@@ -1,12 +1,10 @@
 //! The step `docs/status.md` §2 leaves out: getting from a release directory to
 //! the sets worth comparing.
 //!
-//! On the One Piece collection that was 579 directories down to 141 volume
-//! directories, forming 120 volume-editions of which 19 had more than one copy.
-//! Both of those decisions are heuristics — a page-count threshold and a volume
-//! number parsed from a name — which is exactly why they live here, in their own
-//! command, printing what they decided, rather than inside `duplicates` where a
-//! wrong guess would be invisible.
+//! Its two decisions are heuristics — a page-count threshold and a volume
+//! number parsed from a name — which is exactly why they live here, in their
+//! own command, printing what they decided, rather than inside `duplicates`
+//! where a wrong guess would be invisible.
 
 use std::path::{Path, PathBuf};
 
@@ -83,8 +81,8 @@ pub struct Walked {
 ///
 /// A directory is a candidate when its recursive page count reaches
 /// `min_pages` and none of its children reach it on their own. That handles the
-/// nested case — `docs/sidecar.md` records seven of fifty-seven corpus archives
-/// putting chapters in subdirectories — without making each chapter a copy.
+/// nested case — `docs/sidecar.md` records corpus archives putting chapters in
+/// subdirectories — without making each chapter a copy.
 ///
 /// **Its failure mode, named rather than hidden.** A directory holding nothing
 /// but material below the threshold has no qualifying child, so it becomes one
@@ -94,25 +92,20 @@ pub struct Walked {
 /// Two passes, not one. A single top-down-as-you-go pass would have to decide
 /// each chapter's fate — candidate, excluded, or neither — before it can know
 /// whether the *parent* volume directory goes on to qualify, since that is only
-/// known once every chapter has reported its total back up. Deciding chapter by
-/// chapter as the recursion unwound put three sub-threshold chapters in
-/// `excluded` moments before the volume that contains them turned out to
-/// qualify — the exact case the doc comment above promises does not happen.
-/// `totals` therefore only measures, with no side effects beyond the directory
-/// count; `decide` walks the same tree a second time, top-down, and only
-/// descends into a directory's children when none of them individually
-/// qualifies — otherwise it decides right there and does not look further, so a
-/// qualifying volume's chapters are never independently judged at all.
+/// known once every chapter has reported its total back up. `totals` therefore
+/// only measures, with no side effects beyond the directory count; `decide`
+/// walks the same tree a second time, top-down, and only descends into a
+/// directory's children when none of them individually qualifies — otherwise it
+/// decides right there and does not look further, so a qualifying volume's
+/// chapters are never independently judged at all.
 ///
 /// One case this leaves uncounted, plainly stated rather than left to be
 /// noticed: when a directory is passed over because a child qualifies, that
 /// directory's own loose page files — pages sitting next to the qualifying
 /// child rather than inside it — are folded into the parent's `pages` total
 /// by `totals` but are never visited by `decide`, so they land in neither
-/// `candidates` nor `excluded`. Four stray preview PNGs at a release root did
-/// exactly this in the real corpus run; they are correctly not a copy, but
-/// the header line's candidate and exclusion counts do not add up to
-/// everything on disk as a result.
+/// `candidates` nor `excluded`. The header line's candidate and exclusion
+/// counts therefore do not add up to everything on disk.
 pub fn walk(root: &Path, min_pages: u32) -> Result<Walked, String> {
     let mut walked = Walked::default();
     let tree = totals(root, &mut walked)?;
@@ -140,20 +133,20 @@ struct Totals {
 /// `path.is_dir()` follows symlinks, so a link back to an ancestor recurses
 /// forever. The precise fix is a cycle guard: canonicalize each directory and
 /// refuse to revisit one already on the path down. That costs a syscall per
-/// directory, which is not worth paying on a 579-directory walk to guard
-/// against something this rare — a depth limit catches the same failure for
-/// free, at the cost of naming it one call late.
+/// directory, which is not worth paying to guard against something this
+/// rare — a depth limit catches the same failure for free, at the cost of
+/// naming it one call late.
 ///
-/// **Measured, not guessed, and lower than "far above a real tree" alone would
-/// suggest.** A self-referential symlink does not actually recurse forever on
-/// this platform: Linux caps symlink resolution at 40 hops per lookup
-/// (`ELOOP`), and `Path::is_dir()` swallows that error and answers `false`
-/// rather than propagating it — so past roughly 40 levels the walk does not
-/// crash, it silently treats the cyclic subtree as childless and returns
-/// `Ok`, which is the "silent truncation" this limit exists to rule out just
-/// as much as the stack overflow. The ceiling has to fire before that
-/// happens, not after, so it sits at 32 — comfortably past any real release
-/// tree and comfortably short of where the OS starts lying about `is_dir`.
+/// **Lower than "far above a real tree" alone would suggest.** A
+/// self-referential symlink does not actually recurse forever on this
+/// platform: Linux caps symlink resolution at 40 hops per lookup (`ELOOP`),
+/// and `Path::is_dir()` swallows that error and answers `false` rather than
+/// propagating it — so past roughly 40 levels the walk does not crash, it
+/// silently treats the cyclic subtree as childless and returns `Ok`, which is
+/// the "silent truncation" this limit exists to rule out just as much as the
+/// stack overflow. The ceiling has to fire before that happens, not after, so
+/// it sits at 32 — comfortably past any real release tree and comfortably
+/// short of where the OS starts lying about `is_dir`.
 const MAX_DEPTH: u32 = 32;
 
 fn totals(dir: &Path, walked: &mut Walked) -> Result<Totals, String> {
@@ -258,11 +251,11 @@ fn should_print_group(volume: Option<u32>, copies_len: usize) -> bool {
 ///
 /// `settled` is printed against `duplicated` as its denominator, so the two
 /// have to count the same kind of thing. A group of one satisfies
-/// `largest == copies` trivially, by agreeing with itself, and counting it
-/// printed `duplicated=1 settled=2` — a fraction of more than one whole.
-/// Single-copy numbered groups never reached the counter because they are not
-/// printed at all; the unparsed group always is, so what the counter reported
-/// turned on whether a name parsed, which is nothing to do with signatures.
+/// `largest == copies` trivially, by agreeing with itself. Single-copy
+/// numbered groups never reach the counter because they are not printed at
+/// all; the unparsed group always is, so counting a group of one would make
+/// what the counter reports turn on whether a name parsed, which is nothing
+/// to do with signatures.
 fn is_settled(copies: usize, largest: usize) -> bool {
     copies >= 2 && largest == copies
 }
@@ -344,9 +337,8 @@ impl Row {
 /// The rows the table prints, in group order.
 ///
 /// Signatures are taken only for groups that print. A release directory whose
-/// volumes are mostly single copies — 120 volume-editions of which 19 had more
-/// than one copy, on the One Piece collection — would otherwise pay to sign
-/// every one of them to produce a line nobody sees.
+/// volumes are mostly single copies would otherwise pay to sign every one of
+/// them to produce a line nobody sees.
 fn rows(groups: &[(Option<u32>, Vec<&Candidate>)]) -> Result<Vec<Row>, String> {
     let mut rows = Vec::new();
     for (volume, copies) in groups {

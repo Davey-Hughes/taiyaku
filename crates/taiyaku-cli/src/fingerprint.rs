@@ -53,8 +53,7 @@ impl Border {
     ///
     /// The larger rather than the smaller: the smaller is the mismeasurement. The
     /// exposure is a page with a genuine one-sided margin, where this over-crops
-    /// the other side. Capped at a quarter per side by `flat_border`, and measured
-    /// across five series without regression.
+    /// the other side. Capped at a quarter per side by `flat_border`.
     fn symmetric(self) -> Self {
         let horizontal = self.left.max(self.right);
         let vertical = self.top.max(self.bottom);
@@ -72,28 +71,26 @@ impl Border {
 /// Some scans are letterboxed: Tongari volume 9 is spreads padded into 1920×1080,
 /// twenty per cent of its width being flat white bars. Splitting such a page down
 /// the middle leaves each half a fifth blank, which shifts the content within the
-/// hash grid and wrecks the comparison against a clean page. Removing the bars is
-/// worth 98 runs against 7 on that volume, and 139 paired slots against 176.
+/// hash grid and wrecks the comparison against a clean page.
 ///
-/// This is not the autocrop that was tried and rejected earlier. That one cropped
-/// to the inked bounding box, which moves with whatever each page happens to
-/// contain, and added more variance than it removed.
+/// This is not an autocrop to the inked bounding box, which moves with
+/// whatever each page happens to contain; that crop adds more variance than
+/// it removes.
 ///
 /// Per-member rather than per-page, and that distinction is the whole point. A
 /// letterbox is identical on every page of a volume, so removing it is stable.
-/// Trimming each page independently is not: it was measured, and it degraded
-/// Kaguya from 8 runs to 15 while barely helping the padded volume it was for,
-/// because pages whose art reaches the edge trim less than their neighbours and
-/// the content then sits differently in each hash. That is the same failure as
-/// the ink-bounding-box autocrop, arrived at from a different direction.
+/// Trimming each page independently is not: pages whose art reaches the edge
+/// trim less than their neighbours and the content then sits differently in
+/// each hash. That is the same failure as the ink-bounding-box autocrop,
+/// arrived at from a different direction.
 ///
 /// Sampled rather than exhaustive because a bar present on pages spread through
 /// the volume is present throughout, and decoding twice costs real time.
 ///
-/// The **median** across samples, not the minimum. A minimum was tried and is
-/// wrong: a single full-bleed page — a cover, typically the first thing sampled —
-/// has no border at all and drops the minimum to zero, cancelling the trim for
-/// the entire member. A median survives a handful of such pages.
+/// The **median** across samples, not the minimum. A minimum is wrong: a
+/// single full-bleed page — a cover, typically the first thing sampled — has no
+/// border at all and drops the minimum to zero, cancelling the trim for the
+/// entire member. A median survives a handful of such pages.
 pub fn common_border(pages: &[Page]) -> Border {
     let step = (pages.len() / 12).max(1);
     let mut seen: Vec<Border> = Vec::new();
@@ -201,10 +198,10 @@ pub fn partition_by_size(sizes: &[usize]) -> (Vec<usize>, Vec<usize>) {
 /// Results come back in page order regardless of which path each took, because
 /// every later index — slots, runs, the whole alignment — is derived from it.
 ///
-/// Widened from private for `detect`, which needs the same bounded parallel
-/// decode and must not carry a second copy of the large-page rule: the ceiling
-/// is `MAX_DECODE_ALLOC` and the corpus holds 430 MB TIFFs, so decoding the
-/// large ones one at a time is what keeps a detection run inside memory.
+/// Detection needs the same bounded parallel decode and must not carry a
+/// second copy of the large-page rule: the ceiling is `MAX_DECODE_ALLOC` and
+/// the corpus holds 430 MB TIFFs, so decoding the large ones one at a time is
+/// what keeps a detection run inside memory.
 pub(crate) fn decode_all<T, F>(pages: &[Page], describe: F) -> Result<Vec<T>, String>
 where
     T: Send,
@@ -241,10 +238,9 @@ where
 
 /// Fingerprint every page of an edition.
 ///
-/// Decoding dominates by three orders of magnitude — around 12 ms per page at
-/// 2147x3056 against roughly 100 us for the entire similarity matrix — and it
-/// is embarrassingly parallel, so it is worth spreading across cores. This is
-/// also why fingerprints are cached per archive rather than recomputed per pair.
+/// Decoding dominates the work and is embarrassingly parallel, so it is worth
+/// spreading across cores. This is also why fingerprints are cached per
+/// archive rather than recomputed per pair.
 pub fn fingerprint_edition(pages: &[Page]) -> Result<Vec<PageHash>, String> {
     decode_all(pages, |_, luma| fingerprint(luma))
 }
@@ -279,12 +275,11 @@ pub fn describe_pages(pages: &[Page]) -> Result<Vec<crate::cache::CachedPage>, S
 ///
 /// Resize to a `(GRID+1) x GRID` grid and record, for each cell, whether it is
 /// brighter than the cell to its right. Only the comparisons are kept, which is
-/// what makes the result independent of exposure and of the page's resolution —
-/// the corpus spans 685x1024 to 2147x3056 across editions of one volume.
+/// what makes the result independent of exposure and of the page's resolution.
 ///
-/// Chosen over a DCT-based perceptual hash by measurement, not preference: at
-/// equal width the two scored within noise of each other on the corpus, and this
-/// one needs no transform.
+/// Chosen over a DCT-based perceptual hash because at equal width the two
+/// scored within noise of each other on the corpus, and this one needs
+/// no transform.
 pub fn fingerprint(page: &GrayImage) -> PageHash {
     let small =
         image::imageops::resize(page, GRID + 1, GRID, image::imageops::FilterType::Lanczos3);

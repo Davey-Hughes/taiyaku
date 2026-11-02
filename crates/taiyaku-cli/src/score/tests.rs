@@ -44,9 +44,9 @@ fn one_prediction_over_one_truth_box_is_one_to_one() {
 
 #[test]
 fn one_prediction_swallowing_three_truth_boxes_is_a_merge_not_three_misses() {
-    // The failure `notes.md` found by cropping: the detector returns whole
-    // panels. Under IoU@0.5 this is three misses and says nothing about
-    // why. It must come back as three merges.
+    // The failure `notes.md` records: the detector returns whole panels. Under
+    // IoU@0.5 this is three misses and says nothing about why. It must come
+    // back as three merges.
     let scored = score_page(
         &[
             truth(0.1, 0.1, 0.1, 0.1, Kind::Dialogue),
@@ -65,8 +65,8 @@ fn one_prediction_swallowing_three_truth_boxes_is_a_merge_not_three_misses() {
 
 #[test]
 fn several_predictions_over_one_truth_box_is_a_split() {
-    // The opposite failure on the same page: seven "blocks" that are
-    // vertical slices of one word.
+    // The opposite failure on the same page: "blocks" that are vertical slices
+    // of one word.
     let scored = score_page(
         &[truth(0.1, 0.1, 0.3, 0.1, Kind::Dialogue)],
         &[
@@ -144,8 +144,8 @@ fn a_report_tallies_outcomes_across_pages() {
 
 #[test]
 fn recall_is_reported_per_kind_so_dialogue_and_sfx_are_separable() {
-    // The whole reason kinds were not collapsed into one class: a later
-    // decision to stop caring about sound effects must cost no relabelling.
+    // Kinds are not collapsed into one class: a later decision to stop caring
+    // about sound effects must cost no relabelling.
     let page = [
         truth(0.1, 0.1, 0.1, 0.1, Kind::Dialogue),
         truth(0.5, 0.5, 0.1, 0.1, Kind::Sfx),
@@ -165,8 +165,7 @@ fn recall_is_reported_per_kind_so_dialogue_and_sfx_are_separable() {
 #[test]
 fn only_one_to_one_counts_as_found() {
     // A merge and a split are failures, not partial credit. Counting them as
-    // found would let a detector returning whole panels score as working,
-    // which is the exact mistake blocks_per_page made.
+    // found would let a detector returning whole panels score as working.
     let page = [
         truth(0.1, 0.1, 0.1, 0.1, Kind::Dialogue),
         truth(0.3, 0.1, 0.1, 0.1, Kind::Dialogue),
@@ -213,16 +212,13 @@ fn a_report_over_no_pages_renders_without_dividing_by_zero() {
 
 #[test]
 fn a_whole_panel_prediction_over_one_balloon_is_a_merge_not_one_to_one() {
-    // The regression this instrument exists for. Of the ten blocks
-    // hand-cropped in `docs/notes.md:7046-7057`, five were confirmed by eye
-    // to be whole panels and **three of those contain exactly one balloon**
-    // — `gotoubun p139 b1` ("a figure on a bench, tone, one balloon"),
-    // `gotoubun p158 b2` ("one balloon plus a black silhouette") and
-    // `oshinoko p78 b0` ("one balloon plus art"). Decided on a count of how
-    // many labelled boxes a prediction reaches, every one of those three
-    // scores as a clean 1:1 hit, `add_page` credits it as `found`, and the
-    // detector that returns panels ranks *better*. The prediction here
-    // covers 0.25% of its own area with balloon; it is a merge.
+    // The case this instrument exists for: a whole-panel prediction around
+    // exactly one balloon, as in `docs/notes.md`,
+    // "What the pixels said, and the noun this section had wrong". Decided on a
+    // count of how many labelled boxes a prediction reaches, it scores as a
+    // clean 1:1 hit, `add_page` credits it as `found`, and the detector that
+    // returns panels ranks *better*. The prediction here covers 0.25% of its
+    // own area with balloon; it is a merge.
     let scored = score_page(
         &[truth(0.4, 0.4, 0.05, 0.05, Kind::Dialogue)],
         &[predicted(0.0, 0.0, 1.0, 1.0)],
@@ -237,11 +233,11 @@ fn a_whole_panel_prediction_over_one_balloon_is_a_merge_not_one_to_one() {
 
 #[test]
 fn a_prediction_covering_a_sliver_of_a_truth_box_is_a_fragment() {
-    // `gotoubun p102 b3`, 16×82: "a **letter fragment**, a vertical slice
-    // of one word" (`docs/notes.md:7053`). The prediction lies wholly
-    // inside the truth box and covers 0.25% of it. Association still
-    // holds — it is plainly *about* this box — but it found a quarter of a
-    // percent of it, which is a failure and not a hit.
+    // "a **letter fragment**, a vertical slice of one word" (`docs/notes.md`,
+    // "What the pixels said, and the noun this section had wrong"). The
+    // prediction lies wholly inside the truth box and covers 0.25% of it.
+    // Association still holds — it is plainly *about* this box — but it found
+    // a quarter of a percent of it, which is a failure and not a hit.
     let scored = score_page(
         &[truth(0.1, 0.1, 0.4, 0.4, Kind::Dialogue)],
         &[predicted(0.2, 0.2, 0.02, 0.02)],
@@ -421,7 +417,7 @@ fn sample_needs_the_corpus_root_itself_to_be_a_directory() {
 /// The failure this whole sub-project exists to fight: an edition that
 /// cannot be read must be named on its own, not folded away into a bare
 /// count or dropped from the worklist. Every `sample.rs` entry is missing
-/// under this empty root, so every one of the fifteen must be named.
+/// under this empty root, so every one must be named.
 #[test]
 fn a_missing_edition_directory_is_reported_by_name_not_skipped_silently() {
     let root = taiyaku_read::test_support::TempDir::new("sample-missing-root");
@@ -446,7 +442,7 @@ fn a_missing_edition_directory_is_reported_by_name_not_skipped_silently() {
 /// previous run left one behind.
 fn scratch(name: &str) -> taiyaku_read::test_support::TempDir {
     // O117's shared helper: unique to the process and the call, and removed
-    // when the test ends. It was a process id alone.
+    // when the test ends.
     taiyaku_read::test_support::TempDir::new(&format!("score-{name}"))
 }
 
@@ -532,10 +528,8 @@ const ONE_BOX_ON_PAGE_0: &str =
 /// order the members were typed in does not decide *which* edition they
 /// are — `score.rs`'s own comment says exactly that. `is_stale_for`
 /// compares **element-wise**, deliberately, because content-in-order is
-/// what says these labels describe these pages. Handing the argv-ordered
-/// list to that element-wise check makes the two rules contradict each
-/// other, and it refused a perfectly good document telling a person to
-/// redo hours of labelling.
+/// what says these labels describe these pages. Handing the argv-ordered list
+/// to that element-wise check makes the two rules contradict each other.
 ///
 /// **Live on this corpus.** `corpus/gotoubun-v01`'s sidecar lists en-fan
 /// as `…c004, c005, c005.5`, while `en-fan/*.cbz` expands to `…c004,
@@ -609,11 +603,11 @@ fn a_replaced_archive_is_still_refused_after_the_order_fix() {
 /// A labelled page this edition cannot reach is named and refused, not
 /// quietly left out of the count.
 ///
-/// The filter that keeps only labelled pages cannot see a truth key past
-/// the end — it simply never appears — so the report printed a smaller
-/// `pages=` with nothing saying which page went unmeasured.
-/// `score_corpus.rs` already fails by name on exactly this, and the
-/// shipped command must not be the softer of the two.
+/// The filter that keeps only labelled pages cannot see a truth key past the
+/// end — it simply never appears — so the report would print a smaller `pages=`
+/// with nothing saying which page went unmeasured. `score_corpus.rs` already
+/// fails by name on exactly this, and the shipped command must not be the
+/// softer of the two.
 #[test]
 fn a_labelled_page_past_the_end_of_the_edition_is_named_rather_than_dropped() {
     let root = scratch("past-the-end");

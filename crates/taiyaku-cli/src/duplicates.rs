@@ -1,15 +1,12 @@
 //! Resolving several copies of one volume into a decision.
 //!
-//! The protocol is `docs/status.md` §2, worked out by hand across 109 volumes
-//! and recorded in `docs/notes.md` under "Sorting 109 volumes' worth of
-//! duplicates": signature, then all pairs *within* the set, then a ranking of
-//! what is genuinely distinct.
+//! The protocol is `docs/status.md` §2, recorded in `docs/notes.md` under
+//! "Sorting 109 volumes' worth of duplicates": signature, then all pairs
+//! *within* the set, then a ranking of what is genuinely distinct.
 //!
-//! All pairs rather than every copy against the first, because anchoring on the
-//! first copy reported One Piece volume 77 as three mutually unrelated files
-//! when two of them are an exact identity — and the first copy is the one most
-//! likely to be the odd one out, since the sort that produced it was by page
-//! count.
+//! All pairs rather than every copy against the first, because the first copy
+//! is the one most likely to be the odd one out, since the sort that produced
+//! it was by page count.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -113,10 +110,10 @@ fn representatives(
 /// nothing confirms — every earlier copy sharing a signature it does not
 /// actually share bytes with — it tries every one of them, and the naive
 /// closure `Ok(content_digest(&copies[a])? == content_digest(&copies[b])?)`
-/// re-decoded both sides from scratch on every attempt. A copy compared as
-/// `earlier` against every later copy paid for its own decode once per later
-/// copy: O(n²) full content reads over a set whose signatures collide, where
-/// O(n) — one hash per copy — answers the same question.
+/// would re-decode both sides from scratch on every attempt. A copy compared as
+/// `earlier` against every later copy would pay for its own decode once per
+/// later copy: O(n²) full content reads over a set whose signatures collide,
+/// where O(n) — one hash per copy — answers the same question.
 ///
 /// `digests` fills lazily, one slot per copy, rather than all at once up
 /// front, so a copy `representatives` never calls `confirm` for at all — one
@@ -157,13 +154,12 @@ pub fn command(args: &[String]) -> Result<(), String> {
 
 /// Run the protocol over one set, fingerprinting through the cache.
 ///
-/// Spreads always split. One Piece v092 is 200 images in one copy and 101 in
-/// the other, and c0's 200 slots come out wholly within c1's 202 — every one
-/// of c1's images detects as a spread, so slot expansion doubles its count.
-/// `notes.md` draws the conclusion directly: page counts are a property of
-/// packaging, slot counts a property of the work. A duplicate command that
-/// compared pages would get its own headline case wrong, so there is no flag
-/// for this.
+/// Spreads always split. In One Piece v092 c0's slots come out wholly within
+/// c1's — every one of c1's images detects as a spread, so slot expansion
+/// doubles its count. `notes.md` draws the conclusion directly: page counts are
+/// a property of packaging, slot counts a property of the work. A duplicate
+/// command that compared pages would get its own headline case wrong, so there
+/// is no flag for this.
 pub fn resolve(
     copies: &[Vec<PathBuf>],
     against: Option<&[PathBuf]>,
@@ -175,9 +171,6 @@ pub fn resolve(
     resolve_with(copies, against, &mut fingerprint)
 }
 
-/// The protocol over one set, fingerprinting through a caller-supplied
-/// closure.
-///
 /// A copy's fingerprinted slot count, as `PageRange::new` takes it.
 ///
 /// # Panics
@@ -189,6 +182,8 @@ fn slot_count(n: usize) -> u32 {
     u32::try_from(n).expect("slot count exceeds u32::MAX")
 }
 
+/// The protocol over one set, fingerprinting through a caller-supplied closure.
+///
 /// Separated from `resolve` so the branch that matters most here can be
 /// tested: a copy confirmed byte-identical to an earlier one is never
 /// fingerprinted, and a decode of every page is what that saves. A test
@@ -236,16 +231,15 @@ pub fn resolve_with(
     }
 
     // Step 2. Every unordered pair, one solve each — leaning on the symmetry
-    // `docs/status.md` records as measured across five pairs in two series.
-    // Two copies confirmed byte-identical are not solved: the solver would be
-    // comparing a page sequence with itself, and the run describing that is the
-    // whole of it.
+    // `docs/status.md` records as measured. Two copies confirmed byte-identical
+    // are not solved: the solver would be comparing a page sequence with
+    // itself, and the run describing that is the whole of it.
     let mut pairs = Vec::new();
     for a in 0..copies.len() {
         for b in a + 1..copies.len() {
             let slots = described[a].slots;
-            // The `slots > 0` guard above, on the untruncated usize, rules out `- 1`
-            // underflowing.
+            // The `slots > 0` guard, on the untruncated usize, rules out
+            // `- 1` underflowing.
             let runs = if stands_for[a] == stands_for[b] && slots > 0 {
                 vec![Run::paired(
                     PageRange::new(0, slot_count(slots) - 1),
@@ -282,8 +276,6 @@ pub fn resolve_with(
     // volume even where it refused every other copy — which is precisely the
     // mislabelled-file case, the impostor refusing the real scans and the real
     // scans refusing it right back, neither refusal saying which is which.
-    // Skipping the flagged clusters before scoring them is what made `--against`
-    // print byte-identical output on the one set it exists to settle.
     let reference = match against {
         Some(members) => Some(fingerprint(members)?),
         None => None,
@@ -338,10 +330,6 @@ pub fn resolve_with(
 }
 
 /// How two copies stand to one another, decided from one solve.
-///
-/// Containment is the commonest near-identity shape in the corpus: three of
-/// its four identity-looking pairs are containment rather than identity, two
-/// of those three `Within` and Bocchi's hamaji/krc pair `Contains`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Relation {
     /// Every slot paired on both sides: the same edition, however it is packed.

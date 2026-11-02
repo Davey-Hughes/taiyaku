@@ -5,20 +5,16 @@
 // --- why a baseline rather than a raw survivor list ---------------------------
 //
 // A survivor list is only actionable if a new one is distinguishable from an old
-// one. 91 of the 115 entries below are untriaged, and a run that reprints them
-// all trains the reader to skim — which is the failure mode a scheduled job is
-// most prone to and the exact reason `.forgejo/workflows/mutants.yml` gates
-// nothing.
+// one. A run that reprints every untriaged survivor trains the reader to skim —
+// which is the failure mode a scheduled job is most prone to and the exact
+// reason `.forgejo/workflows/mutants.yml` gates nothing.
 //
 // So the accepted survivors live in `docs/mutants-baseline.md`, each with the
 // reason it is accepted, and this compares against them. **A survivor not in the
 // baseline is the whole of what is worth reading.**
 //
-// It also makes the harness a *ratchet*. Four whole-branch reviews of spec A2
-// each returned fifteen findings and the rate never fell, because nothing
-// remembered what had already been checked — every reviewer re-sampled the whole
-// branch. A committed baseline is that memory, for the one dimension a machine
-// can hold it in.
+// It also makes the harness a *ratchet*: a committed baseline remembers what
+// has already been checked, for the one dimension a machine can hold it in.
 //
 // --- what the key is, and the annoying half of that choice --------------------
 //
@@ -48,9 +44,9 @@ import { dirname, join } from 'node:path'
 
 const PLACEHOLDER = 'TODO: why is this survivor accepted? An entry with no reason is a defect nobody finished reading.'
 
-// **A third state, between "accepted with a reason" and "new".** The first
-// workspace-wide sweep produced 150 survivors, and writing 150 verified reasons
-// in one sitting is not a thing anybody does honestly — the result would be 150
+// **A third state, between "accepted with a reason" and "new".** Writing a
+// verified reason for every survivor of a workspace-wide sweep in one sitting
+// is not a thing anybody does honestly — the result would be a pile of
 // sentences that sound like reasons. An entry whose reason begins with this
 // marker means *recorded, not yet looked at*: it is silenced in the new-survivor
 // diff, because it is not new, and counted out loud on every run, because
@@ -84,17 +80,13 @@ const missed = readList(missedPath)
 // **Every mutant this run actually tested**, as the union of all four outcome
 // lists — not every *file* it touched.
 //
-// The difference is the whole correctness of `--since`. It was a set of file
-// paths at first, on the reasoning that a file with zero survivors must be able
-// to clear its baseline entries, and it appears in `caught.txt` rather than in
-// `missed.txt`. That is true for a whole-file or whole-crate run and false for
-// `--in-diff`, which tests only the mutants inside changed hunks: every other
-// baseline entry in a partially-examined file then looked like a survivor that
-// had been killed. Measured 2026-08-19, the first time `--since` was ever run —
-// it reported 8 accepted survivors as no longer surviving and advised dropping
-// them, none of which had been tested. **Following that advice would have
-// deleted eight legitimate entries on the strength of a run that never looked
-// at them.**
+// The difference is the whole correctness of `--since`. A file with zero
+// survivors appears in `caught.txt` rather than in `missed.txt`, so a set of
+// file paths would let it clear its baseline entries. That is right for a
+// whole-file or whole-crate run and wrong for `--in-diff`, which tests only the
+// mutants inside changed hunks: every other baseline entry in a
+// partially-examined file would then look like a survivor that had been
+// killed, and the run would advise dropping entries it never tested.
 //
 // Keyed on the mutant line rather than the path, it is exact under every scope.
 const outDir = dirname(missedPath)
@@ -123,10 +115,10 @@ const parseBaseline = (text) => {
       continue
     }
     // A blank line inside a reason is kept as an empty string rather than
-    // skipped, so `--write` can put the paragraph break back. Dropping it made
-    // every rewrite reflow a multi-paragraph reason into one blob, a little
-    // more unreadable each time — the failure mode of a file nobody edits by
-    // hand is that a tool quietly degrades it.
+    // skipped, so `--write` can put the paragraph break back. Dropping it would
+    // make every rewrite reflow a multi-paragraph reason into one blob, a
+    // little more unreadable each time — the failure mode of a file nobody
+    // edits by hand is that a tool quietly degrades it.
     if (line.trim() === '') {
       if (current) entries.get(current).push('')
       continue

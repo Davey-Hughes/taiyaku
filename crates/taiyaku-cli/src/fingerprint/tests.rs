@@ -37,8 +37,8 @@ fn encoded(name: &str, image: &GrayImage) -> Page {
 }
 
 /// A flat bar comes off; a margin with anything in it stays. The second half
-/// is what separates this from the autocrop that was rejected: that one
-/// cropped to the ink and so moved with the content, and this must not.
+/// is what separates this from an autocrop to the ink: that one moves with the
+/// content, and this must not.
 #[test]
 fn a_uniform_bar_is_trimmed_and_a_varying_margin_is_not() {
     // 40 wide: 8 columns of flat white, 24 of content, 8 flat again.
@@ -83,12 +83,11 @@ fn a_uniform_bar_is_trimmed_and_a_varying_margin_is_not() {
 /// doing it at all.
 ///
 /// Trimming a padded spread is only useful if the two pages inside it still
-/// split down the middle afterwards. Detection alone does not give that. On
-/// Tongari volume 9 the right bar reads as its true 197 pixels but the left
-/// reads 8, because a one-column scan seam at x=8 stops the left scan dead.
-/// Cropping those unequal amounts leaves the content off-centre, the halves
-/// get cut in the wrong place, and the alignment goes from 88 runs to 98 —
-/// worse than not trimming. Taking 197 from both sides is what took it to 3.
+/// split down the middle afterwards. Detection alone does not give that: a
+/// one-column scan seam at x=8 stops the left scan dead, so the two bars read
+/// unequal, and cropping unequal amounts leaves the content off-centre and
+/// the halves cut in the wrong place. Taking the larger of each opposing pair
+/// from both sides keeps the split between the two pages.
 #[test]
 fn a_letterbox_comes_off_both_sides_equally_so_a_spread_still_splits_in_half() {
     // A padded spread, 400 wide: 40 flat columns, 320 of content, 40 flat.
@@ -143,10 +142,10 @@ fn a_letterbox_comes_off_both_sides_equally_so_a_spread_still_splits_in_half() {
 /// the scan reduces to noise; the guard exists so a thumbnail or a spacer
 /// image cannot report a border and have a quarter of itself removed.
 ///
-/// Both sides of the threshold have to be asserted. Seven alone cannot see
-/// the difference between `< 8` and `<= 8`, and eight alone cannot see the
-/// difference between `< 8` and `== 8` — and each axis needs its own case,
-/// because either one being small is enough to stop the measurement.
+/// Both sides of the threshold have to be asserted. Seven alone cannot
+/// see the difference between `< 8` and `<= 8`, and eight alone cannot see
+/// the guard deleted — and each axis needs its own case, because either one
+/// being small is enough to stop the measurement.
 #[test]
 fn a_page_under_eight_pixels_on_either_axis_reports_no_border() {
     let blank = |w, h| GrayImage::from_fn(w, h, |_, _| image::Luma([255u8]));
@@ -181,15 +180,15 @@ fn a_page_under_eight_pixels_on_either_axis_reports_no_border() {
 
 /// No side gives up more than a quarter of the page, on any of the four.
 ///
-/// The cap is what separates this from the autocrop that was rejected: a
-/// page whose margins are genuinely wide — a single panel floating in
-/// white — would otherwise be trimmed to the panel, which is exactly the
-/// content-following crop that added variance rather than removing it.
+/// The cap is what separates this from an autocrop to the ink: a page whose
+/// margins are genuinely wide — a single panel floating in white — would
+/// otherwise be trimmed to the panel, which is exactly the content-following
+/// crop that adds variance rather than removing it.
 ///
 /// Every one of the four scans has its own bound written out separately,
-/// and each is a small piece of arithmetic on `w` or `h` that no test
-/// reached: the existing letterbox fixtures all have bars narrower than the
-/// cap, so the caps never bound and every operator in them was free.
+/// and each is a small piece of arithmetic on `w` or `h`. The other
+/// letterbox fixtures in this module have bars narrower than the cap, so in
+/// them no cap decides what comes off.
 #[test]
 fn no_side_gives_up_more_than_a_quarter_of_the_page() {
     // 40x40 with a 10x10 panel in the middle: fifteen flat lines on every
@@ -215,9 +214,9 @@ fn no_side_gives_up_more_than_a_quarter_of_the_page() {
 }
 
 /// A letterbox across the top and bottom is measured the same way as one
-/// down the sides. Nothing asserted the horizontal scan before: every
-/// fixture in this module pads left and right, because that is the shape
-/// the corpus has, and so `flat_row`'s own tolerance was never read.
+/// down the sides. Every other letterbox fixture in this module pads left and
+/// right, because that is the shape the corpus has, so the horizontal scan
+/// needs one of its own.
 #[test]
 fn a_letterbox_above_and_below_comes_off_the_same_way_as_one_at_the_sides() {
     // 60x40: eight flat rows at each end, content spanning the full width
@@ -242,15 +241,15 @@ fn a_letterbox_above_and_below_comes_off_the_same_way_as_one_at_the_sides() {
 /// `crop` removes a border from both axes, and refuses one that would leave
 /// nothing behind.
 ///
-/// The vertical pair is what no other test here exercises, and a page of
-/// zero width or height is worse than an uncropped one: every stage after
-/// this resizes it to the hash grid.
+/// A page of zero width or height is worse than an uncropped one: every stage
+/// after this resizes it to the hash grid.
 #[test]
 fn crop_takes_the_vertical_border_off_and_refuses_one_that_would_leave_nothing() {
     let page = GrayImage::from_fn(40, 40, |x, y| image::Luma([ink(x, y)]));
 
-    // Three and two rather than a matching pair: an even border cannot tell
-    // `top + bottom` from `top - bottom`, and both read as five.
+    // Three and two rather than a matching pair: with a matching pair, a crop
+    // that started at `bottom` rather than `top` would still pass the first-row
+    // check below.
     let vertical = Border {
         left: 0,
         right: 0,
@@ -318,12 +317,12 @@ fn partitioning_by_size_keeps_every_page_exactly_once_and_in_order() {
 /// The threshold is a memory bound, and the test has to be written in
 /// page sizes rather than in the constant's own name.
 ///
-/// `partition_by_size` above says everything about the rule except how big
-/// the pages it sorts actually are, because it is written in terms of
-/// `LARGE_PAGE_BYTES` and so agrees with the constant whatever it says.
-/// The two ways `32 * 1024 * 1024` can be got wrong leave 1 MB and 33 KB —
-/// both of which send every ordinary manga page down the one-at-a-time
-/// path, costing only wall-clock, which nothing fails on.
+/// `partition_by_size` above says everything about the rule except how big the
+/// pages it sorts actually are, because it is written in terms of
+/// `LARGE_PAGE_BYTES` and so agrees with the constant whatever it says. The two
+/// ways `32 * 1024 * 1024` can be got wrong leave 1 MB and 33 KB — both of
+/// which send ordinary manga pages down the one-at-a-time path, costing only
+/// wall-clock, which nothing fails on.
 #[test]
 fn the_large_page_rule_keeps_ordinary_pages_parallel_and_archival_scans_alone() {
     // Three megabytes is the top of the ordinary range; a Color Walk page
@@ -369,7 +368,7 @@ fn brightening_a_page_does_not_change_its_hash() {
 ///
 /// The **median** is why a full-bleed cover cannot cancel the trim for the
 /// whole volume — it reports no border, it is page zero, and page zero is
-/// always sampled. A minimum was tried and does exactly that.
+/// always sampled. A minimum would do exactly that.
 ///
 /// The **sampling step** decides which pages get a vote, and getting it
 /// wrong is invisible: the function still returns a border, still of a

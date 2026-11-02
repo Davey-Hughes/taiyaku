@@ -7,10 +7,6 @@ use super::*;
 /// be identical. Corpus pages are portrait: 685×1024 gives
 /// `r = min(1024/1024, 1024/685) = 1`, so `dw = 339` and `dh = 0`, and the
 /// padding lands on the **right**. That is the case this pins.
-///
-/// Proved to bite rather than asserted: with `replace`'s x-offset changed
-/// to `(side - new_w) / 2` — a centred width — this fails on the first
-/// assertion at x = 0, which the sibling test below still passes.
 #[test]
 fn a_portrait_page_pads_on_the_right_not_around_the_middle() {
     // The real shape of `gotoubun-v01/raw-mono`, uniformly white.

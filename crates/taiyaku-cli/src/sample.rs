@@ -25,8 +25,7 @@ pub const DEV_EDITIONS: &[(&str, &str)] = &[
 ///
 /// **Sealed.** Labelled up front, opened once at the end, reported whatever it
 /// says, and never used to choose between candidates. Paths are under
-/// `corpus/incoming/` and are laid out differently from the settled tier —
-/// confirm each against the tree before the first run rather than assuming.
+/// `corpus/incoming/` and are laid out differently from the settled tier.
 pub const HELD_OUT_EDITIONS: &[(&str, &str)] = &[
     ("incoming/berserk-cleaned", "Berserk.T01"),
     ("incoming/onepiece", "op-raw-v01"),
@@ -38,7 +37,7 @@ pub const HELD_OUT_EDITIONS: &[(&str, &str)] = &[
 
 /// The dev set's page indices: every other one of `region_experiment`'s ten.
 ///
-/// A strict subset of the 90 pages `notes.md`'s figures are computed over.
+/// A strict subset of the pages `notes.md`'s figures are computed over.
 /// **Thinned rather than recomputed**: calling that module's `sample_indices`
 /// with a count of 5 lands on *different* pages, because the formula divides
 /// by the count, and the subset property is the whole point.

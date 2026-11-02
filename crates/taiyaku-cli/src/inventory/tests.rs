@@ -44,12 +44,9 @@ fn a_single_unparsed_candidate_is_reported() {
 }
 
 /// `settled` counts duplicate sets whose copies all share one signature,
-/// and it is printed against `duplicated`, so it can never exceed it. A
-/// group of one used to count: `largest == copies.len()` is trivially true
-/// there, and a real run over four directories printed
-/// `duplicated=1 settled=2` because the single unparsed group reached the
-/// counter. The gate is on the group's size, not on whether its name
-/// parsed.
+/// and it is printed against `duplicated`, so it can never exceed it.
+/// `largest == copies` is trivially true for a group of one, so the gate is
+/// on the group's size, not on whether its name parsed.
 #[test]
 fn a_group_of_one_is_not_a_settled_duplicate() {
     assert!(
@@ -83,9 +80,7 @@ fn a_pattern_with_two_placeholders_is_refused() {
     assert!(error.contains("two"), "unhelpful: {error}");
 }
 
-/// An empty prefix on a multi-byte name it must match — `find` used to
-/// panic here (`byte index 1 is not a char boundary`) because the old
-/// byte-stepping scan advanced one byte into `第` instead of past it.
+/// An empty prefix on a multi-byte name it must match.
 #[test]
 fn an_empty_prefix_finds_the_number_before_a_multibyte_suffix() {
     let pattern = Pattern::parse("{}巻").unwrap();
@@ -93,9 +88,7 @@ fn an_empty_prefix_finds_the_number_before_a_multibyte_suffix() {
     assert_eq!(pattern.find("第69巻"), Some(69));
 }
 
-/// The same empty-prefix pattern on a name with no digits at all: `find`
-/// used to walk past the end of the string here rather than return
-/// `None`.
+/// The same empty-prefix pattern on a name with no digits at all finds nothing.
 #[test]
 fn an_empty_prefix_on_a_name_with_no_digits_finds_nothing() {
     let pattern = Pattern::parse("{}巻").unwrap();
@@ -103,9 +96,7 @@ fn an_empty_prefix_on_a_name_with_no_digits_finds_nothing() {
     assert_eq!(pattern.find("extras"), None);
 }
 
-/// A placeholder with nothing before or after it: `find` used to panic
-/// (`byte index 4 is out of bounds for string of length 3`) once the scan
-/// walked past the end of `"abc"` looking for another empty match.
+/// A placeholder with nothing before or after it, on a short name.
 #[test]
 fn an_empty_pattern_on_a_short_name_finds_nothing() {
     let pattern = Pattern::parse("{}").unwrap();
@@ -158,11 +149,10 @@ fn material_below_the_threshold_is_excluded_and_its_range_recorded() {
     assert_eq!(walked.excluded, vec![3, 5]);
 }
 
-/// A symlink pointing back at its own directory: `path.is_dir()` follows
-/// it, so without the depth limit `totals` would recurse until the stack
-/// overflows rather than return an error. This must come back as a named
-/// error mentioning the depth it gave up at, not a panic and not a
-/// silent truncation.
+/// A symlink pointing back at its own directory, which `path.is_dir()` follows
+/// (`MAX_DEPTH`'s doc says where that ends without the limit). This must come
+/// back as a named error mentioning the depth it gave up at, not a panic and
+/// not a silent truncation.
 #[test]
 #[cfg(unix)]
 fn a_symlink_cycle_errors_naming_the_depth_instead_of_overflowing() {
@@ -344,8 +334,7 @@ fn the_footer_counts_duplicated_sets_and_the_settled_ones_among_them() {
 
 /// A group that is not printed is not signed and not counted. Reading the
 /// pages of every single-copy volume to decide it is not a duplicate is
-/// work for a line nobody sees — 101 of the One Piece collection's 120
-/// volume-editions.
+/// work for a line nobody sees.
 #[test]
 fn only_the_groups_worth_printing_become_rows() {
     let root = TempDir::new("inventory-rows");

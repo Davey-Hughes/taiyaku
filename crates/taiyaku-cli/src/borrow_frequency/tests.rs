@@ -65,9 +65,8 @@ fn a_paired_slot_is_at_and_an_unpaired_one_with_no_third_edition_is_a_gap() {
     let order = ordered_editions("a", &b.editions());
     // Slot 0 pairs, so the reader sees a real `b` page.
     assert_eq!(shown_at(&b, &order, "a", 0, "b"), Shown::At(0));
-    // Slot 2 does not, and with only two editions there is nothing to
-    // lend it — the authority no longer does, which is exactly what
-    // Task 2 changed.
+    // Slot 2 does not, and with only two editions there is nothing to lend it:
+    // the authority does not lend.
     assert_eq!(shown_at(&b, &order, "a", 2, "b"), Shown::Gap);
 }
 
@@ -76,9 +75,9 @@ fn an_unpaired_slot_borrows_a_third_edition_where_one_resolves() {
     let json = three_editions();
     let b = Binding::from_json(&json).expect("fixture parses");
     let order = ordered_editions("a", &b.editions());
-    // Slot 2 has no `b` counterpart but does have a `c` one, so `c`
-    // lends it rather than the authority — `c` is skipped like `b` is
-    // for `viewing`, and there is no fallback beyond it.
+    // Slot 2 has no `b` counterpart but does have a `c` one, so `c` lends it
+    // rather than the authority — `a` is skipped like `b` is for `viewing`, and
+    // there is no fallback beyond it.
     assert_eq!(
         shown_at(&b, &order, "a", 2, "b"),
         Shown::Borrowed("c".to_string())

@@ -2,42 +2,16 @@ name: mutants
 
 # Mutation testing, **one crate at a time, run by hand**, gating nothing.
 #
-# `ci.yml` is the gate: four jobs, ten-minute bounds, run on every push and
-# every pull request. This is not one of them and must never become one. The
-# sweep is **2,984 mutants** — 3,191 took 3 h 12 m across the six crates on
-# 2026-08-19, before `detect.rs` and `regions.rs` were excluded — two orders of magnitude past what a gate can cost — and a job
-# that is slow enough to be skipped, or red often enough to be ignored, is worse
-# than no job at all, because it teaches you not to read it. That reasoning is
-# copied wholesale from `plaintextesports`'s `live-smoke.yml`, the other
-# scheduled workflow across these projects, and it holds here for the same
-# reason.
-#
-# **The first version of this file said 43 minutes and set one job's timeout to
-# 260, calling it "six times the measurement".** 43 minutes was August's figure
-# for 1,660 mutants, before spec B's scanner and spec A2's auth; the workspace
-# has since nearly doubled. 260 minutes was therefore 1.35× the real cost on a
-# workstation faster than the runner, and this job would have reported a
-# timeout as a hang. Hence the matrix below: a figure copied forward without
-# re-measuring is how a bound quietly stops bounding.
-#
-# Per crate, 2026-08-19: cli 1,142 mutants / 68 m, serve 495 / 58 m, library
-# 819 / 53 m, read 180 / 7 m, core 504 / 6 m, wasm 51 / 15 s. The two big ones
-# are not the two biggest crates — `serve` runs 495 mutants in nearly the time
-# `cli` takes for 1,142, because its tests build a router per case.
+# `ci.yml` is the gate: four jobs, ten-minute bounds, run on every push to
+# `main` and every pull request. This is not one of them and must never become
+# one. The sweep is far past what a gate can cost, and a job that is slow enough
+# to be skipped, or red often enough to be ignored, is worse than no job at all,
+# because it teaches you not to read it.
 #
 # **A failure here means "go look", not "the build is broken."** Nothing depends
 # on it. Nothing is blocked by it. What it produces is a list of mutations of the
 # source that every test still passed against — places where the suite runs a
 # line without asserting anything about what the line does.
-#
-# The reason it exists at all is that the alternative was nothing. All five
-# crates were swept once, by hand, in August 2026, and the permanent artefact was
-# the fixtures written to kill the survivors — not a harness. So the four modules
-# spec A2 added were never swept until somebody thought to, and a scoped run
-# found eleven survivors in two files: `close_session`, `sweep_expired_sessions`,
-# `revoke_session` and `sessions_of` could each be replaced with `Ok(())`,
-# `Ok(0)`, `Ok(true)` or `Ok(vec![])` with the whole suite still green. A revoke
-# that revoked nothing would have shipped.
 #
 # `scripts/mutants.sh --since main` is the half meant for a branch, and it is the
 # one to reach for before opening a pull request. This job is the backstop for
@@ -50,13 +24,11 @@ on:
   # **No schedule. This is run by hand, and `docs/mutants-baseline.md` records
   # when.**
   #
-  # It was `cron: "0 4 * * 0"` and then `"0 4 * * 4"` before being removed
-  # entirely on 2026-08-20, and the reason is the host rather than the job. The
-  # forge runs on an **8-core** machine carrying **68 other containers at a load
-  # average around 16**, and the runner container has no CPU or memory limit of
-  # its own. A sweep is hours of build-and-test. Putting that on a weekly timer
-  # means the box is degraded for hours every week, unattended, to re-measure
-  # something that moves at the speed of test-writing.
+  # The reason is the host rather than the job. The forge runs on an **8-core**
+  # machine that is already oversubscribed, and the runner container has no CPU
+  # or memory limit of its own. A sweep is hours of build-and-test. Putting that
+  # on a weekly timer means the box is degraded for hours every week,
+  # unattended, to re-measure something that moves at the speed of test-writing.
   #
   # `scripts/mutants.sh --since main` is the half that runs often, and it is
   # cheap because it mutates only changed code. A full crate sweep is worth
@@ -66,7 +38,7 @@ on:
   # **A manual job with no record is a job nobody can tell has lapsed**, which
   # is why the baseline carries a dated log of every sweep. Read it before
   # deciding whether one is due; six months of silence there is the signal a
-  # cron was standing in for.
+  # cron would stand in for.
   workflow_dispatch:
     inputs:
       crate:
@@ -86,11 +58,10 @@ on:
 jobs:
   # **Which crate this week, and in how many pieces.**
   #
-  # A full sweep is 2,984 mutants. On this runner that is ~8.5 hours of compute
-  # — the runner is **3x** slower than the workstation the local figures came
-  # from, measured from `cli`'s own log at 10 s per mutant against ~3.5 s — and
-  # spending that on a job which gates nothing is not a trade worth making
-  # unprompted. So one crate per dispatch.
+  # A full sweep is hours of compute on this runner, which is **3x** slower than
+  # the workstation the local figures came from, and spending that on a job
+  # which gates nothing is not a trade worth making unprompted. So each dispatch
+  # sweeps one crate.
   #
   # `scripts/mutants.sh --since main` is what actually catches a regression as
   # it is written, and it is cheap because it mutates only changed code. This
@@ -144,11 +115,9 @@ jobs:
             n="${SHARDS[$idx]}"
           fi
 
-          # **k is zero-based.** cargo-mutants refuses `1/1` with "shard k must
-          # be less than n", so the last shard of every crate is the one that
-          # fails — after the others have run and passed. Written as `seq 1 n`
-          # first, and the local check that was supposed to catch it used
-          # `--shard 1/3`, a middle shard that is valid either way.
+          # **k is zero-based.** cargo-mutants refuses `1/1` with
+          # "shard k must be less than n", so counting from 1 would fail the
+          # last shard of every crate, after the others have run and passed.
           entries=""
           for i in $(seq 0 $(( n - 1 ))); do
             [ -n "$entries" ] && entries="$entries,"
@@ -164,34 +133,30 @@ jobs:
     strategy:
       fail-fast: false
       # **Two at a time, and the number is the host's rather than this
-      # repository's.** The forge runs on an 8-core machine carrying 68 other
-      # containers at a load average around 16 — measured 2026-08-20 — and the
-      # runner container has no CPU or memory limit of its own (`cpus=0 mem=0`),
-      # so nothing but this line bounds what a sweep takes from everything else
-      # on that box.
+      # repository's.** The forge runs on an 8-core machine that already carries
+      # other containers under load, and the runner container has no CPU or
+      # memory limit of its own (`cpus=0 mem=0`), so nothing but this line
+      # bounds what a sweep takes from everything else on that box.
       #
-      # Left unset, the runner took three jobs at once, and each of those runs
-      # `scripts/mutants.sh` with its own `--jobs` cap: three times four is
-      # twelve concurrent build-and-test processes on eight already-oversubscribed
-      # cores. Two jobs at two each is four, which a machine at that load can
-      # absorb — and `nice` in the script means even those yield to anything
-      # that wants the CPU.
+      # Each job runs `scripts/mutants.sh` with its own `--jobs` cap. Two jobs
+      # at two each is four concurrent build-and-test processes, which a
+      # machine at that load can absorb — and `nice` in the script means even
+      # those yield to anything that wants the CPU.
       max-parallel: 2
       matrix: ${{ fromJSON(needs.choose.outputs.matrix) }}
-    # **Below the runner's own ceiling, not above it.** The first sharded-less
-    # run set this to 210 and `taiyaku-cli` was killed at 3 h 01 m by the runner
-    # with "exceeds the maximum run time" — so 210 sat above a hard limit around
-    # 180 and could never fire. 150 is under that ceiling and roughly 3x the
-    # largest shard expected (~55 m), measured on **this runner** rather than on
-    # the workstation, which is the mistake the 210 and the 260 before it both
-    # made.
+    # **Below the runner's own ceiling, not above it.** The runner kills a job
+    # at a hard limit around 180 minutes ("exceeds the maximum run time"), so a
+    # bound above that could never fire. 150 is under that ceiling and roughly
+    # 3x the largest shard expected (~55 m), measured on **this runner** rather
+    # than on the workstation. A figure copied forward without re-measuring is
+    # how a bound quietly stops bounding.
     #
     # If a shard ever reaches this, the answer is more shards rather than a
     # bigger number: there is no bigger number available.
     #
-    # This bounds a *job*. `.config/nextest.toml` bounds a single test at 60 s,
-    # and `ulimit -v` in `scripts/mutants.sh` bounds a single test's memory.
-    # Three runaways, three bounds, and none subsumes another.
+    # This bounds a *job*. cargo-mutants' own per-mutant timeout bounds one
+    # mutant's test run, and `ulimit -v` in `scripts/mutants.sh` bounds a single
+    # test's memory. Three runaways, three bounds, and none subsumes another.
     timeout-minutes: 150
     container:
       image: rust:1-bookworm
@@ -222,20 +187,15 @@ jobs:
       # against.** Bump them together with the version by re-downloading and
       # re-computing — never by copying a value out of an issue or a README.
       #
-      # `cargo binstall` and `curl … | bash` were both written here first and
-      # both are the thing this repository does not do: they fetch and execute
-      # whatever the URL serves on the day the job runs.
+      # `cargo binstall` and `curl … | bash` are the thing this repository does
+      # not do: they fetch and execute whatever the URL serves on the day the
+      # job runs.
+      #
       # **Built from source rather than fetched as a release binary, and that is
       # forced.** cargo-mutants publishes three assets for v27.1.0 — gnu,
-      # darwin, windows — and no musl one. The gnu build is linked against
-      # glibc 2.39; `rust:1-bookworm` is 2.36. The first run of this workflow
-      # died on all six matrix jobs with `version 'GLIBC_2.39' not found`,
-      # after the checksum verified and the tarball unpacked cleanly.
-      #
-      # The comment on `cargo-nextest` below says the musl build is what makes
-      # it run on this container without a matching libc. That reasoning was
-      # copied here and then the gnu asset picked anyway, which is the only
-      # asset that exists — so the answer is not a different URL.
+      # darwin, windows — and no musl one. The gnu build is linked against glibc
+      # 2.39; `rust:1-bookworm` is 2.36, so it would fail with
+      # `version 'GLIBC_2.39' not found`.
       #
       # **Staying on `rust:1-bookworm` rather than moving to a newer base is
       # the point.** This job measures the same test suite `ci.yml` gates, and
@@ -244,9 +204,8 @@ jobs:
       #
       # `--locked` uses the crate's own `Cargo.lock`, and cargo verifies every
       # crates.io download against the registry's checksums — which is a
-      # stronger guarantee than the hand-computed digest this step used to
-      # carry, since a GitHub release asset can be replaced in place and a
-      # crates.io version cannot.
+      # stronger guarantee than a hand-computed digest, since a GitHub release
+      # asset can be replaced in place and a crates.io version cannot.
       - name: Install cargo-mutants
         run: |
           cargo install cargo-mutants --version 27.1.0 --locked

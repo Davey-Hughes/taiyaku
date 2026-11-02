@@ -3,8 +3,7 @@
 //! **Spec A2 §9 puts user administration here rather than in the reader**, and
 //! §5 puts bootstrap here as well: promoting the first account is a thing the
 //! host's own shell can do, which means an unclaimed server is never reachable
-//! over the network waiting to be claimed. The configuration UI is spec C4; the
-//! CLI covers it in between, which it has to anyway.
+//! over the network waiting to be claimed. The configuration UI is spec C4.
 
 use taiyaku_library::{Library, account};
 
@@ -52,8 +51,8 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// What `grant-root` and `revoke-root` answer since Part F1: the name of the
-/// subcommand that replaced each.
+/// What `grant-root` and `revoke-root` answer: the name of the subcommand that
+/// replaced each.
 fn renamed(verb: &str) -> String {
     let new = verb.replace("-root", "-library");
     format!(
@@ -94,16 +93,7 @@ fn open(args: &[String]) -> Result<Library, String> {
 /// **Two constants rather than one default, because the two commands mean
 /// different things.** Promoting is how a server gets its first administrator;
 /// adding is how a household gets a second reader. One shared default of `admin`
-/// served the first correctly and made `taiyaku library user add alice` mint an
-/// administrator silently — with `--role` marked optional and the default stated
-/// nowhere. Found by the whole-branch review, 2026-08-18.
-///
-/// **The distinction buys less than it looks like today**, and that is worth
-/// knowing rather than discovering: `Principal.role` is resolved by the guard
-/// and no route branches on it, so an account of either role can write the
-/// shared truth documents and correct alignments. Making the role govern
-/// something is spec C4's scope; this is about not handing it out by accident in
-/// the meantime.
+/// would make `taiyaku library user add alice` mint an administrator.
 pub(crate) const PROMOTE_DEFAULT_ROLE: &str = "admin";
 pub(crate) const ADD_DEFAULT_ROLE: &str = "user";
 
@@ -129,10 +119,10 @@ fn role_of(args: &[String], default: &str) -> Result<String, String> {
 ///
 /// Echo is turned off by shelling out to `stty` rather than through a crate:
 /// the workspace forbids `unsafe_code`, which rules out calling `termios`
-/// directly, and adding a dependency for it would make this branch's "one new
-/// crate" claim two. **If `stty` is not there the read still happens and says
-/// so**, because refusing to set a password on a host with an unusual shell
-/// would be worse than a visible one the operator can see is visible.
+/// directly, and a crate would add a dependency for it. **If `stty` is not
+/// there the read still happens and says so**, because refusing to set a
+/// password on a host with an unusual shell would be worse than a visible one
+/// the operator can see is visible.
 fn read_password(prompt: &str) -> Result<String, String> {
     use std::io::Write as _;
 
@@ -201,11 +191,9 @@ fn set_echo(on: bool) -> bool {
 
 /// How a command gets the password it needs.
 ///
-/// **Injected so the three prompting commands can be tested at all.** They were
-/// unreachable from a test — `read_password` blocks on stdin — so `promote`,
-/// `add` and `password` had no coverage below their flag parsing, which is most
-/// of what they do. A parameter is the whole of the change: production passes
-/// `read_password`, tests pass a closure.
+/// **Injected so the three prompting commands can be tested at all.**
+/// `read_password` blocks on stdin. Production passes `read_password`; tests
+/// pass a closure.
 type AskForPassword<'a> = &'a dyn Fn(&str) -> Result<String, String>;
 
 fn promote(args: &[String]) -> Result<(), String> {
@@ -290,12 +278,11 @@ fn password_with(args: &[String], ask: AskForPassword<'_>) -> Result<(), String>
 /// What `library user password` says about the sessions the change ended, or
 /// nothing when it ended none.
 ///
-/// **Extracted from the `if` inside the `println!`**, which is the shape this
-/// codebase's mutation sweep keeps finding: a decision that only changes what a
-/// person reads, reachable only by running the command. `> 0` survived `==`,
-/// `<` and `>=` on 2026-08-19 — three mutants, one of which (`>=`) prints
-/// "ended 0 open session(s)" after a password change on an account nobody was
-/// signed in as.
+/// **A function of its own rather than an `if` inside the `println!`**: a
+/// decision that only changes what a person reads is reachable only by running
+/// the command, so a mutation of `> 0` to `==`, `<` or `>=` would go unseen.
+/// `>=` would print "ended 0 open session(s)" after a password change on an
+/// account nobody was signed in as.
 fn sessions_ended_note(ended: usize) -> Option<String> {
     (ended > 0).then(|| format!("ended {ended} open session(s); API keys are untouched"))
 }
@@ -410,10 +397,8 @@ fn key_revoke(args: &[String]) -> Result<(), String> {
     reject_unknown_flags("library key revoke", args, &["--db"])?;
     let given = positional(args);
     // **Takes the account as well as the id**, matching `key list <user>` and
-    // matching what `account::revoke_key` now scopes on. Before this it took an
-    // id alone, so the ownership rule lived at one HTTP call site and nowhere
-    // else — and this command could revoke anybody's key. Found by the second
-    // whole-branch review.
+    // what `account::revoke_key` scopes on, so a key id revokes only a key of
+    // the account named.
     let [user, id] = given.as_slice() else {
         return Err(KEY_USAGE.to_string());
     };
@@ -484,9 +469,8 @@ fn grant_library(args: &[String]) -> Result<(), String> {
     // and saying so here is the difference between a puzzling result and a
     // known one. Migration 6 added `member.root_id` and left it NULL;
     // migration 7 backfills what it can from each root's path, but a member
-    // whose root cannot be recovered that way stays NULL and `IN (…)` excludes
-    // it. Whole-branch review: an operator who granted on such a library got
-    // a reader who saw nothing, while this command said the opposite.
+    // whose root cannot be recovered that way stays NULL and `IN (…)`
+    // excludes it.
     let unrooted: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM member WHERE root_id IS NULL",
@@ -521,7 +505,7 @@ fn role_of_account(conn: &rusqlite::Connection, user_id: i64) -> Result<String, 
 /// [`sessions_ended_note`]: a unit test reads the decision without running
 /// the command.
 ///
-/// **Takes the role since O86.** An administrator is narrowed by nothing —
+/// **Takes the role (O86).** An administrator is narrowed by nothing —
 /// their grant is dropped where the principal is built — so printing this
 /// beside [`admin_note`] would tell the operator the grant "does nothing while
 /// it stays one" and that the account "is now restricted", one line apart.
@@ -562,9 +546,8 @@ fn admin_note(role: &str) -> Option<String> {
 
 /// The warning a grant carries when the library holds members with no root.
 ///
-/// **Extracted for the same reason [`sessions_ended_note`] was**, and after
-/// the same three mutants: `> 0` inside a `println!` survived as `==`, `<` and
-/// `>=`. Each is now a different answer.
+/// **Extracted for the same reason as [`sessions_ended_note`]**: a `> 0` inside
+/// a `println!` would survive mutation to `==`, `<` or `>=`.
 ///
 /// The warning matters because the rule it qualifies is already
 /// counter-intuitive: a grant restricts, and a restricted account cannot see a

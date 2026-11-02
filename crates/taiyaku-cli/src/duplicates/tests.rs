@@ -47,8 +47,8 @@ fn extra_slot_on_the_near_side_is_containment_the_other_way() {
 }
 
 /// One Piece v077's c0/c1 shape: 184 of 236 paired, neither side wholly
-/// covered. The new containment variants must not swallow the case they
-/// were carved out of distinguishing from.
+/// covered. The containment variants must not swallow the case they are
+/// distinguished from.
 #[test]
 fn neither_side_wholly_covered_is_still_distinct() {
     let pair = Pair::judge(0, 1, &spanning(100, 184), 236, 234);
@@ -322,10 +322,10 @@ fn refusal(a_slots: u32) -> Vec<Run> {
     vec![Run::gap(PageRange::new(0, a_slots - 1))]
 }
 
-/// One Piece volume 77 as actually measured: c0 is a different crop at 236
-/// slots, c1 and c2 are one edition at two paginations. The line a survey
-/// script collects, asserted verbatim — `scripts/margin-survey.sh` reads
-/// `stats:` lines exactly this way, and a format nobody can test drifts.
+/// One Piece volume 77: c0 is a different crop at 236 slots, c1 and c2 are
+/// one edition at two paginations. The line a survey script collects,
+/// asserted verbatim — `scripts/margin-survey.sh` reads `stats:` lines
+/// exactly this way, and a format nobody can test drifts.
 #[test]
 fn the_set_line_reports_every_figure_that_decided_the_answer() {
     let line = set_line(&v077());
@@ -396,13 +396,12 @@ rank
     );
 }
 
-/// Containment gets its own line, naming the contained copy first: "0
-/// within 1", not a bare "identity" — and now the container's own slot
-/// count, 199, so the figure that decides whether the containment matters
-/// is on the line rather than only inferable from the `copies` table
-/// above. Pinned separately from the identity table above so the "X
-/// within Y" rendering is not left only inferred from the enum's doc
-/// comment.
+/// Containment gets its own line, naming the contained copy first:
+/// "0 within 1", not a bare "identity" — and the container's own slot count,
+/// 199, so the figure that decides whether the containment matters is on
+/// the line rather than only inferable from the `copies` table above.
+/// Pinned separately from the identity table above so the "X within Y"
+/// rendering is not left only inferred from the enum's doc comment.
 #[test]
 fn the_tables_name_a_containment_pair() {
     let printed = tables(&cm_v01());
@@ -536,8 +535,7 @@ fn bocchi_hamaji() -> Resolution {
     }
 }
 
-/// The flagged section, which nothing rendered until the `--against` rule
-/// was fixed and which is where that rule's output lives. Without a
+/// The flagged section, where the `--against` rule's output lives. Without a
 /// reference both copies are named, and the hint says what would settle it
 /// — a person reading an empty rank section otherwise has to work out for
 /// themselves why it is empty.
@@ -643,8 +641,7 @@ fn starter_book(with_reference: bool) -> Resolution {
     }
 }
 
-/// The contradictions branch: of `tables()`'s five conditional sections,
-/// the only one no test rendered until now. Built on
+/// The contradictions branch of `tables()`. Built on
 /// `identity_that_is_not_transitive_is_reported_and_still_merged`'s shape
 /// — 0≡1 and 1≡2 both hold, but 0≢2 — so the cluster still merges all
 /// three and the sentence names the pair whose solve disagreed with the

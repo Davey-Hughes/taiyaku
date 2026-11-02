@@ -10,12 +10,11 @@
 //! scripts/check-all.sh                    # TAIYAKU_CORPUS=corpus works here
 //! ```
 //!
-//! **Absolute, if you run cargo directly.** This block said
-//! `TAIYAKU_CORPUS=corpus cargo test …` until O30, and that command runs
-//! nothing: cargo gives each package's test binary that package's own directory
-//! as its working directory, so `corpus` resolves under `crates/taiyaku-cli/`.
-//! `corpus` now panics rather than skipping in that case, so the command fails
-//! loudly instead of printing `ok`, but the working invocation is:
+//! **Absolute, if you run cargo directly.** Cargo gives each package's test
+//! binary that package's own directory as its working directory, so a relative
+//! `TAIYAKU_CORPUS=corpus` resolves under `crates/taiyaku-cli/`. `corpus`
+//! panics rather than skipping in that case, so the command fails loudly
+//! instead of printing `ok`, and the working invocation is:
 //!
 //! ```sh
 //! TAIYAKU_CORPUS="$PWD/corpus" cargo test -p taiyaku-cli corpus:: -- --nocapture
@@ -39,11 +38,11 @@ use crate::cached_edition;
 /// Loss above which the star is not doing its job.
 ///
 /// Measured, not chosen: this path loses **0.91%** of pages on Go-Toubun v01,
-/// over 2,427 comparisons, and the ceiling sits at the next tenth of a percent
-/// above that. If a change pushes past it, composition has started losing pages
-/// a direct solve finds, which is the thing hub-and-spoke is a bet against.
+/// and the ceiling sits at the next tenth of a percent above that. If a change
+/// pushes past it, composition has started losing pages a direct solve finds,
+/// which is the thing hub-and-spoke is a bet against.
 ///
-/// Lower than `topology`'s 2.12% for the same volume, and the gap is the point
+/// Lower than `topology`'s loss for the same volume, and the gap is the point
 /// of the two measurements being separate: `topology` works on unsplit pages,
 /// so a spread one edition joins and another splits is simply lost, while this
 /// path addresses slots and recovers it.
@@ -74,11 +73,9 @@ fn unusable(value: &str, is_dir: bool) -> Option<String> {
 /// The corpus root, or `None` when this machine does not have it.
 ///
 /// **Unset is an absence and skips; set-but-unusable is a mistake and fails.**
-/// O30: the two used to be one branch, so `TAIYAKU_CORPUS=corpus` — the
-/// invocation this module's own header documented — skipped every check while
-/// printing `unset` and reporting `ok`. A green run that measured nothing is
-/// the one outcome a standing check must not have, and it is the same failure
-/// `atomic.rs`'s test comment describes one level down.
+/// O30: a green run that measured nothing is the one outcome a standing check
+/// must not have, and it is the same failure `atomic.rs`'s test comment
+/// describes one level down.
 ///
 /// The panic is O15's rule applied to an environment variable: a value typed
 /// with nothing usable behind it is refused rather than read as absent.
@@ -161,7 +158,7 @@ fn composing_through_the_hub_agrees_with_a_direct_solve() {
     // The cache belongs beside the corpus, not in the working directory, which
     // for `cargo test -p` is the crate directory rather than the repository
     // root. Sharing the one `align` already fills is the difference between
-    // milliseconds and seconds per edition — 3.4 s cold against 189 ms warm.
+    // milliseconds and seconds per edition.
     let cache = root
         .parent()
         .unwrap_or(Path::new("."))
@@ -306,9 +303,8 @@ fn copies(root: &Path, under: &str, names: &[&str]) -> Vec<Vec<PathBuf>> {
 ///
 /// c0 and c1 hold 234 images each and c2 holds 214 — and it is c1 and c2 that
 /// are one edition, the smaller being all-spread and expanding to the same 234
-/// slots. Anchoring on c0 reported three mutually unrelated files, and c0 is
-/// exactly the copy most likely to be the odd one out because the sort that
-/// produced it was by page count.
+/// slots. c0 is exactly the copy most likely to be the odd one out because the
+/// sort that produced it was by page count.
 ///
 /// This check goes red if step 2 is ever rewritten as against-copy-0.
 #[test]
@@ -371,17 +367,15 @@ fn duplicates_finds_the_identity_hidden_behind_the_first_copy() {
 /// One Piece volume 92: 200 images against 101, the smaller being an
 /// all-spread edition.
 ///
-/// Measured, not the identity the brief originally predicted: every one of
-/// c1's 101 images detects as a spread, so slot expansion doubles it to 202 —
-/// two more slots than c0's 200. The solve runs `s0=0-s199=199 ->
-/// s1=0L-s200=100R`, pairing all 200 of c0's slots but leaving c1's first and
-/// last half-slots unreached on the far side. That is coverage on one side
-/// only, which is `Within` by definition, not `Identity` — c0 is wholly
-/// contained in c1's larger packing, and the two stay two clusters with c1
-/// ranked first on its 202 slots.
+/// Every one of c1's 101 images detects as a spread, so slot expansion doubles
+/// it to 202 — two more slots than c0's 200. The solve runs
+/// `s0=0-s199=199 -> s1=0L-s200=100R`, pairing all 200 of c0's slots but
+/// leaving c1's first and last half-slots unreached on the far side. That is
+/// coverage on one side only, which is `Within` by definition, not `Identity` —
+/// c0 is wholly contained in c1's larger packing, and the two stay two clusters
+/// with c1 ranked first on its 202 slots.
 ///
-/// `align`'s "N unmatched slots" counts the A side only, which is how
-/// `notes.md` came to read this pair as nothing unmatched. Goes red if slot
+/// `align`'s "N unmatched slots" counts the A side only. Goes red if slot
 /// expansion or the containment relation stops being load-bearing here.
 #[test]
 fn duplicates_sees_through_a_different_pagination() {
@@ -427,12 +421,10 @@ fn duplicates_sees_through_a_different_pagination() {
 /// The Bocchi file named as main-series volume 1 that is the Gaiden spinoff.
 ///
 /// What is asserted is the flagging: it refuses against both real scans, is kept
-/// out of the ranking, and the survivors rank by slots. Also asserted, now that
-/// it has run repeatedly and stably: the two real scans do not cluster as one.
-/// `hamaji` (125 slots) *contains* `krc` (124), 124 paired — containment, one
-/// slot apart, not identity — and containment does not merge, so the two stay
-/// separate clusters. `notes.md` once called this "the identity case again";
-/// that reading has since been measured wrong and corrected there too. Three
+/// out of the ranking, and the survivors rank by slots. Also asserted: the two
+/// real scans do not cluster as one. `hamaji` (125 slots) *contains* `krc`
+/// (124), 124 paired — containment, one slot apart, not identity — and
+/// containment does not merge, so the two stay separate clusters. Three
 /// clusters result: `hamaji`, `krc`, and the Gaiden file refusing against both.
 #[test]
 fn duplicates_flags_a_file_that_is_not_the_volume_it_claims() {
@@ -491,20 +483,16 @@ fn duplicates_flags_a_file_that_is_not_the_volume_it_claims() {
 /// volume. But `mangazip` is not an impostor of nothing — it is the *Gaiden*
 /// spinoff filed under the main series' name, and the corpus holds the real
 /// edition it belongs to: `en-gaiden-v01.cbz`. `docs/notes.md` records that
-/// pairing at 8 runs, 182 of 185 slots, and records the main-series raws
-/// refusing that same edition. Handing it to `--against` inverts the
-/// flagging: `mangazip` pairs with the reference and is ranked, while
-/// `hamaji` and `krc` — the two real scans of the volume the set is actually
-/// named for — pair nothing with it and are the ones flagged instead. A
-/// reference edition is the only thing in this protocol that can distinguish
-/// an impostor from a set of impostors, and this is the one case in the
-/// corpus where handing it one does not merely confirm the set's own
-/// reading but reverses it outright: the copy the set calls the odd one out
-/// is the only one that really is this volume, once judged against the
-/// edition it belongs to. Until this check, that consequence — not the
-/// pairing itself, which the check above and `notes.md` both already measure
-/// — was held by unit tests alone; `docs/status.md` says so rather than
-/// implying a measurement backs it.
+/// pairing and records the main-series raws refusing that same edition. Handing
+/// it to `--against` inverts the flagging: `mangazip` pairs with the reference
+/// and is ranked, while `hamaji` and `krc` — the two real scans of the volume
+/// the set is actually named for — pair nothing with it and are the ones
+/// flagged instead. A reference edition is the only thing in this protocol that
+/// can distinguish an impostor from a set of impostors, and this is the one
+/// case in the corpus where handing it one does not merely confirm the set's
+/// own reading but reverses it outright: the copy the set calls the odd one out
+/// is the only one that really is this volume, once judged against the edition
+/// it belongs to.
 ///
 /// `resolve` runs twice over the same three directories, once with no
 /// reference and once against the Gaiden edition, so the inversion is
@@ -575,11 +563,9 @@ fn duplicates_against_the_gaiden_edition_inverts_which_copy_is_flagged() {
 /// the English release. `src-b` holds 199 images to the others' 198 and wins on
 /// content.
 ///
-/// Also asserted, now that it has run repeatedly and stably: the cluster shape.
-/// `src-a` and `src-c` are true identity at 198 slots each and merge into one
-/// cluster; `src-b` stands alone on its 199th slot; the colour edition stands
-/// alone too, matching neither. `notes.md` inferred the 198-image pair from
-/// page counts alone; this confirms it.
+/// Also asserted: the cluster shape. `src-a` and `src-c` are true identity at
+/// 198 slots each and merge into one cluster; `src-b` stands alone on its 199th
+/// slot; the colour edition stands alone too, matching neither.
 #[test]
 fn duplicates_ranks_scans_against_a_reference_edition() {
     let Some(root) = corpus() else {
@@ -679,15 +665,8 @@ fn read_sidecar(volume: &Path) -> Sidecar {
 ///
 /// The other two credits checks in this file both ask `("en-fan", "raw-mono")`
 /// — the `to` side of a stored edge — because that is the direction a reader
-/// asks about a spoke. Nothing asked the `from` side, and O38 lived there: a
-/// gap run's own `a` span was counted as *mentioned*, so the hub answered `[]`
-/// for pages that demonstrably have no counterpart.
-///
-/// **This check fails on the code as it stood before that fix**, which is the
-/// property that makes it worth having: measured across all twelve aligned
-/// volumes, the hub side returned zero runs on every one of them while the
-/// stored edges carried 26 gap runs between them. A defect whose failure mode
-/// is "prints nothing" needs a check that expects something.
+/// asks about a spoke. This one asks the `from` side (O38). A defect whose
+/// failure mode is "prints nothing" needs a check that expects something.
 ///
 /// The pages are asserted, not just the count: two-of-two is reachable by
 /// reporting the wrong two.
@@ -729,10 +708,9 @@ fn gotoubun_hub_reports_the_pages_its_english_edition_never_reaches() {
 /// no fingerprinting to reach.
 ///
 /// Asserts the *set*, not the count: four-of-six is reachable by classifying
-/// the wrong four, and an earlier draft of this design did exactly that in
-/// both directions — it would have taken `c005.5`'s front matter and left
-/// `c005`'s staff credits behind. See `docs/notes.md`, "A second group's
-/// habits, and what the bound is worth".
+/// the wrong four, taking `c005.5`'s front matter and leaving `c005`'s staff
+/// credits behind. See `docs/notes.md`,
+/// "A second group's habits, and what the bound is worth".
 ///
 /// The six unpaired runs are asserted separately from the four classified
 /// pages: a regression in boundary splitting (`unpaired_runs`) and a
@@ -787,12 +765,11 @@ fn gotoubun_fan_edition_classifies_four_credit_pages() {
 ///
 /// **This check also pins the solver, not only the classifier.**
 /// `corpus/kaguya-v01/taiyaku.json` comes from an alignment the solver itself
-/// rated `FRAGMENTED` (average run 13.3 slots, 23 runs) — the corpus's only
-/// sidecar with that verdict. `unpaired_runs` reads that alignment directly,
-/// so a change to the solver, unrelated to credit pages at all, can move this
+/// rated `FRAGMENTED`. `unpaired_runs` reads that alignment directly, so a
+/// change to the solver, unrelated to credit pages at all, can move this
 /// check's numbers for reasons that have nothing to do with the rule under
-/// test. See `docs/notes.md`, "A second group's habits, and what the bound is
-/// worth".
+/// test. See `docs/notes.md`,
+/// "A second group's habits, and what the bound is worth".
 #[test]
 fn kaguya_fan_edition_classifies_what_the_survey_measured() {
     let Some(root) = corpus() else {

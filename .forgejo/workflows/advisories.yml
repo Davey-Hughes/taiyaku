@@ -78,7 +78,7 @@ jobs:
     # Twice `ci.yml`'s bound. This job compiles nothing, so its only ways to
     # hang are a stalled download — the release tarball, the advisory database,
     # the crates `cargo metadata` reads — but those are cold every run: nothing
-    # is cached, and the fetch below measured 502 MB into an empty `CARGO_HOME`.
+    # is cached.
     timeout-minutes: 20
     container:
       image: rust:1-bookworm
@@ -118,11 +118,9 @@ jobs:
         #
         # **The checksum is upstream's this time**, unlike those three. The
         # release publishes `cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz.sha256`
-        # beside the tarball, and it matched both GitHub's own digest for the
-        # asset and a sha256sum of the downloaded file. It is still pinned here
-        # rather than fetched at run time, because whoever can replace a release
-        # asset in place can replace its `.sha256` too. Bump the version and the
-        # digest together.
+        # beside the tarball. It is still pinned here rather than fetched at run
+        # time, because whoever can replace a release asset in place can replace
+        # its `.sha256` too. Bump the version and the digest together.
         run: |
           curl -fsSL -o /tmp/cargo-deny.tar.gz \
             https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz
@@ -138,8 +136,8 @@ jobs:
         # cargo-deny 0.20's replacement for `check --disable-fetch`, so both of
         # its runs are judged against this one database snapshot, and a fetch
         # that fails halfway cannot pass for a finding. `fetch db` alone is not
-        # enough: measured, it downloads no crates, and an `--offline` check on
-        # a fresh `CARGO_HOME` then fails inside `cargo metadata`.
+        # enough: it downloads no crates, and an `--offline` check on a fresh
+        # `CARGO_HOME` then fails inside `cargo metadata`.
         run: |
           set -eu
           cargo deny --log-level info --locked fetch db index
@@ -165,9 +163,9 @@ jobs:
         # not a finding fails the re-run. A switch that swallowed those too
         # would turn "the check passed" into "the check may not have run".
         #
-        # **Not `-W` on the only run.** Measured: it relabels the advisories
-        # `deny.toml` accepts as warnings too, and the log can no longer tell
-        # an accepted advisory from one that would fail.
+        # **Not `-W` on the only run.** It relabels the advisories `deny.toml`
+        # accepts as warnings too, and the log can no longer tell an accepted
+        # advisory from one that would fail.
         #
         # `set -eu` explicitly rather than the runner's implicit `-e`: the
         # closing WARN-ONLY line must never print after a failed re-run.

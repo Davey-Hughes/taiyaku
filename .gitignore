@@ -6,12 +6,11 @@
 *.cb7
 *.zip
 # Anchored with a leading slash, and that is not cosmetic. A bare `corpus/`
-# matches a directory of that name at **any** depth, so when the test modules
-# moved into their own files on 2026-08-14 it swallowed
-# `crates/taiyaku-cli/src/corpus/tests.rs` — a source file, silently, with no
-# warning from `git add -A`. The local gate passed because the file was on disk;
-# CI cloned the repository without it and failed with `E0583: file not found for
-# module 'tests'`. Only the top-level corpus directory was ever meant here.
+# matches a directory of that name at **any** depth, so a new source file under
+# `crates/taiyaku-cli/src/corpus/` would be left out silently, with no warning
+# from `git add -A`: the local gate would pass because the file is on disk, and
+# CI, cloning the repository without it, would fail. Only the top-level corpus
+# directory is meant here.
 #
 # `fixtures/` and `testdata/` below are deliberately left unanchored: those names
 # carry the copyright risk this block exists for wherever they appear, and the
@@ -39,23 +38,21 @@ thumbs/
 # tree anyway; this is the second line of defence, not the first.
 mutants.out/
 
-# Model weights fetched by the L2 phase-3 spike, and the overlays it draws.
-# The weights are 95 MB and come out of a GPL-3.0 project whose author states
-# he has no right to redistribute the training material; we fetch them, record
-# the sha256, and never commit them. (`out/` below already matches
-# `spike/out/`; it is named here so a reader of this section is not relying on
-# a Node rule to cover a Rust directory.)
+# Model weights fetched by the L2 phase-3 spike. The weights come from a GPL-3.0
+# project whose author states he has no right to redistribute the training
+# material; we fetch them, record the sha256, and never commit them. (`out/`
+# below matches `spike/out/`; it is named here so a reader is not relying on a
+# Node rule to cover a Rust directory.)
 spike/models/
 spike/out/
 
 # Model weights for the L2 phase-3 measurement, fetched by
-# scripts/fetch-model.sh and verified against a recorded sha256. 95 MB, from a
-# GPL-3.0 project whose training data may not be redistributed. Never committed.
+# scripts/fetch-model.sh and verified against a recorded sha256. From a GPL-3.0
+# project whose training data may not be redistributed. Never committed.
 models/
 
-# Agent scratch. `.claude/worktrees/` holds a full checkout per agent and
-# reached 7.4 GB on the branch that added this line — a `git add -A` away from
-# being staged, since nothing else here was ignoring it.
+# Agent scratch. `.claude/worktrees/` holds a full checkout per agent, a
+# `git add -A` away from being staged, since nothing else here ignores it.
 .claude/
 
 # ---- macOS ------------------------------------------------------------------
@@ -82,7 +79,7 @@ taiyaku-verify.html
 *~
 .claude/settings.local.json
 
-# ---- Python (aligner) -------------------------------------------------------
+# ---- Python -----------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
@@ -165,7 +162,7 @@ blob-report/
 .eslintcache
 .stylelintcache
 
-# ---- Rust (if the core moves to WASM later) ---------------------------------
+# ---- Rust -------------------------------------------------------------------
 target/
 **/*.rs.bk
 Cargo.lock.orig
@@ -198,23 +195,14 @@ web/tests/__screenshots__/
 
 # The same rule, for the directory Vitest actually uses for attachments —
 # content-addressed filenames, written on a failing or screenshotting run.
-# Seven of them were committed across two PRs (#35 and #59) before this line
-# existed, and referenced by nothing. The rule above was written for the right
-# reason and pointed at the wrong path.
 web/.vitest-attachments/
 
 # --- images ---
 #
-# Ignored by extension, reversing the line that stood here: it named
-# `/controls.png` so that adding a deliberate image would stay "a decision
-# somebody makes rather than something this line swallows". Sound, and it did
-# not work — naming catches the stray you already found and none of the next.
-# Four got in across #35, #59 and #119, each answered by a rule written after
-# the fact.
-#
-# A deliberate image is a `!` line below, with the reason it is tracked. Note
-# that no ignore rule untracks something already committed; that takes a
-# `git rm`.
+# Ignored by extension: naming a path catches the stray you already found and
+# none of the next. A deliberate image is a `!` line below, with the reason it
+# is tracked. Note that no ignore rule untracks something already committed;
+# that takes a `git rm`.
 *.png
 *.jpg
 *.jpeg

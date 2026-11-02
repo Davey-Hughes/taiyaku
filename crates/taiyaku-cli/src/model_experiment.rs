@@ -29,12 +29,12 @@
 //!
 //!   - **Page correspondence is in slots, not file pages.** `Edition::slots`
 //!     expands `spreads`, so a joined double page counts as *two* slots and
-//!     every slot index after it is one ahead of the file page number. Measured
-//!     on this corpus the four `raw-mono` editions carry no spreads at all and
-//!     the `en-mono` ones carry 0, 3, 3 and 7 — so slot index equals page index
-//!     on the raw side today, and the test **asserts** that rather than assuming
-//!     it. A raw edition that ever gains a spread would otherwise shift the
-//!     whole measurement by one page with nothing to show for it.
+//!     every slot index after it is one ahead of the file page number. On this
+//!     corpus the `raw-mono` editions carry no spreads at all, so slot index
+//!     equals page index on the raw side today, and the test **asserts** that
+//!     rather than assuming it. A raw edition that ever gains a spread would
+//!     otherwise shift the whole measurement by one page with nothing to show
+//!     for it.
 //!   - **A counterpart landing on a spread is skipped and counted**, not split.
 //!     Which half of a joined page a raw page corresponds to is decided by
 //!     reading direction, and getting it backwards would compare two unrelated
@@ -43,8 +43,7 @@
 //!     beside the compared count so it can never be silent.
 //!   - **Fractions correspond only approximately.** Regions are in page
 //!     fractions, so no explicit transform is needed — but the two editions
-//!     have different aspect ratios (685×1024 = 0.669 against 2147×3056 =
-//!     0.703, to take one real pair), so the same physical point sits at
+//!     have different aspect ratios, so the same physical point sits at
 //!     slightly different fractions on the two scans. The aspect delta is
 //!     printed per pair so a reader can see how far the approximation is being
 //!     stretched. **Fitting a transform is L2b's job and is deliberately not
@@ -56,32 +55,21 @@
 //! different shape with similar centres. IoU would score that pair low and be
 //! measuring the writing system rather than the grouping.
 //!
-//! **This measurement found a defect in the port before it answered its own
-//! question, and the sequence is worth keeping.** On its first run, containment
-//! said 23 of 147 raw regions held two or more English centroids. Only 5 were
-//! real. The other 18 were one balloon with **two English boxes on it**:
-//! `suppress` was class-aware — faithful to YOLOv5 — so a block whose grid
-//! cells disagreed about which class channel won survived twice, at an IoU of
-//! 0.94 to 0.99. Confirmed on the pixels rather than inferred (`gotoubun-v01`
-//! raw 165 against `en-mono` 157, one balloon, two boxes). Upstream gets away
-//! with class-aware NMS because it follows with `group_output`; this port has
-//! no such stage, so the duplicates reached the scorer.
-//!
-//! Suppression is class-agnostic now — see `suppress` for the full reasoning,
+//! **Twins.** Two near-identical boxes on one page (see `duplicated`) would
+//! make containment read a grouping disagreement that is not there.
+//! Suppression is class-agnostic — see `suppress` for the full reasoning,
 //! which is `agnostic=True` on an existing YOLOv5 flag rather than a new
-//! mechanism. The twin count fell to **0 of 147 and 0 of 141**, and the two
-//! headline figures — raw containment, and containment after discounting twins
-//! — **converged at 5**. That convergence is the check: they disagreed only
-//! because of the artefact, so their agreeing is what says it is gone rather
-//! than merely smaller. Both are still printed, and the twin line is still
-//! printed, precisely so a regression would show up as them parting again.
+//! mechanism. The two headline figures — raw containment, and containment
+//! after discounting twins — part only when suppression leaves twins, so
+//! their agreeing is what says that artefact is gone rather than merely
+//! smaller. Both are printed, and the twin line is printed, precisely so a
+//! regression would show up as them parting again.
 //!
 //! **Question three**, `where_the_confidence_floor_goes`. `BLK_CONF` below is
 //! upstream's default. It was chosen for upstream's *translation pipeline*,
-//! not for this project's promotion rule, and nothing here had ever swept it.
-//! The rule's second term caps spurious predictions at **10.7 per page** — the
-//! dev set's own truth-boxes-per-page — and the model at the shipped floor sits
-//! at **0.07**, which is roughly 150× of unused budget. Lowering the floor
+//! not for this project's promotion rule. The rule's second term caps spurious
+//! predictions at **10.7 per page** — the dev set's own truth-boxes-per-page —
+//! and the model at the shipped floor sits far below that. Lowering the floor
 //! spends precision to buy recall, and there is an enormous amount of precision
 //! to spend. So this prints **one row per threshold**, losing rows included,
 //! and like the other two it asserts no bar: which row wins is read off the
@@ -95,16 +83,16 @@
 //! is marked in the output so a reader finds the incumbent without counting.
 //!
 //! **`BLK_IOU` is held on every row: one parameter at a time.**
-//! `band_sweep.rs`'s header explains why it held `hi` fixed while sweeping
-//! `lo`, and the reasoning transfers unchanged — sweeping both at once would
-//! spend many times the forward passes to answer a question about a constant
-//! nothing has said is wrong.
+//! `band_sweep::band`'s doc explains why the band sweep held `hi` fixed while
+//! sweeping `lo`, and the reasoning transfers unchanged — sweeping both at once
+//! would spend many times the forward passes to answer a question about a
+//! constant nothing has said is wrong.
 //!
 //! **The Japanese `raw-mono` dialogue subtotal is printed per row**, beside the
 //! pooled figures. That population is the whole reason this model is being
-//! considered — the classical detector scores 0 of 167 on it — and a floor that
-//! buys English recall while losing Japanese would be invisible in a pooled row,
-//! which is question one's own reason for its per-edition table restated.
+//! considered, and a floor that buys English recall while losing Japanese
+//! would be invisible in a pooled row, which is question one's own reason for
+//! its per-edition table restated.
 //!
 //! **This is a one-parameter sweep over a fixed dev set, which is a mild overfit
 //! and is stated as one.** `band_sweep.rs` says exactly this about itself. The
@@ -117,9 +105,8 @@
 //! applied to it afterwards, and filtering, suppressing and scoring are cheap
 //! beside it. Re-running inference per threshold would cost eight times the
 //! wall clock for identical numbers. `band_sweep.rs`'s memory reason applies on
-//! top: `decode_all` bounds memory by decoding the large pages one at a time —
-//! the corpus holds 430 MB TIFFs — so the pixels are not available afterwards
-//! to run a second threshold over.
+//! top: `decode_all` bounds memory by decoding the large pages one at a time,
+//! so the pixels are not available afterwards to run a second threshold over.
 //!
 //! **The shape is `band_sweep.rs`'s**, deliberately, rather than a fourth
 //! convention: `#[cfg(test)]`, gated on `TAIYAKU_CORPUS`, skipping cleanly when
@@ -130,11 +117,11 @@
 //!
 //! **What the two rows are, stated precisely.** The classical row is
 //! `detect::detect_page` as it ships today — the candidate promoted by L2b, not
-//! the incumbent. The incumbent's 2-of-478 cannot be reproduced here: three
+//! the incumbent. The incumbent cannot be reproduced here: three
 //! changes separate it from today's detector (the band, the two-axis union,
-//! `MIN_INK` counting pixels), and `band_sweep.rs`'s header already records why
-//! its `lo = 0` row is not byte-for-byte that detector either. The incumbent's
-//! figure is quoted from `docs/status.md`, not recomputed.
+//! `MIN_INK` counting pixels), and `band_sweep::SWEEP`'s doc already records
+//! why its `lo = 0` row is not byte-for-byte that detector either. The
+//! incumbent's figure is the one `docs/status.md` records, not recomputed.
 //!
 //! **Pages arrive as `GrayImage` and the model wants three channels.**
 //! `decode_all` decodes to luma, so the three input channels are filled with
@@ -178,14 +165,12 @@ const SIDE: usize = 1024;
 /// its own header, and a candidate that only wins at a tuned threshold is not
 /// the finding phase 3 is after.
 ///
-/// **That reasoning settled whether the model wins; it does not settle where
-/// the floor goes.** The model won at this value with 150× of the promotion
-/// rule's spurious budget unspent, so `conf_thresh` is now *measured* as well
-/// as inherited — `where_the_confidence_floor_goes` sweeps it over [`SWEEP`]
-/// and prints a row each, with this value in the list as the control arm. **The
-/// constant is deliberately unchanged by that test.** Moving it is a person's
-/// decision read off the printed table against the rule, and a separate commit;
-/// until then this is upstream's number and says so.
+/// **That reasoning is about whether the model wins; it does not settle where
+/// the floor goes.** `where_the_confidence_floor_goes` sweeps the floor over
+/// [`SWEEP`] and prints a row each, with this value in the list as the control
+/// arm. **The constant is deliberately unchanged by that test.** Moving it is a
+/// person's decision read off the printed table against the rule, and a
+/// separate commit; until then this is upstream's number and says so.
 const BLK_CONF: f32 = 0.4;
 const BLK_IOU: f64 = 0.35;
 
@@ -202,8 +187,7 @@ const BLK_IOU: f64 = 0.35;
 ///
 /// The low end goes to 0.02 because the budget is large enough to make it worth
 /// asking, not because anything predicts it: 0.07 spurious per page against a
-/// ceiling of 10.7 leaves room for two orders of magnitude more, and nothing has
-/// measured where the floor stops buying recall and starts buying noise.
+/// ceiling of 10.7 leaves room for two orders of magnitude more.
 const SWEEP: [f32; 8] = [0.02, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50];
 
 /// `blk` is `1 × 64512 × 7`: cx, cy, w, h, objectness, then two class scores.
@@ -235,7 +219,7 @@ const EDITIONS: [(&str, &str); 9] = [
 ///   - **Not centred.** `copyMakeBorder(im, 0, dh, 0, dw, ...)`, with the
 ///     centring lines commented out upstream. The page is at the top left.
 ///   - **`scaleup` is left on**, so a page smaller than `SIDE` is enlarged
-///     rather than padded. The corpus has 685×1024 pages; they are upscaled.
+///     rather than padded.
 ///
 /// Returns the tensor and the padding, which the caller needs to turn boxes in
 /// square-space back into page fractions.
@@ -310,10 +294,9 @@ fn candidates(blk: &[f32]) -> Vec<Cand> {
 /// decode. Objectness gates first and then objectness × class, which is what
 /// YOLOv5's own `non_max_suppression` does.
 ///
-/// **`conf` is applied to both gates**, exactly as `BLK_CONF` was applied to
-/// both before this took a parameter. Upstream's `conf_thresh` is one number
-/// used twice and splitting it here would be sweeping a knob upstream does not
-/// have.
+/// **`conf` is applied to both gates.** Upstream's `conf_thresh` is one number
+/// used twice, and splitting it here would be sweeping a knob upstream does
+/// not have.
 fn candidates_at(blk: &[f32], conf: f32) -> Vec<Cand> {
     let mut out = Vec::new();
     for c in blk.as_chunks::<BLK_STRIDE>().0 {
@@ -321,8 +304,8 @@ fn candidates_at(blk: &[f32], conf: f32) -> Vec<Cand> {
         if objectness < conf {
             continue;
         }
-        // Which of the two channels wins still sets the score; *which one it
-        // was* is no longer carried, because nothing downstream may act on it —
+        // Which of the two channels wins sets the score; *which one it was* is
+        // not carried, because nothing downstream may act on it —
         // see `suppress`.
         let class_score = c[5].max(c[6]);
         let score = objectness * class_score;
@@ -353,9 +336,8 @@ fn candidates_at(blk: &[f32], conf: f32) -> Vec<Cand> {
 /// # Why agnostic, when upstream is not
 ///
 /// YOLOv5's `non_max_suppression` takes an `agnostic` flag and upstream leaves
-/// it `False`, so this was class-aware at first — a faithful port, and pinned
-/// by a test that asserted exactly that. **The faithful port was the wrong
-/// one**, and the reason is a stage we never wrote:
+/// it `False`. **Following upstream here would be wrong**, and the reason is a
+/// stage we never wrote:
 ///
 /// Upstream does not stop at NMS. `inference.py` follows it with
 /// `group_output(blks, lines, im_w, im_h, mask)`, which regroups the survivors
@@ -363,18 +345,15 @@ fn candidates_at(blk: &[f32], conf: f32) -> Vec<Cand> {
 /// something downstream tidies up after it. This port has no such stage, so
 /// whatever NMS leaves is what gets scored.
 ///
-/// What it left was duplicates. A text block whose grid cells disagree about
-/// which of the two class channels wins survived **twice**, as two boxes at an
-/// IoU of 0.94 to 0.99. Measured on 2026-08-12 before this change: **40 of 161
-/// English regions carried such a twin, against 0 of 147 Japanese ones** — a
-/// quarter of the English boxes — and it was confirmed on the pixels
-/// (`gotoubun-v01` raw 165 against `en-mono` 157: one balloon, two boxes).
+/// A class-aware pass would leave duplicates. A text block whose grid cells
+/// disagree about which of the two class channels wins would survive
+/// **twice**, as two near-identical boxes.
 ///
 /// A twin is not a second text block. Dropping class from the comparison is the
 /// `agnostic=True` setting of an existing flag rather than a new mechanism or a
 /// new constant, and it is what `group_output` would otherwise have had to
 /// undo. **The class channel is not read anywhere after this**, which is why
-/// `Cand` no longer carries it: a field nothing may act on is one a later reader
+/// `Cand` does not carry it: a field nothing may act on is one a later reader
 /// would act on by mistake.
 fn suppress(mut candidates: Vec<Cand>) -> Vec<Cand> {
     candidates.sort_by(|a, b| {
@@ -432,8 +411,8 @@ fn to_regions(kept: &[Cand], dw: usize, dh: usize) -> Vec<Region> {
 /// The weights, from `TAIYAKU_MODEL`.
 ///
 /// An env var rather than a path guessed from `CARGO_MANIFEST_DIR`, so that the
-/// skip message can name exactly what is missing and how to get it. 95 MB is
-/// not something to silently look for in three places.
+/// skip message can name exactly what is missing and how to get it.
+/// The weights are not something to silently look for in three places.
 fn model_path() -> Option<PathBuf> {
     let raw = std::env::var_os("TAIYAKU_MODEL")?;
     let path = PathBuf::from(raw);
@@ -470,7 +449,7 @@ fn overlay_dir() -> Option<PathBuf> {
 ///
 /// **Green is what a person drew, orange is `detect_page`, blue is the model.**
 /// The point of putting all three on one page is the one thing the table cannot
-/// show: *where* 152 splits and 118 one-to-one matches differ on the same art.
+/// show: *where* the splits and the one-to-one matches differ on the same art.
 ///
 /// Dimming is not cosmetic — over full-contrast line art none of the three
 /// colours is readable. Boxes flagged `ignore` are drawn hollow-thin, so a
@@ -564,12 +543,11 @@ fn stroke(img: &mut image::RgbImage, b: (f64, f64, f64, f64), colour: image::Rgb
 
 /// One page through the model, as regions in page fractions.
 ///
-/// Output order is the file's — `blk`, `seg`, `det`. Only `blk` is read.
-/// `seg`, the full-resolution mask, recalls the same text at glyph granularity
-/// and would score as `split` and `fragment` rather than `1:1`; `det` is the
-/// line head, below the level L2 pairs on. `seg` is counted (not scored) and
-/// `det` is not decoded here at all — both are described in `docs/notes.md`
-/// and neither is what the promotion rule counts.
+/// Output order is the file's — `blk`, `seg`, `det`. Only `blk` is read. `seg`,
+/// the full-resolution mask, recalls the same text at glyph granularity and
+/// would score as `split` and `fragment` rather than `1:1`; `det` is the line
+/// head, below the level L2 pairs on. Neither is decoded here — both are
+/// described in `docs/notes.md` and neither is what the promotion rule counts.
 fn detect_with_model(
     plan: &std::sync::Arc<TypedRunnableModel>,
     page: &GrayImage,
@@ -580,7 +558,7 @@ fn detect_with_model(
 
 /// One page's raw `blk` tensor, beside the letterbox padding its boxes need.
 ///
-/// Split out of `detect_with_model` for `where_the_confidence_floor_goes`,
+/// Separate from `detect_with_model` for `where_the_confidence_floor_goes`,
 /// which applies eight confidence floors to **one** forward pass: the inference
 /// is the expensive part and it does not depend on the floor, so this is the
 /// seam between what must run once per page and what may run once per threshold.
@@ -635,9 +613,9 @@ fn the_model_candidate_scored() {
 
         // **Both detectors inside one decode**, which is `band_sweep.rs`'s
         // reason restated: `decode_all` bounds memory by decoding large pages
-        // one at a time — the corpus holds 430 MB TIFFs — so the pixels are not
-        // available afterwards, and a second pass would pay for 45 more
-        // full-resolution decodes to score the same pages twice.
+        // one at a time, so the pixels are not available afterwards, and a
+        // second pass would pay for 45 more full-resolution decodes to score
+        // the same pages twice.
         // Truth by page name, so the drawing closure can reach it. `truth` and
         // `pages` are parallel, but `decode_all`'s closure is handed a `&Page`
         // rather than an index. Names are unique within an edition — asserted
@@ -679,9 +657,9 @@ fn the_model_candidate_scored() {
         let mut classical_ed = Report::default();
         let mut model_ed = Report::default();
         for (drawn, (found_classical, found_model)) in resolved.truth.iter().zip(&detected) {
-            // One `score_page` call per detector per page, same as before —
-            // its `Scored` result is folded into both the pooled report and
-            // this edition's report, not recomputed.
+            // One `score_page` call per detector per page: its `Scored` result
+            // is folded into both the pooled report and this edition's report,
+            // not recomputed.
             let scored_classical = score_page(drawn, found_classical, COVERAGE);
             let scored_model = score_page(drawn, found_model, COVERAGE);
             classical.add_page(drawn, &scored_classical);
@@ -716,8 +694,7 @@ fn the_model_candidate_scored() {
 
     // Per kind beside the total, because they are different results: the
     // per-kind split is the evidence spec §3.4 defers the balloon-interior
-    // question to, and the model's whole claim is about a kind the classical
-    // detector scores zero on.
+    // question to, and the model's whole claim is about one kind.
     println!("\nfound/drawn per kind, same runs:");
     for (name, report) in [("detect_page", &classical), ("model/blk", &model)] {
         let kinds: Vec<String> = report
@@ -836,7 +813,7 @@ fn merging(boxes: &[Region], of: &[Region]) -> usize {
 /// A second IoU rather than a call to `iou` above, which is question one's and
 /// takes `Cand` in square-space pixels. The two measure the same quantity in
 /// different coordinate spaces, and reaching the first from here would mean
-/// inventing a class and a score for boxes that have neither any more.
+/// inventing a score for boxes that have none.
 fn region_iou(a: &Region, b: &Region) -> f64 {
     let w = ((a.x + a.w).min(b.x + b.w) - a.x.max(b.x)).max(0.0);
     let h = ((a.y + a.h).min(b.y + b.h) - a.y.max(b.y)).max(0.0);
@@ -847,15 +824,14 @@ fn region_iou(a: &Region, b: &Region) -> f64 {
 
 /// How many regions of one page have a near-identical twin on that same page.
 ///
-/// **This used to decide how the headline read, and it is kept as a standing
-/// check that it no longer does.** `suppress` was class-aware at first —
-/// faithful to YOLOv5 — so a text block whose grid cells disagreed about which
-/// of the two class channels won survived **twice**, as two boxes at an IoU of
-/// 0.94 to 0.99. Two centroids then landed inside whatever the other edition
-/// drew over that one block, and containment alone could not tell that from a
-/// grouping disagreement: the headline read 23 where the truth was 5.
+/// **This is a standing check that twins do not decide how the headline
+/// reads.** With class-aware suppression, a text block whose grid cells
+/// disagreed about which of the two class channels won would survive
+/// **twice**, as two near-identical boxes. Two centroids would then land
+/// inside whatever the other edition drew over that one block, and
+/// containment alone could not tell that from a grouping disagreement.
 ///
-/// Suppression is class-agnostic now (see `suppress`) and both counts are zero.
+/// Suppression is class-agnostic (see `suppress`) and both counts are zero.
 /// This function stays because a zero it prints is evidence, and because the
 /// two headline figures agreeing is what says the artefact is gone rather than
 /// merely smaller.
@@ -882,8 +858,7 @@ fn duplicated(regions: &[Region]) -> usize {
 /// A box counts only when two of the centroids it holds belong to regions that
 /// are **not** near-duplicates of each other — that is, when the other edition
 /// really did draw two things where this one drew one. This is the number the
-/// question asks for; `merging` above is what containment alone can see, and on
-/// this corpus the two differ by a factor of four.
+/// question asks for; `merging` above is what containment alone can see.
 fn merging_distinct(boxes: &[Region], of: &[Region]) -> usize {
     boxes
         .iter()
@@ -989,8 +964,8 @@ fn ordered_members(edition: &taiyaku_core::Edition, dir: &std::path::Path) -> Ve
 /// which only the decode knows.
 ///
 /// **Only the wanted pages are decoded**, for `resolve_labelled`'s reason:
-/// `decode_all` decodes everything it is handed, and five pages of 226 are
-/// wanted here.
+/// `decode_all` decodes everything it is handed, and only five pages of an
+/// edition are wanted here.
 fn model_pages(
     plan: &std::sync::Arc<TypedRunnableModel>,
     doc: &taiyaku_core::Sidecar,
@@ -1367,7 +1342,7 @@ fn where_the_confidence_floor_goes() {
 
         // **Every threshold is swept inside one forward pass**, which is the
         // whole point of the array here rather than a loop around `decode_all`:
-        // the 1024×1024 inference costs ~0.9 s a page and `blk` does not depend
+        // the 1024×1024 inference is the costly part and `blk` does not depend
         // on the floor, so eight rows cost one pass plus eight cheap filters.
         // `band_sweep.rs`'s memory reason applies on top — `decode_all` decodes
         // the large pages one at a time and the pixels are gone afterwards.

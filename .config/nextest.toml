@@ -1,156 +1,83 @@
-# Nothing else in this repository bounds a test's runtime, and until this file
-# existed nothing did at all: CI runs `cargo llvm-cov`, which wraps `cargo
-# test`, which has no timeout. A regression that stopped a loop terminating
-# would hang the forge until the runner's own limit rather than fail it. See
-# docs/status.md, O39.
+# Nothing else in this repository bounds a test's runtime: without this file, a
+# regression that stopped a loop terminating would hang the forge until the
+# runner's own limit rather than fail it. See docs/status.md, O39.
 #
-# **These figures were true until spec A2 and are corrected below; the ratio is
-# now roughly 6x rather than 40x.** Argon2 is deliberately expensive and runs
-# unoptimized under `cargo test` — this workspace sets no `[profile.dev]`
-# opt-level — so every test that verifies a password pays about 11.9 ms. The
-# suite's own fixtures no longer do: `test_support` pins a precomputed hash and
-# authenticates with an API key, which §2 routes past argon2 by its `tyk_`
-# prefix, and that took `taiyaku-serve` from 11.85 s back to 4.96 s. What
-# remains slow is the three tests whose *subject* is password guessing —
-# `succeeding_forgets_the_failures_before_it` at 4.86 s runs nineteen logins on
-# purpose — and making those cheap would mean not testing the thing.
+# Argon2 is deliberately expensive and runs unoptimized under `cargo test` —
+# this workspace sets no `[profile.dev]` opt-level — so every test that verifies
+# a password pays for it. The suite's own fixtures do not: `test_support` pins a
+# precomputed hash and authenticates with an API key, which spec A2's §2 routes
+# past argon2 by its `tyk_` prefix. What remains slow is the three tests whose
+# *subject* is password guessing — `succeeding_forgets_the_failures_before_it`
+# runs nineteen logins on purpose — and making those cheap would mean not
+# testing the thing.
 #
 # So: **the slowest test is `succeeding_forgets_the_failures_before_it` at
-# roughly 5 s — 4.99 s on the run this sentence was written from, and it moves
-# by a few hundred milliseconds between runs because argon2 is what it is
-# timing. 30 s is about 6x it and 60 s about 12x**, measured 2026-08-19 on the
-# machine below. That is thinner than what this file was written with, and it is
+# roughly 5 s, and it moves by a few hundred milliseconds between runs because
+# argon2 is what it is timing. 30 s is about 6x it and 60 s about 12x.** That is
 # stated rather than left to be discovered by a shared runner killing a job at
-# `terminate-after`.
+# `terminate-after`. The slack is for a shared docker runner, which is slower
+# than the machine that measured this by a factor nobody has measured — the one
+# guess here, and it says so.
 #
-# A figure quoted to two decimal places here was wrong within a day, so this one
-# is quoted as a range with the reason it moves. `report_the_argon2_cost` is
-# `#[ignore]`d for the same reason it kept appearing at the top of this list: it
-# is a measurement tool that asserts nothing, and it has no business spending the
-# budget a timeout is reasoning about.
-#
-# Found by the second whole-branch review, which measured the regression before
-# the fixtures were fixed, and corrected by the third, which caught the figure
-# already being stale.
-#
-# The original measurement, which the paragraph above supersedes:
-# 30 s was 40x the slowest test in the workspace and 60 s was 80x. Measured, not
-# guessed: running the whole suite under a temporary short `slow-timeout` and
-# raising the period, four SLOW lines print at 250 ms and two at 500 ms — but
-# that is two tests, not four: nextest re-prints a SLOW line at every multiple
-# of the period a test is still running, so the same two tests
-# (`detect::tests::the_gap_does_not_grow_with_the_page` and
-# `cover::tests::a_cover_is_a_bounded_jpeg_whatever_the_page_was`) are each
-# printed once at 250 ms and again at 500 ms, and neither at 750 ms. Nothing in
-# 639 tests exceeds 0.75 s. The slack is for a shared docker runner, which is
-# slower than the machine that measured this by a factor nobody has measured —
-# the one guess here, and it says so.
-#
-# **"639" is this file's own dated count, not today's — the workspace is
-# 1,529 tests as of the library-download branch, and re-measuring all of them
-# against this margin was not repeated for that reason alone.** What *is*
-# worth stating: `taiyaku-serve/src/corpus.rs` gained a check
-# (`a_real_multi_member_edition_downloads_as_a_readable_cbz`, spec C2) that
-# runs about 1.02 s, past this file's 0.75 s figure. It does not reopen either
-# measurement above, because it runs in the corpus job — gated on
-# `TAIYAKU_CORPUS`, which `scripts/check-all.sh`'s `test` job unsets — and so
-# never shares a `nextest` invocation, a `slow-timeout` or this file's margin
-# with the 1,529 tests the figures above describe. `docs/notes.md`, "Task 10's
-# two corpus download checks", has the reproduction.
+# `report_the_argon2_cost` is `#[ignore]`d: it is a measurement tool that
+# asserts nothing, and it has no business spending the budget a timeout is
+# reasoning about.
 [profile.default]
 # A machine-readable summary of the run, at `target/nextest/default/junit.xml`,
 # written as a side effect of a run that was happening anyway. It is what
 # `scripts/status-test-count.mjs` reads to check the test count `docs/status.md`
-# states in two places, which went stale on two consecutive branches when
-# nothing derived it.
+# states in two places.
 #
-# **This one line replaced a step that cost 14.3 seconds a push.** That step
-# shelled out to `cargo nextest list` for a static enumeration, which is a more
-# robust source — it reads no environment and cannot be perturbed by a failing
-# suite — and it rebuilt the entire workspace to get there, because
-# `cargo llvm-cov nextest` builds with coverage instrumentation and a plain
-# `nextest list` cannot reuse those artifacts. 31% of the `test` job's wall
-# clock to check one number. The robustness it bought is recovered instead by
-# refusing to compare when the report shows a failure; see that script's header.
+# **Reading it instead of running `cargo nextest list` saves a rebuild of the
+# whole workspace.** The list is a more robust source — it reads no environment
+# and cannot be perturbed by a failing suite — but `cargo llvm-cov nextest`
+# builds with coverage instrumentation and a plain `nextest list` cannot reuse
+# those artifacts. The robustness is recovered instead by refusing to compare
+# when the report shows a failure; see that script's header.
 junit = { path = "junit.xml" }
 slow-timeout = { period = "30s", terminate-after = 2 }
 
 # The exempt set matches the nine-alternative regex both coverage steps of
-# ci.yml and check-all.sh carry today —
+# ci.yml and check-all.sh carry —
 # `--ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'`
-# — which matches the twelve files `docs/ci.md` tables under "The ignored Rust
-# files, named". This comment quoted a seven-alternative version and said
-# eight files: both were the shape of the regex before `borrow_frequency` and
-# `test_support` were added to it, copied here and never recounted. This is not one exempt set shared three ways: the two
-# coverage steps share one regex string, but nextest's `filter` selects by
-# test name rather than by file, so this file cannot reuse that string — the
-# same set is expressed a second way, by module, and has to be kept in step
-# with the regex by hand rather than by sharing it.
+# — which matches the thirteen files `docs/ci.md` tables under
+# "The ignored Rust files, named". This is not one exempt set shared three ways:
+# the two coverage steps share one regex string, but nextest's `filter` selects
+# by test name rather than by file, so this file cannot reuse that string — the
+# same set is expressed a second way, by module, and has to be kept in step with
+# the regex by hand rather than by sharing it.
 #
-# It fell out of step. `band_sweep`, `truth_population` and `model_experiment`
-# were all missing below until this correction — the first two pre-dating this
-# branch, the third landing without this filter being updated for it — so
-# their tests ran under the default
-# `slow-timeout = { period = "30s", terminate-after = 2 }` rather than the
-# 60 s advisory mark meant for them. `the_model_candidate_scored` was measured
-# at **42.2 s on 32 cores**: past the 30 s SLOW mark but comfortably inside a
-# real 60 s advisory, and instead killed at that same 60 s by the default
-# `terminate-after`. Passing on a fast machine and dying on a slower one is
-# exactly the failure this override exists to prevent, and for this test it
-# was not preventing it.
+# The tests below are marked SLOW and left alone rather than killed. A global
+# kill would destroy a deliberate measurement: `geometry_experiment` in the
+# debug profile with `TAIYAKU_CORPUS` set runs 40+ minutes. Omitting
+# `terminate-after` is what makes a slow-timeout advisory, not a separate key.
+# Under the default `slow-timeout = { period = "30s", terminate-after = 2 }` a
+# test that passes on a fast machine dies on a slower one — the default would
+# kill `the_model_candidate_scored`, which runs 42.2 s on 32 cores, at 60 s —
+# which is exactly the failure this override exists to prevent.
 #
-# A global kill would destroy a deliberate measurement: `geometry_experiment`
-# in the debug profile with TAIYAKU_CORPUS set runs 40+ minutes, and one run
-# was killed by hand at 1 h 09 m. So these are marked SLOW and left alone —
-# omitting `terminate-after` is what makes a slow-timeout advisory, not a
-# separate key.
-#
-# `test(corpus::)` selects **twenty-four** tests, counted with
-# `cargo nextest list -E 'test(corpus::)'` on 2026-08-24 rather than reasoned
-# about: seventeen standing checks against real archives (ten in taiyaku-cli,
-# five in taiyaku-serve, two in taiyaku-library — the second of those being
-# the scanner's own walk-through-derive check, added by the library scanner
-# branch), three `corpus::tests::` helpers that only assert how
-# TAIYAKU_CORPUS is validated, and **four `score_corpus::` tests caught by
-# substring** — `score_corpus::` contains
-# `corpus::`, so the first term already selects them and the separate
+# `test(corpus::)` selects the standing checks against real archives, the
+# `corpus::tests::` helpers that only assert how `TAIYAKU_CORPUS` is validated,
+# and the `score_corpus::` tests, caught by substring — `score_corpus::`
+# contains `corpus::`, so the first term already selects them and the separate
 # `test(score_corpus)` term below is redundant. It is kept anyway: it costs
 # nothing, and it keeps the intent legible if either module is ever renamed.
+# Matching `cargo test`'s selection exactly is the point — the exempt set must
+# be the set the corpus step runs, or the two silently disagree.
 #
-# **This comment has now been wrong four times, in the file that warns about
-# exactly that.** The fourth: it read twenty-two / fifteen until 2026-08-24,
-# the figures from before this branch's Task 10 gave
-# `taiyaku-serve/src/corpus.rs` two more standing checks (`corpus.rs`'s own
-# entry above already names one of them) — not the substring trap again,
-# just a count nobody re-ran once the download work landed.
-# The third: it read twenty-one / fourteen until 2026-08-18,
-# the figures from before `taiyaku-library`'s second corpus check landed —
-# which is not the substring trap again, just a count nobody re-ran.
-# The first two: It said "sixteen / thirteen" while the real figures were twenty /
-# thirteen, because nobody had noticed the substring overlap; and a correction
-# drafted for Task 8 said "seventeen / fourteen", which fixed the standing-check
-# count and preserved the same undercount. It was an agent counting the output
-# instead of trusting the arithmetic that caught it. Run the command.
-# Matching cargo test's existing selection exactly
-# is the point — the exempt set must be the set the corpus step already runs,
-# or the two disagree silently.
+# `test(score_corpus)` is the same shape as the two experiments beside it: gated
+# on `TAIYAKU_CORPUS`, skipping cleanly without it, and decoding real
+# full-resolution pages when it has it, so the 30 s default would bound a
+# measurement rather than a bug.
 #
-# `test(score_corpus)` joined them when the ground-truth scorer landed. It is
-# the same shape as the two experiments beside it: gated on TAIYAKU_CORPUS,
-# skipping cleanly without it, and decoding real full-resolution pages when it
-# has it. Its own `--sample` sibling takes ~14 s just to count pages across
-# fifteen editions, so the 30 s default would bound a measurement rather than
-# a bug.
-#
-# `test(band_sweep)`, `test(truth_population)` and `test(model_experiment)`
-# are the same shape again, and each was missing from this filter until the
-# correction above: `band_sweep` scores eight component-size bands over the
-# 45 labelled pages so `BAND` is read off a table rather than argued for;
-# `truth_population` reads 480 hand-drawn boxes over those same pages to
-# derive `detect.rs`'s size band, ink floor and smear gap; `model_experiment`
-# scores phase 3's model candidate against the same 45 pages for the
-# head-to-head table in `docs/notes.md`. Each is `#[cfg(test)]`, gated on
-# TAIYAKU_CORPUS, and none of the three is a unit test with a normal budget.
+# `test(band_sweep)`, `test(truth_population)` and `test(model_experiment)` are
+# the same shape again: `band_sweep` scores component-size bands over the
+# labelled pages so `BAND` is read off a table rather than argued for;
+# `truth_population` reads hand-drawn boxes over those same pages to derive
+# `detect.rs`'s size band, ink floor and smear gap; `model_experiment` scores
+# phase 3's model candidate against the same pages for the head-to-head table in
+# `docs/notes.md`. Each is `#[cfg(test)]`, gated on `TAIYAKU_CORPUS`, and none
+# of the three is a unit test with a normal budget.
 [[profile.default.overrides]]
 filter = "test(band_sweep) + test(corpus::) + test(geometry_experiment) + test(model_experiment) + test(region_experiment) + test(score_corpus) + test(truth_population)"
 slow-timeout = { period = "60s" }
@@ -168,15 +95,12 @@ slow-timeout = { period = "60s" }
 # test's binary is invoked — including the coverage run `check-all.sh` and
 # `ci.yml` both use, neither of which passes it.
 #
-# **Every test that can skip itself belongs in this filter, not just the one
-# that found the trap.** Three more do, and two of them were added after this
-# override without being added to it, which is the trap arriving again:
+# **Every test that can skip itself belongs in this filter.** Three more do:
 #   - `an_unreadable_directory_is_skipped_counted_and_named_rather_than_failing_the_root`
 #     (`taiyaku-library/src/scan/tests.rs`) — same root/`CAP_DAC_OVERRIDE`
 #     cause, a 0000 directory this process can still list.
 #   - `one_work_that_cannot_be_forgotten_does_not_stop_the_others`
-#     (`taiyaku-serve/src/tests.rs`) — the test that set the pattern, and the
-#     one `docs/ci.md` named as still invisible.
+#     (`taiyaku-serve/src/tests.rs`).
 #   - `a_hand_written_tar_is_one_gnu_tar_can_list`
 #     (`taiyaku-read/src/format/tests.rs`) — skips where `tar` is not on
 #     `PATH`, which is a different cause with the same consequence: the tar

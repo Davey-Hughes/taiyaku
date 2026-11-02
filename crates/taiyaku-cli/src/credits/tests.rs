@@ -192,8 +192,8 @@ fn run(page: u32, local: u32, length: u32, at_member_end: bool) -> UnpairedRun {
 #[test]
 fn only_a_short_run_at_a_members_last_page_is_a_candidate() {
     // All four quadrants of the rule, so neither half can be dropped
-    // without a failure. The bound is `MAX_CREDIT_RUN`, not a literal:
-    // Task 6 raises it from a survey and this test must move with it.
+    // without a failure. The bound is `MAX_CREDIT_RUN`, not a literal, so
+    // this test must move with it.
     let over = MAX_CREDIT_RUN + 1;
     assert!(is_candidate(&run(10, 5, MAX_CREDIT_RUN, true)));
     assert!(
@@ -252,21 +252,19 @@ fn a_written_list_comes_out_ascending() {
 
 /// `--write` must not be able to leave a short sidecar behind.
 ///
-/// The same property O2 established for progress and `atomic.rs` now owns
-/// for everything that writes beside a sidecar: the destination is
-/// *replaced* by a rename, never opened for truncation. A crash cannot be
-/// staged in a test, so this pins the mechanism that rules it out — the
-/// idiom `progress.rs`'s own atomicity test set.
+/// The same property O2 established for progress and `atomic.rs` owns for
+/// everything that writes beside a sidecar: the destination is *replaced* by
+/// a rename, never opened for truncation. A crash cannot be staged in a test,
+/// so this pins the mechanism that rules it out.
 ///
 /// It is observed by **inode identity** rather than by taking write
-/// permission off the existing file, which is what `progress.rs` still
-/// does. `atomic.rs`'s own test records why that approach was abandoned
-/// there: on a filesystem that ignores the read-only bit, or under root,
-/// the permission-denied write it distinguishes "replaced" from
-/// "truncated" by simply succeeds, and the test prints a skip line libtest
-/// captures — a green that measured nothing. A rename gives the path a
-/// different inode; an in-place write keeps the same one, whoever is
-/// running and whatever the filesystem enforces.
+/// permission off the existing file. `atomic.rs`'s own test records why
+/// that approach was abandoned there: on a filesystem that ignores the
+/// read-only bit, or under root, the permission-denied write it
+/// distinguishes "replaced" from "truncated" by simply succeeds, and the
+/// test prints a skip line libtest captures — a green that measured
+/// nothing. A rename gives the path a different inode; an in-place write
+/// keeps the same one, whoever is running and whatever the filesystem enforces.
 ///
 /// The fixture carries a **second** edition and an alignment between the
 /// two, because that is what is actually at stake: `credits --write`
@@ -455,11 +453,8 @@ fn no_matching_edition_is_refused_by_name() {
     );
 }
 
-/// A document with four editions: `hub`, two spokes joined to it directly,
-/// and a third alignment — `spokeA` to `spokeB` — that touches neither.
-/// The buggy version of `resolve_counterpart` mapped every alignment to
-/// "whichever side is not the hub", so `spokeA`-`spokeB` still contributed
-/// `spokeA` even though that edge never reaches the hub at all.
+/// A document with four editions: `hub`, one spoke joined to it directly, and a
+/// second alignment — `spokeA` to `spokeB` — that touches neither.
 fn hub_with_a_spoke_to_spoke_edge() -> Sidecar {
     let text = r#"{
           "taiyaku": 1,
@@ -903,12 +898,10 @@ fn the_kaguya_v08_fixture_reproduces_its_one_candidate_and_it_is_a_false_positiv
 ///
 /// That comment says the first-index version of the position rule "is zero
 /// for four — what accumulates at a member's start is front matter",
-/// measured on `corpus/gotoubun-v01`'s fan edition alone. Here it is five
-/// for five: all five of this edition's known credit pages — 2, 54, 95,
-/// 130 and 157 — sit at the *start* of a chapter (local index 1 in four of
-/// five, local 2 in the first), and signal 1's rule reads only a member's
-/// *last* index, so it structurally cannot see any of them. Candidates is
-/// empty, not merely short of five.
+/// and here it is five for five: all five of this edition's known credit
+/// pages sit at the *start* of a chapter, and signal 1's rule reads only a
+/// member's *last* index, so it structurally cannot see any of them.
+/// Candidates is empty, not merely short of five.
 #[test]
 fn the_domestic_v01_fixture_is_a_direct_counterexample_to_the_first_index_claim() {
     let fixture = CreditFixture::domestic_v01();
@@ -948,14 +941,12 @@ fn the_domestic_v01_fixture_is_a_direct_counterexample_to_the_first_index_claim(
 /// 1's input does not exist, rather than its rule failing to reach a page
 /// it can see.
 ///
-/// The alignment is `REFUSED` — 0 whole pairings of 321 slots, because 61
-/// vertical scroll strips do not correspond to 314 print pages — so there
-/// are no meaningful unpaired runs for signal 1 to read at all. Six
-/// credit pages are known by extraction (0, 20, 21, 39, 40 and 60, two
-/// per chapter), and signal 1 proposes none of them. A future reader
-/// seeing "0 candidates, 6 known" without this context would reasonably
-/// mistake it for the rule breaking; it is instead the absence of the
-/// input the rule needs.
+/// The alignment is `REFUSED`, because vertical scroll strips do not
+/// correspond to print pages, so there are no meaningful unpaired runs for
+/// signal 1 to read at all. Signal 1 proposes none of this edition's known
+/// credit pages. A future reader seeing "0 candidates" beside known credit
+/// pages, without this context, would reasonably mistake it for the rule
+/// breaking; it is instead the absence of the input the rule needs.
 #[test]
 fn the_solo_leveling_v01_fixture_has_no_alignment_for_signal_1_to_read() {
     let fixture = CreditFixture::solo_leveling_v01();
@@ -1025,14 +1016,9 @@ fn the_corpus_figures_are_twenty_three_of_twenty_five_precision_and_thirteen_of_
 
 #[test]
 fn work_of_derives_the_corpus_directory_not_the_display_title() {
-    // The value the two checked-in fixtures key on: `work` is the corpus
-    // directory slug, never the human display title
-    // (`doc.work.title` holds `Go-Toubun no Hanayome v01`, an unrelated
-    // string with spaces in it). This is the derivation `command` skipped
-    // when it passed `&doc.work.title` straight to `emit_fixture_json`
-    // instead — a bug the old test for `emit_fixture_json` could not have
-    // caught, since it passed a literal `"gotoubun-v01"` rather than
-    // exercising this function.
+    // The value the checked-in fixtures key on: `work` is the corpus directory
+    // slug, never the human display title (`doc.work.title` holds
+    // `Go-Toubun no Hanayome v01`, an unrelated string with spaces in it).
     assert_eq!(work_of("corpus/gotoubun-v01/taiyaku.json"), "gotoubun-v01");
     assert_eq!(work_of("corpus/kaguya-v01/taiyaku.json"), "kaguya-v01");
     assert_eq!(

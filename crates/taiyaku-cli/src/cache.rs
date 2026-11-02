@@ -1,9 +1,8 @@
 //! Caching what decoding costs, keyed by content.
 //!
-//! Decoding dominates alignment by three orders of magnitude — roughly 12 ms per
-//! page against 100 µs for an entire similarity matrix — and it produces the
-//! same answer every time for the same bytes. Caching it turns re-solving from
-//! seconds into microseconds, which is what makes tuning the solver bearable.
+//! Decoding dominates alignment by orders of magnitude, and it produces the
+//! same answer every time for the same bytes. Caching it makes re-solving
+//! cheap, which is what makes tuning the solver bearable.
 //!
 //! The key is the member's SHA-256, so the cache invalidates correctly when an
 //! archive is re-downloaded and is shared between every pairing that uses it.

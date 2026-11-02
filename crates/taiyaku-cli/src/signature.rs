@@ -1,9 +1,7 @@
 //! What a directory listing knows about two copies, before anything is
 //! decoded, transferred or solved.
 //!
-//! This is step 1 of the duplicate protocol in `docs/status.md` §2. It settled
-//! 3 of the 19 duplicated One Piece volume-editions without transferring
-//! anything, which is the reason it runs first.
+//! This is step 1 of the duplicate protocol in `docs/status.md` §2.
 //!
 //! Called from `duplicates::resolve`, which groups copies by signature before
 //! confirming a match with `content_digest` and fingerprinting one
@@ -21,8 +19,8 @@ use sha2::{Digest, Sha256};
 /// `Thumbs.db` does not move the answer. Over *uncompressed* sizes, so a
 /// directory of loose images and a `.cbz` of the same scan sign identically.
 ///
-/// `pages` and `bytes` ride along for a person to read and nothing prints them
-/// today; only `digest` decides. It subsumes both, being taken over the whole
+/// `pages` and `bytes` ride along for a person to read and nothing prints
+/// them; only `digest` decides. It subsumes both, being taken over the whole
 /// sorted list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Signature {

@@ -40,8 +40,8 @@ row() {
 }
 
 # The member for an edition directory: the archive inside it if there is one,
-# otherwise the directory itself. Three of the four raw series are stored as
-# loose images rather than archives, so both shapes have to work.
+# otherwise the directory itself. Some raw series are stored as loose images
+# rather than archives, so both shapes have to work.
 member() {
     for f in "$1"/*.cbz; do
         [ -f "$f" ] && { printf '%s\n' "$f"; return; }
@@ -75,8 +75,6 @@ row bad   "op-v077-c0-vs-c1"     corpus/incoming/op-duplicates/v077-mono-c0 -- c
 
 # --- needles: a short A against a long B, with no true counterpart anywhere.
 # --- None of these is refused by calibration; the verdict is what catches them.
-# --- colorwalk-comp2 against Go-Toubun is the worst case measured: it beats
-# --- four confirmed-good pairings on margin and seven on separation.
 row needle "colorwalk-to-op-v105" corpus/incoming/colorwalk-pages -- corpus/incoming/onepiece/en-v105.cbz
 row needle "colorwalk-comp2-to-gotoubun" corpus/incoming/needles/colorwalk-comp2 -- corpus/gotoubun-v01/raw-mono/*.cbz
 row needle "xcalendar-2015-to-op-v105" corpus/incoming/needles/op-xcalendar-2015 -- corpus/incoming/onepiece/op-raw-v105

@@ -98,10 +98,8 @@ fn boxes(spans: &[(u32, u32, u32, u32)]) -> Vec<Bounds> {
 }
 
 /// `glyph_band`'s own contract, pinned independently of whatever `BAND`
-/// becomes: both `lo` and `hi` are inclusive boundaries (`>=`/`<=`, not
-/// `>`/`<`). The `lo` boundary in particular is decision-critical for
-/// Task 7's sweep's control arm — see `screentone_page`'s doc comment for
-/// a fixture that landed exactly on it and passed the band as a result.
+/// becomes: both `lo` and `hi` are inclusive boundaries
+/// (`>=`/`<=`, not `>`/`<`).
 ///
 /// height=1000 makes the ‱ conversion exact: `longer * 10_000 / 1000 ==
 /// longer * 10`, so a longer side of 10 is exactly 100‱ and one of 20 is
@@ -344,9 +342,8 @@ fn a_duplicate_is_broken_on_order_not_on_axis() {
 /// Pinned as behaviour, **not asserted to be desirable** — see limit 2 in
 /// `uncontained`'s doc comment. A multi-line paragraph presents this same
 /// shape, so this rule also keeps the wrong axis's strips beside the right
-/// axis's lines, and the shipped block count rose by half on one raw
-/// edition because of it. This test says what the rule does so that a
-/// later change to it is a decision rather than an accident.
+/// axis's lines. This test says what the rule does so that a later change
+/// to it is a decision rather than an accident.
 #[test]
 fn blocks_that_merely_overlap_both_survive() {
     let tall = Bounds {
@@ -420,21 +417,14 @@ fn detection_is_scale_invariant() {
 /// point of the fixture; see `the_gap_does_not_grow_with_the_page` below
 /// for what it is for.
 ///
-/// **The marks are 24px, and were 10px until Task 7's sweep moved `BAND`'s
-/// `lo` from 16 to 64.** A fixed pixel mark on a canvas that grows is a
+/// **The marks are 24px.** A fixed pixel mark on a canvas that grows is a
 /// *shrinking* fraction of page height, which is the one thing a band stated
-/// in ‱ of page height must cut: 10px on the 3,000px canvas below is 33‱,
-/// under 64, so `glyph_band` dropped every stroke and `detect_page` returned
-/// nothing on the large page while still returning two blocks on the small
-/// one. That is the band doing its job on a fixture whose marks had become
-/// tone-sized in page-relative terms — a glyph on a 3,000px page is nearer
-/// 60px, phase 1's inside p95 being 141‱ — rather than a defect in either.
-///
-/// 24px is chosen against the band and not against the assertion: it is 80‱
-/// on the 3,000px canvas, clear of `lo` on the page where the margin is
-/// tightest. Everything else scales with it so the property below is
-/// untouched — pitch 36 (the strokes still merge within a cluster), 72 blank
-/// rows between the clusters (they still do not merge across).
+/// in ‱ of page height must cut. 24px is chosen against the band and not
+/// against the assertion: it is 80‱ on the 3,000px canvas below, clear of
+/// `lo` on the page where the margin is tightest. Everything else scales
+/// with it so the property below is untouched — pitch 36 (the strokes merge
+/// within a cluster), 72 blank rows between the clusters (they do not
+/// merge across).
 fn two_gapped_clusters(width: u32, height: u32) -> GrayImage {
     let marks: Vec<(u32, u32, u32, u32)> = (0..5)
         .map(|k| (100u32, 40 + 36 * k, 24, 24))
@@ -509,8 +499,7 @@ fn a_panel_border_is_not_a_region() {
 /// leaving the next reader to assume it does. The marks here are solid
 /// 6x6 squares that nowhere overlap, so their summed bounding boxes and
 /// their true ink pixels are the same 360, and this block scores 0.044
-/// against the 0.05 floor under either arithmetic — the one this filter
-/// used before O34 and the one it uses now.
+/// against the 0.05 floor whichever way ink is counted.
 /// `a_block_of_hollow_strokes_is_mostly_paper` below is the fixture that
 /// separates them.
 #[test]
@@ -548,22 +537,20 @@ fn page_of_marks(hollow: bool) -> GrayImage {
     })
 }
 
-/// **The fixture that pins what `MIN_INK` counts**, which is the change
-/// O34 asked for and which no fixture in this file could previously fail.
+/// **The fixture that pins what `MIN_INK` counts** (O34).
 ///
 /// Both pages produce one 100x650 block holding six components: 65,000
-/// pixels of block, and six stroke boxes of 10,000 each. Summing those
-/// boxes — what this filter did before — gives 60,000/65,000 = 0.92 on
-/// *both* pages, so the old arithmetic admitted both. Counting ink pixels
-/// separates them: the solid marks are 60,000 pixels of ink and still
-/// score 0.92, while the outlines are 396 pixels each — 2,376 in total,
-/// 0.037 — and fall under the 0.05 floor.
+/// pixels of block, and six stroke boxes of 10,000 each. Summing those boxes
+/// gives 60,000/65,000 = 0.92 on *both* pages, so that arithmetic would admit
+/// both. Counting ink pixels separates them: the solid marks are 60,000 pixels
+/// of ink and score 0.92, while the outlines are 396 pixels each — 2,376 in
+/// total, 0.037 — and fall under the 0.05 floor.
 ///
 /// The paired assertion is the point. Asserting only that the hollow page
-/// comes back empty would pass if any *other* filter rejected it, and this
-/// file already carries fixtures that pass for the wrong reason (see O33).
-/// The solid page differs in nothing but ink and comes back as one region,
-/// so ink is the only thing that can be doing the rejecting.
+/// comes back empty would pass if any *other* filter rejected it, the
+/// vacuous-fixture shape O33 records. The solid page differs in nothing but
+/// ink and comes back as one region, so ink is the only thing that can be
+/// doing the rejecting.
 #[test]
 fn a_block_of_hollow_strokes_is_mostly_paper() {
     let solid = detect_page(&page_of_marks(false));
@@ -580,18 +567,18 @@ fn a_block_of_hollow_strokes_is_mostly_paper() {
 ///
 /// **It clears the band by two ten-thousandths, and the empty-page
 /// assertion cannot tell the difference.** 4px on a 600px page is 66‱ of
-/// page height, against `BAND`'s `lo` of 64 — so the speck reaches
-/// `MIN_STROKES` today and is refused there, which is what this fixture is
-/// for. Any upward move of `lo` drops it at `glyph_band` instead, and
-/// `detect_page` still returns nothing, and this test still passes while
+/// page height, against `BAND`'s `lo` of 64, so the speck reaches
+/// `MIN_STROKES` and is refused there, which is what this fixture is for. Any
+/// upward move of `lo` would drop it at `glyph_band` instead; `detect_page`
+/// would still return nothing, and the empty-page assertion would pass while
 /// pinning the band rather than the constant it is named for. That is the
-/// vacuous-fixture shape O33 records and `1173466` fixed twice already.
+/// vacuous-fixture shape O33 records.
 ///
 /// The first assertion is the guard, in the shape
 /// `a_field_of_screentone_is_not_a_region` uses below: it fails loudly if
 /// the speck stops reaching the filters. Kept at 4px rather than grown
 /// clear of the band, because a mark with comfortable margin at any
-/// plausible `lo` is 8px — 133‱, against phase 1's inside p95 of 141 — and
+/// plausible `lo` is 8px — 133‱, against the inside p95 of 141 — and
 /// that is a glyph, not a speck. The fixture is named for what it is; the
 /// assertion is what keeps it that.
 #[test]
@@ -644,10 +631,7 @@ fn six_bars(thick: u32, turned: bool) -> GrayImage {
 }
 
 /// **`MIN_BLOCK_STROKE_SPAN` rejects a block on its own, and one pixel more
-/// gets through** — O33, which recorded that no fixture here could fail if
-/// this filter's arithmetic were wrong by a factor of several: everything this
-/// file refuses is refused before the filter, and every block it keeps spans
-/// many stroke-scales.
+/// gets through** (O33).
 ///
 /// A block can only be short against the page's own strokes if those strokes
 /// lie *across* it, which is why these are bars rather than glyph-sized
@@ -745,19 +729,11 @@ fn a_block_over_the_area_ceiling_is_not_a_region() {
 /// A page-sized field of screentone: 2px dots on a 5px lattice, over a
 /// canvas the size of a real scan.
 ///
-/// Sized deliberately. The outside population's own ‱ percentiles,
-/// measured directly over the 45 labelled corpus pages, are p05=3 p25=4
-/// med=6 p75=6 p95=17 (`docs/notes.md`, "What text is made of, measured
-/// against 480 hand-drawn boxes"); 2px on 2400 is 8, inside that range
-/// rather than at its edge. The earlier fixture used 2px on 1200 — 16‱, at
-/// the outside population's own p95 rather than its middle — which is why
-/// it exercised nothing **against the `lo` of 16 that shipped at the
-/// time**: `glyph_band` keeps a component whose per-ten-thousand is `>=
-/// lo`, so a 16‱ dot landed exactly on the boundary and passed the band
-/// instead of being dropped by it. Task 7's sweep has since moved `lo` to
-/// 64, which would drop that dot too — so the fixture is sized off the
-/// measured population rather than off whatever `BAND` currently is, and
-/// the assertion below is what pins the behaviour either way.
+/// Sized deliberately, off the measured population rather than off whatever
+/// `BAND` is. The outside population's own ‱ percentiles run to a p95 of 17
+/// (`docs/notes.md`, "What text is made of, measured against 480 hand-drawn
+/// boxes"); 2px on 2400 is 8, inside that range rather than at its edge, and
+/// the assertion below is what pins the behaviour.
 fn screentone_page(width: u32, height: u32, glyphs: &[(u32, u32, u32, u32)]) -> GrayImage {
     GrayImage::from_fn(width, height, |x, y| {
         let dot = x % 5 < 2 && y % 5 < 2;
@@ -770,13 +746,12 @@ fn screentone_page(width: u32, height: u32, glyphs: &[(u32, u32, u32, u32)]) -> 
 
 /// A page of nothing but screentone must produce no region.
 ///
-/// **This fixture bites**, which the one it replaces did not. Without the
-/// band, `stroke_scale` is 2 and the gap 4, and a 5px lattice merges along
-/// a column — a dot ends at x=1 and the next begins at x=5, and
-/// `merge_along` bridges when `s0 <= g1 + gap` — so each column of tone
-/// smears into one full-height strip that clears every filter and comes
-/// back as a region. Hundreds of them. With the band, every dot is 8‱ and
-/// drops before the smear ever runs.
+/// **This fixture bites.** Without the band, `stroke_scale` is 2 and the gap 4,
+/// and a 5px lattice merges along a column — a dot ends at x=1 and the next
+/// begins at x=5, and `merge_along` bridges when `s0 <= g1 + gap` — so each
+/// column of tone smears into one full-height strip that clears every filter
+/// and comes back as a region. Hundreds of them. With the band, every dot is 8‱
+/// and drops before the smear ever runs.
 ///
 /// Note what it does *not* claim: a square lattice does not weld
 /// page-wide, because `merge_along` also requires overlap *across* the

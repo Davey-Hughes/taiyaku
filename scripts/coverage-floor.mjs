@@ -5,100 +5,53 @@
 // --- why a per-file floor at all (the web side) -------------------------------
 //
 // `web/vite.config.ts`'s thresholds are **aggregate**, and an aggregate cannot
-// see a single module go dark. Measured on this repository: skipping the whole
-// of `pairing.test.ts` takes `pairing.ts` from 100% to 83.58% while the total
-// moves 98.03% → 97.49%, because `App.test.tsx` exercises the same lines
-// transitively through a mounted reader. Every aggregate threshold still
-// passed. A developer could delete a unit suite and the gate would say nothing.
+// see a single module go dark. Skipping the whole of `pairing.test.ts` leaves
+// the total almost unchanged, because `App.test.tsx` exercises the same lines
+// transitively through a mounted reader, and every aggregate threshold still
+// passes. A developer could delete a unit suite and the gate would say nothing.
 //
 // vitest cannot do both halves: a glob entry in `thresholds` is aggregated over
-// the files it matches, and `perFile` inside a glob entry is ignored. Both were
-// tried and measured before this file was written. `perFile: true` at the top
-// level does apply per file, but then one number has to serve both roles, and
-// the aggregate bar (96) is far above the lowest file's honest figure, so it
-// would fail on a clean tree.
+// the files it matches, and `perFile` inside a glob entry is ignored.
+// `perFile: true` at the top level does apply per file, but then one number
+// has to serve both roles, and the aggregate bar (96) is far above the lowest
+// file's honest figure, so it would fail on a clean tree.
 //
-// --- and the Rust side, which had the same hole ------------------------------
+// --- and the Rust side, which has the same hole ------------------------------
 //
 // `cargo llvm-cov --fail-under-lines 93` is workspace-aggregate and has exactly
-// the same blind spot. Measured 2026-08-14, after the test modules moved into
-// their own files and the two `test_support` modules joined the exclusion list:
-// 7169 lines, 6735 covered, 93.95%. A module could go entirely dark and the
-// aggregate still passed as long as it accounted for **67 covered lines or
-// fewer**, which was 17 of the 43 files in the report.
+// the same blind spot: a module could go entirely dark and the aggregate still
+// pass, as long as it accounted for no more covered lines than the slack below.
 //
-// **That slack is now derived rather than written down, and this run prints
+// **That slack is derived rather than written down, and this run prints
 // it.** `covered - ceil(93% of total)`, and every file at or under it, come out
 // of the same report this script already walks — see `reportAggregate` at the
 // bottom of this file, and `docs/ci.md` for what the figure means and one dated
-// measurement of it. The figures used to be restated here, in `check-all.sh`,
-// in `docs/ci.md` and in `docs/status.md`, with the at-or-under file list
-// spelled out twice; nothing derived any of the four, and they were three
-// commits stale by the time anyone looked (delta review M9). A note that
-// re-derives itself on every run cannot be.
+// measurement of it.
 //
 // The shape of the number is the part worth carrying in prose, because it is
 // what makes the per-file floor below necessary: the slack **widens as coverage
 // rises**, so a branch that improves coverage enlarges the set of modules the
-// aggregate would let go entirely dark. It was 8 lines at one commit on
-// 2026-08-17 — briefly no blind spot at all — and 64 lines and 20 files a few
-// commits later. **This file's own threshold is the part that does not move
-// with the margin**, which is exactly why the aggregate alone was never enough.
+// aggregate would let go entirely dark. **This file's own threshold is the
+// part that does not move with the margin**, which is exactly why the
+// aggregate alone is not enough.
 //
-// **That blind spot used to be an order of magnitude wider, and the reason is
-// worth knowing.** Until this branch every `#[cfg(test)] mod tests` lived inline
-// in the file it tested, so its own lines — executed by definition, and
-// therefore ~100% covered — were counted as that file's coverage. The report
-// read 19486 lines at 97.40%, of which roughly 12000 were test code measuring
-// itself, and a module of up to **857** covered lines could go dark unnoticed
-// (39 of the 44 files then in the report). cargo-llvm-cov 0.8.7 drops a source
-// file from the report when its basename contains `tests`, with no flag
-// involved — demonstrated by two files in one directory, where
-// `stump/http/test_support.rs` is present and `stump/http/ureq_tests.rs` is
-// not — so moving the modules out took the test code with them and left the
-// figure measuring implementation only.
+// The test modules live in their own files, and cargo-llvm-cov 0.8.7 drops a
+// source file from the report when its basename contains `tests`, with no flag
+// involved. A `test_support` module has no `s`, so that default exclusion does
+// not see it: those modules are named in the `--ignore-filename-regex` instead.
 //
-// Two `#[cfg(test)] pub(crate) mod test_support` modules survived that by
-// accident — `taiyaku-serve/src/test_support.rs` and
-// `stump/http/test_support.rs`, no `s`, so the default exclusion does not see
-// them — and are named in the `--ignore-filename-regex` instead, which is why
-// that list holds eleven files rather than nine. They were counted before the
-// split too, folded into `lib.rs` and `http.rs`; excluding them explicitly cost
-// 252 lines and 0.19 points (94.14% over 45 files → 93.95% over 43) and makes
-// one rule true of the whole report rather than nearly all of it: no
-// `#[cfg(test)]` code is measured.
+// The two-point rule, the measured figure less two points, is not applied to
+// the aggregate threshold of 93: docs/ci.md derives that rule from v8 counting
+// what a run loaded, so an unrelated import moves the *web* figures by
+// fractions, and the reason does not transfer. If the gate does start costing
+// honest branches their afternoon, 92 is the number the rule would have given.
 //
-// The threshold stayed at 93 across that shift rather than being re-derived
-// from the new figure less two points, which would have given 92. It now leaves
-// 0.95 points — **68 lines** — where it used to leave 4.40 points and 857
-// lines, so the same number bites about twelve times harder: a branch that adds
-// a module of any size materially untested is now red, and was not before.
-//
-// **That margin has about five lines of noise in it, and the noise was measured
-// rather than assumed.** Two runs of the same command on the same tree gave
-// 6735 and 6740 covered lines — 93.95% and 94.02% — and the difference is
-// entirely one file: `taiyaku-serve/src/cover.rs`, lines 257-260, which are
-// `Semaphore::acquire`'s `while *available == 0 { … wait … }` contention branch.
-// They are covered when two decodes actually collide on the permit and
-// uncovered when the scheduler happens not to overlap them. So the figures
-// quoted here are the lower of the two runs, and the honest margin is 67 lines
-// rather than 68. (The semaphore has since moved to `limit.rs`, where a
-// password verify waits on it too; the two runs are from before that.)
-//
-// The two-point rule was not applied on top of that, and the reason it gives
-// does not transfer: docs/ci.md derives it from v8 counting what a run loaded,
-// so an unrelated import moves the *web* figures by fractions. The Rust noise
-// above is 0.07 points against a 0.95-point margin — real, named, and an order
-// of magnitude short of the threshold. If the gate does start costing honest
-// branches their afternoon, 92 is the number the rule would have given.
-//
-// **`cargo llvm-cov` has a `--fail-under-file-lines` flag and it is not used,
-// for a measured reason.** It works — it exits 1 — but it says *nothing*: with
-// `--fail-under-file-lines 80` against this tree it wrote the ordinary coverage
-// table to stdout, zero bytes to stderr, and named neither the file that tripped
-// it nor the threshold it tripped. In CI that is a red step above a 43-row table
-// with no indication which row is the reason. Checked here instead, where the
-// failure can name the file and say what to open first.
+// **`cargo llvm-cov` has a `--fail-under-file-lines` flag and it is not used.**
+// It works — it exits 1 — but it says *nothing*: it writes the ordinary
+// coverage table to stdout and nothing to stderr, and names neither the file
+// that tripped it nor the threshold it tripped. In CI that is a red step above
+// a table with no indication which row is the reason. Checked here instead,
+// where the failure can name the file and say what to open first.
 //
 // --- one script, two report formats ------------------------------------------
 //
@@ -111,14 +64,13 @@
 //
 // --- the minimum file count --------------------------------------------------
 //
-// Both gates used to pass on a report containing no files at all. This script
-// printed "0 files, all above the per-file floor" and exited 0, and the
-// aggregate half passed too: with `coverage.include` pointed at a directory that
-// does not exist, vitest prints `Unknown% ( 0/0 )` for all four metrics and
-// **exits 0** — measured, by doing it. So a typo in one glob left both halves
-// green while measuring nothing, which is precisely the failure the comment
-// above that block says the design exists to prevent. Hence `minFiles` below,
-// per format, with its arithmetic beside it.
+// Without a minimum count, a report containing no files at all would pass both
+// gates: this script would find nothing below the floor and exit 0, and the
+// aggregate half passes too. With `coverage.include` pointed at a directory
+// that does not exist, vitest prints `Unknown% ( 0/0 )` for all four metrics
+// and **exits 0**. So a typo in one glob would leave both halves green while
+// measuring nothing. Hence `minFiles` below, per format, with its arithmetic
+// beside it.
 //
 // Three layers, and it is worth being plain about which catches what: the
 // aggregate thresholds catch the tree regressing overall; the per-file floors
@@ -135,19 +87,18 @@ const FORMATS = [
   {
     name: 'istanbul json-summary',
     tree: 'web/src',
-    // Detected on `total.lines.total` and **not** on `total.lines.pct`, which
-    // was the first attempt and was wrong in exactly the case this gate is here
-    // for: on a report with no files, istanbul writes `"pct": "Unknown"` — the
-    // string — so a `typeof pct === 'number'` sniff rejected the collapsed
-    // report as "not an istanbul summary". It still failed, but it failed
-    // saying the wrong thing. `total` is a count and is `0` there.
+    // Detected on `total.lines.total` and **not** on `total.lines.pct`: on a
+    // report with no files, istanbul writes `"pct": "Unknown"` — the string —
+    // so a `typeof pct === 'number'` sniff would reject the collapsed report
+    // as not an istanbul summary, and the gate would fail saying the wrong
+    // thing. `total` is a count and is `0` there.
     detect: (report) => typeof report?.total?.lines?.total === 'number',
     // **The clean report's file count, less seven of margin.** The margin has
     // only to cover a deliberate exclusion, and the `exclude` list in the block
     // this guards gives each file it names a reason.
     //
     // Seven rather than fifty, because the failure to catch is not only the bare
-    // collapse. Measured, by mutating `coverage.include` and re-running:
+    // collapse. Mutating `coverage.include` and re-running gives:
     //
     //   ['nope/**/*.ts']       →  0 files. Vitest prints `Unknown% ( 0/0 )` for
     //                             all four metrics and **exits 0**.
@@ -173,36 +124,26 @@ const FORMATS = [
     // "the count is still above the floor". A count above the floor does not
     // show the floor still works: a clean tree passes the same whether the
     // near-miss would trip the floor or clear it by fifty files. `docs/ci.md`'s
-    // `minFiles` section has the arithmetic and each time it went stale.
+    // `minFiles` section has the arithmetic.
     //
     // If a deliberate exclusion ever does trip this, that is the check working:
     // re-derive the number beside the exclusion rather than widening it on
     // reflex.
     minFiles: 161,
     /**
-     * Two points below the lowest measured figure for each metric — the rule
-     * these were set by, and no longer quite true of all four. Re-measured
-     * 2026-09-12 (O103): the margins are **1.85 statements, 3.25 branches,
-     * 2.33 functions and 3.00 lines**, and the lowest file is `Shell.tsx` on
-     * the first two, `decode.ts` on functions and `users.ts` on lines. They
-     * are left where they are because every one still passes and lowering a
-     * floor to restore a margin is how a gate stops gating.
+     * Two points below the lowest measured figure for each metric when they
+     * were set. They are left where they are because every one still passes
+     * and lowering a floor to restore a margin is how a gate stops gating.
      *
-     * **The two that moved are the argument for re-deriving these rather than
-     * reading them.** They read 0.85 statements and 1.41 branches on
-     * 2026-08-14, and by 2026-09-12 the branches figure was **0.78** — under
-     * the statements one this comment had named as the one to watch — because
-     * `Users.tsx` arrived at 78.78% against a floor of 78 and no run says so
-     * while it passes. One uncovered branch in that file would have failed
-     * CI. O103's nine guard tests are what moved it; the statements margin
-     * moved with them, and the fix that comment prescribed — a test for
-     * `Labeller.tsx`, not an 89 here — is the one that was written.
+     * **The margins are the argument for re-deriving these rather than
+     * reading them.** A file can sit within a branch or two of its floor and no
+     * run says so while it passes.
      */
     floors: {
-      statements: 91, // derived from Labeller.tsx 91.85; lowest now Shell.tsx 92.85
-      branches: 78, // derived from api.ts 79.41; lowest now Shell.tsx 81.25
-      functions: 91, // derived from decode.ts 93.33; still decode.ts 93.33
-      lines: 92, // derived from api.ts 93.02; lowest now users.ts 95.00
+      statements: 91, // derived from Labeller.tsx 91.85
+      branches: 78, // derived from api.ts 79.41
+      functions: 91, // derived from decode.ts 93.33
+      lines: 92, // derived from api.ts 93.02
     },
     check: 'the `coverage.include` and `coverage.exclude` lists in web/vite.config.ts',
     *entries(report) {
@@ -214,10 +155,10 @@ const FORMATS = [
           // Istanbul is not consistent about a metric with nothing in it: a
           // populated report carries `"pct": 100` (see `total.branchesTrue`,
           // which is 0/0 on every run here), while a collapsed one carries the
-          // **string** `"Unknown"`. Both were measured. Skipping every
-          // non-number is the only safe read, because `"Unknown"` coerced to a
-          // number is `NaN` and `NaN < floor` is `false` — a naive comparison
-          // would quietly pass such a file rather than flag it.
+          // **string** `"Unknown"`. Skipping every non-number is the only safe
+          // read, because `"Unknown"` coerced to a number is `NaN` and
+          // `NaN < floor` is `false` — a naive comparison would quietly pass
+          // such a file rather than flag it.
           if (typeof pct === 'number') pcts[metric] = pct
         }
         const { total, covered } = metrics.lines ?? {}
@@ -233,47 +174,13 @@ const FORMATS = [
     name: 'cargo llvm-cov json export',
     tree: 'the Rust workspace',
     detect: (report) => Array.isArray(report?.data?.[0]?.files),
-    // **53 files measured on a clean tree, across six crates; thirteen of
-    // margin.** The count can only fall three ways: the
-    // `--ignore-filename-regex` widens, a crate leaves the workspace, or files
-    // are merged. Thirteen files are excluded by name today — counted from the
-    // reports, against the same nine alternations in the regex, because
-    // `/corpus` now matches three (`taiyaku-cli`, `taiyaku-serve` and
-    // `taiyaku-library`) and `test_support` three since O104 put one in
-    // `taiyaku-read` — so the margin
-    // leaves room for that list to grow a little without a coverage edit
-    // becoming a gate edit.
-    //
-    // It read 44 immediately before 2026-08-14 — the 38 this comment used to
-    // claim was itself four crates and six files stale. Moving the test modules
-    // into their own files then moved the count three ways at once: the two
-    // `test_support` modules became rows of their own (+2), `taiyaku-read/src/lib.rs`
-    // left the report entirely (−1) because once its test module was elsewhere
-    // the file held nothing but `mod` declarations, a `pub use` and a `const`,
-    // and llvm-cov records no coverage for a file with no executable lines, and
-    // then the same two `test_support` rows were excluded by name (−2). Net −1,
-    // 44 to 43. The 50 new `tests.rs` files do not appear at all — see the note
-    // at the top of this file.
-    //
-    // **Re-measured 2026-08-16, after the library store landed as a sixth
-    // crate.** 43 → 52: `taiyaku-library` contributes 8 measured files
-    // (`corpus.rs` excluded, joining the `/corpus` alternation above) and
-    // `taiyaku-cli` gained `library.rs`, the CLI half of `library import|export`
-    // (14 → 15); the remaining difference is the two smallest crates, unrelated
-    // to this change.
-    //
-    // **Re-measured again 2026-08-17**, after the same review's C3 fix added
-    // `taiyaku-library/src/migrate.rs`: 52 → 53, the whole difference being
-    // that one file. Counted directly from the report rather than reasoned
-    // about, the same way the paragraph above insists on: `taiyaku-cli` 15,
-    // `taiyaku-core` 8, `taiyaku-library` 9, `taiyaku-read` 3, `taiyaku-serve`
-    // 16, `taiyaku-wasm` 2.
-    //
-    // It trips when a crate of fourteen files or more leaves the report, which
-    // today is `taiyaku-serve` at 16 or `taiyaku-cli` at 15, but not
-    // `taiyaku-library` at 9 or `taiyaku-core` at 8 — and this is also the
-    // check ci.yml's exclusion comment used to ask a *reader* to perform by
-    // hand ("check the file count when adding a crate").
+    // The file count can only fall three ways: the `--ignore-filename-regex`
+    // widens, a crate leaves the workspace, or files are merged. Thirteen files
+    // are excluded by name today — counted from the reports, against the same
+    // nine alternations in the regex, because `/corpus` matches three
+    // (`taiyaku-cli`, `taiyaku-serve` and `taiyaku-library`) and `test_support`
+    // three, one of them in `taiyaku-read` — so `minFiles` leaves room for that
+    // list to grow a little without a coverage edit becoming a gate edit.
     minFiles: 40,
     // The **aggregate** line threshold, which this script does not enforce —
     // `cargo llvm-cov --fail-under-lines` does, one command earlier. It is here
@@ -283,73 +190,29 @@ const FORMATS = [
     // structurally blind to.
     //
     // **A mirrored number, and checked rather than trusted** — see
-    // `aggregateFloorFrom` below and `assertAggregateFloorMatches`. Four
-    // documents used to state that slack, and the eleven-file list under it,
-    // as a present-tense fact, with nothing deriving any of them; a run now
-    // prints the current figures and the prose is one dated measurement in
-    // `docs/ci.md` (delta review M9).
+    // `aggregateFloorFrom` below and `assertAggregateFloorMatches`. A run
+    // prints the current figures; `docs/ci.md` holds one dated measurement.
     aggregateFloor: 93,
     aggregateFloorFrom: 'scripts/check-all.sh',
-    // **Lines only, and the other three are measured refusals, not oversights.**
-    // `branches` is `count: 0` on all 53 files — llvm-cov emits no branch data
+    // **Lines only, and the other three are refusals, not oversights.**
+    // `branches` is `count: 0` on every file — llvm-cov emits no branch data
     // without a nightly flag — so any floor on it would fail every file.
     // `regions` and `instantiations` read far below lines on `match`-heavy and
-    // generic code (lowest measured 2026-08-14: 72.22% for regions on
-    // `taiyaku-serve/src/truth.rs`, and 25.00% for instantiations on
-    // `stump/cache.rs`), so they would need their own numbers for no gain the
-    // line floor does not already give. Lines is also what `--fail-under-lines`
+    // generic code, so they would need their own numbers for no gain the line
+    // floor does not already give. Lines is also what `--fail-under-lines`
     // uses, for the reason recorded in ci.yml.
     floors: {
-      // **Well under the lowest measured, and loose by construction.**
-      // Lowest on a clean tree, 2026-08-14: taiyaku-serve/src/truth.rs 73.68%,
-      // then taiyaku-serve/src/lib.rs 77.85%, taiyaku-cli/src/credits.rs
-      // 82.51%, taiyaku-core/src/regions.rs 85.71%, stump/resolve.rs 87.61%.
-      //
-      // *Re-measured 2026-08-16, after the library store moved progress, notes
-      // and truth onto rows: the worst five changed with them, not the floor.*
-      // `taiyaku-serve/src/truth.rs` went from the worst file to 100% — it is
-      // now a thin projection over `taiyaku-library`'s rows — and the new
-      // worst file is the crate that replaced it: taiyaku-library/src/lib.rs
-      // 73.81%, then taiyaku-serve/src/lib.rs 78.12%, taiyaku-cli/src/credits.rs
-      // 82.51% (unmoved), taiyaku-serve/src/works.rs 84.66%, taiyaku-core/src/regions.rs
-      // 85.71% (also unmoved). 73.81% is almost exactly where 73.68% was, so the
-      // floor's 16-point margin does not move: 73.81 − 16 = 57.81, still 57 —
-      // this is the re-derivation the note at the top of this file asks for,
-      // done and landing on the same number rather than skipped because it
-      // looked unnecessary.
-      //
-      // *Re-measured 2026-08-17, after the same review's Minor fixes.* The
-      // worst five are now taiyaku-serve/src/lib.rs 78.13%,
-      // taiyaku-cli/src/credits.rs 82.51% (unmoved for a third measurement),
-      // taiyaku-library/src/lib.rs 84.00%, taiyaku-serve/src/works.rs 84.56%
-      // and taiyaku-core/src/regions.rs 85.71% (also unmoved).
-      // `taiyaku-library/src/lib.rs` left the bottom, 73.81% (31/42) →
-      // 84.00% (42/50): it grew and its new lines are covered. The two
-      // commits that touched it between the measurements are `8d2c196`
-      // (I1's FTS5 probe) and `caa534f` (the busy-timeout lock); which of
-      // them moved it was not separated, and the figure is quoted rather
-      // than attributed.
-      //
-      // The margin under the worst file is now 21 points rather than 16,
-      // which loosens the floor rather than threatening it. 57 stays: raising
-      // it toward the worst file is how a collapse detector turns into a
+      // **Well under the lowest measured, and loose by construction.** The
+      // floor is a collapse detector, not a regression detector, and wide
+      // slack under the worst file is what it needs to be. It is not raised
+      // toward the worst file: that is how a collapse detector turns into a
       // regression detector nobody asked for.
-      //
-      // Every one of the 2026-08-14 figures fell without a line of
-      // implementation changing, because that is when the `#[cfg(test)] mod
-      // tests` blocks left these files and stopped counting as their coverage.
-      // The three largest drops were taiyaku-serve/src/lib.rs (90.91% →
-      // 77.85%), taiyaku-cli/src/credits.rs (93.13% → 82.51%) and
-      // taiyaku-core/src/regions.rs (95.65% → 85.71%). The floor was left at 57
-      // rather than re-derived that time: it is a collapse detector, not a
-      // regression detector, and 16 points of slack under the worst file is
-      // what it needs to be. See the note at the top of this file.
       //
       // So it does **not** catch a module sliding from 95% to 80%; the spread
       // between the best-covered file and the worst is too wide for one number
       // to do that. What it catches is a module that stops being tested *at
-      // all* — the failure `--fail-under-lines` structurally cannot see, since
-      // a 400-line file going dark moves the workspace total by half a point.
+      // all* — the failure `--fail-under-lines` cannot see in a module within
+      // its slack.
       lines: 57,
     },
     check: 'the `--ignore-filename-regex` in scripts/check-all.sh and .forgejo/workflows/ci.yml',
@@ -435,25 +298,19 @@ reportAggregate(format, files)
 /**
  * The aggregate figures, derived from the same report this gate just walked.
  *
- * **The point is that nothing here is written down anywhere.** `docs/ci.md`,
- * `docs/status.md`, `scripts/check-all.sh` and this file each used to carry
- * "9628 lines, 9000 covered, 93.48%, 53 files, a slack of 45, eleven at or
- * under it", plus the eleven-file list twice — four hand-maintained copies of
- * one measurement, in a repository that has already been bitten by exactly that
- * (`docs/status.md`'s test count, twice in one day, which is what
- * `scripts/status-test-count.mjs` exists for). They are all derivable from the
- * JSON already on disk, so they are derived, and the prose is one dated
- * measurement rather than four live claims (delta review M9).
+ * **The point is that nothing here is written down anywhere.** The aggregate
+ * figures — lines, covered, percentage, slack and the files at or under it —
+ * are all derivable from the JSON already on disk, so they are derived, and
+ * `docs/ci.md` holds one dated measurement rather than live claims.
  *
  * The **slack** is the interesting figure and the reason this whole script
  * exists: `covered - ceil(floor% of total)` is how many covered lines the
  * workspace could lose with the aggregate threshold still green, so every file
  * at or under it is a file that could go entirely dark unnoticed by
- * `--fail-under-lines`. It is printed, not gated: the number moves every commit
- * and by a few lines of measurement noise besides (see the `Semaphore` note
- * above), so a threshold on it would be red for reasons that
- * are not defects. What is gated is the per-file floor above, which does not
- * move with the margin.
+ * `--fail-under-lines`. It is printed, not gated: the number moves every
+ * commit and by a few lines of measurement noise besides, so a threshold on it
+ * would be red for reasons that are not defects. What is gated is the per-file
+ * floor above, which does not move with the margin.
  *
  * Silent for a format with no `aggregateFloor` — the web side's aggregate is
  * four per-metric vitest thresholds rather than one line figure, and a "slack"
@@ -489,7 +346,7 @@ function reportAggregate(format, files) {
  * The mirrored aggregate floor, checked against the file that actually applies
  * it.
  *
- * A mirror nobody checks is the fifth copy of the problem this function's
+ * A mirror nobody checks is one more copy of the problem this function's
  * caller exists to remove. `check-all.sh` and `.forgejo/workflows/ci.yml` carry
  * the real `--fail-under-lines N` byte for byte; if the number there moves and
  * this one does not, every slack figure printed afterwards is quietly wrong.

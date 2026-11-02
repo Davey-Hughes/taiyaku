@@ -2,75 +2,56 @@
 # file holds only what every invocation needs, so that a bare `cargo mutants`
 # run by hand behaves the same as the script's.
 #
-# **It must live at `.cargo/mutants.toml`.** It was at the repository root as
-# `mutants.toml` from the day it was written until 2026-08-20, where
-# cargo-mutants does not look — so none of it applied, silently, and a
-# `--list` was the thing that finally showed it: the excluded files were all
-# still in the mutant list. A config file that is not read fails exactly like a
-# config file whose settings happen to be the defaults.
+# **It must live at `.cargo/mutants.toml`**, where cargo-mutants looks. A config
+# file that is not read fails exactly like a config file whose settings happen
+# to be the defaults.
 #
-# **Nothing here makes mutation testing a gate.** The whole workspace took 43
-# minutes for 1,660 mutants (2026-08-10), which is far too slow to sit in
-# `check-all.sh` before every push. `.forgejo/workflows/mutants.yml` runs it
-# weekly and gates nothing; the script's `--since` mode is what makes it usable
-# on a branch.
+# **Nothing here makes mutation testing a gate.** A sweep of the whole workspace
+# is far too slow to sit in `check-all.sh` before every push.
+# `.forgejo/workflows/mutants.yml` runs it and gates nothing; the script's
+# `--since` mode is what makes it usable on a branch.
 
-# **`cargo test`, deliberately — this said `test_tool = "nextest"` and that was
-# wrong twice over.**
-#
-# It was wrong on its own terms. The stated reason was `.config/nextest.toml`'s
-# per-test bound, so a mutant that stops a loop terminating is reported TIMEOUT
-# rather than hanging the run (O39). cargo-mutants already has its own per-mutant
-# timeout — it prints `Auto-set test timeout to 20s` and the sweeps of
-# 2026-08-19 reported 19 timeouts for `taiyaku-cli` and 14 for `taiyaku-read`,
-# every one of them under `cargo test`. The bound nextest was there to add was
+# **`cargo test`, deliberately.** The reason to use nextest would be
+# `.config/nextest.toml`'s per-test bound, so a mutant that stops a loop
+# terminating is reported TIMEOUT rather than hanging the run (O39).
+# cargo-mutants already has its own per-mutant timeout — it prints
+# `Auto-set test timeout to 20s` — so the bound nextest would add is
 # already present.
 #
-# And it was wrong in what it cost. nextest runs **one process per test**, as
-# many at once as there are cores, where `cargo test` runs the suite in one
-# process. Turning it on took `taiyaku-wasm` from 15 s to 63 s, and on a 32-core
-# machine it multiplied a bounded-per-process memory limit by thirty-two —
-# exhausting 60 GB within a minute of first being enabled.
+# nextest also runs **one process per test**, as many at once as there are
+# cores, where `cargo test` runs the suite in one process, so it multiplies a
+# bounded-per-process memory limit by the number of cores.
 #
-# **Nothing noticed either, because this file was never read.** cargo-mutants
-# looks for `.cargo/mutants.toml`; it lived at the repository root as
-# `mutants.toml` from the day it was written until 2026-08-20. Every sweep whose
-# numbers this project records ran under `cargo test` with no exclusions, which
-# is what makes `cargo test` the measured configuration rather than the guess.
+# Every sweep whose numbers this project records ran under `cargo test`, which
+# is what makes it the measured configuration rather than the guess.
 test_tool = "cargo"
 
-# **The build directory is a copy of this tree, and this tree has 28 GB of
+# **The build directory is a copy of this tree, and this tree has a large
 # gitignored corpus in it.** Without this, cargo-mutants copies `corpus/` into
 # /tmp for every build directory and dies with `No space left on device` — an
-# error naming neither the corpus nor the ignore file. Measured 2026-08-10.
+# error naming neither the corpus nor the ignore file.
 #
 # A CLI flag rather than a config key in cargo-mutants 27.1, so it lives in the
 # script; this comment is here because this is where somebody will look for it.
 # See `scripts/mutants.sh`.
 
-# **`detect.rs` and `regions.rs` are excluded, and that reverses what this file
-# said until 2026-08-20.** The argument for keeping them was that excluding them
-# would make the number look better and stop the harness noticing if they got
-# worse. What changed is the cost: they are **207 of `taiyaku-cli`'s 1,142
-# mutants**, 18% of the longest crate in the rotation, and on the forge that is
-# about ten minutes of wall clock every time cli comes up.
+# **`detect.rs` and `regions.rs` are excluded.** They cost about ten minutes of
+# wall clock on the forge every time `taiyaku-cli` comes up, and that buys
+# nothing: every survivor in them was accepted in `docs/mutants-baseline.md` as
+# deferred until L2 redesigns the detector, the code is slated for replacement
+# rather than repair, and a file whose every survivor is accepted has nothing
+# left to regress *into* — a new survivor there would be accepted on sight for
+# the same reason the existing ones are.
 #
-# What the ten minutes buys is nothing. All 45 of their survivors were already
-# accepted in `docs/mutants-baseline.md` as deferred until L2 redesigns the
-# detector, the code is slated for replacement rather than repair, and a file
-# whose every survivor is accepted has nothing left to regress *into* — a new
-# survivor there would be accepted on sight for the same reason the existing
-# ones are.
-#
-# So the trade is ten minutes a week against noticing a regression in code about
-# to be deleted. Delete the exclusion when L2 lands and the detector is worth
-# testing again; `docs/mutants-baseline.md`'s header records that these files are
+# So the trade is ten minutes against noticing a regression in code about to be
+# deleted. Delete the exclusion when L2 lands and the detector is worth testing
+# again; `docs/mutants-baseline.md`'s header records that these files are
 # unswept rather than clean, which is the distinction that must not be lost.
 
 # Experiments and survey binaries: these print measurements and assert nothing,
-# which is what `coverage-floor.mjs` already exempts them from for the same
-# reason. A mutant in a file whose output is read by a person is not a defect a
-# test could have caught.
+# which is what the coverage steps' `--ignore-filename-regex` already exempts
+# them from for the same reason. A mutant in a file whose output is read by a
+# person is not a defect a test could have caught.
 exclude_globs = [
     "**/detect.rs",
     "**/regions.rs",

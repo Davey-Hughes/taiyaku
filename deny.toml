@@ -1,6 +1,5 @@
 # cargo-deny's configuration. `.forgejo/workflows/advisories.yml` runs the
-# advisories check against it, and so can you, checking the same graph CI
-# does:
+# advisories check against it, and so can you, checking the same graph CI does:
 #
 #   cargo deny --locked check advisories
 #
@@ -15,10 +14,9 @@
 # `[advisories]` keeps cargo-deny 0.20.2's defaults but one: a vulnerability,
 # notice or unmaintained advisory fails the check, **and so does an unsound one
 # on any crate**. That is `unsound = "all"`. The default, `"workspace"`, drops
-# unsound advisories on transitive crates without even a note — measured, it
-# hid the unsound zstd-safe entries below. A yanked crate only warns. How to
-# accept a finding, by an `ignore` entry or for everything at once, is in the
-# workflow's header.
+# unsound advisories on transitive crates without even a note. A yanked crate
+# only warns. How to accept a finding, by an `ignore` entry or for everything at
+# once, is in the workflow's header.
 #
 # `spike/Cargo.lock` is not checked. `probe` is a tool pointed at the next
 # model candidate, outside the workspace and never shipped; the `tract-onnx` it
@@ -26,17 +24,15 @@
 #
 # **Every entry but paste's is one bump.** zip 9 takes zstd `^0.14.2`, and
 # zstd 0.14.3 requires zstd-safe 8.2 and zstd-sys 2.1.2 — the three fixed
-# releases. zip 9's rust-version is 1.88, which the workspace has declared
-# since #205. Moving to it should clear every zip and zstd entry below at
-# once.
+# releases. zip 9's rust-version is 1.88, which the workspace declares. Moving
+# to it should clear every zip and zstd entry below at once.
 #
-# Every entry was matched against the RustSec database on 2026-10-27, on the
-# lockfile #205 left, and each reachability claim against the source: no
-# `extract` call anywhere in `crates/`; zstd used only through zip, and by zip
-# only as `Decoder::with_buffer` and `stream::write::Encoder`; zstd-safe and
-# zstd-sys built with `std` alone, so none of zstd-safe's `experimental`,
-# `seekable` or `zdict_builder` code is compiled and there is no `zstdmt`; and
-# none of the four in `taiyaku-wasm`'s wasm32 graph.
+# The reachability claims below rest on the source: no `extract` call anywhere
+# in `crates/`; zstd used only through zip, and by zip only as
+# `Decoder::with_buffer` and `stream::write::Encoder`; zstd-safe and zstd-sys
+# built with `std` alone, so none of zstd-safe's `experimental`, `seekable` or
+# `zdict_builder` code is compiled and there is no `zstdmt`; and none of the
+# four in `taiyaku-wasm`'s wasm32 graph.
 
 [graph]
 all-features = true

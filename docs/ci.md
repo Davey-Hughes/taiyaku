@@ -1578,10 +1578,8 @@ single stated source for the pin, only one more thing that can drift. Bump all o
 them together if any one moves, the same discipline `ci.yml` already asks of
 `wasm-pack`'s version.
 
-*`ci.yml`'s own comment on the `wasm` job's node step says "Four places" and
-enumerates four. It is one behind: it counts the same set minus `@types/node`.
-Correcting a comment in `ci.yml` was outside the scope of the change that found
-this, so the disagreement is recorded here rather than silently left.*
+*`ci.yml`'s own comment on the `wasm` job's node step names the same five
+places and points here for the count.*
 
 **The `wasm` job was on Node 18 and nothing said so.** It installed node with
 `apt-get install -y nodejs`, and Debian bookworm's `nodejs` package is
@@ -2211,7 +2209,7 @@ first:
    rather than swept — writing fixtures against a detector about to be replaced
    is work thrown away. A gate would be red on every commit for a correct reason,
    which is the state in which nobody reads it. `plaintextesports`'s `live-smoke.yml`
-   made the same call for the same reason, and this workflow's comment says so.
+   made the same call for the same reason.
 
 **A failure means "go look", not "the build is broken."**
 

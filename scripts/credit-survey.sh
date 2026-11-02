@@ -11,10 +11,9 @@
 #
 # **The bound in `crates/taiyaku-cli/src/credits.rs` is not chosen from this
 # output.** It is chosen from this output *and* from extracting every candidate
-# page and looking at it — every error found in this feature so far was found
-# that way and by nothing else. What this script gives you is which pages to
-# look at, and the reproducibility that the table in notes.md can be rebuilt
-# rather than retyped.
+# page and looking at it. What this script gives you is which pages to look
+# at, and the reproducibility that the table in notes.md can be rebuilt rather
+# than retyped.
 #
 # Only `en-fan` is surveyed. Credit pages are a scanlation group's own matter,
 # so an official edition has none to find; and `raw-mono` is every corpus work's

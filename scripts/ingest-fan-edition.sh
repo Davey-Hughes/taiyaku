@@ -48,7 +48,7 @@ mkdir -p "${dest:?}"
 
 # One header line before the rows, so the provenance block is self-describing a
 # year later. The rows alone are hash + filename, which says what a file is and
-# not where it came from - and "which member of a 61 GB archive" is precisely
+# not where it came from - and "which member of a large archive" is precisely
 # the expensive question corpus/README.md says these docs exist to answer.
 printf '# ingest %s\n# from   %s\n# filter %s\n' "$work/en-fan" "$src" "$filter"
 

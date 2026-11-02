@@ -25,12 +25,9 @@ fn suppression_drops_the_weaker_of_two_overlapping_boxes_of_one_class() {
 
 #[test]
 fn suppression_collapses_a_twin_that_only_disagrees_about_its_class() {
-    // The same geometry, two classes. **This used to assert the opposite**,
-    // and the change is deliberate rather than a relaxation — see
-    // `suppress`'s own doc comment for why the agnostic setting is the
-    // right one here. Measured before the change: 40 of 161 English regions
-    // carried a near-identical twin at IoU 0.94–0.99, against 0 of 147
-    // Japanese ones, and a twin is not a second text block.
+    // The same geometry, two classes. See `suppress`'s own doc comment for why
+    // the agnostic setting is the right one here: a twin is not a second
+    // text block.
     let kept = suppress(vec![
         cand(0.0, 0.0, 100.0, 100.0, 0.9),
         cand(0.0, 0.0, 100.0, 100.0, 0.8),
@@ -100,12 +97,6 @@ fn a_candidate_below_the_confidence_floor_is_not_proposed() {
 /// mode O33 exists to catch, where a shape bug ships because only counts
 /// were ever asserted. `cx` and `cy` also differ (300 vs 700) so a
 /// `cx`/`cy` mix-up is caught the same way.
-///
-/// Proved to bite: with the corner computation changed to swap `w` and
-/// `h` (`x0 = cx - h / 2.0`, `y0 = cy - w / 2.0`, etc.), the `x0`/`x1`
-/// assertions here fail (200/400 expected, 275/325 produced) while every
-/// other test in this module still passes — the swap is invisible to
-/// anything that only checks a length.
 #[test]
 fn candidates_corners_match_the_known_geometry_of_one_cell() {
     // cx, cy, w, h, objectness, class0, class1.
@@ -124,11 +115,6 @@ fn candidates_corners_match_the_known_geometry_of_one_cell() {
 /// score also clears `BLK_CONF`, so the second gate is never the reason
 /// a candidate is rejected there — deleting it would leave the rest of
 /// this module green.
-///
-/// Proved to bite: with the `score < BLK_CONF` check removed (the
-/// objectness gate left in place), `candidates` no longer rejects this
-/// cell and the `is_empty` assertion fails, while every other test in
-/// this module still passes.
 #[test]
 fn a_candidate_clearing_objectness_alone_can_still_fail_the_combined_gate() {
     // objectness 0.41 clears BLK_CONF by itself, but the winning class

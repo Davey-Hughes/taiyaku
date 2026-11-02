@@ -20,8 +20,7 @@ fn member_of_three_pages(dir: &Path) {
 /// A temporary root nobody else is using, removed when the test ends.
 fn scratch(name: &str) -> taiyaku_read::test_support::TempDir {
     // O117's shared helper: unique to the process and the call, and removed
-    // when the test ends. It was a process id alone, which kept two runs apart
-    // and left one directory per test per run behind.
+    // when the test ends.
     taiyaku_read::test_support::TempDir::new(&format!("cache-{name}"))
 }
 

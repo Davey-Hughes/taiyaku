@@ -4,9 +4,7 @@
 //! of a heuristic, so it proposes and prints, and it writes only under
 //! `--write`. It identifies the edition by content — hashing the members it was
 //! handed and matching them against the document — rather than being told,
-//! which is the rule `verify` established after taking the first alignment of a
-//! five-edition document produced a confident report about a pair nobody asked
-//! about.
+//! which is the rule `verify` established.
 //!
 //! **It pairs nothing.** Which block corresponds to which block on another
 //! edition is derived at read time from the alignment; see the L2 design, §5.
@@ -47,14 +45,11 @@ fn median_area(pages: &BTreeMap<u32, Vec<Region>>) -> f64 {
 
 /// One fixed-field line for a survey to collect.
 ///
-/// **`blocks_per_page` is a mean, where the L2 design's disqualifier says
-/// "median regions per page".** The two are named here rather than quietly
-/// reconciled, because on this detector's output they differ sharply and the
-/// mean is the *weaker* claim: most pages return zero blocks, so the median is
-/// 0 on nearly every edition while the mean reaches 0.84. Reporting the mean
-/// and still failing the bar of 2 on all nine editions is therefore
-/// conservative — the median would fail harder. The design is corrected to name
-/// the mean; see its §6.
+/// **`blocks_per_page` is a mean, not a median.** On this detector's output the
+/// two differ sharply and the mean is the *weaker* claim: most pages return
+/// zero blocks, so the median is 0 on nearly every edition. Reporting the mean
+/// against the bar of 2 is therefore conservative — the median would fail
+/// harder. The design names the mean; see its §6.
 fn survey_line(edition: &str, pages: &BTreeMap<u32, Vec<Region>>) -> String {
     let blocks: usize = pages.values().map(Vec::len).sum();
     let vertical = pages

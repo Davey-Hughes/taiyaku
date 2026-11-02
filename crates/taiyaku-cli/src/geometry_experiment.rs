@@ -2,8 +2,8 @@
 //!
 //! A measurement rather than a check: this is the shape the autocrop and
 //! mirrored-pages hypotheses were settled in (`docs/notes.md`, "Two more
-//! hypotheses tested and rejected"), and neither became a standing check. The
-//! promotion rule was fixed before the number was known — see
+//! hypotheses tested and rejected"). The promotion rule was fixed before the
+//! number was known — see
 //! `docs/superpowers/specs/2026-08-07-l1-geometry-design.md` §4 — so that the
 //! result decides the cost rather than the cost deciding how the result reads.
 //!
@@ -23,54 +23,32 @@
 //!
 //! **`--release`, and it is not optional in practice.** The same command
 //! without it measures the same thing and takes about forty minutes rather
-//! than about one: the search fingerprints roughly 1.4 million crops, each a
+//! than about one: the search fingerprints its candidate crops, each a
 //! Lanczos3 resize, and an unoptimised `image` is two orders of magnitude
-//! slower at that than an optimised one. Both were run; the figures below and
-//! in `docs/notes.md` are from the release build.
+//! slower at that than an optimised one.
 //!
-//! **`check-all.sh` does not run this — and this paragraph has now said each
-//! answer once, so the reasoning matters more than the verdict.** It first said
-//! "does not", reaching for the gate's *corpus* job, which filters on `corpus::`
-//! and so misses this module. That was corrected on 2026-08-08 to "does": the
-//! gate exported `TAIYAKU_CORPUS` before its *unfiltered*
-//! `cargo test --workspace`, so with a corpus present this ran there in the
-//! **debug** profile, at the forty minutes above — measured, not reasoned
-//! about, by a local gate run killed at 1h09m still inside this one test.
-//! **That is fixed at the source rather than described again**: the `test` job
-//! now runs with the variable removed from its environment
-//! (`run env -u TAIYAKU_CORPUS …`), which both drops this module back out of
-//! the gate and makes that job a truer mirror of CI, which has no corpus and
-//! never ran it. So the gate is fast and this stays a one-off measurement, run
-//! by the command at the top of this header when someone means to run it.
+//! **`check-all.sh` does not run this.** Its `test` job removes
+//! `TAIYAKU_CORPUS` from its environment (`run env -u TAIYAKU_CORPUS …`),
+//! which keeps this module out of the gate: with a corpus present it would run
+//! there in the **debug** profile, at the forty minutes above. The gate's
+//! *corpus* job filters on `corpus::` and so misses it. This stays a one-off
+//! measurement, run by the command at the top of this header when someone
+//! means to run it.
 //!
-//! The module is still not filtered out of the test target, and that is the
-//! part worth keeping: a one-off measurement that silently stops being
-//! *compiled* is the failure its own assertions exist to prevent. What changed
-//! is the gate's environment, not this module's gating.
+//! The module is not filtered out of the test target: a one-off measurement
+//! that silently stops being *compiled* is the failure its own assertions
+//! exist to prevent.
 //!
-//! **What it found, so this header is not just a description of a method.**
-//! Over 284 settled slots across all twelve corpus volumes, the best map's
-//! vertical scale is 0.996 — the identity map to within one tick of the
-//! search's own resolution — while its horizontal scale tracks `aFrom / aTo`
-//! in all twelve, sign included. That is the letterbox assumption with its
-//! axes swapped, so the two candidates the spec named came third and second:
-//! `letterbox` as shipped is strictly worse than `identity`, and a third rule
-//! this experiment named — the same arithmetic with `Math.max` over the two
-//! aspects replaced by `Math.min` — beats both. `docs/notes.md`, "Which
-//! derived transform maps a rect between editions", has the table and the
-//! exposure.
+//! **What it found** is in `docs/notes.md`, "Which derived transform maps a
+//! rect between editions", with the table and the exposure.
 //!
-//! **And the falsification that decides whether to believe it.** The
-//! horizontal finding was indistinguishable on its face from an artefact of a
-//! score that renders every crop onto one 17x16 grid whatever its shape, so
-//! the identical search is run on the identical slots the other way round. A
-//! real geometric relation inverts when the pages swap roles; a preference
-//! belonging to the metric or the search does not know which page is which and
-//! comes back on the same side of 1. It inverts: the reverse horizontal scale
-//! lands on the far side of 1 in twelve volumes of twelve, and
-//! `sx forward * sx reverse` has a median of 0.994 against 1.084 for the
-//! artefact. That is the second run's whole reason for existing, and it cost
-//! 98 s rather than 68.
+//! **And the falsification that decides whether to believe it.** A best
+//! horizontal scale tracking `aFrom / aTo` is indistinguishable on its face
+//! from an artefact of a score that renders every crop onto one 17x16 grid
+//! whatever its shape, so the identical search is run on the identical slots
+//! the other way round. A real geometric relation inverts when the pages swap
+//! roles; a preference belonging to the metric or the search does not know
+//! which page is which and comes back on the same side of 1.
 
 use std::path::{Path, PathBuf};
 
@@ -124,10 +102,8 @@ const READING: Direction = Direction::RightToLeft;
 /// rather than exhaustive. Every table below prints sampled-of-available,
 /// because a silent cap reads as "measured everything" when it did not.
 ///
-/// 24 rather than the 8 the first run used: at 8 the run took 26 s in release
-/// and the interesting figure — the p90 of the residual, which is what the
-/// promotion rule turns on — rested on 96 slots, so its tail was nine of them.
-/// 24 costs about a minute and a half and puts 288 slots behind it.
+/// 24 per volume puts 288 slots behind the p90 of the residual, the figure the
+/// promotion rule turns on.
 const SAMPLE: usize = 24;
 
 /// The window of the source page the search matches, in page fractions.
@@ -147,7 +123,7 @@ const WINDOW: (f64, f64) = (0.20, 0.80);
 /// there are ~4,900 candidates per slot. Pre-scaling each page once to 384px
 /// tall makes it microseconds.
 ///
-/// The cost is that a candidate is now resized twice rather than once, so a
+/// The cost is that a candidate is resized twice rather than once, so a
 /// hash here is not bit-identical to a hash of the same crop at full
 /// resolution. That is the same property the hash is already relied on for:
 /// `notes.md` records the corpus spanning 685x1024 to 2147x3056 across editions
@@ -179,7 +155,7 @@ const COARSE: (f64, f64, usize) = (0.18, 0.09, 7);
 /// pass.
 ///
 /// Each pass re-searches one coarse step either side of the winner, so the
-/// resolution halves twice per pass. Four passes take scale from ±0.06 to
+/// resolution halves once per pass. Four passes take scale from ±0.06 to
 /// ±0.00375 and offset from ±0.03 to ±0.0019 — on a 1200px page that last
 /// figure is two pixels, well under anything a reader could see.
 ///
@@ -235,9 +211,7 @@ struct Measured {
     /// Which two pages this row measured.
     ///
     /// Carried so that a slot whose search ended on its own boundary can be
-    /// *named* rather than only counted. The first run printed the count and
-    /// nothing else, which left four rows that had not found a minimum sitting
-    /// inside every distribution below with no way to look at them.
+    /// *named* rather than only counted.
     a_page: usize,
     b_page: usize,
     /// Whole-page similarity of the two slots, in the solver's own currency.
@@ -251,9 +225,8 @@ struct Measured {
     letterbox_score: f32,
     best: (Axis, Axis),
     letterbox: (Axis, Axis),
-    /// `letterbox`'s mirror: the same rule with `Math.max` over the two aspects
-    /// replaced by `Math.min`. Not in the spec's two, and added because the
-    /// twelve rows of `scale x of best` asked for it by name — see its
+    /// `letterbox`'s mirror: the same rule with `Math.max` over the two
+    /// aspects replaced by `Math.min`. Not in the spec's two; see its
     /// construction in `measure`.
     pillarbox: (Axis, Axis),
     pillarbox_score: f32,
@@ -264,14 +237,13 @@ struct Measured {
     /// **The falsification.** The identical search on the identical two pages,
     /// run the other way round: `TO`'s window searched onto `FROM`.
     ///
-    /// The forward run's horizontal finding — best scale tracking
-    /// `aFrom / aTo` in twelve volumes of twelve — is indistinguishable on its
-    /// face from an artefact of a search that likes a particular crop *shape*,
-    /// because `fingerprint` renders every crop onto one 17x16 grid whatever
-    /// its aspect. A real geometric relation between two pages inverts when the
-    /// pages swap roles, so `reverse.0.scale` must come back as
-    /// `1 / best.0.scale`; a bias belonging to the metric or the search does
-    /// not know which page is which and comes back on the same side of 1.
+    /// A best horizontal scale tracking `aFrom / aTo` is indistinguishable on
+    /// its face from an artefact of a search that likes a particular crop
+    /// *shape*, because `fingerprint` renders every crop onto one 17x16 grid
+    /// whatever its aspect. A real geometric relation between two pages
+    /// inverts when the pages swap roles, so `reverse.0.scale` must come back
+    /// as `1 / best.0.scale`; a bias belonging to the metric or the search
+    /// does not know which page is which and comes back on the same side of 1.
     /// `scale x of best * scale x of reverse` is the whole test in one number:
     /// 1.0 if the geometry is real, `(aFrom/aTo)^2` if it is not.
     ///
@@ -399,8 +371,7 @@ struct Search {
     /// answer off the edge again, so by the time the search returns there is
     /// nothing in the result to show which of the four parameters ran out of
     /// room, or on which side. Keeping the coarse winner is what lets such
-    /// slots be printed and read rather than only counted — which is how the
-    /// forward run's four turned out to be near-blank pages.
+    /// slots be printed and read rather than only counted.
     boundary: Option<(Axis, Axis)>,
 }
 
@@ -581,11 +552,11 @@ fn spread_sample<T: Copy>(items: &[T], count: usize) -> Vec<T> {
 /// value the sample actually contains. Interpolating between two neighbours
 /// would report a residual no page had.
 ///
-/// An empty sample reports NaN rather than panicking. That became reachable
-/// once every distribution below is taken over the slots whose search settled:
-/// a volume all of whose slots ended on the search's own boundary has nothing
-/// to report, and losing twelve volumes' run to an index panic on the
-/// thirteenth column of one of them is the wrong trade for a measurement.
+/// An empty sample reports NaN rather than panicking. It is reachable because
+/// every distribution below is taken over the slots whose search settled: a
+/// volume all of whose slots ended on the search's own boundary has nothing to
+/// report, and losing twelve volumes' run to an index panic on the thirteenth
+/// column of one of them is the wrong trade for a measurement.
 fn distribution(sample: &[f64]) -> (f64, f64, f64, f64) {
     if sample.is_empty() {
         return (f64::NAN, f64::NAN, f64::NAN, f64::NAN);
@@ -633,14 +604,11 @@ impl Volume {
     /// The median of one figure over the rows a predicate keeps.
     ///
     /// The predicate is always "the search this figure comes from found a
-    /// minimum", and it is a correction to the first run rather than a
-    /// refinement of it: the first run printed the count of boundary slots and
-    /// then included them in every figure it reported. A row whose search ran
-    /// out of room contributes a bound where the table's header promises a
-    /// measurement. Applied per search rather than once for all of them — the
-    /// four searches of a slot fail independently, and excluding a control
-    /// reading because the *forward* search failed would filter one measurement
-    /// by another's result.
+    /// minimum": a row whose search ran out of room contributes a bound where
+    /// the table's header promises a measurement. Applied per search rather
+    /// than once for all of them — the four searches of a slot fail
+    /// independently, and excluding a control reading because the *forward*
+    /// search failed would filter one measurement by another's result.
     fn median_where(&self, keep: impl Fn(&Measured) -> bool, f: impl Fn(&Measured) -> f64) -> f64 {
         let v: Vec<f64> = self.rows.iter().filter(|m| keep(m)).map(f).collect();
         distribution(&v).1
@@ -728,12 +696,12 @@ fn measure(root: &Path, name: &'static str, cache: &Path) -> Result<Volume, Stri
         // and then a scale that failed to invert could be blamed on the draw.
         let reverse = best_map(back, &a_work);
 
-        // Candidate 2, stated arithmetically. `web/src/viewport.ts`'s `mapRect`
-        // takes the content aspect as the *max* of the two frames', so the
-        // horizontal box is full width in both and `x`/`w` come out unchanged;
-        // the vertical scale that survives is exactly `aTo / aFrom`. Derived
-        // here from the same two numbers the browser has — the drawn images'
-        // natural dimensions — and nothing else.
+        // Candidate 2, stated arithmetically. With the content aspect taken as
+        // the *max* of the two frames', the horizontal box is full width in
+        // both and `x`/`w` come out unchanged; the vertical scale that survives
+        // is exactly `aTo / aFrom`. Derived here from the same two numbers the
+        // browser has — the drawn images' natural dimensions — and
+        // nothing else.
         let aspect = |(w, h): (u32, u32)| f64::from(w) / f64::from(h);
         let letterbox = (
             Axis::IDENTITY,
@@ -747,19 +715,12 @@ fn measure(root: &Path, name: &'static str, cache: &Path) -> Result<Volume, Stri
                 .map(|h| similarity(target, h))
                 .unwrap_or(f32::NAN)
         };
-        // The third candidate, and the reason it exists. The spec named two,
-        // and the first run over the corpus put `scale y of best` at 0.996 —
-        // identity to within the search's own tick — while `scale x of best`
-        // tracked `aFrom / aTo` across all twelve volumes. That is the
-        // letterbox assumption with its axes swapped: the shared artwork is as
-        // *tall* as the taller page says, and the wider-aspect page carries its
-        // extra as margin at left and right. In `mapRect`'s terms it is one
-        // token — `Math.max` over the two aspects becomes `Math.min` — and the
-        // arithmetic falls out the same way, with `cw` doing what `ch` did.
+        // The third candidate: the letterbox assumption with its axes swapped,
+        // in which the shared artwork is as *tall* as the taller page says and
+        // the wider-aspect page carries its extra as margin at left and right.
         //
-        // Measured rather than argued in, and measured against the same best
-        // map and the same control as the other two, so it wins or loses on the
-        // same terms. It was not in the spec because nothing had looked yet.
+        // Measured against the same best map and the same control as the other
+        // two, so it wins or loses on the same terms.
         let pillarbox = (
             Axis {
                 scale: aspect(a_frame) / aspect(b_frame),
@@ -893,7 +854,7 @@ fn geometry_experiment_measures_the_derived_transform() {
     let pb = |m: &Measured| m.residual(m.pillarbox, WINDOW);
     // The control's residual is measured the same way, against the answer that
     // is known in advance to be right — so it is directly comparable with the
-    // two above, and it is the line below which none of them means anything.
+    // three above, and it is the line below which none of them means anything.
     let ctl = |m: &Measured, span: (f64, f64)| {
         (
             Axis::IDENTITY.apart(m.control.0, span),
@@ -968,7 +929,7 @@ fn geometry_experiment_measures_the_derived_transform() {
     }
 
     // The falsification, and it gets the widest table because it is the one
-    // number the horizontal recommendation now rests on. `1/fwd sx` is the
+    // number the horizontal recommendation rests on. `1/fwd sx` is the
     // prediction, printed beside `rev sx` rather than asserted about it, so
     // agreement or disagreement is visible per volume rather than summarised.
     println!("\n-- the falsification: the same search, the same slots, the other way round --");
@@ -1073,12 +1034,11 @@ fn geometry_experiment_measures_the_derived_transform() {
     println!(
         "excluded: {mismatched} slots paired whole-page against spread-half, {blank} blank-page slots"
     );
-    // Every distribution below is over the slots whose search *settled* — the
-    // correction this run makes to the first one, which counted its boundary
-    // slots and then reported them anyway. A search that stops on the edge of
-    // its own range has not found a minimum; it has run out of room, and its
-    // answer is a bound. `every_row` exists only to print the difference the
-    // exclusion made, so that "restated" is a number rather than a claim.
+    // Every distribution below is over the slots whose search *settled*. A
+    // search that stops on the edge of its own range has not found a minimum;
+    // it has run out of room, and its answer is a bound. `every_row` exists
+    // only to print the difference the exclusion made, so that the effect of
+    // dropping those rows is a number rather than a claim.
     let every = |f: &dyn Fn(&Measured) -> f64| -> Vec<f64> {
         measured
             .iter()
@@ -1247,8 +1207,8 @@ fn geometry_experiment_measures_the_derived_transform() {
     );
     // What the reverse scale would be if the search were reading aspect rather
     // than artwork: the same side of 1 as the forward one, so the product is
-    // its square. Printed beside the measured product so the alternative the
-    // result beats is on the page rather than in the prose.
+    // its square. Printed beside the measured product so the alternative is on
+    // the page rather than in the prose.
     row(
         "sx fwd squared (if bias)",
         every_both(&|m| m.best.0.scale * m.best.0.scale),
@@ -1297,7 +1257,7 @@ fn geometry_experiment_measures_the_derived_transform() {
     println!("\nmeasured in {:.1}s", started.elapsed().as_secs_f64());
 
     // The floor, and only the floor. Nothing here bounds a residual: that is
-    // what the promotion rule decides, now that there is a number to bound.
+    // what the promotion rule decides.
     assert!(
         sampled > 0,
         "the sample is empty: no volume matched, or no slot paired"
@@ -1310,10 +1270,10 @@ fn geometry_experiment_measures_the_derived_transform() {
             volume.available,
             volume.paired
         );
-        // Now that the tables are taken over settled slots, a volume with none
-        // prints NaN across its row. Silent NaN in a table of measurements is
-        // the same failure as an empty table, so it is asserted rather than
-        // read: this is a floor on the sample, not on any residual.
+        // The tables are taken over settled slots, so a volume with none prints
+        // NaN across its row. Silent NaN in a table of measurements is the same
+        // failure as an empty table, so it is asserted rather than read: this
+        // is a floor on the sample, not on any residual.
         assert!(
             volume.rows.iter().any(Measured::settled_both),
             "{}: every one of {} slots ended a search on its own coarse boundary",

@@ -5,9 +5,8 @@
 //! assumed. The detector's two known failure modes both
 //! score as a flat miss under IoU@0.5 and it cannot tell them apart:
 //! `docs/notes.md` records *both* on one edition at one gap — panels
-//! over-merged, and seven "blocks" that are vertical slices of one word. A
-//! single overlap number reports "recall 0.0" for each and says nothing about
-//! which, which is why finding out cost ten hand-cropped blocks.
+//! over-merged, and "blocks" that are vertical slices of one word. A single
+//! overlap number reports "recall 0.0" for each and says nothing about which.
 //!
 //! This is the region-evaluation scheme from document-layout analysis
 //! (Shafait/Breuel, ICDAR). The payoff is that "this edition is finding
@@ -25,12 +24,14 @@ pub enum Outcome {
     OneToOne,
     /// Its prediction is mostly something else: it also swallows other
     /// labelled boxes, or it swallows this one inside a far larger area — the
-    /// whole-panel-around-one-balloon case, `docs/notes.md:7046-7057`.
+    /// whole-panel-around-one-balloon case (`docs/notes.md`,
+    /// "What the pixels said, and the noun this section had wrong").
     Merged,
     /// Two or more predictions cover it.
     Split,
     /// Its prediction sits inside it and covers little of it — "a **letter
-    /// fragment**, a vertical slice of one word", `docs/notes.md:7053`.
+    /// fragment**, a vertical slice of one word" (`docs/notes.md`,
+    /// "What the pixels said, and the noun this section had wrong").
     Fragment,
     /// Nothing significantly overlaps it.
     Missed,
@@ -48,8 +49,7 @@ pub struct Scored {
 /// How much of the smaller box must lie inside the larger for the two to count
 /// as describing the same thing.
 ///
-/// **A starting value, not a measurement.** It cannot be one yet: settling it
-/// needs labels and there are none. It gets settled the way
+/// **A starting value, not a measurement.** It gets settled the way
 /// `scripts/region-survey.sh`'s own header says constants get settled in this
 /// repository — by drawing the proposed matches over the pages and looking at
 /// them, not from aggregate output alone. Asserting this as measured before
@@ -103,7 +103,7 @@ fn significant(t: &TruthRegion, p: &Region, coverage: f64) -> bool {
     // provisional constant a human is expected to sweep, and at `0.0` the
     // ratio alone is vacuously true for *every* pair on the page including
     // disjoint ones — a sweep through zero would print a flawless page rather
-    // than an obvious error. At zero this now reads "any overlap at all".
+    // than an obvious error. At zero this reads "any overlap at all".
     inter > 0.0 && inter / smaller >= coverage
 }
 
@@ -112,9 +112,10 @@ fn significant(t: &TruthRegion, p: &Region, coverage: f64) -> bool {
 /// `reach` is how many *scored* truth boxes the prediction covers. Deciding
 /// on that count alone is the defect this instrument exists to catch: a
 /// prediction can be a whole panel and still touch exactly one labelled
-/// balloon, and `docs/notes.md:7046-7057` lists three such panels among ten
-/// hand-cropped blocks. Counting says 1:1 and credits the detector for
-/// returning panels. Geometry says the prediction is 99% something else.
+/// balloon, and the table in `docs/notes.md`,
+/// "What the pixels said, and the noun this section had wrong", lists such
+/// panels. Counting says 1:1 and credits the detector for returning panels.
+/// Geometry says the prediction is 99% something else.
 fn classify_single_cover(t: &TruthRegion, p: &Region, reach: usize, coverage: f64) -> Outcome {
     if reach > 1 {
         return Outcome::Merged;
@@ -220,8 +221,7 @@ use std::collections::BTreeMap;
 pub struct KindTally {
     /// Boxes that came back `OneToOne`. A merge, a split and a fragment are
     /// failures, not partial credit: counting them here would let a detector
-    /// returning whole panels score as working, which is the mistake
-    /// `blocks_per_page` made.
+    /// returning whole panels score as working.
     pub found: usize,
     pub total: usize,
 }
@@ -333,11 +333,6 @@ how many boxes were flagged `ignore`.
 which editions to draw — which is where a run of this command starts.
 ";
 
-/// Score `detect_page` against a truth document, or print the labelling
-/// worklist under `--sample`.
-///
-/// Follows `regions::command` step for step — it is the closest sibling and
-/// already carries the reasoning for each guard.
 /// One edition's labelled pages, resolved and ready to decode.
 ///
 /// Extracted from `command` so `truth_population.rs` measures **the same pages
@@ -346,7 +341,7 @@ which editions to draw — which is where a run of this command starts.
 ///
 /// `truth` and `pages` are parallel and ascending. `pages` is undecoded bytes
 /// rather than `GrayImage`, because `decode_all` bounds memory by decoding
-/// large pages one at a time and the corpus holds 430 MB TIFFs.
+/// large pages one at a time.
 pub(crate) struct Labelled {
     pub truth: Vec<Vec<taiyaku_core::TruthRegion>>,
     pub pages: Vec<taiyaku_read::Page>,
@@ -391,7 +386,7 @@ pub(crate) fn resolve_labelled(
     // `members` array *is* the page order and must not be re-sorted. Paths are
     // relative to the sidecar and may point into unrelated trees, so their
     // names need not sort into reading order at all. This is the block
-    // `regions::command` carries at `regions.rs:201-218`; it is restated
+    // in `regions::command` that builds `ordered_members`; it is restated
     // rather than shared because that one is inline in a longer function.
     let target = doc
         .editions
@@ -424,10 +419,9 @@ pub(crate) fn resolve_labelled(
     // element-wise, deliberately, because content-in-order is what says the
     // labels describe these pages. Feeding argv order to an element-wise
     // comparison makes the two rules contradict each other, and a shell glob
-    // is exactly where they disagree: `en-fan/*.cbz` expands to `…c004,
-    // c005.5, c005` (`5` sorts before `c`) while the sidecar lists `…c004,
-    // c005, c005.5`. That refused a perfectly good truth document on this
-    // corpus today, telling a person to redo hours of labelling.
+    // is exactly where they disagree: `en-fan/*.cbz` expands to
+    // `…c004, c005.5, c005` (`5` sorts before `c`) while the sidecar
+    // lists `…c004, c005, c005.5`.
     if labelled.is_stale_for(&ordered_digests) {
         return Err(format!(
             "{} was drawn against different files; re-label or restore the archive",
@@ -435,10 +429,10 @@ pub(crate) fn resolve_labelled(
         ));
     }
 
-    // **Only the labelled pages are decoded.** `decode_all` decodes
-    // everything it is handed, and five pages of 195 are labelled — handing it
-    // the whole edition would pay for 190 full-resolution decodes to score
-    // five. Moved rather than cloned, so `Page` needs no `Clone`.
+    // **Only the labelled pages are decoded.** `decode_all` decodes everything
+    // it is handed, so handing it the whole edition would pay for a
+    // full-resolution decode of every page to score only the labelled ones.
+    // Moved rather than cloned, so `Page` needs no `Clone`.
     let pages = taiyaku_read::read_members_in_order(&ordered_members)?;
     let available = pages.len();
 
@@ -484,6 +478,11 @@ pub(crate) fn resolve_labelled(
     })
 }
 
+/// Score `detect_page` against a truth document, or print the labelling
+/// worklist under `--sample`.
+///
+/// Follows `regions::command` step for step — it is the closest sibling and
+/// already carries the reasoning for each guard.
 pub fn command(args: &[String]) -> Result<(), String> {
     // No `--cache`, for `regions::command`'s reason: the fingerprint cache
     // holds hashes and dimensions, not pixels, and a flag that cannot take
@@ -573,12 +572,12 @@ pub fn command(args: &[String]) -> Result<(), String> {
 /// The same rule `corpus::members` applies for `score_corpus.rs`'s and
 /// `region_experiment.rs`'s own edition reads, restated here rather than
 /// called: that function lives in `corpus.rs`, a module gated on
-/// `#[cfg(test)]` because the corpus itself is 24 GB and never committed
-/// (`corpus.rs`'s own header), while `--sample` is a command a person runs
-/// directly against the plain `bin "taiyaku"` build. Unlike `corpus::members`,
-/// a directory that will not list comes back a `Result` rather than a panic:
-/// `--sample` resolves fifteen entries in one run, and one bad directory must
-/// not take the other fourteen lines down with it — see `sample_worklist`.
+/// `#[cfg(test)]` because the corpus itself is never committed (`corpus.rs`'s
+/// own header), while `--sample` is a command a person runs directly against
+/// the plain `bin "taiyaku"` build. Unlike `corpus::members`, a directory that
+/// will not list comes back a `Result` rather than a panic: `--sample` resolves
+/// every entry in one run, and one bad directory must not take the other
+/// entries' lines down with it — see `sample_worklist`.
 fn sample_members(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
     let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut archives: Vec<std::path::PathBuf> = Vec::new();
@@ -600,13 +599,12 @@ fn sample_members(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, Stri
 
 /// Resolve one `sample.rs` entry to its page count and the indices to label.
 ///
-/// Reaches the edition the way `score_corpus.rs`'s `score_corpus_page` and
-/// `region_experiment.rs`'s `measure_edition` both do — list the members,
-/// then `taiyaku_read::read_edition` for the page count — because
-/// `dev_pages`'s subset-of-the-survey's-ten property is stated against
-/// exactly that count. A second way of counting an edition's pages here
-/// would be a second, possibly disagreeing, answer to the question the
-/// survey already answered once.
+/// Reaches the edition the way `region_experiment.rs`'s `measure_edition` does
+/// — list the members, then `taiyaku_read::read_edition` for the page count —
+/// because `dev_pages`'s subset-of-the-survey's-ten property is stated against
+/// exactly that count. A second way of counting an edition's pages here would
+/// be a second, possibly disagreeing, answer to the question the survey already
+/// answered once.
 fn resolve_sample_edition(
     root: &std::path::Path,
     work: &str,
@@ -647,14 +645,14 @@ const SAMPLE_GROUPS: &[SampleGroup] = &[
 /// Print the labelling worklist `sample.rs` fixes, and fail after printing it
 /// if any entry could not be read.
 ///
-/// **Every one of the fifteen entries gets a line, resolved or not.** A
-/// silently short worklist — an edition dropped from the list rather than
-/// named as broken — is the exact failure this whole sub-project exists to
-/// fight, so a directory that is missing or an archive that will not open is
-/// printed inline, marked `CANNOT BE READ`, rather than skipped. The `Err`
-/// that follows a failure is returned only after every line has printed, so
-/// a human reading stdout sees the whole worklist before the exit code says
-/// the run did not come back clean.
+/// **Every entry gets a line, resolved or not.** A silently short worklist —
+/// an edition dropped from the list rather than named as broken — is the
+/// exact failure this whole sub-project exists to fight, so a directory that
+/// is missing or an archive that will not open is printed inline, marked
+/// `CANNOT BE READ`, rather than skipped. The `Err` that follows a failure
+/// is returned only after every line has printed, so a human reading stdout
+/// sees the whole worklist before the exit code says the run did not come
+/// back clean.
 fn sample_worklist(root: &std::path::Path) -> Result<(), String> {
     if !root.is_dir() {
         return Err(format!(

@@ -164,7 +164,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-cli/src/duplicates.rs`
 
-- `crates/taiyaku-cli/src/duplicates.rs:453:53: replace > with >= in contradictions`
+- `crates/taiyaku-cli/src/duplicates.rs:441:53: replace > with >= in contradictions`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -173,7 +173,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/duplicates.rs:455:33: replace + with * in contradictions`
+- `crates/taiyaku-cli/src/duplicates.rs:443:33: replace + with * in contradictions`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -185,7 +185,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-cli/src/fingerprint.rs`
 
-- `crates/taiyaku-cli/src/fingerprint.rs:170:22: replace || with && in flat_border`
+- `crates/taiyaku-cli/src/fingerprint.rs:167:22: replace || with && in flat_border`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -197,7 +197,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-cli/src/library.rs`
 
-- `crates/taiyaku-cli/src/library.rs:1367:20: delete ! in export_targets`
+- `crates/taiyaku-cli/src/library.rs:1335:20: delete ! in export_targets`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -206,7 +206,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/library.rs:274:5: replace resolve_export_user -> Result<i64, String> with Ok(1)`
+- `crates/taiyaku-cli/src/library.rs:264:5: replace resolve_export_user -> Result<i64, String> with Ok(1)`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -218,7 +218,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-cli/src/main.rs`
 
-- `crates/taiyaku-cli/src/main.rs:1696:8: delete ! in serve_work`
+- `crates/taiyaku-cli/src/main.rs:1656:8: delete ! in serve_work`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -227,7 +227,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:2025:5: replace slot_index -> u32 with 0`
+- `crates/taiyaku-cli/src/main.rs:1972:5: replace slot_index -> u32 with 0`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -236,7 +236,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:2025:5: replace slot_index -> u32 with 1`
+- `crates/taiyaku-cli/src/main.rs:1972:5: replace slot_index -> u32 with 1`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -245,7 +245,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:2045:5: replace print_alignment_detail with ()`
+- `crates/taiyaku-cli/src/main.rs:1983:5: replace print_alignment_detail with ()`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -254,7 +254,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:739:37: replace / with * in verify`
+- `crates/taiyaku-cli/src/main.rs:717:37: replace / with * in verify`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -263,7 +263,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:739:37: replace / with % in verify`
+- `crates/taiyaku-cli/src/main.rs:717:37: replace / with % in verify`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -272,7 +272,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:801:5: replace page_count -> u32 with 0`
+- `crates/taiyaku-cli/src/main.rs:779:5: replace page_count -> u32 with 0`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -281,7 +281,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/main.rs:801:5: replace page_count -> u32 with 1`
+- `crates/taiyaku-cli/src/main.rs:779:5: replace page_count -> u32 with 1`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -293,7 +293,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-cli/src/sample.rs`
 
-- `crates/taiyaku-cli/src/sample.rs:58:30: replace < with <= in dev_pages`
+- `crates/taiyaku-cli/src/sample.rs:57:30: replace < with <= in dev_pages`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -305,7 +305,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-cli/src/score.rs`
 
-- `crates/taiyaku-cli/src/score.rs:119:14: replace > with < in classify_single_cover`
+- `crates/taiyaku-cli/src/score.rs:120:14: replace > with < in classify_single_cover`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -314,7 +314,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/score.rs:130:29: replace < with <= in classify_single_cover`
+- `crates/taiyaku-cli/src/score.rs:131:29: replace < with <= in classify_single_cover`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -323,16 +323,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/score.rs:150:12: replace * with + in absorbs`
-  UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
-  examined. Nothing is known about this mutant beyond the fact that it survived.
-
-  It is here so a dispatched run's diff stays readable, **not** because anybody has
-  judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
-  and prints the total on every run for exactly that reason. Triaging one means
-  deciding which of three it is: an equivalent mutant, a decision inside output
-  nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/score.rs:151:20: replace > with >= in absorbs`
+- `crates/taiyaku-cli/src/score.rs:151:12: replace * with + in absorbs`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -350,7 +341,16 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/score.rs:155:13: replace && with || in absorbs`
+- `crates/taiyaku-cli/src/score.rs:153:20: replace > with >= in absorbs`
+  UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
+  examined. Nothing is known about this mutant beyond the fact that it survived.
+
+  It is here so a dispatched run's diff stays readable, **not** because anybody has
+  judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
+  and prints the total on every run for exactly that reason. Triaging one means
+  deciding which of three it is: an equivalent mutant, a decision inside output
+  nobody asserts on, or a missing assertion. Only the third is work on the tests.
+- `crates/taiyaku-cli/src/score.rs:156:13: replace && with || in absorbs`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -404,7 +404,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/score.rs:507:34: replace == with != in command`
+- `crates/taiyaku-cli/src/score.rs:506:34: replace == with != in command`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -413,7 +413,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/score.rs:675:33: replace += with -= in sample_worklist`
+- `crates/taiyaku-cli/src/score.rs:673:33: replace += with -= in sample_worklist`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -422,7 +422,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/score.rs:675:33: replace += with *= in sample_worklist`
+- `crates/taiyaku-cli/src/score.rs:673:33: replace += with *= in sample_worklist`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -431,7 +431,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/score.rs:693:27: replace += with -= in sample_worklist`
+- `crates/taiyaku-cli/src/score.rs:691:27: replace += with -= in sample_worklist`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -440,7 +440,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-cli/src/score.rs:693:27: replace += with *= in sample_worklist`
+- `crates/taiyaku-cli/src/score.rs:691:27: replace += with *= in sample_worklist`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -470,34 +470,34 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-cli/src/user.rs`
 
-- `crates/taiyaku-cli/src/user.rs:137:5: replace read_password -> Result<String, String> with Ok("xyzzy".into())`
+- `crates/taiyaku-cli/src/user.rs:127:5: replace read_password -> Result<String, String> with Ok("xyzzy".into())`
   The process boundary. `read_password` is a terminal prompt, two blocking reads
   from stdin and an `stty` call; nothing under `cargo test` has a tty. **The
   testable half is already extracted** — `accept(first, &second)` holds the rule
   about which inputs are refused and in what words, and it is tested; the
   commands take an injected `AskForPassword` rather than calling this at all.
   What survives here is the reading itself.
-- `crates/taiyaku-cli/src/user.rs:137:5: replace read_password -> Result<String, String> with Ok(String::new())`
+- `crates/taiyaku-cli/src/user.rs:127:5: replace read_password -> Result<String, String> with Ok(String::new())`
   The process boundary. `read_password` is a terminal prompt, two blocking reads
   from stdin and an `stty` call; nothing under `cargo test` has a tty. **The
   testable half is already extracted** — `accept(first, &second)` holds the rule
   about which inputs are refused and in what words, and it is tested; the
   commands take an injected `AskForPassword` rather than calling this at all.
   What survives here is the reading itself.
-- `crates/taiyaku-cli/src/user.rs:140:8: delete ! in read_password`
+- `crates/taiyaku-cli/src/user.rs:130:8: delete ! in read_password`
   The `if !quiet` that warns when echo could not be turned off — a decision about
   what a terminal shows, reachable only with a tty. It sits above the extracted
   `accept` for the same reason the rest of this function does.
-- `crates/taiyaku-cli/src/user.rs:180:5: replace read_line -> Result<String, String> with Ok("xyzzy".into())`
+- `crates/taiyaku-cli/src/user.rs:170:5: replace read_line -> Result<String, String> with Ok("xyzzy".into())`
   `read_line` is `std::io::stdin().read_line`. There is nothing here but the read.
-- `crates/taiyaku-cli/src/user.rs:180:5: replace read_line -> Result<String, String> with Ok(String::new())`
+- `crates/taiyaku-cli/src/user.rs:170:5: replace read_line -> Result<String, String> with Ok(String::new())`
   `read_line` is `std::io::stdin().read_line`. There is nothing here but the read.
-- `crates/taiyaku-cli/src/user.rs:190:5: replace set_echo -> bool with false`
+- `crates/taiyaku-cli/src/user.rs:180:5: replace set_echo -> bool with false`
   `set_echo` shells out to `stty` against an inherited stdin. Under a test harness
   stdin is not a tty, so it answers false — which would kill `-> true` and not
   `-> false`, and only while the harness captures stdin. A test whose result
   depends on whether the runner has a terminal is worse than this entry.
-- `crates/taiyaku-cli/src/user.rs:190:5: replace set_echo -> bool with true`
+- `crates/taiyaku-cli/src/user.rs:180:5: replace set_echo -> bool with true`
   `set_echo` shells out to `stty` against an inherited stdin. Under a test harness
   stdin is not a tty, so it answers false — which would kill `-> true` and not
   `-> false`, and only while the harness captures stdin. A test whose result

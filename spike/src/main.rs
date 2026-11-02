@@ -1,10 +1,8 @@
 //! **Does `tract` run this ONNX graph, and what is in it?**
 //!
-//! The one survivor of two spikes, kept because it is the tool you point at the
-//! *next* candidate. It answered that question for comic-text-detector in about
-//! ten minutes (`docs/notes.md`, "comic-text-detector through `tract`") and the
-//! answer decided a whole phase: seventeen operators, all supported, opset 11,
-//! and no `NonMaxSuppression` in the file at all.
+//! The tool you point at the *next* candidate. Its findings on
+//! comic-text-detector are in `docs/notes.md`, under "comic-text-detector
+//! through `tract`".
 //!
 //! Outside the workspace on purpose, so its dependency and its lint standards
 //! cannot reach the real crates or CI.
@@ -25,10 +23,7 @@
 //!
 //! **What it does not do.** Run the model on anything. Scoring a candidate
 //! against real pages belongs in the workspace, gated and reproducible —
-//! `crates/taiyaku-cli/src/model_experiment.rs` is what that looks like, and it
-//! is where the spike's own detector port went when it stopped being throwaway.
-//! The overlays this directory used to draw are drawn there now, from the run
-//! that produces the numbers rather than from a second decode.
+//! `crates/taiyaku-cli/src/model_experiment.rs` is what that looks like.
 
 use std::{collections::BTreeMap, env, path::PathBuf};
 

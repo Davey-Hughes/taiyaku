@@ -10,8 +10,8 @@ fn write_without_a_sidecar_is_refused() {
     assert!(err.contains("--sidecar"), "names what is missing: {err}");
 }
 
-/// O21: a misspelling used to be accepted in silence by every command, and
-/// the refusal has to name the flags that do exist rather than guess.
+/// O21: the refusal of a misspelling has to name the flags that do exist
+/// rather than guess.
 #[test]
 fn an_unknown_flag_is_refused_and_the_real_ones_are_named() {
     let err = command(&args(&["a.cbz", "--sidecar", "t.json", "--writ"])).expect_err("refuses");
@@ -19,10 +19,9 @@ fn an_unknown_flag_is_refused_and_the_real_ones_are_named() {
     assert!(err.contains("--write"), "names the real flag: {err}");
 }
 
-/// The deviation this plan states, pinned rather than left to the prose:
-/// `--cache` cannot take effect here, so it is refused rather than
-/// accepted and ignored — the rule O19, O20 and O22 each closed a defect
-/// to establish.
+/// Pinned rather than left to the prose: `--cache` cannot take effect here,
+/// so it is refused rather than accepted and ignored — the rule O19, O20 and
+/// O22 establish.
 #[test]
 fn cache_is_refused_rather_than_accepted_and_ignored() {
     let err =
@@ -30,7 +29,7 @@ fn cache_is_refused_rather_than_accepted_and_ignored() {
     assert!(err.contains("--cache"), "names it: {err}");
 }
 
-/// O15: a flag whose value is another flag used to be taken as absent.
+/// O15: a flag whose value is another flag is refused.
 #[test]
 fn a_flag_with_no_value_is_refused() {
     let err = command(&args(&["a.cbz", "--sidecar", "--write"])).expect_err("refuses");
@@ -128,18 +127,15 @@ fn cbz_with_page(dir: &std::path::Path, name: &str, page: &str) -> PathBuf {
 /// `docs/sidecar.md` rule 1 is normative: a sidecar's `members` array *is*
 /// the page order, and a reader must not re-sort it — paths are relative
 /// to the sidecar and may point into unrelated trees, so their names need
-/// not sort into reading order at all. `regions` used to derive page order
-/// from natural order of the argv members instead (the idiom `align`'s
-/// own `split_editions` uses for a shell glob), which agrees with the
-/// sidecar only by coincidence.
+/// not sort into reading order at all.
 ///
 /// The sidecar's own `members` array is set here to `b, a` — the reverse
 /// of natural order — while the command line types `a, b`, natural order
 /// itself. That combination is what a test typing only the reverse order
-/// on the command line (the old fixture's shape) cannot distinguish: a
-/// version that sorts the typed members naturally and a version that uses
-/// the typed order verbatim would *both* produce `a, b` here, and only
-/// reading the sidecar's own order produces the expected `b, a`.
+/// on the command line cannot distinguish: a version that sorts the typed
+/// members naturally and a version that uses the typed order verbatim
+/// would *both* produce `a, b` here, and only reading the sidecar's own
+/// order produces the expected `b, a`.
 #[test]
 fn write_records_members_in_the_sidecars_own_order_not_natural_order() {
     let scratch = taiyaku_read::test_support::TempDir::new("regions-given");

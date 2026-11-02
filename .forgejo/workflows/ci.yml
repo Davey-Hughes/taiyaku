@@ -22,9 +22,9 @@ env:
 # JavaScript action, and a JS action needs a node inside the job's container to
 # execute. rust:1-bookworm carries none — `command -v node` exits non-zero — and
 # this runner does not inject one, so a job combining `container:` with any JS
-# action dies before its first step. Measured against this instance: a container
-# with no action passes, an action with no container passes, and both together
-# is the only combination that fails.
+# action dies before its first step. On this instance a container with no action
+# passes, an action with no container passes, and both together is the only
+# combination that fails.
 #
 # The clone is authenticated because the instance requires sign-in for all
 # content, so an anonymous fetch is refused even for a public repository. The
@@ -33,9 +33,9 @@ env:
 # than the public hostname.
 #
 # These are Forgejo's own names. The runner also exports the same values under
-# GITHUB_*, for compatibility with actions written against GitHub, and both were
-# measured working here. Nothing in this repository is hosted on or fetched from
-# GitHub, so the names that say Forgejo are the ones used.
+# GITHUB_*, for compatibility with actions written against GitHub. Nothing in
+# this repository is hosted on or fetched from GitHub, so the names that say
+# Forgejo are the ones used.
 #
 # The block is repeated per job rather than factored out. Extracting it would
 # need either a composite action, which reintroduces the node problem, or a
@@ -48,17 +48,15 @@ env:
 # hang outside a test: a stalled `curl` in one of the five tool-install steps
 # below, or a `cargo build` that never finishes. Neither subsumes the other.
 #
-# 10 minutes is 4.5x the worst honest job observed over the ten runs before
-# this branch (134 s). Measured from the forge's own /actions/tasks API over
-# those ten runs: `test` 32-134 s, `lint` 21-85 s, `wasm` 33-84 s, `web` 9-25 s.
-# Uniform across those four rather than tuned per job, because a per-job number
-# has to be re-tuned as jobs shift and the only property this number needs is
-# to sit between "any honest run" and "hours".
+# 10 minutes is 4.5x the worst honest job observed (134 s). Uniform across the
+# four jobs rather than tuned per job, because a per-job number has to be
+# re-tuned as jobs shift and the only property this number needs is to sit
+# between "any honest run" and "hours".
 #
 # **This key is untriggered rather than untested**, and deliberately so:
 # deliberately hanging a job for ten minutes to watch it die costs a
 # ten-minute CI run to verify one documented key, where the per-test bound
-# beside it can be triggered in sixty seconds and was. See docs/status.md, O39.
+# beside it can be triggered in sixty seconds. See docs/status.md, O39.
 
 jobs:
   lint:
@@ -97,29 +95,25 @@ jobs:
       # file its author never touched.
       #
       # `continue-on-error: true` is what makes this step advisory rather than
-      # blocking, and it is the only place in this file that uses the key. The
-      # branch that added it was pushed and came back green, but that does not
-      # verify the key: `-W clippy::pedantic` exits 0 regardless of how many
-      # warnings it prints (only `-D warnings` sets a non-zero exit), so this
-      # step succeeded on its own and `continue-on-error` was never exercised.
-      # It cannot fail on a lint at all — its only possible failure is a
-      # compile error, which the blocking step above would already have
-      # caught — so this key and `scripts/check-all.sh`'s shell-level
+      # blocking, and it is the only place in this file that uses the key.
+      # `-W clippy::pedantic` exits 0 regardless of how many warnings it prints
+      # (only `-D warnings` sets a non-zero exit), so this step cannot fail on a
+      # lint at all, and the key is never exercised by one — its only possible
+      # failure is a compile error, which the blocking step above would already
+      # have caught. So this key and `scripts/check-all.sh`'s shell-level
       # `|| true` (which *is* verified, on every local run) are both
       # belt-and-braces for a failure lints cannot produce today. The key is
-      # untriggered rather than untested; it has still never been observed
-      # turning this job red.
+      # untriggered rather than untested.
       #
       # This step's own output is not quite empty, and that is expected rather
       # than a leak: every `assert_eq!` on a float literal in this workspace's
       # tests prints a `clippy::float_cmp` warning here, always, because
       # clippy's JSON marks that lint's primary span inside `assert_eq!`'s own
-      # expansion in rustc's `core/src/macros/mod.rs` — confirmed by path in
-      # the JSON stream, not assumed — never a file in this repository. That is
-      # why `scripts/pedantic-sites.mjs`, the count this branch is built on,
-      # reports 0 unique sites under `crates/` even though this unfiltered,
-      # plain-text step still prints all of them. See docs/ci.md, "The
-      # pedantic lints, and why they are advisory".
+      # expansion in rustc's `core/src/macros/mod.rs`, never a file in this
+      # repository. That is why `scripts/pedantic-sites.mjs` reports 0 unique
+      # sites under `crates/` even though this unfiltered, plain-text step still
+      # prints all of them. See docs/ci.md,
+      # "The pedantic lints, and why they are advisory".
       #
       # Anything *else* that appears here is either a cast written without a
       # stated bound or a lint a new rustc added — and the per-site #[expect]
@@ -212,53 +206,37 @@ jobs:
         # cannot execute without TAIYAKU_CORPUS which CI does not have, and three
         # `test_support` modules — two `#[cfg(test)] pub(crate)` in taiyaku-serve
         # and one in taiyaku-read that its `test-support` feature also exposes to
-        # taiyaku-library's tests, since O104. Counted from the
-        # reports rather than from the nine alternations in the regex, which is
-        # what the "four" here used to say — `band_sweep.rs`,
+        # taiyaku-library's tests, since O104. The count is of the files the
+        # regex matches, not of its nine alternations: `band_sweep.rs`,
         # `borrow_frequency.rs`, `geometry_experiment.rs`, `model_experiment.rs`,
         # `region_experiment.rs`, `score_corpus.rs` and `truth_population.rs` in
         # taiyaku-cli, plus `corpus.rs` in taiyaku-cli, taiyaku-serve and
         # taiyaku-library, and `test_support.rs` twice in taiyaku-serve and once
         # in taiyaku-read, which is two alternations matching three files each.
-        # This said eleven while twelve matched, from the day
-        # taiyaku-library's `corpus.rs` landed until O104 added the thirteenth.
         #
         # `test_support` is named here only because cargo-llvm-cov's own default
         # exclusion misses it: that default drops a source file whose basename
         # contains `tests`, which takes every `tests.rs` in the workspace out of
-        # the report but leaves `test_support.rs` in, for want of an `s`. Naming
-        # it makes one rule true of the whole report — no `#[cfg(test)]` code is
-        # measured — rather than nearly all of it.
+        # the report but leaves `test_support.rs` in, for want of an `s`.
         #
         # Note the regex matches `/corpus.rs` by path segment, so a *new*
         # `corpus.rs` added to some crate that is not corpus-gated would be
         # silently excluded too. Nothing like that exists today — the whole
         # workspace holds exactly these thirteen matching files — but a coverage
         # exclusion that grows on its own is the failure this list is shaped to
-        # avoid. This used to ask the reader to check the file count by hand when
-        # adding a crate; the "Coverage floor, per file" step below now asserts
-        # it (82 files on 2026-09-13, 40 required), so a regex that quietly
-        # swallows more than these thirteen fails the job. They are named with a
-        # reason each in
+        # avoid. The "Coverage floor, per file" step below asserts a minimum
+        # file count, so a regex that quietly swallows far more than these
+        # thirteen fails the job. They are named with a reason each in
         # docs/ci.md, "The coverage gates".
         #
-        # `--fail-under-lines 93` is the gate. It was derived as the measured
-        # figure less two points, but the figure it was derived from — 95.75%
-        # over a report that still contained every inline `#[cfg(test)] mod
-        # tests` — no longer exists. Since 2026-08-14 the test modules live in
-        # their own files, no `#[cfg(test)]` code reaches the report at all, and
-        # the workspace measures 7169 lines at **93.95%** implementation-only.
-        # The threshold was deliberately not re-derived downward to 92: leaving
-        # it at 93 keeps the gate at least as strict as it was, on a number that
-        # now moves about twelve times as far for the same untested code — the
-        # slack under the threshold is 68 lines, against 857 while the tests were
-        # inline. That is deliberate and it is tight; docs/ci.md, "Why the Rust
-        # per-file floor exists", carries the arithmetic and says what to do if
-        # it starts costing honest branches. Lines rather than regions because
-        # llvm-cov reports regions far below lines on `match`-heavy code and the
-        # two would need different numbers for no gain.
-        # Keep this in step with scripts/check-all.sh, which runs the same
-        # invocation.
+        # `--fail-under-lines 93` is the gate. The slack under the threshold is
+        # deliberately small, which keeps the gate strict. docs/ci.md,
+        # "Why the Rust per-file floor exists", carries the arithmetic and says
+        # what to do if it starts costing honest branches. Lines rather than
+        # regions because llvm-cov reports regions far below lines on
+        # `match`-heavy code and the two would need different numbers for no
+        # gain. Keep this in step with scripts/check-all.sh, which runs the
+        # identical command.
         #
         # `TAIYAKU_COMMIT` is the commit under test, so `about`'s route test
         # compares `/api/about`'s `commit` with a real 40-character hash on
@@ -290,54 +268,34 @@ jobs:
           node --version
       - name: Coverage floor, per file
         # **The step above is workspace-aggregate and cannot see one module go
-        # dark.** Measured 2026-08-14 over 7169 lines, 6735 covered: a module
-        # going entirely dark still passed as long as it accounted for 67 covered
-        # lines or fewer, which was 17 of the 43 files then.
+        # dark.** A module going entirely dark still passes as long as it
+        # accounts for no more covered lines than the slack, which is
+        # `covered - ceil(0.93 * total)`: it widens as coverage rises and
+        # vanishes as it approaches the floor. Whether the blind spot is open is
+        # an accident of the margin rather than a property of the check, and the
+        # per-file step is the half that does not move with it.
+        # `scripts/coverage-floor.mjs` carries the arithmetic. This is the Rust
+        # counterpart of the web job's identically named step, and it runs the
+        # identical script.
         #
-        # **Re-measured 2026-08-17, once the library store's Minor fixes
-        # landed: 9490 lines, 8834 covered, 93.09% over 53 files — a slack of 8
-        # covered lines, and NONE of the 53 at or under it** (the smallest,
-        # `taiyaku-serve/src/progress.rs`, carries 11). The blind spot is
-        # currently closed altogether, and that is an accident of the margin
-        # rather than a property of the check: the slack is
-        # `covered - ceil(0.93 * total)`, so it widens as coverage rises and
-        # vanishes as it approaches the floor. The per-file step is the half
-        # that does not move with it.
-        # This is the Rust counterpart of the web job's identically named step,
-        # and it runs the identical script.
+        # When the step above fails, this step does not run (O234).
         #
-        # The blind spot was `taiyaku-read/src/pages.rs`-sized until that date —
-        # 406 covered lines going dark landed the workspace at 93.05% and passed,
-        # against 89.85% and a red step today. Nothing about the tests changed;
-        # the test modules moved into their own files and stopped being counted
-        # as coverage of the code they test. scripts/coverage-floor.mjs carries
-        # the arithmetic.
-        #
-        # **This step is also the one that says something when the aggregate
-        # fires.** Re-measured on this tree by `#[ignore]`-ing all 100 tests in
-        # `taiyaku-cli/src/tests.rs`: the step above exits 1 having written 9,165
-        # bytes to stdout — the ordinary table — and **zero to stderr**, while
-        # this one prints `crates/taiyaku-cli/src/main.rs lines 11.84% < 57%` and
-        # names what to open.
-        #
-        # **`cargo llvm-cov report` is not a second test run.** It re-renders the
-        # profile data the step above already produced — no rebuild, no re-run —
-        # and measured 0.13 seconds against 7.8 for the run itself. It is a
-        # separate command rather than another flag because `--text` and
-        # `--json` are mutually exclusive, and dropping the text table would cost
-        # this job its only human-readable coverage output.
+        # **`cargo llvm-cov report` is not a second test run.** It re-renders
+        # the profile data the step above already produced — no rebuild, no
+        # re-run. It is a separate command rather than another flag because
+        # `--text` and `--json` are mutually exclusive, and dropping the text
+        # table would cost this job its only human-readable coverage output.
         #
         # **`cargo llvm-cov --fail-under-file-lines` exists and is deliberately
-        # not used.** It works, but it exits 1 having printed nothing at all —
-        # measured, zero bytes on stdout and stderr beyond the ordinary table —
-        # naming neither the file nor the threshold. A red step above a 43-row
-        # table with no indication which row is the reason is not a gate anyone
-        # can act on.
+        # not used.** It works, but it exits 1 having printed nothing beyond the
+        # ordinary table, naming neither the file nor the threshold. A red step
+        # above a table with no indication which row is the reason is not a gate
+        # anyone can act on.
         #
-        # The `--ignore-filename-regex` is repeated from the step above and the
-        # two cannot silently disagree: a narrower copy lets the excluded files
-        # in at 12–40% and the floor names them; a wider one drops the file count
-        # and the script's minimum-file check fires. Both were run.
+        # The `--ignore-filename-regex` is repeated from the step above: a
+        # narrower copy lets the excluded files in and the floor names them; a
+        # wider one drops the file count, and the script's minimum-file check
+        # fires once the count falls below its minimum.
         #
         # Keep the three lines below in step with scripts/check-all.sh, together
         # with the three in the step above: strip the leading whitespace from
@@ -348,23 +306,20 @@ jobs:
             --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'
           node scripts/coverage-floor.mjs target/rust-coverage.json
 
-      # docs/status.md states a total test count twice and nothing derived
-      # either figure, so both went stale on three consecutive branches in one
-      # day. This is the only documentation claim in the repository that is
-      # mechanically checkable, so it is the one that gets checked — the site
-      # counts and the open-item counts beside it are not derivable and stay
-      # the reviewer's job.
+      # docs/status.md states a total test count twice. That is the only
+      # documentation claim in the repository that is mechanically checkable, so
+      # it is the one that gets checked — the site counts and the open-item
+      # counts beside it are not derivable and stay the reviewer's job.
       #
-      # Reads the run two steps up rather than running anything.
+      # Reads the run above rather than running anything.
       # .config/nextest.toml sets junit.path, so `cargo llvm-cov nextest`
       # writes target/nextest/default/junit.xml on its way past and this step
       # is one node process over an XML file — no build, no test run.
       #
-      # It was a fresh `cargo nextest list` until 2026-08-11 and cost 14.3 s a
-      # push: llvm-cov builds with coverage instrumentation, so a plain `list`
-      # could not reuse the artifacts and rebuilt the workspace — 31% of this
-      # job's wall clock to check one number.
-      # scripts/status-test-count.mjs records why that was the wrong trade.
+      # A fresh `cargo nextest list` would rebuild the workspace: llvm-cov
+      # builds with coverage instrumentation, so a plain `list` cannot reuse the
+      # artifacts. scripts/status-test-count.mjs records why that trade is the
+      # wrong one.
       - name: Check the test count in docs/status.md
         run: node scripts/status-test-count.mjs target/nextest/default/junit.xml docs/status.md
       # Keeps comments from growing back once trimmed; see
@@ -400,16 +355,14 @@ jobs:
   # The core is required to stay WebAssembly-compatible so the browser reader
   # and a future native shell can share it. This is easy to break by accident —
   # one dependency pulling in threads or a native library does it — and the
-  # breakage is invisible until you try to ship the reader. Hence a CI gate from
-  # day one rather than a discovery six months in.
+  # breakage is invisible until you try to ship the reader. Hence a CI gate.
   #
-  # The last three steps close a gap docs/ci.md used to document as permanent:
-  # nothing in CI ever executed the compiled module, so a codegen break in
-  # `binding.rs` (as against the conversion drift `cargo test -p taiyaku-wasm`
-  # already catches) went green. `node` is fetched as a checksummed tarball and
-  # unpacked into this container rather than installed by switching to a
-  # dual-toolchain image, per the cost comparison recorded in docs/ci.md;
-  # `wasm-pack` is fetched as a prebuilt release binary rather than
+  # The last three steps are what execute the compiled module, which catches a
+  # codegen break in `binding.rs` (as against the conversion drift
+  # `cargo test -p taiyaku-wasm` already catches). `node` is fetched as a
+  # checksummed tarball and unpacked into this container rather than installed
+  # by switching to a dual-toolchain image, per the cost comparison recorded in
+  # docs/ci.md; `wasm-pack` is fetched as a prebuilt release binary rather than
   # `cargo install`ed, since the latter is a multi-minute compile for a tool
   # this job only runs, never links against.
   wasm:
@@ -435,12 +388,11 @@ jobs:
       - name: Build the binding for wasm
         run: cargo build -p taiyaku-wasm --target wasm32-unknown-unknown --all-features
       - name: Install node
-        # Debian bookworm's `nodejs` package is 18.20.4, so this step used to
-        # run the smoke test on Node 18 while the `web` job ran 22 — not a
-        # decision, just what `apt-get` happened to ship. A prebuilt tarball
-        # pins it to the same 26.7.0 everything else uses, following the
-        # precedent this job already sets for `wasm-pack`. The checksum is
-        # from nodejs.org's own SHASUMS256.txt for this file.
+        # Debian bookworm's `nodejs` package is 18.20.4, an older Node than the
+        # one the `web` job runs. A prebuilt tarball pins this job to the same
+        # 26.7.0 everything else uses, following the precedent this job already
+        # sets for `wasm-pack`. The checksum is from nodejs.org's own
+        # SHASUMS256.txt for this file.
         #
         # Five places name a Node version and nothing keeps them in step:
         # this pin (below, twice — the download URL and the symlink target),
@@ -463,11 +415,10 @@ jobs:
         # than guessed at (see docs/ci.md). Bump the version here and in
         # rust-toolchain.toml's neighbourly context together if either drifts.
         #
-        # The checksum was added on the coverage branch, not when this step was
-        # written: this job downloads three binaries and only node's was pinned,
-        # so two of the three would have executed whatever the URL happened to
-        # return. wasm-pack publishes no checksum file either, so this digest
-        # was computed here from the artefact in use. Re-compute it on a bump.
+        # **The checksum pins the artefact**: without it this step would execute
+        # whatever the URL happened to return. wasm-pack publishes no checksum
+        # file, so this digest was computed here from the artefact in use.
+        # Re-compute it on a bump.
         run: |
           curl -fsSL -o /tmp/wasm-pack.tar.gz \
             https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz
@@ -531,15 +482,14 @@ jobs:
         run: pnpm -C web run test:coverage
       - name: Coverage floor, per file
         # The other half of the web gate. `vite.config.ts`'s thresholds are
-        # aggregate, and an aggregate cannot see one module go dark: measured,
-        # skipping the whole of `pairing.test.ts` takes that file from 100% to
-        # 83.58% while the total moves only 98.03% → 97.49% — because
-        # `App.test.tsx` covers the same lines through a mounted reader — and
-        # every vitest threshold still passed. This step fails on it.
+        # aggregate, and an aggregate cannot see one module go dark: skipping
+        # the whole of `pairing.test.ts` takes `pairing.ts` down while the
+        # total barely moves — because `App.test.tsx` covers the same lines
+        # through a mounted reader — and every vitest threshold still passes.
+        # This step fails on it.
         #
         # vitest cannot express both halves: a glob entry in `thresholds` is
-        # aggregated over its matches, and `perFile` inside one is ignored. Both
-        # were tried and measured before this script existed.
+        # aggregated over its matches, and `perFile` inside one is ignored.
         run: node scripts/coverage-floor.mjs
 
   # Builds the image, runs it until its health check passes, and pushes it —

@@ -21,21 +21,17 @@
 # panics and `debug_assert!` exist only under `debug_assertions`, and this repository has two of the
 # latter that matter — `PageRange::new`'s "page range must not be inverted" and `Run::paired`'s
 # equal-length check, both in `taiyaku-core/src/lib.rs`. The `test` job below runs the whole
-# workspace in debug and is what exercises them. It costs **4.4 seconds**.
+# workspace in debug and is what exercises them.
 #
-# **Release: the standing corpus checks.** Those decode and fingerprint real pages — one compares
-# 2,427 pairs, another 617 — and `image` in debug is roughly two orders of magnitude slower. They
-# are not a CI job (CI has no corpus), so nothing about the mirror above depends on their profile.
-# **6.9 seconds** warm; about 1:13 the first time, since `[profile.release]` here is `lto = "thin"`
-# with `codegen-units = 1`.
+# **Release: the standing corpus checks.** Those decode and fingerprint real pages, and `image` in
+# debug is much slower. They are not a CI job (CI has no corpus), so nothing about the mirror above
+# depends on their profile. The first build is slow, since `[profile.release]` here is
+# `lto = "thin"` with `codegen-units = 1`.
 #
-# **This used to run the corpus checks twice, both times in debug, and that is why nobody could
-# finish the gate.** `TAIYAKU_CORPUS` is exported at the top of this file, so the `test` job
-# inherited it and ran all thirteen standing checks itself; the dedicated pass below then ran them
-# again for their output. Measured before this change: over 25 minutes without reaching the second
-# pass. After: about 11 seconds for both, warm. The `test` job now runs with the variable removed
-# from its environment, which also makes it a *truer* mirror of CI than it was — CI has no corpus
-# and has always skipped them.
+# **The `test` job runs with `TAIYAKU_CORPUS` removed from its environment.** The variable is
+# exported at the top of this file, so the job would otherwise inherit it and run the standing
+# corpus checks in debug, and the dedicated pass below would then run them again for their output.
+# Without the variable the job is also a *truer* mirror of CI, which has no corpus and skips them.
 #
 # **What the default run does not measure**, named here and again where it happens: the corpus
 # checks in release have no overflow checks and neither `debug_assert` above fires, so those two
@@ -44,25 +40,17 @@
 # thing to run when touching `PageRange`, `Run::paired`, or arithmetic on page and slot indices,
 # rather than every time.
 #
-# It said "three jobs" until 2026-08-07 and reproduced three, while CI had grown a fourth — the
-# `web` job, running biome, `tsc -b` and vitest over `web/`. So a TypeScript change could take this
-# gate green having had nothing whatsoever run against it, which is precisely the drift the
-# paragraph above claims cannot happen. The `wasm` job had drifted the narrower way at the same
-# time: its two `cargo build`s were here, but not the `wasm-pack` package build or the smoke run
-# that executes the compiled module.
-#
 # Anything not measured is named twice — once where it would have run, and again in the closing
 # summary, which refuses to print a bare "all green" when something was skipped.
 #
 # --- what this deliberately does NOT run -------------------------------------
 #
 # `scripts/mutants.sh`. Mutation testing measures something no gate here can — whether the
-# assertions see a defect, rather than whether the lines ran — and it costs 3 h 12 m for the
-# workspace against this file's whole budget of about eleven seconds warm. It also has 92 untriaged
-# survivors deferred behind L2, so it is red for a correct reason on a clean tree. It runs weekly
-# in `.forgejo/workflows/mutants.yml`, gating nothing, and `scripts/mutants.sh --since main` is
-# the version worth running by hand before opening a pull request. See docs/ci.md, "Mutation
-# testing, and why it cannot be a gate".
+# assertions see a defect, rather than whether the lines ran — and it costs far more than this
+# file's whole budget. It also has untriaged survivors deferred behind L2, so it is red for a
+# correct reason on a clean tree. It runs in `.forgejo/workflows/mutants.yml`, gating nothing, and
+# `scripts/mutants.sh --since main` is the version worth running by hand before opening a pull
+# request. See docs/ci.md, "Mutation testing, and why it cannot be a gate".
 #
 # This is the one place the "local gate and CI gate cannot drift" claim above has an exception,
 # and it is stated here so that the exception is a decision rather than a gap: `mutants.yml` is
@@ -103,14 +91,6 @@ note_skip() {
 # working directory set to that package's own directory rather than the
 # workspace root, so a relative `TAIYAKU_CORPUS=corpus` resolves to
 # `crates/taiyaku-serve/corpus` and finds nothing.
-#
-# Resolved *here*, at the top, and not beside the corpus run below — which is
-# where it used to be, and that was too late. The `test` job further down
-# inherits this variable too, so a relative path left it skipping every corpus
-# check in silence while the gate went green; only the second run, with the path
-# canonicalised, actually measured anything. O30 turned that skip into a failure,
-# which is what surfaced the ordering: the gate began failing its own first job
-# on an invocation it had always accepted.
 if [ -n "${TAIYAKU_CORPUS:-}" ]; then
   if [ ! -d "${TAIYAKU_CORPUS}" ]; then
     echo "error: TAIYAKU_CORPUS=${TAIYAKU_CORPUS} is not a directory" >&2
@@ -126,12 +106,9 @@ fi
 # found for module`, three minutes after the push. Nothing else in this gate can
 # see it, because every other check reads the working tree rather than the index.
 #
-# It is not hypothetical. `.gitignore` carried a bare `corpus/` to keep manga
-# archives out, and a bare pattern matches a directory of that name at any depth,
-# so when the test modules moved into their own files on 2026-08-14 it swallowed
-# `crates/taiyaku-cli/src/corpus/tests.rs` — silently, with no complaint from
-# `git add -A`. The rule is anchored now; this is the check that would have said
-# so before the push rather than after.
+# A bare `corpus/` in `.gitignore` matches a directory of that name at any
+# depth, so it would swallow `crates/taiyaku-cli/src/corpus/tests.rs` —
+# silently, with no complaint from `git add -A`.
 #
 # `--others --ignored --exclude-standard` lists exactly the files git is hiding,
 # and the filter is deliberately narrow: `crates/**/*.rs` only. Generated
@@ -152,13 +129,10 @@ run cargo clippy --workspace --all-targets --all-features -- -D warnings
 # **`broken_intra_doc_links` specifically, not `-D warnings` — the difference is
 # the whole reason this can be a gate.** A `[`name`]` that resolves to nothing
 # is always a defect: the reader is sent to a symbol that does not exist, and a
-# rename is how it happens. `browse.rs` carried one from a rename in #92 through
-# that branch's gate, its CI, and a mutation sweep, and it was found by hand.
-# `private_intra_doc_links` is a different thing entirely and must stay a
-# warning: linking a public item's doc to the private helper it delegates to is
-# this workspace's own convention — 79 of them, against the 2 unresolved links
-# that existed when this was added — so `-D warnings` here would fail on day one
-# and be deleted by the end of the week.
+# rename is how it happens. `private_intra_doc_links` is a different thing
+# entirely and must stay a warning: linking a public item's doc to the private
+# helper it delegates to is this workspace's own convention, so `-D warnings`
+# here would fail on day one and be deleted by the end of the week.
 run env RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
   cargo doc --workspace --no-deps
 
@@ -173,15 +147,13 @@ run env RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
 # operator — this script runs it, on this machine, every time, so it is
 # verified rather than assumed. `continue-on-error: true` in ci.yml is
 # Forgejo Actions' own key for the same job, and nothing local can exercise
-# it: it only does anything when the step it guards fails. The branch was
-# pushed and came back green, but that proves nothing about the key: `-W
-# clippy::pedantic` exits 0 no matter how many warnings it prints, only
-# `-D warnings` sets a non-zero exit, so the step never had a reason to
-# fail on lints — and it cannot fail on lints at all, since its only
-# possible failure is a compile error the blocking step above would
-# already have caught. Both guards are belt-and-braces for a failure
-# lints cannot produce today; the key stays untriggered rather than
-# untested, and has still never been observed doing its job.
+# it: it only does anything when the step it guards fails.
+# `-W clippy::pedantic` exits 0 no matter how many warnings it prints, only
+# `-D warnings` sets a non-zero exit, so the step has no reason to fail on
+# lints — and it cannot fail on lints at all, since its only possible failure
+# is a compile error the blocking step above would already have caught. Both
+# guards are belt-and-braces for a failure lints cannot produce today; the
+# key stays untriggered rather than untested.
 #
 # Written out rather than passed to `run`, because `run` inherits this script's
 # `set -e` and would abort the whole gate on a warning — the opposite of what
@@ -191,12 +163,11 @@ run env RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
 # `assert_eq!` on a float literal in this workspace's tests prints a
 # `clippy::float_cmp` warning here, always, because clippy's JSON marks that
 # lint's primary span inside `assert_eq!`'s own expansion in rustc's
-# `core/src/macros/mod.rs` — confirmed by path in the JSON stream, not
-# assumed — never a file in this repository. `scripts/pedantic-sites.mjs`, the
-# count this branch is built on, reports 0 unique sites under `crates/` even
-# though this unfiltered, plain-text run still prints all of them. See
-# docs/ci.md, "The pedantic lints, and why they are advisory". Anything *else*
-# here is a new unguarded cast or a lint a newer clippy added.
+# `core/src/macros/mod.rs`, never a file in this repository.
+# `scripts/pedantic-sites.mjs` drops paths outside `crates/`, so it reports no
+# site for them even though this unfiltered, plain-text run still prints all of
+# them. See docs/ci.md, "The pedantic lints, and why they are advisory".
+# Anything *else* here is a new unguarded cast or a lint a newer clippy added.
 echo; echo "==> cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic (advisory)"
 cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic || true
 
@@ -204,7 +175,7 @@ cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic || 
 # **`TAIYAKU_CORPUS` is removed from this one's environment**, which is the difference between a
 # gate that finishes and one nobody runs — see "Two profiles" at the top. It is also the more
 # faithful mirror: CI has no corpus, so this is what CI actually executes. The standing checks are
-# not lost, they move to the pass below, which is where their output was already being read from.
+# not lost: they run in the pass below, which is where their output is read from.
 #
 # Debug, deliberately and not merely by default: this is the only pass with overflow checks and
 # `debug_assert!` compiled in.
@@ -216,31 +187,25 @@ cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic || 
 # tool nobody installed.
 #
 # **The per-file floor is the second command, and it is not a second test run.** `--fail-under-lines`
-# is workspace-aggregate and cannot see one module go dark, though it sees rather more of it than it
-# used to. Measured 2026-08-14, with the test modules in their own files and no `#[cfg(test)]` code
-# in the report at all: the workspace was 7169 lines at 93.95%, so a module going dark passed only if
-# it accounted for 67 covered lines or fewer — true of 17 of the 43 files then.
+# is workspace-aggregate and cannot see one module go dark: a module going dark passes as long as it
+# accounts for no more covered lines than the slack below.
 #
 # **The current figure is not written down here, it is printed by the run.** `coverage-floor.mjs`
 # derives the slack — `covered - ceil(0.93 * total)` — and the files at or under it from the same
-# report it already walks, and prints both on every invocation below. This comment used to restate
-# them, as did `docs/status.md`, `docs/ci.md` and `coverage-floor.mjs` itself, and nothing derived
-# any of the four (delta review M9). `docs/ci.md` keeps the derivation and one dated measurement.
+# report it already walks, and prints both on every invocation below. `docs/ci.md` keeps the
+# derivation and one dated measurement.
 #
 # What does not change is the shape: the slack **widens as coverage rises**, so improving coverage
-# enlarges the set of modules the aggregate would let go entirely dark. It was 8 lines at one commit
-# on 2026-08-17 and 64 lines a few commits later. The per-file floor is what does not move with the
-# margin, which is the whole reason it exists.
+# enlarges the set of modules the aggregate would let go entirely dark. The per-file floor is what
+# does not move with the margin, which is the whole reason it exists.
 #
-# See scripts/coverage-floor.mjs for why the 2026-08-14 figure moved once without any implementation
-# changing.
 # `cargo llvm-cov report` re-renders the profile data the run above already produced — no rebuild, no
-# re-run — and measured **0.13 seconds** against 7.8 for the run. `--text` and `--json` are mutually
-# exclusive, which is why this is a second command rather than another flag on the first.
+# re-run. `--text` and `--json` are mutually exclusive, which is why this is a second command rather
+# than another flag on the first.
 #
-# The `--ignore-filename-regex` appears twice as a result, and the two copies cannot silently
-# disagree: if the report's is narrower, the excluded files leak in at 12–40% and the floor names
-# them; if it is wider, the file count drops and the minimum-file check fires. Both were run.
+# The `--ignore-filename-regex` appears twice as a result: if the report's is narrower, the excluded
+# files leak in at 12–40% and the floor names them; if it is wider, the file count drops, and the
+# minimum-file check fires once it falls below the minimum.
 #
 # Keep the six invocation lines below in step with .forgejo/workflows/ci.yml, which runs them byte
 # for byte. The property is checkable: take those six lines from each file, strip the leading
@@ -270,28 +235,25 @@ else
 fi
 
 # --- the test count docs/status.md states ---
-# `status.md` gives a total test count twice, and nothing derived either figure, so both went stale
-# on two consecutive branches in one day — 639 against 656, then 656 against 658 — caught by hand
-# both times and only because someone looked. Checked here instead.
+# `status.md` gives a total test count twice, and nothing else derives either figure, so they are
+# checked here.
 #
 # **This reads the run above rather than running anything.** `.config/nextest.toml` sets
 # `junit.path`, so the `cargo llvm-cov nextest` invocation a few lines up writes
 # `target/nextest/default/junit.xml` on its way past, and this is a `node` process over an XML file.
 # The marginal cost is approximately zero.
 #
-# It cost 14.3 seconds a push until 2026-08-11, when it shelled out to `cargo nextest list` for a
-# static enumeration instead — a genuinely more robust source that rebuilt the entire workspace to
-# get there, because the coverage step builds with instrumentation and a plain `nextest list` cannot
-# reuse those artifacts. `scripts/status-test-count.mjs` records why that trade was wrong and how
-# the robustness is recovered without it.
+# Enumerating the tests with `cargo nextest list` instead is a more robust source, but it would
+# rebuild the entire workspace, because the coverage step builds with instrumentation and a plain
+# `nextest list` cannot reuse those artifacts. `scripts/status-test-count.mjs` records why that
+# trade is wrong and how the robustness is recovered without it.
 #
 # **The guard has to match the condition that WRITES the report, not just the tools this step
-# itself needs**, and getting that wrong is a defect this check shipped with for one commit. The
-# report is written only on the coverage block's `else` branch, which needs *both* `cargo-llvm-cov`
-# and `cargo-nextest`; its fallback runs plain `cargo test` and writes nothing. A guard on
-# `cargo-nextest` alone therefore passed on a machine with nextest but no llvm-cov, ran this check
-# against a file the fallback never created, and failed the whole gate with an ENOENT about a
-# missing JUnit report — a message pointing at the wrong problem entirely.
+# itself needs.** The report is written only on the coverage block's `else` branch, which needs
+# *both* `cargo-llvm-cov` and `cargo-nextest`; its fallback runs plain `cargo test` and writes
+# nothing. A guard on `cargo-nextest` alone would pass on a machine with nextest but no llvm-cov,
+# run this check against a file the fallback never creates, and fail the whole gate with an ENOENT
+# about a missing JUnit report — a message pointing at the wrong problem entirely.
 #
 # So all three are required, and the first two are named in the same order and with the same
 # `command -v` form as the block above, so the two conditions can be read against each other.
@@ -317,7 +279,7 @@ fi
 # --- the standing corpus checks ---
 # Not a CI job: CI has no corpus, so these skip there and are the one thing this script measures
 # that the forge cannot. `cargo test` captures stderr for passing tests, so a check that skipped and
-# one that measured 617 pages are indistinguishable in the output above. These run again with
+# one that measured real pages are indistinguishable in the output above. These run again with
 # output, or say plainly that they were not run at all. A gate that quietly covers less than it
 # claims is the defect this repository exists to avoid in the aligner; it should not ship in the
 # gate itself.
@@ -346,9 +308,9 @@ fi
 #
 # The two `cargo build`s are the fast fail-fast half. The `wasm-pack` build and the smoke run are
 # the other half, and they catch a different class: `cargo build` proves the crate compiles for the
-# target, while `scripts/smoke-wasm.mjs` is the only thing anywhere that *executes* the generated
-# module — `cargo test -p taiyaku-wasm` exercises `binding.rs` as plain Rust, which cannot see a
-# codegen break. See `docs/ci.md`, "Running the compiled module in CI".
+# target, while `scripts/smoke-wasm.mjs` *executes* the generated module —
+# `cargo test -p taiyaku-wasm` exercises `binding.rs` as plain Rust, which cannot see a codegen
+# break. See `docs/ci.md`, "Running the compiled module in CI".
 #
 # Note that `build-wasm.sh` deletes and regenerates `crates/taiyaku-wasm/pkg`, which is the
 # gitignored artefact `web/node_modules/taiyaku-wasm` symlinks to. That is the same thing a
@@ -375,23 +337,19 @@ else
 fi
 
 # --- the `web` job ---
-# The job this script did not have until 2026-08-07. `pnpm -C web run lint` is
-# `biome check ./src ./tests`, which is formatting *and* lint in one command — see `docs/ci.md`,
-# "Formatting, and the tool that checks it".
+# `pnpm -C web run lint` is `biome check ./src ./tests`, which is formatting *and* lint in one
+# command — see `docs/ci.md`, "Formatting, and the tool that checks it".
 #
-# **The lockfile *is* checked here, and it did not used to be.** `docs/ci.md` carried this as a
-# permanent gap: CI's install builds `node_modules` from nothing, while running the same command
-# locally would delete a working install and rebuild it on every gate run — so the one property it
-# checks, that `package.json` and the lockfile agree, went unchecked and a drifted lockfile passed
-# this script and failed the forge. pnpm has a command for exactly that check and nothing else:
-# `--lockfile-only` verifies the lockfile satisfies `package.json` without touching `node_modules`.
-# Measured at roughly 240ms. It is run directly rather than piped, because a pipe would mask its
-# exit code.
+# **The lockfile *is* checked here.** CI's install builds `node_modules` from nothing, while
+# running the same command locally would delete a working install and rebuild it on every gate
+# run, so, left unchecked, a drifted lockfile would pass this script and fail the forge. pnpm has
+# a command for exactly the check wanted and nothing else: `--lockfile-only` verifies the lockfile
+# satisfies `package.json` without touching `node_modules`. It is run directly rather than piped,
+# because a pipe would mask its exit code.
 #
-# It runs ahead of the `web/node_modules` guard below, deliberately. It needs no install, and a
-# fresh clone — no `node_modules` yet — is exactly the state where drift is likeliest to have gone
-# unnoticed. It used to sit inside that guard, which meant a fresh clone skipped the one check most
-# able to catch a mismatch it introduced.
+# It runs ahead of the `web/node_modules` guard below, deliberately. It needs no install,
+# and a fresh clone — no `node_modules` yet — is exactly the state where drift is likeliest
+# to go unnoticed.
 if [ "$no_web" -eq 1 ]; then
   note_skip "the web job (--no-web)"
 else
@@ -415,12 +373,11 @@ else
 
     # **The other half of the web coverage gate, and it is not redundant.**
     # `vite.config.ts`'s thresholds are aggregate, and an aggregate cannot see
-    # one module go dark. Measured: skipping the whole of `pairing.test.ts`
-    # takes `pairing.ts` from 100% to 83.58% while the total moves only
-    # 98.03% → 97.49%, because `App.test.tsx` exercises the same lines through a
-    # mounted reader — and every vitest threshold still passed. This check fails
-    # on it. vitest cannot express both halves; see the script's own comment for
-    # the two forms that were tried and measured first.
+    # one module go dark. Skipping the whole of `pairing.test.ts` leaves the
+    # total almost unchanged, because `App.test.tsx` exercises the same lines
+    # through a mounted reader, and every vitest threshold still passes. This
+    # check fails on it. vitest cannot express both halves; see the script's own
+    # comment for the two forms vitest offers.
     run node scripts/coverage-floor.mjs
 
     # --- the browser tests, which are not a CI job ---

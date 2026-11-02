@@ -25,8 +25,7 @@ const MARGIN_WEAK: f32 = 0.05;
 
 /// Decode each page once, then take both the hash and the thumbnail from it.
 ///
-/// Decoding is the expensive step by three orders of magnitude, so the report
-/// must not pay for it twice.
+/// Decoding is the expensive step, so the report must not pay for it twice.
 pub fn prepare(pages: &[Page], width: u32) -> Result<(Vec<PageHash>, Vec<String>), String> {
     let prepared: Result<Vec<(PageHash, String)>, String> = pages
         .par_iter()
@@ -81,8 +80,8 @@ pub fn thumbnail(page: &DynamicImage, width: u32) -> Result<String, String> {
 
     let mut jpeg = Vec::new();
     // Quality 70: these are read at 130px to judge whether two pages show the
-    // same artwork, not to read the dialogue. A whole volume pair still lands
-    // around 3.5 MB, which is small enough to open and to keep.
+    // same artwork, not to read the dialogue, so a whole volume pair stays
+    // small enough to open and to keep.
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 70)
         .encode_image(&small.to_rgb8())
         .map_err(|e| e.to_string())?;
@@ -139,10 +138,9 @@ pub fn render(
         };
         // Offset drives the registration gauge: a firm pairing closes to zero
         // and the two ticks read as one rule.
-        // 16px of total travel. Smaller ranges were tried and read as a whisper:
-        // the difference between a firm pairing and an ambiguous one has to be
-        // obvious in peripheral vision while scrolling, or the gauge is
-        // decoration.
+        // 16px of total travel: the difference between a firm pairing and an
+        // ambiguous one has to be obvious in peripheral vision while scrolling,
+        // or the gauge is decoration.
         #[expect(
             clippy::cast_possible_truncation,
             reason = "score.margin.clamp(0.0, MARGIN_FIRM) bounds the clamped value to \

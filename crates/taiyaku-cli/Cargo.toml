@@ -13,9 +13,7 @@ name = "taiyaku"
 path = "src/main.rs"
 
 # Native-only work belongs here rather than in taiyaku-core: image decoding, the
-# content-addressed fingerprint cache, and parallel hashing across pages. Page
-# reading itself moved to taiyaku-read when taiyaku-serve became a second
-# consumer of it.
+# content-addressed fingerprint cache, and parallel hashing across pages.
 [dependencies]
 base64 = "0.23.0"
 image = "0.25.9"
@@ -35,17 +33,15 @@ taiyaku-read = { path = "../taiyaku-read" }
 taiyaku-serve = { path = "../taiyaku-serve" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
-# `tract-onnx` is here for `model_experiment.rs` alone — phase 3's measurement —
-# and a dev-dependency is what keeps it out of the `taiyaku` binary while
-# leaving the module inside the workspace, compiled by CI, and unable to rot.
+# `tract-onnx` is here for `model_experiment.rs` alone, and a dev-dependency is
+# what keeps it out of the `taiyaku` binary while leaving the module inside the
+# workspace, compiled by CI, and unable to rot.
 #
 # It is not free: CI has no cargo cache (see `.forgejo/workflows/ci.yml`), so
-# both the clippy job and the test job compile it from scratch every run —
-# measured at 21 s on 32 cores with a warm registry, and more on a small
-# container, against `timeout-minutes: 10` on each. That cost was accepted
-# rather than hidden behind an optional feature, because dodging it would mean
-# dropping `--all-features` from two CI invocations and leaving this module
-# never compiled by the gate.
+# both the clippy job and the test job compile it from scratch every run. That
+# cost is accepted rather than hidden behind an optional feature, because
+# dodging it would mean dropping `--all-features` from two CI invocations and
+# leaving this module never compiled by the gate.
 [dev-dependencies]
 # `test-support` for `TempDir`, O117: a directory unique to the process and the
 # call, the one helper every crate's tests share.
@@ -60,8 +56,8 @@ zip = "7.2.0"
 #
 # It is the *reader's own* resolver rather than a second copy: `binding.rs`
 # holds the routing logic as ordinary Rust and the wasm layer above it decides
-# nothing, so measuring through it measures what the browser does. Only
-# `display` and `withBorrow` are ported by hand, and the design's §5 says so.
+# nothing, so measuring through it measures what the browser does. `display` and
+# `withBorrow` are ported by hand, and the design's §5 says so.
 taiyaku-wasm = { path = "../taiyaku-wasm" }
 
 [lints]

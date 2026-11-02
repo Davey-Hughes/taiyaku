@@ -4,52 +4,41 @@
 // --- why this exists -----------------------------------------------------------
 //
 // `status.md` opens "What is built" with a sentence of the form
-// "Five crates, N tests", and repeats N once more a few lines below. Nothing
-// derived either figure, so both went stale every time a branch added a test.
-// Measured on two consecutive branches in one day: 639 stated against 656
-// actual, then 656 against 658 — caught by hand both times, and only because
-// someone happened to look.
+// "<count> crates, N tests", and repeats N once more further down. Written by
+// hand, both figures go stale every time a branch adds a test.
 //
-// That is the same failure this repository has logged in three other places:
-// the open-items preamble's count word (which drifted three times on its own),
-// the cache-root design's §6 site count, and its §7 test breakdown. The lesson
-// recorded there is that **a per-site list is checkable and a count is not** —
-// so this file makes the count checkable rather than asking anyone to re-derive
-// it by hand a fourth time.
+// The open-items preamble's count word, the cache-root design's §6 site count
+// and its §7 test breakdown record the same failure. The lesson recorded there
+// is that **a per-site list is checkable and a count is not** — so this file
+// makes the count checkable rather than asking anyone to re-derive it by hand.
 //
-// --- where the number comes from, and the 14 seconds this used to cost --------
+// --- where the number comes from ---------------------------------------------
 //
 // From `target/nextest/default/junit.xml`, which the test run **already
-// happening two steps above this** writes as a side effect. `.config/nextest.toml`
-// turns it on with one line. The marginal cost of this check is therefore
+// happening above this** writes as a side effect. `.config/nextest.toml` turns
+// it on with one line. The marginal cost of this check is therefore
 // approximately zero: no extra build, no extra run, no extra process.
 //
-// **The first version of this script did not do that, and cost 14.3 seconds a
-// push.** It shelled out to `cargo nextest list --message-format json` for a
-// static enumeration, on the argument that a *list* is more robust than a *run*:
-// it reads no environment, runs nothing, and cannot be perturbed by a failure.
-// That argument is true and it was not worth 14.3 seconds. `cargo llvm-cov
-// nextest` builds with coverage instrumentation and a plain `nextest list`
-// cannot reuse those artifacts, so it rebuilt the whole workspace — 31% of the
-// `test` job's wall clock, to check one number in one sentence.
+// Enumerating the tests with `cargo nextest list` instead would be more robust
+// than reading a run: it reads no environment, runs nothing, and cannot be
+// perturbed by a failure. It is not worth its cost. `cargo llvm-cov nextest`
+// builds with coverage instrumentation and a plain `nextest list` cannot reuse
+// those artifacts, so it would rebuild the whole workspace to check one number
+// in one sentence.
 //
-// The three objections that justified it do not survive being looked at:
+// The three ways a run's report is less robust than a list are handled:
 //
-// 1. *"A run has two output formats."* In CI there is only ever one — the
-//    fallback to plain `cargo test` exists only in `check-all.sh`, on a machine
-//    missing `cargo-nextest`, and that branch now skips this check the same way
-//    it already skips the coverage floor. One format, one parser.
-// 2. *"A run's totals move with the environment."* Both callers run it with
-//    `TAIYAKU_CORPUS` removed, deliberately and for other reasons, and CI has no
-//    corpus at all. The variable cannot reach it.
-// 3. *"A run's totals move when something fails."* True, and now handled rather
-//    than avoided: this script refuses to compare at all when the report shows
-//    a failure or an error, and says why. A red suite gets one clear message
-//    instead of a second confusing one about documentation.
-//
-// The honest summary is that the expensive design was chosen first and defended
-// afterwards. It is recorded here rather than quietly replaced, because the
-// reasoning error is more reusable than the fix.
+// 1. A run has two output formats. In CI there is only ever one: the fallback
+//    to plain `cargo test` exists only in `check-all.sh`, on a machine missing
+//    `cargo-nextest`, and that branch skips this check the same way it already
+//    skips the coverage floor. One format, one parser.
+// 2. A run's totals move with the environment. Both callers run it with
+//    `TAIYAKU_CORPUS` removed, deliberately and for other reasons, and CI has
+//    no corpus at all. The variable cannot reach it.
+// 3. A run's totals move when something fails. This script refuses to
+//    compare at all when the report shows a failure or an error, and says
+//    why. A red suite gets one clear message instead of a second confusing
+//    one about documentation.
 //
 // --- why a regex and not an XML parser ----------------------------------------
 //
@@ -70,16 +59,13 @@ const STATUS_MD = process.argv[3] ?? 'docs/status.md'
 const CLAIMS = [
   // The leading count word is matched as `\w+` rather than spelled out, for
   // the same reason the comment on the next claim gives: it is exactly the
-  // thing that drifts. This one used to spell it out (`Five crates, …`), and
-  // the day a sixth crate landed the checker reported the claim as *missing*
-  // rather than as wrong — the confusing failure the next claim's comment
-  // already warned about, applied to only one of the two claims.
+  // thing that drifts.
   { name: 'the crate summary', pattern: /\w+ crates, ([\d,]+) tests/ },
   // The leading count word is matched as `\w+` rather than spelled out.
   // That word is exactly the thing that drifts — `status.md`'s own open-items
-  // section records the same word going wrong three times — so anchoring on it
-  // makes this check fail with "claim not found" every time the number of
-  // standing checks changes, which is a false alarm about the wrong thing.
+  // section records the same word going wrong — so anchoring on it makes this
+  // check fail with "claim not found" every time the number of standing checks
+  // changes, which is a false alarm about the wrong thing.
   { name: 'the corpus-check sentence', pattern: /\w+ of the ([\d,]+) are standing checks/ },
 ]
 
@@ -129,7 +115,7 @@ if (actual === null || failures === null || errors === null) {
   ])
 }
 
-// **This is objection 3, handled rather than argued away.** The count reports
+// **A failed run is refused, not compared.** The count reports
 // what ran, so a suite that went red under-reports it — and a documentation
 // complaint stacked on top of a real failure is noise at exactly the moment
 // someone needs signal. Refuse, and name the real problem instead.

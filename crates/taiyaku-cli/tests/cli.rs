@@ -79,12 +79,6 @@ fn fixture(dir: &Path) -> String {
 }
 
 /// A `--db` path, `library.db` in `dir`.
-///
-/// *(Until O117 this was a process-scoped name under the temp dir, and removed
-/// `x.db`, `x.db-wal` and `x.db-shm` by hand first so a killed run's write-ahead
-/// log could not be replayed into a fresh database — whole-branch review 3,
-/// Minor 13, and delta review M6. A new directory holds none of the three, and
-/// goes when the test does.)*
 fn db_path(dir: &Path) -> String {
     let path = dir.join("library.db");
     path.to_str().expect("a utf-8 temp path").to_string()
@@ -217,10 +211,8 @@ fn the_usage_advertises_serve_dirs() {
     );
 }
 
-/// `library scan` and `library rules` reached `command`'s dispatch and
-/// `README.md`/`docs/status.md` without ever reaching `print_usage` — a
-/// person running bare `taiyaku` could not discover either. No test named
-/// `print_usage` at all is what let that stand; this is that test.
+/// The usage lists `library scan` and `library rules`, so a person running
+/// bare `taiyaku` can discover them.
 #[test]
 fn the_usage_lists_library_scan_and_rules() {
     let run = taiyaku().output().expect("the binary runs");
@@ -864,14 +856,12 @@ fn library_import_reports_what_the_merge_did() {
 }
 
 /// `taiyaku serve <sidecar>...` keeps working: it imports those paths and
-/// serves them (design §5). That is the migration path for an existing
-/// install and what keeps the three corpus-gated tests in
-/// `serve/src/corpus.rs` alive — this checks the argument *shape* survived
-/// (still a positional `<taiyaku.json>...` list, not e.g. a `--sidecar`
-/// flag) without actually binding a port, which is what `--help`'s early
-/// return (`main.rs`'s `run`) buys: the same whole-binary usage `taiyaku`
-/// with no arguments prints, and `the_usage_advertises_serve_cache` already
-/// pins that its serve line names `<taiyaku.json>` positionally.
+/// serves them (design §5). That is the migration path for an existing install
+/// and what keeps the corpus-gated tests in `serve/src/corpus.rs` alive — this
+/// checks the argument *shape* survived (still a positional `<taiyaku.json>...`
+/// list, not e.g. a `--sidecar` flag) without actually binding a port, which is
+/// what `--help`'s early return (`main.rs`'s `run`) buys: the same whole-binary
+/// usage `taiyaku` with no arguments prints.
 #[test]
 fn serve_still_accepts_sidecar_paths() {
     let out = taiyaku_output(&["serve", "--help"]);
@@ -883,24 +873,22 @@ fn serve_still_accepts_sidecar_paths() {
 /// `content_key` — a hash of the sidecar's declared `sha256`s — and
 /// `taiyaku_library::import::sidecar`/`reimport` matches on `content_key`
 /// *before* falling back to `sidecar_path`. The second import reconciles by
-/// content hash regardless of how its path was spelled, which is a property
-/// that predates this task and holds even with `canonical_sidecar_path`
-/// reverted to a no-op (confirmed by running it that way). What this test
+/// content hash regardless of how its path was spelled. What this test
 /// actually pins: two `taiyaku library import` calls against the identical
 /// underlying file, spelled two different ways, leave exactly one `work`
 /// row — reconciliation is by content, not by path string equality.
 ///
 /// The placeholder hazard is specifically about a row whose `content_key` is
-/// the `bridge:{slug}` sentinel — minted by `taiyaku serve` recording a
-/// reading position *before* any import — which can never match on
-/// `content_key` and so falls through to the `sidecar_path` comparison this
-/// module's canonicalisation exists to fix. That is not reachable from this
-/// test, because nothing here ever creates a placeholder row. The
-/// discriminating coverage for that hazard lives in
+/// the `bridge:{slug}` sentinel — minted by `taiyaku serve` recording a reading
+/// position *before* any import — which can never match on `content_key` and so
+/// falls through to the `sidecar_path` comparison that `library.rs`'s
+/// canonicalisation exists to fix. That is not reachable from this test,
+/// because nothing here ever creates a placeholder row. The discriminating
+/// coverage for that hazard lives in
 /// `crates/taiyaku-cli/src/library.rs`'s own tests (`crates/taiyaku-cli/src/library/tests.rs`):
 /// `importing_the_same_file_under_a_different_spelling_reuses_the_placeholder_row`
-/// goes through `canonical_sidecar_path`/`import_canonical` and is confirmed
-/// to fail if `canonical_sidecar_path` is reverted to a no-op;
+/// goes through `canonical_sidecar_path`/`import_canonical` and fails if
+/// `canonical_sidecar_path` is reverted to a no-op;
 /// `without_canonicalisation_the_same_scenario_would_orphan_the_placeholder`
 /// calls `taiyaku_library::import::sidecar` directly, bypassing
 /// `canonical_sidecar_path` on purpose, to show the underlying defect is real
@@ -948,15 +936,13 @@ fn two_imports_of_one_file_reconcile_by_content_not_path() {
     );
 }
 
-/// **Whole-branch review 3's I1.** `export_targets`' entire stdout reporting
-/// surface — `wrote`, `removed`, `kept`, and the final summary line — was
-/// provable by deleting all four `println!`s in `library.rs::export_targets`
-/// and watching the whole suite stay green: the *arithmetic* behind the
-/// totals was pinned (`export_all_into_one_dir_keeps_every_work_rather_than_overwriting`,
-/// a unit test over `export_targets` directly), but nothing asserted a reader
-/// running the real binary ever sees a line reporting it. This drives
-/// `taiyaku library import` and `taiyaku library export --in-place` and reads
-/// every one of the four kinds of line off the process's actual stdout.
+/// **`export_targets`' stdout reporting surface — `wrote`, `removed`, `kept`
+/// and the final summary line — as a reader running the real binary sees it.**
+/// The *arithmetic* behind the totals is pinned by
+/// `export_all_into_one_dir_keeps_every_work_rather_than_overwriting`, a unit
+/// test over `export_targets` directly. This drives `taiyaku library import`
+/// and `taiyaku library export --in-place` and reads every one of the four
+/// kinds of line off the process's actual stdout.
 ///
 /// The recipe behind each outcome:
 /// - **`wrote`**: `taiyaku.json` is written on every in-place export
@@ -965,10 +951,10 @@ fn two_imports_of_one_file_reconcile_by_content_not_path() {
 ///   ever recorded notes for this fixture, so there is nothing to keep.
 /// - **`removed`**: a hand-written `taiyaku.library.json` holding nothing but
 ///   `taiyaku_library`/`updated` — the content-free "skeleton" shape
-///   `export::work`'s own doc comment and whole-branch review 3's verdict
-///   both describe — migrates cleanly on import (`library=migrated`, and the
-///   marker records it absorbed) but stays an *empty* `LibraryDoc`, so the
-///   next export finds no state behind it and deletes it.
+///   `export::work`'s own doc comment describes — migrates cleanly on import
+///   (`library=migrated`, and the marker records it absorbed) but stays an
+///   *empty* `LibraryDoc`, so the next export finds no state behind it and
+///   deletes it.
 /// - **`kept`**: a `taiyaku.truth.json` that appears only *after* the first
 ///   import is reported `truth=unread` on the second import — settled, but
 ///   never read — and the export that follows leaves it alone rather than
@@ -1064,13 +1050,11 @@ fn export_reports_wrote_removed_kept_and_the_summary_line_on_real_stdout() {
     );
 }
 
-/// **Whole-branch review 3's I2, `library.rs`'s call site.** Gutting
-/// `library.rs::import`'s `for line in malformed_sibling_warnings(...) {
-/// eprintln!("{line}"); }` loop leaves the whole suite green: nothing greps a
-/// real process's stderr for the sentence that tells a reader a sibling
-/// document was left unread, even though `malformed_sibling_warnings` itself
-/// is well tested (`library/tests.rs`'s
-/// `every_malformed_sibling_gets_a_sentence_naming_the_file_and_the_reason`).
+/// **`library.rs`'s call site of `malformed_sibling_warnings`.** The
+/// `for line in malformed_sibling_warnings(...) { eprintln!("{line}"); }` loop
+/// in `library.rs::import` is what tells a reader a sibling document was left
+/// unread. `malformed_sibling_warnings` itself is tested in `library/tests.rs`
+/// (`every_malformed_sibling_gets_a_sentence_naming_the_file_and_the_reason`).
 /// This drives `taiyaku library import` against a fixture with an unreadable
 /// `taiyaku.notes.json` and reads the warning off the binary's real stderr.
 #[test]
@@ -1113,15 +1097,12 @@ fn library_import_prints_the_malformed_sibling_warning_to_stderr() {
     );
 }
 
-/// **I1 / I2.** `derive` already calls `proposals::raise` once, at the end of
-/// its own pass; `library scan` used to call it a *second* time purely to get
-/// a number to print, and since the first call had already opened everything
-/// raisable, the second call's own `INSERT OR IGNORE` conflicted on every row
-/// and the printed count was unconditionally `0` — the failure
-/// `derive_summary_prints_suppressed_and_rekeyed_when_nonzero` only ever
-/// justified itself by preventing, since it exercises the pure formatter with
-/// a hand-built `raised` argument and never the real command's own count.
-/// Nothing before this ran `library scan` for real and read its real stdout.
+/// `derive` calls `proposals::raise` once, at the end of its own pass; the
+/// count `library scan` prints must be that one.
+/// `derive_summary_prints_suppressed_and_rekeyed_when_nonzero` exercises the
+/// pure formatter with a hand-built `raised` argument and never the real
+/// command's own count, so this runs `library scan` for real and reads its
+/// real stdout.
 ///
 /// A tree with a genuine colour-edition suffix — the same shape
 /// `proposals::tests::library_with_two_suffixed_series` scans — is what
@@ -1156,13 +1137,11 @@ fn library_scan_reports_the_real_proposal_count_on_real_stdout() {
     );
 
     // §8's per-root watch report and the walk's own added/updated/gone line
-    // are two separate `println!`s in `scan`, and **deleting either left the
-    // whole suite green**: "watching" and "scanning every" appear nowhere in
-    // any CLI test, and `scan_summary`'s unit tests exercise the formatter
-    // with a hand-built report, never the command. A counter nobody prints is
-    // the failure it exists to prevent — the rule `derive_summary`'s own
-    // conditional fields already follow — and that rule was never checked at
-    // the one layer where a person actually reads it.
+    // are two separate `println!`s in `scan`, and `scan_summary`'s unit tests
+    // exercise the formatter with a hand-built report, never the command. A
+    // counter nobody prints is the failure it exists to prevent — the rule
+    // `derive_summary`'s own conditional fields follow — so this reads both
+    // lines where a person actually reads them.
     assert!(
         out.contains(&format!("root {}", dir.display())),
         "the per-root watch report line must reach stdout: {out}"
@@ -1187,13 +1166,10 @@ fn library_scan_reports_the_real_proposal_count_on_real_stdout() {
     );
 }
 
-/// **I3, end to end.** `proposals::open`, `accept`, `unaccept` and `dismiss`
-/// had no caller outside their own tests before this — `taiyaku library` had
-/// only `import|export|scan|rules`, and two rounds of Critical fixes went
-/// into an `accept` a person could not invoke. This drives the real binary
-/// through a scan that raises one proposal, lists it, and accepts it —
-/// reading everything off the process's actual stdout, the way
-/// `library_import_reports_what_the_merge_did` already does for `import`.
+/// **I3, end to end.** This drives the real binary through a scan that raises
+/// one proposal, lists it, and accepts it — reading everything off the
+/// process's actual stdout, the way
+/// `library_import_reports_what_the_merge_did` does for `import`.
 #[test]
 fn library_proposals_lists_and_accepts_over_real_stdout() {
     let dir = TempDir::new("cli-proposals");
@@ -1254,13 +1230,12 @@ fn library_proposals_lists_and_accepts_over_real_stdout() {
 /// A refused `--unaccept` or `--dismiss` **exits 1 with the library's own
 /// sentence** on stderr, and prints no success line.
 ///
-/// Pinned at the binary because of what changed underneath it (O70):
-/// `proposals::unaccept` and `proposals::dismiss` answered a refusal as
-/// `Err(String)`, which `main` prints as `taiyaku: {message}` before exiting
-/// 1, and they answer it as `Ok(Offer::Refused(why))` now — so this command
-/// turns the refusal back into that error itself. An arm that printed the
-/// success line instead, or reworded the sentence on the way, is a changed
-/// exit code or a changed message, and the exact line is what tells.
+/// Pinned at the binary (O70): `proposals::unaccept` and `proposals::dismiss`
+/// answer a refusal as `Ok(Offer::Refused(why))`, so this command turns it
+/// into the `Err(String)` that `main` prints as `taiyaku: {message}` before
+/// exiting 1. An arm that printed the success line instead, or reworded the
+/// sentence on the way, is a changed exit code or a changed message, and the
+/// exact line is what tells.
 #[test]
 fn library_proposals_refusals_exit_one_with_the_librarys_own_sentence() {
     let dir = TempDir::new("cli-proposals-refusals");
@@ -1346,7 +1321,7 @@ fn library_proposals_refusals_exit_one_with_the_librarys_own_sentence() {
 /// **`if !reopened.is_empty()`, not `if reopened.is_empty()`.** An import
 /// that orphans an accepted proposal's rule must say so; `library.rs`'s own
 /// unit tests call `rules` directly and this crate has no stdout-capturing
-/// helper (deliberately, per the note above), so the only place this line
+/// helper (deliberately, per the note below), so the only place this line
 /// is reachable at all is through the real binary.
 ///
 /// Builds the same one-proposal fixture
@@ -1395,9 +1370,9 @@ fn library_rules_import_reports_a_proposal_that_lost_its_accepted_rule() {
     let accept_out = taiyaku_output(&["library", "proposals", "--accept", id, "--db", &db]);
     assert!(accept_out.contains("accepted proposal"), "{accept_out}");
 
-    // Stdout alone, like the note test above: mixing in stderr's "library
-    // database at …" line would break the JSON this is fed straight back
-    // into.
+    // Stdout alone, like the note test below: mixing in stderr's
+    // "library database at …" line would break the JSON this is fed straight
+    // back into.
     let exported = String::from_utf8_lossy(
         &taiyaku()
             .args(["library", "rules", "--db", &db])
@@ -1435,16 +1410,14 @@ fn library_rules_import_reports_a_proposal_that_lost_its_accepted_rule() {
     );
 }
 
-/// **Whole-branch review 3's I2, `main.rs`'s call site.** The identical loop
-/// is duplicated in `serve_work` — `taiyaku serve <sidecar>...` imports every
-/// path it is given the same way `library import` does, this module's own
-/// doc comment says so — and gutting *that* copy independently also leaves
-/// the suite green. `serve` never returns on success, so this occupies the
-/// address first with a listener of its own: the bind inside
-/// `taiyaku_serve::serve` then fails immediately with `AddrInUse`, the
-/// process exits instead of blocking forever, and everything printed
-/// *before* that bind attempt — including this warning, which fires while
-/// importing, well before the network is ever touched — is still on its
+/// **`main.rs`'s call site of `malformed_sibling_warnings`.** The identical
+/// loop is duplicated in `serve_work`: `taiyaku serve <sidecar>...` imports
+/// every path it is given the same way `library import` does. `serve` never
+/// returns on success, so this occupies the address first with a listener of
+/// its own: the bind inside `taiyaku_serve::serve` then fails immediately with
+/// `AddrInUse`, the process exits instead of blocking forever, and everything
+/// printed *before* that bind attempt — including this warning, which fires
+/// while importing, well before the network is ever touched — is still on its
 /// stderr to read.
 #[test]
 fn serve_prints_the_malformed_sibling_warning_before_refusing_to_bind() {
@@ -1502,12 +1475,12 @@ fn serve_prints_the_malformed_sibling_warning_before_refusing_to_bind() {
     drop(occupied);
 }
 
-/// **A rule import stores rules and derives nothing**, and the command used
-/// to print only "imported rules from …". The whole claim the rule layer
-/// makes is that editing a rule re-derives the library without touching the
-/// filesystem — which is true, and requires something to call `derive`. A
-/// person who has just replaced every rule and seen only a success line
-/// reasonably believes the library already reflects them.
+/// **A rule import stores rules and derives nothing**, so the command has to
+/// name the scan that applies them. The whole claim the rule layer makes is
+/// that editing a rule re-derives the library without touching the filesystem
+/// — which is true, and requires something to call `derive`. A person who has
+/// just replaced every rule and seen only a success line would reasonably
+/// believe the library already reflects them.
 ///
 /// Driven through the real binary because that is where the line reaches
 /// anybody: `library.rs`'s own unit tests call `rules` directly and this

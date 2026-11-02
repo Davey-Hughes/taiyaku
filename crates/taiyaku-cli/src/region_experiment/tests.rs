@@ -74,10 +74,9 @@ fn a_survivor_is_profiled_from_its_own_strokes() {
         survivor.area
     );
     // Ink *pixels* over the block's own box. The marks are solid and
-    // disjoint, so a pixel count and the summed bounding boxes this used
-    // to be come to the same 2,400 — which is exactly why this fixture
-    // does not pin that change and `detect.rs`'s
-    // `a_block_of_hollow_strokes_is_mostly_paper` does.
+    // disjoint, so a pixel count and summed bounding boxes come to the same
+    // 2,400 — which is exactly why this fixture does not pin the difference
+    // and `detect.rs`'s `a_block_of_hollow_strokes_is_mostly_paper` does.
     assert!(
         (survivor.ink - 6.0 * 400.0 / (20.0 * 170.0)).abs() < 1e-9,
         "six solid 20x20 marks over the block's own box: {}",

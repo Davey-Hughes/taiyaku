@@ -1412,7 +1412,7 @@ both are waiting on L2.
 
 ### Open items
 
-Two hundred and thirty-one, each found by a whole-branch review, carried as a deferral,
+Two hundred and thirty-five, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -1447,7 +1447,7 @@ faster than the router could commit it, or turned up
 by answering a question an earlier item's notes wrote down and left open, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **One hundred and forty-three are now closed — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20, O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43, O44, O47, O53, O54, O55, O57, O60, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96, O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O112, O113, O114, O115, O116, O117, O119, O120, O121, O133, O134, O135, O137, O138, O140, O145, O146, O148, O149, O150, O151, O153, O154, O155, O156, O157, O158, O159, O160, O161, O163, O164, O165, O166, O173, O174, O175, O176, O177, O178, O179, O180, O182, O183, O192, O193, O195, O196, O197, O198, O199, O205, O206, O207, O208, O210, O216, O218, O219, O220, O221, O223, O224 and O228 — leaving eighty-eight.** *(This sentence carried **two** errors before ⑤c rebuilt it from the table on 2026-09-25: it omitted **O151**, closed on 2026-09-24, and "leaving fifty-seven" stood against sixty-two open rows. It is generated from the table now rather than edited, which is the only reason the list and the word cannot disagree again.* **A larger warning sits in how this note first read.** It claimed six errors — the word disagreeing with its own list, O34 and O39 listed twice each, and O31 named while its row read `[ ]`. None of those four existed. The check that found them anchored on the string `are now closed`, which first matches a sentence about mutation survivors a hundred and fifty lines earlier, and then read everything from there to the next `— leaving` — so it counted O-numbers out of hundreds of lines of unrelated prose and reported them as this list's. The rebuilt sentence was right and the story about why was invented, which is worse than the drift it was describing: a wrong count invites a recount, and a wrong history is believed. Caught by ⑤c's pre-merge claim check, which re-derived it from `git show` rather than from this paragraph.)* *(It read "leaving fifty" against
+visible act rather than a thing someone remembers. **One hundred and forty-three are now closed — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20, O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43, O44, O47, O53, O54, O55, O57, O60, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96, O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O112, O113, O114, O115, O116, O117, O119, O120, O121, O133, O134, O135, O137, O138, O140, O145, O146, O148, O149, O150, O151, O153, O154, O155, O156, O157, O158, O159, O160, O161, O163, O164, O165, O166, O173, O174, O175, O176, O177, O178, O179, O180, O182, O183, O192, O193, O195, O196, O197, O198, O199, O205, O206, O207, O208, O210, O216, O218, O219, O220, O221, O223, O224 and O228 — leaving ninety-two.** *(This sentence carried **two** errors before ⑤c rebuilt it from the table on 2026-09-25: it omitted **O151**, closed on 2026-09-24, and "leaving fifty-seven" stood against sixty-two open rows. It is generated from the table now rather than edited, which is the only reason the list and the word cannot disagree again.* **A larger warning sits in how this note first read.** It claimed six errors — the word disagreeing with its own list, O34 and O39 listed twice each, and O31 named while its row read `[ ]`. None of those four existed. The check that found them anchored on the string `are now closed`, which first matches a sentence about mutation survivors a hundred and fifty lines earlier, and then read everything from there to the next `— leaving` — so it counted O-numbers out of hundreds of lines of unrelated prose and reported them as this list's. The rebuilt sentence was right and the story about why was invented, which is worse than the drift it was describing: a wrong count invites a recount, and a wrong history is believed. Caught by ⑤c's pre-merge claim check, which re-derived it from `git show` rather than from this paragraph.)* *(It read "leaving fifty" against
 forty-nine open rows from the moment O97 closed: the count of closed items
 moved and the count of open ones did not, which is the drift the sweep at the
 head of this section exists to catch and did not run. Corrected here. **It
@@ -1806,6 +1806,10 @@ each is in the detail below; the table is what a reader scans.
 | O229 | [ ] | **The reader's account panel opens only from the keyboard.** Inside a book, Shift+A is the one way to open it: `A` in `keys.ts` resolves to the `account` intent, `keyplan.ts` plans `open-account`, and `App.tsx` sets `accountOpen`. No stop on the reader's bar, no button and no entry in the ⚙ settings panel opens it, so on a phone or a tablet the panel cannot be opened from a book; `/account`, reached from the library's sidebar, draws the same `Account` component. The user looked for it on 2026-10-25 and could not find it. **Options:** a stop on the reader's bar, an entry in the settings panel, or a link to `/account`. **Not decided:** which | `keys.ts`'s `A` binding, `keyplan.ts`'s `open-account`, `App.tsx`'s `accountOpen` | the user's look at PR 3's checkpoint server, 2026-10-25 |
 | O230 | [ ] | **After heavy image use, Back to the Library view can draw the grid before its covers.** In the loading work's second PR's live check, in Chromium on 2026-10-29, after One Piece's 111 thumbnails and three visits to the reader, Back to the grid kept its scroll and had 1 of 18 visible covers complete at React's commit, and 18 of 18 at +590 ms. No cover was asked of the server: they came back from the browser's HTTP cache under `COVER_CACHE_CONTROL`, so the browser's in-memory image cache had dropped them. A return by the reader's Library button had 1 of 18 at its commit too, and the user's iPhone asked for no cover or thumbnail address twice (`docs/notes.md`, "The cover version"). **Not established:** why the browser drops them, and whether the app can keep them drawn; the user filed it on 2026-10-29 as a known limit, to be investigated later (spec `2026-10-28-loading-library-design.md` §10) | `Cover.tsx`'s `Cover`; `library.ts`'s `coverSources` | the loading work's second PR's live check, 2026-10-29 |
 | O231 | [ ] | **`open_archive` reads its 512-byte header with one `read`, so a short read can make a tar look like a cbz that will not open.** `open_archive` fills a `[0u8; 512]` buffer with a single `file.read` and passes the first `read` bytes to `unsupported_container`. `Read::read` may return fewer bytes than were asked for, and the tar magic sits at offset 257, so a read that stops short of it gives `from_header` no tar to recognise. `unsupported_container` then answers `None`, `ZipArchive::new` fails on the tar, and the error says "not a readable cbz" instead of "this is a tar archive". `format.rs`'s `read_header` is the loop that avoids this and its doc warns of exactly this failure; `open_archive` does not use it. **Found by reading, during the comments pass on 2026-10-29; not reproduced.** **Not established:** whether `open_archive`'s read is ever short in practice; `read_header`'s doc says a read comes back short over a network filesystem. The effect would be a wrong message on a file taiyaku cannot read either way. The fix comes later, in its own PR | `open_archive` in `taiyaku-read`'s `pages.rs`; `read_header` in `format.rs` | reading `open_archive` during the comments pass, 2026-10-29 |
+| O232 | [ ] | **`align --no-split-spreads` prints no run table and no figure line.** On that path `align` prints the two page counts, and with `--stats` the calibration and shape lines, then calls `report_summary(&runs, a.len())` and drops the two strings it returns. `verify` prints the same pair, the run table to stdout and the figure line to stderr. Before `report_summary` returned them it printed them itself, and this call site was not changed when it began returning them, so the page-level diagnostic the help text offers ends before its result. **Found by reading `align` during the comments pass, 2026-11-01; not run.** The fix prints both as `verify` does, with a test that runs the path, in its own PR | `align` and `report_summary` in `taiyaku-cli`'s `main.rs` | reading `align` during the comments pass, 2026-11-01 |
+| O233 | [ ] | **The refusal of `export --in-place --user` says the export would delete documents, and it would not.** The message says the export "would write one reader's notes and position over another's own files, and delete the documents they have no state for". The first half holds. The second does not: before `export::work` writes over a file or removes a stale one in place it asks `migrate::absorbed_for`, which answers `mine \|\| !theirs` for notes and progress, so a file another reader holds state for, and the named reader does not, is kept. The refusal is right; its reason is wrong. **Found by the comments pass's review of a test comment that copied the message, 2026-11-01.** The fix is the message, in its own PR | `export` in `taiyaku-cli`'s `library.rs`; `absorbed_for` in `taiyaku-library`'s `migrate.rs` | the comments pass's review of a test comment, 2026-11-01 |
+| O234 | [ ] | **CI's "Coverage floor, per file" step does not run when the aggregate step above it fails, so nothing names the file.** The Rust job's `Coverage floor, per file` step in `.forgejo/workflows/ci.yml` has no `if:`, so under the default `success()` condition it is skipped whenever the step above it, the `cargo llvm-cov nextest ... --fail-under-lines 93` aggregate, fails. Its comment called it the step that says something when the aggregate fires, by printing which file fell below its floor; when the aggregate fails it does not run, and nothing names the file. `scripts/check-all.sh` runs the same pair under `set -euo pipefail`, so the per-file command is not reached when the aggregate command fails. The web job's step of the same name has no `if:` either, after `pnpm -C web run test:coverage`. **Found by the comments pass reading that step's comment, 2026-11-01; verified by reading, not run.** The comments pass cut that claim from the comment, which now points here. The fix runs the per-file step after an aggregate failure, in CI and in `check-all.sh`, with a check of the red path, in its own PR | the `Coverage floor, per file` steps of the `test` and `web` jobs in `.forgejo/workflows/ci.yml`; the Rust per-file command in `scripts/check-all.sh` | reading the step's comment during the comments pass, 2026-11-01 |
+| O235 | [ ] | **The Rust coverage floor's `minFiles` is set from a count the report has outgrown.** In `scripts/coverage-floor.mjs` the `cargo llvm-cov json export` format has `minFiles: 40`, and its comment said it was set from 53 files measured across six crates, thirteen of margin. `docs/ci.md`'s table of files measured against `minFiles` gives the Rust report 82 files against 40, and this document's coverage-gates bullet says "40 for Rust (82)". So the check fails only when the report loses 43 or more files. The web format's `minFiles` drifted the same way and was re-derived (O98). **Found by the comments pass checking the comment against BASE, 2026-11-02; the figures are read from those two documents, not measured.** The comments pass cut the comment's false "53 files … thirteen of margin" lead and its "It trips when a crate of fourteen files or more leaves the report" line. The fix re-derives the Rust `minFiles` from today's count, as O98 did for the web one, in its own PR | the `cargo llvm-cov json export` format in `scripts/coverage-floor.mjs` | the comments pass checking a comment against BASE, 2026-11-02 |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -3208,12 +3212,13 @@ wrong population *(O33 has since closed — see its entry below)*:
   the change and **13 of them changed axis**, all horizontal to vertical, every
   one on a block whose box, stroke count, median stroke and ink are identical
   in the two runs; the sample's v/h split moved 55/21 to 65/8.
-  `uncontained`'s own doc comment states and bounds this. So the design's §1
-  justification for storing `axis` on a region — "the clustering already knows
-  it" — is still not true of every region, which is the claim this item exists
-  to track. **What would close it:** an axis decided by something the
-  clustering measures on a duplicate box, or a `Region::axis` able to say it
-  does not know.
+  `uncontained`'s own doc comment states this, and the count it gave is in
+  `docs/superpowers/notes/2026-11-01-code-history-cli-scripts.md`, under
+  `detect.rs`. So the design's §1 justification for storing `axis` on a region —
+  "the clustering already knows it" — is still not true of every region, which
+  is the claim this item exists to track. **What would close it:** an axis
+  decided by something the clustering measures on a duplicate box, or a
+  `Region::axis` able to say it does not know.
 - **O32 — The `median_area` disqualifier cannot fire. Open.** The L2 design
   names two absolute disqualifiers for a detector, one of them "median region
   area > 0.15 of the page". `MAX_BLOCK_AREA` discards any block above 0.15
@@ -3706,6 +3711,62 @@ written:
   **Found by reading during the comments pass, 2026-10-29, and not
   reproduced.** The fix is to read the header through the same loop, in its
   own PR.
+
+**O232 to O235 were found by the comments pass on 2026-11-01 and 2026-11-02**, by reading
+the code a comment described, and their bullets follow.
+
+- **O232 — `align --no-split-spreads` prints no run table and no figure
+  line. Open.** On that path `align` solves the two editions, prints their
+  page counts and, with `--stats`, the calibration and shape lines, then
+  calls `report_summary(&runs, a.len())` and drops what it returns.
+  `report_summary` returns the run table and the figure line as two strings
+  so that both can be asserted; `verify` prints them, the table to stdout and
+  the figure line to stderr. When `report_summary` printed them itself, this
+  call was enough, and it was not changed when the function began returning
+  them. So the page-level diagnostic the help text offers ends before its
+  result. **Found by reading `align` during the comments pass, 2026-11-01;
+  not run.** The fix is to print both as `verify` does, in its own PR, with a
+  test that runs the path.
+- **O233 — the refusal of `export --in-place --user` says the export would
+  delete documents, and it would not. Open.** `export` refuses the pair before
+  it opens a database, and the message says the export "would write one
+  reader's notes and position over another's own files, and delete the
+  documents they have no state for". The first half holds. The second does
+  not: before `export::work` writes over a file or removes a stale one in
+  place, it asks `migrate::absorbed_for`, which answers `mine || !theirs` for
+  notes and progress, so a file another reader holds state for, and the named
+  reader does not, is kept. The refusal is right; its reason is wrong.
+  **Found by the comments pass's review of a test comment that copied the
+  message, 2026-11-01.** The fix is the message, in its own PR.
+- **O234 — CI's "Coverage floor, per file" step does not run when the
+  aggregate step above it fails. Open.** In the Rust job the per-file step
+  has no `if:`, so under the default `success()` condition it is skipped
+  whenever the `cargo llvm-cov nextest ... --fail-under-lines 93` step above
+  it fails. Its comment said it was the step that says something when the
+  aggregate fires, by printing which file fell below its floor; when the
+  aggregate fails nothing names the file. `scripts/check-all.sh` runs the
+  same pair under `set -euo pipefail`, so the per-file command is not reached
+  when the aggregate command fails. The web job's step of the same name has
+  the same shape: no `if:`, after `pnpm -C web run test:coverage`. **Found by
+  the comments pass reading the step's comment, 2026-11-01; verified by
+  reading, not run.** The comments pass cut that claim from the comment,
+  which now points here. The fix is to run the per-file step after an
+  aggregate failure, in CI and in `check-all.sh`, with a check of the red
+  path, in its own PR.
+- **O235 — The Rust coverage floor's `minFiles` is set from a count the
+  report has outgrown. Open.** In `scripts/coverage-floor.mjs` the
+  `cargo llvm-cov json export` format has `minFiles: 40`, and its comment said
+  it was set from 53 files measured across six crates, thirteen of margin.
+  `docs/ci.md`'s table of files measured against `minFiles` gives the Rust
+  report 82 files against 40, and this document's coverage-gates bullet says
+  "40 for Rust (82)". So the check fails only when the report loses 43 or more
+  files. The web format's `minFiles` drifted the same way and was re-derived
+  (O98). **Found by the comments pass checking the comment against BASE,
+  2026-11-02; the figures are read from those two documents, not measured.**
+  The comments pass cut the comment's false "53 files … thirteen of margin"
+  lead and its "It trips when a crate of fourteen files or more leaves the
+  report" line. The fix re-derives the Rust `minFiles` from today's count, as
+  O98 did for the web one, in its own PR.
 
 ## What comes next
 
@@ -4228,7 +4289,7 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the eighty-eight open items tabled above — **a large minority of
+What remains: the ninety-two open items tabled above — **a large minority of
 them opened by a review** rather than by building something, which is the
 fact worth carrying. **The count that used to stand here is deleted rather
 than corrected**, after three passes over one afternoon produced twenty-five,
@@ -4960,9 +5021,10 @@ mismatched pair said nothing at all.
   `docs/superpowers/plans/2026-10-29-comment-pass-pilot.md`. The user ruled on
   2026-10-29 how the rest of the repository goes: a full pass in which Sonnet
   cuts, Opus reviews every block blind, then one fix round and a pointer pass.
-  It runs as five PRs by `docs/superpowers/plans/2026-10-29-comment-pass.md`;
-  the first four are done: `web/src` with `web/vite.config.ts`, `web/tests`,
-  `crates/taiyaku-library` and `crates/taiyaku-serve`.
+  It ran as five PRs by `docs/superpowers/plans/2026-10-29-comment-pass.md`;
+  all five are done: `web/src` with `web/vite.config.ts`, `web/tests`,
+  `crates/taiyaku-library`, `crates/taiyaku-serve`, and `crates/taiyaku-cli`
+  with `scripts/` and the CI, build and tool config files.
 
 - **Measure argon2's cost on the NAS, and set the semaphore cap O57 wants.**
   §14 recorded that OWASP's parameters — `M_COST_KIB` 19456, `T_COST` 2,

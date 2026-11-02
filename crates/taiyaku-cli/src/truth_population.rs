@@ -1,11 +1,11 @@
 //! What text is made of, measured from the boxes a person drew.
 //!
-//! Every constant in `detect.rs` says "a starting value, not a measurement",
-//! and until 2026-08-11 there was no material against which one could become
-//! one. There is now: 480 hand-drawn boxes over 45 pages. The components
-//! *inside* a box are the glyph population; the ones outside are the reject
-//! population. A size band, an ink floor and a smear gap are each read off
-//! those two distributions rather than guessed.
+//! `detect.rs`'s module doc says which of its constants cite these
+//! measurements and which are starting values. The material is 480
+//! hand-drawn boxes over 45 pages.
+//! The components *inside* a box are the glyph population; the ones outside are
+//! the reject population. A size band, an ink floor and a smear gap are each
+//! read off those two distributions rather than guessed.
 //!
 //! **The shape is `region_experiment.rs`'s**, deliberately, rather than a
 //! second convention: `#[cfg(test)]`, gated on `TAIYAKU_CORPUS`, skipping
@@ -128,10 +128,9 @@ fn merge_gap(strokes: &[Bounds], axis: Axis, limit: u32) -> Option<u32> {
 
 /// Ink pixels inside `bounds`, as a fraction of its area.
 ///
-/// **Counts pixels, not bounding boxes.** O34 records `MIN_INK` summing
-/// overlapping stroke boxes, which is why 61 of 76 surviving blocks scored
-/// above 1.0 against a floor of 0.05. This is the quantity that floor was
-/// always meant to be, measured on the material.
+/// **Counts pixels, not bounding boxes**, which would double-count every
+/// overlap between strokes (O34). This is the quantity `MIN_INK` is a floor on,
+/// measured on the material.
 fn ink_fraction(page: &GrayImage, threshold: u8, bounds: &Bounds) -> f64 {
     let mut ink = 0u64;
     for y in bounds.y0..=bounds.y1 {
@@ -162,7 +161,7 @@ struct PageMeasure {
     /// Smallest gap merging one box's own components into one block, in
     /// pixels. Boxes whose axis the labeller declined are skipped.
     within_gap: Vec<u32>,
-    /// Smallest gap welding two *adjacent* boxes into one block — the ceiling.
+    /// Smallest gap welding two boxes into one block — the ceiling.
     between_gap: Vec<u32>,
     height: u32,
 }
@@ -217,9 +216,9 @@ fn measure_page(page: &GrayImage, drawn: &[TruthRegion]) -> PageMeasure {
         }
     }
 
-    // The ceiling: for each box, the nearest other box sharing its axis, and
-    // the gap at which their two component sets weld into one block. A smear
-    // gap at or above this merges two balloons and produces a `merged`.
+    // The ceiling: for every pair of boxes sharing an axis, the gap at which
+    // their two component sets weld into one block. A smear gap at or above
+    // this merges two balloons and produces a `merged`.
     for (i, b) in boxes.iter().enumerate() {
         let Some(axis) = b.axis else { continue };
         for (j, other) in boxes.iter().enumerate() {
@@ -244,13 +243,9 @@ fn measure_page(page: &GrayImage, drawn: &[TruthRegion]) -> PageMeasure {
 /// The one percentile index this file uses: `round((n - 1) · p)`, clamped into
 /// range.
 ///
-/// **One convention, in one place, because there were two.** Until 2026-08-12
-/// the ink line below indexed `trunc(n · p)` while `quantile` indexed
-/// `round((n - 1) · p)` — one element apart at n = 478, and printed side by
-/// side in the same table under the same names. `MIN_INK`'s cited p05 of 0.050
-/// is the whole justification for a floor of 0.05, so which of the two it came
-/// from is not a detail. Unified onto this one; `docs/notes.md`, "What text is
-/// made of, measured against 480 hand-drawn boxes", records what that moved.
+/// **One convention, in one place**, so the ink line and `quantile`, printed
+/// together under the same names, index the same way. `MIN_INK`'s doc cites the
+/// ink line's p05, so which convention produced it is not a detail.
 ///
 /// Also the file's only cast from a length to a float and back, rather than one
 /// per percentile.
@@ -322,9 +317,8 @@ fn what_text_is_made_of() {
         .unwrap_or_else(|e| panic!("{work}/{edition}: {e}"));
 
         // Measure **inside** the decode closure. `decode_all` bounds memory by
-        // decoding the large pages one at a time — the corpus holds 430 MB
-        // TIFFs — and collecting every decoded `GrayImage` first throws that
-        // away, holding five full-resolution pages of a TIFF edition at once.
+        // decoding the large pages one at a time, and collecting every decoded
+        // `GrayImage` first throws that away.
         //
         // The closure is handed no index, so truth is looked up by page name.
         // Names are unique within an edition (archive entry names, or
@@ -349,15 +343,14 @@ fn what_text_is_made_of() {
         .unwrap_or_else(|e| panic!("{work}/{edition}: {e}"));
 
         // Per edition as well as globally, because the global row cannot
-        // answer the question the dev-set scores raise. Dialogue recall is
-        // 0.00 on all four Japanese raw editions and non-zero on every English
-        // one, and `BAND`'s `lo` is a fraction of page height — so "vertical
-        // type does not smear into one block" and "the raw editions are
-        // scanned at a different size" are two explanations a single
-        // 1,024–3,056px range over all 45 pages cannot separate. Per edition
-        // it can: if the zero tracks page height, the two stay entangled; if
-        // it does not, the scan-scale account is refused. No extra decode —
-        // `m.height` is already per page and this loop already exists.
+        // separate two explanations of the raw editions' zero dialogue recall
+        // in the dev-set scores: "vertical type does not smear into one block"
+        // and "the raw editions are scanned at a different size". `BAND`'s
+        // `lo` is a fraction of page height, and a single page-height range
+        // over all 45 pages cannot tell them apart. Per edition it can: if the
+        // zero tracks page height, the two stay entangled; if it does not, the
+        // scan-scale account is refused. No extra decode — `m.height` is
+        // already per page and this loop already exists.
         let mut edition_inside = 0usize;
         let mut edition_heights: Vec<u32> = Vec::new();
         let mut edition_inside_frac: Vec<u32> = Vec::new();
@@ -376,11 +369,8 @@ fn what_text_is_made_of() {
                 edition_inside_frac.push(frac);
             }
             for &side in &m.outside_sides {
-                // Same conversion as inside_frac above, over the outside
-                // population instead — this is the figure `BAND`'s `lo` and
-                // `glyph_band`'s doc comment are actually cut against, which
-                // until now existed only in pixels (see the table this test
-                // prints outside_sides in).
+                // Same conversion as `inside_frac` above, over the outside
+                // population instead: the figure `BAND`'s doc comment quotes.
                 let frac = (u64::from(side) * 10_000 / u64::from(m.height)) as u32;
                 outside_frac.push(frac);
                 edition_outside_frac.push(frac);
@@ -433,11 +423,11 @@ fn what_text_is_made_of() {
     println!("outside longer-side px      {}", q(&outside));
     println!("inside  longer-side ‱page-h {}", q(&inside_frac));
     println!("outside longer-side ‱page-h {}", q(&outside_frac));
-    // Several claims on this branch convert pixels to ten-thousandths of page
-    // height at an assumed page height; this is the range that conversion was
-    // ever standing on, over the same 45 dev pages, one height per page. The
-    // per-edition rows above are the same figure split nine ways, which is the
-    // form that can say whether an edition's page size explains its score.
+    // Pixel figures converted to ten-thousandths of page height assume a page
+    // height; this is the range that assumption stands on, over the same 45 dev
+    // pages, one height per page. The per-edition rows above are the same
+    // figure split nine ways, which is the form that can say whether an
+    // edition's page size explains its score.
     println!(
         "page height px  min={} med={} max={}",
         heights.first().copied().unwrap_or(0),

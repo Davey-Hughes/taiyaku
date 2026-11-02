@@ -31,9 +31,9 @@ fn the_distribution_reports_values_the_sample_contains() {
     assert_eq!(distribution(&[3.0]), (3.0, 3.0, 3.0, 3.0));
 }
 
-/// Reachable since the tables are taken over the slots whose search
+/// Reachable because the tables are taken over the slots whose search
 /// settled: a volume with none has nothing to report. NaN in one cell,
-/// rather than an index panic that loses the other eleven volumes' hour.
+/// rather than an index panic that loses the other eleven volumes' run.
 #[test]
 fn an_empty_sample_reports_nothing_rather_than_panicking() {
     let (lo, med, p90, hi) = distribution(&[]);

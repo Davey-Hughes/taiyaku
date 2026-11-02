@@ -9,7 +9,7 @@
 //!
 //! ## The hazard this module closes, and the decision it makes about it
 //!
-//! Task 13's `taiyaku-serve::works::row_id_for_write` mints a placeholder
+//! `taiyaku-serve::works::row_id_for_write` mints a placeholder
 //! `work` row so a reading position can be recorded before a sidecar is ever
 //! imported. That row's `content_key` is the sentinel `bridge:{slug}` — never
 //! a real 64-hex-character key — and its `sidecar_path` is whatever string
@@ -100,8 +100,8 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
 /// time it runs is a surprise on the run where the operator is least sure what
 /// it does; retention is opt-in, and the cron entry that wants it says so.
 ///
-/// **No schedule**, per this PR's build design §5 and spec C4's: a cron entry
-/// runs this, and the server gains no timer at all in C4.
+/// **No schedule**, per build design §5 and spec C4's: a cron entry runs this,
+/// and the server has no timer for it.
 ///
 /// # Errors
 ///
@@ -197,13 +197,9 @@ fn export(args: &[String]) -> Result<(), String> {
         return Err(format!("{usage}: name exactly one work, or pass --all"));
     }
     // C2: with neither flag, `export::work` defaults to writing back over
-    // `sidecar_path` — the file a work was imported from. That is exactly
-    // right when the database is the more current copy, but a hand
-    // correction made through `taiyaku serve`'s alignment editor
-    // (`routes.rs::patch_alignments`) reaches the sidecar file and the
-    // in-memory `Work` only, never `state.library` — so between a
-    // correction and the next `serve` start, the file can be ahead of the
-    // database, and an unflagged export would silently revert it. Refusing
+    // `sidecar_path` — the file a work was imported from. That is exactly right
+    // when the database is the more current copy, but the file can be ahead of
+    // the database, and an unflagged export would silently revert it. Refusing
     // here, before any database is opened, makes overwriting the source a
     // decision a caller states rather than a default nobody chose.
     if dir.is_none() && !in_place {
@@ -215,15 +211,10 @@ fn export(args: &[String]) -> Result<(), String> {
         ));
     }
     // **`--in-place` and `--user` together is refused**, before any database is
-    // opened. `--in-place` writes over the files a reader was handed, and there
-    // is exactly one reader those files belong to; exporting somebody else's
-    // state onto them overwrote their notes and *deleted* their reading
-    // position, because `absorbed` is keyed `(work_id, document)` while the
-    // state read is keyed on the user — so the guard that stops an export
-    // touching a document this library has never had was already satisfied by
-    // the first reader's import. `--dir` writes anybody's state anywhere, which
-    // is what a person reaching for `--user` actually wants. Found by the
-    // whole-branch review, 2026-08-18.
+    // opened. `--in-place` writes over the files a reader was handed, and
+    // there is exactly one reader those files belong to. `--dir` writes
+    // anybody's state anywhere, which is what a person reaching for `--user`
+    // actually wants.
     if in_place && user.is_some() {
         return Err(format!(
             "{usage}: --in-place with --user would write one reader's notes and position \
@@ -238,7 +229,7 @@ fn export(args: &[String]) -> Result<(), String> {
     // than refusing. `export::work` creates the per-work subdirectory
     // underneath it — `DIR/<slug>/` — which is what stops every work in a
     // library, all of whose sidecars are named `taiyaku.json`, from writing
-    // to the same five paths and overwriting each other (review 2's C1).
+    // to the same five paths and overwriting each other.
     // Creating the parent here as well keeps an unusable `--dir` (a typo
     // into an unwritable place) a refusal before any database is opened.
     if let Some(d) = &dir {
@@ -267,9 +258,8 @@ fn export(args: &[String]) -> Result<(), String> {
 ///
 /// With no `--user`, the lowest account id: on every library that has ever
 /// existed that is the row migration 1 seeded and `user promote` renamed, which
-/// is the person running the command on the host. **Not a constant**, which is
-/// the distinction that matters — the `LOCAL_USER = 1` this replaced was a rule
-/// about which reader a sidecar speaks for, and this is a default for a flag.
+/// is the person running the command on the host. **Not a constant**: this is a
+/// default for a flag.
 fn resolve_export_user(conn: &rusqlite::Connection, named: Option<&str>) -> Result<i64, String> {
     use rusqlite::OptionalExtension as _;
 
@@ -283,9 +273,8 @@ fn resolve_export_user(conn: &rusqlite::Connection, named: Option<&str>) -> Resu
             .ok_or_else(|| format!("no account named `{name}` in this library")),
         None => conn
             // `MIN` over an empty table answers one row holding NULL rather than
-            // no rows, so `optional()` never sees `None` and the written error
-            // was unreachable. Typed as `Option<i64>` so the NULL is what
-            // carries it. Found by the second whole-branch review.
+            // no rows, so it is typed `Option<i64>` and the NULL is what
+            // reaches the "no accounts" error below.
             .query_row("SELECT MIN(id) FROM user", [], |row| {
                 row.get::<_, Option<i64>>(0)
             })
@@ -425,10 +414,7 @@ fn scan(args: &[String]) -> Result<(), String> {
         let conn = library.conn();
         // One raiser, like one writer: `derive` already calls
         // `proposals::raise` once, at the end of its own pass, and returns
-        // the count it opened. A second call here used to exist purely to
-        // get a number to print — and since the first call's `INSERT OR
-        // IGNORE` had already opened everything raisable, the second call's
-        // own count was unconditionally zero (I1).
+        // the count it opened.
         let derived =
             taiyaku_library::derive::derive(&conn).map_err(|e| format!("deriving: {e}"))?;
         println!("{}", derive_summary(&derived, derived.raised));
@@ -578,13 +564,12 @@ const DOCUMENTS_USAGE: &str = "usage: taiyaku library root documents <path> on|o
 
 /// Dispatch `library root`.
 ///
-/// **One subcommand today, dispatched the same shape
-/// [`crate::user::command`] uses for `library user`'s six** — a `root`
-/// group rather than a bare `library documents` command, because spec C4's
-/// eventual root editor will need a home for this library's other
-/// per-root settings too (`edition_key`, `default_kind`,
-/// `default_language`, `scan_interval_secs`), and this is the one place a
-/// second root-scoped command joins without reshaping the dispatch again.
+/// **One subcommand today, dispatched the same shape [`crate::user::command`]
+/// uses for `library user`** — a `root` group rather than a bare
+/// `library documents` command, because this library's other per-root settings
+/// (`edition_key`, `default_kind`, `default_language`, `scan_interval_secs`)
+/// would need a home too, and this is the one place a second root-scoped
+/// command joins without reshaping the dispatch again.
 ///
 /// # Errors
 ///
@@ -608,8 +593,7 @@ fn root_command(args: &[String]) -> Result<(), String> {
 /// **Changes one column and stops.** It does not scan, does not derive, and
 /// does not write, move or delete a single document. Turning documents on
 /// gets them written by the next `taiyaku library scan`'s `hand::reconcile`
-/// pass — the mechanism the reconciliation design already built for exactly
-/// this — rather than by a second write path minted here. See
+/// pass rather than by a second write path minted here. See
 /// [`documents_state_line`] for why the printed line says so in full: the
 /// reasonable reading of "now keeps documents" is that a file just
 /// appeared, and it has not.
@@ -677,9 +661,8 @@ fn root_named(
 
 /// What [`root_documents`] prints once the column is set — pulled into a
 /// pure function for the reason `crate::user::sessions_ended_note` and its
-/// siblings already established: a branch inside a `println!` is reachable
-/// only by running the command, and this codebase's mutation sweep has found
-/// exactly that shape survive more than once.
+/// siblings give: a branch inside a `println!` is reachable only by running
+/// the command.
 ///
 /// **States what the flag means, not only what changed.** `on`/`off` alone
 /// tells a reader nothing unless they already know what `keeps_documents`
@@ -718,7 +701,7 @@ fn documents_state_line(path: &Path, on: bool) -> String {
 /// `forgotten_by_exclusion` and `bad_exclude_patterns` print only when
 /// non-zero, the same rule [`derive_summary`] applies to its own
 /// silent-outcome counters: a `Vec` nobody prints is a directory a person
-/// never learns was skipped (I4).
+/// never learns was skipped.
 fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
     use std::fmt::Write as _;
 
@@ -825,17 +808,16 @@ fn unreadable_causes(unreadable: &taiyaku_library::derive::Unreadable) -> String
 /// correction that was never written — a counter that never reaches this
 /// line is the failure they were added to prevent.
 ///
-/// **`emptied_works` is the sharpest of them**, being the only outcome in the
-/// project that deletes a `work` row: what moved with it, how many reading
-/// positions stopped existing, what a labeller already held that it left
-/// alone, and what its `DELETE` took and did not move all travel on the same
-/// line, so "1 work folded away" can never stand on its own.
+/// **`emptied_works` is the sharpest of them**, being the only derive outcome
+/// that deletes a `work` row: what moved with it, how many reading positions
+/// stopped existing, what a labeller already held that it left alone, and what
+/// its `DELETE` took and did not move all travel on the same line, so
+/// "1 work folded away" can never stand on its own.
 ///
-/// **The two position clauses sit together**, which they did not: the lost
-/// count printed between "truth page(s) moved" and "truth page(s) already
-/// held", so the one number that is about a reading position destroyed was
-/// read in the middle of two clauses about labelling. Grouping is the only
-/// thing a single line of prose has instead of columns.
+/// **The two position clauses sit together**, so the one number that is
+/// about a reading position destroyed is not read in the middle of two
+/// clauses about labelling. Grouping is the only thing a single line of prose
+/// has instead of columns.
 ///
 /// **`unfolded_works` prints its reasons beside its count**, the way
 /// [`scan_summary`] prints `unreadable_dirs`: the refusal messages name the
@@ -843,20 +825,16 @@ fn unreadable_causes(unreadable: &taiyaku_library::derive::Unreadable) -> String
 /// over a library of thousands tells a person something happened and gives
 /// them nothing to look at.
 ///
-/// **`series_holding_no_work` says "holding no work" and not "left empty", which
-/// is what it said and did not count.** The field is a whole-library census
-/// taken after the folds — `derive` mints a series row for every named series,
-/// a series holding only unattached chapter directories among them — so a
-/// first scan of an ordinary chapter tree printed `1 series left empty` beside
-/// the fold's own numbers with nothing having been emptied by anything:
-/// `derived 1 series, 0 works, 0 editions, 0 members, 1 unattached chapter
-/// directories, 1 series left empty`, reproduced 2026-08-27. The clause sits
-/// on the line reporting what a fold did, so the past participle read as a
-/// claim about this run, and the present participle agrees with one series
-/// and with six alike — no singular/plural branch, for the reason
-/// `fold::absorb`'s `edition(s)` gives. The count is unchanged and deliberately so — see
-/// `DeriveReport::series_holding_no_work`, which argues for the census — only
-/// the tense is.
+/// **`series_holding_no_work` says "holding no work" and not "left empty".**
+/// The field is a whole-library census taken after the folds — `derive` mints
+/// a series row for every named series, a series holding only unattached
+/// chapter directories among them — so on a first scan of an ordinary chapter
+/// tree "left empty" would sit on the line reporting what a fold did and read
+/// as a claim about this run, with nothing having been emptied by anything.
+/// The present participle also agrees with one series and with six alike — no
+/// singular/plural branch, for the reason `fold::absorb`'s `edition(s)` gives.
+/// The count is a census, deliberately so — see
+/// `DeriveReport::series_holding_no_work`, which argues for it.
 fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize) -> String {
     use std::fmt::Write as _;
 
@@ -1005,12 +983,10 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
         // **Worded so it reads as a standing fact about this root, not a
         // loss.** "No work owes" — the orphan clause above — says a document
         // is stranded and invites a person to act on it; a declined document
-        // is neither, and printing it the same way is the exact Critical
-        // this clause exists to not repeat. "This root no longer keeps"
-        // names what actually happened: someone (or migration 012, by
-        // default) turned `keeps_documents` off, and the file at a
-        // perfectly good address is simply outside what this root
-        // maintains any more.
+        // is neither. "This root no longer keeps" names what is so:
+        // `keeps_documents` is off, by someone's choice or by migration 012's
+        // default, and the file at a perfectly good address is simply outside
+        // what this root maintains.
         let named: Vec<String> = report
             .declined_documents
             .iter()
@@ -1066,9 +1042,9 @@ fn rules(args: &[String]) -> Result<(), String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
         // The return value is every accepted proposal `import_json` itself
         // just reopened, because the rule it had accepted did not survive
-        // the replace — whole-branch review, Important 3. Named here rather
-        // than only inside the library, the same discipline the paragraph
-        // below already applies to "nothing has been re-derived yet".
+        // the replace. Named here rather than only inside the library, the
+        // same discipline the paragraph below applies to "nothing has been
+        // re-derived yet".
         let reopened = taiyaku_library::rules::import_json(&conn, &text)
             .map_err(|e| format!("importing rules from {path}: {e}"))?;
         // **An import replaces the rule set and derives nothing.** The whole
@@ -1104,10 +1080,8 @@ fn rules(args: &[String]) -> Result<(), String> {
 /// [--unaccept ID] [--reopen ID] [--db PATH]`: the surface over
 /// `taiyaku_library::proposals` — [`taiyaku_library::proposals::open`],
 /// [`taiyaku_library::proposals::accept`], [`taiyaku_library::proposals::dismiss`],
-/// [`taiyaku_library::proposals::unaccept`] and, since O72,
-/// [`taiyaku_library::proposals::reopen`] — the first four of which had no
-/// caller outside their own tests before this (I3). Two rounds of Critical
-/// fixes went into an `accept` a person could not invoke.
+/// [`taiyaku_library::proposals::unaccept`] and
+/// [`taiyaku_library::proposals::reopen`].
 ///
 /// **Listing is the default**, with nothing after it: `library scan` already
 /// raises proposals as a side effect of deriving, so the ordinary use of this
@@ -1189,11 +1163,10 @@ fn proposals(args: &[String]) -> Result<(), String> {
         println!("accepted proposal {id}: wrote rule {rule_id}");
         return Ok(());
     }
-    // **A refusal is this command's error, unreworded**, as it was while
-    // `dismiss` and `unaccept` answered one through their `Err`. They answer
-    // it as `Offer::Refused` since O70, for `taiyaku-serve`, which gives a
-    // refusal and a store failure different statuses; this command prints
-    // either and exits 1, so it folds the two back together here, as
+    // **A refusal is this command's error, unreworded.** `dismiss` and
+    // `unaccept` answer one as `Offer::Refused` (O70), for `taiyaku-serve`,
+    // which gives a refusal and a store failure different statuses; this
+    // command prints either and exits 1, so it folds the two together here, as
     // `proposals::accept` does for `--accept`.
     if let Some(id) = dismiss_id {
         let id = parse_proposal_id(id)?;
@@ -1276,13 +1249,12 @@ fn parse_proposal_id(raw: &str) -> Result<i64, String> {
 
 /// Export every named work, and report what happened to each.
 ///
-/// **A work that fails does not abort the ones after it.** This loop used to
-/// propagate with `?`, so under `--all` a single bad work — a NULL
-/// `sidecar_path`, which `clear_stale_path_claim` can produce, most plausibly
-/// — left the works before it written and the works after it neither written
-/// nor named (review 2, Minor 1). Under `--in-place` that is the worst
-/// available outcome: some of a reader's sources overwritten from the
-/// database, the rest not, and no list of which.
+/// **A work that fails does not abort the ones after it.** Propagating with
+/// `?` would leave, under `--all`, the works before a single bad work — a NULL
+/// `sidecar_path`, which `clear_stale_path_claim` can produce, most plausibly —
+/// written and the works after it neither written nor named. Under
+/// `--in-place` that is the worst available outcome: some of a reader's
+/// sources overwritten from the database, the rest not, and no list of which.
 ///
 /// The alternative considered and rejected was refusing before writing
 /// anything. It cannot be done honestly: the failures here include a
@@ -1303,13 +1275,10 @@ fn parse_proposal_id(raw: &str) -> Result<i64, String> {
 /// `--all` is the count that matches the files.
 ///
 /// **Returns that document count**, which is the only reason this is not a
-/// `Result<(), String>`. The figure lived in a `println!` and nowhere else, so
-/// nothing could assert it: `+=` → `*=` left every summary reading "exported 0
-/// document(s)" and passed the suite, since no `--all` fixture had enough
-/// works and documents to tell the two apart (whole-branch review 3, Minor
-/// 11). Its one production caller drops it — the command's output is the
-/// printed line — but a claim a person reads off the terminal after
-/// overwriting their own library is worth a test, and a test needs a value.
+/// `Result<(), String>`: a figure that lives only in a `println!` cannot be
+/// asserted, and a test needs a value. Its one production caller drops it —
+/// the command's output is the printed line — but a claim a person reads off
+/// the terminal after overwriting their own library is worth a test.
 fn export_targets(
     conn: &rusqlite::Connection,
     targets: &[(i64, String)],
@@ -1338,16 +1307,15 @@ fn export_targets(
                 // `export::work`'s "What an export will not touch" for the
                 // three ways a file gets into that state and the one way out.
                 //
-                // **"a fresh one" was a promise this cannot keep** (delta
-                // review M8). A document with no state behind it is not
-                // written at all — the rule `export::work` applies to all of
-                // them and `taiyaku.library.json` joined on this branch — and
-                // an empty database side is exactly the state that produces a
-                // `kept` in the first place. So moving the file aside can
-                // leave the reader with nothing where the sentence had
-                // promised a skeleton to fill in. What it can honestly say is
-                // what the export would put there, including when that is
-                // nothing.
+                // **It cannot promise "a fresh one".** A document with no state
+                // behind it is not written at all — the rule `export::work`
+                // applies to all of them but `taiyaku.notes.json`,
+                // `taiyaku.library.json` included — and an empty database side
+                // is exactly the state that produces a `kept` in the first
+                // place. So moving the file aside can leave the reader with
+                // nothing, where "a fresh one" would promise a skeleton to fill
+                // in. What it can honestly say is what the export would put
+                // there, including when that is nothing.
                 for path in &exported.kept {
                     println!(
                         "kept {} (this library has never read it, so it was not \
@@ -1473,11 +1441,8 @@ fn merge_summary(outcomes: &[Merged]) -> String {
 }
 
 /// `merge_summary`'s own fixed-field discipline, for what `import_canonical`'s
-/// new call to `taiyaku_library::migrate::work` read back from a work's up to
-/// four sibling documents on its first import — the whole-branch review's
-/// "C3" defect, `.superpowers/sdd/lib-fix-c3-context.md`, not to be confused
-/// with the roadmap's spec C3 (`librarydoc.rs`'s metadata-editing screen,
-/// still unbuilt). A document with no sibling file
+/// call to `taiyaku_library::migrate::work` read back from a work's up to
+/// four sibling documents on its first import. A document with no sibling file
 /// beside the sidecar at all is omitted entirely — the same way
 /// `merge_summary` prints nothing for a plain import with nothing to report —
 /// so a library that has never used the sibling-file convention stays silent
@@ -1495,13 +1460,6 @@ fn merge_summary(outcomes: &[Merged]) -> String {
 /// or applied; the reason is not embedded here, since a fixed-field line is
 /// no place for a sentence with spaces in it — see
 /// `malformed_sibling_warnings`, which gives the reason in full.
-///
-/// **`kept` and `unread` were one token until review 3's C1**, and it was the
-/// wrong one: `kept` was printed for every already-settled document, so a
-/// reader whose `taiyaku.truth.json` had been copied back from another
-/// machine was told the database already held their labelling — in the line
-/// immediately before the export that deleted the file, with the database
-/// holding nothing.
 pub(crate) fn migration_summary(report: &taiyaku_library::migrate::SiblingMigration) -> String {
     use taiyaku_library::migrate::{LibraryOutcome, NotesOutcome, ProgressOutcome, TruthOutcome};
 
@@ -1567,15 +1525,11 @@ pub(crate) fn migration_summary(report: &taiyaku_library::migrate::SiblingMigrat
 /// `taiyaku_library::migrate::work` already made, to skip that one document
 /// rather than fail the whole import over it.
 ///
-/// **Returns the lines rather than printing them, which is the whole reason
-/// this function changed shape** (whole-branch review 3, Minor 10). It printed
-/// directly, so replacing its body with `()` passed the entire suite: the only
-/// message that tells a reader a sibling document was not read was pinned by
-/// nothing. That matters most for exactly the file the C1 fix protects — a
-/// malformed `taiyaku.truth.json` is left on disk *so that* fixing it and
-/// importing again works, and this line is how a reader learns there is
-/// something to fix. `migration_summary` above already had this shape for the
-/// same reason; the two now match.
+/// **Returns the lines rather than printing them**, so a test can assert them.
+/// That matters most for a malformed `taiyaku.truth.json`, which is left on
+/// disk *so that* fixing it and importing again works: this line is how a
+/// reader learns there is something to fix. `migration_summary` above has
+/// this shape for the same reason.
 pub(crate) fn malformed_sibling_warnings(
     canonical: &Path,
     report: &taiyaku_library::migrate::SiblingMigration,
@@ -1695,16 +1649,15 @@ fn from_variable(value: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
 /// `db_path`, reading the real environment and reporting what it decided —
 /// **every time**, unlike `cache_root`'s warn-only-on-fallback: a cache
 /// regenerates and losing track of it costs milliseconds; this database
-/// holds a reader's notes and positions, and the whole point of moving it
+/// holds a reader's notes and positions, and the whole point of putting it
 /// under `XDG_DATA_HOME` — deliberately *data*, not `XDG_CACHE_HOME` — is
 /// that a person can find it again, which is worth saying on every run
 /// rather than only the run that would have surprised them.
 ///
 /// Also creates the resolved path's parent directory, the same reason
 /// `cache_root::create` does: `rusqlite::Connection::open` cannot create a
-/// missing directory, and this is the first thing in this codebase ever to
-/// open a *real* on-disk library, so `~/.local/share/taiyaku/` will not
-/// already exist on a fresh install.
+/// missing directory, and `~/.local/share/taiyaku/` does not exist on a
+/// fresh install.
 ///
 /// # Errors
 ///

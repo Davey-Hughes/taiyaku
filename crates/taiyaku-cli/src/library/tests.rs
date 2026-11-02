@@ -1,9 +1,7 @@
 /// The account these tests export and import as.
 ///
 /// A fixture detail rather than a rule — which is the distinction spec A2
-/// §5.1 turned on. The `LOCAL_USER = 1` this replaced lived in `export.rs`
-/// and answered for every reader in the library; this says only "whoever
-/// this test is".
+/// §5.1 turned on. It says only "whoever this test is".
 const THE_READER: i64 = 1;
 
 use super::*;
@@ -18,21 +16,7 @@ use taiyaku_library::Library;
 /// alone separates tests within one run and nothing between runs, so a
 /// `cargo test` overlapping a `cargo mutants` or a second terminal has two
 /// processes sharing one directory, and either one's `remove_dir_all` deletes
-/// the other's fixture mid-test. Review 3's Minor 13 added it there and to
-/// `tests/cli.rs`'s `db_path`; this copy and `cache/tests.rs`'s were missed
-/// (delta review M6).
-///
-/// **It buys the collision fix at the cost of accumulation, knowingly**, and
-/// that is the trade every helper on this branch that took the pid has made —
-/// `migrate/tests.rs`, `cache/tests.rs`, `score/tests.rs` and `tests/cli.rs`'s
-/// `db_path` alike. A fixed name is reused, so `/tmp` holds one directory per
-/// test forever; a per-run name is not, so it holds one per test **per run**.
-/// `taiyaku-serve/src/test_support.rs`'s `Fixture` is the shape that answers
-/// both — unique name *plus* a `Drop` that removes it, added there after 9,147
-/// leaked directories were measured — and giving these five helpers the same
-/// guard is a separate piece of work from the collision this comment is about.
-/// *(O117 did that piece of work: this is the shared `TempDir` now, and every
-/// helper named above went with it.)*
+/// the other's fixture mid-test.
 fn scratch(name: &str) -> taiyaku_read::test_support::TempDir {
     taiyaku_read::test_support::TempDir::new(&format!("library-{name}"))
 }
@@ -226,11 +210,9 @@ fn a_migration_summary_names_every_document_that_had_a_sibling_file() {
     );
 }
 
-/// `kept` and `unread` are different words because they are different facts,
-/// and printing the first for the second is how whole-branch review 3's C1
-/// stayed invisible: `kept` is documented as "the database already held state
-/// for that document", and it was printed in the line immediately before an
-/// export that deleted a `taiyaku.truth.json` the database had never held.
+/// `kept` and `unread` are different words because they are different facts:
+/// printing `kept` for a document the database never held would claim, as
+/// `kept` is documented, "the database already held state for that document".
 #[test]
 fn a_document_neither_side_holds_is_reported_as_unread_rather_than_kept() {
     let report = taiyaku_library::migrate::SiblingMigration {
@@ -302,9 +284,8 @@ fn export_refuses_neither_a_work_name_nor_all() {
 ///
 /// `--db` is still passed, pointed at a scratch path nothing ever creates:
 /// belt and braces against the refusal being reordered after
-/// `resolve_db_path` later, which — unguarded, as this test caught once
-/// already while red — reads `$XDG_DATA_HOME`/`$HOME` and creates a real
-/// library there.
+/// `resolve_db_path` later, which, unguarded, reads `$XDG_DATA_HOME`/`$HOME`
+/// and creates a real library there.
 #[test]
 fn export_refuses_without_dir_or_in_place_and_names_both_options() {
     let root = scratch("export-refuses-neither-flag");
@@ -382,13 +363,12 @@ fn export_writes_the_documents_for_a_previously_imported_work() {
     );
 }
 
-/// **Whole-branch review 3's C1, end to end through the two commands that
-/// produced it.** Import a work with no siblings; restore its
-/// `taiyaku.truth.json` from a backup (or copy it back from the laptop it was
-/// labelled on); import again — which is what `taiyaku serve <sidecar>...`
-/// does on every start; export in place. The labelling was deleted, and the
-/// import line before it said `truth=kept`, whose documented meaning is that
-/// the database already held it. The database had never seen it.
+/// **Import then export, end to end.** Import a work with no siblings;
+/// restore its `taiyaku.truth.json` from a backup (or copy it back from the
+/// laptop it was labelled on); import again — which is what
+/// `taiyaku serve <sidecar>...` does on every start; export in place. The
+/// import line must say the database holds nothing for that file
+/// (`truth=unread`), and the labelling must still be on disk afterwards.
 #[test]
 fn export_in_place_does_not_delete_a_sibling_the_database_never_absorbed() {
     let root = scratch("export-in-place-keeps-unabsorbed");
@@ -433,12 +413,11 @@ fn export_in_place_does_not_delete_a_sibling_the_database_never_absorbed() {
     );
 }
 
-/// C2's fix, proven the way the reviewer reproduced the defect: a hand edit
-/// made to the sidecar after import is gone once `--in-place` exports the
-/// database's copy back over it. That is `--in-place`'s whole point — export
-/// intentionally reverting a stale file is the fix working, not a new bug —
-/// so this pins the flag actually reaches `target_dir`'s default-to-parent
-/// behaviour rather than the refusal added above.
+/// C2's fix: a hand edit made to the sidecar after import is gone once
+/// `--in-place` exports the database's copy back over it. That is
+/// `--in-place`'s whole point — export intentionally reverting a stale file is
+/// the flag working, not a bug — so this pins that the flag actually reaches
+/// `target_dir`'s default-to-parent behaviour rather than the refusal above.
 #[test]
 fn export_in_place_writes_over_the_sidecar_it_was_imported_from() {
     let root = scratch("export-in-place");
@@ -450,8 +429,7 @@ fn export_in_place_writes_over_the_sidecar_it_was_imported_from() {
     import_canonical(&library, &canonical).expect("imports");
     drop(library);
 
-    // A hand edit to the file the database no longer knows about — the same
-    // shape as the reviewer's repro (a title, a `spreads` list).
+    // A hand edit to the file the database no longer knows about: a title.
     std::fs::write(
         &path,
         sidecar_json("hh").replace("\"T\"", "\"HAND EDITED\""),
@@ -479,9 +457,8 @@ fn export_in_place_writes_over_the_sidecar_it_was_imported_from() {
     );
 }
 
-/// The unchanged case: `--dir` still lands the five documents in the given
-/// directory and never touches the source sidecar, exactly as before this
-/// fix — the guard above only fires when neither flag is given.
+/// `--dir` lands the five documents in the given directory and never touches
+/// the source sidecar — the guard above only fires when neither flag is given.
 #[test]
 fn export_with_dir_never_touches_the_source_sidecar() {
     let root = scratch("export-dir-unchanged");
@@ -556,19 +533,16 @@ fn export_all_covers_every_work_in_the_library() {
     assert!(b.parent().unwrap().join("taiyaku.notes.json").exists());
 }
 
-/// **Minor 1 of whole-branch review 2, closed: one bad work under `--all`
-/// does not strand the works after it.** The loop used to propagate with `?`,
-/// so a work that could not be exported — a NULL `sidecar_path` under
-/// `--in-place`, which `clear_stale_path_claim` can produce — left the works
-/// before it written over their sources and the works after it neither
-/// written nor named.
+/// **One bad work under `--all` does not strand the works after it.** A work
+/// that cannot be exported — a NULL `sidecar_path` under `--in-place`, which
+/// `clear_stale_path_claim` can produce — must not leave the works after it
+/// unwritten and unnamed.
 ///
 /// `zeta` is chosen so the bad work sorts *first* by `work.id` (it is imported
-/// first), which is the ordering that made the old behaviour worst: nothing
-/// after it ran at all. The assertions are on the payload — the good work's
-/// documents on disk, the bad work's slug in the error — rather than on the
-/// call merely returning `Err`, since returning `Err` is exactly what it did
-/// before.
+/// first), so any work after it runs only if the loop carries on past the
+/// failure. The assertions are on the payload — the good work's documents on
+/// disk, the bad work's slug in the error — rather than on the call merely
+/// returning `Err`.
 #[test]
 fn export_all_writes_what_it_can_and_names_the_work_it_could_not() {
     let root = scratch("export-all-partial");
@@ -618,16 +592,13 @@ fn export_all_writes_what_it_can_and_names_the_work_it_could_not() {
     );
 }
 
-/// **The C1 defect of whole-branch review 2, closed.** Every work in a real
-/// library keeps its sidecar at `<dir>/taiyaku.json`, so a flat `--dir` gave
-/// every work the same five filenames and each one silently overwrote the
-/// one before it: three works in, three files out, the summary line claiming
-/// nine documents across three works, and the files holding only the third.
-/// `atomic::write` makes each write atomic, so there was not even a
-/// truncated file to notice.
+/// **A flat `--dir` must not give every work the same five filenames.** Every
+/// work in a real library keeps its sidecar at `<dir>/taiyaku.json`, so each
+/// work would silently overwrite the one before it, and `atomic::write` makes
+/// each write atomic, so there would not even be a truncated file to notice.
 ///
 /// A per-work subdirectory named for the work's `slug` — unique by schema —
-/// is what closes it, and it keeps the property the round trip needs: the
+/// is what prevents it, and it keeps the property the round trip needs: the
 /// five documents of one work stay siblings of each other, sharing the stem
 /// `migrate.rs` finds them by on the way back in.
 #[test]
@@ -655,9 +626,9 @@ fn export_all_into_one_dir_keeps_every_work_rather_than_overwriting() {
     {
         let library = Library::open(&db).expect("reopens");
         let conn = library.conn();
-        // `volume_hand` too — a *reader's* filing is a hand value, and since
-        // O80 / migration 011 that is what `librarydoc::of` projects and what
-        // makes `export` write a `taiyaku.library.json` at all.
+        // `volume_hand` too — a *reader's* filing is a hand value, and that is
+        // what `librarydoc::of` projects and what makes `export` write a
+        // `taiyaku.library.json` at all (O80, migration 011).
         conn.execute(
             "UPDATE work SET volume_hand = 2.0, volume = 2.0 WHERE slug = 'beta'",
             [],
@@ -707,10 +678,8 @@ fn export_all_into_one_dir_keeps_every_work_rather_than_overwriting() {
         "and Beta's volume is"
     );
 
-    // **Whole-branch review 3, Minor 11.** The count the summary line reports
-    // is the count on disk, and it is a sum rather than a product: `+=` → `*=`
-    // read "exported 0 document(s)" on every run and passed the whole suite,
-    // because no fixture had enough works and documents to tell them apart.
+    // The count the summary line reports is the count on disk, and it is a sum
+    // rather than a product.
     let mut on_disk: Vec<PathBuf> = Vec::new();
     for entry in std::fs::read_dir(&out).expect("reads the backup directory") {
         let dir = entry.expect("entry").path();
@@ -730,7 +699,7 @@ fn export_all_into_one_dir_keeps_every_work_rather_than_overwriting() {
     );
 }
 
-// -- the placeholder-path hazard (Task 13 -> Task 15), tested explicitly --
+// -- the placeholder-path hazard, tested explicitly --
 
 /// The bridge row exactly as `taiyaku-serve`'s `works::row_id_for_write`
 /// mints one. That function is `pub(crate)` to `taiyaku-serve` and
@@ -850,14 +819,12 @@ fn without_canonicalisation_the_same_scenario_would_orphan_the_placeholder() {
     );
 }
 
-// -- sibling migration on first import (spec C3-fix) -----------------------
+// -- sibling migration on first import -------------------------------------
 //
-// `.superpowers/sdd/lib-fix-c3-context.md`: Task 13 moved reading progress,
-// notes and labelling truth into rows and nothing ever read the sibling
-// files back. These tests go through `import_canonical` itself — the wiring,
-// not just `taiyaku_library::migrate::work`'s own unit tests
-// (`taiyaku-library/src/migrate/tests.rs`) — because the defect was never in
-// that function's logic; it was that nothing called it.
+// These tests go through `import_canonical` itself — the wiring, not just
+// `taiyaku_library::migrate::work`'s own unit tests
+// (`taiyaku-library/src/migrate/tests.rs`) — because what they guard is that
+// `import_canonical` calls `migrate::work` at all.
 
 fn notes_fixture() -> &'static str {
     r#"{"work":"t","notes":[
@@ -1000,14 +967,12 @@ fn a_second_import_does_not_overwrite_state_changed_since_the_first() {
     assert_eq!(notes.notes[0].id, "live", "the file must not have won");
 }
 
-/// **The C3 defect of whole-branch review 2, through the wiring `serve`
-/// actually uses.** `taiyaku serve <sidecar>...` calls `import_canonical` for
-/// every path on every start, so a migration that decided "already migrated?"
-/// by asking whether the database currently holds anything undid a reader's
-/// deletion at every restart, forever: delete your last note and clear your
-/// labelling, and both came back — with `export --in-place` unable to remove
-/// the stale files, because it does not write a document whose state is
-/// `None`.
+/// **A deletion survives every restart, through the wiring `serve` actually
+/// uses.** `taiyaku serve <sidecar>...` calls `import_canonical` for every
+/// path on every start, so a migration that decided "already migrated?" by
+/// asking whether the database currently holds anything would undo a reader's
+/// deletion at every restart: delete your last note and clear your labelling,
+/// and both would come back.
 #[test]
 fn a_deletion_made_since_the_first_import_survives_every_restart() {
     let root = scratch("siblings-deletion-sticks");
@@ -1040,8 +1005,7 @@ fn a_deletion_made_since_the_first_import_survives_every_restart() {
             .expect("clears the labelling");
     }
 
-    // Two more starts, because "it comes back at every restart" was the
-    // shape of the defect: once is not evidence that it stays away.
+    // Two more starts: once is not evidence that it stays away.
     for start in 1..=2 {
         import_canonical(&library, &canonical).expect("a later start");
         let conn = library.conn();
@@ -1094,21 +1058,17 @@ fn a_malformed_sibling_is_reported_and_skipped_and_the_sidecar_still_imports() {
     );
 }
 
-/// **Whole-branch review 3, Minor 10.** The `=malformed` token in the summary
-/// line names the document and stops there — no colon, no byte offset, no
-/// sentence — deliberately, because a fixed-field line is no place for one.
-/// This is the sentence, and it was pinned by nothing: the function printed
-/// directly, so replacing its body with `()` passed the whole suite.
+/// The `=malformed` token in the summary line names the document and stops
+/// there — no colon, no byte offset, no sentence — deliberately, because a
+/// fixed-field line is no place for one. This is the sentence.
 ///
-/// It is the only message that tells a reader a sibling document was not read,
-/// and it is what makes the C1 recovery path a recovery: a malformed
-/// `taiyaku.truth.json` is left on disk *so that* fixing it and importing
-/// again works, and nothing else says there is something to fix.
+/// It is what makes the recovery path a recovery: a malformed
+/// `taiyaku.truth.json` is left on disk *so that* fixing it and importing again
+/// works, and this message gives the reason it was not read.
 ///
 /// All four documents malformed at once, because the order is part of the
 /// claim — a reader scanning four lines should meet them in the order
-/// `migrate::work` considered them — and because three of the four arms had
-/// never been reached by any test at all.
+/// `migrate::work` considered them.
 #[test]
 fn every_malformed_sibling_gets_a_sentence_naming_the_file_and_the_reason() {
     let root = scratch("siblings-malformed-sentences");
@@ -1309,18 +1269,17 @@ fn round_trip_export_wipe_the_database_and_reimport_recovers_the_same_state() {
     assert_eq!(meta.tags, vec!["seinen".to_string()]);
 }
 
-/// **The C2 defect of whole-branch review 2, end to end, exactly as it was
-/// reproduced.** Labels are drawn against archive `aaaaaaaa` and recorded in
+/// **A reimport that changes the archives leaves the labels' provenance as it
+/// was.** Labels are drawn against archive `aaaaaaaa` and recorded in
 /// `taiyaku.truth.json`; the archive is then replaced (same path, different
 /// bytes) and the work reimported; the export must still say `aaaaaaaa`.
+/// `state::truth`'s own doc comment says why `members` is stored rather than
+/// projected from the archives in hand now.
 ///
-/// Before the fix it said `bbbbbbbb`: `state::truth` re-projected `members`
-/// from whatever `member` rows existed at read time, so the exported document
-/// asserted provenance the labelling had never seen — and under `--in-place`
-/// wrote that falsehood over the reader's only copy of it. Two things ride on
-/// this list being true: `taiyaku score`'s refusal to score labels against
-/// archives that have since changed, and the Labeller's own view of the same
-/// document through `GET /api/works/{w}/truth`.
+/// Two things ride on the exported `members` list being true: `taiyaku
+/// score`'s refusal to score labels against archives that have since changed,
+/// and the Labeller's own view of the same document through
+/// `GET /api/works/{w}/truth`.
 #[test]
 fn a_reimport_that_changes_the_archives_does_not_rewrite_what_the_labels_were_drawn_against() {
     let root = scratch("truth-provenance-survives-reimport");
@@ -1439,8 +1398,7 @@ fn scan_summary_omits_excluded_directories_when_none() {
     assert!(!line.contains("excluded"), "{line}");
 }
 
-/// O92: `excluded_files` survived `> 0` mutated to `< 0` in the mutation
-/// sweep — nothing exercised this branch at all before this test.
+/// O92: `excluded_files` is named when present.
 #[test]
 fn scan_summary_names_excluded_files_when_present() {
     let mut report = scan_report(3, 1, 2);
@@ -1472,8 +1430,7 @@ fn scan_summary_omits_bad_exclude_patterns_when_none() {
     assert!(!line.contains("unusable"), "{line}");
 }
 
-/// O92: `forgotten_by_exclusion` survived `> 0` mutated to `< 0` in the
-/// mutation sweep, the same as `excluded_files` above.
+/// O92: `forgotten_by_exclusion` is named when present.
 #[test]
 fn scan_summary_names_forgotten_by_exclusion_when_present() {
     let mut report = scan_report(3, 1, 2);
@@ -1495,14 +1452,9 @@ fn derive_report() -> taiyaku_library::derive::DeriveReport {
     taiyaku_library::derive::DeriveReport::default()
 }
 
-/// **Four distinct numbers, deliberately.** This fixture used to set
-/// `editions` and `members` both to 6, so printing `report.editions` where
-/// `report.members` belongs produced the identical line and the mutation
-/// survived — the member count a person reads after a scan would silently
-/// have been the edition count. The same mutation on `works` was already
-/// caught, for no better reason than that 5 happened to differ from 6. Every
-/// count here now differs from every other, so each position is pinned by
-/// the number in it rather than by luck.
+/// **Four distinct numbers, deliberately.** Every count here differs from
+/// every other, so a count printed in another's position changes the line:
+/// each position is pinned by the number in it rather than by luck.
 #[test]
 fn derive_summary_names_the_four_headline_counts_and_the_proposal_count() {
     let mut report = derive_report();
@@ -1516,10 +1468,10 @@ fn derive_summary_names_the_four_headline_counts_and_the_proposal_count() {
     );
 }
 
-/// Step 6b: `suppressed` and `rekeyed` are counters nobody would ever see if
-/// they stayed silent when zero — a silent drop is indistinguishable from an
-/// empty library, and a silent re-key is indistinguishable from growth. Both
-/// must print here, or the counters `derive.rs` added never reach a person.
+/// `suppressed` and `rekeyed` are counters nobody would ever see if they stayed
+/// silent when zero — a silent drop is indistinguishable from an empty
+/// library, and a silent re-key is indistinguishable from growth. Both must
+/// print here, or those counters never reach a person.
 #[test]
 fn derive_summary_prints_suppressed_and_rekeyed_when_nonzero() {
     let mut report = derive_report();
@@ -1537,12 +1489,12 @@ fn derive_summary_omits_suppressed_and_rekeyed_when_zero() {
     assert!(!line.contains("rekeyed"), "{line}");
 }
 
-/// The same rule, for the two counters the whole-branch review added. An
-/// edition a scan stopped naming is left standing rather than deleted (C2),
-/// and an orphan nobody is told about is what that fix would otherwise trade
-/// the deletion for; two entries joining one edition are one page sequence
-/// (C4), which is right for a volume's chapters and wrong for anything else,
-/// and derivation cannot always tell which it has.
+/// The same rule, for `kept_editions` and `merged`. An edition a scan stopped
+/// naming is left standing rather than deleted, and an orphan nobody is told
+/// about is what leaving it standing would otherwise trade the deletion for;
+/// two entries joining one edition are one page sequence, which is right for a
+/// volume's chapters and wrong for anything else, and derivation cannot
+/// always tell which it has.
 #[test]
 fn derive_summary_prints_kept_editions_and_merged_when_nonzero_and_omits_them_when_zero() {
     let mut report = derive_report();
@@ -1556,10 +1508,10 @@ fn derive_summary_prints_kept_editions_and_merged_when_nonzero_and_omits_them_wh
     assert!(!quiet.contains("merged"), "{quiet}");
 }
 
-/// The same rule once more, for the counter `derive::write_edition_metadata`
-/// added. A rule naming an edition kind the column's closed set does not hold
-/// decides nothing, and without this line it decides nothing *silently* —
-/// indistinguishable, from every side, from a rule that named no kind at all.
+/// The same rule once more, for `unrecognised_kinds`. A rule naming an edition
+/// kind the column's closed set does not hold decides nothing, and without this
+/// line it decides nothing *silently* — indistinguishable, from every side,
+/// from a rule that named no kind at all.
 #[test]
 fn derive_summary_prints_unrecognised_kinds_when_nonzero_and_omits_them_when_zero() {
     let mut report = derive_report();
@@ -1570,15 +1522,15 @@ fn derive_summary_prints_unrecognised_kinds_when_nonzero_and_omits_them_when_zer
     assert!(!quiet.contains("unrecognised"), "{quiet}");
 }
 
-/// The same rule once more, for the counters the fold added — and the one
-/// place it matters most, `emptied_works` being the only outcome in the
-/// project that deletes a `work` row.
+/// The same rule once more, for the fold's counters — and the one place it
+/// matters most, `emptied_works` being the only derive outcome that deletes a
+/// `work` row.
 ///
-/// **Eight distinct numbers, deliberately**, for the reason
+/// **Nine distinct numbers, deliberately**, for the reason
 /// `derive_summary_names_the_four_headline_counts_and_the_proposal_count`
-/// gives: seven counts travel inside one parenthesis here, and a fixture that
-/// repeated a value would let two of them swap places and print the identical
-/// line.
+/// gives: eight counts travel inside one parenthesis here, and a fixture that
+/// repeated a value would let two of them swap places and print the
+/// identical line.
 ///
 /// **`uncarried_alignments` last — O76.** An alignment the fold left behind is
 /// not a row its delete discarded, and a person who corrected one needs the
@@ -1627,12 +1579,11 @@ fn derive_summary_says_what_a_fold_moved_and_what_its_delete_took() {
 /// whole of `DeriveReport::unfoldable`'s reason for existing, and
 /// `scan_summary`'s treatment of `unreadable_dirs` above.
 ///
-/// **The second clause is present tense, and that is the assertion.** It read
-/// `6 series left empty`, which on a library that has never folded anything —
-/// a first scan of a chapter-directory tree, an ordinary shape in this
-/// project's corpus — states that a fold emptied a series. The count is a
-/// census of the whole library rather than of this run, so the words have to
-/// be too.
+/// **The second clause is present tense, and that is the assertion.**
+/// `6 series left empty` would state, on a library that has never folded
+/// anything — a first scan of a chapter-directory tree, an ordinary shape in
+/// this project's corpus — that a fold emptied a series. The count is a census
+/// of the whole library rather than of this run, so the words have to be too.
 #[test]
 fn derive_summary_names_a_work_left_standing_and_a_series_holding_no_work() {
     let mut report = derive_report();
@@ -1664,11 +1615,11 @@ fn derive_summary_names_a_work_left_standing_and_a_series_holding_no_work() {
     assert!(!quiet.contains("holding no work"), "{quiet}");
 }
 
-/// Task 5's read-back reports a hand document it could not read, parse or
-/// apply through `DeriveReport::unreadable_hand` rather than aborting the
-/// derive — `scan_summary`'s treatment of `unreadable_dirs` is the same
-/// shape: no separate counter, so the length of the `Vec` is the count, and
-/// the reasons travel with it because a bare count names nothing to fix.
+/// The hand-document read-back reports one it could not read, parse or apply
+/// through `DeriveReport::unreadable_hand` rather than aborting the derive —
+/// `scan_summary`'s treatment of `unreadable_dirs` is the same shape: no
+/// separate counter, so the length of the `Vec` is the count, and the reasons
+/// travel with it because a bare count names nothing to fix.
 #[test]
 fn derive_summary_names_a_hand_document_it_could_not_read() {
     let mut report = derive_report();
@@ -1810,12 +1761,12 @@ fn derive_summary_names_only_the_unreadable_causes_that_happened() {
 /// line naming only the path gives a person nothing to act on. The title is
 /// the actionable half, and this is what pins it into the output.
 ///
-/// **Two orphans, deliberately** — this clause's `join("; ")` had no fixture
-/// with more than one entry to exercise it, so a mutation dropping the
-/// separator or joining on the wrong string would have survived undetected.
-/// `repaired_documents` (5) and the orphan count (2) are kept distinct, this
-/// file's own convention: a fixture that reused a number once already let a
-/// wrong-field mutation survive, per the comment below.
+/// **Two orphans, deliberately** — this clause's `join("; ")` needs a fixture
+/// with more than one entry, or a mutation dropping the separator or joining
+/// on the wrong string would go undetected. `repaired_documents` (5) and the
+/// orphan count (2) are kept distinct, this file's own convention: a fixture
+/// that reused a number would let a wrong-field mutation survive, per the
+/// comment below.
 #[test]
 fn derive_summary_names_a_stranded_document_and_its_title() {
     let mut report = derive_report();
@@ -1840,8 +1791,8 @@ fn derive_summary_names_a_stranded_document_and_its_title() {
     // assertions below check is untouched by it, and only the leading number
     // is wrong. The same adjacent-field swap
     // `derive_summary_names_unwritable_and_stale_documents_distinctly` exists
-    // to catch, left open for this clause until now — which is why the count
-    // here (2) differs from `repaired_documents` above.
+    // to catch, which is why the count here (2) differs from
+    // `repaired_documents` above.
     assert!(line.contains("2 document(s) no work owes"), "{line}");
     assert!(line.contains("abc123.library.json"), "{line}");
     assert!(
@@ -1929,16 +1880,16 @@ fn derive_summary_names_the_work_a_folded_documents_orphan_was_absorbed_into() {
     );
 }
 
-/// **`title: None` alongside `absorbed_into: Some(..)` is reachable and
-/// untested until now.** `Orphan::title` is `None` for a document correcting
-/// only a series or an edition label — no title to carry — and nothing stops
-/// a fold from stranding exactly that kind of document. Traced by hand it
-/// renders correctly: the titled branch's `(`title`)` clause is skipped
-/// entirely (see `derive_summary_names_a_titleless_orphan_without_empty_backticks`
-/// for that half alone), but the absorbed clause is still appended after it,
-/// so the line reads `path, now held as an edition of \`slug\` (\`title\`)`
-/// with no empty backticks anywhere. `repaired_documents` (4) and the orphan
-/// count (1) are kept distinct, this file's own convention.
+/// **`title: None` alongside `absorbed_into: Some(..)` is reachable.**
+/// `Orphan::title` is `None` for a document correcting only a series or an
+/// edition label — no title to carry — and nothing stops a fold from
+/// stranding exactly that kind of document. It renders correctly: the titled
+/// branch's `(`title`)` clause is skipped entirely (see
+/// `derive_summary_names_a_titleless_orphan_without_empty_backticks` for that
+/// half alone), but the absorbed clause is still appended after it, so the
+/// line reads `path, now held as an edition of \`slug\` (\`title\`)` with no
+/// empty backticks anywhere. `repaired_documents` (4) and the orphan count (1)
+/// are kept distinct, this file's own convention.
 #[test]
 fn derive_summary_names_a_titleless_orphans_fold_target() {
     let mut report = derive_report();
@@ -1963,16 +1914,11 @@ fn derive_summary_names_a_titleless_orphans_fold_target() {
     assert!(!line.contains("(``)"), "no empty title parens: {line}");
 }
 
-/// **The fix for the review's Critical, from the printing side.** A document
-/// a live work still addresses, whose root has simply declined to keep it,
-/// must print under its own clause — worded so it reads as a standing fact
-/// about this root ("no longer keeps"), not as "no work owes it", which is
-/// the orphan clause's wording and invites exactly the wrong reaction: before
-/// the fix behind `taiyaku_library::hand::Declined`, this case printed
-/// through the orphan clause instead, so migration 012's default-off upgrade
-/// told every person with a hand-edited library that every one of their
-/// corrections was stranded, on the very derive that had just read each
-/// title back into the database.
+/// **A declined document prints under its own clause.** A document a live work
+/// still addresses, whose root has simply declined to keep it, must print
+/// under its own clause — worded so it reads as a standing fact about this
+/// root ("no longer keeps"), not as "no work owes it", which is the orphan
+/// clause's wording and invites exactly the wrong reaction.
 ///
 /// **Two entries, deliberately** — `join("; ")` needs more than one to prove
 /// the separator, the same reason `derive_summary_names_a_stranded_document_
@@ -2023,13 +1969,9 @@ fn derive_summary_omits_the_document_clauses_when_there_is_nothing_to_say() {
     assert!(!line.contains("document(s)"), "{line}");
 }
 
-/// Neither `unwritable_documents` nor `stale_documents` is touched by the
-/// task's own three tests above, so a mutation printing one field's count or
-/// joined text where the other belongs passed the whole suite — confirmed by
-/// deliberately introducing exactly that mutation (`unwritable_documents`'s
-/// clause printing `stale_documents.len()`) and rerunning before this test
-/// existed. Distinct counts (1 and 2) and distinct entries pin both fields to
-/// their own clause.
+/// Distinct counts (1 and 2) and distinct entries pin `unwritable_documents`
+/// and `stale_documents` each to its own clause, so a mutation printing one
+/// field's count or joined text where the other belongs fails.
 #[test]
 fn derive_summary_names_unwritable_and_stale_documents_distinctly() {
     let mut report = derive_report();
@@ -2242,7 +2184,7 @@ fn scan_without_a_root_says_how_to_add_one_rather_than_doing_nothing() {
 
 /// The no-roots refusal's own failure arriving by another door: a scan
 /// whose only root has become an unmounted share must not exit 0 over
-/// having scanned nothing, the way it did before this test existed.
+/// having scanned nothing.
 #[test]
 fn scan_exits_nonzero_when_its_only_root_is_refused() {
     let dir = scratch("scan-only-root-refused");
@@ -2319,12 +2261,10 @@ fn roots_and_members(db: &std::path::Path) -> (i64, i64) {
     )
 }
 
-/// O47: `--add` went through the unchecked `scan::add_root`, so a root inside
-/// one already held was accepted, and the next derive admitted the same
-/// directory twice — two members of one work with one path and one `sha256`.
-/// `scan::add_root_checked` is the refusal `POST /api/library/roots` already
-/// had; this pins that `--add` takes it too, and that a refused `--add` adds
-/// nothing.
+/// O47: `--add` must go through `scan::add_root_checked_in`, not the unchecked
+/// `scan::add_root`, since a root inside one already held double-counts every
+/// file beneath it. This pins that `--add` takes the refusal, and that a
+/// refused `--add` adds nothing.
 #[test]
 fn scan_add_refuses_a_root_inside_a_known_root() {
     let dir = scratch("scan-add-inside");
@@ -2657,9 +2597,9 @@ fn a_refused_root_does_not_stop_the_scan_of_the_others() {
         .expect("count")
     };
 
-    // The exit status now follows §8.1's refusal — a run with one refused
-    // root is not a quiet success, the same precedent `export_targets`
-    // already set for "some of these failed".
+    // The exit status follows §8.1's refusal — a run with one refused root is
+    // not a quiet success, the same precedent `export_targets` sets for
+    // "some of these failed".
     let err = command(&["scan".into(), "--db".into(), db.display().to_string()])
         .expect_err("a refused root must fail the command, not just print about it");
     assert!(
@@ -2982,7 +2922,7 @@ fn proposals_refuses_more_than_one_action_at_once() {
     // The exact string, not a substring: this message is built from a
     // `\`-continued literal, and `cargo fmt` has a real quirk of baking
     // stripped indentation into a merged continuation as literal spaces
-    // (`proposals.rs`'s own doc comment on the analogous case in `accept`
+    // (`proposals.rs`'s own comment on the analogous case in `accept_with`
     // records the same trap). An exact match is what would catch that; a
     // `.contains("--accept")` check would not.
     assert_eq!(
@@ -3112,10 +3052,9 @@ fn proposals_accept_writes_a_rule_and_the_cli_surface_reaches_it() {
 }
 
 /// I3's own reason for existing, checked at the surface a person actually
-/// reaches: **two rounds of Critical fixes went into an `accept` a person
-/// could not invoke**, and the refusal `proposals::accept` writes for an
-/// `attach-chapters` proposal — naming `taiyaku align` rather than silently
-/// doing nothing — must reach this command's own error unreworded.
+/// reaches: the refusal `proposals::accept` writes for an `attach-chapters`
+/// proposal — naming `taiyaku align` rather than silently doing nothing —
+/// must reach this command's own error unreworded.
 #[test]
 fn proposals_accept_surfaces_the_attach_chapters_refusal_unreworded() {
     let root = scratch("proposals-accept-attach-chapters");
@@ -3214,10 +3153,9 @@ fn proposals_dismiss_and_unaccept_reach_the_library_crate() {
 /// word**, and writes nothing.
 ///
 /// `proposals::dismiss` answers "un-accept it first" as a refusal —
-/// `Ok(Offer::Refused(why))` since O70, where it was an `Err` — so `proposals`
-/// turns it back into its own `Err`, which `main` prints and exits 1 on. Equal
-/// rather than `contains`, because a refusal reworded on its way out would
-/// still contain the phrase.
+/// `Ok(Offer::Refused(why))` (O70) — so `proposals` turns it back into its own
+/// `Err`, which `main` prints and exits 1 on. Equal rather than `contains`,
+/// because a refusal reworded on its way out would still contain the phrase.
 #[test]
 fn proposals_dismiss_surfaces_the_accepted_refusal_unreworded() {
     let (_root, db) = db_with_one_open_proposal("proposals-dismiss-accepted");
@@ -3321,11 +3259,11 @@ fn proposals_reopen_reaches_the_library_crate_and_surfaces_its_refusal_unreworde
 /// A bare path handed to a command that takes none is refused by name, not
 /// ignored.
 ///
-/// `taiyaku library scan /srv/manga` used to scan every root the library
-/// already knew, print a full report about all of them, and say nothing at
-/// all about the path — a plausible-looking success for a directory that was
-/// never touched. The same for `library rules` and `library proposals`, whose
-/// arguments are a flag and an id respectively.
+/// Ignoring it would make `taiyaku library scan /srv/manga` scan every root
+/// the library already knows and say nothing at all about the path — a
+/// plausible-looking success for a directory that was never touched. The same
+/// for `library rules` and `library proposals`, whose arguments are a flag
+/// and an id respectively.
 ///
 /// The refusal names what the caller probably meant, because "takes no
 /// arguments" on its own does not tell someone holding a path what to type.
@@ -3381,17 +3319,10 @@ fn a_flags_own_value_is_not_mistaken_for_a_bare_argument() {
 /// **`--in-place` writes over a reader's own files, and there is exactly one
 /// reader those files belong to.**
 ///
-/// Combined with `--user`, it overwrote another reader's `taiyaku.notes.json`
-/// and *deleted* their `taiyaku.progress.json`: the `absorbed` marker is keyed
-/// `(work_id, document)` while the state read became keyed on the user, so the
-/// "this library has never had that content" guard was already satisfied by the
-/// first reader's import and skipped for the second. The CLI's own new note
-/// recommended exactly that command.
-///
-/// Refused rather than made user-aware, which would need a migration and would
-/// still leave "whose files are these" unanswered. `--dir` exports anybody's
-/// state anywhere, which is what the refusal points at. Found by the
-/// whole-branch review, 2026-08-18.
+/// Combined with `--user`, it is refused rather than made user-aware, which
+/// would need a migration and would still leave "whose files are these"
+/// unanswered. `--dir` exports anybody's state anywhere, which is what the
+/// refusal points at.
 #[test]
 fn exporting_another_reader_in_place_is_refused_and_names_the_way_out() {
     let root = scratch("export-user-in-place");
@@ -3458,10 +3389,8 @@ fn backup_writes_a_snapshot_beside_the_database_and_keep_prunes() {
         1,
         "--keep 1 leaves exactly the newest: {left:?}"
     );
-    // **Named against the decoys, not against a year.** This read
-    // `starts_with("2026") && !starts_with("202601")`, which is a test that
-    // fails every run from 2027 onward and would have failed throughout
-    // January 2026. Found by C4 PR 2's whole-branch review.
+    // **Named against the decoys, not against a year.** A name check on a year,
+    // such as `starts_with("2026")`, would fail every run from 2027 onward.
     assert!(
         !decoys.contains(&left[0].name),
         "the survivor is the one this run took, not a hand-minted decoy: {left:?}"

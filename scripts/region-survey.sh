@@ -67,15 +67,15 @@ while IFS= read -r name; do
 
     # `regions` identifies its edition by content against the sidecar, and
     # nothing says every edition directory on disk has to be in it —
-    # `gotoubun-v01/en-color` and `raw-color` are exactly this on the corpus
-    # this script was written against (see notes.md, "Outside gotoubun..."):
-    # present beside a work whose sidecar never names them. That failure is
-    # routine, the same shape as no `taiyaku.json` or no `.cbz` above, and
-    # belongs in `skipped` rather than aborting a run that has not actually
-    # gone wrong. Stderr is captured to tell it apart from a genuine failure
-    # — by *why* the command failed — while still `tee`-ing it live to this
-    # script's own stderr, so the per-page table a person judges a proposal
-    # by still streams as it always has on every run that gets that far.
+    # `gotoubun-v01/en-color` and `raw-color` are exactly this (see notes.md,
+    # "The survey ran over four works, not the corpus"): present beside a work
+    # whose sidecar never names them. That failure is routine, the same shape as
+    # no `taiyaku.json` or no `.cbz` above, and belongs in `skipped` rather than
+    # aborting a run that has not actually gone wrong. Stderr is captured to
+    # tell it apart from a genuine failure — by *why* the command failed —
+    # while still `tee`-ing it live to this script's own stderr, so the
+    # per-page table a person judges a proposal by streams on every run that
+    # gets that far.
     err_file="$(mktemp)"
     if ! full_stdout="$("${taiyaku[@]}" regions "${members[@]}" \
       --sidecar "$work/taiyaku.json" 2> >(tee "$err_file" >&2))"; then

@@ -33,9 +33,8 @@ fn scored(page: u32, counterpart: Option<u32>, similarity: f32, margin: f32) -> 
     }
 }
 
-/// Four bands, and the two thresholds between them. Nothing asserted any of
-/// it: `verdict` could return `("xyzzy", "xyzzy")` for every page, and both
-/// margin comparisons could be inverted, with the suite green.
+/// Four bands, and the two thresholds between them: `verdict` must not return
+/// one string for every page, and neither margin comparison may be inverted.
 ///
 /// The boundaries are tested *exactly at* the constants, because both are
 /// strict `<` — a margin of exactly `MARGIN_WEAK` is not weak — and that is
@@ -84,7 +83,7 @@ fn a_verdict_bands_on_the_margin_and_the_boundaries_are_exclusive() {
 /// The gauge is the one thing in the report a reader judges at a glance
 /// while scrolling, and it is pure arithmetic on the margin: it must close
 /// to zero when the pairing is firm and open to its full travel when the
-/// margin collapses. Every operator in it survived.
+/// margin collapses.
 ///
 /// Asserted through `render` rather than on an extracted helper because the
 /// clamp, the divide and the scale are written inline there, and it is the
@@ -127,8 +126,9 @@ fn the_gauge_closes_on_a_firm_pairing_and_opens_as_the_margin_collapses() {
 
 /// The header counts, and the one that is a rate rather than a tally.
 /// `render` could return `"xyzzy"` outright; `paired`'s `is_some` could be
-/// inverted; and every operator in `100 * runs / pages` survived, including
-/// `*` → `+`, which reads plausibly and is wrong at every input but one.
+/// inverted; and any operator in `100 * runs / pages` could be swapped,
+/// including `*` → `+`, which reads plausibly and is wrong at every input
+/// but one.
 #[test]
 fn the_header_counts_the_pages_the_pairings_and_the_run_rate() {
     let html = render(
@@ -151,7 +151,7 @@ fn the_header_counts_the_pages_the_pairings_and_the_run_rate() {
         "three of the four have a counterpart"
     );
     assert!(html.contains("<dt>runs</dt><dd>2</dd>"));
-    // 100 * 2 / 4. `+` gives 102, `%` gives 0, `/` gives 12.5 — all visible.
+    // 100 * 2 / 4. `+` gives 100.5, `%` gives 0, `/` gives 12.5 — all visible.
     assert!(
         html.contains("<dt>runs / 100pp</dt><dd>50.0</dd>"),
         "two runs over four pages is 50 per hundred: {html}"
@@ -211,10 +211,10 @@ fn a_gap_reports_the_best_rejected_candidate_rather_than_a_bare_score() {
     assert!(html.contains("plate empty"), "and no facing page is drawn");
 }
 
-/// `prepare` decodes each page once and takes both the hash and the
-/// thumbnail from that one decode — decoding being expensive by three
-/// orders of magnitude. It could return two empty vectors instead, and the
-/// report would render with no thumbnails and every page unhashed.
+/// `prepare` decodes each page once and takes both the hash and the thumbnail
+/// from that one decode — decoding being expensive. It could return two empty
+/// vectors instead, and the report would render with no thumbnails and every
+/// page unhashed.
 ///
 /// Two pages that differ, so the hashes must differ too: a `prepare` that
 /// decoded once and reused the result for every page would pass a
@@ -223,8 +223,8 @@ fn a_gap_reports_the_best_rejected_candidate_rather_than_a_bare_score() {
 fn prepare_returns_one_hash_and_one_thumbnail_per_page_in_order() {
     // Split on different axes, not merely shaded differently: the
     // fingerprint is perceptual and runs on `to_luma8`, so two smooth
-    // gradients that differ only in one channel hash identically —
-    // measured, both `PageHash([0, 0, 0, 0])`. Structure is what it sees.
+    // gradients that differ only in one channel hash identically. Structure is
+    // what it sees.
     let encode = |vertical: bool| {
         let img = image::RgbImage::from_fn(64, 96, |x, y| {
             let dark = if vertical { x < 32 } else { y < 48 };

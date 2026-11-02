@@ -1,9 +1,8 @@
 //! Where the component-size band goes, measured against the boxes a person drew.
 //!
-//! `BAND` shipped provisional from Task 4 and `detect.rs`'s own header calls a
-//! constant asserted as measured a defect. This is the measurement: the whole
-//! dev set — nine labelled editions, 45 pages, 478 scored boxes — scored at
-//! several bands, so the value is read off a table rather than argued for.
+//! `detect.rs`'s own header calls a constant asserted as measured a defect.
+//! This is the measurement for `BAND`: the whole dev set, scored at several
+//! bands, so the value is read off a table rather than argued for.
 //!
 //! **The shape is `truth_population.rs`'s**, deliberately, rather than a third
 //! convention: `#[cfg(test)]`, gated on `TAIYAKU_CORPUS`, skipping cleanly when
@@ -20,8 +19,8 @@
 //! two chances to disagree while both printed plausible numbers.
 //!
 //! **This is a one-parameter sweep over a fixed dev set, which is a mild overfit
-//! and is stated as one.** The 30 held-out pages are what would check it, and
-//! they are not opened here.
+//! and is stated as one.** The held-out pages are what would check it, and they
+//! are not opened here.
 //!
 //! ```sh
 //! TAIYAKU_CORPUS="$PWD/corpus" cargo test --release -p taiyaku-cli band_sweep -- --nocapture
@@ -62,17 +61,14 @@ const EDITIONS: [(&str, &str); 9] = [
 /// row (see [`band`]), where `NO_BAND`'s `hi` is `u32::MAX`, so `lo = 0` here
 /// is the incumbent's population *minus* components spanning more than a fifth
 /// of page height — which is the one thing `hi` exists to drop, a panel border.
-/// **And `hi` is not the only difference**: the detector around this row is
-/// Task 5's two-axis union and Task 6's pixel-counting `MIN_INK`, where the
-/// incumbent that scored 2 smeared one axis per page and summed overlapping
-/// stroke boxes (O34). Three changes separate this row from that figure, not
-/// one. It is the control for the question this sweep asks, which is where `lo`
-/// goes.
+/// **And `hi` is not the only difference**: the detector around this row is a
+/// two-axis union with a pixel-counting `MIN_INK`, which the incumbent's was
+/// not (O34). It is the control for the question this sweep asks, which is
+/// where `lo` goes.
 ///
-/// Phase 1 measured the outside population's p95 at 17‱ and its median at 6‱,
-/// so the low end brackets the measurement; the high end goes well past it
-/// because spurious-per-page misses its ceiling by 5.1× at 16 and nothing has
-/// measured where it crosses.
+/// The low end brackets the outside population's p95 (17‱) and median (6‱); the
+/// high end goes well past them because spurious-per-page misses its ceiling at
+/// 16 and nothing has measured where it crosses.
 const SWEEP: [u32; 8] = [0, 8, 16, 32, 64, 128, 256, 512];
 
 /// `hi` is held at `BAND.hi` throughout: one parameter at a time. `hi` is not
@@ -112,15 +108,14 @@ fn where_the_band_goes() {
         // **Every band is detected inside one decode**, which is the whole
         // reason this is an array rather than a loop around `decode_all`.
         // `decode_all` bounds memory by decoding the large pages one at a time
-        // — the corpus holds 430 MB TIFFs — so the decoded pixels are not
+        // — the corpus holds large TIFFs — so the decoded pixels are not
         // available afterwards to run a second band over, and re-entering
-        // `decode_all` once per band would pay for 360 full-resolution decodes
-        // to score 45 pages. The `Region` lists it returns instead are a few
-        // hundred boxes per page.
+        // `decode_all` once per band would decode every page at full resolution
+        // each time. The `Region` lists it returns instead are small.
         //
         // Nothing is shared between the bands: each call is
-        // `detect_page_with`'s own six stages from the same `luma`, so the
-        // rows are independent measurements rather than one run edited.
+        // `detect_page_with`'s own stages from the same `luma`, so the rows are
+        // independent measurements rather than one run edited.
         let detected = crate::fingerprint::decode_all(&resolved.pages, |_, luma| {
             SWEEP.map(|lo| detect::detect_page_with(luma, band(lo)))
         })

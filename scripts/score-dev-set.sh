@@ -2,19 +2,18 @@
 #
 # Score `detect_page` against the nine labelled editions of the dev set.
 #
-# Exists because the invocation is a trap that has been fallen into twice, and
-# both times it failed *quietly*. An edition is identified by its exact member
-# set, and what counts as a member differs by how the edition is stored —
-# `corpus::members` states the rule:
+# This exists because the invocation is a trap that fails *quietly*. An edition
+# is identified by its exact member set, and what counts as a member differs by
+# how the edition is stored — `corpus::members` states the rule:
 #
 #   * an edition holding `.cbz` archives is those archives;
 #   * an edition holding loose page images is **the directory itself**, one
 #     member, not one member per image.
 #
-# So `score corpus/kaguya-v01/raw-mono/*` reports "no edition is made of these
-# 213 members", and `score corpus/gotoubun-v01/raw-mono` reports the same for
-# the opposite reason. Neither is wrong about the corpus; both are wrong about
-# the invocation. This picks the right form per edition.
+# So `score corpus/kaguya-v01/raw-mono/*` reports that no edition is made of
+# the members it was given, and `score corpus/gotoubun-v01/raw-mono` reports
+# the same for the opposite reason. Neither is wrong about the corpus; both are
+# wrong about the invocation. This picks the right form per edition.
 #
 # The other half of the trap is that a `case` filter looking for `pages=` turns
 # a failed edition into a *missing row* rather than an error, so nine editions
@@ -23,10 +22,10 @@
 #
 # **The nine are named, not globbed**, for the reason `region_experiment.rs`
 # gives for its own `EDITIONS` array: a glob that stops matching is a silent
-# nothing. Globbing the work directories was tried while writing this and is
-# wrong — `corpus/*/` also holds `en-color`, `raw-color`, `raw-mono-altcopy`
-# and `raw-mono-BADCOPY`, none of them part of the dev set, all of them
-# indistinguishable from a genuine failure once they error.
+# nothing. Globbing the work directories is wrong too — `corpus/*/` also holds
+# `en-color`, `raw-color`, `raw-mono-altcopy` and `raw-mono-BADCOPY`, none of
+# them part of the dev set, all of them indistinguishable from a genuine
+# failure once they error.
 #
 # Usage:
 #   scripts/score-dev-set.sh [path-to-taiyaku-binary]
@@ -81,8 +80,7 @@ for entry in "${EDITIONS[@]}"; do
 
     # No `| head -1` here. Under `pipefail`, `head` closing the pipe after one
     # line sends SIGPIPE to `taiyaku`, whose non-zero status then aborts the
-    # whole script under `set -e` — silently, having printed nothing. Which is
-    # this script's own failure mode, found while writing it.
+    # whole script under `set -e` — silently, having printed nothing.
     out=$("$BIN" score "${members[@]}" --sidecar "$sidecar" 2>&1 || true)
     first=${out%%$'\n'*}
 

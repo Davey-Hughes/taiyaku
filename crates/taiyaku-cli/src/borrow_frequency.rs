@@ -101,11 +101,10 @@ mod tests;
 
 /// Every corpus volume that carries a sidecar, swept over every ordered pair.
 ///
-/// Reads `taiyaku.json` where it already exists rather than re-solving: the
-/// figures this reproduces were taken against the documents `align --write`
-/// produces, and re-solving here would measure the solver as well as the
-/// reader. Directories without a sidecar are named as a matter of course,
-/// so any skipped volume is visible rather than silent.
+/// Reads `taiyaku.json` where it already exists rather than re-solving, which
+/// would measure the solver as well as the reader. Directories without a
+/// sidecar are named as a matter of course, so any skipped volume is visible
+/// rather than silent.
 #[test]
 fn how_often_a_reader_meets_a_gap() {
     let Some(root) = corpus() else {
@@ -115,8 +114,8 @@ fn how_often_a_reader_meets_a_gap() {
 
     // Every directory under the root, split on whether it carries a sidecar.
     // The ones without are named rather than dropped: a corpus that had lost
-    // one volume's `taiyaku.json` would otherwise sweep eleven volumes and
-    // pass, which is the silent skip `corpus.rs`'s header calls out.
+    // one volume's `taiyaku.json` would otherwise sweep the rest and pass,
+    // which is the silent skip `corpus.rs`'s header calls out.
     //
     // Dot-prefixed directories are excluded because `.taiyaku-cache` is not a
     // volume and never will be. Nothing else is filtered by name — `incoming/`

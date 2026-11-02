@@ -15,12 +15,12 @@
 //! `serve` is a thin front for `taiyaku-serve`: argument parsing and a runtime.
 //! Everything the server does lives in that crate.
 
-// Task 7 of the detector redesign: where the component-size band goes, scored
-// over the whole dev set at several bands. Gated on TAIYAKU_CORPUS exactly as
-// `corpus`, `geometry_experiment`, `region_experiment` and `truth_population`
-// are, and declared the same way, so no part of it is compiled into the binary.
+// Where the component-size band goes, scored over the whole dev set at several
+// bands. Gated on TAIYAKU_CORPUS exactly as `corpus`, `geometry_experiment`,
+// `region_experiment` and `truth_population` are, and declared the same way, so
+// no part of it is compiled into the binary.
 //
-// Unlike the two experiments below it takes no module-level lint suppression:
+// Unlike the three experiments below it takes no module-level lint suppression:
 // it does its arithmetic through `score::Report`, which already carries the
 // per-site #[expect] for the one division involved.
 #[cfg(test)]
@@ -43,16 +43,15 @@ mod fingerprint;
 // `TAIYAKU_CORPUS` exactly as `corpus` is — so it is declared the same way, and
 // no part of it is compiled into the binary.
 //
-// It also carries one of this workspace's two module-level lint
-// suppressions — the other is `region_experiment`'s, below, granted on the
-// same grounds. Everything else pedantic flags is fixed or carries a
-// per-site #[expect] stating its bound; §10.3 of the design forbids
-// module-level allows precisely so that a file with many casts cannot
-// switch the lint off wholesale. The exception is granted on the same
-// grounds the coverage gate already excludes this file by name: its
-// arithmetic exists to print a table for docs/notes.md once, and writing 29
-// bounds for it would spend the mechanism's credibility on the code least
-// able to hurt anyone.
+// It also carries one of this workspace's three module-level lint suppressions
+// — the others are `region_experiment`'s and `model_experiment`'s, below,
+// granted on the same grounds. Everything else pedantic flags is fixed or
+// carries a per-site #[expect] stating its bound; §10.3 of the design forbids
+// module-level allows precisely so that a file with many casts cannot switch
+// the lint off wholesale. The exception is granted on the same grounds the
+// coverage gate already excludes this file by name: its arithmetic exists to
+// print a table for docs/notes.md once, and writing bounds for it would spend
+// the mechanism's credibility on the code least able to hurt anyone.
 //
 // The cost, stated: a truncating cast introduced here is invisible. That is
 // accepted because a wrong number in a measurement shows up as a wrong number
@@ -67,13 +66,9 @@ mod inventory;
 mod library;
 mod regions;
 // `sample.rs`'s three items (`DEV_EDITIONS`, `HELD_OUT_EDITIONS`, `dev_pages`)
-// used to be read by `score_corpus.rs` alone, and were gated on `cfg(test)`
-// for exactly that reason — a `mod sample;` compiled unconditionally would
-// have left those three genuinely unused in the plain `bin "taiyaku"` build.
-// `score --sample` (`score.rs`) now reads them from that plain build itself,
-// to print the labelling worklist a human runs the binary to see, so the
-// build this comment used to describe no longer exists: the always-on caller
-// it said would justify removing the gate has arrived.
+// are read by `score --sample` (`score.rs`) from the plain `bin "taiyaku"`
+// build, to print the labelling worklist a human runs the binary to see, so the
+// module is declared unconditionally.
 mod sample;
 mod score;
 #[cfg(test)]
@@ -83,16 +78,15 @@ mod user;
 // `TAIYAKU_CORPUS` exactly as `corpus` and `geometry_experiment` are — so it
 // is declared the same way, and no part of it is compiled into the binary.
 //
-// It also carries the second of this workspace's two module-level lint
-// suppressions — `geometry_experiment`'s, above, is the other, granted on
-// the same grounds. Everything else pedantic flags is fixed or carries a
-// per-site #[expect] stating its bound; §10.3 of the design forbids
-// module-level allows precisely so that a file with many casts cannot
-// switch the lint off wholesale. The exception is granted on the same
-// grounds the coverage gate already excludes this file by name: its
-// arithmetic exists to print a table for docs/notes.md once, and writing 16
-// bounds for it would spend the mechanism's credibility on the code least
-// able to hurt anyone.
+// It also carries one of this workspace's three module-level lint suppressions
+// — `geometry_experiment`'s, above, and `model_experiment`'s, below, are the
+// others, granted on the same grounds. Everything else pedantic flags is fixed
+// or carries a per-site #[expect] stating its bound; §10.3 of the design
+// forbids module-level allows precisely so that a file with many casts cannot
+// switch the lint off wholesale. The exception is granted on the same grounds
+// the coverage gate already excludes this file by name: its arithmetic exists
+// to print a table for docs/notes.md once, and writing bounds for it would
+// spend the mechanism's credibility on the code least able to hurt anyone.
 //
 // The cost, stated: a truncating cast introduced here is invisible. That is
 // accepted because a wrong number in a measurement shows up as a wrong number
@@ -104,17 +98,16 @@ mod user;
 )]
 mod region_experiment;
 
-// Phase 1 of the detector redesign: what text is made of, measured from the
-// boxes a person drew. Gated on TAIYAKU_CORPUS exactly as `corpus`,
-// `geometry_experiment` and `region_experiment` are, and declared the same
-// way, so no part of it is compiled into the binary.
+// What text is made of, measured from the boxes a person drew. Gated on
+// TAIYAKU_CORPUS exactly as `corpus`, `geometry_experiment` and
+// `region_experiment` are, and declared the same way, so no part of it is
+// compiled into the binary.
 #[cfg(test)]
 mod truth_population;
 
-// Phase 3 of the detector redesign: the model candidate, scored against the
-// same 45 pages as phase 2's sweep. Gated the same way and for the same
-// reason, and additionally on TAIYAKU_MODEL, because the weights are 95 MB and
-// are fetched rather than committed.
+// The model candidate. Gated the same way and for the same reason, and
+// additionally on TAIYAKU_MODEL, because the weights are fetched rather
+// than committed.
 #[cfg(test)]
 #[allow(
     clippy::pedantic,
@@ -147,9 +140,8 @@ fn run(args: &[String]) -> Result<(), String> {
     // Checked before dispatch, and for every command rather than one at a
     // time, so `taiyaku serve --help` answers the same way `taiyaku --help`
     // does: the usage this binary already prints for no arguments at all.
-    // A second, command-scoped usage line would drift from this one the way
-    // `score.rs`'s own `USAGE` almost did (its doc comment states the two
-    // must not disagree); one function printed from two call sites cannot.
+    // A second, command-scoped usage line would drift from this one; one
+    // function printed from two call sites cannot.
     if args.iter().any(|a| a == "--help") {
         print_usage();
         return Ok(());
@@ -269,12 +261,11 @@ fn split_editions(args: &[String]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Strin
         .position(|a| a == "--")
         .ok_or("needs `--` between the two editions")?;
     let (left, rest) = args.split_at(split);
-    // A flag typed before the separator lands in the a-side member list and
-    // used to surface as `--stats: No such file or directory`, which names a
-    // file the caller never meant and hides the actual mistake. By the time
-    // this runs the flag is known to exist — `reject_unknown_flags` has
-    // already refused the ones that do not — so the only thing left to say is
-    // that it is in the wrong place.
+    // A flag typed before the separator lands in the a-side member list, where
+    // it would be read as a member and name a file the caller never meant,
+    // hiding the actual mistake. By the time this runs the flag is known to
+    // exist — `reject_unknown_flags` has already refused the ones that do not —
+    // so the only thing left to say is that it is in the wrong place.
     if let Some(misplaced) = left.iter().find(|a| a.starts_with("--")) {
         return Err(format!(
             "`{misplaced}` is a flag, but it is before the `--` that separates \
@@ -299,18 +290,17 @@ fn split_editions(args: &[String]) -> Result<(Vec<PathBuf>, Vec<PathBuf>), Strin
 /// The value typed after `flag`, or `None` where the flag was not typed at all.
 ///
 /// `expects` names what the flag wanted — "a path", "a number of pages" — and
-/// is only ever read on the two ways this goes wrong, both of which used to be
-/// silent. A flag last on the line has nothing after it and used to read as no
-/// flag at all; a flag followed by another flag used to take that flag as its
-/// value, so `align a -- b --write --ltr` wrote the sidecar to a file named
-/// `--ltr` and applied the direction anyway. Neither is distinguishable from a
+/// is only ever read on the two ways this goes wrong: a flag last on the line
+/// has nothing after it and would read as no flag at all, and a flag followed
+/// by another flag would take that flag as its value, so
+/// `align a -- b --write --ltr` would write the sidecar to a file named
+/// `--ltr` and apply the direction anyway. Neither is distinguishable from a
 /// correct run by anything the caller can see, which is why both are refused
 /// here rather than left to each caller to notice.
 ///
 /// **A value beginning with `--` is a flag, not a value**, without asking which
 /// flags exist. That is the rule `split_editions`, `serve`'s path list and
-/// `duplicates::against_members` already apply to their positional arguments,
-/// so it is the command's existing convention rather than a new one. The cost
+/// `duplicates::against_members` apply to their positional arguments. The cost
 /// is that a file genuinely named `--something` cannot be named on the command
 /// line; the benefit is that every valued flag refuses the same way, including
 /// the ones whose values are never otherwise inspected. `--name-a` needs this
@@ -353,26 +343,6 @@ pub(crate) fn edition_of_digests(
     })
 }
 
-/// Refuse any `--`-prefixed argument this command does not have a flag for.
-///
-/// O15, O19 and O20 each refuse a *known* flag used wrongly, and all three key
-/// off the flag's name — so none of them can see a name that was typed wrong.
-/// A misspelling therefore reproduced the exact failure O19 closed, through
-/// the one door left open: `taiyaku align a -- b --writ out.json` reported a
-/// plausible alignment, wrote nothing, and exited 0. Worse, `--split-spread`
-/// for `--split-spreads` returns a *different but plausible* answer rather
-/// than an obviously broken one.
-///
-/// **O15 is what makes this checkable at all.** Once a flag's value can never
-/// itself begin with `--`, every `--`-prefixed token in an argv is
-/// unambiguously meant to be a flag, so an unrecognised one is a mistake
-/// rather than possibly somebody's filename. Before that rule this scan would
-/// have had to know which flags take values and skip past them.
-///
-/// `--` is the edition separator and not a flag, so it is excluded. Each
-/// command passes its own set rather than sharing a global one: `--pattern` is
-/// real for `inventory` and a typo for `align`, and a global list would accept
-/// it in both.
 /// Whether a bare flag was given.
 ///
 /// One function rather than an `any(|a| a == "--x")` written out at each site.
@@ -395,7 +365,21 @@ fn reading_direction(args: &[String]) -> Direction {
     }
 }
 
+/// Refuse any `--`-prefixed argument this command does not have a flag for.
+///
+/// O15, O19 and O20 each refuse a *known* flag used wrongly, and all three key
+/// off the flag's name — so none of them can see a name that was typed wrong.
+/// Without this, `taiyaku align a -- b --writ out.json` would report a
+/// plausible alignment, write nothing, and exit 0.
+///
+/// **O15 is what makes this checkable at all.** Once a flag's value can never
+/// itself begin with `--`, every `--`-prefixed token in an argv is
+/// unambiguously meant to be a flag, so an unrecognised one is a mistake.
 fn reject_unknown_flags(command: &str, args: &[String], known: &[&str]) -> Result<(), String> {
+    // `--` is the edition separator and not a flag, so it is excluded. Each
+    // command passes its own set rather than sharing a global one: `--pattern`
+    // is real for `inventory` and a typo for `align`, and a global list would
+    // accept it in both.
     let Some(unknown) = args
         .iter()
         .find(|a| a.starts_with("--") && a.as_str() != "--" && !known.contains(&a.as_str()))
@@ -422,12 +406,12 @@ fn reject_unknown_flags(command: &str, args: &[String], known: &[&str]) -> Resul
 /// Refuse a bare word given to a command that has nothing to do with one.
 ///
 /// **A silently ignored argument is the worst of the three answers.**
-/// `taiyaku library scan /srv/manga` reads as "scan this path"; it used to
-/// scan every root the library already knows, print a report about all of
-/// them, and say nothing at all about the path — so a person adding a new
-/// share saw a plausible-looking scan of somebody else's directories and no
-/// hint that theirs had not been touched. `--add` and `--root` are how a path
-/// reaches this command, and naming them is what makes the refusal useful
+/// `taiyaku library scan /srv/manga` reads as "scan this path"; ignoring the
+/// path would scan every root the library already knows, print a report about
+/// all of them, and say nothing at all about the path — so a person adding a
+/// new share would see a plausible-looking scan of somebody else's directories
+/// and no hint that theirs had not been touched. `--add` and `--root` are how a
+/// path reaches this command, and naming them is what makes the refusal useful
 /// rather than merely correct.
 ///
 /// `with_values` names the flags that take a value, so the value is not
@@ -586,12 +570,10 @@ fn runs_from_sidecar(
     let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
     let sidecar = Sidecar::from_json(&text)?;
 
-    // Which two editions is this? Asked of the archives rather than
-    // assumed from the document's order. Taking the first alignment
-    // worked only while `align` could write just one; against a
-    // five-edition document it renders a confident report of a pair
-    // nobody asked about, which is the single failure this report
-    // exists to prevent.
+    // Which two editions is this? Asked of the archives rather than assumed
+    // from the document's order: taking the first alignment of a document with
+    // several editions would render a confident report of a pair nobody asked
+    // about, which is the single failure this report exists to prevent.
     let named = |members: &[PathBuf], side: &str| -> Result<String, String> {
         let mut digests = Vec::new();
         for member in members {
@@ -653,8 +635,7 @@ fn verify(args: &[String]) -> Result<(), String> {
     // Every valued flag is resolved here, before an archive is opened, for the
     // reason `align` gives at its own top: a flag typed wrong is a typo, and a
     // typo should not cost the seconds it takes to read two editions before it
-    // is reported. `--sidecar` and `--cache` are each read once here rather
-    // than at each of the two places below that used to look them up.
+    // is reported.
     let out = option_value(args, "--out", "a path")?.unwrap_or("taiyaku-verify.html");
     let sidecar_path = option_value(args, "--sidecar", "a path")?;
     let cache_root = std::path::PathBuf::from(
@@ -663,8 +644,7 @@ fn verify(args: &[String]) -> Result<(), String> {
     // O22, O20's rule in the command O20 did not reach. Both of these are read
     // only from the `--sidecar` arm below: without a sidecar `verify` solves
     // the pair directly, never calls `cached_edition`, and so consults neither
-    // the cache nor a reading direction. Measured before the fix — `verify a
-    // -- b --cache DIR` did not create DIR.
+    // the cache nor a reading direction.
     if sidecar_path.is_none() {
         if args.iter().any(|a| a == "--cache") {
             return Err(
@@ -695,16 +675,14 @@ fn verify(args: &[String]) -> Result<(), String> {
     let direction = reading_direction(args);
     // The summary at the end is counted in whatever unit the runs are addressed
     // in. A solved run indexes pages; a run out of a sidecar indexes slots, and
-    // an edition with seven spreads has seven more slots than pages — which is
-    // how the same summary reported 192 of 187 pages paired, at 102.7%.
+    // an edition with seven spreads has seven more slots than pages.
     let (runs, a_units) = match sidecar_path {
         Some(path) => runs_from_sidecar(path, &a_members, &b_members, a.len())?,
         None => (solve(&a, &b), a.len()),
     };
     // Confidence has to be measured in whatever space the runs are addressed in.
     // A solved run indexes pages; a run out of a sidecar indexes slots, and
-    // scoring it against page hashes silently compares the wrong things — it
-    // reported 189 doubtful pairings on an alignment that has two.
+    // scoring it against page hashes silently compares the wrong things.
     let scored = match sidecar_path {
         Some(_) => {
             let (a_slot_hashes, a_slots, _) = cached_edition(&cache_root, &a_members, direction)?;
@@ -1099,10 +1077,7 @@ fn sidecar_dir(out: &Path) -> &Path {
 /// whole old one.
 ///
 /// `atomic::write` names the destination — the path spelled right here, as the
-/// caller typed it — in both of its failures, so there is nothing to add. That
-/// is O29, closed: the staging branch used to answer with the temporary it
-/// invents, which is not a file anyone asked for and is deleted before the
-/// error is returned.
+/// caller typed it — in both of its failures, so there is nothing to add (O29).
 ///
 /// A named function rather than a statement inside either command, because a
 /// test can call one and cannot reach the other: `align` solves and `credits`
@@ -1113,8 +1088,8 @@ fn sidecar_dir(out: &Path) -> &Path {
 /// `tests::writing_an_alignment_replaces_the_sidecar_rather_than_truncating_it`
 /// on a three-edition star carrying a hand correction, and
 /// `credits::tests::writing_a_credits_list_replaces_the_sidecar_rather_than_truncating_it`
-/// on the pair `credits` rewrites. Neither proves its command still *calls*
-/// this; that was driven against the corpus instead, and `notes.md` records it.
+/// on the pair `credits` rewrites. Neither proves its command *calls* this;
+/// `notes.md` records the corpus run that does.
 fn write_sidecar(out: &str, sidecar: &Sidecar) -> Result<(), String> {
     taiyaku_read::atomic::write(Path::new(out), sidecar.to_json().as_bytes(), "json")
 }
@@ -1173,15 +1148,11 @@ fn lookup(args: &[String]) -> Result<(), String> {
     );
     // Printed on every call rather than only on a bad one. A warning that
     // appears sometimes teaches people to skip it; a line that is always there
-    // is read as part of the answer. Measured across twenty-two needles, seven
-    // pair every page they have while being wholly unrelated, and the run
-    // shape is the only thing that says so.
+    // is read as part of the answer. A wholly unrelated needle can pair every
+    // page it has, and the run shape is the only thing that says so.
     //
-    // The line describes the path this call will actually walk. `route` and
-    // `trust` now agree about which paths exist, so the old "not by a path this
-    // lookup can walk" case is gone — but a composed answer is weaker than a
-    // direct one, measured at about 1.7% of pages lost to hub gaps, and the
-    // line has to say which it is.
+    // The line describes the path this call will actually walk. A composed
+    // answer is weaker than a direct one, and the line has to say which it is.
     let route = taiyaku_core::route(&sidecar, from, to);
     match &route {
         Some(found) => match &found.via {
@@ -1266,11 +1237,9 @@ fn serve(args: &[String]) -> Result<(), String> {
         .collect();
     // **A sidecar named after a flag is a mistake, not an empty invocation.**
     // `paths` is `take_while(|a| !a.starts_with("--"))`, so
-    // `serve --db lib.db work/taiyaku.json` yields NO paths — and once an
-    // empty list meant "serve the whole library", that command line silently
-    // served everything instead of the one work it named. Before spec C1 §5.3
-    // it failed with "needs at least one taiyaku.json". Found by the
-    // whole-branch review.
+    // `serve --db lib.db work/taiyaku.json` yields NO paths — and an empty list
+    // means "serve the whole library", so that command line would silently
+    // serve everything instead of the one work it named.
     // The rule is deliberately simple rather than clever: a sidecar is a
     // `.json` file by definition, so an argument ending in `.json` when no
     // path was read is a sidecar that landed in the wrong place. Trying to
@@ -1290,21 +1259,18 @@ fn serve(args: &[String]) -> Result<(), String> {
     // so a mistyped flag or variable is refused for what is actually wrong.
     let options = serve_options(args, &|name| std::env::var(name).ok())?;
 
-    // `taiyaku serve <sidecar>...` keeps working, and now means it: every
-    // path it is handed is imported into the real, on-disk library — through
-    // `library::import_canonical`, the same function `taiyaku library
-    // import` calls, so a work this command imports and one a person imports
-    // by hand agree on what row it is (see `library.rs`'s own doc comment on
-    // the placeholder-path hazard this closes). This is the migration path
-    // for an existing install, and it is what keeps `serve/src/corpus.rs`'s
-    // corpus-gated tests alive — they call `taiyaku_serve::load_works`
-    // directly rather than through this function, so they are untouched by
-    // this change.
-    // **No paths is now an invocation rather than a mistake** — spec C1 §5.3.
-    // The scanner produces works with no `sidecar_path` at all, so there is
-    // nothing to put on a command line; `serve --db` is how a browse UI's
-    // `/read/{work}` link reaches one. `serve_works` answers for both cases,
-    // including the refusal when the library turns out to hold nothing.
+    // `taiyaku serve <sidecar>...` imports every path it is handed into the
+    // real, on-disk library — through `library::import_canonical`, the same
+    // function `taiyaku library import` calls, so a work this command imports
+    // and one a person imports by hand agree on what row it is (see
+    // `library.rs`'s own doc comment on the placeholder-path hazard this
+    // closes). This is the migration path for an existing install, and it is
+    // what keeps `serve/src/corpus.rs`'s corpus-gated tests alive — they call
+    // `taiyaku_serve::load_works` directly rather than through this function.
+    // **No paths is an invocation, not a mistake** — spec C1 §5.3. The scanner
+    // produces works with no `sidecar_path` at all, so there is nothing to put
+    // on a command line; `serve --db` is how a browse UI's `/read/{work}` link
+    // reaches one. `serve_works` answers for both cases.
     let (db_library, works) = serve_works(&paths, option_value(args, "--db", "a path")?)?;
     for work in works.snapshot().iter() {
         let sidecar = work.sidecar();
@@ -1363,9 +1329,8 @@ fn serve_options(
         (None, None) => None,
     };
     let auth = serve_auth(args, environment("TAIYAKU_TRUSTED_PROXY").as_deref())?;
-    // Refused rather than ignored: a deployment that set the old name had its
-    // directories listed, and ignoring it would empty the browser without
-    // saying why.
+    // Refused rather than ignored: ignoring `TAIYAKU_FOLDERS` would empty the
+    // browser without saying why.
     if environment("TAIYAKU_FOLDERS").is_some() {
         return Err(
             "TAIYAKU_FOLDERS was renamed TAIYAKU_DIRS; rename it where the server is configured"
@@ -1503,19 +1468,18 @@ fn serve_auth(
         }
     }
 
-    // **`Secure` cannot be derived from `--trusted-proxy` alone**, which is what
-    // shipped and what the whole-branch review caught on 2026-08-18. That flag
-    // is about believing `X-Forwarded-For`, and the ordinary TLS deployment —
+    // **`Secure` cannot be derived from `--trusted-proxy` alone.** That flag is
+    // about believing `X-Forwarded-For`, and the ordinary TLS deployment —
     // `caddy reverse_proxy 127.0.0.1:8484` in front of a loopback server —
-    // needs no forwarded address at all. It would therefore have configured
-    // neither flag and sent a thirty-day session token with no `Secure`, so one
+    // needs no forwarded address at all. It would therefore configure neither
+    // flag and send a thirty-day session token with no `Secure`, so one
     // plain-HTTP request to the same host puts it in cleartext, without anybody
     // passing the documented opt-out.
     //
-    // So a trusted proxy still *implies* `Secure`, and `--secure-cookies` says
-    // it outright for the deployment that has TLS in front and nothing to
-    // forward. `--insecure-cookies` overrides both, and is still the only way
-    // to end up without it deliberately.
+    // So a trusted proxy *implies* `Secure`, and `--secure-cookies` says it
+    // outright for the deployment that has TLS in front and nothing to forward.
+    // `--insecure-cookies` overrides both, and is the only way to end up
+    // without it deliberately.
     let insecure = flag_present(args, "--insecure-cookies");
     let secure = flag_present(args, "--secure-cookies");
     Ok(taiyaku_serve::session::AuthConfig {
@@ -1562,30 +1526,26 @@ fn web_root(dir: Option<&str>) -> Result<Option<PathBuf>, String> {
 /// reason `align_flags` is split out of `align`.
 ///
 /// Every path is validated first — canonicalised, which requires it to exist
-/// — before the library is touched at all, so a mistyped path still fails
-/// exactly where it always has (`serve_reaches_load_works_with_...`'s own
-/// tests pin this) rather than as a side effect of provisioning a database
-/// nobody asked for yet.
+/// — before the library is touched at all, so a mistyped path fails at that
+/// point (`serve_reaches_load_works_with_...`'s own tests pin this) rather than
+/// as a side effect of provisioning a database nobody asked for yet.
 ///
-/// **One sidecar that cannot be imported is skipped, not fatal.** It used to
-/// propagate with `?` from inside the loop, so a single hand-edited
-/// `taiyaku.json` — a renamed edition the `hub` no longer names, a truncated
-/// file — took the whole server down and with it every other work on the
-/// command line, which is not a trade a reader would make (review 2, I3).
-/// Each failure is named on stderr as it happens; the start only refuses when
-/// *nothing* could be imported, since there is then no library to serve.
+/// **One sidecar that cannot be imported is skipped, not fatal.** A single
+/// hand-edited `taiyaku.json` — a renamed edition the `hub` no longer names, a
+/// truncated file — would otherwise take the whole server down and with it
+/// every other work on the command line, which is not a trade a reader would
+/// make. Each failure is named on stderr as it happens; the start only refuses
+/// when *nothing* could be imported, since there is then no library to serve.
 ///
-/// **An empty library, reached with no paths at all, is not refused.** It
-/// used to be — but spec C1 §5.3's "no paths means the whole library" made
-/// that refusal exactly the thing standing in front of the two first-run
-/// states the browse UI's `EmptyState.tsx` exists to show: no roots
-/// configured, and roots configured but nothing scanned yet. The server
-/// exited before either screen could render, so `GET /api/library/status`,
-/// added to tell those two states apart, could never be exercised in the
-/// state it was built for. Found by trying to serve an empty database in a
-/// browser. A start against an empty library now prints a note to stderr and
-/// goes on to bind — the guidance that used to be the fatal error now lives
-/// on the screen where a person can act on it.
+/// **An empty library, reached with no paths at all, is not refused.** Spec
+/// C1 §5.3's "no paths means the whole library" would otherwise put a refusal
+/// in front of the two first-run states the browse UI's `EmptyState.tsx`
+/// exists to show: no roots configured, and roots configured but nothing
+/// scanned yet. The server would exit before either screen could render, so
+/// `GET /api/library/status`, which tells those two states apart, could never
+/// be exercised in the state it was built for. A start against an empty library
+/// prints a note to stderr and goes on to bind; the guidance lives on the
+/// screen where a person can act on it.
 ///
 /// # Errors
 ///
@@ -1673,9 +1633,9 @@ fn serve_works(
 /// import to one work — that is the whole point of matching on content, and
 /// `taiyaku serve raw/taiyaku.json raw/../raw/taiyaku.json` is not the only
 /// way to reach it: a copy of a library under a second path imports to the
-/// same row by `content_key`. Dropping the second silently meant a person
-/// passed two paths, got one work, and had nothing to tell them which of the
-/// two the server was actually reading — the same failure `load_works`'
+/// same row by `content_key`. Dropping the second silently would leave a
+/// person who passed two paths with one work and nothing to tell them which of
+/// the two the server was actually reading — the same failure `load_works`'
 /// refusal already names both sides of. It is a notice rather than a refusal
 /// because the outcome is correct: one row, one `Work`, everything the
 /// command line asked for is being served.
@@ -1766,8 +1726,8 @@ fn route_note(via: &Via, from: &str, to: &str) -> String {
 /// Fingerprint an edition through the cache, splitting joined spreads.
 ///
 /// Returns the hashes, the slot table, and how many members were served from
-/// cache — worth reporting, because a cold run and a warm one differ by three
-/// orders of magnitude and it would be misleading to imply otherwise.
+/// cache — worth reporting, because a cold run and a warm one differ so much
+/// that it would be misleading to imply otherwise.
 fn cached_edition(
     root: &std::path::Path,
     members: &[PathBuf],
@@ -1826,10 +1786,10 @@ fn slot_hashes(
 /// The parsed and validated flags `align` runs on, resolved once before
 /// either edition is read.
 ///
-/// Split out of `align` itself so that ~130 lines of argument checking —
-/// none of which touches an archive or a solver — are not counted as part of
-/// the function that does. `align_flags` reads only `args`; `align` reads
-/// only an already-validated `AlignFlags`.
+/// Split out of `align` itself so that the argument checking — none of which
+/// touches an archive or a solver — is not counted as part of the function
+/// that does. `align_flags` reads only `args`; `align` reads only an
+/// already-validated `AlignFlags`.
 struct AlignFlags<'a> {
     a_members: Vec<PathBuf>,
     b_members: Vec<PathBuf>,
@@ -1843,16 +1803,14 @@ struct AlignFlags<'a> {
     cache_root: PathBuf,
 }
 
-/// Parse and validate every flag `align` accepts, in the order the checks
-/// have always run in. Nothing here reads an archive.
+/// Parse and validate every flag `align` accepts, in the order the checks run.
+/// Nothing here reads an archive.
 fn align_flags(args: &[String]) -> Result<AlignFlags<'_>, String> {
     // Before `reject_unknown_flags`, which would otherwise call it a
-    // misspelling. A flag that was documented yesterday is not a typo, and the
-    // two failures want different answers: a typo wants the alphabet, a
-    // retirement wants to know what replaced it. Accepting it as a no-op was
-    // the other option and is the one this group has spent five items arguing
-    // against — a flag that cannot change what a run does is refused, not
-    // ignored.
+    // misspelling. A retired flag is not a typo, and the two failures want
+    // different answers: a typo wants the alphabet, a retirement wants to know
+    // what replaced it. A flag that cannot change what a run does is refused,
+    // not ignored.
     if args.iter().any(|a| a == "--split-spreads") {
         return Err(
             "--split-spreads is retired: splitting joined spreads is now what \
@@ -1877,28 +1835,22 @@ fn align_flags(args: &[String]) -> Result<AlignFlags<'_>, String> {
         ],
     )?;
     let (a_members, b_members) = split_editions(args)?;
-    // Splitting joined spreads is the default. `corpus/README.md` has said to
-    // pass it "essentially always" since before there was a second caller —
-    // unhandled spreads make a correct alignment look broken, which cost
-    // several hours once — so the flag spent its whole life being the answer
-    // to a question nobody wanted asked. O19 and O20 then made the default
-    // path the one that can do almost nothing: it cannot write a sidecar, and
-    // it refuses six of the nine flags. A default nobody should choose is the
-    // same silence this group has been closing, one level up.
+    // Splitting joined spreads is the default: unhandled spreads make a correct
+    // alignment look broken. The page-level path cannot write a sidecar and
+    // refuses most of the other flags (O19, O20), so it is not a default
+    // anybody should choose.
     let split_spreads = !flag_present(args, "--no-split-spreads");
     let show_stats = flag_present(args, "--stats");
     let direct = flag_present(args, "--direct");
 
     // Every valued flag is resolved here, before either edition is read, and
     // not merely before the sidecar is written: a flag typed wrong is a typo,
-    // not a reason to spend seconds fingerprinting pages before saying so. The
-    // key checks were already here on that argument; the rest joined them when
-    // O15 made a missing value a refusal, because a refusal that arrives after
-    // the fingerprinting has run is most of the cost of the mistake anyway.
+    // not a reason to spend seconds fingerprinting pages before saying so. A
+    // refusal that arrives after the fingerprinting has run is most of the cost
+    // of the mistake anyway (O15: a missing value is a refusal).
     //
-    // Reading each of these once also removes the second lookup `--name-a`,
-    // `--name-b` and `--title` each used to do further down, where a flag
-    // could in principle have been resolved twice and answered differently.
+    // Each of these is read once, so a flag cannot be resolved twice and
+    // answered differently.
     let name_a = option_value(args, "--name-a", "an edition key")?;
     let name_b = option_value(args, "--name-b", "an edition key")?;
     let write = option_value(args, "--write", "a path")?;
@@ -1920,10 +1872,7 @@ fn align_flags(args: &[String]) -> Result<AlignFlags<'_>, String> {
     // claim `"spreads": []`, having never looked. That claim is not cosmetic.
     // `sidecar.md` makes the slot sequence follow from `spreads`, so an
     // edition that does join spreads would have every run after the first one
-    // silently re-indexed, which is the shape of the two failures this
-    // repository already records: verify's "192 of 187 pages paired, at
-    // 102.7%", and "entirely an artifact of joined spreads having no
-    // representation". Refusing costs a documented option pairing; the
+    // silently re-indexed. Refusing costs a documented option pairing; the
     // alternative writes an unverified claim into the normative format.
     if write.is_some() && !split_spreads {
         return Err(
@@ -1936,10 +1885,8 @@ fn align_flags(args: &[String]) -> Result<AlignFlags<'_>, String> {
     // that cannot change what this run does is refused rather than ignored.
     //
     // These four are read only inside the `--write` block, so they are dead on
-    // *both* paths when nothing is written — `--split-spreads` alone skips that
-    // block exactly as the plain path does, which is what the framing "dead on
-    // the plain path" got wrong. One message for all four, because the reason
-    // is identical and naming it four ways would suggest four rules.
+    // *both* paths when nothing is written. One message for all four, because
+    // the reason is identical and naming it four ways would suggest four rules.
     //
     // `validate_key` above still runs first, so a malformed `--name-a` reports
     // its own shape rather than this: the value is wrong whatever the run then
@@ -2025,22 +1972,13 @@ fn slot_index(i: usize) -> u32 {
     u32::try_from(i).expect("slot index exceeds u32::MAX")
 }
 
-/// Build or merge into the sidecar `align --write` names, from the runs
-/// `align` just solved.
-///
-/// Split out of `align` itself, which otherwise reaches `too_many_lines` on
-/// this block alone — the merge-or-create decision below cannot shrink
-/// without either hiding a case `docs/sidecar.md` distinguishes, or naming it
-/// a second time in a doc comment where a reader has to trust it still
-/// matches the code below it.
 /// Print the two diagnostics `align` shows on its split-spreads path: the
 /// page-to-page pairing table and the runs restated in slot notation.
 ///
-/// Split out of `align` for the same reason as `write_aligned_sidecar`
-/// above: this is pure output over `a_slots`, `b_slots` and `runs`, computes
-/// nothing the `--write` branch after it needs, and its own two local
-/// closures (`show`, `span`) exist only to keep the printing below them
-/// short.
+/// Split out of `align` for the same reason as `write_aligned_sidecar` below:
+/// this is pure output over `a_slots`, `b_slots` and `runs`, computes nothing
+/// the `--write` branch after it needs, and its own two local closures (`show`,
+/// `span`) exist only to keep the printing below them short.
 fn print_alignment_detail(a_slots: &[Slot], b_slots: &[Slot], runs: &[Run]) {
     let paired: Vec<(&Slot, Option<&Slot>)> = a_slots
         .iter()
@@ -2092,11 +2030,8 @@ fn print_alignment_detail(a_slots: &[Slot], b_slots: &[Slot], runs: &[Run]) {
         "{} runs | {whole} whole pairings | {halves} involving a spread half | {gaps} unmatched slots",
         runs.len()
     );
-    // The verdict was previously printed only in the plain path, so the
-    // documented way of running the tool - `--split-spreads`, which
-    // corpus/README.md says to pass essentially always - never showed it. An
-    // art book paired page-for-page against a volume looked like a clean
-    // result.
+    // Without the verdict, an art book paired page-for-page against a volume
+    // would look like a clean result.
     eprintln!("{}", stats::verdict_sentence(runs, a_slots.len()));
 }
 
@@ -2159,9 +2094,17 @@ fn built_alignment(a_name: &str, b_name: &str, w: &AlignWrite<'_>) -> Result<Ali
     })
 }
 
+/// Build or merge into the sidecar `align --write` names, from the runs
+/// `align` just solved.
+///
+/// Split out of `align` itself, which otherwise reaches `too_many_lines` on
+/// this block alone — the merge-or-create decision below cannot shrink
+/// without either hiding a case `docs/sidecar.md` distinguishes, or naming it
+/// a second time in a doc comment where a reader has to trust it still
+/// matches the code below it.
 fn write_aligned_sidecar(w: &AlignWrite<'_>) -> Result<(), String> {
-    // Read before writing. `--write` used to be a bare `fs::write`, which
-    // silently discarded a document that may hold four other editions.
+    // Read before writing, so a document that may hold other editions is merged
+    // into rather than discarded.
     let existing = existing_sidecar(w.out)?;
 
     // On a merge the a-side is the edition the document already names, so
@@ -2220,13 +2163,13 @@ fn write_aligned_sidecar(w: &AlignWrite<'_>) -> Result<(), String> {
                     format!("replaced, dropping {n} credits page(s)")
                 }
                 // `merge_spoke` itself never returns this — see its own doc
-                // comment — so this call site can never actually reach the
-                // arm. Only `taiyaku_library::import::reimport` constructs
-                // it, catching a `merge_spoke` refusal rather than
-                // propagating it, which is not what this command does: a
-                // refusal here reaches the caller through the `?` two lines
-                // above instead. Handled anyway because the match must be
-                // exhaustive over every `Merged` this crate can see.
+                // comment — so this call site can never actually reach the arm.
+                // Only `taiyaku_library::import::reimport` constructs it,
+                // catching a `merge_spoke` refusal rather than propagating it,
+                // which is not what this command does: a refusal here reaches
+                // the caller through the `?` above instead. Handled anyway
+                // because the match must be exhaustive over every `Merged` this
+                // crate can see.
                 Merged::DroppedHandRuns(n) => {
                     format!("replaced, dropping {n} stale hand run(s)")
                 }
@@ -2296,10 +2239,10 @@ fn align(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
 
-    // Prototype: cut joined spreads in half on BOTH sides before solving.
-    // Which edition joins a spread is not fixed - raws split them and English
-    // releases join them here, but the colour editions join them too, so the
-    // same pair read the other way round puts the spreads on the other side.
+    // Cut joined spreads in half on BOTH sides before solving. Which edition
+    // joins a spread is not fixed - raws split them and English releases join
+    // them here, but the colour editions join them too, so the same pair read
+    // the other way round puts the spreads on the other side.
     let direction = reading_direction(args);
     let started = std::time::Instant::now();
     let (a_slots_hashes, a_slots, a_hits) = cached_edition(&cache_root, &a_members, direction)?;
@@ -2404,11 +2347,10 @@ fn spreads_in(slots: &[Slot]) -> usize {
 
 /// The document `--write` will merge into, if there is one.
 ///
-/// Absent is a new document; unreadable is not. `--write` used to be a bare
-/// `fs::write`, which silently discarded a file that may hold four other
-/// editions — so a read that fails for any reason other than the file not
-/// being there has to stop the write, rather than be treated as "nothing to
-/// merge" and overwrite whatever is actually at that path.
+/// Absent is a new document; unreadable is not. A read that fails for any
+/// reason other than the file not being there has to stop the write, rather
+/// than be treated as "nothing to merge" and overwrite whatever is actually at
+/// that path.
 fn existing_sidecar(out: &str) -> Result<Option<Sidecar>, String> {
     match std::fs::read_to_string(out) {
         Ok(text) => Ok(Some(Sidecar::from_json(&text)?)),
@@ -2457,9 +2399,8 @@ fn report_summary(runs: &[Run], a_len: usize) -> (String, String) {
     // plausible-looking one. A correct pairing is a few long runs; a spurious
     // one is confetti at roughly the same coverage. Runs per hundred pages is
     // kept here as a diagnostic to show the user, not as the thing judged on:
-    // the 18-row survey in docs/notes.md ("The margin survey, and where the
-    // refusal threshold sits") retired it in favour of average run length,
-    // which `verdict_sentence` reports.
+    // average run length, which `verdict_sentence` reports, is the measure; see
+    // docs/notes.md, "The margin survey, and where the refusal threshold sits".
     #[expect(
         clippy::cast_precision_loss,
         reason = "runs.len() cannot exceed a_len (every run consumes at least one A page), \

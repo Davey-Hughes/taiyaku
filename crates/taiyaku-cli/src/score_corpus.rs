@@ -6,25 +6,23 @@
 //! measurement. `region_experiment.rs`'s header carries the full argument.
 //!
 //! **The deliberate asymmetry.** A *missing* truth document skips — the
-//! ordinary state before any page has been labelled, which is where this
-//! check starts life, since no page has been drawn yet — but a labelled page
-//! that fails to score *fails* the test. The first is expected; the second
-//! means somebody's labelling work is silently not being measured, which is
-//! the exact failure this whole sub-project exists to catch. `score_corpus_page`
-//! never panics for that reason: every way it can fail to reach a page comes
-//! back `None` rather than aborting the loop, so a run that fails still names
-//! every page it failed on rather than just the first.
+//! ordinary state before any page has been labelled — but a labelled page that
+//! fails to score *fails* the test. The first is expected; the second means
+//! somebody's labelling work is silently not being measured, which is the exact
+//! failure this whole sub-project exists to catch. `decode_labelled_page` never
+//! panics for that reason: every way it can fail to reach a page comes back
+//! `None` rather than aborting the loop, so a run that fails still names every
+//! page it failed on rather than just the first.
 //!
 //! **Only the labelled pages are decoded.** `fingerprint::decode_all` (and, at
-//! the single-page grain this module needs, `fingerprint::decode_luma`)
-//! decodes whatever it is handed, and a handful of pages per edition are
-//! labelled against tens or hundreds available — `score_corpus_page` resolves
-//! and decodes exactly one page at a time, by index, so nothing outside the
-//! dev set is ever paid for. This is `score::command`'s own rule ("Only the
-//! labelled pages are decoded"), restated at a coarser grain: `command` reads
-//! one sidecar-identified edition and filters its pages before one
-//! `decode_all` call; this check reads several editions across the fixed dev
-//! set, so filtering happens per truth-document page instead.
+//! the single-page grain this module needs, `fingerprint::decode_luma`) decodes
+//! whatever it is handed, and only some of an edition's pages are labelled —
+//! `decode_labelled_page` decodes exactly one page at a time, by index, so
+//! no page outside the dev set is ever decoded. This is `score::command`'s own
+//! rule ("Only the labelled pages are decoded"), restated at a coarser grain:
+//! `command` reads one sidecar-identified edition and filters its pages before
+//! one `decode_all` call; this check reads several editions across the fixed
+//! dev set, so filtering happens per truth-document page instead.
 //!
 //! **Reuses `score::command`'s shape, not its edition lookup.** `command`
 //! identifies an edition by matching member digests against a sidecar, because
@@ -35,24 +33,19 @@
 //! entered one step later because the edition is already known.
 //!
 //! **The page sequence comes from the sidecar, not from a glob of the
-//! directory.** This used to reach pages through `corpus::members` and
-//! `taiyaku_read::read_edition`, which list what happens to be on disk and
-//! sort it naturally — and `read_edition`'s own doc says "a caller holding a
-//! sidecar must not [sort]". This caller *does* hold one: it tests
-//! `sidecar.exists()` before anything else. `docs/sidecar.md` rule 1 is
-//! normative — the edition's own `members` array *is* the page order — so
-//! `edition_pages` walks that array, exactly as `score::command` does. The two
-//! orders coincide on today's corpus, which is precisely why the old form
-//! could not be seen to be wrong: drop an extra archive into an edition
-//! directory, or replace one, and it scored labels against different pages and
-//! printed a plausible report.
+//! directory.** `corpus::members` and `taiyaku_read::read_edition` list what
+//! happens to be on disk and sort it naturally — and `read_members_in_order`'s
+//! doc says "a caller holding a sidecar must not [sort]". This caller *does*
+//! hold one: it tests `sidecar.exists()` before anything else.
+//! `docs/sidecar.md` rule 1 is normative — the edition's own `members` array
+//! *is* the page order — so `edition_pages` walks that array, exactly as
+//! `score::command` does.
 //!
-//! **And it refuses on `is_stale_for`.** This is the one place in the branch
-//! where that guard exists and was not used. Labels drawn against an archive
-//! that has since been replaced put a box on the wrong art on the *right*
-//! page — `TruthEdition::is_stale_for`'s own doc calls that the sharpest form
-//! of the problem — and a standing check that cannot see it is a check that
-//! certifies the mistake.
+//! **And it refuses on `is_stale_for`.** Labels drawn against an archive that
+//! has since been replaced put a box on the wrong art on the *right* page —
+//! `TruthEdition::is_stale_for`'s own doc calls that the sharpest form of the
+//! problem — and a standing check that cannot see it is a check that certifies
+//! the mistake.
 //!
 //! ```sh
 //! TAIYAKU_CORPUS="$PWD/corpus" cargo test -p taiyaku-cli score_corpus -- --nocapture
@@ -68,10 +61,9 @@ use crate::score::{COVERAGE, Report, score_page};
 /// One edition's pages, in the sidecar's own member order, or an error saying
 /// why the labels drawn on them cannot be trusted against what is on disk.
 ///
-/// Three separate refusals, each of which the globbing form it replaced was
-/// blind to: a sidecar that does not name this edition, a member that will not
-/// read, and — the one this branch's own guard exists for — a member list
-/// whose bytes are not the bytes the labels were drawn against.
+/// Three separate refusals: a sidecar that does not name this edition, a member
+/// that will not read, and a member list whose bytes are not the bytes the
+/// labels were drawn against.
 ///
 /// Member paths are relative to the sidecar, per `docs/sidecar.md`, so they
 /// are joined to its directory rather than to the edition directory: a member
@@ -190,7 +182,7 @@ fn scoring_the_dev_set_produces_a_report_over_every_labelled_page() {
 
         // Counted as a contributor here, before the edition is resolved, and
         // not after the loop below. Somebody has labelled this edition, so the
-        // run is no longer the "nothing drawn yet" case that skips — and if
+        // run is not the "nothing drawn yet" case that skips — and if
         // this were pushed only on the way out, an edition that failed to
         // resolve at all would `continue` past it and leave `contributed`
         // empty, which turns the assertions below into a clean skip. A green
@@ -221,8 +213,8 @@ fn scoring_the_dev_set_produces_a_report_over_every_labelled_page() {
         }
     }
 
-    // Skipping cleanly before any labelling exists, rather than failing: this
-    // check ships ahead of the labelling and the drawing happens afterwards.
+    // Skipping cleanly when nothing is labelled, rather than failing: the
+    // module header's asymmetry.
     if contributed.is_empty() {
         eprintln!("no truth documents found; skipping until the dev set is labelled");
         return;
@@ -246,14 +238,9 @@ fn scoring_the_dev_set_produces_a_report_over_every_labelled_page() {
 
 /// Every `sample.rs` entry resolves to a real directory under `TAIYAKU_CORPUS`.
 ///
-/// Written after the plan that produced `sample.rs` listed three
-/// `HELD_OUT_EDITIONS` paths that did not exist on disk —
-/// `bocchi/raw-v01-src-a`/`-b`/`-c`, when the real directories are
-/// `raw-v01-src-hamaji`, `raw-v01-src-krc` and `raw-v01-src-mangazip` — and
-/// nothing would have caught that until someone sat down to label them.
-/// Checks all fifteen entries in one run rather than stopping at the first
-/// wrong one, because a second wrong path in the same run is a second thing
-/// somebody has to go fix, and finding it on a later run costs another whole
+/// Checks every entry in one run rather than stopping at the first wrong one,
+/// because a second wrong path in the same run is a second thing somebody has
+/// to go fix, and finding it on a later run costs another whole
 /// label-then-discover cycle.
 #[test]
 fn every_sample_edition_resolves_to_a_directory_on_disk() {
@@ -286,10 +273,10 @@ fn every_sample_edition_resolves_to_a_directory_on_disk() {
 // `edition_pages`, against fixtures rather than the corpus.
 //
 // These need no `TAIYAKU_CORPUS`, deliberately. The two checks above skip
-// entirely without it — and nothing has been labelled on the corpus yet, so
-// even with it the whole first check skips today. A guard that only runs once
-// somebody has spent hours labelling is a guard that is discovered to be wrong
-// at the worst possible moment.
+// entirely without it, and the first also skips while nothing is labelled (the
+// module header's asymmetry). A guard that only runs once somebody has spent
+// hours labelling is a guard that is discovered to be wrong at the worst
+// possible moment.
 
 /// A one-page cbz whose page is a real, decodable image.
 ///
@@ -378,12 +365,10 @@ fn labelled_against(digests: &[&str]) -> taiyaku_core::TruthEdition {
 /// The page sequence is the sidecar's member array, not a sort of what is in
 /// the directory.
 ///
-/// `read_edition`'s own doc says "a caller holding a sidecar must not [sort]",
-/// and this caller holds one. Two things bite here at once, and both were
-/// silently wrong: a glob returns `a, b, zz` — sorted, and three members
-/// where the sidecar names two — while the sidecar says `b, a`. On today's
-/// corpus the two orders happen to coincide, which is exactly why nothing
-/// would have caught this until an archive was added or replaced.
+/// `read_members_in_order`'s doc says
+/// "a caller holding a sidecar must not [sort]", and this caller holds one. Two
+/// things bite here at once: a glob returns `a, b, zz` — sorted, and three
+/// members where the sidecar names two — while the sidecar says `b, a`.
 #[test]
 fn the_page_order_is_the_sidecars_and_an_unnamed_archive_is_not_read() {
     let (_root, sidecar, [digest_b, digest_a]) = fixture("order");
@@ -400,13 +385,11 @@ fn the_page_order_is_the_sidecars_and_an_unnamed_archive_is_not_read() {
     );
 }
 
-/// And the guard this branch built is finally used here: labels drawn against
-/// bytes that are no longer on disk are refused rather than scored.
+/// Labels drawn against bytes that are no longer on disk are refused rather
+/// than scored.
 ///
 /// The sharpest form of the staleness problem — a box on the wrong art on the
-/// *right* page (`TruthEdition::is_stale_for`). This check never called it,
-/// so a replaced archive produced a plausible report and nothing in it could
-/// have said so.
+/// *right* page (`TruthEdition::is_stale_for`).
 #[test]
 fn labels_drawn_against_a_replaced_archive_are_refused_rather_than_scored() {
     let (_root, sidecar, [digest_b, _]) = fixture("stale");

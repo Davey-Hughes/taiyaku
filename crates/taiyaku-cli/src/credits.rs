@@ -2,17 +2,16 @@
 //! same edition, by dhash.
 //!
 //! **This is a diagnostic and never a classifier**, and that is a measurement
-//! rather than a preference. Run over all 235 pages of `corpus/gotoubun-v01`'s
-//! fan edition, its two tightest matches in the whole edition — Hamming
-//! distance 2 — are the volume *cover*, which the release carries in two chapter
-//! files. Its true positives, the three donation cards, sit at 14 to 24 rather
-//! than near zero, because a near-black card has few strong gradients and
-//! re-encoding flips the weak ones. And it misses both staff-credit pages, at
-//! distances 93 and 99, because each appears exactly once.
+//! rather than a preference. Over `corpus/gotoubun-v01`'s fan edition, its
+//! tightest matches are the volume *cover*, which the release carries in two
+//! chapter files. Its true positives, the donation cards, do not sit near zero,
+//! because a near-black card has few strong gradients and re-encoding flips the
+//! weak ones. And it misses the staff-credit pages, because each appears
+//! exactly once.
 //!
-//! So it cannot decide, and gating signal 1 on it would veto the two true
-//! positives signal 1 uniquely finds. What it is good for is telling a person
-//! reviewing a candidate *why* a page recurs and where. See `docs/notes.md`,
+//! So it cannot decide, and gating signal 1 on it would veto the true positives
+//! signal 1 uniquely finds. What it is good for is telling a person reviewing a
+//! candidate *why* a page recurs and where. See `docs/notes.md`,
 //! "The dhash signal finds duplicated pages, which is not the same thing".
 
 use std::collections::BTreeMap;
@@ -53,9 +52,8 @@ fn page_index(n: usize) -> u32 {
 /// For each page, the nearest page in a *different* member.
 ///
 /// Quadratic in the edition's page count, which is fine at the scale this runs
-/// at — 235 pages is 27,495 comparisons of four `u64` xors — and worth keeping
-/// simple rather than indexing, because the answer is printed for a person and
-/// never sits on a request path.
+/// at and worth keeping simple rather than indexing, because the answer is
+/// printed for a person and never sits on a request path.
 ///
 /// An edition with fewer than two members reports nothing rather than falling
 /// back to within-member neighbours: there is no recurrence to measure, and an
@@ -94,21 +92,18 @@ pub fn recurrences(members: &[Vec<PageHash>]) -> Vec<Recurrence> {
 
 /// The longest run at a member's last page that still reads as credits.
 ///
-/// **1, and measured rather than provisional.** Surveyed 2026-08-07 with
-/// `scripts/credit-survey.sh` over both fan editions the corpus holds —
-/// `gotoubun-v01` and `kaguya-v01`, 461 pages, 15 unpaired runs, four
-/// scanlation groups — and then by extracting every candidate and looking at
-/// it. **Every credit page found anywhere is a run of exactly 1**, all five of
-/// them, so there is no measured run of 2 or 3 to raise this for. The corpus's
-/// only run of that length at all — Kaguya's pages 2 to 4 — is the volume's two
-/// inside covers and the digital edition's own notice page, so the single piece
-/// of evidence a longer bound could be tested against argues against it.
+/// **1, and measured rather than provisional.** **Every credit page found
+/// anywhere is a run of exactly 1**, so there is no measured run of 2 or 3 to
+/// raise this for. The corpus's only run of that length at all — Kaguya's pages
+/// 2 to 4 — is the volume's two inside covers and the digital edition's own
+/// notice page, so the single piece of evidence a longer bound could be tested
+/// against argues against it.
 ///
 /// This is therefore not a compromise struck between two readings; 1 is the
 /// only length anyone has measured. What it does *not* claim is that no group
-/// prints a two-page credits spread: four groups is not the population, and
-/// such a spread would go undetected with no sign that it had. See
-/// `docs/notes.md`, "A second group's habits, and what the bound is worth".
+/// prints a two-page credits spread: the groups surveyed are not the
+/// population, and such a spread would go undetected with no sign that it had.
+/// See `docs/notes.md`, "A second group's habits, and what the bound is worth".
 const MAX_CREDIT_RUN: u32 = 1;
 
 /// Is this unpaired run a scanlation group's own matter?
@@ -179,7 +174,7 @@ fn label_of(path: &str) -> &str {
 /// directory a `--sidecar` path names, not the document's display title.
 ///
 /// `corpus/gotoubun-v01/taiyaku.json`'s immediate parent directory is
-/// `gotoubun-v01` — the slug the two checked-in fixtures key on
+/// `gotoubun-v01` — the slug the checked-in fixtures key on
 /// (`gotoubun-v01-en-fan.json` and `kaguya-v01-en-fan.json` both hold
 /// `"work": "gotoubun-v01"` / `"work": "kaguya-v01"`, and the
 /// `CreditFixture` test at `gotoubun_v01` asserts exactly that string).
@@ -255,9 +250,9 @@ impl Row {
 /// One row per unpaired run, widest cell deciding each column.
 ///
 /// Widths are measured rather than fixed because a member is named after the
-/// file it came from, and a scanlation group's file names run to fifty
-/// characters — a fixed width either truncates them or wastes half the line on
-/// a corpus whose members are called `c1.cbz`.
+/// file it came from, and a scanlation group's file names run long — a fixed
+/// width either truncates them or wastes half the line on a corpus whose
+/// members are called `c1.cbz`.
 fn table(rows: &[Row]) -> String {
     let cells: Vec<[String; 8]> = rows.iter().map(Row::cells).collect();
     let mut widths = HEADERS.map(str::len);
@@ -296,10 +291,8 @@ fn table(rows: &[Row]) -> String {
 /// tested without an archive: it is a question about `doc.alignments` alone.
 ///
 /// The suggestion list is filtered to alignments that actually touch
-/// `edition` before taking "whichever side is not it" (I4). Without that
-/// filter a direct edge between two spokes — neither of them the hub — still
-/// mapped to `al.from`, an edition with no edge to the hub at all, which then
-/// failed downstream with a different, more confusing refusal.
+/// `edition` before taking "whichever side is not it", so a direct edge between
+/// two spokes — neither of them the hub — suggests nothing.
 fn resolve_counterpart(
     doc: &Sidecar,
     edition: &str,
@@ -424,8 +417,8 @@ fn credits_line(
 /// `Edition`'s own `members` list, never from this order** — `edition_of`
 /// matched a sorted set, so the argument order it accepted said nothing about
 /// which chapter is first, and a shell glob orders `c10.5` before `c1` in any
-/// case. `page_order_comes_from_the_editions_own_member_order` pins this by
-/// handing the two hashes in reverse and checking nothing moves.
+/// case. A test in `credits/tests.rs` pins this by handing the two hashes in
+/// reverse and checking nothing moves.
 ///
 /// `scan` is `scan_information`'s already-computed answer, passed in rather
 /// than read here, for the same reason `fingerprinted` is: reading an archive
@@ -610,9 +603,8 @@ pub fn command(args: &[String]) -> Result<(), String> {
         );
     }
 
-    // Four consumed flags now, not three. A path this list forgets becomes a
-    // member, and a member that is really a flag argument fingerprints as a
-    // missing file rather than refusing.
+    // A path this list forgets becomes a member, and a member that is really a
+    // flag argument fingerprints as a missing file rather than refusing.
     let members = member_args(args, &[sidecar, against, cache, emit_fixture]);
     if members.is_empty() {
         return Err(USAGE.into());
@@ -718,7 +710,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
         eprintln!("wrote {count} credits page(s) for `{edition}` to {sidecar}");
     }
 
-    // M6: printed only once whatever `--write` promised has actually happened.
+    // Printed only once whatever `--write` promised has actually happened.
     // On an unwritable target `write_sidecar` above returns before this is
     // reached, so a failed run never leaves a well-formed `credits:` line on
     // stdout for a survey to collect.

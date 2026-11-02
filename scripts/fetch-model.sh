@@ -10,7 +10,7 @@
 #
 # From the `zyddnys/manga-image-translator` release, which is a GPL-3.0 project.
 # The Hugging Face mirror `mayocream/comic-text-detector-onnx` serves the
-# **same bytes** — verified, identical sha256 — while tagging them `apache-2.0`.
+# **same bytes** — identical sha256 — while tagging them `apache-2.0`.
 # It is the first hit when you search for this model and it is mislabelled, so
 # the authoritative source is named here explicitly.
 #
@@ -30,11 +30,11 @@
 # --- the checksum -------------------------------------------------------------
 #
 # A GitHub release asset can be replaced in place by whoever owns the
-# repository, and upstream publishes no checksum of its own. The digest below
-# was computed here from the artefact this measurement was taken against. Bump
-# it together with the URL, by downloading and re-computing — never by copying a
-# value out of a README or an issue. This is the same rule the nextest download
-# in `.forgejo/workflows/ci.yml` follows, for the same reason.
+# repository, and upstream publishes no checksum of its own. The digest below is
+# of the artefact this measurement was taken against. Bump it together with the
+# URL, by downloading and re-computing — never by copying a value out of a
+# README or an issue. This is the same rule the nextest download in
+# `.forgejo/workflows/ci.yml` follows, for the same reason.
 
 set -euo pipefail
 

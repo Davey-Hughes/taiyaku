@@ -425,10 +425,9 @@ fn a_pairing_involves_a_spread_whichever_side_is_the_half() {
 }
 
 /// `--write` merges, so it reads first — and a read that fails for any
-/// reason other than the file not being there has to stop the write. It
-/// used to be a bare `fs::write`, which silently discarded a document that
-/// may hold four other editions, and treating every read error as "nothing
-/// to merge" puts that back.
+/// reason other than the file not being there has to stop the write.
+/// Treating every read error as "nothing to merge" would silently discard
+/// a document that may hold four other editions.
 #[test]
 fn a_sidecar_that_cannot_be_read_stops_the_write_rather_than_being_absent() {
     let root = TempDir::new("existing-sidecar");
@@ -456,10 +455,9 @@ fn a_sidecar_that_cannot_be_read_stops_the_write_rather_than_being_absent() {
 /// `--write` merges into whatever is already at `--out`, so a document from a
 /// newer taiyaku would be parsed with every unknown field dropped, merged, and
 /// written back stamped version 1 — over the reader's only copy, which is the
-/// exact loss `existing_sidecar` was introduced to prevent for an unreadable
-/// file. `taiyaku_library::import` refused this at the library's entry points
-/// and `align` never did; `Sidecar::from_json` refuses it now, for every
-/// command at once, and this pins that `align --write` is one of them.
+/// exact loss `existing_sidecar` exists to prevent for an unreadable file.
+/// `Sidecar::from_json` refuses such a document for every command at once, and
+/// this pins that `align --write` is one of them.
 #[test]
 fn a_sidecar_from_a_newer_taiyaku_stops_the_write_rather_than_being_downgraded() {
     let root = TempDir::new("existing-sidecar-newer");
@@ -490,7 +488,7 @@ fn a_sidecar_from_a_newer_taiyaku_stops_the_write_rather_than_being_downgraded()
 ///
 /// Counted rather than inferred: a count that never rises reads as an
 /// honest cold run every time, and the only thing wrong is that the
-/// three-orders-of-magnitude saving the cache exists for is invisible.
+/// saving the cache exists for is invisible.
 #[test]
 fn a_warm_edition_reports_every_member_as_a_cache_hit() {
     let root = TempDir::new("cached-edition");
@@ -573,18 +571,16 @@ fn a_report_summary_counts_paired_pages_and_the_run_rate() {
     );
 }
 
-/// A shell glob is not in reading order, and the sidecar used to record it
-/// verbatim while the solver quietly worked in natural order — so a
-/// document's member list disagreed with the page sequence its own runs
-/// addressed. Nothing in this repository reads member order, which is why
-/// it went unnoticed; a reader that concatenates `members` to rebuild the
-/// sequence would show the wrong page for every lookup.
+/// A shell glob is not in reading order, and a sidecar that recorded it
+/// verbatim while the solver worked in natural order would have a member list
+/// that disagrees with the page sequence its own runs addressed. A reader
+/// that concatenates `members` to rebuild the sequence would show the wrong
+/// page for every lookup.
 ///
-/// Kaguya's fan translation is the reproduction: `*.cbz` yields
-/// `c10.5, c10, c1, c2, …` and the solve used `c1, c2, … c10, c10.5`.
-/// Ordering here rather than in each consumer is what makes them agree —
-/// `slug` and `label` name an edition after its first member, and they
-/// were reading the glob's first member too.
+/// `*.cbz` yields `c10.5, c10, c1, c2, …` where reading order is
+/// `c1, c2, … c10, c10.5`. Ordering here rather than in each consumer is what
+/// makes them agree — `slug` and `label` name an edition after its first
+/// member, and would otherwise name it after the glob's first.
 #[test]
 fn both_editions_come_back_in_natural_order() {
     let args: Vec<String> = [
@@ -610,13 +606,10 @@ fn both_editions_come_back_in_natural_order() {
 }
 
 /// `docs/sidecar.md` says a member's `path` is relative to the sidecar, and
-/// `LocalLibrary` resolves it that way. `describe_edition` wrote the path as
-/// typed on the command line, which is relative to the working directory —
-/// so a sidecar written from one directory and stored in another named
-/// members that were not there, and every page 404'd.
-///
-/// The same class as the member-order bug: the writer disagreeing with a
-/// rule the format states, invisible until something resolved it.
+/// `LocalLibrary` resolves it that way. A path recorded as typed on the
+/// command line is relative to the working directory instead — so a sidecar
+/// written from one directory and stored in another would name members that
+/// were not there, and every page would 404.
 #[test]
 fn a_member_path_is_recorded_relative_to_the_sidecar() {
     let root = TempDir::new("relative");
@@ -662,16 +655,14 @@ fn a_member_inside_the_base_directory_is_recorded_relative_to_it() {
 
 /// A `let-else` pattern's bindings are not in scope inside its `else`
 /// block, so `let (Ok(target), Ok(base)) = (...) else { return
-/// target... }` returns the *parameter*, not a canonicalised path. In this
-/// call chain that parameter is exactly the working-directory-relative
+/// target... }` would return the *parameter*, not a canonicalised path. In
+/// this call chain that parameter is exactly the working-directory-relative
 /// path this function exists to stop writing into the sidecar — the
-/// fallback was reintroducing the bug it exists to prevent.
+/// fallback would reintroduce the bug it exists to prevent.
 ///
-/// Constructed the way the review asked: a base that cannot be resolved (a
-/// sidecar directory that does not exist) and a relative target, the shape
-/// a caller's argument actually has. Before the fix this returned
-/// `target` completely unchanged, `relative/thing.cbz` — not absolute, not
-/// even looked at. After the fix it returns an absolute path.
+/// Constructed with a base that cannot be resolved (a sidecar directory that
+/// does not exist) and a relative target, the shape a caller's argument
+/// actually has: the result must be an absolute path, not `target` unchanged.
 ///
 /// Pinned against `current_dir().join(target)` rather than only asserting
 /// `is_absolute()`: the weaker assertion passes for any absolute path at
@@ -705,9 +696,8 @@ fn relative_to_returns_an_absolute_path_when_the_base_cannot_be_resolved() {
 
 /// `Path::new("taiyaku.json").parent()` returns `Some("")`, not `None`,
 /// for a bare filename — the guard at the `--write` call site exists
-/// because computing member paths against an empty base would be silently
-/// wrong. Pinned directly rather than only through the inline expression
-/// it used to be.
+/// because computing member paths against an empty base would be
+/// silently wrong.
 #[test]
 fn sidecar_dir_falls_back_to_the_current_directory_for_a_bare_filename() {
     assert_eq!(sidecar_dir(Path::new("taiyaku.json")), Path::new("."));
@@ -754,12 +744,12 @@ fn three_editions_one_hand_corrected() -> Sidecar {
 
 /// O26: `align --write` must not be able to leave a short sidecar behind.
 ///
-/// The property O2 established for progress and `atomic.rs` now owns for
-/// everything that writes beside a sidecar: the destination is *replaced*
-/// by a rename, never opened for truncation. A crash cannot be staged in a
-/// test, so this pins the mechanism that rules it out — the same shape
+/// `atomic.rs` owns the property for everything that writes beside a
+/// sidecar: the destination is *replaced* by a rename, never opened for
+/// truncation. A crash cannot be staged in a test, so this pins the
+/// mechanism that rules it out — the same shape
 /// `credits::tests::writing_a_credits_list_replaces_the_sidecar_rather_than_truncating_it`
-/// set for the command next door.
+/// sets for the command next door.
 ///
 /// Observed by **inode identity** rather than by taking write permission
 /// off the existing file. `atomic.rs`'s own test records why: on a
@@ -844,13 +834,12 @@ fn writing_an_alignment_replaces_the_sidecar_rather_than_truncating_it() {
     );
 }
 
-/// Important 1a: an edition key reaches two URLs —
+/// An edition key reaches two URLs —
 /// `/api/works/{work}/{edition}/pages/{n}` and the OPDS stream route —
-/// verbatim. `--name-a`/`--name-b` used to hand `slug` a caller's string
-/// unexamined, so `taiyaku align --name-a "raw color"` wrote a key
-/// containing a space, breaking both `href`s it went into. Pinned to the
-/// exact wording the review asked for: the key, the offending character,
-/// its position, and a suggestion.
+/// verbatim. Were a caller's string handed to `slug` unexamined,
+/// `taiyaku align --name-a "raw color"` would write a key containing a
+/// space, breaking both `href`s it went into. Pinned to the exact wording:
+/// the key, the offending character, its position, and a suggestion.
 #[test]
 fn validate_key_names_the_character_position_and_a_suggestion() {
     let err = validate_key("raw color").unwrap_err();
@@ -949,11 +938,10 @@ fn argv(args: &[&str]) -> Vec<String> {
     args.iter().map(ToString::to_string).collect()
 }
 
-/// Splitting joined spreads is what the corpus README has said to do
-/// "essentially always" since before the flag had a second user, so it is
-/// the default. The observable consequence at this level: `--write` alone
-/// no longer trips O19's refusal, because the run it names now detects
-/// spreads.
+/// Splitting joined spreads is what the corpus README says to do
+/// "essentially always", so it is the default. The observable consequence at
+/// this level: `--write` alone does not trip O19's refusal, because the run
+/// it names detects spreads.
 #[test]
 fn writing_a_sidecar_no_longer_needs_a_flag_to_enable_it() {
     let args = argv(&[
@@ -972,10 +960,9 @@ fn writing_a_sidecar_no_longer_needs_a_flag_to_enable_it() {
     );
 }
 
-/// O19's rule survives the inversion — it now keys off the flag that asks
-/// for the page-level path rather than off the absence of the one that
-/// asked for the slot-level path. The reason is unchanged: that path
-/// cannot describe an edition's spreads, so it cannot write a sidecar.
+/// O19's rule keys off the flag that asks for the page-level path. The reason
+/// is that this path cannot describe an edition's spreads, so it cannot write
+/// a sidecar.
 #[test]
 fn align_refuses_write_with_no_split_spreads() {
     let args = argv(&[
@@ -995,10 +982,9 @@ fn align_refuses_write_with_no_split_spreads() {
 }
 
 /// The retired flag explains itself rather than being accepted as a no-op
-/// or reported as a typo. Accepting it would break the rule O19 and O20
-/// established — a flag that cannot change what a run does is refused —
-/// and `reject_unknown_flags` alone would call yesterday's documented flag
-/// a misspelling.
+/// or reported as a typo. Accepting it would break the rule of O19 and O20 —
+/// a flag that cannot change what a run does is refused — and
+/// `reject_unknown_flags` alone would call it a misspelling.
 #[test]
 fn the_retired_split_spreads_flag_says_what_replaced_it() {
     let args = argv(&["a.cbz", "--", "b.cbz", "--split-spreads"]);
@@ -1011,7 +997,7 @@ fn the_retired_split_spreads_flag_says_what_replaced_it() {
     );
 }
 
-/// O20's two split-path flags follow the same inversion.
+/// O20's rule for the page-level path, as it applies to `--ltr`.
 #[test]
 fn align_refuses_ltr_with_no_split_spreads() {
     let args = argv(&[
@@ -1029,7 +1015,7 @@ fn align_refuses_ltr_with_no_split_spreads() {
     );
 }
 
-/// The plain diagnostic is still reachable, and still takes `--stats`.
+/// The plain diagnostic is reachable, and takes `--stats`.
 #[test]
 fn the_page_level_diagnostic_is_still_reachable() {
     let args = argv(&[
@@ -1050,8 +1036,8 @@ fn the_page_level_diagnostic_is_still_reachable() {
 
 /// O21. O15, O19 and O20 all key off a flag's *name*, so none of them can
 /// see a name that was typed wrong — and a misspelling reproduces exactly
-/// the failure O19 closed: `--writ` is not `--write`, so the run reports a
-/// plausible alignment and writes nothing, at exit 0.
+/// the failure O19 exists to stop: `--writ` is not `--write`, so the run
+/// reports a plausible alignment and writes nothing, at exit 0.
 #[test]
 fn a_misspelled_flag_is_refused_rather_than_ignored() {
     let args = argv(&[
@@ -1096,8 +1082,7 @@ fn a_flag_belonging_to_another_command_is_refused() {
     );
 }
 
-/// O22, O20's rule in the command O20 did not touch. Measured before the
-/// fix: `verify a -- b --cache DIR` never created DIR, because
+/// O22, O20's rule in the command O20 did not touch. In `verify`,
 /// `cached_edition` is reached only from the `--sidecar` arm — without one
 /// `verify` solves the pair directly and the cache is never consulted.
 #[test]
@@ -1185,9 +1170,8 @@ fn the_edition_separator_is_not_treated_as_an_unknown_flag() {
     );
 }
 
-/// #3, folded in here because the fix is the same scan: a flag typed on
-/// the a-side lands in the member list, and used to be reported as a file
-/// that does not exist — which names the wrong problem entirely.
+/// A flag typed on the a-side lands in the member list, and would be reported
+/// as a file that does not exist — which names the wrong problem entirely.
 #[test]
 fn a_flag_before_the_separator_says_so_rather_than_reporting_a_missing_file() {
     let args = argv(&["a.cbz", "--stats", "--", "b.cbz"]);
@@ -1221,8 +1205,7 @@ fn a_flag_with_a_value_still_returns_it() {
 
 /// The first of O15's two silences: a flag last on the line has nothing
 /// after it, and `args.get(at + 1)` answering `None` is indistinguishable
-/// from the flag never being typed. `taiyaku inventory releases
-/// --min-pages` walked with the default threshold of 60 and said nothing.
+/// from the flag never being typed.
 #[test]
 fn a_flag_with_nothing_after_it_is_refused_rather_than_read_as_absent() {
     let args = argv(&["a.cbz", "--", "b.cbz", "--write"]);
@@ -1233,10 +1216,10 @@ fn a_flag_with_nothing_after_it_is_refused_rather_than_read_as_absent() {
     );
 }
 
-/// The second: the argument after the flag is taken verbatim however it
-/// reads, so `align a -- b --write --ltr` wrote the sidecar to a file
-/// named `--ltr` — and applied the direction anyway, since `--ltr` is
-/// matched separately, so nothing reported a problem.
+/// The second: the argument after the flag would be taken verbatim however it
+/// reads, so `align a -- b --write --ltr` would write the sidecar to a file
+/// named `--ltr` — and apply the direction anyway, since `--ltr` is matched
+/// separately, so nothing would report a problem.
 #[test]
 fn a_flag_followed_by_another_flag_is_refused_rather_than_taking_it_as_the_value() {
     let args = argv(&["a.cbz", "--", "b.cbz", "--write", "--ltr"]);
@@ -1305,7 +1288,7 @@ fn align_refuses_direct_when_no_sidecar_is_written() {
 
 /// O20's other half: two flags that are live on the default path and inert
 /// on the page-level one. `--cache` writes the fingerprint cache there and
-/// nothing at all here, measured — the directory is never created.
+/// nothing at all here — the directory is never created.
 #[test]
 fn align_refuses_a_cache_the_page_level_path_would_never_write() {
     let args = argv(&[
@@ -1353,9 +1336,9 @@ fn align_allows_the_sidecar_flags_when_one_is_written() {
 }
 
 /// `validate_key` does not catch this one and cannot: `-` is in its safe
-/// alphabet, so `--name-b` is a well-formed edition key. Before this,
-/// `align … --name-a --name-b` wrote an edition keyed `--name-b` into the
-/// sidecar, where it becomes a path segment in two URLs.
+/// alphabet, so `--name-b` is a well-formed edition key. Without a check
+/// for it, `align … --name-a --name-b` would write an edition keyed
+/// `--name-b` into the sidecar, where it becomes a path segment in two URLs.
 #[test]
 fn align_refuses_a_name_a_that_swallowed_the_next_flag() {
     let args = argv(&[
@@ -1494,19 +1477,17 @@ fn run_dispatches_to_lookup() {
 
 /// **Dispatch only, and it must never reach a real library or a real bind.**
 ///
-/// `serve` with no paths is an invocation rather than a mistake since spec C1
-/// §5.3 — it serves everything the library holds, and an empty library is no
-/// longer refused (see `serve_works`'s own doc comment: the browse UI's
-/// `EmptyState.tsx` is what tells a person what to do about that now). That
+/// `serve` with no paths is an invocation rather than a mistake (spec C1
+/// §5.3) — it serves everything the library holds, and an empty library is
+/// not refused (see `serve_works`'s own doc comment: the browse UI's
+/// `EmptyState.tsx` is what tells a person what to do about that). That
 /// makes a bare `run(&["serve"])` resolve `--db` from `XDG_DATA_HOME`/`HOME`,
 /// open the operator's actual database, migrate it, and then bind a port and
-/// never return. This test did exactly that once, on the machine it was
-/// written on, which is how the hazard was found — and the empty-library
-/// refusal it used to lean on to stop short of the bind is gone, so leaning
-/// on it again here would hang the suite.
+/// never return. No empty-library refusal stops short of the bind, so
+/// dispatching a bare `serve` here would hang the suite.
 ///
-/// `--addr` turns out not to be the fast failure it looks like: `option_value`
-/// only extracts its string, and nothing parses it into a `SocketAddr` until
+/// `--addr` is not the fast failure it looks like: `option_value` only
+/// extracts its string, and nothing parses it into a `SocketAddr` until
 /// `taiyaku_serve::serve`'s own `TcpListener::bind`, which is deep inside the
 /// `tokio` runtime this function builds — reaching it needs a real `--db`, a
 /// real (if empty) library open, and the whole of `serve`'s pre-bind startup
@@ -1823,8 +1804,7 @@ fn spread_lookup_fixture(reading: &str) -> Sidecar {
 /// rather than "all four slots" — and `assert_eq!(lookup(...), Ok(()))`
 /// alone cannot tell that mistake apart from success, since an
 /// unreadable edge still returns `Ok(())` having printed a warning
-/// instead of the half. This is what caught exactly that mistake in this
-/// fixture during development.
+/// instead of the half.
 #[test]
 fn lookup_names_the_right_half_of_a_spread_in_a_right_to_left_document() {
     let doc = spread_lookup_fixture("rtl");
@@ -1865,8 +1845,8 @@ fn lookup_names_the_left_half_of_a_spread_in_a_left_to_right_document() {
 // succeeding: every fixture is a nonexistent path, because the property
 // under test is argument handling, and real archives would only slow that
 // down. The full pipeline — decode, fingerprint, solve, print, and for
-// `align --write`, write a sidecar back — has had no test at all up to
-// this point, so everything below builds a real, decodable `.cbz`.
+// `align --write`, write a sidecar back — is tested below, on a real,
+// decodable `.cbz`.
 
 /// Build a cbz of `count` real, decodable, and mutually distinguishable
 /// pages.
@@ -1914,13 +1894,12 @@ fn cbz_pages(dir: &Path, name: &str, count: u32, seed: u32) -> PathBuf {
 /// both `stats::calibration_line` and `stats::shape_line` run too, not
 /// just the plain `report_summary` beneath them.
 ///
-/// Everything this path computes is printed, not returned, so pin
-/// against the same `taiyaku_read::read_edition` +
-/// `fingerprint::fingerprint_edition` + `solve` chain `align` runs on
-/// this exact fixture: `a` and `b` share a seed, so every page is
-/// byte-identical to its counterpart and the correspondence is exact,
-/// not approximate. A solve that lost a page, or paired pages out of
-/// order, would still leave `align` returning `Ok(())`.
+/// Nothing this path computes is returned, so pin against the same
+/// `taiyaku_read::read_edition` + `fingerprint::fingerprint_edition` + `solve`
+/// chain `align` runs on this exact fixture: `a` and `b` share a seed, so every
+/// page is byte-identical to its counterpart and the correspondence is exact,
+/// not approximate. A solve that lost a page, or paired pages out of order,
+/// would still leave `align` returning `Ok(())`.
 #[test]
 fn align_runs_the_page_level_diagnostic_against_real_pages() {
     let scratch = TempDir::new("main-diag");
@@ -2555,10 +2534,10 @@ fn verify_reports_confidence_through_an_inverted_edge() {
 
 // -- serve(): argument parsing only. Actually starting the server would
 // block this test forever, so every one of these stops at the first
-// thing that fails before a socket is ever bound: `library::canonical_sidecar_path`
-// refusing a sidecar that does not exist, before the library is ever opened
-// (Task 15) — the same failure point `load_works` used to be, moved one
-// step earlier so a mistyped path still fails without touching a database.
+// thing that fails before a socket is ever bound:
+// `library::canonical_sidecar_path` refusing a sidecar that does not exist,
+// before the library is ever opened, so a mistyped path still fails without
+// touching a database.
 
 #[test]
 fn serve_refuses_an_unknown_flag() {
@@ -2684,12 +2663,12 @@ fn serve_works_imports_the_given_path_and_the_work_carries_the_librarys_slug() {
     assert_eq!(slug, "serve-works-fixture");
 }
 
-/// The same file, named twice on one command line — a repeated argument, or
-/// two spellings of one path — must not become two independent `Work`s
-/// sharing one library row: `Work` is deliberately not `Clone`, precisely
-/// because two of them over one document could correct it twice and see two
-/// different answers. This is the `if imported.contains(&work_id) { continue; }`
-/// branch in `serve_works`.
+/// The same file, named twice on one command line — a repeated argument, or two
+/// spellings of one path — must not become two independent `Work`s sharing one
+/// library row: `Work` is deliberately not `Clone`, precisely because two of
+/// them over one document could correct it twice and see two different answers.
+/// This is the branch in `serve_work` that finds `work_id` already in
+/// `imported` and returns `Ok(None)`.
 #[test]
 fn serve_works_serves_one_work_when_the_same_path_is_given_twice() {
     let fixture_dir = TempDir::new("serve-works-repeated");
@@ -2749,14 +2728,13 @@ fn unimportable_fixture(dir: &Path) -> PathBuf {
     path
 }
 
-/// **One work that cannot be imported must not stop the library from
-/// serving.**
+/// **One work that cannot be imported must not stop the library from serving.**
 ///
-/// `serve_works` propagated its import failure with `?` from inside the loop,
-/// so a single unreadable or structurally broken `taiyaku.json` aborted
+/// Propagating an import failure with `?` from inside `serve_works`'s loop
+/// would let a single unreadable or structurally broken `taiyaku.json` abort
 /// `taiyaku serve` for every other sidecar on the command line — the reader
-/// lost their whole library to one hand edit, with no way to start until the
-/// file was found and fixed. Whole-branch review 2, I3.
+/// would lose their whole library to one hand edit, with no way to start
+/// until the file was found and fixed.
 ///
 /// The bad path is named on stderr and skipped; every other work is served.
 /// Asserted on the payload — which works came back, by id — rather than on
@@ -2856,12 +2834,9 @@ fn serve_works_refuses_when_no_work_could_be_imported() {
 
 /// **C1b, end to end through the real `serve` startup path.** Adding a
 /// volume to the hub edition and re-solving is the ordinary case for an
-/// ongoing series. Before the fix, `reimport`'s only write was the database's
-/// own stale projection, so `merge_spoke`'s from-side guard refused every
-/// spoke merge — the held hub had one member, the freshly solved one had two
-/// — and that refusal propagated all the way out of `serve_works` as an
-/// `Err`, which is what made the real `taiyaku serve` binary exit 1 telling a
-/// reader to re-solve the work they had just re-solved. This drives
+/// ongoing series, and `serve` must start over it:
+/// `taiyaku_library::import::reimport`'s doc comment says why `merge_spoke`'s
+/// refusal never reaches `serve` as a hard error. This drives
 /// `serve_works` directly (see its own doc comment: the split exists
 /// precisely so a test can reach the database-and-import half without
 /// binding a port), so it is the same code path `serve` itself runs, minus
@@ -3370,10 +3345,9 @@ fn serve_refuses_web_with_no_directory() {
 /// about believing `X-Forwarded-For` rather than about TLS.
 ///
 /// The ordinary deployment — `caddy reverse_proxy 127.0.0.1:8484` in front of a
-/// loopback server — forwards no address and needs no CIDR, so before this it
-/// would have configured neither flag and sent a thirty-day token with no
-/// `Secure`, without anybody passing the documented opt-out. Found by the
-/// whole-branch review, 2026-08-18.
+/// loopback server — forwards no address and needs no CIDR, so without this it
+/// would configure neither flag and send a thirty-day token with no `Secure`,
+/// without anybody passing the documented opt-out.
 #[test]
 fn secure_cookies_can_be_asked_for_without_trusting_a_proxy() {
     let auth = super::serve_auth(&argv(&["--secure-cookies"]), None).expect("parses");
@@ -3384,8 +3358,8 @@ fn secure_cookies_can_be_asked_for_without_trusting_a_proxy() {
     );
 }
 
-/// `--insecure-cookies` still overrides both ways of asking, so there is
-/// exactly one way to end up without `Secure` deliberately.
+/// `--insecure-cookies` overrides both ways of asking, so there is exactly
+/// one way to end up without `Secure` deliberately.
 #[test]
 fn insecure_cookies_overrides_an_explicit_request_too() {
     let auth = super::serve_auth(&argv(&["--secure-cookies", "--insecure-cookies"]), None)
@@ -3396,10 +3370,9 @@ fn insecure_cookies_overrides_an_explicit_request_too() {
 /// A sidecar named *after* a flag is refused rather than silently ignored.
 ///
 /// `paths` is `take_while(|a| !a.starts_with("--"))`, so
-/// `serve --db lib.db work/taiyaku.json` reads no paths at all — and once an
-/// empty list meant "serve the whole library" (spec C1 §5.3), that command
-/// line served everything instead of the one work it named. Whole-branch
-/// review, 2026-08-20.
+/// `serve --db lib.db work/taiyaku.json` reads no paths at all — and an empty
+/// list means "serve the whole library" (spec C1 §5.3), so that command line
+/// would serve everything instead of the one work it named.
 #[test]
 fn serve_refuses_a_sidecar_that_follows_a_flag() {
     let err = serve(&argv(&["--db", "/tmp/x.db", "work/taiyaku.json"])).unwrap_err();

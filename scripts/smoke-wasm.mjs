@@ -1,9 +1,6 @@
-// The first execution of this module under any JS runtime.
-//
-// M4 gated that the crate *builds* for wasm32 and tested its logic natively,
-// and recorded that this leaves codegen unproven. This closes that: it loads
-// the real .wasm, parses the real fixture, and checks the two properties the
-// reader depends on before a single line of React exists.
+// Building the crate for wasm32 and testing its logic natively leaves codegen
+// unproven. This loads the real .wasm, parses the real fixture, and checks the
+// properties the reader depends on.
 import { readFile } from 'node:fs/promises'
 import init, { WasmSidecar } from '../crates/taiyaku-wasm/pkg/taiyaku_wasm.js'
 

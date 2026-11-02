@@ -55,12 +55,8 @@ fn a_role_that_is_neither_is_refused_with_the_two_that_are() {
 
 /// **`user add` defaults to `user`, and `promote` to `admin`.**
 ///
-/// One shared default of `admin` served `promote`, where it is right, and `add`,
-/// where it is not — so `taiyaku library user add alice` to give a housemate a
-/// reader account silently minted a second administrator, with `--role` marked
-/// optional and the default stated nowhere. Each caller now says which it means.
-///
-/// Found by the whole-branch review, 2026-08-18.
+/// A reader account made with `taiyaku library user add alice` must not come
+/// out an administrator when `--role` is left off.
 #[test]
 fn adding_an_account_does_not_quietly_make_an_administrator() {
     assert_eq!(
@@ -451,10 +447,8 @@ fn a_refused_password_changes_nothing() {
     );
 }
 
-/// The three mutants `> 0` carried while it lived inside a `println!`: `==`,
-/// `<` and `>=` all survived, because nothing could see what the command
-/// printed. Extracted into [`sessions_ended_note`], each is now a different
-/// answer.
+/// Each of `==`, `<` and `>=` in place of `> 0` in [`sessions_ended_note`]
+/// gives a different answer.
 #[test]
 fn the_sessions_ended_note_appears_only_when_sessions_ended() {
     assert_eq!(
@@ -606,8 +600,8 @@ fn the_library_subcommands_state_their_usage() {
     }
 }
 
-/// The two subcommands a grant used to be made with answer with the name of
-/// the one that replaced each, and grant nothing.
+/// `grant-root` and `revoke-root` answer with the name of the subcommand that
+/// replaced each, and grant nothing.
 #[test]
 fn the_old_grant_root_names_its_replacement() {
     let err = command(&argv(&["grant-root", "davey", "x"])).unwrap_err();
@@ -673,9 +667,8 @@ fn revoking_names_the_library_it_was_given_and_not_another() {
     );
 }
 
-/// The three mutants `> 0` carried while it lived inside a `println!` — the
-/// same three [`sessions_ended_note`] was extracted for, reintroduced by
-/// spec C1's grant command and found by the sweep on 2026-08-20.
+/// Each of `==`, `<` and `>=` in place of `> 0` in [`unrooted_note`] gives a
+/// different answer.
 #[test]
 fn the_unrooted_note_appears_only_when_members_carry_no_root() {
     assert_eq!(

@@ -48,10 +48,8 @@ fn the_shape_line_reports_runs_coverage_and_both_fragmentation_measures() {
 }
 
 /// The needle case: nine art book pages against a whole volume, every one
-/// paired. It is already classified `Fragmented` and the classification was
-/// never printed in the path the documentation tells people to use. The
-/// average run length is the figure that carries the argument — the survey
-/// measured every correct pairing at 36 slots or more.
+/// paired. It is classified `Fragmented`, and the average run length is the
+/// figure that carries the argument.
 #[test]
 fn a_fragmented_alignment_says_so_and_shows_how_short_its_runs_are() {
     let runs: Vec<Run> = (0..9)

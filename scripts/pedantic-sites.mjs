@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Count `clippy::pedantic` sites, deduplicated.
 //
-// The raw warning count is not the site count and is roughly 1.7x it: clippy
-// emits one message per primary span, and a single line such as
+// The raw warning count is not the site count: clippy emits one message per
+// primary span, and a single line such as
 //
 //     let height = ((width as u64 * page.height() as u64) / page.width() as u64) as u32;
 //
