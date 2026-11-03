@@ -2235,7 +2235,9 @@ fn align(args: &[String]) -> Result<(), String> {
             );
             eprintln!("{}", stats::shape_line(&runs, a.len()));
         }
-        report_summary(&runs, a.len());
+        let (table, figures) = report_summary(&runs, a.len());
+        print!("{table}");
+        eprintln!("{figures}");
         return Ok(());
     }
 
@@ -2365,6 +2367,7 @@ fn existing_sidecar(out: &str) -> Result<Option<Sidecar>, String> {
 /// go to different streams — the run table is the output and the figure line
 /// is commentary on it — and the caller keeps them apart, because a survey
 /// script reading one must not have to filter out the other.
+#[must_use]
 fn report_summary(runs: &[Run], a_len: usize) -> (String, String) {
     let mut paired = 0u32;
     let mut table = String::new();

@@ -327,3 +327,64 @@ impl Drop for TempDir {
 
 #[cfg(test)]
 mod tests;
+
+/// A reader that hands back one byte per call, however much is asked for.
+///
+/// Legal `Read` behaviour, and what a network filesystem does under load. No
+/// file written to this host's local disk will produce it, which is why
+/// `read_header` takes a `Read` at all, and why the header check in `pages.rs`
+/// does too.
+#[derive(Debug)]
+pub struct OneByteAtATime<'a> {
+    pub rest: &'a [u8],
+}
+
+impl std::io::Read for OneByteAtATime<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.rest.is_empty() || buf.is_empty() {
+            return Ok(0);
+        }
+        buf[0] = self.rest[0];
+        self.rest = &self.rest[1..];
+        Ok(1)
+    }
+}
+
+/// A cbz of `count` decodable pages that fingerprint differently from each
+/// other. Seeds used together must be at least `count` apart, since page `i + 1`
+/// of seed `s` is page `i` of seed `s + 1`.
+///
+/// Not a solid fill: taiyaku-cli's `fingerprint::fingerprint` is a difference
+/// hash, so every flat page hashes alike and any alignment would look perfect
+/// by accident. The pattern varies along both axes, by page and by `seed`.
+// Gated on the feature because `image` exists only with it.
+#[cfg(feature = "test-support")]
+pub fn cbz_pages(dir: &Path, name: &str, count: u32, seed: u32) -> PathBuf {
+    use std::io::Write;
+    let path = dir.join(name);
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).expect("create cbz"));
+    for i in 0..count {
+        let level = seed.wrapping_add(i).wrapping_mul(101);
+        let image = image::GrayImage::from_fn(8, 8, |x, y| {
+            let v = x.wrapping_mul(37).wrapping_add(y.wrapping_mul(59)) + level;
+            let byte = u8::try_from(v % 256)
+                .expect("v % 256 is in 0..256 by construction, which is exactly u8's range");
+            image::Luma([byte])
+        });
+        let mut bytes = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("an 8x8 gray image always encodes");
+        zip.start_file(
+            format!("{i:03}.png"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .expect("start entry");
+        zip.write_all(&bytes).expect("write page bytes");
+    }
+    zip.finish().expect("finish cbz");
+    path
+}

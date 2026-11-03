@@ -3343,6 +3343,10 @@ fn exporting_another_reader_in_place_is_refused_and_names_the_way_out() {
         "the refusal must name the flag that does what was wanted: {err}"
     );
     assert!(
+        !err.contains("delete"),
+        "an in-place export deletes nothing, so the refusal must not say it does: {err}"
+    );
+    assert!(
         !db.exists(),
         "the refusal must come before a database is ever opened"
     );

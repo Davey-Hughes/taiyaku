@@ -1,5 +1,5 @@
 use super::*;
-use taiyaku_read::test_support::TempDir;
+use taiyaku_read::test_support::{TempDir, cbz_pages};
 
 /// A bare flag is on when it is there and off when it is not, and that is
 /// the whole of it — but it is the whole of it at every call site, so the
@@ -1847,48 +1847,6 @@ fn lookup_names_the_left_half_of_a_spread_in_a_left_to_right_document() {
 // down. The full pipeline — decode, fingerprint, solve, print, and for
 // `align --write`, write a sidecar back — is tested below, on a real,
 // decodable `.cbz`.
-
-/// Build a cbz of `count` real, decodable, and mutually distinguishable
-/// pages.
-///
-/// A solid fill will not do here the way it does for `regions.rs`'s
-/// `cbz_with_page`: `fingerprint::fingerprint` is a *difference* hash,
-/// comparing each pixel to its neighbour, and every neighbour comparison
-/// in a flat image is a tie — so every solid-colour page hashes to the
-/// same all-zero fingerprint regardless of its level, and every alignment
-/// over such a set would look like a perfect match by accident rather
-/// than by the solver actually distinguishing anything. The pattern below
-/// varies along both axes and by page and by `seed`, so distinct calls
-/// produce distinct fingerprints.
-fn cbz_pages(dir: &Path, name: &str, count: u32, seed: u32) -> PathBuf {
-    use std::io::Write;
-    let path = dir.join(name);
-    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).expect("create cbz"));
-    for i in 0..count {
-        let level = seed.wrapping_add(i).wrapping_mul(101);
-        let image = image::GrayImage::from_fn(8, 8, |x, y| {
-            let v = x.wrapping_mul(37).wrapping_add(y.wrapping_mul(59)) + level;
-            let byte = u8::try_from(v % 256)
-                .expect("v % 256 is in 0..256 by construction, which is exactly u8's range");
-            image::Luma([byte])
-        });
-        let mut bytes = Vec::new();
-        image
-            .write_to(
-                &mut std::io::Cursor::new(&mut bytes),
-                image::ImageFormat::Png,
-            )
-            .expect("an 8x8 gray image always encodes");
-        zip.start_file(
-            format!("{i:03}.png"),
-            zip::write::SimpleFileOptions::default(),
-        )
-        .expect("start entry");
-        zip.write_all(&bytes).expect("write page bytes");
-    }
-    zip.finish().expect("finish cbz");
-    path
-}
 
 /// The page-level diagnostic (`--no-split-spreads`), with `--stats` so
 /// both `stats::calibration_line` and `stats::shape_line` run too, not

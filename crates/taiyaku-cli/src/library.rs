@@ -218,7 +218,7 @@ fn export(args: &[String]) -> Result<(), String> {
     if in_place && user.is_some() {
         return Err(format!(
             "{usage}: --in-place with --user would write one reader's notes and position \
-             over another's own files, and delete the documents they have no state for. \
+             over another's own files. \
              Use --dir DIR to export a named reader's state somewhere of its own"
         ));
     }

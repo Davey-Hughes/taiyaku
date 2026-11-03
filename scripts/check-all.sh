@@ -219,18 +219,35 @@ if ! command -v cargo-llvm-cov >/dev/null 2>&1 || ! command -v cargo-nextest >/d
     || note_skip "the per-test timeout bound, and the Rust coverage gate with it (cargo-nextest not on PATH — the fallback is a plain cargo test, so nothing bounded how long any test could take and neither coverage threshold ran)"
   run env -u TAIYAKU_CORPUS cargo test --workspace --all-features
 else
+  # A red aggregate threshold must not hide the per-file check that names the file, so the status is
+  # held until that check has run. CI does the same with a step condition.
+  set +e
   run env -u TAIYAKU_CORPUS cargo llvm-cov nextest --workspace --all-features \
     --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
     --fail-under-lines 93
+  rust_coverage_status=$?
+  set -e
   # Guarded the same way the tool above is, and for the same reason: a Rust-only machine without
   # node should not fail the whole gate over the half of it that node runs. CI has no such problem —
   # its `test` job fetches the pinned node tarball — so this branch is local-only.
   if ! command -v node >/dev/null 2>&1; then
     note_skip "the Rust per-file coverage floor (node not on PATH — the aggregate threshold ran, the per-file one did not)"
+    [ "${rust_coverage_status}" -eq 0 ] || exit "${rust_coverage_status}"
   else
+    # The floor is skipped when `report` fails, so a report left by an earlier run is never read.
+    set +e
     run cargo llvm-cov report --json --output-path target/rust-coverage.json \
       --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'
-    run node scripts/coverage-floor.mjs target/rust-coverage.json
+    report_status=$?
+    if [ "${report_status}" -eq 0 ]; then
+      run node scripts/coverage-floor.mjs target/rust-coverage.json
+      floor_status=$?
+    else
+      floor_status="${report_status}"
+    fi
+    set -e
+    [ "${rust_coverage_status}" -eq 0 ] || exit "${rust_coverage_status}"
+    [ "${floor_status}" -eq 0 ] || exit "${floor_status}"
   fi
 fi
 
@@ -369,7 +386,10 @@ else
     # The thresholds live in `web/vite.config.ts` and only fire under
     # `--coverage`, so running plain `vitest run` here would have left the web
     # half of the gate enforcing nothing while reading green.
+    set +e
     run pnpm -C web run test:coverage
+    web_coverage_status=$?
+    set -e
 
     # **The other half of the web coverage gate, and it is not redundant.**
     # `vite.config.ts`'s thresholds are aggregate, and an aggregate cannot see
@@ -378,7 +398,15 @@ else
     # through a mounted reader, and every vitest threshold still passes. This
     # check fails on it. vitest cannot express both halves; see the script's own
     # comment for the two forms vitest offers.
+
+    # It runs after a red `test:coverage` too, so the failure names the file; a failing test leaves no
+    # report, and the script then exits 2 saying it cannot read one.
+    set +e
     run node scripts/coverage-floor.mjs
+    web_floor_status=$?
+    set -e
+    [ "${web_coverage_status}" -eq 0 ] || exit "${web_coverage_status}"
+    [ "${web_floor_status}" -eq 0 ] || exit "${web_floor_status}"
 
     # --- the browser tests, which are not a CI job ---
     # `test:coverage` above is the `node` and `jsdom` projects, which is exactly

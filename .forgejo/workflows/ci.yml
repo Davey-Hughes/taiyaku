@@ -199,6 +199,7 @@ jobs:
           apt-get install -y -qq --no-install-recommends strace
           strace -V
       - name: Tests, with coverage
+        id: rust_coverage
         # `cargo llvm-cov nextest` runs the tests — this is the test step, not
         # an addition to it, and the `nextest` subcommand is what applies
         # `.config/nextest.toml`'s per-test timeout. Thirteen files are ignored,
@@ -252,6 +253,7 @@ jobs:
             --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
             --fail-under-lines 93
       - name: Install node
+        if: success() || steps.rust_coverage.outcome == 'failure'
         # This job needs node only for the scripts after this step, which is
         # why the step sits here rather than with the tool installs above.
         # rust:1-bookworm carries no node at all (the comment at
@@ -267,6 +269,7 @@ jobs:
           ln -s /opt/node-v26.7.0-linux-x64/bin/node /usr/local/bin/node
           node --version
       - name: Coverage floor, per file
+        if: success() || steps.rust_coverage.outcome == 'failure'
         # **The step above is workspace-aggregate and cannot see one module go
         # dark.** A module going entirely dark still passes as long as it
         # accounts for no more covered lines than the slack, which is
@@ -274,11 +277,11 @@ jobs:
         # vanishes as it approaches the floor. Whether the blind spot is open is
         # an accident of the margin rather than a property of the check, and the
         # per-file step is the half that does not move with it.
-        # `scripts/coverage-floor.mjs` carries the arithmetic. This is the Rust
-        # counterpart of the web job's identically named step, and it runs the
-        # identical script.
+        # `scripts/coverage-floor.mjs` carries the arithmetic; the web job's
+        # identically named step runs the same script.
         #
-        # When the step above fails, this step does not run (O234).
+        # Runs after a red aggregate step so the failure names the file;
+        # `success()` is named: an `if:` that names a status function drops it.
         #
         # **`cargo llvm-cov report` is not a second test run.** It re-renders
         # the profile data the step above already produced — no rebuild, no
@@ -468,6 +471,7 @@ jobs:
       - name: Typecheck
         run: pnpm -C web run typecheck
       - name: Tests, with coverage
+        id: web_coverage
         # `--project node --project jsdom --coverage`: both projects in one
         # run, which is why this replaces the separate `test` and `test:jsdom`
         # steps rather than joining them — the same trade the `test` job makes
@@ -481,6 +485,7 @@ jobs:
         # scripts/check-all.sh; see docs/ci.md, "The coverage gates".
         run: pnpm -C web run test:coverage
       - name: Coverage floor, per file
+        if: success() || steps.web_coverage.outcome == 'failure'
         # The other half of the web gate. `vite.config.ts`'s thresholds are
         # aggregate, and an aggregate cannot see one module go dark: skipping
         # the whole of `pairing.test.ts` takes `pairing.ts` down while the

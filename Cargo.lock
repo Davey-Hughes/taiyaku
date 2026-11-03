@@ -2404,6 +2404,7 @@ name = "taiyaku-read"
 version = "0.0.0"
 dependencies = [
  "crc32fast",
+ "image",
  "sha2",
  "zip",
 ]

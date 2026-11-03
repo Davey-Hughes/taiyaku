@@ -77,7 +77,7 @@
 // catch a file that is *in* the report and has stopped being tested; the file
 // count catches files that have left the report entirely. Only the third can see
 // a collapse, because a file that is absent is a file no per-file check visits.
-import { readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 
 /**
  * The two report formats, detected by shape rather than by filename — the path
@@ -175,13 +175,17 @@ const FORMATS = [
     tree: 'the Rust workspace',
     detect: (report) => Array.isArray(report?.data?.[0]?.files),
     // The file count can only fall three ways: the `--ignore-filename-regex`
-    // widens, a crate leaves the workspace, or files are merged. Thirteen files
-    // are excluded by name today — counted from the reports, against the same
-    // nine alternations in the regex, because `/corpus` matches three
-    // (`taiyaku-cli`, `taiyaku-serve` and `taiyaku-library`) and `test_support`
-    // three, one of them in `taiyaku-read` — so `minFiles` leaves room for that
-    // list to grow a little without a coverage edit becoming a gate edit.
-    minFiles: 40,
+    // widens, a crate leaves the workspace, or files are merged. This number
+    // catches a collapse or a regex that swallows far more than it should, and
+    // sits well below the clean count so that ordinary growth and a deliberate
+    // exclusion do not trip it. It is not what catches a single small crate
+    // leaving: that needs a floor within a file or two of the clean count,
+    // which one new file anywhere would loosen. `requireCrates` below holds
+    // that case instead. `docs/ci.md` has the counts and the arithmetic.
+    minFiles: 72,
+    // Every workspace member must have at least one file in the report, read
+    // from the root `Cargo.toml` so a new crate is covered without an edit here.
+    requireCrates: true,
     // The **aggregate** line threshold, which this script does not enforce —
     // `cargo llvm-cov --fail-under-lines` does, one command earlier. It is here
     // only to derive the slack printed at the end of a run: `covered - ceil(93%
@@ -270,6 +274,21 @@ if (files.length < format.minFiles) {
   console.error('The check exists because a report with no files in it used to take both halves')
   console.error('green while measuring nothing.')
   process.exit(1)
+}
+
+if (format.requireCrates) {
+  const missing = workspaceMembers().filter(
+    (member) => !files.some(({ file }) => file.startsWith(`${member}/`)),
+  )
+  if (missing.length > 0) {
+    console.error(
+      `coverage-floor: ${format.name} has no file for ${missing.length} workspace crate(s): ${missing.map((m) => m.replace(/^.*\//, '')).join(', ')}.`,
+    )
+    console.error(`\nCheck ${format.check} first.`)
+    console.error('A crate with no file in the report is a crate neither coverage gate measures:')
+    console.error('the aggregate still passes, and no per-file check visits a file that is absent.')
+    process.exit(1)
+  }
 }
 
 const failures = []
@@ -383,4 +402,33 @@ function assertAggregateFloorMatches(format) {
     console.error('Fix: change `aggregateFloor` in this file to match, so the printed slack is real.')
     process.exit(2)
   }
+}
+
+/**
+ * The workspace's member directories, as `crates/<name>`, from the root
+ * `Cargo.toml`. A `dir/*` entry is expanded to the subdirectories that hold a
+ * `Cargo.toml`; anything else is taken as a path. Refuses, rather than
+ * returning an empty list, when `members` cannot be read: an empty list would
+ * make the crate check pass for nothing.
+ */
+function workspaceMembers() {
+  // A `]` inside a `#` comment would end the array early and drop every crate
+  // after it, so comments go first; a `#` inside a quoted string stays.
+  const toml = readFileSync('Cargo.toml', 'utf8').replace(
+    /("[^"\n]*"|'[^'\n]*')|#[^\n]*/g,
+    (_, quoted) => quoted ?? '',
+  )
+  const match = /^members\s*=\s*\[([^\]]*)\]/m.exec(toml)
+  const entries = match ? [...match[1].matchAll(/["']([^"']+)["']/g)].map((m) => m[1]) : []
+  if (entries.length === 0) {
+    console.error('coverage-floor: cannot read `members` from Cargo.toml, so the crate check has nothing to check.')
+    process.exit(2)
+  }
+  return entries.flatMap((entry) => {
+    if (!entry.endsWith('/*')) return [entry]
+    const dir = entry.slice(0, -2)
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && existsSync(`${dir}/${d.name}/Cargo.toml`))
+      .map((d) => `${dir}/${d.name}`)
+  })
 }

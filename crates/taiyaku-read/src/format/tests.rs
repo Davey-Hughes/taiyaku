@@ -1,7 +1,7 @@
 use super::*;
 use std::path::PathBuf;
 
-use crate::test_support::TempDir;
+use crate::test_support::{OneByteAtATime, TempDir};
 
 fn tempdir() -> TempDir {
     TempDir::new("format")
@@ -126,26 +126,6 @@ fn a_tar_whose_first_entry_name_begins_with_a_zip_signature_is_still_a_tar() {
     assert_eq!(&bytes[257..262], b"ustar", "and really is a tar");
 
     assert_eq!(sniff(&path), Ok(Format::Tar));
-}
-
-/// A reader that hands back one byte per call, however much is asked for.
-///
-/// Legal `Read` behaviour, and what a network filesystem does under load. No
-/// file written to this host's local disk will produce it, which is why
-/// `read_header` takes a `Read` at all.
-struct OneByteAtATime<'a> {
-    rest: &'a [u8],
-}
-
-impl std::io::Read for OneByteAtATime<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.rest.is_empty() || buf.is_empty() {
-            return Ok(0);
-        }
-        buf[0] = self.rest[0];
-        self.rest = &self.rest[1..];
-        Ok(1)
-    }
 }
 
 /// The defect this pins: with a single `read`, a source that returns one

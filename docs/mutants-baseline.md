@@ -1074,7 +1074,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-read/src/format.rs`
 
-- `crates/taiyaku-read/src/format.rs:138:16: replace < with <= in read_header`
+- `crates/taiyaku-read/src/format.rs:154:16: replace < with <= in read_header`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1107,7 +1107,7 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-read/src/pages.rs`
 
-- `crates/taiyaku-read/src/pages.rs:379:5: replace page_count -> u32 with 0`
+- `crates/taiyaku-read/src/pages.rs:389:5: replace page_count -> u32 with 0`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1116,7 +1116,7 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-read/src/pages.rs:379:5: replace page_count -> u32 with 1`
+- `crates/taiyaku-read/src/pages.rs:389:5: replace page_count -> u32 with 1`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 

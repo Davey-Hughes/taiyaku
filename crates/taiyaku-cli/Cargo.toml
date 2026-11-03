@@ -44,7 +44,7 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 # leaving this module never compiled by the gate.
 [dev-dependencies]
 # `test-support` for `TempDir`, O117: a directory unique to the process and the
-# call, the one helper every crate's tests share.
+# call, the one helper every crate's tests share; `cbz_pages` comes from it too.
 taiyaku-read = { path = "../taiyaku-read", features = ["test-support"] }
 tract-onnx = "0.23.4"
 zip = "9.1.3"

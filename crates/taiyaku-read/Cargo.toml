@@ -18,13 +18,17 @@ authors.workspace = true
 crc32fast = "1.5.0"
 sha2 = "0.11.0"
 zip = "9.1.3"
+# Optional: only `test_support::cbz_pages` encodes pages, and no binary this
+# workspace ships should carry an image codec for it. PNG alone is what it
+# writes; the other crates that enable `image` bring their own codecs.
+image = { version = "0.25.9", default-features = false, features = ["png"], optional = true }
 
 # Exposes `test_support` to other crates' tests. Enabled only from a
 # `[dev-dependencies]` entry, so it reaches test builds and `--all-features`
 # builds and no binary this workspace ships — see that module's own doc for
 # why it is shared rather than copied.
 [features]
-test-support = []
+test-support = ["dep:image"]
 
 [lints]
 workspace = true

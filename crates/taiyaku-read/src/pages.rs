@@ -297,6 +297,23 @@ fn page_names_from(zip: &mut zip::ZipArchive<File>) -> Vec<String> {
     names
 }
 
+/// Refuse a file whose leading bytes name a container taiyaku cannot read.
+///
+/// Takes a `Read` so a short read is reachable from a test; a local file never
+/// comes back short. The header is filled by `format::read_header`, because the
+/// tar magic sits at offset 257 and one `read` may stop before it. A read error
+/// assumes no header, and the zip reader then gives the answer.
+fn refuse_unsupported_container(source: &mut impl Read, path: &Path) -> Result<(), String> {
+    let (header, read) = crate::format::read_header(source).unwrap_or(([0u8; 512], 0));
+    match unsupported_container(&header[..read]) {
+        Some(kind) => Err(format!(
+            "{}: this is {kind}. taiyaku reads zip-based archives and directories of page images; convert it or unpack it first",
+            path.display()
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Open an archive, naming its format first if taiyaku cannot read it.
 ///
 /// The single door in, so that listing an archive, reading one page of it and
@@ -309,14 +326,7 @@ fn open_archive(path: &Path) -> Result<zip::ZipArchive<File>, String> {
 
     // Look at the bytes before handing them to the zip reader, so an archive in
     // another format is named rather than reported as a corrupt zip.
-    let mut header = [0u8; 512];
-    let read = file.read(&mut header).unwrap_or(0);
-    if let Some(kind) = unsupported_container(&header[..read]) {
-        return Err(format!(
-            "{}: this is {kind}. taiyaku reads zip-based archives and directories of page images; convert it or unpack it first",
-            path.display()
-        ));
-    }
+    refuse_unsupported_container(&mut file, path)?;
     file.rewind()
         .map_err(|e| format!("{}: {e}", path.display()))?;
 

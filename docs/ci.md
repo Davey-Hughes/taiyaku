@@ -369,7 +369,7 @@ because an unproven gate is indistinguishable from no gate.
 | | aggregate step | per-file step | set in |
 | --- | -------------- | ------------- | ------ |
 | web | four thresholds — `statements`/`branches`/`functions`/`lines` | four floors, and ≥161 files in the report | `web/vite.config.ts`; `scripts/coverage-floor.mjs` |
-| Rust | `--fail-under-lines 93` | one floor, on lines, and ≥40 files in the report | `ci.yml` and `check-all.sh`; `scripts/coverage-floor.mjs` |
+| Rust | `--fail-under-lines 93` | one floor, on lines, ≥72 files in the report, and a file for every workspace crate | `ci.yml` and `check-all.sh`; `scripts/coverage-floor.mjs` |
 
 Four steps, but **three kinds of failure**, and it is worth being plain about
 which catches what, because each is invisible to the others:
@@ -446,7 +446,7 @@ signal a re-measurement was owed.*
 | Rust | lines, aggregate | 93.64% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
 | Rust | lines, **per file** | 74.48%, `taiyaku-serve/src/lib.rs` | 57 | `scripts/coverage-floor.mjs` |
 | web | **files in the report** | 168 (2026-10-28) | 161 | `scripts/coverage-floor.mjs` |
-| Rust | **files in the report** | 82 | 40 | `scripts/coverage-floor.mjs` |
+| Rust | **files in the report** | 92 (2026-11-02) | 72, and every workspace crate present | `scripts/coverage-floor.mjs` |
 
 **The four web *aggregate* rows are measured 2026-09-12, on the branch that
 closed O103, and the margin they carry was worked for rather than found.** They
@@ -481,19 +481,16 @@ which are not the same and stopped being the same without a run saying so.
 
 **The two minimums do not follow the two-points rule, and are not meant to.**
 They are counts, not percentages, and the failure they exist to catch is not a
-slide — it is a collapse. Web carries seven of margin (59 against 66) because a
+slide — it is a collapse. Web carries eight of margin (161 against 169) because a
 looser number is too loose to catch the near miss recorded below, where a
 one-character edit to a glob drops 14 files and every percentage stays green.
 **It was 50 against 57 until 2026-08-14, and by then the tree had grown past
 it**: the same near miss reached 52 files and 50 let it through. Seven is the
 rule; the number under it has to be re-derived as web/src grows.
-Rust carries twenty (40 against 60) because the count there can only fall three
-ways — the `--ignore-filename-regex` widens, a crate leaves the workspace, or
-files merge — and thirteen files are excluded by name today, so the margin leaves
-that list room to grow without a coverage edit becoming a gate edit.
-Forty also trips when either of the two largest crates leaves the report:
-`taiyaku-serve` is 17 files and `taiyaku-cli` 15, though `taiyaku-library` at 14
-and `taiyaku-core` at 8 are under the margin and would not.
+Rust is not held by a margin alone: a count floor cannot catch a crate leaving
+without going stale, so every workspace crate is checked by name as well. The
+floor and the reason are under "Why the Rust `minFiles` is 72, and a crate check
+holds the rest" below.
 
 **The Rust per-file floor is loose by construction and that is stated rather than
 apologised for.** The spread between the workspace's best-covered file and its
@@ -913,6 +910,28 @@ run is on.
 **If a deliberate exclusion ever does trip this, that is the check working**:
 re-derive the number beside the exclusion rather than widening it on reflex.
 
+### Why the Rust `minFiles` is 72, and a crate check holds the rest
+
+The Rust report held 92 files at this derivation: `taiyaku-serve` 35,
+`taiyaku-library` 27, `taiyaku-cli` 16, `taiyaku-core` 8, `taiyaku-read` 4 and
+`taiyaku-wasm` 2. The near miss is the smallest crate leaving, which is
+`taiyaku-wasm` (92 to 90). A count floor that catches it must sit at 91, one file
+under the clean count, and one new file anywhere then moves the clean count to
+93 and leaves the floor catching nothing: the drift the web section above
+records four times. The old floor of 40 sat 52 files under the clean count
+for the same reason and caught no crate.
+
+So the count and the crate are checked separately. `scripts/coverage-floor.mjs`
+requires at least one report file under every `members` entry of the root
+`Cargo.toml` (read at run time, `dir/*` globs expanded), and names each crate
+that has none. `minFiles` is 72, which keeps 20 files of room under the clean
+count, as the original floor had (40 against 60), and now only has to catch a
+collapse or a regex that swallows far more than it should.
+
+Hand-applied on the clean report: the report with every `taiyaku-wasm` file
+removed passed the old script (90 files against 40) and fails the crate check;
+the report cut to 71 files with every crate still present fails the count.
+
 ### Why the Rust per-file floor exists
 
 `--fail-under-lines 93` is workspace-aggregate, and an aggregate cannot see one
@@ -1044,8 +1063,8 @@ minimums:
 
 | format | files measured | `minFiles` |
 | ------ | -------------: | ---------: |
-| istanbul (web) | 168 | 161 |
-| llvm-cov (Rust) | 82 | 40 |
+| istanbul (web) | 169 | 161 |
+| llvm-cov (Rust) | 92 | 72 |
 
 **A fifth column, because the fourth stopped being true and nothing said so.**
 The floors were derived from the fourth; the fifth is what a run measures today,

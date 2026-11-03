@@ -146,8 +146,9 @@ pub fn sniff(path: &Path) -> Result<Format, String> {
 /// # Errors
 ///
 /// Returns the underlying read error, unwrapped — [`sniff`] is what names
-/// the path.
-fn read_header(source: &mut impl Read) -> std::io::Result<([u8; 512], usize)> {
+/// the path. `pages.rs`'s `open_archive` reads its header through this too, so
+/// it and [`sniff`] cannot disagree about a tar.
+pub(crate) fn read_header(source: &mut impl Read) -> std::io::Result<([u8; 512], usize)> {
     let mut header = [0u8; 512];
     let mut read = 0;
     while read < header.len() {

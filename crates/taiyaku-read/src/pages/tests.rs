@@ -814,3 +814,19 @@ fn member_entry_does_not_descend_into_a_directorys_subdirectories() {
         "a nested ComicInfo.xml is not this member's own"
     );
 }
+
+/// A source that returns its bytes a few at a time must still be recognised: the
+/// tar magic sits at offset 257, so a header assembled from one `read` that
+/// stops short would call a tar an unreadable zip.
+#[test]
+fn a_tar_is_named_even_when_the_source_reads_one_byte_at_a_time() {
+    let mut tar = vec![0u8; 512];
+    tar[257..262].copy_from_slice(b"ustar");
+
+    let error = refuse_unsupported_container(
+        &mut crate::test_support::OneByteAtATime { rest: &tar },
+        Path::new("volume.cbz"),
+    )
+    .unwrap_err();
+    assert!(error.contains("this is a tar archive"), "{error}");
+}

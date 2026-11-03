@@ -9,7 +9,7 @@
 
 use std::path::Path;
 use std::process::Command;
-use taiyaku_read::test_support::TempDir;
+use taiyaku_read::test_support::{TempDir, cbz_pages};
 
 /// The binary this crate builds, resolved by Cargo rather than by guessing at
 /// a path under `target/`, which differs by profile and by platform.
@@ -2066,4 +2066,31 @@ fn listed_within(serving: &Serving, key: &str, wanted: &str, limit: std::time::D
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+}
+
+/// `align --no-split-spreads` is the page-level diagnostic, and like `verify` it
+/// prints its run table to stdout and the figure line under it to stderr. A
+/// survey script reading stdout must get the table and nothing else.
+#[test]
+fn align_without_split_spreads_prints_the_table_to_stdout_and_the_figures_to_stderr() {
+    let dir = TempDir::new("cli-align-pages");
+    let a = cbz_pages(&dir, "a.cbz", 3, 1);
+    let b = cbz_pages(&dir, "b.cbz", 3, 1);
+    let (a, b) = (
+        a.to_str().expect("a utf-8 path"),
+        b.to_str().expect("a utf-8 path"),
+    );
+
+    let run = taiyaku()
+        .args(["align", a, "--", b, "--no-split-spreads"])
+        .output()
+        .expect("the binary runs");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+
+    assert!(run.status.success(), "{stdout}{stderr}");
+    assert!(stdout.contains("offset +0"), "the run table: {stdout}");
+    assert!(!stdout.contains("3/3 pages paired"), "stdout: {stdout}");
+    assert!(stderr.contains("3/3 pages paired"), "the figures: {stderr}");
+    assert!(!stderr.contains("offset +0"), "stderr: {stderr}");
 }
