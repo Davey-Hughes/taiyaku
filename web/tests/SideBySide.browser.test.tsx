@@ -460,13 +460,8 @@ const REMOVAL: config.RemovalAnswer = {
 const MOVED: librariesApi.Moved = {
   library_id: 2,
   library: 'Comics',
-  works_kept: 1,
-  works_joined: 0,
-  works_split: 0,
-  series_joined: 0,
-  positions: 0,
-  notes: 0,
-  alignments_dropped: 0,
+  gains_sight: [],
+  loses_sight: [],
   library_removed: null,
   grants_removed: 0,
   left_with_no_library: [],
@@ -503,10 +498,11 @@ async function disclose(scope: ParentNode, words: string) {
 
 /**
  * The pages held at a phone's width, and the states of them that draw
- * `LONG_LABEL`: a directory's and a library's scan report, each removal's and a
- * move's rehearsal with what re-deriving would find opened, and the report the
- * Libraries table draws after a removal. `holds` is the page's own root, so a
- * case that drew some other page fails.
+ * `LONG_LABEL`: a directory's and a library's scan report, each removal's
+ * rehearsal with what re-deriving would find opened, and the report the
+ * Libraries table draws after a removal; and a move's rehearsal, which derives
+ * nothing. `holds` is the page's own root, so a case that drew some other page
+ * fails.
  */
 const AT_A_PHONE: Array<{
   page: string
@@ -667,16 +663,15 @@ const AT_A_PHONE: Array<{
     },
   },
   {
-    page: 'a directory’s move, what deriving after it would find open',
+    page: 'a directory’s move, rehearsed',
     holds: '.dir-page',
-    long: true,
+    long: false,
     open: async () => {
       vi.mocked(librariesApi.listLibraries).mockResolvedValue({
         libraries: SHELVES,
       })
       vi.mocked(librariesApi.moveCost).mockResolvedValue({
         moved: MOVED,
-        derive: emptyDerive,
         dry_run: true,
       })
       const host = await shell(PHONE, dirPath(MANGA.name, 3))
@@ -688,10 +683,7 @@ const AT_A_PHONE: Array<{
         )
       })
       await click(need(host, 'button[name="rehearse"]'))
-      await disclose(
-        need(host, '.dir-page'),
-        'What deriving after the move would find',
-      )
+      need(host, '.move-root .move-counts')
       return host
     },
   },

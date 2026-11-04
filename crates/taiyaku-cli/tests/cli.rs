@@ -373,7 +373,9 @@ fn library_scan_with_a_library_derives_the_whole_store() {
         let dir = tree.join(name);
         let volume = dir.join(series).join(format!("{series} - v01"));
         std::fs::create_dir_all(&volume).expect("mkdir");
-        std::fs::write(volume.join("000.jpg"), b"page").expect("write");
+        // Bytes of its own per volume: one content is one work across the
+        // store, so two identical pages would derive as one work.
+        std::fs::write(volume.join("000.jpg"), format!("a page of {series}")).expect("write");
         let mut args = vec!["library", "scan", "--add", dir.to_str().unwrap()];
         if let Some(library) = library {
             args.extend(["--library", library]);

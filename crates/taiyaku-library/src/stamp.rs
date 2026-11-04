@@ -74,9 +74,14 @@ pub struct Planned {
 ///
 /// # Errors
 ///
-/// Returns an error if the rows cannot be read, or if a zip archive cannot
-/// be opened; a member whose file cannot be read is skipped.
+/// Returns an error if the rows cannot be read or a zip will not open; a
+/// member that cannot be read, or is held under more than one directory, is
+/// skipped.
 pub fn plan(conn: &Connection, work_id: i64) -> Result<Vec<Planned>, String> {
+    // A member held under more than one directory is left out, as an
+    // unreadable one is: a stamp rewrites the file at `member.path` only, so
+    // the copies would differ and the next derive would split the one member
+    // into two. [`copied`] is how a caller says so.
     let mut stmt = conn
         .prepare(
             "SELECT m.id, m.path, m.pages, e.key, w.slug, r.path
@@ -85,6 +90,7 @@ pub fn plan(conn: &Connection, work_id: i64) -> Result<Vec<Planned>, String> {
                JOIN work w    ON w.id = e.work_id
                LEFT JOIN root r ON r.id = m.root_id
               WHERE e.work_id = ?1
+                AND (SELECT count(*) FROM member_root c WHERE c.member_id = m.id) <= 1
               ORDER BY e.key, m.ordinal",
         )
         .map_err(|e| format!("preparing this work's members: {e}"))?;
@@ -440,6 +446,24 @@ fn staging_path(path: &std::path::Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".taiyaku-stamp");
     path.with_file_name(name)
+}
+
+/// Whether any member of this work is held under more than one directory,
+/// which [`plan`] leaves out.
+///
+/// # Errors
+///
+/// Returns an error if the rows cannot be read.
+pub fn copied(conn: &Connection, work_id: i64) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM member m
+                          JOIN edition e ON e.id = m.edition_id
+                         WHERE e.work_id = ?1
+                           AND (SELECT count(*) FROM member_root c WHERE c.member_id = m.id) > 1)",
+        [work_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("reading where this work's members are held: {e}"))
 }
 
 /// Every member path of a work, whether or not a stamp would touch it.

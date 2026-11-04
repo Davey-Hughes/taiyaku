@@ -500,11 +500,10 @@ pub(crate) async fn edition(
     headers: HeaderMap,
     extensions: axum::http::Extensions,
 ) -> Response {
-    if let Some(refusal) =
-        crate::routes::refuse_if_hidden(&state, &extensions, &slug, &edition_key).await
-    {
-        return refusal;
-    }
+    let view = match crate::view::of_edition(&state, &extensions, &slug, &edition_key).await {
+        Ok(view) => view,
+        Err(refusal) => return refusal,
+    };
     if let Some(refusal) = crate::routes::refuse_if_cannot_download(&extensions) {
         return refusal;
     }
@@ -514,9 +513,7 @@ pub(crate) async fn edition(
     // status code. Spec §5.
     let prepared = {
         let state = state.clone();
-        let slug = slug.clone();
-        let edition_key = edition_key.clone();
-        tokio::task::spawn_blocking(move || prepare(&state, &slug, &edition_key)).await
+        tokio::task::spawn_blocking(move || prepare(&state, &slug, &view)).await
     };
     let (shape, name) = match prepared {
         Ok(Ok(pair)) => pair,
@@ -671,18 +668,19 @@ fn streamed(
 fn prepare(
     state: &Arc<ServeState>,
     slug: &str,
-    edition_key: &str,
+    view: &crate::view::EditionView,
 ) -> Result<(Shape, String), Response> {
-    let work = state
-        .find_blocking(slug)
-        .map_err(crate::routes::not_found)?;
-    let sidecar = work.sidecar();
-    let found = sidecar.editions.get(edition_key).ok_or_else(|| {
+    let work = view.work();
+    let edition_key = view.key();
+    // The members the account is sent, so a narrowed edition zips only its
+    // visible files and a single one is passed through, as `advertised_type`
+    // types the feed's link from the same edition (spec §3.8).
+    let found = view.edition().ok_or_else(|| {
         crate::routes::not_found(format!("no edition `{edition_key}` in `{slug}`"))
     })?;
     // A scanned work has no document, so its member paths are absolute and
     // this join is the identity — `derive.rs` says so where it writes them.
-    let paths = member_paths(&work, found);
+    let paths = member_paths(work, found);
     if paths.is_empty() {
         return Err(crate::routes::not_found(format!(
             "`{edition_key}` of `{slug}` has no members"
@@ -711,7 +709,7 @@ fn prepare(
                 ))
             },
         )
-        .unwrap_or((None, None, sidecar.work.title.clone()))
+        .unwrap_or_else(|_| (None, None, work.sidecar().work.title.clone()))
     };
 
     if let Some(extension) = passthrough_extension(&paths) {
@@ -1165,11 +1163,10 @@ pub(crate) async fn member(
     headers: HeaderMap,
     extensions: axum::http::Extensions,
 ) -> Response {
-    if let Some(refusal) =
-        crate::routes::refuse_if_hidden(&state, &extensions, &slug, &edition_key).await
-    {
-        return refusal;
-    }
+    let view = match crate::view::of_edition(&state, &extensions, &slug, &edition_key).await {
+        Ok(view) => view,
+        Err(refusal) => return refusal,
+    };
     if let Some(refusal) = crate::routes::refuse_if_cannot_download(&extensions) {
         return refusal;
     }
@@ -1182,13 +1179,7 @@ pub(crate) async fn member(
         ));
     };
 
-    let prepared = {
-        let state = state.clone();
-        let slug = slug.clone();
-        let edition_key = edition_key.clone();
-        tokio::task::spawn_blocking(move || prepare_member(&state, &slug, &edition_key, ordinal))
-            .await
-    };
+    let prepared = tokio::task::spawn_blocking(move || prepare_member(&slug, &view, ordinal)).await;
     let (path, length, content_type, name) = match prepared {
         Ok(Ok(four)) => four,
         Ok(Err(refusal)) => return refusal,
@@ -1267,16 +1258,15 @@ pub(crate) async fn member(
               comment says buys nothing a comment does not already say"
 )]
 fn prepare_member(
-    state: &Arc<ServeState>,
     slug: &str,
-    edition_key: &str,
+    view: &crate::view::EditionView,
     ordinal: usize,
 ) -> Result<(std::path::PathBuf, u64, &'static str, String), Response> {
-    let work = state
-        .find_blocking(slug)
-        .map_err(crate::routes::not_found)?;
-    let sidecar = work.sidecar();
-    let found = sidecar.editions.get(edition_key).ok_or_else(|| {
+    let work = view.work();
+    let edition_key = view.key();
+    // Numbered and counted as the account's document lists the members, so
+    // an ordinal past the visible ones is one the edition does not have.
+    let found = view.edition().ok_or_else(|| {
         crate::routes::not_found(format!("no edition `{edition_key}` in `{slug}`"))
     })?;
     let held = found.members.get(ordinal).ok_or_else(|| {

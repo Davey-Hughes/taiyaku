@@ -714,6 +714,71 @@ async fn search_narrows_to_the_library_the_query_names() {
     );
 }
 
+/// The volumes a response's `works` lists, in its order.
+fn volumes_in(works: &serde_json::Value) -> Vec<f64> {
+    works
+        .as_array()
+        .unwrap_or_else(|| panic!("an array of works: {works}"))
+        .iter()
+        .map(|w| {
+            w["volume"]
+                .as_f64()
+                .unwrap_or_else(|| panic!("a volume: {w}"))
+        })
+        .collect()
+}
+
+/// Spec §3.6: `?library=` reaches the series page. Opened from `Kids`' grid,
+/// whose tile counts one volume, the page counts and lists that one; with no
+/// library it lists all five, and a library that does not exist is a 404.
+#[tokio::test]
+async fn one_series_narrows_to_the_library_the_query_names() {
+    let (router, _state, _fixture, ids) = test_support::router_over_a_series_in_two_libraries();
+    let series = ids.series;
+
+    let grid = get_json(
+        &router,
+        &format!("/api/library/series?library={}", ids.kids),
+    )
+    .await;
+    assert_eq!(grid["series"][0]["id"], series, "Kids' grid: {grid}");
+    assert_eq!(grid["series"][0]["works"], 1, "Kids' tile: {grid}");
+
+    let kids = get_json(
+        &router,
+        &format!("/api/library/series/{series}?library={}", ids.kids),
+    )
+    .await;
+    assert_eq!(kids["series"]["works"], 1, "opened from Kids: {kids}");
+    assert_eq!(volumes_in(&kids["works"]), [5.0], "opened from Kids");
+
+    let manga = get_json(
+        &router,
+        &format!("/api/library/series/{series}?library={}", ids.manga),
+    )
+    .await;
+    assert_eq!(
+        volumes_in(&manga["works"]),
+        [1.0, 2.0, 3.0, 4.0],
+        "opened from Manga"
+    );
+
+    let all = get_json(&router, &format!("/api/library/series/{series}")).await;
+    assert_eq!(all["series"]["works"], 5, "every library: {all}");
+    assert_eq!(
+        volumes_in(&all["works"]),
+        [1.0, 2.0, 3.0, 4.0, 5.0],
+        "every library"
+    );
+
+    let response = get(
+        &router,
+        &format!("/api/library/series/{series}?library=999999"),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
 /// **`?root=` is refused, naming `library`.**
 #[tokio::test]
 async fn a_grid_asked_for_a_root_is_refused_naming_library() {
@@ -1223,7 +1288,7 @@ fn a_reader_with(access: Access) -> crate::auth::Principal {
 /// would pass here; each asks both in one trip.
 #[tokio::test(flavor = "current_thread")]
 async fn no_browse_route_stalls_the_runtime() {
-    use crate::library_api::{GridQuery, HomeQuery, SearchQuery};
+    use crate::library_api::{GridQuery, HomeQuery, SearchQuery, SeriesQuery};
     use axum::extract::{Extension, Path as AxPath, Query, State};
     use axum::http::StatusCode;
     use std::sync::Arc;
@@ -1287,6 +1352,7 @@ async fn no_browse_route_stalls_the_runtime() {
                     State(Arc::clone(&state)),
                     who(),
                     AxPath(1),
+                    Query(SeriesQuery { library: None }),
                 )),
             ),
             (
@@ -1569,4 +1635,447 @@ fn a_cover_with_no_page_zero_is_null() {
         editions[2]["cover"],
         super::cover_address("w", "raw", "def")
     );
+}
+
+/// Spec §3.8's cover version, over
+/// [`test_support::router_over_an_edition_merged_from_two_libraries`].
+mod narrowing {
+    use super::*;
+    use crate::test_support::{EditionMergedFromTwoLibraries, Reader};
+
+    /// Every cover address `reader`'s grid, series page and home carry under
+    /// `query`, each named by where it was found.
+    async fn cover_addresses(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        query: &str,
+    ) -> Vec<(String, String)> {
+        let router = merged.router(reader);
+        let grid = get_json(router, &format!("/api/library/series{query}")).await;
+        let id = &grid["series"][0]["id"];
+        let one = get_json(router, &format!("/api/library/series/{id}{query}")).await;
+        let home = get_json(router, &format!("/api/library/home{query}")).await;
+        let mut addresses = Vec::new();
+        for (what, value) in [
+            ("the grid's row", &grid["series"][0]["cover"]),
+            ("the series page's own row", &one["series"]["cover"]),
+        ] {
+            addresses.push((what.to_string(), value.to_string()));
+        }
+        for (list, works) in [
+            ("the series page", &one["works"]),
+            ("home's added", &home["added"]),
+        ] {
+            for work in works.as_array().unwrap_or_else(|| panic!("{list}: works")) {
+                for edition in work["editions"].as_array().expect("editions") {
+                    addresses.push((
+                        format!("{list}: {}", edition["key"]),
+                        edition["cover"].to_string(),
+                    ));
+                }
+            }
+        }
+        addresses
+            .into_iter()
+            .map(|(what, address)| {
+                let address: String = serde_json::from_str(&address).unwrap_or_else(|_| {
+                    panic!("{reader:?} {query} {what}: an address, not {address}")
+                });
+                (format!("{reader:?} {query} {what}"), address)
+            })
+            .collect()
+    }
+
+    /// `raw`'s member `file`'s sha256, from the sidecar every account shares.
+    fn sha_of(merged: &EditionMergedFromTwoLibraries, file: &str) -> String {
+        let work = merged.state.find_blocking(&merged.slug).expect("the work");
+        let sidecar = work.sidecar();
+        sidecar.editions["raw"]
+            .members
+            .iter()
+            .find(|member| member.path.ends_with(file))
+            .unwrap_or_else(|| panic!("no member {file}"))
+            .sha256
+            .clone()
+    }
+
+    /// The pairs `reader`'s work document carries, and the alignments its
+    /// `/api/library/works/{slug}` lists with their counts.
+    async fn alignments_of(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+    ) -> (Vec<(String, String)>, Vec<serde_json::Value>) {
+        let router = merged.router(reader);
+        let document = get_json(router, &format!("/api/works/{}", merged.slug)).await;
+        let pairs = document["alignments"]
+            .as_array()
+            .expect("the document's alignments")
+            .iter()
+            .map(|a| (a["from"].to_string(), a["to"].to_string()))
+            .collect();
+        let detail = get_json(router, &format!("/api/library/works/{}", merged.slug)).await;
+        let listed = detail["alignments"]
+            .as_array()
+            .expect("the work's alignments")
+            .clone();
+        (pairs, listed)
+    }
+
+    /// An alignment's `slots` and `paired` count its editions in the full
+    /// numbering, so the library route lists one only when both its editions
+    /// are seen whole, the pairs the work document carries: Manga, who sees
+    /// `raw` narrowed, is told neither `raw`↔`en` nor its 9 slots, from which
+    /// part2's size follows. The work card's `aligned` says the same.
+    #[tokio::test]
+    async fn the_work_route_lists_only_the_alignments_the_work_document_carries() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let (_, everything) = alignments_of(&merged, Reader::Administrator).await;
+        assert_eq!(
+            everything,
+            [
+                serde_json::json!({"from": "en", "to": "fr", "verdict": "sound", "slots": 5, "paired": 5}),
+                serde_json::json!({"from": "raw", "to": "en", "verdict": "sound", "slots": 9, "paired": 7}),
+            ],
+            "the fixture: both alignments carry counts, raw's over its full 9 slots"
+        );
+
+        let raw_en = (r#""raw""#.to_string(), r#""en""#.to_string());
+        let en_fr = (r#""en""#.to_string(), r#""fr""#.to_string());
+        for (reader, pairs) in [
+            (Reader::Administrator, vec![raw_en.clone(), en_fr.clone()]),
+            (Reader::Both, vec![raw_en.clone(), en_fr.clone()]),
+            (Reader::MangaOnly, vec![en_fr.clone()]),
+            (Reader::KidsOnly, vec![]),
+        ] {
+            let (document, listed) = alignments_of(&merged, reader).await;
+            let mut sorted = document.clone();
+            sorted.sort();
+            let mut expected = pairs.clone();
+            expected.sort();
+            assert_eq!(sorted, expected, "{reader:?}: the work document's pairs");
+            let listed: Vec<(String, String)> = listed
+                .iter()
+                .map(|a| (a["from"].to_string(), a["to"].to_string()))
+                .collect();
+            let mut listed_sorted = listed.clone();
+            listed_sorted.sort();
+            assert_eq!(
+                listed_sorted, expected,
+                "{reader:?}: the library route lists the pairs the work document carries"
+            );
+        }
+
+        // With `en`↔`fr` gone, Manga's only pair touches `raw`: its card says
+        // it has none, and Both's, which sees `raw` whole, that it has one.
+        // Narrowed to Manga's library the card still says what the account
+        // opens, `raw` whole for Both and the administrator.
+        merged
+            .state
+            .library
+            .conn()
+            .execute("DELETE FROM alignment WHERE from_key = 'en'", [])
+            .expect("drops en↔fr");
+        let series: i64 = merged
+            .state
+            .library
+            .conn()
+            .query_row("SELECT series_id FROM work", [], |row| row.get(0))
+            .expect("the work's series");
+        for (reader, query, aligned) in [
+            (Reader::MangaOnly, "", false),
+            (Reader::Both, "", true),
+            (Reader::Both, "?library=70", true),
+            (Reader::Administrator, "?library=70", true),
+        ] {
+            let one = get_json(
+                merged.router(reader),
+                &format!("/api/library/series/{series}{query}"),
+            )
+            .await;
+            assert_eq!(
+                one["works"][0]["aligned"],
+                serde_json::json!(aligned),
+                "{reader:?} {query}: the work card's `aligned`"
+            );
+            assert_eq!(
+                one["series"]["aligned"],
+                serde_json::json!(i64::from(aligned)),
+                "{reader:?} {query}: the series card's count"
+            );
+        }
+    }
+
+    /// `raw` as `reader`'s series page opened with `query` lists it: its
+    /// files, pages and missing files.
+    async fn listed_raw(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        query: &str,
+    ) -> (u64, u64, u64) {
+        let series: i64 = merged
+            .state
+            .library
+            .conn()
+            .query_row("SELECT series_id FROM work", [], |row| row.get(0))
+            .expect("the work's series");
+        let one = get_json(
+            merged.router(reader),
+            &format!("/api/library/series/{series}{query}"),
+        )
+        .await;
+        let raw = one["works"][0]["editions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{reader:?} {query}: editions"))
+            .iter()
+            .find(|edition| edition["key"] == "raw")
+            .unwrap_or_else(|| panic!("{reader:?} {query}: raw is listed"))
+            .clone();
+        let count = |field: &str| {
+            raw[field]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{reader:?} {query}: raw's {field}"))
+        };
+        (count("members"), count("pages"), count("missing"))
+    }
+
+    /// Home opened from a library counts each card on each of its strips as
+    /// the series page does (decision 15): by what the account opens, 9 pages
+    /// of `raw` for the administrator and Both where Kids' share is 3. The
+    /// work is on `added`, then on `continuing` once the reader holds a
+    /// position on it, then on `read` once that position is finished.
+    #[tokio::test]
+    async fn home_counts_an_edition_by_what_its_account_opens_whichever_library_it_is_opened_from()
+    {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let work_id: i64 = merged
+            .state
+            .library
+            .conn()
+            .query_row("SELECT id FROM work", [], |row| row.get(0))
+            .expect("the work");
+        for (reader, query, members, pages) in [
+            (Reader::Administrator, "?library=80", 3, 9),
+            (Reader::Administrator, "?library=70", 3, 9),
+            (Reader::Both, "?library=80", 3, 9),
+            (Reader::KidsOnly, "?library=80", 1, 3),
+            (Reader::MangaOnly, "?library=70", 2, 6),
+        ] {
+            merged
+                .state
+                .library
+                .conn()
+                .execute("DELETE FROM progress", [])
+                .expect("clears positions");
+            for (strip, finished) in [
+                ("added", None),
+                ("continuing", Some(false)),
+                ("read", Some(true)),
+            ] {
+                if let Some(finished) = finished {
+                    merged
+                        .state
+                        .library
+                        .conn()
+                        .execute(
+                            "INSERT OR REPLACE INTO progress
+                                    (user_id, work_id, edition, slot, completed_at)
+                             VALUES (?1, ?2, 'raw', 0,
+                                     CASE WHEN ?3 THEN datetime('now') END)",
+                            rusqlite::params![merged.user_id(reader), work_id, finished],
+                        )
+                        .expect("a position");
+                }
+                let home =
+                    get_json(merged.router(reader), &format!("/api/library/home{query}")).await;
+                let card = home[strip]
+                    .as_array()
+                    .and_then(|cards| {
+                        cards
+                            .iter()
+                            .find(|card| card["slug"] == merged.slug.as_str())
+                    })
+                    .unwrap_or_else(|| panic!("{reader:?} {query}: the work on {strip}: {home}"));
+                assert_eq!(
+                    raw_of(card, &format!("{reader:?} {query} {strip}")),
+                    (members, pages),
+                    "{reader:?} {query}: home's {strip} card's raw"
+                );
+            }
+        }
+    }
+
+    /// The files and pages of `raw` on a work `card`.
+    fn raw_of(card: &serde_json::Value, what: &str) -> (u64, u64) {
+        let raw = card["editions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{what}: editions"))
+            .iter()
+            .find(|edition| edition["key"] == "raw")
+            .unwrap_or_else(|| panic!("{what}: raw is listed"));
+        let count = |field: &str| {
+            raw[field]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{what}: raw's {field}"))
+        };
+        (count("members"), count("pages"))
+    }
+
+    /// A series page opened from a library counts each edition it lists by
+    /// what the account opens, not by the library's share of it (decision
+    /// 15): the cell and the download label promise the pages the work
+    /// document and the download give. Kids' directory holds part2 alone, so
+    /// a count through the listing's library gives 3 where the administrator
+    /// and Both open 9, and Manga's gives 6.
+    #[tokio::test]
+    async fn a_series_page_counts_an_edition_by_what_its_account_opens_whichever_library_it_is_opened_from()
+     {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        for (reader, query, members, pages) in [
+            (Reader::Administrator, "?library=80", 3, 9),
+            (Reader::Administrator, "?library=70", 3, 9),
+            (Reader::Both, "?library=80", 3, 9),
+            (Reader::Both, "?library=70", 3, 9),
+            (Reader::KidsOnly, "?library=80", 1, 3),
+            (Reader::MangaOnly, "?library=70", 2, 6),
+        ] {
+            let (listed_members, listed_pages, _) = listed_raw(&merged, reader, query).await;
+            assert_eq!(
+                (listed_members, listed_pages),
+                (members, pages),
+                "{reader:?} {query}: the series page's raw"
+            );
+
+            let document = get_json(
+                merged.router(reader),
+                &format!("/api/works/{}", merged.slug),
+            )
+            .await;
+            let opened: Vec<u64> = document["editions"]["raw"]["members"]
+                .as_array()
+                .expect("the document's raw members")
+                .iter()
+                .map(|member| member["pages"].as_u64().expect("pages"))
+                .collect();
+            assert_eq!(
+                (opened.len() as u64, opened.iter().sum::<u64>()),
+                (members, pages),
+                "{reader:?}: the work document's raw"
+            );
+
+            let sent = merged
+                .get(
+                    reader,
+                    &format!("/api/works/{}/raw/download", merged.slug),
+                    None,
+                )
+                .await;
+            assert_eq!(
+                sent.status(),
+                axum::http::StatusCode::OK,
+                "{reader:?}: the download"
+            );
+            let mut zipped = zip::ZipArchive::new(std::io::Cursor::new(sent.body().as_slice()))
+                .expect("the download is a zip");
+            let zipped_pages = (0..zipped.len())
+                .filter(|&i| {
+                    zipped
+                        .by_index(i)
+                        .expect("an entry")
+                        .name()
+                        .expect("a name")
+                        != "ComicInfo.xml"
+                })
+                .count() as u64;
+            assert_eq!(
+                zipped_pages, pages,
+                "{reader:?}: the pages the download zips"
+            );
+        }
+    }
+
+    /// A series page opened from a library counts an edition's missing files
+    /// by the account too: with part1, under Manga's directory, gone from the
+    /// scan, Both's `raw` opened from Kids' library is unreadable, as the
+    /// reader would find it, and Kids alone's is whole.
+    #[tokio::test]
+    async fn a_series_page_counts_missing_files_by_what_its_account_opens() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let forgotten = merged
+            .state
+            .library
+            .conn()
+            .execute(
+                "DELETE FROM scan_entry WHERE rel_path = 'Foo v01 part1.cbz'",
+                [],
+            )
+            .expect("forgets part1");
+        assert_eq!(forgotten, 1, "the fixture: part1 was scanned once");
+        for (reader, missing) in [
+            (Reader::Administrator, 1),
+            (Reader::Both, 1),
+            (Reader::KidsOnly, 0),
+        ] {
+            let (_, _, listed) = listed_raw(&merged, reader, "?library=80").await;
+            assert_eq!(
+                listed, missing,
+                "{reader:?} ?library=80: raw's missing files"
+            );
+        }
+    }
+
+    /// A cover address names the page 0 the account is served, so the thumb
+    /// keeps it for good: Kids alone sees `raw` as part2, whose first page is
+    /// its page 0. An account that sees part1 is versioned by part1's, a
+    /// listing narrowed to Kids' library included, since the thumb narrows by
+    /// the account's grant and not the listing's.
+    #[tokio::test]
+    async fn each_cover_address_names_the_page_zero_its_account_is_served() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let part1 = crate::cover::cover_version(&sha_of(&merged, "Foo v01 part1.cbz"), 0);
+        let part2 = crate::cover::cover_version(&sha_of(&merged, "Foo v01 part2.cbz"), 0);
+        assert_ne!(
+            part1, part2,
+            "the fixture: part1's and part2's first pages differ"
+        );
+
+        for (reader, query, raw) in [
+            (Reader::Administrator, "", &part1),
+            (Reader::Administrator, "?library=80", &part1),
+            (Reader::Both, "?library=80", &part1),
+            (Reader::MangaOnly, "", &part1),
+            (Reader::KidsOnly, "", &part2),
+            (Reader::KidsOnly, "?library=80", &part2),
+        ] {
+            let addresses = cover_addresses(&merged, reader, query).await;
+            let of_raw: Vec<&(String, String)> = addresses
+                .iter()
+                .filter(|(_, address)| address.contains("/raw/"))
+                .collect();
+            assert!(!of_raw.is_empty(), "{reader:?} {query}: an address of raw");
+            for (what, address) in of_raw {
+                assert_eq!(
+                    address.split_once("?v=").map(|(_, v)| v),
+                    Some(raw.as_str()),
+                    "{what}: {address}"
+                );
+            }
+            for (what, address) in &addresses {
+                let response = get(merged.router(reader), &at_a_cover_size(address)).await;
+                let cache = response
+                    .headers()
+                    .get(axum::http::header::CACHE_CONTROL)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                assert_eq!(
+                    (response.status(), cache.as_str()),
+                    (
+                        axum::http::StatusCode::OK,
+                        crate::routes::COVER_CACHE_CONTROL
+                    ),
+                    "{what}: {address}"
+                );
+            }
+        }
+    }
 }

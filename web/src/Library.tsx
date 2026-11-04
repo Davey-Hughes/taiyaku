@@ -127,6 +127,8 @@ export function Library() {
   const [params, setParams] = useSearchParams()
   /** `'invalid'` is no library: the page says so, and asks the server nothing. */
   const library = libraryParam(params.get('library'))
+  /** The library the search and the tiles carry, where the page names one. */
+  const narrowed = typeof library === 'number' ? library : undefined
   const view = viewIn(params)
   const { chip, sort } = view
 
@@ -203,11 +205,7 @@ export function Library() {
     hits,
     failure: searchFailure,
     waiting: searchWaiting,
-  } = useSearchHits(
-    offered ? q : '',
-    typeof library === 'number' ? library : undefined,
-    typed,
-  )
+  } = useSearchHits(offered ? q : '', narrowed, typed)
   // Where the hits go, the view waits for the box to be offered (for the
   // status, or for rows) and then for the search: one wait over both, so a
   // line drawn before the query is sent stays drawn after it. A failed read
@@ -282,7 +280,11 @@ export function Library() {
           ) : hits.series.length === 0 && hits.unfiled.length === 0 ? (
             <EmptyState kind="no-matches" query={hits.query} />
           ) : (
-            <SeriesGrid series={hits.series} unfiled={hits.unfiled} />
+            <SeriesGrid
+              series={hits.series}
+              unfiled={hits.unfiled}
+              library={narrowed}
+            />
           )}
         </div>
       ) : (
@@ -353,7 +355,11 @@ export function Library() {
             gridData.unfiled.length === 0 ? (
             <EmptyState kind={emptyKind(status, library)} />
           ) : (
-            <SeriesGrid series={visible} unfiled={gridData?.unfiled ?? []} />
+            <SeriesGrid
+              series={visible}
+              unfiled={gridData?.unfiled ?? []}
+              library={narrowed}
+            />
           )}
         </>
       )}

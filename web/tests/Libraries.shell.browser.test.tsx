@@ -979,18 +979,12 @@ describe('the Libraries screen in the real Shell', () => {
       moved: {
         library_id: 3,
         library: 'Extras',
-        works_kept: 0,
-        works_joined: 0,
-        works_split: 0,
-        series_joined: 0,
-        positions: 0,
-        notes: 0,
-        alignments_dropped: 0,
+        gains_sight: [],
+        loses_sight: [],
         library_removed: 'Light novels',
         grants_removed: 0,
         left_with_no_library: [],
       },
-      derive: emptyDerive,
       dry_run,
     })
     vi.mocked(librariesApi.moveCost).mockResolvedValue(answer(true))
@@ -2061,24 +2055,41 @@ describe('Move… in its dialog, in the real Shell', () => {
     moved: {
       library_id: 1,
       library: 'Manga',
-      works_kept: 14,
-      works_joined: 0,
-      works_split: 0,
-      series_joined: 0,
-      positions: 3,
-      notes: 1,
-      alignments_dropped: 0,
+      gains_sight: [],
+      loses_sight: [],
       library_removed: 'Light novels',
       grants_removed: 0,
       left_with_no_library: [],
     },
-    derive: emptyDerive,
     dry_run,
   })
 
-  /** Opens Move… with a real mouse, chooses Manga and asks what that would do. */
-  async function rehearse(host: HTMLElement) {
-    vi.mocked(librariesApi.moveCost).mockResolvedValue(answer(true))
+  /**
+   * A rehearsal that names enough accounts to make the dialog taller than
+   * the window.
+   */
+  const crowded = (): librariesApi.MoveAnswer => {
+    const names = (who: string) =>
+      Array.from(
+        { length: 80 },
+        (_, i) => `${who}${String(i).padStart(2, '0')}`,
+      )
+    return {
+      ...answer(true),
+      moved: {
+        ...answer(true).moved,
+        gains_sight: names('reader'),
+        loses_sight: names('former'),
+      },
+    }
+  }
+
+  /**
+   * Opens Move… with a real mouse, chooses Manga and asks what that would do,
+   * answered with `rehearsed`.
+   */
+  async function rehearse(host: HTMLElement, rehearsed = answer(true)) {
+    vi.mocked(librariesApi.moveCost).mockResolvedValue(rehearsed)
     await click(moveButton(host))
     await act(async () => {
       await userEvent.selectOptions(moveTo(host) as HTMLSelectElement, '1')
@@ -2191,28 +2202,6 @@ describe('Move… in its dialog, in the real Shell', () => {
       expectStill(before, tops(host), 'when the answer arrives')
     })
 
-    it(`keeps the dialog’s top, its title’s and Move to’s where they were when What deriving after the move would find opens, at ${width}`, async () => {
-      const host = await shell(width, height, NOVELS_DIR_PAGE)
-      moveButton(host).focus()
-      await rehearse(host)
-      const derive = moveBox(host).querySelector(
-        '.removal-derive',
-      ) as HTMLDetailsElement
-      const summary = derive.querySelector('summary') as HTMLElement
-      expect(summary.textContent).toBe(
-        'What deriving after the move would find',
-      )
-      // In sight before the press, so that the press scrolls nothing and
-      // whatever moves is moved by the disclosure.
-      summary.scrollIntoView({ block: 'nearest' })
-      const before = tops(host)
-
-      await click(summary)
-      await settle()
-      expect(derive.open).toBe(true)
-      expectStill(before, tops(host), 'when it opens')
-    })
-
     /**
      * The settings pages' rows: each field's label in its own case, beside
      * the field where the box is wide enough, and the buttons a row's gap
@@ -2296,10 +2285,10 @@ describe('Move… in its dialog, in the real Shell', () => {
     /**
      * What a rehearsal answers is read after See what this would do, which
      * asked for it, and before the buttons that act on it, as a removal's
-     * counts are before its confirm: each of the refusal, the volumes in
-     * its way, the counts, the accounts left with no library and what
-     * deriving would find comes after the dry run and before every button
-     * of the box's foot, in the document and on the screen. Each is a row
+     * counts are before its confirm: each of the refusal, what the move
+     * would do and the accounts left with no library comes after the dry
+     * run and before every button of the box's foot, in the document and
+     * on the screen. Each is a row
      * of the box as the fields are, the box's width, so the line above it
      * is too, and its sentences keep the measure prose keeps in a box.
      */
@@ -2392,7 +2381,7 @@ describe('Move… in its dialog, in the real Shell', () => {
       )
     }
 
-    it(`puts the counts, the accounts left with no library and what deriving would find between See what this would do and the move, as rows of its box, at ${width}`, async () => {
+    it(`puts what the move would do and the accounts left with no library between See what this would do and the move, as rows of its box, at ${width}`, async () => {
       vi.mocked(librariesApi.moveCost).mockResolvedValue({
         ...answer(true),
         moved: {
@@ -2409,7 +2398,7 @@ describe('Move… in its dialog, in the real Shell', () => {
       await settle()
       await answered(
         host,
-        ['.move-counts', '.left-with-no-library', '.removal-derive'],
+        ['.move-counts', '.left-with-no-library'],
         ['Move', 'Cancel'],
       )
       const box = moveBox(host)
@@ -2439,10 +2428,10 @@ describe('Move… in its dialog, in the real Shell', () => {
       }
     })
 
-    it(`puts a refusal and the volumes in its way between See what this would do and Cancel, as rows of its box, at ${width}`, async () => {
+    it(`puts a refusal between See what this would do and Cancel, as a row of its box, at ${width}`, async () => {
       vi.mocked(librariesApi.moveCost).mockRejectedValue(
         new Error(
-          '/api/library/roots/3/move?dry_run=true: 409 {"error":"moving this directory would split a volume whose readers have places in it","volumes":["Spice and Wolf v01","Spice and Wolf v02"]}',
+          '/api/library/roots/3/move?dry_run=true: 409 {"error":"a scan of /srv/manga is running; move the directory once it has finished","volumes":[]}',
         ),
       )
       const host = await shell(width, height, NOVELS_DIR_PAGE)
@@ -2452,13 +2441,7 @@ describe('Move… in its dialog, in the real Shell', () => {
       })
       await click(host.querySelector('button[name="rehearse"]') as Element)
       await settle()
-      const volumes = moveBox(host).querySelector(
-        '.move-volumes',
-      ) as HTMLDetailsElement
-      volumes.open = true
-      await settle()
-      await answered(host, ['[role="alert"]', '.move-volumes'], ['Cancel'])
-      expect(volumes.querySelectorAll('li')).toHaveLength(2)
+      await answered(host, ['[role="alert"]'], ['Cancel'])
     })
 
     /**
@@ -2896,10 +2879,8 @@ describe('Move… in its dialog, in the real Shell', () => {
     const host = await shell(390, 600, NOVELS_DIR_PAGE)
     const doc = document.documentElement
     const pageHeight = doc.scrollHeight
-    await rehearse(host)
+    await rehearse(host, crowded())
     const box = moveBox(host)
-    ;(box.querySelector('.removal-derive') as HTMLDetailsElement).open = true
-    await settle()
 
     const at = box.getBoundingClientRect()
     const gutter = Number.parseFloat(
@@ -2935,10 +2916,8 @@ describe('Move… in its dialog, in the real Shell', () => {
     const doc = document.documentElement
     const pageHeight = doc.scrollHeight
     moveButton(host).focus()
-    await rehearse(host)
+    await rehearse(host, crowded())
     const box = moveBox(host)
-    ;(box.querySelector('.removal-derive') as HTMLDetailsElement).open = true
-    await settle()
 
     const at = box.getBoundingClientRect()
     const step = (name: string) =>

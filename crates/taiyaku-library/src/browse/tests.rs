@@ -94,7 +94,13 @@ fn two_library_store() -> TwoLibraries {
     let raw = crate::tests::tempdir("browse-lib-raw");
     write_pages(&raw.path().join("Series").join("Series - v01"), 2);
     let comics = crate::tests::tempdir("browse-lib-comics");
-    write_pages(&comics.path().join("Series").join("Series - v01"), 2);
+    write_pages(
+        &comics
+            .path()
+            .join("Comics Series")
+            .join("Comics Series - v01"),
+        2,
+    );
     write_pages(&comics.path().join("Other").join("Other - v01"), 3);
 
     let library = Library::open_in_memory().expect("in-memory");
@@ -154,12 +160,17 @@ fn two_library_store() -> TwoLibraries {
     }
 }
 
-/// The ids of a library's series, by `series.library_id`: never by title,
-/// since both libraries hold a `Series`.
+/// The ids of the series holding a member under a library's directories,
+/// which is what narrowing to a library reads: one series can be in both.
 fn series_of(library: &Library, library_id: i64) -> Vec<i64> {
     let conn = library.conn();
     let mut stmt = conn
-        .prepare("SELECT id FROM series WHERE library_id = ?1 ORDER BY id")
+        .prepare(
+            "SELECT DISTINCT s.id FROM series s
+               JOIN work w ON w.series_id = s.id JOIN edition e ON e.work_id = w.id
+               JOIN member m ON m.edition_id = e.id JOIN root r ON r.id = m.root_id
+              WHERE r.library_id = ?1 ORDER BY s.id",
+        )
         .expect("prepares");
     stmt.query_map([library_id], |r| r.get(0))
         .expect("reads")
@@ -296,7 +307,7 @@ fn only_with_no_dir_sees_nothing() {
             "home's continuing, {access:?}"
         );
         assert!(home.read.is_empty(), "nothing is finished");
-        let one = one_series(&conn, &access, 1, series_id).expect("reads the series");
+        let one = one_series(&conn, &access, 1, series_id, None).expect("reads the series");
         assert_eq!(one.is_some(), sees, "one_series, {access:?}");
         let detail = work(&conn, &access, 1, slug).expect("reads the work");
         assert_eq!(detail.is_some(), sees, "work, {access:?}");
@@ -304,8 +315,8 @@ fn only_with_no_dir_sees_nothing() {
         assert_eq!(cover.is_some(), sees, "cover_work, {access:?}");
         let scope = library_scope(&conn, &access, library_id).expect("reads the scope");
         assert_eq!(scope.is_some(), sees, "library_scope, {access:?}");
-        let visible = edition_visible(&conn, &access, slug, "en").expect("checks");
-        assert_eq!(visible, sees, "edition_visible, {access:?}");
+        let visible = sees_edition(&conn, &access, slug, "en");
+        assert_eq!(visible, sees, "visible_members, {access:?}");
         let all = visible_editions(&conn, &access).expect("lists editions");
         assert_eq!(!all.is_empty(), sees, "visible_editions, {access:?}");
         let missing = missing_by_edition(&conn, &access, &editions).expect("counts");
@@ -806,10 +817,19 @@ fn a_merged_edition_counts_only_the_members_the_grant_allows() {
     }
 }
 
-/// The same boundary at the page level: `edition_visible` is what the page
+/// Whether `access` sees a member of `slug`'s `edition`: the page routes'
+/// grant check, which `taiyaku-serve`'s `view::of_edition` reads from
+/// [`visible_members`].
+pub(crate) fn sees_edition(conn: &Connection, access: &Access, slug: &str, edition: &str) -> bool {
+    visible_members(conn, access, slug, Some(edition))
+        .expect("reads")
+        .get(edition)
+        .is_some_and(|members| members.iter().any(|member| member.visible))
+}
+
+/// The same boundary at the page level: `visible_members` is what the page
 /// routes ask, and a merged edition must still be visible to each grant that
-/// holds part of it — the *bytes* are guarded per edition, which is as
-/// fine-grained as the schema goes.
+/// holds part of it.
 #[test]
 fn a_merged_edition_is_visible_to_either_grant_and_an_unheld_root_sees_nothing() {
     let (library, a_id, _b_id, _a, _b) = merged_edition_library();
@@ -821,16 +841,90 @@ fn a_merged_edition_is_visible_to_either_grant_and_an_unheld_root_sees_nothing()
         .query_row("SELECT key FROM edition LIMIT 1", [], |row| row.get(0))
         .expect("reads the edition key");
 
-    assert!(edition_visible(&conn, &Access::Every, &slug, &key).expect("reads"));
-    assert!(edition_visible(&conn, &Access::Only(vec![a_id]), &slug, &key).expect("reads"));
+    assert!(sees_edition(&conn, &Access::Every, &slug, &key));
+    assert!(sees_edition(&conn, &Access::Only(vec![a_id]), &slug, &key));
     assert!(
-        !edition_visible(&conn, &Access::Only(vec![a_id]), &slug, "no-such-edition")
-            .expect("reads"),
+        !sees_edition(&conn, &Access::Only(vec![a_id]), &slug, "no-such-edition"),
         "an edition that does not exist is not visible"
     );
     assert!(
-        !edition_visible(&conn, &Access::Only(vec![a_id]), "no-such-work", &key).expect("reads"),
+        !sees_edition(&conn, &Access::Only(vec![a_id]), "no-such-work", &key),
         "a work that does not exist is not visible"
+    );
+}
+
+/// Narrowing reads each member of a merged edition, in the order the sidecar
+/// lists them, so each grant must be told which of the two roots' members it
+/// sees, where each sits, and which file it is.
+#[test]
+fn visible_members_flags_each_member_of_a_merged_edition_in_ordinal_order() {
+    let (library, a_id, b_id, _a, _b) = merged_edition_library();
+    let conn = library.conn();
+    let (slug, key): (String, String) = conn
+        .query_row(
+            "SELECT w.slug, e.key FROM work w JOIN edition e ON e.work_id = w.id",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the fixture: one work of one edition");
+    let shape: Vec<(i64, i64, String, String)> = conn
+        .prepare("SELECT pages, root_id, sha256, path FROM member ORDER BY ordinal")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .collect()
+        })
+        .expect("lists the members");
+    assert_eq!(
+        shape
+            .iter()
+            .map(|(pages, root, _, _)| (*pages, *root))
+            .collect::<Vec<_>>(),
+        [(2, a_id), (3, b_id)],
+        "the fixture: a's two pages are member 0, b's three member 1"
+    );
+    assert_ne!(shape[0].2, shape[1].2, "the fixture: two different files");
+    assert_ne!(shape[0].3, shape[1].3, "the fixture: at two paths");
+    let read_as = |visible: &[bool]| -> Vec<SeenMember> {
+        shape
+            .iter()
+            .zip(visible)
+            .map(|((_, _, sha256, path), &visible)| SeenMember {
+                sha256: sha256.clone(),
+                path: path.clone(),
+                visible,
+            })
+            .collect()
+    };
+
+    let flags = |roots: Vec<i64>, edition: Option<&str>| {
+        visible_members(&conn, &Access::Only(roots), &slug, edition).expect("reads")
+    };
+    for (roots, seen) in [
+        (vec![a_id], [true, false]),
+        (vec![b_id], [false, true]),
+        (vec![a_id, b_id], [true, true]),
+        (vec![], [false, false]),
+    ] {
+        assert_eq!(
+            flags(roots.clone(), None),
+            HashMap::from([(key.clone(), read_as(&seen))]),
+            "granted {roots:?}"
+        );
+    }
+    assert_eq!(
+        flags(vec![a_id], Some(&key)),
+        HashMap::from([(key.clone(), read_as(&[true, false]))]),
+        "asked for its one edition"
+    );
+    assert!(
+        flags(vec![a_id], Some("no-such-edition")).is_empty(),
+        "an edition the work does not have has no flags"
+    );
+    assert!(
+        visible_members(&conn, &Access::Only(vec![a_id]), "no-such-work", None)
+            .expect("reads")
+            .is_empty(),
+        "a work that does not exist has no flags"
     );
 }
 
@@ -845,12 +939,17 @@ fn a_work_outside_the_grant_is_invisible_to_the_page_check() {
         .query_row("SELECT slug FROM work LIMIT 1", [], |row| row.get(0))
         .expect("reads a slug");
 
-    assert!(edition_visible(&conn, &Access::Only(vec![en_id]), &slug, "en").expect("reads"));
+    assert!(sees_edition(&conn, &Access::Only(vec![en_id]), &slug, "en"));
     assert!(
-        !edition_visible(&conn, &Access::Only(vec![en_id]), &slug, "raw").expect("reads"),
+        !sees_edition(&conn, &Access::Only(vec![en_id]), &slug, "raw"),
         "the raw edition lives under a root this grant does not hold"
     );
-    assert!(edition_visible(&conn, &Access::Only(vec![raw_id]), &slug, "raw").expect("reads"));
+    assert!(sees_edition(
+        &conn,
+        &Access::Only(vec![raw_id]),
+        &slug,
+        "raw"
+    ));
 }
 
 /// `cover_work` answers `None` for a series that does not exist rather than
@@ -925,7 +1024,7 @@ fn one_series_returns_the_series_and_its_works() {
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
         .expect("reads the series");
 
-    let (card, works) = one_series(&conn, &Access::Every, 1, series_id)
+    let (card, works) = one_series(&conn, &Access::Every, 1, series_id, None)
         .expect("reads")
         .expect("the series is visible");
     assert_eq!(card.id, series_id);
@@ -939,7 +1038,7 @@ fn one_series_returns_the_series_and_its_works() {
     conn.execute("DELETE FROM scan_entry WHERE root_id = ?1", [en_id])
         .expect("simulates forget_unseen dropping the en root's scan_entry");
 
-    let (_card, works) = one_series(&conn, &Access::Every, 1, series_id)
+    let (_card, works) = one_series(&conn, &Access::Every, 1, series_id, None)
         .expect("reads")
         .expect("still visible — the member row, and so the work, survives");
     let en = works[0]
@@ -960,7 +1059,7 @@ fn one_series_returns_the_series_and_its_works() {
     assert_eq!(raw.missing, 0, "the raw edition's file is still on disk");
 
     assert!(
-        one_series(&conn, &Access::Every, 1, 9999)
+        one_series(&conn, &Access::Every, 1, 9999, None)
             .expect("reads")
             .is_none(),
         "a series that does not exist is None, and the id is what decides it"
@@ -1273,16 +1372,22 @@ fn every_home_list_narrows_to_the_library() {
             conn.query_row(sql, [p], |r| r.get(0)).expect("one work")
         };
         (
-            one("SELECT w.id FROM work w WHERE w.library_id = ?1", s.manga),
             one(
-                "SELECT w.id FROM work w JOIN series x ON x.id = w.series_id
-                  WHERE w.library_id = ?1 AND x.sort_title = 'Series'",
-                s.comics,
+                "SELECT DISTINCT e.work_id FROM edition e JOIN member m ON m.edition_id = e.id
+                  WHERE m.root_id = ?1",
+                s.en_root,
             ),
             one(
-                "SELECT w.id FROM work w JOIN series x ON x.id = w.series_id
-                  WHERE w.library_id = ?1 AND x.sort_title = 'Other'",
-                s.comics,
+                "SELECT DISTINCT w.id FROM work w JOIN series x ON x.id = w.series_id
+                   JOIN edition e ON e.work_id = w.id JOIN member m ON m.edition_id = e.id
+                  WHERE m.root_id = ?1 AND x.sort_title = 'Comics Series'",
+                s.comics_root,
+            ),
+            one(
+                "SELECT DISTINCT w.id FROM work w JOIN series x ON x.id = w.series_id
+                   JOIN edition e ON e.work_id = w.id JOIN member m ON m.edition_id = e.id
+                  WHERE m.root_id = ?1 AND x.sort_title = 'Other'",
+                s.comics_root,
             ),
         )
     };
@@ -1330,7 +1435,11 @@ fn search_narrowed_to_a_library_finds_only_its_series() {
     import_a_work(&s.library, "Imported Series", "/x/taiyaku.json");
     let conn = s.library.conn();
     let all = search(&conn, &Access::Every, 1, "Series", None).expect("searches");
-    assert_eq!(all.series.len(), 2, "a Series in each library");
+    assert_eq!(
+        all.series.len(),
+        2,
+        "a series matching `Series` in each library"
+    );
     assert_eq!(all.unfiled.len(), 1, "and the imported work, in neither");
     let comics = search(&conn, &Access::Every, 1, "Series", Some(s.comics)).expect("searches");
     assert!(
@@ -1342,7 +1451,10 @@ fn search_narrowed_to_a_library_finds_only_its_series() {
     drop(conn);
     let theirs = series_of(&s.library, s.comics);
     assert_eq!(ids.len(), 1);
-    assert!(theirs.contains(&ids[0]), "comics' Series, not Manga's");
+    assert!(
+        theirs.contains(&ids[0]),
+        "comics' `Comics Series`, not Manga's `Series`"
+    );
 }
 
 /// An imported work is in no library: asking for one leaves the unfiled
@@ -1619,11 +1731,11 @@ fn status_lists_each_library_once_by_name_with_case_folded() {
     );
 }
 
-/// The slugs `work.library_id` files in each library: Manga's one work and
-/// comics' two, told apart by the directories their members are under rather
-/// than by asking the column again.
+/// The slugs of the works with a member under each library's directories. The
+/// raw directory is relabelled into comics with no derive after it, as a move
+/// leaves it, so Manga's work is under both libraries' directories.
 #[test]
-fn filed_in_answers_the_slugs_of_the_works_filed_in_a_library() {
+fn held_in_answers_the_slugs_of_the_works_under_a_librarys_directories() {
     let s = two_library_store();
     let conn = s.library.conn();
     let dirs = [s.en_root, s.raw_root, s.comics_root];
@@ -1633,6 +1745,11 @@ fn filed_in_answers_the_slugs_of_the_works_filed_in_a_library() {
         s.manga,
         s.comics
     );
+    conn.execute(
+        "UPDATE root SET library_id = ?1 WHERE id = ?2",
+        [s.comics, s.raw_root],
+    )
+    .expect("relabels the raw directory");
     let under = |these: &[i64]| -> HashSet<String> {
         let holes = holes(these.len());
         conn.prepare(&format!(
@@ -1648,15 +1765,19 @@ fn filed_in_answers_the_slugs_of_the_works_filed_in_a_library() {
         .expect("reads")
     };
 
-    let manga = filed_in(&conn, s.manga).expect("reads Manga's");
-    let comics = filed_in(&conn, s.comics).expect("reads comics'");
+    let manga = held_in(&conn, s.manga).expect("reads Manga's");
+    let comics = held_in(&conn, s.comics).expect("reads comics'");
     assert_eq!(manga.len(), 1, "Manga's one work: {manga:?}");
-    assert_eq!(comics.len(), 2, "comics' Series and Other: {comics:?}");
-    assert_eq!(manga, under(&[s.en_root, s.raw_root]));
-    assert_eq!(comics, under(&[s.comics_root]));
+    assert_eq!(
+        comics.len(),
+        3,
+        "comics' `Comics Series` and `Other`, and Manga's work: {comics:?}"
+    );
+    assert_eq!(manga, under(&[s.en_root]));
+    assert_eq!(comics, under(&[s.raw_root, s.comics_root]));
     assert!(
-        manga.is_disjoint(&comics),
-        "a work filed in both: {manga:?} {comics:?}"
+        manga.is_subset(&comics),
+        "Manga's work is under both: {manga:?} {comics:?}"
     );
 }
 
@@ -2101,7 +2222,7 @@ fn statements_listing_series(library: &Library) -> (usize, usize) {
         .expect("reads the series");
 
     STATEMENTS.with(|c| c.set(0));
-    let (_card, works) = one_series(&conn, &Access::Every, 1, series_id)
+    let (_card, works) = one_series(&conn, &Access::Every, 1, series_id, None)
         .expect("reads")
         .expect("the series is visible");
     (STATEMENTS.with(std::cell::Cell::get), works.len())
@@ -2164,7 +2285,7 @@ fn a_restricted_grant_hides_its_edition_in_every_work_of_a_series() {
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
         .expect("the series");
 
-    let (_card, unrestricted) = one_series(&conn, &Access::Every, 1, series_id)
+    let (_card, unrestricted) = one_series(&conn, &Access::Every, 1, series_id, None)
         .expect("reads")
         .expect("visible");
     assert_eq!(unrestricted.len(), 3, "three volumes");
@@ -2176,7 +2297,7 @@ fn a_restricted_grant_hides_its_edition_in_every_work_of_a_series() {
         );
     }
 
-    let (_card, restricted) = one_series(&conn, &Access::Only(vec![raw_id]), 1, series_id)
+    let (_card, restricted) = one_series(&conn, &Access::Only(vec![raw_id]), 1, series_id, None)
         .expect("reads")
         .expect("visible");
     assert_eq!(restricted.len(), 3, "the works themselves all survive");
@@ -2218,7 +2339,7 @@ fn opens_names_the_stored_position_and_falls_back_to_the_hub() {
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
         .expect("the series");
     let read = |access: &Access| {
-        one_series(&conn, access, 1, series_id)
+        one_series(&conn, access, 1, series_id, None)
             .expect("reads")
             .expect("visible")
             .1
@@ -2297,7 +2418,7 @@ fn opens_substitutes_the_first_visible_edition_when_the_grant_hides_the_hub() {
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
         .expect("the series");
 
-    let card = one_series(&conn, &Access::Only(vec![other_root]), 1, series_id)
+    let card = one_series(&conn, &Access::Only(vec![other_root]), 1, series_id, None)
         .expect("reads")
         .expect("visible")
         .1
@@ -2684,12 +2805,12 @@ fn an_edition_whose_first_member_has_no_pages_takes_page_zero_from_the_next() {
     assert_eq!(page_zero_read(&conn, &Access::Every), [None, None, None]);
 }
 
-/// Page 0 is read from the whole edition whatever the grant, as the page
-/// routes read it once the edition is visible, so a reader granted only the
-/// directory of a merged edition's second member is handed the version of the
-/// first member's page: the bytes the thumbnail route serves them.
+/// Page 0 is read from the members the grant shows, as the page routes
+/// narrow a merged edition to them (spec §3.8), so a reader granted only the
+/// directory of its second member is handed the version of that member's
+/// first page: the bytes the thumbnail route serves them.
 #[test]
-fn page_zero_is_read_from_the_whole_edition_whatever_the_grant() {
+fn page_zero_is_read_from_the_members_the_grant_shows() {
     let (library, _a, _b, _da, _db) = merged_edition_library();
     let conn = library.conn();
     let members = members_by_ordinal(&conn);
@@ -2704,15 +2825,70 @@ fn page_zero_is_read_from_the_whole_edition_whatever_the_grant() {
     let located = page_zero_as_located(&conn, work_id, &key);
     assert_eq!(located.as_deref(), Some(members[0].2.as_str()));
 
-    for access in [
-        Access::Every,
-        Access::Only(vec![members[0].1]),
-        Access::Only(vec![members[1].1]),
+    for (access, member) in [
+        (Access::Every, 0),
+        (Access::Only(vec![members[0].1]), 0),
+        (Access::Only(vec![members[1].1]), 1),
     ] {
+        let seen = Some(members[member].2.clone());
         assert_eq!(
             page_zero_read(&conn, &access),
-            [located.clone(), located.clone(), located.clone()],
+            [seen.clone(), seen.clone(), seen],
             "{access:?}: the edition card, the grid's cover and the 307's"
+        );
+    }
+}
+
+/// A listing narrowed to a library reads page 0 through the account's grant,
+/// not through that library's directories: the thumbnail route narrows by the
+/// grant alone, so an account that sees the whole edition is served its first
+/// member's page 0 whichever listing it came from.
+#[test]
+fn a_listing_narrowed_to_a_library_reads_page_zero_through_the_accounts_grant() {
+    let (library, a_id, b_id, _da, _db) = merged_edition_library();
+    let second = raw_in_a_library_of_its_own(&library, b_id);
+    let conn = library.conn();
+    let members = members_by_ordinal(&conn);
+    assert_eq!(
+        members.iter().map(|m| m.1).collect::<Vec<_>>(),
+        [a_id, b_id],
+        "the fixture: the second member alone is in the library listed"
+    );
+    let series_id = the_series(&conn);
+    let first = Some(members[0].2.clone());
+    for access in [Access::Every, Access::Only(vec![a_id, b_id])] {
+        let grid = series(&conn, &access, 1, Some(second)).expect("lists series");
+        let (row, works) = one_series(&conn, &access, 1, series_id, Some(second))
+            .expect("reads the series")
+            .expect("the series is in the library");
+        let added = home(&conn, &access, 1, Some(second))
+            .expect("reads home")
+            .added;
+        let hits = search(&conn, &access, 1, "Series", Some(second)).expect("searches");
+        let cover = |card: &SeriesCard| {
+            card.cover
+                .as_ref()
+                .expect("a cover")
+                .page_zero_sha256
+                .clone()
+        };
+        assert_eq!(
+            [
+                cover(&grid[0]),
+                cover(&row),
+                cover(&hits.series[0]),
+                works[0].editions[0].page_zero_sha256.clone(),
+                added[0].editions[0].page_zero_sha256.clone(),
+            ],
+            [
+                first.clone(),
+                first.clone(),
+                first.clone(),
+                first.clone(),
+                first.clone()
+            ],
+            "{access:?}: the grid's row, the series page's row, the search hit, \
+             and the edition cards of the series page and home's added"
         );
     }
 }
@@ -2738,7 +2914,7 @@ fn every_edition_card_names_the_member_its_page_zero_is_located_in() {
 fn assert_each_edition_card_names_its_page_zero(library: &Library, works: usize, editions: usize) {
     let conn = library.conn();
     let series_id = the_series(&conn);
-    let (_card, cards) = one_series(&conn, &Access::Every, 1, series_id)
+    let (_card, cards) = one_series(&conn, &Access::Every, 1, series_id, None)
         .expect("reads")
         .expect("the series is visible");
     assert_eq!(cards.len(), works, "the works");
@@ -2822,4 +2998,328 @@ fn works_sharing_a_volume_take_the_cover_by_id_before_key() {
             .expect("gives both works one volume");
         assert_grid_covers(&conn, &Access::Every, &[(series_id, Some((first, "raw")))]);
     }
+}
+
+/// One work whose edition `en` is under `Kids`' directory and whose edition
+/// `raw` is under `Manga`'s, and a series `Other` under a third library's
+/// directory, scanned and derived. The libraries are numbered 70, 80 and 90,
+/// apart from the directories.
+struct KidsAndManga {
+    library: Library,
+    kids: i64,
+    manga: i64,
+    other: i64,
+    slug: String,
+    _dirs: [crate::tests::TempDir; 3],
+}
+
+fn kids_and_manga() -> KidsAndManga {
+    let kids = crate::tests::tempdir("browse-kids");
+    write_pages(&kids.path().join("Series").join("Series - v01"), 2);
+    let manga = crate::tests::tempdir("browse-manga");
+    write_pages(&manga.path().join("Series").join("Series - v01"), 2);
+    let other = crate::tests::tempdir("browse-other");
+    write_pages(&other.path().join("Other").join("Other - v01"), 3);
+
+    let library = Library::open_in_memory().expect("in-memory");
+    let (kids_root, manga_root, other_root, slug) = {
+        let conn = library.conn();
+        conn.execute(
+            "INSERT INTO library (id, name) VALUES (70, 'Kids'), (80, 'Manga'), (90, 'Other')",
+            [],
+        )
+        .expect("three libraries, numbered apart from their directories");
+        let add = |dir: &crate::tests::TempDir, name: &str, edition: &str| -> i64 {
+            let id = scan::add_root_in(&conn, dir.path(), scan::InLibrary::Named(name))
+                .expect("adds the directory")
+                .id;
+            conn.execute(
+                "UPDATE root SET edition_key = ?1 WHERE id = ?2",
+                rusqlite::params![edition, id],
+            )
+            .expect("names the directory's edition");
+            id
+        };
+        let k = add(&kids, "Kids", "en");
+        let m = add(&manga, "Manga", "raw");
+        let o = add(&other, "Other", "raw");
+        for root in scan::roots(&conn).expect("re-reads the roots") {
+            scan::scan_root(&conn, &root).expect("scans");
+        }
+        derive::derive(&conn).expect("derives");
+        let slug: String = conn
+            .query_row(
+                "SELECT w.slug FROM work w JOIN series s ON s.id = w.series_id
+                  WHERE s.sort_title = 'Series'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the fixture: one work of `Series`, holding both editions");
+        (k, m, o, slug)
+    };
+    KidsAndManga {
+        library,
+        kids: kids_root,
+        manga: manga_root,
+        other: other_root,
+        slug,
+        _dirs: [kids, manga, other],
+    }
+}
+
+/// Spec §7, "Access": an account granted one of two libraries holding a
+/// work's editions is listed the work with that library's edition alone, and
+/// is refused the other edition's pages.
+#[test]
+fn an_account_granted_one_library_sees_the_work_with_that_librarys_edition_alone() {
+    let s = kids_and_manga();
+    let conn = s.library.conn();
+    for (root, granted, withheld) in [(s.kids, "en", "raw"), (s.manga, "raw", "en")] {
+        let access = Access::Only(vec![root]);
+        let titles: Vec<String> = series(&conn, &access, 1, None)
+            .expect("lists")
+            .into_iter()
+            .map(|card| {
+                assert_eq!(
+                    (card.works, card.editions),
+                    (1, 1),
+                    "{granted}: the work, counted with one edition"
+                );
+                card.title
+            })
+            .collect();
+        assert_eq!(
+            titles,
+            ["Series"],
+            "{granted}: the series of the work alone"
+        );
+        let keys: Vec<String> = work(&conn, &access, 1, &s.slug)
+            .expect("reads")
+            .expect("the work is listed")
+            .card
+            .editions
+            .into_iter()
+            .map(|e| e.key)
+            .collect();
+        assert_eq!(keys, [granted], "the granted library's edition alone");
+        assert!(sees_edition(&conn, &access, &s.slug, granted));
+        assert!(
+            !sees_edition(&conn, &access, &s.slug, withheld),
+            "{granted}: the other library's edition's pages are refused"
+        );
+    }
+}
+
+/// And an account granted neither library sees nothing of the work.
+#[test]
+fn an_account_granted_neither_library_sees_nothing_of_the_work() {
+    let s = kids_and_manga();
+    let conn = s.library.conn();
+    let access = Access::Only(vec![s.other]);
+    let titles: Vec<String> = series(&conn, &access, 1, None)
+        .expect("lists")
+        .into_iter()
+        .map(|card| card.title)
+        .collect();
+    assert_eq!(titles, ["Other"], "the granted library's own series alone");
+    assert!(work(&conn, &access, 1, &s.slug).expect("reads").is_none());
+    for key in ["en", "raw"] {
+        assert!(!sees_edition(&conn, &access, &s.slug, key), "{key}");
+    }
+    assert!(
+        !visible_editions(&conn, &access)
+            .expect("lists")
+            .contains_key(&s.slug)
+    );
+}
+
+/// Spec §7, "Access": a copy held under two libraries' directories is one
+/// member, read through either library's grant alone, counted there with its
+/// member and its pages, and filed in both.
+#[test]
+fn a_copy_held_in_two_libraries_is_visible_through_either_grant_alone() {
+    let copy = crate::tests::a_volume_copied_into_two_libraries();
+    let conn = copy.conn();
+    let slug: String = conn
+        .query_row("SELECT slug FROM work", [], |r| r.get(0))
+        .expect("the one work");
+    for (root, label) in [(copy.a.id, "a"), (copy.b.id, "b")] {
+        let access = Access::Only(vec![root]);
+        let cards = series(&conn, &access, 1, None).expect("lists");
+        assert_eq!(
+            cards
+                .iter()
+                .map(|c| (c.works, c.editions))
+                .collect::<Vec<_>>(),
+            [(1, 1)],
+            "{label}: the work's series, counting the work and its edition"
+        );
+        let editions = work(&conn, &access, 1, &slug)
+            .expect("reads")
+            .expect("the work is listed")
+            .card
+            .editions;
+        assert_eq!(
+            editions
+                .iter()
+                .map(|e| (e.key.as_str(), e.members, e.pages))
+                .collect::<Vec<_>>(),
+            [("raw", 1, 3)],
+            "{label}: the edition, counted with its one member and its pages"
+        );
+        assert!(
+            sees_edition(&conn, &access, &slug, "raw"),
+            "{label}: its pages are served"
+        );
+    }
+    for library in [70, 80] {
+        assert_eq!(
+            held_in(&conn, library).expect("reads"),
+            HashSet::from([slug.clone()]),
+            "held in library {library}"
+        );
+    }
+}
+
+/// Series `Foo`, volumes 1 to 4 under `Manga`'s directory and volume 5 under
+/// `Kids`', and a series `Bar` under `Manga`'s alone, scanned and derived:
+/// spec §3.6's case. The libraries are numbered 70 and 80, apart from the
+/// directories.
+struct FooAcrossTwoLibraries {
+    library: Library,
+    manga: i64,
+    kids: i64,
+    manga_root: i64,
+    kids_root: i64,
+    foo: i64,
+    bar: i64,
+    _dirs: [crate::tests::TempDir; 2],
+}
+
+fn foo_across_two_libraries() -> FooAcrossTwoLibraries {
+    let manga = crate::tests::tempdir("browse-foo-manga");
+    for volume in 1..=4 {
+        write_pages(
+            &manga.path().join("Foo").join(format!("Foo - v{volume:02}")),
+            2,
+        );
+    }
+    write_pages(&manga.path().join("Bar").join("Bar - v01"), 2);
+    let kids = crate::tests::tempdir("browse-foo-kids");
+    write_pages(&kids.path().join("Foo").join("Foo - v05"), 2);
+
+    let library = Library::open_in_memory().expect("in-memory");
+    let (manga_root, kids_root, foo, bar) = {
+        let conn = library.conn();
+        conn.execute(
+            "INSERT INTO library (id, name) VALUES (70, 'Manga'), (80, 'Kids')",
+            [],
+        )
+        .expect("two libraries, numbered apart from their directories");
+        let manga_root = scan::add_root_in(&conn, manga.path(), scan::InLibrary::Named("Manga"))
+            .expect("adds Manga's directory")
+            .id;
+        let kids_root = scan::add_root_in(&conn, kids.path(), scan::InLibrary::Named("Kids"))
+            .expect("adds Kids' directory")
+            .id;
+        for root in scan::roots(&conn).expect("re-reads the roots") {
+            scan::scan_root(&conn, &root).expect("scans");
+        }
+        derive::derive(&conn).expect("derives");
+        let titled = |title: &str| -> i64 {
+            conn.query_row(
+                "SELECT id FROM series WHERE sort_title = ?1",
+                [title],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("the series {title}: {e}"))
+        };
+        (manga_root, kids_root, titled("Foo"), titled("Bar"))
+    };
+    FooAcrossTwoLibraries {
+        library,
+        manga: 70,
+        kids: 80,
+        manga_root,
+        kids_root,
+        foo,
+        bar,
+        _dirs: [manga, kids],
+    }
+}
+
+/// The volumes of `works`, in the order listed.
+fn volumes(works: &[WorkCard]) -> Vec<Option<f64>> {
+    works.iter().map(|w| w.volume).collect()
+}
+
+/// Spec §3.6: for an account granted both libraries, the series page opened
+/// from `Kids`' grid counts and lists the one volume `Kids`' directory holds,
+/// as the tile it was opened from does, and the page asked with no library
+/// lists all five.
+#[test]
+fn a_series_opened_from_a_library_holds_what_that_librarys_directories_hold() {
+    let s = foo_across_two_libraries();
+    let conn = s.library.conn();
+    let both = Access::Only(vec![s.manga_root, s.kids_root]);
+
+    let tile = series(&conn, &both, 1, Some(s.kids))
+        .expect("lists Kids' grid")
+        .into_iter()
+        .find(|c| c.id == s.foo)
+        .expect("Foo is in Kids' grid");
+    assert_eq!(tile.works, 1, "Kids' tile counts the volume Kids holds");
+
+    for (library, works, listed) in [
+        (Some(s.kids), 1, vec![Some(5.0)]),
+        (
+            Some(s.manga),
+            4,
+            vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)],
+        ),
+        (
+            None,
+            5,
+            vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0), Some(5.0)],
+        ),
+    ] {
+        let (card, cards) = one_series(&conn, &both, 1, s.foo, library)
+            .expect("reads the series")
+            .unwrap_or_else(|| panic!("Foo is found in {library:?}"));
+        assert_eq!(card.works, works, "the card's count in {library:?}");
+        assert_eq!(volumes(&cards), listed, "the works listed in {library:?}");
+    }
+    let (card, _) = one_series(&conn, &both, 1, s.foo, Some(s.kids))
+        .expect("reads the series")
+        .expect("Foo is in Kids");
+    assert_eq!(card, tile, "the page's card is the tile it was opened from");
+}
+
+/// A library outside the grant, a library holding nothing of the series and a
+/// library that does not exist each answer as a series that does not exist,
+/// while the same series asked with a library that holds it, or with none, is
+/// found.
+#[test]
+fn a_series_asked_for_in_a_library_that_holds_none_of_it_is_not_found() {
+    let s = foo_across_two_libraries();
+    let conn = s.library.conn();
+    let manga_only = Access::Only(vec![s.manga_root]);
+    let both = Access::Only(vec![s.manga_root, s.kids_root]);
+    let found = |access: &Access, id: i64, library: Option<i64>| {
+        one_series(&conn, access, 1, id, library)
+            .expect("reads the series")
+            .is_some()
+    };
+
+    assert!(found(&manga_only, s.foo, Some(s.manga)), "Manga, granted");
+    assert!(
+        !found(&manga_only, s.foo, Some(s.kids)),
+        "Kids, outside the grant"
+    );
+    assert!(found(&both, s.bar, None), "Bar, with no library");
+    assert!(!found(&both, s.bar, Some(s.kids)), "Bar, in Kids");
+    assert!(
+        !found(&both, s.foo, Some(999)),
+        "a library that does not exist"
+    );
 }

@@ -7,6 +7,7 @@ import * as backupApi from '../src/backup'
 import * as curation from '../src/curation'
 import * as librariesApi from '../src/libraries'
 import * as rulesApi from '../src/rules'
+import * as splitApi from '../src/splitEditions'
 import * as usersApi from '../src/users'
 import { deferred, flush } from './support/async'
 import { press, submit, typeInto } from './support/input'
@@ -33,6 +34,10 @@ vi.mock('../src/users', async (importOriginal) => ({
 vi.mock('../src/backup', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/backup')>()),
   listBackups: vi.fn(),
+}))
+vi.mock('../src/splitEditions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/splitEditions')>()),
+  listSplitEditions: vi.fn(),
 }))
 
 async function at(entry: string) {
@@ -76,6 +81,7 @@ beforeEach(() => {
   })
   vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [] })
   vi.mocked(backupApi.listBackups).mockResolvedValue({ backups: [] })
+  vi.mocked(splitApi.listSplitEditions).mockResolvedValue({ editions: [] })
 })
 
 describe('Config', () => {
@@ -102,7 +108,7 @@ describe('Config', () => {
     ).toBe('Libraries')
   })
 
-  it('draws the tabs in the order Libraries, Users, Rules, Backup — O219 §1.4', async () => {
+  it('draws the tabs in the order Libraries, Users, Rules, Backup — O219 §1.4 — then Split editions', async () => {
     const host = await at('/config/libraries')
     expect(
       [...host.querySelectorAll('.config-nav a')].map((a) => [
@@ -114,6 +120,7 @@ describe('Config', () => {
       ['Users', '/config/users'],
       ['Rules', '/config/rules'],
       ['Backup', '/config/backup'],
+      ['Split editions', '/config/split-editions'],
     ])
   })
 

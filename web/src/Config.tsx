@@ -28,6 +28,7 @@ import { Backup } from './Backup'
 import { TABS } from './config'
 import { RuleEditor } from './RuleEditor'
 import { Libraries } from './Libraries'
+import { SplitEditions } from './SplitEditions'
 import { Users } from './Users'
 import { useDocumentTitle } from './title'
 
@@ -37,6 +38,7 @@ const SCREENS: Record<string, React.ReactNode> = {
   libraries: <Libraries />,
   users: <Users />,
   backup: <Backup />,
+  'split-editions': <SplitEditions />,
 }
 
 export function Config() {

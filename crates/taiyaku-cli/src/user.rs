@@ -467,21 +467,25 @@ fn grant_library(args: &[String]) -> Result<(), String> {
     }
     // **A grant over a library nothing has re-derived shows an empty shelf**,
     // and saying so here is the difference between a puzzling result and a
-    // known one. Migration 6 added `member.root_id` and left it NULL;
-    // migration 7 backfills what it can from each root's path, but a member
-    // whose root cannot be recovered that way stays NULL and `IN (…)`
-    // excludes it.
-    let unrooted: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM member WHERE root_id IS NULL",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("counting members with no root: {e}"))?;
-    if let Some(note) = unrooted_note(unrooted) {
+    // known one.
+    if let Some(note) = unrooted_note(unrooted_members(&conn)?) {
         println!("  {note}");
     }
     Ok(())
+}
+
+/// How many members are under no directory: those with no `member_root` row,
+/// which no grant reaches. A member is under each directory it has a row for,
+/// so one whose `root_id` is `NULL` while a copy is still recorded elsewhere
+/// is not counted.
+fn unrooted_members(conn: &rusqlite::Connection) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM member m
+          WHERE NOT EXISTS (SELECT 1 FROM member_root mr WHERE mr.member_id = m.id)",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("counting members with no root: {e}"))
 }
 
 /// The role the store holds for the account `user_id`.

@@ -4,7 +4,7 @@
 //! `sidecar_path`; if the path hits and the key differs, the archives were
 //! replaced, so the key is updated rather than a second work inserted.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension};
@@ -38,7 +38,7 @@ fn readable_version(doc: &Sidecar) -> Result<(), String> {
 /// build reads (see [`readable_version`]), if `content_key` fails — a hub
 /// naming no edition — or if SQLite refuses a statement.
 pub fn sidecar(conn: &Connection, doc: &Sidecar, path: &Path) -> Result<i64, String> {
-    import_with(conn, doc, Some(path), Scope::Document, None, None)
+    import_with(conn, doc, Some(path), Scope::Document, None)
 }
 
 /// What the document being imported is entitled to speak for, and so what an
@@ -60,10 +60,10 @@ enum Scope {
 
 /// Import a work the **scanner** derived, which has no document on disk.
 ///
-/// **With no library — Part F1.** `derive` calls [`scanned_in`], which looks
-/// for the work in its group's library and files it there. This is the same
-/// import with no library to look in, so content decides across the whole
-/// store, and a work it mints is in no library. What follows is true of both.
+/// **Across the store.** Content decides whichever library's directories the
+/// files are under, so a byte-identical volume in two libraries lands on one
+/// work (overlapping-libraries spec §3.2). Nothing here files a work under a
+/// library: which libraries a work is in is read from its members' roots.
 ///
 /// `known` is the row derivation already found for this `(series_id,
 /// volume)`, or `None` for a work it has never seen. It is the second
@@ -145,29 +145,7 @@ enum Scope {
 ///
 /// The same as [`sidecar`].
 pub fn scanned(conn: &Connection, doc: &Sidecar, known: Option<i64>) -> Result<i64, String> {
-    import_with(conn, doc, None, Scope::Scan, None, known)
-}
-
-/// [`scanned`] for a work derived from a library's directories, which is every
-/// work `derive` writes.
-///
-/// **Content decides within `library` — Part F1.** A byte-identical volume
-/// in two libraries is two works, so the content probe looks only at the
-/// works [`crate::libraries::own_or_adoptable_work`] allows `library`: its
-/// own, and those in no library that it may take. The row the import lands
-/// on is filed under `library` where it was in none, and keeps its id and
-/// its slug.
-///
-/// # Errors
-///
-/// As [`scanned`].
-pub fn scanned_in(
-    conn: &Connection,
-    doc: &Sidecar,
-    library_id: i64,
-    known: Option<i64>,
-) -> Result<i64, String> {
-    import_with(conn, doc, None, Scope::Scan, Some(library_id), known)
+    import_with(conn, doc, None, Scope::Scan, known)
 }
 
 fn import_with(
@@ -175,7 +153,6 @@ fn import_with(
     doc: &Sidecar,
     path: Option<&Path>,
     scope: Scope,
-    library: Option<i64>,
     known: Option<i64>,
 ) -> Result<i64, String> {
     readable_version(doc)?;
@@ -194,9 +171,8 @@ fn import_with(
     // A document-backed work is addressed by the path it was read from; a
     // scanned one by the `(series_id, volume)` derivation already resolved it
     // at, which is what `known` carries. Neither is consulted while the content
-    // still matches, beyond a document's path choosing among several works of
-    // that content. See [`scanned`].
-    let existing = match find_by_key(&tx, &key, library, path)? {
+    // still matches. See [`scanned`].
+    let existing = match find_by_key(&tx, &key)? {
         Some(id) => Some(id),
         None => match path {
             Some(path) => find_by_path(&tx, path)?,
@@ -206,10 +182,10 @@ fn import_with(
 
     let work_id = match existing {
         Some(id) => {
-            update_work(&tx, id, doc, path, &key, scope, library)?;
+            update_work(&tx, id, doc, path, &key, scope)?;
             id
         }
-        None => insert_work(&tx, doc, path, &key, library)?,
+        None => insert_work(&tx, doc, path, &key)?,
     };
 
     // Only meaningful when a path was claimed: content decided `work_id`, so
@@ -303,8 +279,7 @@ pub fn reimport(
     // `sidecar` sees a document. This is the only place it can be read.
     readable_version(incoming)?;
     let key = crate::identity::content_key(incoming)?;
-    let Some(work_id) = find_by_key(conn, &key, None, Some(path))?.or(find_by_path(conn, path)?)
-    else {
+    let Some(work_id) = find_by_key(conn, &key)?.or(find_by_path(conn, path)?) else {
         return Ok((sidecar(conn, incoming, path)?, Vec::new()));
     };
 
@@ -456,33 +431,13 @@ fn drop_stale_spoke(
     }
 }
 
-/// The work holding `key`.
-///
-/// Given a `library`, a work [`crate::libraries::own_or_adoptable_work`]
-/// allows it: its own first, then the oldest in none. With no library — a
-/// document import, or [`scanned`] — any work in the store: one in a library
-/// before one in none, then the oldest. Given a `document`, the path a
-/// `taiyaku.json` was read from, the work whose `sidecar_path` is that path
-/// answers before any other.
-fn find_by_key(
-    conn: &Connection,
-    key: &str,
-    library: Option<i64>,
-    document: Option<&Path>,
-) -> Result<Option<i64>, String> {
-    let its = crate::libraries::own_or_adoptable_work("work", "?2");
-    let document = document.map(Path::to_string_lossy);
-    conn.query_row(
-        &format!(
-            "SELECT id FROM work
-              WHERE content_key = ?1
-                AND (?2 IS NULL OR {its})
-              ORDER BY (?3 IS NOT NULL AND sidecar_path IS ?3) DESC, library_id IS NULL, id
-              LIMIT 1"
-        ),
-        rusqlite::params![key, library, document],
-        |row| row.get(0),
-    )
+/// The work holding `key`: `content_key` is unique across the store, so
+/// content is one work whichever libraries hold it (overlapping-libraries
+/// spec §3.1).
+fn find_by_key(conn: &Connection, key: &str) -> Result<Option<i64>, String> {
+    conn.query_row("SELECT id FROM work WHERE content_key = ?1", [key], |row| {
+        row.get(0)
+    })
     .optional()
     .map_err(|e| format!("looking up a work by content key: {e}"))
 }
@@ -557,18 +512,14 @@ fn update_work(
     path: Option<&Path>,
     key: &str,
     scope: Scope,
-    library: Option<i64>,
 ) -> Result<(), String> {
     if scope == Scope::Scan {
         // `path` is always NULL here — `scanned` passes none — so the
         // COALESCE below would already have left `sidecar_path` alone. What
         // this leaves alone as well is the work block.
-        //
-        // `library_id` is filed only where the row is in no library: the
-        // adoption [`scanned_in`] describes. A row in a library keeps it.
         conn.execute(
-            "UPDATE work SET content_key = ?1, library_id = COALESCE(library_id, ?3) WHERE id = ?2",
-            rusqlite::params![key, work_id, library],
+            "UPDATE work SET content_key = ?1 WHERE id = ?2",
+            rusqlite::params![key, work_id],
         )
         .map_err(|e| format!("updating work {work_id}: {e}"))?;
         return Ok(());
@@ -607,13 +558,11 @@ fn insert_work(
     doc: &Sidecar,
     path: Option<&Path>,
     key: &str,
-    library: Option<i64>,
 ) -> Result<i64, String> {
     let slug = unique_slug(conn, &doc.work.title)?;
     conn.execute(
-        "INSERT INTO work (content_key, slug, title, title_derived, reading, hub, sidecar_path,
-                           library_id)
-         VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO work (content_key, slug, title, title_derived, reading, hub, sidecar_path)
+         VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6)",
         rusqlite::params![
             key,
             slug,
@@ -621,7 +570,6 @@ fn insert_work(
             direction_text(doc.work.reading),
             doc.hub,
             path.map(|p| p.to_string_lossy().into_owned()),
-            library,
         ],
     )
     .map_err(|e| format!("inserting work: {e}"))?;
@@ -897,9 +845,23 @@ fn replace_editions(
                 conn.execute(
                     "UPDATE member SET chapter_declared = ?1, chapter_source = ?2, root_id = ?3
                       WHERE id = ?4",
-                    rusqlite::params![held.declared, held.source, held.root_id, member_id],
+                    rusqlite::params![
+                        held.declared,
+                        held.source,
+                        held.root_id(&member.path),
+                        member_id
+                    ],
                 )
                 .map_err(|e| format!("restoring metadata on a member of `{key}`: {e}"))?;
+                // OR IGNORE: the trigger on `root_id` has already added that
+                // directory's row. See `HeldMember::roots_by_path`.
+                for root_id in held.roots_by_path.get(&member.path).into_iter().flatten() {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO member_root (member_id, root_id) VALUES (?1, ?2)",
+                        rusqlite::params![member_id, root_id],
+                    )
+                    .map_err(|e| format!("restoring a directory of a member of `{key}`: {e}"))?;
+                }
             }
         }
         match scope {
@@ -1102,46 +1064,55 @@ fn held_credits(conn: &Connection, edition_id: i64) -> Result<Vec<(i64, String)>
 }
 
 /// One member's data that lives on the row `replace_editions`' wholesale
-/// delete would otherwise drop: the hand-set chapter columns, and `root_id` —
-/// a fact a scan alone establishes and no document, hand-written or
-/// projected, carries a field for. Keyed by `sha256` alone in the map that
-/// holds these — see `held_member_meta`'s doc comment for the work-wide-match
-/// limitation that follows from that.
+/// delete would otherwise drop: the hand-set chapter columns, and where the
+/// bytes are held — `root_id` and the `member_root` set — facts a scan alone
+/// establishes and no document, hand-written or projected, carries a field
+/// for. Keyed by `sha256` alone in the map that holds these — see
+/// `held_member_meta`'s doc comment for the work-wide-match limitation that
+/// follows from that.
 struct HeldMember {
     declared: Option<f64>,
     source: Option<String>,
-    /// **Restoring this is a fix for a defect, not a decision — but only when
-    /// there is one root to restore.** A member a scan has already stamped
-    /// keeps the root association that scan established across a later
-    /// `Scope::Document` reimport — the sidecar format has no field for a
-    /// root, so there is nothing for the document to override it with, only a
-    /// wholesale delete to lose it to. This holds regardless of which row of
-    /// a shared hash wins `declared`/`source`'s chapter tie-break below:
-    /// `root_id` is resolved as its own value across every held row for the
-    /// hash, not inherited from the tie-break's choice, so a hand-set chapter
-    /// on one edition's copy does not cost a different edition's copy its
-    /// scanned root. A member genuinely new to the document has no held row
-    /// here and correctly gets `root_id` NULL, which is what leaves a
-    /// purely-imported work "under no root" exactly as spec C1 §5.1 intends
-    /// (O64).
-    ///
-    /// **When `held_member_meta` finds the same hash claimed by two distinct
-    /// roots, this is NULL by construction, and that is not the same
-    /// situation as `declared`/`source`'s tie-break below.** A chapter number
-    /// picked arbitrarily between two rows is a cosmetic wrong guess — there
-    /// was never a "true" chapter number for the tie-break to miss. A root is
-    /// different: exactly one root produced each physical member, so guessing
-    /// is not arbitrary, it is a permission-shaped fact stated wrong — a
-    /// member whose real root is B comes back stamped A, an account granted
-    /// only A sees a work that does not live there, and one granted only B
-    /// loses it. NULL fails *closed* (spec C1 §5.1's `IN (…)` excludes it from
-    /// every grant); a wrongly-guessed non-null root fails *open*. So this
-    /// field alone declines to guess: see `held_member_meta`'s doc comment for
-    /// how.
-    root_id: Option<i64>,
+    /// Every directory any held row of this hash had a `member_root` row for,
+    /// which [`Self::root_id`] reads to tell one directory from several.
+    roots: BTreeSet<i64>,
+    /// Each held row's `root_id`, NULL included, by its `member.path`.
+    root_by_path: HashMap<String, Option<i64>>,
+    /// Each held row's `member_root` rows, by its `member.path`. A new row at
+    /// a path the work held comes back under exactly those, as `write_roots`
+    /// writes them; one edition's copy under another directory gives it none.
+    /// The one exception: a path no held row had takes the hash's one
+    /// directory as its column, which can be another edition's, and so a
+    /// grant on it gains sight. A member new to the document gets none, and
+    /// a purely imported work stays under no root (spec C1 §5.1, O64).
+    roots_by_path: HashMap<String, BTreeSet<i64>>,
 }
 
-/// Every member's hand-set chapter number and `root_id` currently on
+impl HeldMember {
+    /// The `root_id` a new row of this hash at `path` comes back with.
+    ///
+    /// **The held row at the same path, else the one directory, else NULL.**
+    /// `member.root_id` is the directory of the copy `member.path` names, so
+    /// a path the work held answers it exactly, NULL included. A path it did
+    /// not hold is answered only where every copy sat under one directory;
+    /// with two, a guess could name a directory the file is not under and
+    /// give a grant on it sight of the file. NULL fails closed: the member is
+    /// under no directory until the next derive writes it from the scan, and
+    /// that derive's primary is the lowest root id, not necessarily the one
+    /// held.
+    fn root_id(&self, path: &str) -> Option<i64> {
+        if let Some(&root_id) = self.root_by_path.get(path) {
+            return root_id;
+        }
+        let mut roots = self.roots.iter();
+        match (roots.next(), roots.next()) {
+            (Some(&only), None) => Some(only),
+            _ => None,
+        }
+    }
+}
+
+/// Every member's hand-set chapter number and directories currently on
 /// `work_id`, keyed by `sha256` — content identity, the same reason
 /// `<stem>.library.json` keys its own `members` on it rather than on path
 /// (`librarydoc.rs`'s own doc comment). A path or an edition can move
@@ -1152,10 +1123,9 @@ struct HeldMember {
 /// of two editions of one work: not the `Sidecar`/`Edition`/`Member` types,
 /// not JSON parsing, and not the schema (`member_by_sha` indexes `sha256`
 /// with no uniqueness constraint). A repack or omnibus edition that shares a
-/// literal file with a standalone edition produces exactly this, and so does
-/// an ordinary pair of roots added with `library scan --add` and no
-/// `edition_key`: both fall back to `raw` and derivation merges their members
-/// into one edition (O54). When it happens, only one of the two held rows can
+/// literal file with a standalone edition produces exactly this, and so do
+/// two byte-identical files under one directory, which the derive keeps as
+/// two members of one edition. When it happens, only one of the held rows can
 /// survive into this map, keyed as it is by hash alone — so the query below
 /// carries an explicit `ORDER BY edition.id, member.ordinal`, and building the
 /// map with `or_insert` keeps only the first row seen in that order: the
@@ -1170,23 +1140,13 @@ struct HeldMember {
 /// carry different values for it, is an open design question this function does
 /// not settle.
 ///
-/// **For `root_id` the two are not the same question, and this function does
-/// not treat them alike.** A chapter number has no "true" value to get wrong,
-/// so an arbitrary pick costs nothing worse than a cosmetic surprise. A root
-/// has exactly one true value per physical member — it is which directory a
-/// scan found the bytes under — so picking between two distinct roots is not
-/// an arbitrary tie-break, it is a guess that can be wrong, and wrong here
-/// means a permission grant misfires (see [`HeldMember::root_id`]). So
-/// `root_id` is not carried by the first-row-wins pass below at all: it is
-/// resolved separately, as its own value per hash, from every held row the
-/// hash had — not from whichever row `or_insert` happened to keep for the
-/// chapter columns. No non-null root seen across those rows leaves it `None`;
-/// exactly one distinct non-null root seen restores that root, even onto a
-/// representative row whose own `root_id` was NULL because a hand-set
-/// chapter, not a scan, is what put that row here; two or more distinct roots
-/// seen — the "same file under two roots" case above — sets it back to
-/// `None`. The chapter columns on the row `or_insert` kept are untouched
-/// throughout: only `root_id` is decided independently of that choice.
+/// **Where the bytes are held is not decided by that choice at all.** Every
+/// row of the hash contributes its `root_id` and its `member_root` rows under
+/// its own path ([`HeldMember::root_by_path`], [`HeldMember::roots_by_path`]),
+/// so a hand-set chapter on one edition's copy does not cost another
+/// edition's copy its scanned directory, and a held copy is not given
+/// another's, except that a path no held row had takes the hash's one
+/// directory, which can be another edition's ([`HeldMember::root_id`]).
 fn held_member_meta(
     conn: &Connection,
     work_id: i64,
@@ -1194,69 +1154,71 @@ fn held_member_meta(
     let mut stmt = conn
         .prepare(
             "SELECT member.sha256, member.chapter_declared, member.chapter_source,
-                    member.root_id
+                    member.root_id, member.path
              FROM member JOIN edition ON edition.id = member.edition_id
              WHERE edition.work_id = ?1
                AND (member.chapter_declared IS NOT NULL OR member.chapter_source IS NOT NULL
-                    OR member.root_id IS NOT NULL)
+                    OR member.root_id IS NOT NULL
+                    OR EXISTS (SELECT 1 FROM member_root WHERE member_id = member.id))
              ORDER BY edition.id, member.ordinal",
         )
         .map_err(|e| format!("preparing held member metadata: {e}"))?;
+    type Row = (String, Option<f64>, Option<String>, Option<i64>, String);
+    let rows = stmt
+        .query_map([work_id], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .map_err(|e| format!("querying held member metadata: {e}"))?
+        .collect::<Result<Vec<Row>, _>>()
+        .map_err(|e| format!("reading held member metadata: {e}"))?;
+
+    let mut out: HashMap<String, HeldMember> = HashMap::new();
+    for (sha256, declared, source, root_id, path) in rows {
+        // First row wins the chapter columns: the earliest edition, earliest
+        // ordinal within it, per the `ORDER BY` above.
+        let held = out.entry(sha256).or_insert(HeldMember {
+            declared,
+            source,
+            roots: BTreeSet::new(),
+            root_by_path: HashMap::new(),
+            roots_by_path: HashMap::new(),
+        });
+        held.root_by_path.entry(path).or_insert(root_id);
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT member.sha256, member.path, member_root.root_id
+               FROM member_root
+               JOIN member ON member.id = member_root.member_id
+               JOIN edition ON edition.id = member.edition_id
+              WHERE edition.work_id = ?1",
+        )
+        .map_err(|e| format!("preparing held member directories: {e}"))?;
     let rows = stmt
         .query_map([work_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                HeldMember {
-                    declared: row.get(1)?,
-                    source: row.get(2)?,
-                    root_id: row.get(3)?,
-                },
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
             ))
         })
-        .map_err(|e| format!("querying held member metadata: {e}"))?;
-
-    let mut out = HashMap::new();
-    // The one distinct non-null `root_id` seen so far for a hash, so a second,
-    // *different* one can be told apart from a repeat of the same root or from
-    // a row that carries no root at all.
-    let mut root_seen: HashMap<String, i64> = HashMap::new();
-    let mut ambiguous_root = std::collections::HashSet::new();
+        .map_err(|e| format!("querying held member directories: {e}"))?;
     for row in rows {
-        let (sha256, held) = row.map_err(|e| format!("reading held member metadata: {e}"))?;
-        if let Some(root_id) = held.root_id {
-            match root_seen.get(&sha256) {
-                None => {
-                    root_seen.insert(sha256.clone(), root_id);
-                }
-                Some(&first) if first != root_id => {
-                    ambiguous_root.insert(sha256.clone());
-                }
-                _ => {}
-            }
+        let (sha256, path, root_id) =
+            row.map_err(|e| format!("reading held member directories: {e}"))?;
+        // Every row read here has a member the first query also read, by its
+        // `EXISTS` arm, so the hash is already in `out`.
+        if let Some(held) = out.get_mut(&sha256) {
+            held.roots.insert(root_id);
+            held.roots_by_path.entry(path).or_default().insert(root_id);
         }
-        // First row wins: the earliest edition, earliest ordinal within it,
-        // per the `ORDER BY` above. A later duplicate for the same hash is
-        // dropped rather than overwriting it — but only for the chapter
-        // columns. `root_id` is resolved separately, below, from every row
-        // seen for the hash rather than from whichever one this `or_insert`
-        // happens to keep.
-        out.entry(sha256).or_insert(held);
-    }
-    // `root_id` is its own value per hash, independent of which row the
-    // chapter tie-break above kept: `root_seen`/`ambiguous_root` were built
-    // from every held row for the hash, not just the one `or_insert` chose.
-    // No non-null root seen at all leaves it `None`; exactly one distinct
-    // non-null root seen restores it, even onto a representative row whose
-    // own `root_id` was NULL; two or more distinct roots seen — a hash
-    // claimed by two roots cannot be restored safely, see
-    // `HeldMember::root_id` — sets it back to `None`. The chapter columns on
-    // the row `or_insert` kept are untouched either way.
-    for (sha256, held) in &mut out {
-        held.root_id = if ambiguous_root.contains(sha256) {
-            None
-        } else {
-            root_seen.get(sha256).copied()
-        };
     }
     Ok(out)
 }

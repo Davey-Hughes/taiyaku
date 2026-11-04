@@ -1,6 +1,6 @@
 import { vi } from 'vitest'
 import type { Grid } from '../../src/library'
-import { gridRead } from '../../src/pageReads'
+import { gridRead, SPLIT_EDITIONS } from '../../src/pageReads'
 import { entryOf, read, readSet } from '../../src/reads'
 import { deferred } from './async'
 
@@ -35,5 +35,21 @@ export async function keptGrid(library?: number) {
   return {
     stale: () => entryOf(grid.read)?.stale,
     sent: () => grid.fetch.mock.calls.length,
+  }
+}
+
+/**
+ * The split editions read and kept with nothing drawing them, as the tab
+ * left behind leaves them: `keptGrid`'s `stale()` and `sent()`, for the list
+ * a scan or a directory's write marks with the Library views.
+ */
+export async function keptSplitEditions() {
+  const split = address<{ editions: [] }>(SPLIT_EDITIONS.address)
+  const kept = readSet([split.read])
+  split.requests[0].resolve({ editions: [] })
+  await kept
+  return {
+    stale: () => entryOf(split.read)?.stale,
+    sent: () => split.fetch.mock.calls.length,
   }
 }

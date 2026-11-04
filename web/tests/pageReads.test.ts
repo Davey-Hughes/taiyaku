@@ -22,7 +22,7 @@ import {
   subscribe,
 } from '../src/reads'
 import { deferred } from './support/async'
-import { address } from './support/reads'
+import { address, keptSplitEditions } from './support/reads'
 
 vi.mock('../src/library', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/library')>()),
@@ -104,11 +104,18 @@ const factories: readonly {
     args: [undefined],
   },
   {
+    name: 'seriesRead(17, 2)',
+    read: () => seriesRead(17, 2),
+    address: '/api/library/series/17?library=2',
+    client: 'oneSeries',
+    args: [17, 2],
+  },
+  {
     name: 'seriesRead(17)',
     read: () => seriesRead(17),
     address: '/api/library/series/17',
     client: 'oneSeries',
-    args: [17],
+    args: [17, undefined],
   },
   {
     name: "searchRead('a b&c', 2)",
@@ -179,6 +186,17 @@ describe('the Library view’s reads', () => {
     },
   )
 
+  it('keeps a series opened from a library apart from the same series of every library', async () => {
+    vi.mocked(library.oneSeries).mockImplementation((_id, narrowed) =>
+      Promise.resolve({ from: narrowed ?? 'every' } as unknown as Awaited<
+        ReturnType<typeof library.oneSeries>
+      >),
+    )
+    await readSet([seriesRead(17, 2), seriesRead(17)])
+    expect(entryOf(seriesRead(17, 2))?.answer).toEqual({ from: 2 })
+    expect(entryOf(seriesRead(17))?.answer).toEqual({ from: 'every' })
+  })
+
   it('names the three views’ prefixes', () => {
     expect(LIBRARY_VIEWS).toEqual([
       '/api/library/series',
@@ -223,5 +241,14 @@ describe('the Library view’s reads', () => {
       expect(o.fetch, o.read.address).toHaveBeenCalledTimes(1)
       expect(entryOf(o.read)?.stale, o.read.address).toBe(false)
     }
+  })
+
+  it('marks the split editions kept stale on invalidateLibraryViews, sending nothing while nothing draws them', async () => {
+    const split = await keptSplitEditions()
+    expect(split.stale()).toBe(false)
+    invalidateLibraryViews()
+    await landed()
+    expect(split.stale()).toBe(true)
+    expect(split.sent()).toBe(1)
   })
 })

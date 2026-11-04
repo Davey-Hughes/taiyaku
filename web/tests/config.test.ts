@@ -36,12 +36,13 @@ describe('TABS', () => {
     expect(TABS[0].path).toBe('libraries')
   })
 
-  it('orders the tabs Libraries, Users, Rules, Backup — O219 §1.4', () => {
+  it('orders the tabs Libraries, Users, Rules, Backup — O219 §1.4 — then Split editions', () => {
     expect(TABS.map((t) => [t.path, t.label])).toEqual([
       ['libraries', 'Libraries'],
       ['users', 'Users'],
       ['rules', 'Rules'],
       ['backup', 'Backup'],
+      ['split-editions', 'Split editions'],
     ])
   })
 

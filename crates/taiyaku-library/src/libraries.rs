@@ -21,7 +21,9 @@ pub struct Listed {
     pub name: String,
     /// Its directories' paths, oldest first.
     pub dirs: Vec<PathBuf>,
-    /// The works filed under it.
+    /// The works with a member under one of its directories. A work with an
+    /// edition under each of two libraries' directories is counted in both, and
+    /// so is a work whose one member has a copy under each.
     pub works: usize,
 }
 
@@ -33,7 +35,13 @@ pub struct Listed {
 pub fn list(conn: &Connection) -> Result<Vec<Listed>, String> {
     let mut libraries = conn
         .prepare(
-            "SELECT l.id, l.name, (SELECT count(*) FROM work w WHERE w.library_id = l.id)
+            "SELECT l.id, l.name,
+                    (SELECT count(DISTINCT e.work_id)
+                       FROM edition e
+                       JOIN member m ON m.edition_id = e.id
+                       JOIN member_root mr ON mr.member_id = m.id
+                       JOIN root r ON r.id = mr.root_id
+                      WHERE r.library_id = l.id)
                FROM library l ORDER BY l.name, l.id",
         )
         .map_err(|e| format!("listing libraries: {e}"))?;
@@ -223,82 +231,185 @@ pub fn books(conn: &Connection, id: i64) -> Result<usize, String> {
     .map_err(|e| format!("counting the books of library {id}: {e}"))
 }
 
-/// SQL that is true of a `work` row library `library` may derive onto: a work
-/// filed under it, or a work in no library that it may take.
-///
-/// **A work in no library is taken only by a library whose directories hold
-/// it**: one with a member under a root of `library`. A work with no member
-/// under any root, an imported one for instance, may be taken by any library.
-/// A work whose members are under roots of other libraries alone is not this
-/// library's to take, whatever its key, series or volume.
-///
-/// `work` is the row's table or alias in the statement this is spliced into,
-/// and `library` the placeholder the library's id is bound to there. Every
-/// statement by which a library finds a work takes this text, so they cannot
-/// differ: `derive::held_work`'s two, and `import::find_by_key`'s when it is
-/// given a library. Each orders the library's own row before one in none,
-/// and the older before the younger, and one row is filed.
-pub(crate) fn own_or_adoptable_work(work: &str, library: &str) -> String {
-    own_or_adoptable(
-        work,
-        library,
-        &format!(
-            "edition adopt_e
-               JOIN member adopt_m
-                 ON adopt_m.edition_id = adopt_e.id AND adopt_e.work_id = {work}.id"
-        ),
-    )
-}
-
-/// [`own_or_adoptable_work`] for a `series` row: a series filed under
-/// `library`, or a series in no library that it may take.
-///
-/// **A series in no library goes with its works' directories**: `library` may
-/// take one where a work of the series has a member under a root of
-/// `library`, or where no work of the series has a member under any root,
-/// which includes a series holding no work.
-///
-/// Spliced into `derive::reconcile_series`'s statement, and into
-/// `librarydoc::find_series_by_title`'s when it is given a library.
-pub(crate) fn own_or_adoptable_series(series: &str, library: &str) -> String {
-    own_or_adoptable(
-        series,
-        library,
-        &format!(
-            "work adopt_w
-               JOIN edition adopt_e
-                 ON adopt_e.work_id = adopt_w.id AND adopt_w.series_id = {series}.id
-               JOIN member adopt_m ON adopt_m.edition_id = adopt_e.id"
-        ),
-    )
-}
-
-/// The shape both rules share. `members` is a `FROM` clause yielding, as
-/// `adopt_m`, the members that say where `row` is held.
-fn own_or_adoptable(row: &str, library: &str, members: &str) -> String {
-    format!(
-        "({row}.library_id = {library}
-          OR ({row}.library_id IS NULL
-              AND (NOT EXISTS (SELECT 1 FROM {members} WHERE adopt_m.root_id IS NOT NULL)
-                   OR EXISTS (SELECT 1 FROM {members}
-                                JOIN root adopt_r ON adopt_r.id = adopt_m.root_id
-                               WHERE adopt_r.library_id = {library}))))"
-    )
-}
-
-/// How many works are filed under no library.
+/// How many works are in no library: those no member of which is under a
+/// directory, as every member of an imported work is.
 ///
 /// # Errors
 ///
 /// Returns an error if the read fails.
 pub fn unfiled_works(conn: &Connection) -> Result<usize, String> {
     conn.query_row(
-        "SELECT count(*) FROM work WHERE library_id IS NULL",
+        "SELECT count(*) FROM work w
+          WHERE NOT EXISTS (SELECT 1 FROM edition e JOIN member m ON m.edition_id = e.id
+                             JOIN member_root mr ON mr.member_id = m.id
+                             WHERE e.work_id = w.id)",
         [],
         |r| r.get::<_, i64>(0),
     )
     .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
     .map_err(|e| format!("counting works in no library: {e}"))
+}
+
+/// An edition some library holds part of and not all of, which an account
+/// granted that library and not the others sees narrowed (spec §3.8).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SplitEdition {
+    /// The work's slug.
+    pub work: String,
+    pub title: String,
+    /// The edition's key.
+    pub edition: String,
+    /// Every member's pages.
+    pub pages: i64,
+    /// In ordinal order.
+    pub members: Vec<SplitMember>,
+    /// By name: each library whose directories hold one of the members.
+    pub libraries: Vec<SplitLibrary>,
+}
+
+/// A member of a [`SplitEdition`] and the directories holding a copy of it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SplitMember {
+    /// As `member.path` stores it.
+    pub path: String,
+    pub pages: i64,
+    /// By path.
+    pub directories: Vec<MemberDirectory>,
+}
+
+/// A directory holding a copy of a member, and its library.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct MemberDirectory {
+    pub root: i64,
+    pub path: String,
+    pub library: i64,
+}
+
+/// A library holding some of a [`SplitEdition`]'s members: how many, and
+/// their pages, which is what an account granted it alone is sent.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SplitLibrary {
+    pub id: i64,
+    pub name: String,
+    pub members: usize,
+    pub pages: i64,
+}
+
+/// Every edition some library holds part of and not all of, by work title as
+/// the rest of the UI sorts one (`COLLATE NOCASE`), then edition key.
+///
+/// **Members, not bytes.** A byte-identical copy is one member held under a
+/// directory of each library, so it splits nothing. A member under no
+/// directory, as an imported work's are, is held by no library.
+///
+/// # Errors
+///
+/// Returns an error if a read fails.
+pub fn split_editions(conn: &Connection) -> Result<Vec<SplitEdition>, String> {
+    let failed = |e: rusqlite::Error| format!("listing the split editions: {e}");
+    let found = conn
+        .prepare(
+            "SELECT e.id, w.slug, w.title, e.key FROM edition e JOIN work w ON w.id = e.work_id
+              WHERE EXISTS (SELECT 1 FROM library l
+                WHERE EXISTS (SELECT 1 FROM member m
+                                JOIN member_root mr ON mr.member_id = m.id
+                                JOIN root r ON r.id = mr.root_id
+                               WHERE m.edition_id = e.id AND r.library_id = l.id)
+                  AND EXISTS (SELECT 1 FROM member m WHERE m.edition_id = e.id
+                                AND NOT EXISTS (SELECT 1 FROM member_root mr
+                                                  JOIN root r ON r.id = mr.root_id
+                                                 WHERE mr.member_id = m.id
+                                                   AND r.library_id = l.id)))
+              ORDER BY w.title COLLATE NOCASE, e.key, w.slug",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(failed)?;
+    let mut members = conn
+        .prepare("SELECT id, path, pages FROM member WHERE edition_id = ?1 ORDER BY ordinal")
+        .map_err(failed)?;
+    let mut directories = conn
+        .prepare(
+            "SELECT r.id, r.path, r.library_id, l.name FROM member_root mr
+               JOIN root r ON r.id = mr.root_id JOIN library l ON l.id = r.library_id
+              WHERE mr.member_id = ?1 ORDER BY r.path, r.id",
+        )
+        .map_err(failed)?;
+    let mut split = Vec::with_capacity(found.len());
+    for (edition_id, work, title, edition) in found {
+        let held = members
+            .query_map([edition_id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .map_err(failed)?;
+        let mut listed = Vec::with_capacity(held.len());
+        let mut libraries: Vec<SplitLibrary> = Vec::new();
+        for (member_id, path, pages) in held {
+            let under = directories
+                .query_map([member_id], |r| {
+                    Ok((
+                        MemberDirectory {
+                            root: r.get(0)?,
+                            path: r.get(1)?,
+                            library: r.get(2)?,
+                        },
+                        r.get::<_, String>(3)?,
+                    ))
+                })
+                .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+                .map_err(failed)?;
+            // A member under two directories of one library is one of its
+            // members, not two.
+            let mut counted: Vec<i64> = Vec::new();
+            for (directory, name) in &under {
+                if counted.contains(&directory.library) {
+                    continue;
+                }
+                counted.push(directory.library);
+                match libraries.iter_mut().find(|l| l.id == directory.library) {
+                    Some(library) => {
+                        library.members += 1;
+                        library.pages += pages;
+                    }
+                    None => libraries.push(SplitLibrary {
+                        id: directory.library,
+                        name: name.clone(),
+                        members: 1,
+                        pages,
+                    }),
+                }
+            }
+            listed.push(SplitMember {
+                path,
+                pages,
+                directories: under.into_iter().map(|(directory, _)| directory).collect(),
+            });
+        }
+        libraries.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+        split.push(SplitEdition {
+            work,
+            title,
+            edition,
+            pages: listed.iter().map(|member| member.pages).sum(),
+            members: listed,
+            libraries,
+        });
+    }
+    Ok(split)
 }
 
 #[cfg(test)]

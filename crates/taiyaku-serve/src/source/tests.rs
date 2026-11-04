@@ -38,11 +38,15 @@ fn state_walks_a_flat_index_across_member_boundaries() {
     let work = &held[0];
 
     let count = work.sidecar().editions.get("raw").unwrap().total_pages();
-    let first = state.page(work, "raw", 0).unwrap();
-    let across = state.page(work, "raw", 2).unwrap();
-    let last = state.page(work, "raw", 3).unwrap();
-    let past_end = state.page(work, "raw", 4);
-    let no_edition = state.page(work, "nope", 0);
+    let whole = |key: &str| {
+        crate::view::EditionView::build(std::sync::Arc::clone(work), key, None)
+            .expect("an edition is never hidden from `Access::Every`")
+    };
+    let first = state.page(&whole("raw"), 0).unwrap();
+    let across = state.page(&whole("raw"), 2).unwrap();
+    let last = state.page(&whole("raw"), 3).unwrap();
+    let past_end = state.page(&whole("raw"), 4);
+    let no_edition = state.page(&whole("nope"), 0);
 
     assert_eq!(count, 4);
     assert_eq!(first.bytes, b"a1.jpg");

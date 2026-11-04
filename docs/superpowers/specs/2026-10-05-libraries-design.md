@@ -40,6 +40,10 @@ state. Each carried a recommendation, and the user accepted all six on
      database is new and empty, and the only existing databases are this
      workstation's, which hold test data (spec §1 of the deployment design).
      Migration 15 should say so in its comment rather than handle the split.
+     *The overlapping-libraries design of 2026-11-02 has since undone the
+     split this accepts: one derive runs over the whole store, so a work
+     spans every directory that holds it, whichever library holds that
+     directory. See `2026-11-02-overlapping-libraries-design.md`.*
 2. **Byte-identical volumes in two libraries become two works.** `work.content_key`
    is `UNIQUE` across the whole store (migration 1), and `import::scanned`
    finds an existing work by `content_key` first. Left alone, a copy of a
@@ -50,12 +54,20 @@ state. Each carried a recommendation, and the user accepted all six on
      scoped to the library. Positions and notes do not carry between the two
      copies. `content_key` itself is unchanged, so no hand document moves its
      address (O81's mechanism is untouched).
+     *The overlapping-libraries design of 2026-11-02 has since reversed
+     this: migration 18 drops `work.library_id` and makes `content_key`
+     unique across the store again, so a byte-identical volume in two
+     libraries is one work, and an account is shown only the editions its
+     grants reach. See `2026-11-02-overlapping-libraries-design.md`.*
 3. **Proposals stay inside a library.** `proposals::raise` pairs every series
    with every other through `all_series` (`raise_edition_of`,
    `raise_same_series`), and `raise_attach_chapters` looks across the whole
    store.
    - **Recommendation: pair only series of the same library.** An Ecchi series
      is never offered as an edition of a Volumes series.
+     *The overlapping-libraries design of 2026-11-02 has since reversed
+     this: proposals pair series wherever their files are. See
+     `2026-11-02-overlapping-libraries-design.md` §3.3.*
 4. **Rules keep their two scopes, a folder or every folder.** `rule.root_id`
    is a folder scope (`rules.rs` skips a rule whose `root_id` names another
    root), and NULL means every root, which is how migration 3's four defaults
@@ -281,6 +293,12 @@ to a table that has rows.
 6. **`proposals::common_directory_pattern` is unchanged.** It already scopes to one root,
    and a root is in one library.
 
+*The overlapping-libraries design of 2026-11-02 has since reversed items 1, 2,
+3 and 5: the group key carries no library, `reconcile_series` reconciles on
+`sort_title` across the store, the content-key lookups are not scoped, and
+proposals pair across the store. See
+`2026-11-02-overlapping-libraries-design.md` §3.2 and §3.3.*
+
 The derive pass still runs over **every** library after any scan, not just the
 one scanned. At 0.38–0.41 s for 1,896 works (`deployable-evidence/spec-readings/`)
 there is nothing to save by narrowing it, and one pass keeps "the store is
@@ -299,6 +317,10 @@ library's size makes that false, narrowing is a later change.
   `member_clause` machinery with the library's root ids. `pair_clause`'s
   "both sides inside" rule holds unchanged. The series page needs no
   parameter, since a series is in exactly one library.
+  *The overlapping-libraries design of 2026-11-02 has since reversed this: a
+  series can hold works from several libraries, so the series page takes
+  `?library=`, the library it was opened from. See
+  `2026-11-02-overlapping-libraries-design.md` §3.6.*
 - **The sidebar's provisional ROOTS list becomes LIBRARIES, for everyone.** It
   is no longer an admin-default preference: every account sees the libraries
   it may read, as in Komga. Each links to that library's grid,
@@ -321,6 +343,12 @@ working.
 The narrowing reads `work.library_id` from the store on the blocking pool,
 beside `visible_editions_by_work`'s own read. The registry's `Work` does not
 carry a library, and does not need to.
+
+*Part F3 built two views instead, by directory and by work, and only the
+by-work view read `work.library_id`. The overlapping-libraries design of
+2026-11-02 has since dropped that column: the by-work view lists each work
+with a member under the library's directories, with every edition the grant
+allows. See `2026-11-02-overlapping-libraries-design.md` §3.4.*
 
 ## 5. Access
 
@@ -495,6 +523,15 @@ In one transaction it:
 Cases 1 and 2 become one case, in which the works keep their rows. Case 3
 ends as it does today: the moved work and the target's are one volume of one
 series in one library, and the derive folds them.
+
+*The overlapping-libraries design of 2026-11-02 has since replaced these
+steps: a move sets the folder's library, makes the target library where it is
+new and takes a library it empties with its grants, and writes nothing else,
+so nothing is re-filed, split, folded or derived. The rehearsal below counts
+no works, positions or notes, and no move is refused to keep a reader's place;
+it names the accounts that will gain and lose sight of the folder, and still
+says where the library goes with the move and how many grants go with it.
+See `2026-11-02-overlapping-libraries-design.md` §3.5.*
 
 **It is rehearsed before it is done.** The dry run runs the same statements
 and rolls them back, as `scan::removal_cost` does for a removal, and derives

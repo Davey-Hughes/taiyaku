@@ -3,22 +3,20 @@
  *
  * **Nothing is asked of the server until a target is chosen and the
  * rehearsal asked for**, and the confirm does not exist until the rehearsal
- * has answered. `RemoveRoot`'s rule, for a move: a rehearsal derives
- * the whole store, and a button that moves a directory under a
- * sentence that says nothing is what this component is for preventing.
+ * has answered. `RemoveRoot`'s rule, for a move: a button that moves a
+ * directory under a sentence that says nothing is what this component is for
+ * preventing.
  *
- * **The rehearsal is for one target.** Choosing another takes the counts and
- * the confirm away, so the confirm is never offered under counts taken for
- * another.
+ * **The rehearsal is for one target.** Choosing another takes what it said
+ * and the confirm away, so the confirm is never offered under an answer
+ * given for another.
  *
- * **A refusal is the sentence and the list.** The server refuses a move
- * that cannot keep every reader's place, names the first few volumes in its
- * sentence and lists them all beside it.
+ * **A refusal is the server's sentence**, drawn under the button that asked.
  *
  * **An account whose only grant is the library the move empties is named
- * under the counts, and the confirm is still offered.** The move leaves it
- * seeing no library until an administrator grants one; the rehearsal names
- * it, and the move does what the rehearsal described.
+ * under what the move would do, and the confirm is still offered.** The move
+ * leaves it seeing no library until an administrator grants one; the
+ * rehearsal names it, and the move does what the rehearsal described.
  *
  * **It is a modal `<dialog>`, opened when it is drawn**, so the page beneath
  * holds still and is inert while it is open, and its owner closes it by not
@@ -42,11 +40,10 @@ import {
   noLibrarySentence,
 } from './libraries'
 import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
-import { sentenceOf, volumesOf } from './message'
+import { sentenceOf } from './message'
 import { MoveCounts } from './MoveCounts'
 import { PathWithBreaks } from './PathWithBreaks'
 import { Refusal } from './Refusal'
-import { DeriveSection } from './ScanReport'
 import { Row } from './settingsLayout'
 import { WaitWords } from './WaitWords'
 
@@ -63,8 +60,8 @@ export interface MoveRootProps {
   /** Every other library. */
   targets: NamedLibrary[]
   /**
-   * Something else in the directory's library has begun, so the counts quoted
-   * here are from before it. The dialog cancels itself when this becomes
+   * Something else in the directory's library has begun, so what is quoted
+   * here is from before it. The dialog cancels itself when this becomes
    * true, as its Cancel does, and so not while its move is out.
    */
   held?: boolean
@@ -78,11 +75,6 @@ export interface MoveRootProps {
 /** What each button says while its wait is drawn. */
 const ASKING = 'Working out what this would do…'
 const MOVING = 'Moving…'
-
-/** `n` of a thing, in the number the count is. */
-function count(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`
-}
 
 export function MoveRoot({
   root,
@@ -101,7 +93,6 @@ export function MoveRoot({
   const [name, setName] = useState('')
   const [cost, setCost] = useState<MoveAnswer | undefined>()
   const [failure, setFailure] = useState<string | undefined>()
-  const [volumes, setVolumes] = useState<string[]>([])
   const [asking, setAsking] = useState(false)
   const [moving, setMoving] = useState(false)
   const askingDrawn = useDrawnWait(asking)
@@ -141,8 +132,6 @@ export function MoveRoot({
   const targetSelect = useRef<HTMLSelectElement>(null)
   const seeButton = useRef<HTMLButtonElement>(null)
   const confirmButton = useRef<HTMLButtonElement>(null)
-  const volumesInTheWay = useRef<HTMLDetailsElement>(null)
-  const deriveWouldFind = useRef<HTMLDetailsElement>(null)
 
   // A library chosen and then gone from `targets` (removed elsewhere, or
   // emptied by a move) is no choice: the select shows none, and what was
@@ -156,19 +145,13 @@ export function MoveRoot({
     !targets.some((t) => String(t.id) === choice)
   useEffect(() => {
     if (!gone) return
-    const focus = document.activeElement
-    if (
-      [confirmButton, volumesInTheWay, deriveWouldFind].some(
-        (goes) => goes.current?.contains(focus) === true,
-      )
-    ) {
+    if (confirmButton.current?.contains(document.activeElement) === true) {
       targetSelect.current?.focus()
     }
     setChoice('')
     latest.current += 1
     setCost(undefined)
     setFailure(undefined)
-    setVolumes([])
     setAsking(false)
   }, [gone])
 
@@ -192,21 +175,16 @@ export function MoveRoot({
     latest.current += 1
     setCost(undefined)
     setFailure(undefined)
-    setVolumes([])
     setAsking(false)
   }
 
-  const refuse = (err: unknown) => {
-    setFailure(sentenceOf(err))
-    setVolumes(volumesOf(err))
-  }
+  const refuse = (err: unknown) => setFailure(sentenceOf(err))
 
   const rehearse = () => {
     if (to === undefined || asking || moving) return
     const seq = ++latest.current
     setCost(undefined)
     setFailure(undefined)
-    setVolumes([])
     setAsking(true)
     moveCost(root.id, to)
       .then((answer) => {
@@ -237,7 +215,7 @@ export function MoveRoot({
           return
         }
         // A refused move leaves what was rehearsed behind it: the store is
-        // not as the counts said, so they and the confirm go, and the
+        // not as the rehearsal said, so it and the confirm go, and the
         // person asks again.
         setCost(undefined)
         refuse(err)
@@ -339,27 +317,9 @@ export function MoveRoot({
           </div>
         </div>
         {failure !== undefined && <Refusal>{failure}</Refusal>}
-        {volumes.length > 0 && (
-          <details ref={volumesInTheWay} className="move-volumes">
-            <summary>
-              {count(volumes.length, 'volume', 'volumes')} in the way
-            </summary>
-            <ul>
-              {volumes.map((volume, at) => (
-                // By place as well: a list may name one volume twice.
-                <li key={`${at}:${volume}`}>{volume}</li>
-              ))}
-            </ul>
-          </details>
-        )}
-
-        {moved !== undefined && cost !== undefined && (
+        {moved !== undefined && (
           <>
-            <MoveCounts
-              moved={moved}
-              from={from.name}
-              newLibrary={choice === 'new'}
-            />
+            <MoveCounts moved={moved} from={from.name} />
             {/* Here and not in `MoveCounts`, which the kept report shares:
                 this says what the move will do, and that report says what it
                 did. */}
@@ -371,16 +331,12 @@ export function MoveRoot({
                 )}
               </p>
             )}
-            <details ref={deriveWouldFind} className="removal-derive">
-              <summary>What deriving after the move would find</summary>
-              <DeriveSection derive={cost.derive} level={5} />
-            </details>
           </>
         )}
         {/* At the box's foot, after everything a rehearsal answers, so the
             consequences are read before the button that acts on them. The
             confirm says only "Move":
-            the title names the directory, and the counts the library. */}
+            the title names the directory, and the rehearsal the library. */}
         <div className="settings-actions">
           {moved !== undefined && (
             <HeldButton

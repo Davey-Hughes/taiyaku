@@ -29,14 +29,14 @@
 //! the false positives §1 found: they are unrelated proper nouns whose only
 //! shared property is scoring low.
 //!
-//! # Within a library
+//! # Across libraries
 //!
-//! Part F1 of `docs/superpowers/specs/2026-10-05-libraries-design.md`.
-//! [`raise`] pairs only series of one library, and offers a chapter-organised
-//! directory the series of the library it is in. A series in no library
-//! pairs only with another in none. A proposal whose two series are in
-//! different libraries, or one in a library and the other in none, is refused
-//! at [`accept`], and no rule accepted for another proposal answers it.
+//! §3.3 of `docs/superpowers/specs/2026-11-02-overlapping-libraries-design.md`.
+//! [`raise`] pairs series wherever their files are, reading no library, and
+//! offers a chapter-organised directory the oldest series of its name in the
+//! store. An accepted rule is still scoped to one directory or to every
+//! directory, and `common_directory_pattern` refuses a subject whose entries
+//! sit under more than one.
 //!
 //! # The four kinds, and where each comes from
 //!
@@ -605,24 +605,14 @@ impl<T> Offer<T> {
 /// Read proposal `id` and refuse it if an accept must not proceed.
 ///
 /// [`accept_with`]'s way in to [`acceptable`] — see there for the refusals
-/// themselves and for why they live in one place — and then to
-/// [`across_libraries`].
+/// themselves and for why they live in one place.
 ///
 /// # Errors
 ///
 /// Returns an error if `id` names no proposal or if a read fails. Each of
-/// [`acceptable`]'s refusals is [`Offer::Refused`], and so is
-/// [`across_libraries`]'s.
+/// [`acceptable`]'s refusals is [`Offer::Refused`].
 fn acceptable_proposal(conn: &Connection, id: i64) -> Result<Offer<AcceptableProposal>, String> {
-    let proposal = one(conn, id)?;
-    let facts = match acceptable(&proposal) {
-        Offer::Made(facts) => facts,
-        Offer::Refused(why) => return Ok(Offer::Refused(why)),
-    };
-    if let Some(why) = across_libraries(conn, &proposal, facts.target_id)? {
-        return Ok(Offer::Refused(why));
-    }
-    Ok(Offer::Made(facts))
+    Ok(acceptable(&one(conn, id)?))
 }
 
 /// Refuse `proposal` if an accept must not proceed: not `open`,
@@ -639,9 +629,6 @@ fn acceptable_proposal(conn: &Connection, id: i64) -> Result<Offer<AcceptablePro
 /// refusals apart from a read that failed without expressing them a second
 /// time: no read happens here, so it has no failure to report, and its
 /// answer is an [`Offer`] with no `Result` around it.
-///
-/// **A fourth refusal needs a read, so it is not here.** It is
-/// [`across_libraries`]'s, which reads each series' library.
 fn acceptable(proposal: &Proposal) -> Offer<AcceptableProposal> {
     let Proposal {
         id,
@@ -675,52 +662,18 @@ fn acceptable(proposal: &Proposal) -> Offer<AcceptableProposal> {
     Offer::Made(AcceptableProposal { kind, target_id })
 }
 
-/// The refusal for a proposal whose two series are not filed together, or
-/// `None` where they are. Two series in two different libraries are refused
-/// in one sentence, and a series in a library beside one in none in another.
-/// Two series of one library are not refused, and neither are two in no
-/// library.
-fn across_libraries(
-    conn: &Connection,
-    proposal: &Proposal,
-    target_id: i64,
-) -> Result<Option<String>, String> {
-    let subject = series_library(conn, proposal.subject_id)?;
-    let target = series_library(conn, target_id)?;
-    if subject == target {
-        return Ok(None);
-    }
-    Ok(Some(if subject.is_none() || target.is_none() {
-        format!(
-            "proposal {}: one of its two series is in no library. A derive files a series under \
-             the library whose directories hold it; if this one is still in none after a scan, \
-             dismiss the proposal.",
-            proposal.id
-        )
-    } else {
-        format!(
-            "proposal {}: its two series are in different libraries, and a rule moves \
-             material only within one. Dismiss it; the next raise proposes only within a \
-             library.",
-            proposal.id
-        )
-    }))
-}
-
 /// The rule [`accept`] would write for proposal `id`, without writing it.
 ///
 /// Every refusal [`accept`] makes before its transaction opens is made here
 /// instead, so a client is never shown a rule the write will reject: the
 /// state guard, the `attach-chapters` refusal by name, a missing `target_id`,
-/// two series in different libraries or one of the two in none, a subject
-/// whose entries share no single directory, a target renamed since the
-/// proposal was raised, and a suffix with no letters or digits to make an
+/// a subject whose entries share no single directory, a target renamed since
+/// the proposal was raised, and a suffix with no letters or digits to make an
 /// edition key from.
 ///
 /// The first three of those are [`acceptable`]'s rather than this
 /// function's: [`accept_with`] is a `pub fn` that cannot assume its caller
-/// came through here, so they are written once and called three times. The
-/// fourth is [`across_libraries`]'s, for the same reason.
+/// came through here, so they are written once and called three times.
 ///
 /// # Errors
 ///
@@ -733,13 +686,9 @@ pub fn preview(conn: &Connection, id: i64) -> Result<ProposedRule, String> {
     // and finding them costs a pass over every `scan_entry` row in the
     // library. A proposal that cannot be accepted at all must not pay for
     // one to be told so.
-    let AcceptableProposal { target_id, .. } = acceptable(&proposal).or_refusal()?;
-    if let Some(why) = across_libraries(conn, &proposal, target_id)? {
-        return Err(why);
-    }
+    acceptable(&proposal).or_refusal()?;
     let subject_title = series_title(conn, proposal.subject_id)?;
-    let subject_library = series_library(conn, proposal.subject_id)?;
-    let paths = crate::derive::rel_paths_for_series(conn, subject_library, &subject_title)?;
+    let paths = crate::derive::rel_paths_for_series(conn, &subject_title)?;
     offered_rule(conn, &proposal, &subject_title, &paths)?.or_refusal()
 }
 
@@ -768,9 +717,6 @@ fn offered_rule(
         Offer::Made(acceptable) => acceptable,
         Offer::Refused(why) => return Ok(Offer::Refused(why)),
     };
-    if let Some(why) = across_libraries(conn, proposal, target_id)? {
-        return Ok(Offer::Refused(why));
-    }
 
     let target_title = series_title(conn, target_id)?;
     let (pattern, root_id) = match common_directory_pattern(conn, id, subject_paths)? {
@@ -847,8 +793,7 @@ fn offered_rule(
 ///
 /// Answers [`Offer::Made`] with the written rule's id. Answers
 /// [`Offer::Refused`], with nothing written, if the proposal is not `open`,
-/// if it is `attach-chapters`, if it has no target series, if its two series
-/// are in different libraries or one of the two is in none — what
+/// if it is `attach-chapters`, if it has no target series — what
 /// [`acceptable_proposal`] refuses on — if `rule`'s `kind` or `match_on` is
 /// not one `rules.rs` knows or its pattern will not compile, if `rule`
 /// reaches a series no proposal it answers named — naming it — if it reaches
@@ -869,7 +814,7 @@ pub fn accept_with(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Of
     // here as well as in `preview` and `offered_rule`: this is a `pub fn`,
     // and C3's accept route hands it a rule out of a request body without
     // any guarantee `preview` was ever called. One helper, three callers —
-    // see `acceptable`'s own doc — and `across_libraries` beside it.
+    // see `acceptable`'s own doc.
     //
     // Its answer is dropped: what the rule would decide, and whose material
     // that is, is `resolves`' question, and it reads the proposal's own two
@@ -1331,7 +1276,9 @@ pub fn resolves(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Resol
         .filter(|(series_id, _)| targets.contains(series_id))
         .map(|(_, reached)| reached.title.clone())
         .collect();
-    // Keyed on the series the library records *now*, which is what
+    // Keyed on the series each entry's current title names *now*: the oldest
+    // of that title in the store, which is the row `derive::reconcile_series`
+    // files the entry under and `series_id_by_sort_title` finds. That is what
     // `reach.series` is keyed on: "does this rule decide anything about the
     // material this proposal is about".
     let subject_reached = reach.series.contains_key(&subject_id);
@@ -1351,18 +1298,11 @@ pub fn resolves(conn: &Connection, id: i64, rule: &ProposedRule) -> Result<Resol
 /// material *and* gives that material `other`'s own target title.
 ///
 /// See [`resolves`]'s own doc for why reaching alone is not enough.
-///
-/// **Never a proposal [`across_libraries`] refuses.** [`accept_with`] marks
-/// every proposal this answers accepted as one of a group, and would refuse
-/// that one asked about on its own.
 fn answers(conn: &Connection, reach: &Reach, other: &Proposal) -> Result<bool, String> {
     let (Some(reached), Some(target_id)) = (reach.series.get(&other.subject_id), other.target_id)
     else {
         return Ok(false);
     };
-    if across_libraries(conn, other, target_id)?.is_some() {
-        return Ok(false);
-    }
     let target_title = series_title(conn, target_id)?;
     Ok(reached.becomes.len() == 1 && reached.becomes.contains(&target_title))
 }
@@ -1395,8 +1335,8 @@ fn slugify(s: &str) -> String {
 /// plus a trailing `/` — and the single root that directory sits under (I6).
 ///
 /// `paths` is [`crate::derive::rel_paths_for_series`]' answer for the
-/// subject's title in the subject's library, swept by the caller: see
-/// [`offered_rule`] for why it is not read here.
+/// subject's title, from every directory whichever library holds it, swept by
+/// the caller: see [`offered_rule`] for why it is not read here.
 ///
 /// # Errors
 ///
@@ -1570,8 +1510,8 @@ pub fn evaluable(rule: &ProposedRule) -> Result<(), String> {
 /// [`CANDIDATE_RULE_ID`] appearing in the resolution's provenance, which is
 /// the engine's own record of who decided what rather than a second reading
 /// of the pattern. The live engine says which series each of those entries
-/// belongs to *today*, which is the series a person would see move: the one
-/// of that name in the entry's own library. An entry
+/// belongs to *today*, which is the series a person would see move: the
+/// oldest of that name in the store. An entry
 /// no rule gives a series to, or a series name no `series` row carries — a
 /// container directory resolving to its publisher's name, say — is reached
 /// but has nothing to lose, so it counts towards `entries_matched` and
@@ -1629,9 +1569,7 @@ fn series_reached_by(conn: &Connection, rule: &ProposedRule) -> Result<Reach, St
     let mut stmt = conn
         .prepare("SELECT rel_path FROM scan_entry WHERE root_id = ?1 ORDER BY rel_path")
         .map_err(|e| format!("reading scan entries for the dry run: {e}"))?;
-    // Keyed by the entry's library as well as the name: an entry's series is
-    // the one of that name in the entry's own library.
-    let mut series_ids: BTreeMap<(i64, String), Option<i64>> = BTreeMap::new();
+    let mut series_ids: BTreeMap<String, Option<i64>> = BTreeMap::new();
 
     for root in &roots {
         let rows = stmt
@@ -1659,12 +1597,11 @@ fn series_reached_by(conn: &Connection, rule: &ProposedRule) -> Result<Reach, St
                     .moved_members
                     .insert(root.path.join(&rel_path).to_string_lossy().into_owned());
             }
-            let asked = (root.library_id, current.clone());
-            let looked_up = match series_ids.get(&asked) {
+            let looked_up = match series_ids.get(&current) {
                 Some(hit) => *hit,
                 None => {
-                    let found = series_id_by_sort_title(conn, Some(root.library_id), &current)?;
-                    series_ids.insert(asked, found);
+                    let found = series_id_by_sort_title(conn, &current)?;
+                    series_ids.insert(current.clone(), found);
                     found
                 }
             };
@@ -2001,12 +1938,11 @@ pub struct Side {
     /// root it is under, distinct and ascending — C3 §2's "the full path on
     /// disk, verbatim". One element for the ordinary case, several where
     /// this series' entries span directories or roots, and **empty where
-    /// nothing in the series' library currently resolves to this series'
-    /// title**, as nothing does for a series in no library — which is not
-    /// only "never scanned": an edited rule, or a series a document minted
-    /// under a title no rule resolves, can leave a series with
-    /// `volume_count: 1` and a real `first_volume` while nothing in the live
-    /// rule set resolves to it any more.
+    /// nothing in any directory currently resolves to this series' title**
+    /// — which is not only "never scanned": an edited rule, or a series a
+    /// document minted under a title no rule resolves, can leave a series
+    /// with `volume_count: 1` and a real `first_volume` while nothing in the
+    /// live rule set resolves to it any more.
     ///
     /// **A list, because a count is not a path.** A side spanning two
     /// directories, written as one string, would be prose in a field the
@@ -2109,13 +2045,8 @@ pub struct Evidence {
 pub fn evidence(conn: &Connection, id: i64) -> Result<Evidence, String> {
     let proposal = one(conn, id)?;
     let subject_title = series_title(conn, proposal.subject_id)?;
-    let subject_library = series_library(conn, proposal.subject_id)?;
     let target_title = match proposal.target_id {
         Some(target_id) => Some(series_title(conn, target_id)?),
-        None => None,
-    };
-    let target_library = match proposal.target_id {
-        Some(target_id) => series_library(conn, target_id)?,
         None => None,
     };
 
@@ -2126,28 +2057,24 @@ pub fn evidence(conn: &Connection, id: i64) -> Result<Evidence, String> {
     // `preview`'s own for the subject would run three of them for what a person
     // triggers by expanding a row.
     //
-    // Keyed by library and *title* rather than by series id, which is also
-    // how `rel_paths_by_series` filters: two `series` rows of one library can
-    // carry the same `sort_title`, and both then read the same entries, which
-    // is what the sweep would have answered for either of them separately.
-    // Each side is asked about in its own library.
-    let mut asked: std::collections::BTreeSet<(Option<i64>, &str)> =
-        std::collections::BTreeSet::from([(subject_library, subject_title.as_str())]);
+    // Keyed by *title* rather than by series id, which is also how
+    // `rel_paths_by_series` filters: two `series` rows can carry the same
+    // `sort_title`, and both then read the same entries, which is what the
+    // sweep would have answered for either of them separately.
+    let mut asked: std::collections::BTreeSet<&str> =
+        std::collections::BTreeSet::from([subject_title.as_str()]);
     if let Some(title) = &target_title {
-        asked.insert((target_library, title.as_str()));
+        asked.insert(title.as_str());
     }
     let material = crate::derive::rel_paths_by_series(conn, &asked)?;
-    let paths_of = |library: Option<i64>, title: &str| -> &[(i64, String)] {
-        material
-            .get(&(library, title.to_string()))
-            .map_or(&[][..], Vec::as_slice)
-    };
+    let paths_of =
+        |title: &str| -> &[(i64, String)] { material.get(title).map_or(&[][..], Vec::as_slice) };
 
     let subject = side(
         conn,
         proposal.subject_id,
         subject_title.clone(),
-        paths_of(subject_library, &subject_title),
+        paths_of(&subject_title),
     )?;
     let target = match proposal.target_id {
         Some(target_id) => {
@@ -2160,12 +2087,7 @@ pub fn evidence(conn: &Connection, id: i64) -> Result<Evidence, String> {
             let title = target_title
                 .clone()
                 .expect("target_title is set whenever target_id is, above");
-            Some(side(
-                conn,
-                target_id,
-                title.clone(),
-                paths_of(target_library, &title),
-            )?)
+            Some(side(conn, target_id, title.clone(), paths_of(&title))?)
         }
         None => None,
     };
@@ -2178,12 +2100,7 @@ pub fn evidence(conn: &Connection, id: i64) -> Result<Evidence, String> {
     // expandable, so propagating those would mean a person could not read the
     // evidence for exactly the proposals whose evidence explains why they are
     // stuck. A read that *fails* is not one of them.
-    let rule = match offered_rule(
-        conn,
-        &proposal,
-        &subject_title,
-        paths_of(subject_library, &subject_title),
-    )? {
+    let rule = match offered_rule(conn, &proposal, &subject_title, paths_of(&subject_title))? {
         Offer::Made(rule) => Some(rule),
         Offer::Refused(_) => None,
     };
@@ -2511,20 +2428,17 @@ fn scored_reasons(conn: &Connection, proposal: &Proposal) -> Result<Vec<Reason>,
 struct SeriesRow {
     id: i64,
     sort_title: String,
-    /// The library the series is filed under, or `None` for a series in none.
-    library_id: Option<i64>,
 }
 
 fn all_series(conn: &Connection) -> Result<Vec<SeriesRow>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, sort_title, library_id FROM series ORDER BY id")
+        .prepare("SELECT id, sort_title FROM series ORDER BY id")
         .map_err(|e| format!("listing series: {e}"))?;
     let rows = stmt
         .query_map([], |r| {
             Ok(SeriesRow {
                 id: r.get(0)?,
                 sort_title: r.get(1)?,
-                library_id: r.get(2)?,
             })
         })
         .map_err(|e| format!("listing series: {e}"))?;
@@ -2541,9 +2455,9 @@ fn series_title(conn: &Connection, series_id: i64) -> Result<String, String> {
     .map_err(|e| format!("looking up series {series_id}: {e}"))
 }
 
-/// [`series_title`]'s inverse within `library`, and `None` where no series of
-/// that library carries the name. A `library` of `None` asks among the series
-/// in no library. Where several carry it, the oldest answers.
+/// [`series_title`]'s inverse across the store, and `None` where no series
+/// carries the name. Where several carry it, the oldest answers, which is
+/// stable across a rescan as a proposal's identity needs.
 ///
 /// **`None` is an answer, not a failure**, for both callers.
 /// [`raise_attach_chapters`] can be called before any derive has reconciled
@@ -2551,29 +2465,14 @@ fn series_title(conn: &Connection, series_id: i64) -> Result<String, String> {
 /// directories to names — a publisher's, under the seeded first-component
 /// rule — that no series was ever derived from. Neither has anything to
 /// attach to, which is the honest outcome rather than an error.
-fn series_id_by_sort_title(
-    conn: &Connection,
-    library: Option<i64>,
-    sort_title: &str,
-) -> Result<Option<i64>, String> {
+fn series_id_by_sort_title(conn: &Connection, sort_title: &str) -> Result<Option<i64>, String> {
     conn.query_row(
-        "SELECT id FROM series WHERE sort_title = ?1 AND library_id IS ?2 ORDER BY id LIMIT 1",
-        rusqlite::params![sort_title, library],
+        "SELECT id FROM series WHERE sort_title = ?1 ORDER BY id LIMIT 1",
+        [sort_title],
         |r| r.get(0),
     )
     .optional()
     .map_err(|e| format!("looking up the series `{sort_title}`: {e}"))
-}
-
-/// The library series `series_id` is filed under, or `None` for a series in
-/// none.
-fn series_library(conn: &Connection, series_id: i64) -> Result<Option<i64>, String> {
-    conn.query_row(
-        "SELECT library_id FROM series WHERE id = ?1",
-        [series_id],
-        |r| r.get(0),
-    )
-    .map_err(|e| format!("looking up the library of series {series_id}: {e}"))
 }
 
 /// Every `work` row against `series_id`, whether or not it carries a volume
@@ -2760,11 +2659,6 @@ fn raise_edition_of(conn: &Connection, series: &[SeriesRow]) -> Result<usize, St
             if suffixed.id == base.id {
                 continue;
             }
-            // **Within one library — spec decision 3.** An Ecchi series is never
-            // offered as an edition of a Volumes one.
-            if suffixed.library_id != base.library_id {
-                continue;
-            }
             let Some(suffix) = suffixed.sort_title.strip_prefix(prefix.as_str()) else {
                 continue;
             };
@@ -2793,9 +2687,8 @@ fn raise_edition_of(conn: &Connection, series: &[SeriesRow]) -> Result<usize, St
 }
 
 /// §5's second use of `series_title`: a series whose own `sort_title` equals
-/// some *other* series' known title joins that series. The other series is
-/// one of the candidate's own library, or one in no library for a candidate
-/// in none.
+/// some *other* series' known title joins that series, wherever its files
+/// are.
 fn raise_same_series(conn: &Connection, series: &[SeriesRow]) -> Result<usize, String> {
     let mut newly_open = 0;
     for candidate in series {
@@ -2808,10 +2701,9 @@ fn raise_same_series(conn: &Connection, series: &[SeriesRow]) -> Result<usize, S
         // proposal's identity needs to be idempotent across a rescan.
         let owner: Option<i64> = conn
             .query_row(
-                "SELECT st.series_id FROM series_title st JOIN series s ON s.id = st.series_id \
-                  WHERE st.title = ?1 AND st.series_id != ?2 AND s.library_id IS ?3 \
-                  ORDER BY st.series_id LIMIT 1",
-                rusqlite::params![candidate.sort_title, candidate.id, candidate.library_id],
+                "SELECT series_id FROM series_title WHERE title = ?1 AND series_id != ?2 \
+                  ORDER BY series_id LIMIT 1",
+                rusqlite::params![candidate.sort_title, candidate.id],
                 |r| r.get(0),
             )
             .optional()
@@ -2845,28 +2737,18 @@ fn raise_same_series(conn: &Connection, series: &[SeriesRow]) -> Result<usize, S
 /// `proposal_identity`'s `ifnull(target_id, -1)` is what makes idempotent
 /// across however many such directories one series accumulates.
 ///
-/// **The series is the one in the directory's own library.** A directory's
-/// library is its root's, the directories are counted per series within a
-/// library, and the name is looked up there.
+/// **The series is the oldest of that name in the store**, whichever library
+/// holds the directory: the directories are counted per name across every
+/// directory, and the name is looked up by [`series_id_by_sort_title`].
 fn raise_attach_chapters(conn: &Connection) -> Result<usize, String> {
-    let dirs = crate::derive::unattached_chapter_dirs(conn)?;
-    let library_of: BTreeMap<i64, i64> = crate::scan::roots(conn)?
-        .into_iter()
-        .map(|root| (root.id, root.library_id))
-        .collect();
-    let mut per_series: BTreeMap<(String, i64), usize> = BTreeMap::new();
-    for ((root_id, _directory), series_name) in dirs {
-        // A root removed since the directories were read has no library to
-        // ask in.
-        let Some(&library_id) = library_of.get(&root_id) else {
-            continue;
-        };
-        *per_series.entry((series_name, library_id)).or_insert(0) += 1;
+    let mut per_series: BTreeMap<String, usize> = BTreeMap::new();
+    for (_directory, series_name) in crate::derive::unattached_chapter_dirs(conn)? {
+        *per_series.entry(series_name).or_insert(0) += 1;
     }
 
     let mut newly_open = 0;
-    for ((series_name, library_id), count) in per_series {
-        let Some(series_id) = series_id_by_sort_title(conn, Some(library_id), &series_name)? else {
+    for (series_name, count) in per_series {
+        let Some(series_id) = series_id_by_sort_title(conn, &series_name)? else {
             // No series row exists for this name yet — `raise` is meant to
             // run at the end of `derive::derive`, after every named series is
             // reconciled, so this is unreached in that path. A standalone

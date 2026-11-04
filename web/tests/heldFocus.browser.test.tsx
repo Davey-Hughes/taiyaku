@@ -13,7 +13,6 @@ import * as librariesApi from '../src/libraries'
 import { LibraryPage } from '../src/LibraryPage'
 import { deferred, settleUntil } from './support/async'
 import { holdOf } from './support/held'
-import { emptyDerive } from './support/derive'
 import { counted, dir, idle, scanningIn } from './support/libraries'
 import { typeInto } from './support/input'
 import { mount, rerender } from './support/mount'
@@ -376,18 +375,12 @@ const moved = (dry_run: boolean): librariesApi.MoveAnswer => ({
   moved: {
     library_id: 2,
     library: 'Light novels',
-    works_kept: 4,
-    works_joined: 0,
-    works_split: 0,
-    series_joined: 0,
-    positions: 1,
-    notes: 0,
-    alignments_dropped: 0,
+    gains_sight: [],
+    loses_sight: [],
     library_removed: null,
     grants_removed: 0,
     left_with_no_library: [],
   },
-  derive: emptyDerive,
   dry_run,
 })
 
@@ -444,8 +437,8 @@ describe('Move…’s dialog, held controls in a real browser', () => {
     const { dialog, select } = await rehearsed()
     expect(select.value).toBe('2')
 
-    // Back past what deriving would find and See what this would do.
-    await keys('{Enter}{Shift>}{Tab}{Tab}{Tab}{/Shift}')
+    // Back past See what this would do.
+    await keys('{Enter}{Shift>}{Tab}{Tab}{/Shift}')
     expect(document.activeElement).toBe(select)
     await settle(WAIT_DRAWN_AFTER_MS + 100)
     expect(document.activeElement).toBe(select)
@@ -475,7 +468,7 @@ describe('Move…’s dialog, held controls in a real browser', () => {
     ) as HTMLInputElement
     expect(box.value).toBe('Volumes')
 
-    await keys('{Enter}{Shift>}{Tab}{Tab}{Tab}{/Shift}')
+    await keys('{Enter}{Shift>}{Tab}{Tab}{/Shift}')
     expect(document.activeElement).toBe(box)
     await settle(WAIT_DRAWN_AFTER_MS + 100)
     expect(document.activeElement).toBe(box)
@@ -567,44 +560,19 @@ describe('Move…’s dialog, held controls in a real browser', () => {
     await settle()
   }
 
-  it.each([
-    ['the move’s confirm', '{Tab}{Tab}', '.confirm'],
-    [
-      'what deriving after the move would find',
-      '{Tab}',
-      '.removal-derive > summary',
-    ],
-  ])(
-    'hands focus to Move to when a read of the list takes away the library chosen while %s has focus',
-    async (_, onward, goes) => {
-      vi.mocked(librariesApi.moveCost).mockResolvedValue(moved(true))
-      const { dialog, select } = await askedThen(onward)
-      expect(document.activeElement).toBe(dialog.querySelector(goes))
-
-      await lightNovelsGone()
-      expect(document.activeElement).toBe(select)
-      expect([select.value, dialog.querySelector(goes)]).toEqual(['', null])
-    },
-  )
-
-  it('hands focus to Move to when a read of the list takes away the library chosen while the volumes in the way of its refused rehearsal have focus', async () => {
-    vi.mocked(librariesApi.moveCost).mockRejectedValue(
-      new Error(
-        '/api/library/roots/1/move?dry_run=true: 409 {"error":"`Light novels` already holds volumes of /srv/manga/volumes under the same edition key: A v01 (raw). Nothing was changed","volumes":["A v01 (raw)"]}',
-      ),
-    )
+  it('hands focus to Move to when a read of the list takes away the library chosen while the move’s confirm has focus', async () => {
+    vi.mocked(librariesApi.moveCost).mockResolvedValue(moved(true))
     const { dialog, select } = await askedThen('{Tab}')
-    const goes = '.move-volumes > summary'
-    expect(document.activeElement).toBe(dialog.querySelector(goes))
+    expect(document.activeElement).toBe(dialog.querySelector('.confirm'))
 
     await lightNovelsGone()
     expect(document.activeElement).toBe(select)
-    expect([select.value, dialog.querySelector(goes)]).toEqual(['', null])
+    expect([select.value, dialog.querySelector('.confirm')]).toEqual(['', null])
   })
 
   it('leaves focus on Cancel when a read of the list takes away the library chosen and what was rehearsed for it', async () => {
     vi.mocked(librariesApi.moveCost).mockResolvedValue(moved(true))
-    const { dialog } = await askedThen('{Tab}{Tab}{Tab}')
+    const { dialog } = await askedThen('{Tab}{Tab}')
     const cancel = dialog.querySelector(
       '.settings-actions > button:last-child',
     ) as HTMLButtonElement

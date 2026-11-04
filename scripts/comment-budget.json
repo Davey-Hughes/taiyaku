@@ -1,11 +1,11 @@
 {
   "crates/taiyaku-cli": 0.2673,
   "crates/taiyaku-core": 0.3069,
-  "crates/taiyaku-library": 0.2887,
+  "crates/taiyaku-library": 0.2952,
   "crates/taiyaku-read": 0.3994,
-  "crates/taiyaku-serve": 0.2530,
+  "crates/taiyaku-serve": 0.2532,
   "crates/taiyaku-wasm": 0.3230,
-  "web/src": 0.4505,
-  "web/tests": 0.1513,
+  "web/src": 0.4514,
+  "web/tests": 0.1517,
   "scripts": 0.3144
 }

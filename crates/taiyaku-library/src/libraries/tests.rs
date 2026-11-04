@@ -1,9 +1,46 @@
+use rusqlite::Connection;
+
 use super::*;
 use crate::Library;
 use crate::scan::{InLibrary, add_root, add_root_in};
 
+/// Seed a work with one member per `(edition key, root)`, a root of `None`
+/// being a member under no directory, as an imported work's are.
+fn seed_work(conn: &Connection, key: &str, members: &[(&str, Option<i64>)]) {
+    conn.execute(
+        "INSERT INTO work (content_key, slug, title, reading, hub)
+         VALUES (?1, ?1, ?1, 'rtl', 'raw')",
+        [key],
+    )
+    .expect("a work");
+    let work = conn.last_insert_rowid();
+    for (ordinal, (edition, root)) in (0_i64..).zip(members) {
+        conn.execute(
+            "INSERT OR IGNORE INTO edition (work_id, key, label) VALUES (?1, ?2, ?2)",
+            rusqlite::params![work, edition],
+        )
+        .expect("an edition");
+        let edition: i64 = conn
+            .query_row(
+                "SELECT id FROM edition WHERE work_id = ?1 AND key = ?2",
+                rusqlite::params![work, edition],
+                |r| r.get(0),
+            )
+            .expect("the edition");
+        conn.execute(
+            "INSERT INTO member (edition_id, ordinal, path, sha256, pages, root_id)
+             VALUES (?1, ?2, ?3, ?3, 1, ?4)",
+            rusqlite::params![edition, ordinal, format!("{key}-{ordinal}"), root],
+        )
+        .expect("a member");
+    }
+}
+
 /// Manga is made first and Comics last, so the order by name is not also the
-/// order by id.
+/// order by id. A library counts each work with a member under one of its
+/// directories, once however many it has: `split` has an edition under each
+/// library's, `held` is under Manga's alone, `twice` has two members under
+/// one directory, and `imported` is under none.
 #[test]
 fn listing_names_each_library_with_its_dirs_and_works() {
     let parent = crate::tests::tempdir("libraries-list");
@@ -17,15 +54,21 @@ fn listing_names_each_library_with_its_dirs_and_works() {
         .collect();
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    add_root_in(&conn, &dirs[0], InLibrary::Named("Manga")).expect("Manga");
-    add_root_in(&conn, &dirs[1], InLibrary::Named("Manga")).expect("Manga again");
+    let volumes = add_root_in(&conn, &dirs[0], InLibrary::Named("Manga")).expect("Manga");
+    let chapters = add_root_in(&conn, &dirs[1], InLibrary::Named("Manga")).expect("Manga again");
     let comics = add_root(&conn, &dirs[2]).expect("Comics, a library of its own");
-    conn.execute(
-        "INSERT INTO work (content_key, slug, title, reading, hub, library_id)
-         VALUES ('k', 's', 'T', 'rtl', 'raw', ?1)",
-        [comics.library_id],
-    )
-    .expect("one work in Comics");
+    seed_work(
+        &conn,
+        "split",
+        &[("raw", Some(chapters.id)), ("en", Some(comics.id))],
+    );
+    seed_work(&conn, "held", &[("raw", Some(volumes.id))]);
+    seed_work(
+        &conn,
+        "twice",
+        &[("raw", Some(volumes.id)), ("raw", Some(volumes.id))],
+    );
+    seed_work(&conn, "imported", &[("raw", None)]);
 
     let listed = list(&conn).expect("lists");
 
@@ -36,9 +79,9 @@ fn listing_names_each_library_with_its_dirs_and_works() {
             .collect::<Vec<_>>(),
         vec![
             ("Comics", vec![dirs[2].clone()], 1),
-            ("Manga", vec![dirs[0].clone(), dirs[1].clone()], 0),
+            ("Manga", vec![dirs[0].clone(), dirs[1].clone()], 3),
         ],
-        "by name, each directory once, oldest first, and each library's own works"
+        "by name, each directory once, oldest first, and the works under each library's directories"
     );
 }
 
@@ -131,17 +174,23 @@ fn a_rename_is_refused_a_name_another_library_holds_in_another_case() {
     );
 }
 
+/// A work is in no library where no member of it is under a directory:
+/// `imported` and `imported too` are held under none, and the three held
+/// under the directory, one of them also by a member under none, are in its
+/// library.
 #[test]
 fn unfiled_works_counts_only_works_in_no_library() {
+    let parent = crate::tests::tempdir("libraries-unfiled");
+    let dir = parent.path().join("Manga");
+    std::fs::create_dir_all(&dir).expect("mkdir");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let id = create(&conn, "Manga").expect("creates");
-    conn.execute_batch(&format!(
-        "INSERT INTO work (content_key, slug, title, reading, hub, library_id)
-         VALUES ('a', 'a', 'A', 'rtl', 'raw', {id}), ('b', 'b', 'B', 'rtl', 'raw', NULL),
-                ('c', 'c', 'C', 'rtl', 'raw', NULL);"
-    ))
-    .expect("works");
+    let root = add_root_in(&conn, &dir, InLibrary::Named("Manga")).expect("Manga");
+    seed_work(&conn, "imported", &[("raw", None)]);
+    seed_work(&conn, "imported too", &[("raw", None)]);
+    seed_work(&conn, "held", &[("raw", Some(root.id))]);
+    seed_work(&conn, "held too", &[("raw", Some(root.id))]);
+    seed_work(&conn, "partly", &[("raw", None), ("en", Some(root.id))]);
     assert_eq!(unfiled_works(&conn).expect("counts"), 2);
 }
 
@@ -340,4 +389,250 @@ fn books_counts_the_librarys_own_epub_and_pdf_entries() {
 
     assert_eq!(books(&conn, roots[0].library_id).expect("counts"), 3);
     assert_eq!(books(&conn, roots[1].library_id).expect("counts"), 1);
+}
+
+/// A copy held under a directory of each of two libraries is counted in both,
+/// and in no library's absence.
+#[test]
+fn a_copy_held_in_two_libraries_is_counted_in_both() {
+    let copy = crate::tests::a_volume_copied_into_two_libraries();
+    let conn = copy.conn();
+    let counted: Vec<(String, usize)> = list(&conn)
+        .expect("lists")
+        .into_iter()
+        .map(|l| (l.name, l.works))
+        .collect();
+    assert_eq!(
+        counted,
+        [("A".to_string(), 1), ("B".to_string(), 1)],
+        "the one work, in each library holding a copy"
+    );
+    assert_eq!(unfiled_works(&conn).expect("counts"), 0);
+}
+
+/// A member whose primary directory went with no removal around it has its
+/// `root_id` `NULL` while a copy is still recorded under another directory,
+/// and is in that directory's library.
+#[test]
+fn a_member_recorded_under_a_copy_alone_is_in_that_copys_library() {
+    let copy = crate::tests::a_volume_copied_into_two_libraries();
+    let conn = copy.conn();
+    conn.execute("DELETE FROM root WHERE id = ?1", [copy.b.id])
+        .expect("b's directory goes with no removal around it");
+    assert_eq!(
+        crate::tests::member_root_ids(&conn),
+        [copy.a.id],
+        "the fixture: the member is recorded under a's copy alone"
+    );
+    assert_eq!(unfiled_works(&conn).expect("counts"), 0);
+    let counted: Vec<(String, usize)> = list(&conn)
+        .expect("lists")
+        .into_iter()
+        .map(|l| (l.name, l.works))
+        .collect();
+    assert_eq!(counted, [("A".to_string(), 1)], "B went with its directory");
+}
+
+fn set_pages(conn: &Connection, path: &str, pages: i64) {
+    let set = conn
+        .execute(
+            "UPDATE member SET pages = ?2 WHERE path = ?1",
+            rusqlite::params![path, pages],
+        )
+        .expect("sets a member's pages");
+    assert_eq!(set, 1, "one member at {path}");
+}
+
+fn held_under(root: &crate::scan::Root, library: i64) -> MemberDirectory {
+    MemberDirectory {
+        root: root.id,
+        path: root.path.display().to_string(),
+        library,
+    }
+}
+
+/// Manga holds Volumes and Chapters, Comics its own directory. Manga is made
+/// first and `zeta` seeded before `alpha`, so neither name nor title order is
+/// id order. `zeta`'s `raw` and `de` and `alpha`'s `raw` have members in both
+/// libraries; `zeta`'s `raw` is renumbered against its insert and path order,
+/// `zeta-0` has a copy under Comics and `alpha-1` one under a second Manga
+/// directory. `zeta`'s `en` and `whole` are under Manga alone, `imported`
+/// under none.
+#[test]
+fn split_editions_are_those_a_library_holds_part_of_and_not_all() {
+    let parent = crate::tests::tempdir("libraries-split");
+    let dirs: Vec<_> = ["Volumes", "Chapters", "Comics"]
+        .iter()
+        .map(|name| {
+            let dir = parent.path().join(name);
+            std::fs::create_dir_all(&dir).expect("mkdir");
+            dir.canonicalize().expect("canonical")
+        })
+        .collect();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let volumes = add_root_in(&conn, &dirs[0], InLibrary::Named("Manga")).expect("Manga");
+    let chapters = add_root_in(&conn, &dirs[1], InLibrary::Named("Manga")).expect("Manga again");
+    let comics = add_root_in(&conn, &dirs[2], InLibrary::Named("Comics")).expect("Comics");
+    let manga = id_of(&conn, "Manga").expect("reads").expect("Manga");
+    let comic = id_of(&conn, "Comics").expect("reads").expect("Comics");
+    assert!(manga < comic, "the fixture: Manga is made first");
+    seed_work(
+        &conn,
+        "zeta",
+        &[
+            ("raw", Some(volumes.id)),
+            ("raw", Some(comics.id)),
+            ("raw", Some(chapters.id)),
+            ("en", Some(volumes.id)),
+            ("de", Some(comics.id)),
+            ("de", Some(chapters.id)),
+        ],
+    );
+    seed_work(
+        &conn,
+        "alpha",
+        &[("raw", Some(comics.id)), ("raw", Some(chapters.id))],
+    );
+    seed_work(
+        &conn,
+        "whole",
+        &[("raw", Some(volumes.id)), ("raw", Some(chapters.id))],
+    );
+    seed_work(&conn, "imported", &[("raw", None), ("raw", None)]);
+    // Before `alpha` in byte order, and after it in the UI's.
+    conn.execute("UPDATE work SET title = 'Zeta' WHERE slug = 'zeta'", [])
+        .expect("titles zeta");
+    conn.execute(
+        "INSERT INTO member_root (member_id, root_id)
+         SELECT id, ?1 FROM member WHERE path = 'zeta-0'",
+        [comics.id],
+    )
+    .expect("a copy of zeta-0 under Comics");
+    conn.execute(
+        "INSERT INTO member_root (member_id, root_id)
+         SELECT id, ?1 FROM member WHERE path = 'alpha-1'",
+        [volumes.id],
+    )
+    .expect("a copy of alpha-1 under Volumes");
+    for (path, pages) in [
+        ("zeta-0", 2),
+        ("zeta-1", 3),
+        ("zeta-2", 4),
+        ("zeta-3", 5),
+        ("zeta-4", 8),
+        ("zeta-5", 9),
+        ("alpha-0", 6),
+        ("alpha-1", 7),
+    ] {
+        set_pages(&conn, path, pages);
+    }
+    // Moved clear first, as `(edition_id, ordinal)` is unique.
+    conn.execute_batch(
+        "UPDATE member SET ordinal = ordinal + 10
+          WHERE path IN ('zeta-0', 'zeta-1', 'zeta-2');
+         UPDATE member SET ordinal = CASE path
+           WHEN 'zeta-2' THEN 0 WHEN 'zeta-0' THEN 1 WHEN 'zeta-1' THEN 2 END
+          WHERE path IN ('zeta-0', 'zeta-1', 'zeta-2');",
+    )
+    .expect("renumbers zeta's raw");
+    let renumbered: Vec<String> = conn
+        .prepare(
+            "SELECT m.path FROM member m JOIN edition e ON e.id = m.edition_id
+              WHERE m.path LIKE 'zeta-%' AND e.key = 'raw' ORDER BY m.ordinal",
+        )
+        .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+        .expect("reads zeta's raw");
+    assert_eq!(
+        renumbered,
+        ["zeta-2", "zeta-0", "zeta-1"],
+        "the fixture: zeta's raw in an order neither its ids nor its paths give"
+    );
+    assert!(
+        comics.path < volumes.path && chapters.path < volumes.path,
+        "the fixture: by path, Comics and Chapters come before Volumes, made before them"
+    );
+
+    let member = |path: &str, pages: i64, directories: Vec<MemberDirectory>| SplitMember {
+        path: path.to_string(),
+        pages,
+        directories,
+    };
+    let held = |id: i64, name: &str, members: usize, pages: i64| SplitLibrary {
+        id,
+        name: name.to_string(),
+        members,
+        pages,
+    };
+    assert_eq!(
+        split_editions(&conn).expect("lists"),
+        [
+            SplitEdition {
+                work: "alpha".to_string(),
+                title: "alpha".to_string(),
+                edition: "raw".to_string(),
+                pages: 13,
+                members: vec![
+                    member("alpha-0", 6, vec![held_under(&comics, comic)]),
+                    member(
+                        "alpha-1",
+                        7,
+                        vec![held_under(&chapters, manga), held_under(&volumes, manga)],
+                    ),
+                ],
+                libraries: vec![held(comic, "Comics", 1, 6), held(manga, "Manga", 1, 7)],
+            },
+            SplitEdition {
+                work: "zeta".to_string(),
+                title: "Zeta".to_string(),
+                edition: "de".to_string(),
+                pages: 17,
+                members: vec![
+                    member("zeta-4", 8, vec![held_under(&comics, comic)]),
+                    member("zeta-5", 9, vec![held_under(&chapters, manga)]),
+                ],
+                libraries: vec![held(comic, "Comics", 1, 8), held(manga, "Manga", 1, 9)],
+            },
+            SplitEdition {
+                work: "zeta".to_string(),
+                title: "Zeta".to_string(),
+                edition: "raw".to_string(),
+                pages: 9,
+                members: vec![
+                    member("zeta-2", 4, vec![held_under(&chapters, manga)]),
+                    member(
+                        "zeta-0",
+                        2,
+                        vec![held_under(&comics, comic), held_under(&volumes, manga)],
+                    ),
+                    member("zeta-1", 3, vec![held_under(&comics, comic)]),
+                ],
+                libraries: vec![held(comic, "Comics", 2, 5), held(manga, "Manga", 2, 6)],
+            },
+        ]
+    );
+}
+
+/// A byte-identical copy in two libraries is one member held under both, so
+/// each library holds all of its edition: nothing is split.
+#[test]
+fn a_copy_held_in_two_libraries_is_not_split() {
+    let copy = crate::tests::a_volume_copied_into_two_libraries();
+    let conn = copy.conn();
+    let members: i64 = conn
+        .query_row("SELECT count(*) FROM member", [], |r| r.get(0))
+        .expect("counts the members");
+    let held: Vec<String> = conn
+        .prepare(
+            "SELECT l.name FROM member_root mr JOIN root r ON r.id = mr.root_id
+               JOIN library l ON l.id = r.library_id ORDER BY l.name",
+        )
+        .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+        .expect("reads where the members are held");
+    assert_eq!(
+        (members, held),
+        (1, vec!["A".to_string(), "B".to_string()]),
+        "the fixture: a copy, one member held under a directory of each library"
+    );
+    assert_eq!(split_editions(&conn).expect("lists"), []);
 }

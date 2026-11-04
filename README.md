@@ -65,8 +65,13 @@ and reading logic runs in the browser and, later, inside a native shell.
 # a later run needs no flag. The commands below still take real file paths,
 # not names
 # --library NAME files the directory under that library, creating it, so two
-# directories (Volumes and Chapters, say) derive as one shelf; without it, a
-# directory is a library of its own. `taiyaku library libraries` lists them
+# directories (Volumes and Chapters, say) share one library page and one
+# grant; without it, a directory is a library of its own.
+# `taiyaku library libraries` lists the libraries. The derive that follows
+# reads every directory whichever library holds it, so a chapter release
+# whose files name their volume joins that volume's work: as another edition
+# where the two directories' edition keys differ, and as more pages of the
+# volume's edition where they share a key, as both do by default (`raw`)
 taiyaku library scan --add /srv/manga
 
 # pair a Japanese raw against an English release and write the sidecar
@@ -160,10 +165,11 @@ TAIYAKU_STUMP_URL=https://stump.example TAIYAKU_STUMP_KEY=… \
 # point an OPDS reader at
 #   http://<host>:8484/opds/v1.2/catalog
 # which lists every work, and every library's works twice: by the directories
-# each library holds, and by the library each work is filed in. in the
-# browser, About and the account screen show this address, built from the
-# origin the page was loaded from, with a Copy address button only in a
-# secure context (https, or localhost) that has the Clipboard API.
+# each library holds, and by work, each work with a member under them listed
+# with every edition the grant allows. in the browser, About and the account
+# screen show this address, built from the origin the page was loaded from,
+# with a Copy address button only in a secure context (https, or localhost)
+# that has the Clipboard API.
 # use your account name as the username and an API key as the password —
 # a key is shown once, because only its hash is stored:
 taiyaku library key create davey --name ipad
@@ -178,7 +184,11 @@ taiyaku library user revoke-library alice Manga
 taiyaku library user every-library alice
 #
 # a restricted account sees only the editions whose files sit under a directory
-# of a library it was granted, and cannot read their pages either. a work
+# of a library it was granted, and cannot read their pages either. an edition
+# some of whose files sit only under another library's directories is narrowed:
+# the account is shown only the files under its own libraries' directories, its
+# pages numbered from 1, and Configuration → Split editions lists each edition a
+# library's directories hold some of and not all for an administrator. a work
 # imported from a `taiyaku.json` sits under no root at all, so it is visible
 # only to an unrestricted account. members scanned before this feature existed
 # carry no root until the schema migration recovers it from their paths;
@@ -270,15 +280,15 @@ as the server's own sentence. Removing a library or a directory states what it
 will take — works, reading positions, notes — and offers no confirm button at
 all until those counts have arrived, and names any account the removal leaves
 seeing no library. A directory's page has **Move…**, to another library or a new
-one: it says what the move would do — how many works keep their address, how
-many join a work the library already holds, how many are split — before it
-offers the move, and refuses, naming what stands in the way, a move that cannot
-keep every reader's place. **Scan library** on a library walks each of its
-directories in turn and derives once. A scan started from the screen reports
-both halves of what it did in full: the walk and the derivation, every field,
-with what it *could not* do listed before what it did, and an empty list drawn
-as `0` rather than left out — so "nothing was unreadable this time" cannot be
-mistaken for "this version does not say".
+one: a move changes only which library holds the directory, so before it offers
+the move it names the accounts that will gain and lose sight of the directory,
+and it refuses a move while a scan is queued in either library, or while a scan,
+a rule save, a stamp or another move is running. **Scan library** on a library
+walks each of its directories in turn and derives once. A scan started from the
+screen reports both halves of what it did in full: the walk and the derivation,
+every field, with what it *could not* do listed before what it did, and an empty
+list drawn as `0` rather than left out — so "nothing was unreadable this time"
+cannot be mistaken for "this version does not say".
 
 **The rule editor is built too**, at `/config/rules` — the screen the whole
 preview mechanism exists for. An ordered
@@ -322,6 +332,15 @@ says the four things a button cannot: restore is out of band, a backup is the
 whole database — password hashes included — a sidecar export is not a backup,
 and the schedule is the cron entry above rather than anything inside the
 server.
+
+**Split editions** is the last tab, at `/config/split-editions`. It lists each
+edition that a library's directories hold some of and not all of, which an
+account granted that library and not the others holding the rest is shown
+narrowed: for each library, what an account granted it alone sees of the
+edition, and for each file, its pages and the directories holding it, linked
+to their pages. Under the list it says how to split one: give one of its
+directories its own edition key (Edition key, on the directory's page), then
+scan that directory.
 
 To read in the browser, build the WebAssembly binding first, then run the
 reader against `serve --db`. The browser opens on a **library** now, not a
@@ -485,10 +504,13 @@ docker exec -it taiyaku taiyaku library user promote davey
 Then sign in and make the libraries on Configuration → Libraries. Each is made
 from a name and one directory, picked in a browser that starts at `/media`: the
 image sets `TAIYAKU_DIRS=/media`, and the browser lists nothing outside it. More
-directories are added on the library's page with Add directory…. Two directories
-in one library, `/media/Manga/Volumes` and `/media/Manga/Chapters` say, are
-derived together, so a chapter release joins its volume as another edition. Scan
-library on a library's page walks its directories and derives once.
+directories are added on the library's page with Add directory…. Two
+directories, `/media/Manga/Volumes` and `/media/Manga/Chapters` say, are derived
+together whichever libraries hold them, so a chapter release whose files name
+their volume joins that volume's work: as another edition where the two
+directories' edition keys differ, and as more pages of the volume's edition
+where they share a key, as both do by default (`raw`). Scan library on a
+library's page walks its directories and derives once.
 
 `TAIYAKU_DIRS` is a `:`-separated list, because a directory's path can hold a
 space or a comma. `taiyaku serve --dirs DIR`, repeatable, sets the same

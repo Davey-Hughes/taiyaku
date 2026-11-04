@@ -112,7 +112,8 @@ const card = (
 })
 
 /**
- * Mount at `/series/7` and let the series' read settle: the store calls the
+ * Mount at `at`, `/series/7` unless a test names another address, and let the
+ * series' read settle: the store calls the
  * mocked `oneSeries` once the progress saves sent before it have settled, so
  * the answer is drawn some microtask turns after the mount.
  *
@@ -128,6 +129,7 @@ async function settleWith(
     >
   > = {},
   me?: Me,
+  at = '/series/7',
 ): Promise<HTMLElement> {
   let host: HTMLElement | undefined
   await act(async () => {
@@ -138,7 +140,7 @@ async function settleWith(
         <GateContext.Provider
           value={me ? { who: me, signOut: () => {} } : undefined}
         >
-          <MemoryRouter initialEntries={['/series/7']}>
+          <MemoryRouter initialEntries={[at]}>
             <Routes>
               <Route path="/series/:id" element={<Series />} />
             </Routes>
@@ -184,7 +186,21 @@ describe('Series, grid layout', () => {
 
   it('asks for the series named in the URL', async () => {
     await settle()
-    expect(vi.mocked(library.oneSeries)).toHaveBeenCalledWith(7)
+    expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7, undefined]])
+  })
+
+  it('asks for what the library the URL names holds of the series — spec §3.6', async () => {
+    await settleWith({}, undefined, '/series/7?library=3')
+    expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7, 3]])
+  })
+
+  it('asks nothing for a library the URL names that is no library id, and says the series is not there', async () => {
+    const host = await settleWith({}, undefined, '/series/7?library=01')
+    expect(vi.mocked(library.oneSeries)).not.toHaveBeenCalled()
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      '7 is not a series',
+    )
+    expect(host.querySelector('.volumes')).toBeNull()
   })
 
   it('names the series and lists its volumes in order', async () => {
@@ -635,7 +651,7 @@ describe('Series, the work-level editor', () => {
       await flush(() => save.resolve(saved(true)))
       await flush()
       await flush()
-      expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7]])
+      expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7, undefined]])
       expect(
         host.querySelector('.volumes a[href="/read/gotoubun-v01"] .title')
           ?.textContent,
@@ -658,7 +674,7 @@ describe('Series, the work-level editor', () => {
       await flush()
       await flush()
       expect(host.querySelector('.metadata-editor .unwritten')).not.toBeNull()
-      expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7]])
+      expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7, undefined]])
       expect(
         host.querySelector('.volumes a[href="/read/gotoubun-v01"] .title')
           ?.textContent,
@@ -676,7 +692,7 @@ describe('Series, the work-level editor', () => {
       await submit(form(host))
       await flush()
       await flush()
-      expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7]])
+      expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7, undefined]])
       expect(alerts(host)).toEqual(['/api/library/series/7: 500'])
       expect(host.querySelector('h1')?.textContent).toBe(
         'Go-Toubun no Hanayome',
@@ -1959,7 +1975,7 @@ describe('Series, read through the store', () => {
     await flush()
     await flush()
     expect(drawn(host)).toBe(sevenDrawn)
-    expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7]])
+    expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7, undefined]])
   })
 
   it('draws nothing of a kept series marked stale before a return, and draws its re-read once it lands', async () => {
@@ -1982,7 +1998,7 @@ describe('Series, read through the store', () => {
     await flush(() => again.resolve(seven))
     await flush()
     expect(drawn(host)).toBe(sevenDrawn)
-    expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7]])
+    expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7, undefined]])
   })
 
   it('draws nothing of the series left on a move to one not kept, Loading… from 200 ms, and the next series in one step once it lands', async () => {
@@ -2007,7 +2023,10 @@ describe('Series, read through the store', () => {
     expect(drawn(host)).toBe(nothing)
     pass(1)
     expect(drawn(host)).toBe(waiting)
-    expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7], [9]])
+    expect(vi.mocked(library.oneSeries).mock.calls).toEqual([
+      [7, undefined],
+      [9, undefined],
+    ])
 
     const seen = watchDrawn(() => drawn(host))
     await flush(() => next.resolve(nine))

@@ -5,7 +5,6 @@ import * as config from '../src/config'
 import { DirPage } from '../src/DirPage'
 import * as api from '../src/libraries'
 import { deferred, flush } from './support/async'
-import { emptyDerive } from './support/derive'
 import './support/dialog'
 import { press } from './support/input'
 import { holdOf } from './support/held'
@@ -280,23 +279,16 @@ describe('DirPage', () => {
       moved: {
         library_id: 8,
         library: 'Comics',
-        works_kept: 1,
-        works_joined: 0,
-        works_split: 0,
-        series_joined: 0,
-        positions: 0,
-        notes: 0,
-        alignments_dropped: 0,
+        gains_sight: ['kim'],
+        loses_sight: [],
         library_removed: null,
         grants_removed: 0,
         left_with_no_library: [],
       },
-      derive: { ...emptyDerive, lost_positions: 6 },
       dry_run: false,
     }
     vi.mocked(api.moveCost).mockResolvedValue({
-      ...moved,
-      derive: { ...emptyDerive, lost_positions: 2 },
+      moved: { ...moved.moved, gains_sight: [] },
       dry_run: true,
     })
     vi.mocked(api.moveDir).mockResolvedValue(moved)

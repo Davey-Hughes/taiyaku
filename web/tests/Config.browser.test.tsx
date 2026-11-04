@@ -55,11 +55,11 @@ import { rootFontAt } from './support/rootFont'
 import { holdTheClock, pass, WAIT_DRAWN_AFTER_MS } from './support/wait'
 
 /**
- * The browser pass over all four Configuration screens. A measured width, a
+ * The browser pass over the Configuration screens. A measured width, a
  * computed colour and a grid's row count all need a real layout engine, so
  * none of them is measurable in jsdom.
  *
- * **These three screens take no props and fetch their own data**, so this
+ * **These screens take no props and fetch their own data**, so this
  * file stubs `../src/config`, `../src/libraries`, `../src/users` and
  * `../src/backup` exactly as `Libraries.test.tsx`, `Users.test.tsx` and
  * `Backup.test.tsx` do — copying each mock surface from its matching jsdom
@@ -1240,22 +1240,19 @@ describe('the Configuration screens at 390px', () => {
     return { host, dir }
   }
 
-  it('keeps a move’s refusal and the list of volumes it names inside its dialog', async () => {
-    const volumes = Array.from({ length: 20 }, (_, i) =>
-      `${String(i).padStart(2, '0')}_`.padEnd(80, 'v'),
-    )
+  it('keeps a move’s refusal inside its dialog', async () => {
+    const why = `a scan of ${UNBROKEN_ROOT.path} is running; move the directory once it has finished`
     const { host, dir } = await rehearsedMove(
       new Error(
         `/api/library/roots/3/move?dry_run=true: 409 ${JSON.stringify({
-          error: `${UNBROKEN_NAME} already holds volumes of ${UNBROKEN_ROOT.path}`,
-          volumes,
+          error: why,
+          volumes: [],
         })}`,
       ),
     )
-    const list = dir.querySelector('.move-volumes') as HTMLDetailsElement
-    list.open = true
-    await document.fonts.ready
-    expect(list.querySelectorAll('li')).toHaveLength(20)
+    expect(dir.querySelector('.move-root [role="alert"]')?.textContent).toBe(
+      why,
+    )
     assertNoSidewaysScroll(host)
     expect(pastItsDialog(dir)).toEqual([])
   })
@@ -1266,18 +1263,12 @@ describe('the Configuration screens at 390px', () => {
         moved: {
           library_id: 2,
           library: UNBROKEN_NAME,
-          works_kept: 1,
-          works_joined: 0,
-          works_split: 0,
-          series_joined: 0,
-          positions: 0,
-          notes: 0,
-          alignments_dropped: 0,
+          gains_sight: [],
+          loses_sight: [],
           library_removed: null,
           grants_removed: 0,
           left_with_no_library: [],
         },
-        derive: derived(),
         dry_run: true,
       }),
     )
@@ -1301,18 +1292,12 @@ describe('the Configuration screens at 390px', () => {
         moved: {
           library_id: 2,
           library: 'Comics',
-          works_kept: 1,
-          works_joined: 0,
-          works_split: 0,
-          series_joined: 0,
-          positions: 0,
-          notes: 0,
-          alignments_dropped: 0,
+          gains_sight: [],
+          loses_sight: [],
           library_removed: null,
           grants_removed: 0,
           left_with_no_library: [],
         },
-        derive: derived(),
         dry_run: true,
       }),
     )
@@ -3388,7 +3373,7 @@ describe('the way up from a page beneath a table', () => {
       expect(backs.map((link) => link.textContent)).toEqual([words])
       const back = backs[0] as Element
       const tabs = [...host.querySelectorAll('.config-nav a')]
-      expect(tabs).toHaveLength(4)
+      expect(tabs).toHaveLength(5)
       if (pointer === 'fine') {
         expect(pressArea(back).height).toBeLessThan(44)
         return
@@ -4019,51 +4004,6 @@ describe('a library’s rename box', () => {
  * `RuleEditor.browser.test.tsx`, which can save a rule.
  */
 describe('the settings pages’ disclosures', () => {
-  const moved: librariesApi.Moved = {
-    library_id: 2,
-    library: 'Comics',
-    works_kept: 1,
-    works_joined: 0,
-    works_split: 0,
-    series_joined: 0,
-    positions: 0,
-    notes: 0,
-    alignments_dropped: 0,
-    library_removed: null,
-    grants_removed: 0,
-    left_with_no_library: [],
-  }
-
-  /** The directory's page, Move… opened, Comics chosen and its rehearsal asked for. */
-  async function moveRehearsed() {
-    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
-      libraries: [
-        ...holding(root()).libraries,
-        {
-          id: 2,
-          name: 'Comics',
-          works: 0,
-          books: 0,
-          dirs: [root({ id: 4, path: '/srv/comics' })],
-        },
-      ],
-    })
-    const host = await opened(DIR)
-    await press(
-      [...host.querySelectorAll('.dir-page button')].find(
-        (b) => b.textContent === 'Move…',
-      ) as Element,
-    )
-    await act(async () => {
-      await userEvent.selectOptions(
-        host.querySelector('select[name="move-target"]') as HTMLElement,
-        '2',
-      )
-    })
-    await press(host.querySelector('button[name="rehearse"]') as Element)
-    return host
-  }
-
   const summaryOf = (host: HTMLElement, details: string) =>
     host.querySelector(`${details} > summary`) as HTMLElement
 
@@ -4109,34 +4049,6 @@ describe('the settings pages’ disclosures', () => {
     await expectDisclosure(
       summaryOf(host, '.remove-library .removal-derive'),
       'the library removal’s derive',
-    )
-  })
-
-  it('draws what deriving after a move would find as something to press, closed and open', async () => {
-    await sized(1280, 800)
-    vi.mocked(librariesApi.moveCost).mockResolvedValue({
-      moved,
-      derive: derived(),
-      dry_run: true,
-    })
-    const host = await moveRehearsed()
-    await expectDisclosure(
-      summaryOf(host, '.move-root .removal-derive'),
-      'the move’s derive',
-    )
-  })
-
-  it('draws the volumes in a move’s way as something to press, closed and open', async () => {
-    await sized(1280, 800)
-    vi.mocked(librariesApi.moveCost).mockRejectedValue(
-      new Error(
-        '/api/library/roots/3/move?dry_run=true: 409 {"error":"Comics already holds volumes of /srv/manga","volumes":["A v01"]}',
-      ),
-    )
-    const host = await moveRehearsed()
-    await expectDisclosure(
-      summaryOf(host, '.move-root .move-volumes'),
-      'the volumes in the move’s way',
     )
   })
 })

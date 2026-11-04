@@ -525,17 +525,16 @@ export function MetadataEditor({
     const skipped = shown.skipped_formats
     if (skipped.length === 0) return null
     /**
-     * The tokens that name a format, as opposed to the two that report the
-     * absence of one. `stamp.rs`'s `skipped_formats` can print nine values:
-     * `dir`, `rar`, `7z`, `pdf`, `tar`, `epub-fixed` and `epub-reflow` all
-     * come from `Format::token`, while `unknown` is what a file that was read
-     * and matched no signature answers and `unreadable` is what a file that
-     * could not be opened at all answers. The last two are not formats and
-     * must not be listed as if they were — "this work holds unreadable" is
-     * not a sentence about a format.
+     * The tokens that name a format, as opposed to the three that do not.
+     * `stamp.rs`'s `skipped_formats` prints `dir`, `rar`, `7z`, `pdf`, `tar`,
+     * `epub-fixed` and `epub-reflow` from `Format::token`; `unknown` for a
+     * file that matched no signature, `unreadable` for one that could not be
+     * opened, and `copied` for one held in more than one directory. Those three
+     * are not formats — "this work holds unreadable" is not a sentence.
      */
     const namedFormats = skipped.filter(
-      (token) => token !== 'unknown' && token !== 'unreadable',
+      (token) =>
+        token !== 'unknown' && token !== 'unreadable' && token !== 'copied',
     )
     const containers = namedFormats.some((token) => token.startsWith('epub'))
     return (
@@ -564,6 +563,12 @@ export function MetadataEditor({
           <p className="unrecognised">
             At least one file in this work matches no format taiyaku recognises.
             A stamp leaves it where it is.
+          </p>
+        )}
+        {skipped.includes('copied') && (
+          <p className="copied">
+            At least one file in this work is held in more than one directory. A
+            stamp leaves it alone, so its copies stay identical.
           </p>
         )}
       </div>

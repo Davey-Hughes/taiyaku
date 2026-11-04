@@ -173,6 +173,22 @@ describe('the library screen', () => {
     ])
   })
 
+  it('links each tile of a library’s page to its series as that library holds it — spec §3.6', async () => {
+    vi.mocked(library.grid).mockResolvedValue({
+      series: [
+        series({ id: 1, title: 'One' }),
+        series({ id: 2, title: 'Two' }),
+      ],
+      unfiled: [],
+    })
+    const host = await showAt('/?library=2', twoLibraries)
+    const links = [...host.querySelectorAll('a[href^="/series/"]')]
+    expect(links.map((a) => a.getAttribute('href'))).toEqual([
+      '/series/1?library=2',
+      '/series/2?library=2',
+    ])
+  })
+
   it('marks how many volumes of a series are aligned', async () => {
     // `aligned` distinct from `works`, `editions` and `unread` — the default
     // fixture's `works: 3, editions: 3, unread: 3` would all equal `aligned`
@@ -1831,6 +1847,17 @@ describe('the search bar — spec §2', () => {
     // Every call, not the last: one search, narrowed, and none before it of
     // another scope.
     expect(vi.mocked(library.search).mock.calls).toEqual([['Series', 2]])
+  })
+
+  it('links a hit to its series as the library searched holds it, and a hit of every library to the whole series — spec §3.6', async () => {
+    const hits = (host: HTMLElement) =>
+      [...host.querySelectorAll('.search-hits a[href^="/series/"]')].map((a) =>
+        a.getAttribute('href'),
+      )
+    expect(hits(await viewAt('/?q=Series&library=2'))).toEqual([
+      '/series/7?library=2',
+    ])
+    expect(hits(await viewAt('/?q=Series'))).toEqual(['/series/7'])
   })
 
   it('searches a link’s library once, when the status lands after the search has gone', async () => {

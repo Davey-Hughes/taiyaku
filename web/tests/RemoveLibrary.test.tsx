@@ -94,6 +94,13 @@ describe('RemoveLibrary', () => {
     expect(api.libraryRemovalCost).toHaveBeenCalledWith(7)
   })
 
+  it('says a removal takes only what no other library holds', async () => {
+    const host = await shown()
+    expect(host.querySelector('.irreversible')?.textContent).toBe(
+      "Nothing here can be undone from this screen. The files on disk are untouched; what goes is everything derived from files no other library's directories hold, and everything anybody recorded against a work that goes.",
+    )
+  })
+
   it('draws the rehearsal’s report headings one level beneath the library’s name', async () => {
     // The dialog sits in a card whose heading is an h3.
     const host = await shown()

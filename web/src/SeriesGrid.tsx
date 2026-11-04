@@ -1,6 +1,11 @@
 import { Link } from 'react-router'
 import { Cover } from './Cover'
-import { type SeriesCard, unreadable, type WorkCard } from './library'
+import {
+  narrowedTo,
+  type SeriesCard,
+  unreadable,
+  type WorkCard,
+} from './library'
 
 /** "42 volumes", "1 volume": a series' `works`, as its tile says it. */
 function volumeCount(works: number): string {
@@ -18,15 +23,22 @@ function volumeCount(works: number): string {
 export function SeriesGrid({
   series,
   unfiled,
+  library,
 }: {
   series: SeriesCard[]
   unfiled: WorkCard[]
+  /**
+   * The library the tiles are drawn for. A series can hold works under
+   * several libraries' directories, so its page is opened with `?library=`
+   * to count what the tile counted (spec §3.6).
+   */
+  library?: number
 }) {
   return (
     <ul className="grid">
       {series.map((s) => (
         <li key={s.id}>
-          <Link to={`/series/${s.id}`}>
+          <Link to={narrowedTo(`/series/${s.id}`, library)}>
             <span className="cover-box">
               <Cover src={s.cover} title={s.title} />
               {s.aligned > 0 && <span className="aligned">⇄ {s.aligned}</span>}

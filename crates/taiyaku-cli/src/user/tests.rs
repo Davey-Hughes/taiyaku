@@ -686,6 +686,33 @@ fn the_unrooted_note_appears_only_when_members_carry_no_root() {
     assert!(note.contains("library scan"), "and what fixes it: {note}");
 }
 
+/// The count a grant warns on is of the members under no directory: those with
+/// no `member_root` row. A member whose `root_id` is `NULL` while a copy is
+/// still recorded under another directory is reached by that directory's
+/// grant, and is not counted.
+#[test]
+fn the_unrooted_count_is_of_members_with_no_directory_recorded() {
+    let library = taiyaku_library::Library::open_in_memory().expect("opens");
+    let conn = library.conn();
+    conn.execute_batch(
+        "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/copy');
+         INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (1, 'k', 'w', 'W', 'rtl', 'raw');
+         INSERT INTO edition (id, work_id, key, label) VALUES (1, 1, 'raw', 'Raw');
+         INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id) VALUES
+           (1, 1, 0, '/held/a.cbz', 'a', 1, 1),
+           (2, 1, 1, '/held/b.cbz', 'b', 1, NULL),
+           (3, 1, 2, 'c.cbz', 'c', 1, NULL);
+         INSERT INTO member_root (member_id, root_id) VALUES (2, 2);",
+    )
+    .expect("a member under a directory, one under a copy's alone, and one under none");
+    assert_eq!(
+        unrooted_members(&conn).expect("counts"),
+        1,
+        "the member with no directory recorded, alone"
+    );
+}
+
 /// A grant narrows an account only where it saw every library, so only then
 /// does it say so, and how to lift the limit again. An account already
 /// limited is widened by a grant, and an administrator is narrowed by

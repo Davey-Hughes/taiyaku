@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use rusqlite::{Connection, params};
 use taiyaku_core::{Kind, RegionMember, TruthDoc, TruthEdition, TruthRegion};
 
-use super::{Moved, Outcome, Rehomed, Rehoming, absorb, rehome_editions};
+use super::{Moved, Outcome, absorb};
 use crate::state::{progress, put_notes, put_progress, put_truth};
 use crate::{Note, Notes, Progress, Region};
 
@@ -828,6 +828,7 @@ fn folding_a_work_that_carries_nothing_by_hand_discards_nothing() {
             lost_positions: 0,
             discarded: 0,
             uncarried_alignments: 0,
+            hand_carried: 0,
         },
         "the edition and member rows the fold removes are the duplication, \
          not a cost"
@@ -3248,249 +3249,17 @@ fn a_fold_refused_after_its_slot_plan_has_writes_makes_none_of_them() {
     );
 }
 
-/// A work divided by a directory move, as a derive leaves it: work 1 still holds
-/// `raw` (its hub, which stays) and `en`, and work 2 is the fresh work the
-/// derive made for `en`'s archives on the other side.
-fn divided_pair() -> (Connection, i64, i64) {
-    let conn = open();
-    seed_work(
-        &conn,
-        1,
-        "stays",
-        &[("raw", &["aaa"]), ("en", &["bbb", "ccc"])],
-    );
-    seed_work(&conn, 2, "fresh", &[("en", &["bbb", "ccc"])]);
-    (conn, 1, 2)
-}
-
-fn rehomed(conn: &Connection, from: i64, into: i64, keys: &[&str]) -> Rehomed {
-    let keys: Vec<String> = keys.iter().map(|k| (*k).to_string()).collect();
-    match rehome_editions(conn, from, into, &keys).expect("rehoming") {
-        Rehoming::Done(moved) => moved,
-        Rehoming::Refused(why) => panic!("refused: {why}"),
-    }
-}
-
-fn refused(conn: &Connection, from: i64, into: i64, keys: &[&str]) -> String {
-    let keys: Vec<String> = keys.iter().map(|k| (*k).to_string()).collect();
-    match rehome_editions(conn, from, into, &keys).expect("rehoming") {
-        Rehoming::Done(moved) => panic!("rehomed: {moved:?}"),
-        Rehoming::Refused(why) => why,
-    }
-}
-
-fn edition_id(conn: &Connection, work: i64, key: &str) -> i64 {
-    conn.query_row(
-        "SELECT id FROM edition WHERE work_id = ?1 AND key = ?2",
-        params![work, key],
-        |r| r.get(0),
-    )
-    .expect("the edition")
-}
-
-fn count(conn: &Connection, sql: &str) -> i64 {
-    conn.query_row(sql, [], |r| r.get(0)).expect("counts")
-}
-
-/// The row moves: the edition `into` ends up holding is the one `from` held,
-/// by id, with the spread flag and the label a person put on it.
-#[test]
-fn a_rehomed_edition_is_the_same_row_with_what_was_on_it() {
-    let (conn, from, into) = divided_pair();
-    let old = edition_id(&conn, from, "en");
-    conn.execute("UPDATE edition SET label = 'Viz' WHERE id = ?1", [old])
-        .expect("a hand label");
-    conn.execute(
-        "INSERT INTO page_flag (edition_id, kind, page) VALUES (?1, 'spread', 1)",
-        [old],
-    )
-    .expect("a spread flag");
-
-    rehomed(&conn, from, into, &["en"]);
-
-    assert_eq!(edition_id(&conn, into, "en"), old, "the row itself");
-    assert_eq!(
-        count(
-            &conn,
-            &format!("SELECT count(*) FROM edition WHERE work_id = {from}")
-        ),
-        1,
-        "and the work it left keeps only what stays"
-    );
-    assert_eq!(
-        count(&conn, "SELECT count(*) FROM edition WHERE key = 'en'"),
-        1,
-        "the fresh edition it replaced is gone"
-    );
-    assert_eq!(
-        count(
-            &conn,
-            &format!("SELECT count(*) FROM page_flag WHERE edition_id = {old}")
-        ),
-        1
-    );
-    assert_eq!(
-        count(
-            &conn,
-            &format!("SELECT count(*) FROM member WHERE edition_id = {old}")
-        ),
-        2
-    );
-}
-
-/// One of everything a reader can put on an edition, on the edition that
-/// goes and on the one that stays. What is on `en` goes; what is on `raw`
-/// does not move.
-#[test]
-fn what_readers_put_on_a_rehomed_edition_goes_with_it_and_nothing_else_does() {
-    let (conn, from, into) = divided_pair();
-    for edition in ["raw", "en"] {
-        put_progress(
-            &conn,
-            from,
-            1,
-            &Progress {
-                edition: edition.to_string(),
-                slot: 1,
-            },
-        )
-        .expect("a position");
-    }
-    // `put_truth` and `put_notes` replace what the work holds, so each
-    // edition's rows go in one call.
-    let mut doc = TruthDoc::new();
-    for edition in ["raw", "en"] {
-        doc.editions.insert(
-            edition.to_string(),
-            TruthEdition {
-                members: vec![RegionMember {
-                    sha256: "bbb".to_string(),
-                }],
-                pages: BTreeMap::from([(
-                    0,
-                    vec![TruthRegion {
-                        x: 0.1,
-                        y: 0.2,
-                        w: 0.3,
-                        h: 0.4,
-                        axis: None,
-                        kind: Kind::Dialogue,
-                        ignore: false,
-                        text: None,
-                    }],
-                )]),
-            },
-        );
-    }
-    put_truth(&conn, from, &doc).expect("a page on each edition");
-    // `put_notes` replaces a reader's notes on the work, so both go in one call.
-    put_notes(
-        &conn,
-        from,
-        1,
-        &Notes {
-            work: "ignored".to_string(),
-            notes: ["raw", "en"]
-                .iter()
-                .zip(["01JEXAMPLE0000000000000001", "01JEXAMPLE0000000000000002"])
-                .map(|(edition, id)| Note {
-                    id: id.to_string(),
-                    edition: (*edition).to_string(),
-                    slot: 0,
-                    region: None,
-                    color: None,
-                    body: "the sign in the background".to_string(),
-                    created: "2026-08-27T09:00:00Z".to_string(),
-                    updated: "2026-08-27T09:00:00Z".to_string(),
-                })
-                .collect(),
-        },
-    )
-    .expect("a note on each edition");
-
-    let moved = rehomed(&conn, from, into, &["en"]);
-
-    assert_eq!((moved.positions, moved.notes, moved.truth_pages), (1, 1, 1));
-    for (table, column) in [
-        ("progress", "edition"),
-        ("note", "edition"),
-        ("truth_page", "edition"),
-        ("truth_box", "edition"),
-        ("truth_member", "edition"),
-    ] {
-        assert_eq!(
-            count(
-                &conn,
-                &format!("SELECT count(*) FROM {table} WHERE work_id = {into} AND {column} = 'en'")
-            ),
-            1,
-            "{table}: `en`'s row is on the work `en` went to"
-        );
-        assert_eq!(
-            count(
-                &conn,
-                &format!("SELECT count(*) FROM {table} WHERE work_id = {from} AND {column} = 'en'")
-            ),
-            0,
-            "{table}: and not left behind"
-        );
-        assert_eq!(
-            count(
-                &conn,
-                &format!(
-                    "SELECT count(*) FROM {table} WHERE work_id = {from} AND {column} = 'raw'"
-                )
-            ),
-            1,
-            "{table}: `raw`'s row stayed"
-        );
-    }
-}
-
-#[test]
-fn an_alignment_goes_with_two_editions_that_move_together_and_is_dropped_between_two_that_part() {
-    let conn = open();
-    seed_work(
-        &conn,
-        1,
-        "stays",
-        &[("raw", &["aaa"]), ("en", &["bbb"]), ("fr", &["ccc"])],
-    );
-    seed_work(&conn, 2, "fresh", &[("en", &["bbb"]), ("fr", &["ccc"])]);
-    for (from_key, to_key) in [("en", "fr"), ("raw", "en")] {
-        conn.execute(
-            "INSERT INTO alignment (work_id, from_key, to_key, by) VALUES (1, ?1, ?2, 'hand')",
-            params![from_key, to_key],
-        )
-        .expect("an alignment");
-        conn.execute(
-            "INSERT INTO run (alignment_id, ordinal, a_start_page, a_end_page)
-             VALUES (?1, 0, 0, 0)",
-            [conn.last_insert_rowid()],
-        )
-        .expect("its run");
-    }
-
-    let moved = rehomed(&conn, 1, 2, &["en", "fr"]);
-
-    assert_eq!(moved.alignments_dropped, 1, "raw to en: the two parted");
-    assert_eq!(
-        count(
-            &conn,
-            "SELECT count(*) FROM alignment WHERE work_id = 2 AND from_key = 'en' AND to_key = 'fr'"
-        ),
-        1,
-        "en to fr went with them"
-    );
-    assert_eq!(count(&conn, "SELECT count(*) FROM alignment"), 1);
-    assert_eq!(count(&conn, "SELECT count(*) FROM run"), 1, "with its run");
-}
-
-/// The tables a rehoming moves rows between, as text rows, so that a refusal
-/// that wrote to any of them is seen.
+/// The tables a fold moves rows between, the target's hand and effective
+/// columns it carries values into and the markers it arms, as text rows, so
+/// that a refusal that wrote to any of them is seen.
 fn store_dump(conn: &Connection) -> Vec<String> {
     let mut rows = Vec::new();
     for sql in [
+        "SELECT 'work ' || id || ' ' || quote(title) || ' ' || quote(title_hand) || ' '
+                || quote(volume) || ' ' || quote(volume_hand) || ' '
+                || quote(series_id) || ' ' || quote(series_id_hand) FROM work ORDER BY 1",
+        "SELECT 'migrated_document ' || work_id || ' ' || document || ' ' || absorbed
+           FROM migrated_document ORDER BY 1",
         "SELECT 'edition ' || id || ' ' || work_id || ' ' || key FROM edition ORDER BY 1",
         "SELECT 'progress ' || work_id || ' ' || edition || ' ' || slot FROM progress ORDER BY 1",
         "SELECT 'note ' || work_id || ' ' || edition || ' ' || id FROM note ORDER BY 1",
@@ -3512,267 +3281,288 @@ fn store_dump(conn: &Connection) -> Vec<String> {
     rows
 }
 
-/// Refusals, and after each the store is as it was.
-#[test]
-fn a_rehoming_is_refused_before_anything_is_written() {
-    let (conn, from, into) = divided_pair();
-    put_progress(
-        &conn,
-        from,
-        1,
-        &Progress {
-            edition: "en".to_string(),
-            slot: 1,
-        },
-    )
-    .expect("a position");
-    let before = store_dump(&conn);
-
-    assert!(refused(&conn, from, from, &["en"]).contains("itself"));
-    assert!(refused(&conn, from, into, &["raw"]).contains("hub"));
-    assert!(refused(&conn, from, into, &["zz"]).contains("`zz`"));
-    assert!(refused(&conn, from, into, &["en", "en"]).contains("twice"));
-    assert_eq!(store_dump(&conn), before);
-
-    // The other side's edition holds different archives.
+/// A series a hand-set `series_id_hand` can name.
+fn seed_series(conn: &Connection, series_id: i64, title: &str) {
     conn.execute(
-        "UPDATE member SET sha256 = 'zzz' WHERE edition_id = ?1 AND ordinal = 1",
-        [edition_id(&conn, into, "en")],
+        "INSERT INTO series (id, sort_title) VALUES (?1, ?2)",
+        params![series_id, title],
     )
-    .expect("a different archive");
-    let before = store_dump(&conn);
-    assert!(refused(&conn, from, into, &["en"]).contains("same archives"));
-    assert_eq!(store_dump(&conn), before);
+    .expect("seeding a series");
+}
+
+/// One work's hand column and the effective column beside it, in that order.
+fn hand_and_effective<T: rusqlite::types::FromSql>(
+    conn: &Connection,
+    work_id: i64,
+    hand: &str,
+    effective: &str,
+) -> (Option<T>, Option<T>) {
+    conn.query_row(
+        &format!("SELECT {hand}, {effective} FROM work WHERE id = ?1"),
+        [work_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .expect("the work's hand and effective columns")
+}
+
+/// Whether this work's `LIBRARY` marker is armed: `None` with no row at all.
+fn library_marker(conn: &Connection, work_id: i64) -> Option<bool> {
+    use rusqlite::OptionalExtension as _;
+    conn.query_row(
+        "SELECT absorbed FROM migrated_document WHERE work_id = ?1 AND document = 'library'",
+        [work_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .expect("reading the library marker")
+}
+
+/// **A title only the folded work holds is the target's afterwards**, in
+/// `title` as well as `title_hand`: `librarydoc::apply` writes both, and the
+/// target must read right before its next derive recomputes anything.
+#[test]
+fn a_hand_title_only_the_folded_work_holds_is_carried_onto_the_target() {
+    let (conn, from, into) = folded_pair();
     conn.execute(
-        "UPDATE member SET sha256 = 'ccc' WHERE edition_id = ?1 AND ordinal = 1",
-        [edition_id(&conn, into, "en")],
+        "UPDATE work SET title_hand = 'By Hand', title = 'By Hand' WHERE id = ?1",
+        [from],
     )
-    .expect("back");
+    .expect("a hand title on the work about to be folded");
 
-    // The other side already holds something a reader put on that key.
-    put_progress(
-        &conn,
-        into,
-        1,
-        &Progress {
-            edition: "en".to_string(),
-            slot: 0,
-        },
-    )
-    .expect("a position on the fresh edition");
-    let before = store_dump(&conn);
-    assert!(refused(&conn, from, into, &["en"]).contains("already holds"));
-    assert_eq!(store_dump(&conn), before);
-}
+    let moved = folded(&conn, from, into);
 
-/// Something on `into`'s edition `en`, by table, and the store after a refusal
-/// is as it was. Each is reached through the held-check: the rest of the pair
-/// is as a derive leaves it.
-fn refused_for_what_the_other_side_holds(table: &str, hold: impl FnOnce(&Connection, i64)) {
-    let (conn, from, into) = divided_pair();
-    hold(&conn, into);
-    let before = store_dump(&conn);
-    let why = refused(&conn, from, into, &["en"]);
-    assert!(
-        why.contains(&format!("already holds 1 {table} row(s) on edition `en`")),
-        "{table}: {why}"
-    );
-    assert_eq!(store_dump(&conn), before, "{table}: nothing written");
-}
-
-#[test]
-fn a_position_the_other_side_holds_refuses_the_rehoming() {
-    refused_for_what_the_other_side_holds("progress", |conn, into| {
-        put_progress(
-            conn,
-            into,
-            1,
-            &Progress {
-                edition: "en".to_string(),
-                slot: 0,
-            },
-        )
-        .expect("a position");
-    });
-}
-
-#[test]
-fn a_note_the_other_side_holds_refuses_the_rehoming() {
-    refused_for_what_the_other_side_holds("note", |conn, into| seed_note(conn, into, "en", 0));
-}
-
-#[test]
-fn a_truth_page_the_other_side_holds_refuses_the_rehoming() {
-    refused_for_what_the_other_side_holds("truth_page", |conn, into| {
-        seed_truth(conn, into, "en", 0, "ccc");
-    });
-}
-
-#[test]
-fn an_alignment_the_other_side_holds_from_the_key_refuses_the_rehoming() {
-    refused_for_what_the_other_side_holds("alignment", |conn, into| {
-        seed_alignment(conn, into, "en", "xx")
-    });
-}
-
-#[test]
-fn an_alignment_the_other_side_holds_to_the_key_refuses_the_rehoming() {
-    refused_for_what_the_other_side_holds("alignment", |conn, into| {
-        seed_alignment(conn, into, "xx", "en")
-    });
-}
-
-fn seed_alignment(conn: &Connection, work: i64, from_key: &str, to_key: &str) {
-    conn.execute(
-        "INSERT INTO alignment (work_id, from_key, to_key, by) VALUES (?1, ?2, ?3, 'hand')",
-        params![work, from_key, to_key],
-    )
-    .expect("an alignment");
-    conn.execute(
-        "INSERT INTO run (alignment_id, ordinal, a_start_page, a_end_page) VALUES (?1, 0, 0, 0)",
-        [conn.last_insert_rowid()],
-    )
-    .expect("its run");
-}
-
-/// `note`'s key is `(user_id, work_id, id)`: one reader may hold one id on
-/// both works, and the move would then collide. The other side's copy is on a
-/// key that is not moving, so only this refusal can see it.
-#[test]
-fn one_note_id_on_both_works_refuses_the_rehoming() {
-    let (conn, from, into) = divided_pair();
-    seed_note(&conn, from, "en", 0);
-    seed_note(&conn, into, "zz", 0);
-    let before = store_dump(&conn);
-
-    let why = refused(&conn, from, into, &["en"]);
-
-    assert!(why.contains("note id(s) on both"), "{why}");
-    assert_eq!(store_dump(&conn), before);
-}
-
-/// What a person made on the other side's edition, which the rehoming would
-/// delete with it. The edition must still be there, unchanged, afterwards.
-fn refused_for_what_a_person_made(what: &str, make: impl FnOnce(&Connection, i64)) {
-    let (conn, from, into) = divided_pair();
-    let kept = edition_id(&conn, into, "en");
-    make(&conn, kept);
-    let before = store_dump(&conn);
-
-    let why = refused(&conn, from, into, &["en"]);
-
-    assert!(
-        why.contains(&format!("already holds {what} on edition `en`")),
-        "{what}: {why}"
-    );
     assert_eq!(
-        edition_id(&conn, into, "en"),
-        kept,
-        "{what}: the edition stands"
-    );
-    assert_eq!(store_dump(&conn), before, "{what}: nothing written");
-}
-
-#[test]
-fn a_label_set_by_hand_on_the_other_side_refuses_the_rehoming() {
-    refused_for_what_a_person_made("a label, kind or language set by hand", |conn, id| {
-        conn.execute("UPDATE edition SET label_hand = 'Mine' WHERE id = ?1", [id])
-            .expect("a hand label");
-    });
-}
-
-#[test]
-fn a_kind_set_by_hand_on_the_other_side_refuses_the_rehoming() {
-    refused_for_what_a_person_made("a label, kind or language set by hand", |conn, id| {
-        conn.execute("UPDATE edition SET kind_hand = 'fan' WHERE id = ?1", [id])
-            .expect("a hand kind");
-    });
-}
-
-#[test]
-fn a_language_set_by_hand_on_the_other_side_refuses_the_rehoming() {
-    refused_for_what_a_person_made("a label, kind or language set by hand", |conn, id| {
-        conn.execute(
-            "UPDATE edition SET language_hand = 'ja' WHERE id = ?1",
-            [id],
-        )
-        .expect("a hand language");
-    });
-}
-
-#[test]
-fn a_chapter_number_set_by_hand_on_the_other_side_refuses_the_rehoming() {
-    refused_for_what_a_person_made("a chapter number set by hand", |conn, id| {
-        conn.execute(
-            "UPDATE member SET chapter_declared = 7, chapter_source = 'hand'
-              WHERE edition_id = ?1 AND ordinal = 0",
-            [id],
-        )
-        .expect("a hand chapter number");
-    });
-}
-
-#[test]
-fn a_credit_flag_on_the_other_side_refuses_the_rehoming() {
-    refused_for_what_a_person_made("a flag on a page", |conn, id| {
-        conn.execute(
-            "INSERT INTO page_flag (edition_id, kind, page) VALUES (?1, 'credit', 1)",
-            [id],
-        )
-        .expect("a credit flag");
-    });
-}
-
-#[test]
-fn a_spread_flag_on_the_other_side_refuses_the_rehoming() {
-    refused_for_what_a_person_made("a flag on a page", |conn, id| {
-        conn.execute(
-            "INSERT INTO page_flag (edition_id, kind, page) VALUES (?1, 'spread', 1)",
-            [id],
-        )
-        .expect("a spread flag");
-    });
-}
-
-#[test]
-fn a_credit_of_the_edition_on_the_other_side_refuses_the_rehoming() {
-    refused_for_what_a_person_made("a credit", |conn, id| {
-        conn.execute("INSERT INTO person (name) VALUES ('Some Group')", [])
-            .expect("a person");
-        conn.execute(
-            "INSERT INTO credit (person_id, role, edition_id) VALUES (last_insert_rowid(), 'group', ?1)",
-            [id],
-        )
-        .expect("a credit");
-    });
-}
-
-/// An alignment between two editions that both stay is not the rehoming's:
-/// it is left as it was and is not counted as dropped.
-#[test]
-fn an_alignment_between_two_staying_editions_is_left_alone() {
-    let conn = open();
-    seed_work(
-        &conn,
-        1,
-        "stays",
-        &[
-            ("raw", &["aaa"]),
-            ("en", &["bbb", "ccc"]),
-            ("other", &["ddd"]),
-        ],
-    );
-    seed_work(&conn, 2, "fresh", &[("en", &["bbb", "ccc"])]);
-    seed_alignment(&conn, 1, "raw", "other");
-
-    let moved = rehomed(&conn, 1, 2, &["en"]);
-
-    assert_eq!(moved.alignments_dropped, 0);
-    assert_eq!(
-        count(
-            &conn,
-            "SELECT count(*) FROM alignment WHERE work_id = 1 AND from_key = 'raw' AND to_key = 'other'"
+        (
+            hand_and_effective::<String>(&conn, into, "title_hand", "title"),
+            moved.hand_carried
         ),
-        1
+        ((Some("By Hand".into()), Some("By Hand".into())), 1),
+        "the target holds the title, provenance and effective value both"
+    );
+}
+
+#[test]
+fn a_hand_volume_only_the_folded_work_holds_is_carried_onto_the_target() {
+    let (conn, from, into) = folded_pair();
+    conn.execute("UPDATE work SET volume = 1.0 WHERE id = ?1", [into])
+        .expect("the volume the target's derive gave it");
+    conn.execute(
+        "UPDATE work SET volume_hand = 4.5, volume = 4.5 WHERE id = ?1",
+        [from],
+    )
+    .expect("a hand volume on the work about to be folded");
+
+    let moved = folded(&conn, from, into);
+
+    assert_eq!(
+        (
+            hand_and_effective::<f64>(&conn, into, "volume_hand", "volume"),
+            moved.hand_carried
+        ),
+        ((Some(4.5), Some(4.5)), 1),
+        "the target holds the volume, provenance and effective value both"
+    );
+}
+
+#[test]
+fn a_hand_series_only_the_folded_work_holds_is_carried_onto_the_target() {
+    let (conn, from, into) = folded_pair();
+    seed_series(&conn, 10, "Derived");
+    seed_series(&conn, 20, "Placed By Hand");
+    conn.execute("UPDATE work SET series_id = 10 WHERE id = ?1", [into])
+        .expect("the series the target's derive gave it");
+    conn.execute(
+        "UPDATE work SET series_id_hand = 20, series_id = 20 WHERE id = ?1",
+        [from],
+    )
+    .expect("a hand series on the work about to be folded");
+
+    let moved = folded(&conn, from, into);
+
+    assert_eq!(
+        (
+            hand_and_effective::<i64>(&conn, into, "series_id_hand", "series_id"),
+            moved.hand_carried
+        ),
+        ((Some(20), Some(20)), 1),
+        "the target sits in the series a person placed the folded work in"
+    );
+}
+
+/// **Two different answers about one work are refused, each of the three, and
+/// the refusal writes nothing.** Every table the fold writes raises on a write
+/// before the call, because a refusal rolls back and a write made before it
+/// would otherwise be invisible to the comparison after.
+#[test]
+fn a_fold_between_two_works_holding_different_hand_values_is_refused_and_writes_nothing() {
+    for (field, set_from, set_into, values) in [
+        (
+            "title",
+            "title_hand = 'Folded Title', title = 'Folded Title'",
+            "title_hand = 'Target Title', title = 'Target Title'",
+            ["`Folded Title`", "`Target Title`"],
+        ),
+        (
+            "volume",
+            "volume_hand = 4.5, volume = 4.5",
+            "volume_hand = 7.25, volume = 7.25",
+            ["4.5", "7.25"],
+        ),
+        (
+            "series",
+            "series_id_hand = 20, series_id = 20",
+            "series_id_hand = 10, series_id = 10",
+            ["20 `Folded Series`", "10 `Target Series`"],
+        ),
+    ] {
+        let (conn, from, into) = folded_pair();
+        seed_series(&conn, 10, "Target Series");
+        seed_series(&conn, 20, "Folded Series");
+        conn.execute(&format!("UPDATE work SET {set_from} WHERE id = ?1"), [from])
+            .expect("the folded work's hand value");
+        conn.execute(&format!("UPDATE work SET {set_into} WHERE id = ?1"), [into])
+            .expect("the target's own, different, hand value");
+        conn.execute(
+            "INSERT INTO migrated_document (work_id, document, absorbed) VALUES (?1, 'library', 1)",
+            [from],
+        )
+        .expect("the folded work's armed marker");
+        let before = store_dump(&conn);
+        forbid_writes(&conn, &["work", "migrated_document"]);
+
+        let why = refusal(&conn, from, into);
+
+        for named in [
+            format!("— {field} {} on work {from}", values[0]),
+            format!("{} on work {into}", values[1]),
+            "nothing was moved and nothing was deleted".to_string(),
+        ] {
+            assert!(
+                why.contains(&named),
+                "the {field} refusal names {named:?}: {why}"
+            );
+        }
+        assert_eq!(
+            store_dump(&conn),
+            before,
+            "the {field} refusal wrote nothing"
+        );
+        let standing: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM work WHERE id IN (?1, ?2)",
+                [from, into],
+                |r| r.get(0),
+            )
+            .expect("counting the two works");
+        assert_eq!(standing, 2, "both works stand after the {field} refusal");
+    }
+}
+
+/// The same answer twice is one answer, for each of the three: the fold goes
+/// ahead and carries nothing, since the target already holds it.
+#[test]
+fn a_fold_between_two_works_holding_the_same_hand_value_goes_ahead() {
+    for (field, set_both, read) in [
+        (
+            "title",
+            "title_hand = 'Agreed', title = 'Agreed'",
+            "SELECT quote(title_hand) || ' ' || quote(title) FROM work WHERE id = ?1",
+        ),
+        (
+            "volume",
+            "volume_hand = 4.5, volume = 4.5",
+            "SELECT quote(volume_hand) || ' ' || quote(volume) FROM work WHERE id = ?1",
+        ),
+        (
+            "series",
+            "series_id_hand = 20, series_id = 20",
+            "SELECT quote(series_id_hand) || ' ' || quote(series_id) FROM work WHERE id = ?1",
+        ),
+    ] {
+        let (conn, from, into) = folded_pair();
+        seed_series(&conn, 20, "Agreed Series");
+        conn.execute(
+            &format!("UPDATE work SET {set_both} WHERE id IN (?1, ?2)"),
+            [from, into],
+        )
+        .expect("one hand value on both works");
+        let held: String = conn
+            .query_row(read, [into], |r| r.get(0))
+            .expect("the target's value before");
+
+        let moved = match absorb(&conn, from, into).expect("folding") {
+            Outcome::Folded(moved) => moved,
+            Outcome::Refused(why) => panic!("the {field} fold was refused: {why}"),
+        };
+
+        let kept: String = conn
+            .query_row(read, [into], |r| r.get(0))
+            .expect("the target's value after");
+        assert_eq!(
+            (kept, moved.hand_carried),
+            (held, 0),
+            "the target keeps the {field} both held, and nothing needed carrying"
+        );
+    }
+}
+
+/// **A carried value takes the folded work's armed marker with it**, so the
+/// target owes a document holding it: the value stood in the folded work's
+/// document, and must stand in the target's to survive a rebuild from the
+/// files.
+#[test]
+fn a_carried_hand_value_arms_the_targets_marker_where_the_folded_works_was_armed() {
+    let (conn, from, into) = folded_pair();
+    conn.execute(
+        "UPDATE work SET title_hand = 'By Hand', title = 'By Hand' WHERE id = ?1",
+        [from],
+    )
+    .expect("a hand title on the work about to be folded");
+    conn.execute(
+        "INSERT INTO migrated_document (work_id, document, absorbed) VALUES (?1, 'library', 1)",
+        [from],
+    )
+    .expect("the folded work's armed marker");
+    assert_eq!(
+        library_marker(&conn, into),
+        None,
+        "the target starts unarmed"
+    );
+
+    folded(&conn, from, into);
+
+    assert_eq!(library_marker(&conn, into), Some(true));
+}
+
+/// **Armed only where both halves hold**: a value carried, from a work whose
+/// marker was armed. This pins `absorb`'s own arming, which the ruling keeps
+/// for a pass that writes no document; under `Documents::Reconcile` the derive
+/// saves the target's document after a carry, armed source or not.
+#[test]
+fn the_targets_marker_is_left_alone_unless_a_value_carried_from_an_armed_work() {
+    let (conn, from, into) = folded_pair();
+    conn.execute(
+        "INSERT INTO migrated_document (work_id, document, absorbed) VALUES (?1, 'library', 1)",
+        [from],
+    )
+    .expect("the folded work's armed marker");
+    folded(&conn, from, into);
+    assert_eq!(
+        library_marker(&conn, into),
+        None,
+        "nothing carried, so the target's marker is untouched"
+    );
+
+    let (conn, from, into) = folded_pair();
+    conn.execute(
+        "UPDATE work SET title_hand = 'By Hand', title = 'By Hand' WHERE id = ?1",
+        [from],
+    )
+    .expect("a hand title on the work about to be folded");
+    folded(&conn, from, into);
+    assert_eq!(
+        library_marker(&conn, into),
+        None,
+        "carried from an unarmed work, so the target's marker is untouched"
     );
 }

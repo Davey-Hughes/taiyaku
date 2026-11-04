@@ -27,7 +27,7 @@
 //!
 //! `work`, `edition` and `member` **rows** are written by [`crate::import`]
 //! alone — this module builds a [`Sidecar`] and hands it to
-//! [`crate::import::scanned_in`] rather than issuing its own inserts, so the
+//! [`crate::import::scanned`] rather than issuing its own inserts, so the
 //! column lists cannot drift from `project.rs`'s reader. What it then writes
 //! itself is exactly what the sidecar format has no field for and so cannot
 //! carry: `work.series_id`, `work.volume`, `edition.kind`/`edition.language`,
@@ -243,14 +243,13 @@ pub struct DeriveReport {
     ///
     /// A refusal is not always a mapping failure. `fold::absorb` also refuses
     /// a work carrying a reader's row on an edition key it no longer holds; a
-    /// pair where one reader holds one note id on both works and the two
-    /// copies differ, which the move would collide on (copies identical in
-    /// every column are dropped from the superseded work instead, and counted
-    /// in [`Self::dropped_notes`]); and a pair whose ground truth on a mapped
-    /// edition was drawn against different archives on the two sides. All
-    /// three are the reader's own state or the library's ground truth, and
-    /// none is this fold's to destroy or to rewrite. [`Self::unfoldable`] is
-    /// where the difference is legible.
+    /// pair where one reader holds one note id on both works, in two copies
+    /// that differ (identical ones are dropped, see [`Self::dropped_notes`]);
+    /// a pair whose ground truth on a mapped edition was drawn against
+    /// different archives on the two sides; and a pair holding different
+    /// hand-set titles, volumes or series. `derive` refuses a fold onto a work
+    /// whose hand document did not read this pass. None of these is the
+    /// fold's to destroy or to rewrite; [`Self::unfoldable`] says which.
     ///
     /// **And a fold that would leave a row naming another page (O121)** — a
     /// reading position or a note whose page and half has no slot on the
@@ -453,8 +452,8 @@ pub struct DeriveReport {
     /// scan of a library that has never folded anything reports one of these.
     pub series_holding_no_work: usize,
     /// Entries that joined an edition another entry had already opened — a
-    /// volume arriving as two chapter directories contributes two members and
-    /// one of these.
+    /// volume arriving as two chapter directories contributes one of these; a
+    /// copy of a member under another directory joins no page sequence and none.
     ///
     /// **A merge is a page sequence.** Member order is page order (see
     /// [`write_work`]), so two entries in one edition are one continuous
@@ -502,10 +501,10 @@ pub struct DeriveReport {
     /// `NULL` instead — the identical state `schema/006_member_root.sql`'s own
     /// `ON DELETE SET NULL` gives every other member of the removed root — and
     /// counts it here rather than either failing the pass or losing the event,
-    /// for [`Self::suppressed`]'s reason. A member counted here is not
-    /// stranded: it reads exactly as an imported member with no root on record
-    /// does (O54), and the next scan that finds it under a surviving root
-    /// recovers it the ordinary way.
+    /// for [`Self::suppressed`]'s reason; a copy's directory gone the same way
+    /// is counted too and gets no `member_root` row. A member counted here
+    /// reads as an imported member with no root on record does (O54), and the
+    /// next scan that finds it under a surviving root recovers it.
     pub root_removed_mid_derive: usize,
 }
 
@@ -544,17 +543,17 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
     derive_with(conn, Documents::Reconcile)
 }
 
-/// Turn every `scan_entry` this library holds into series, works, editions and
-/// members, through the rules.
+/// Turn every `scan_entry` in the store, whichever library holds its
+/// directory, into series, works, editions and members, through the rules.
 ///
-/// Idempotent by construction: series are reconciled on `(library,
-/// sort_title)`, and works on `(series_id, volume)` within the library, so
+/// Idempotent by construction: series are reconciled on `sort_title`, and
+/// works on `(series_id, volume)`, both across the store, so
 /// running this twice over unchanged facts writes the same rows a second time
 /// rather than a second set of rows.
 ///
 /// **No transaction of its own — but everything under it can still be
 /// wrapped in one.** [`write_work`] opens one per work, which
-/// [`crate::import::scanned_in`]'s own nests in, and [`crate::fold::absorb`]
+/// [`crate::import::scanned`]'s own nests in, and [`crate::fold::absorb`]
 /// opens one per fold; all three do it through [`crate::Nested`] rather than
 /// `unchecked_transaction` directly: a plain `BEGIN` — the same constraint
 /// [`crate::import::replace_alignments`] records — is refused outright inside
@@ -564,10 +563,10 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
 /// each fold and a derive is atomic per work — save a work rekeyed under
 /// [`Documents::Reconcile`], which commits before and after
 /// [`crate::hand::rename_for_rekey`] (see [`write_work`]) — and not across
-/// the library: the right grain for that case, since a library that
+/// the store: the right grain for that case, since a store that
 /// half-derives has half its works current, not none of them.
 ///
-/// **`preview` is the one caller that needs the library-wide grain, and gets
+/// **`preview` is the one caller that needs the store-wide grain, and gets
 /// it without this function changing at all.** It wraps a whole `derive_with`
 /// pass in a transaction of its own, so it can roll every write back
 /// together; the per-work and per-fold `Nested` scopes above then take the
@@ -601,9 +600,9 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     let roots = crate::scan::roots(conn)?;
 
     let mut report = DeriveReport::default();
-    let mut groups: BTreeMap<GroupKey, Group> = BTreeMap::new();
+    let mut staged: Vec<Staged> = Vec::new();
     let mut chapter_dirs: BTreeSet<(i64, String)> = BTreeSet::new();
-    let mut named_series: BTreeSet<(String, i64)> = BTreeSet::new();
+    let mut named_series: BTreeSet<String> = BTreeSet::new();
 
     // **Two passes over each root's entries, and the second is what stops a
     // volume being counted twice.** The fact layer records the container
@@ -638,7 +637,7 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
                 root,
                 admitted,
                 &mut Sorting {
-                    groups: &mut groups,
+                    staged: &mut staged,
                     chapter_dirs: &mut chapter_dirs,
                     named_series: &mut named_series,
                     report: &mut report,
@@ -647,31 +646,36 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
         }
     }
     report.unattached_chapter_dirs = chapter_dirs.len();
+    let groups = place(conn, staged, &mut named_series, &mut report)?;
 
     // Every series that produced *anything* gets a row, including one holding
     // only unattached chapters: `proposal.subject_id` references `series(id)`,
     // so the `attach-chapters` proposal has nothing to point at otherwise.
-    let mut series_ids: BTreeMap<(String, i64), i64> = BTreeMap::new();
-    for (title, library_id) in named_series {
-        let id = reconcile_series(conn, library_id, &title)?;
-        series_ids.insert((title, library_id), id);
+    let mut series_ids: BTreeMap<String, i64> = BTreeMap::new();
+    for title in named_series {
+        let id = reconcile_series(conn, &title)?;
+        series_ids.insert(title, id);
     }
     report.series = series_ids.len();
 
     let mut written: BTreeSet<i64> = BTreeSet::new();
+    // Each work whose hand document `write_work` could not read or apply this
+    // pass, with the read-back's own message. The fold below refuses a pair
+    // whose target is one; see its comment.
+    let mut unread: BTreeMap<i64, String> = BTreeMap::new();
     // `(work_id, edition key)` pairs this pass actually wrote — narrower than
     // `written` alone, because a written work can still be holding an edition
     // this pass never touched (`DeriveReport::kept_editions`). `superseded`
     // needs the narrower set: only these rows count as evidence that a
     // candidate's material has a home. `group.editions.keys()` is exactly
     // `doc.editions.keys()` below in `write_work`, which is what
-    // `import::scanned_in`'s `Scope::Scan` arm actually writes into `edition`.
+    // `import::scanned`'s `Scope::Scan` arm actually writes into `edition`.
     let mut written_editions: BTreeSet<(i64, String)> = BTreeSet::new();
     for group in groups.into_values() {
         let series_id = *series_ids
-            .get(&(group.series.clone(), group.library_id))
+            .get(&group.series)
             .ok_or_else(|| format!("no series row was reconciled for `{}`", group.series))?;
-        let work_id = write_work(conn, series_id, &group, documents, &mut report)?;
+        let work_id = write_work(conn, series_id, &group, documents, &mut unread, &mut report)?;
         written_editions.extend(group.editions.keys().cloned().map(|key| (work_id, key)));
         written.insert(work_id);
     }
@@ -691,13 +695,13 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     // rather than being dropped for the count beside it: it already names the
     // work and the keys, and a count alone leaves an operator with "1
     // superseded work left standing" over a library of thousands.
-    // **Which work absorbed the one whose document is about to become an
-    // orphan** — read here, before `absorb` runs, because `absorb`'s own
-    // `DELETE FROM work` removes the `from_work` row itself: `hand::path_for`
-    // joins through `work`, `edition`, `member` and `root` to resolve an
-    // address (it never reads `migrated_document`), and once that row is gone
-    // there is nothing left for it to join through. Captured after the
-    // delete instead, `path_for` would find no `from_work` to query at all.
+    // **Where the document about to become an orphan sits** — read here,
+    // before `absorb` runs, because `absorb`'s own `DELETE FROM work` removes
+    // the `from_work` row itself: `hand::path_for` joins through `work`,
+    // `edition`, `member` and `root` to resolve an address (it never reads
+    // `migrated_document`), and once that row is gone there is nothing left
+    // for it to join through. Captured after the delete instead, `path_for`
+    // would find no `from_work` to query at all.
     //
     // `migrated_document`'s own `ON DELETE CASCADE` is a separate mechanism,
     // not this one: it is what makes the file an orphan in the first place,
@@ -712,17 +716,45 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     // orphan report.
     let mut absorbed_into: HashMap<PathBuf, crate::hand::Absorbed> = HashMap::new();
     for (from_work, into_work) in superseded(conn, &written, &written_editions)? {
+        // **Refused while the target's document did not read this pass.** The
+        // hand-value clash check reads rows and cannot see what that document
+        // holds, and a fold that carries a value can arm the target, after which
+        // the fixed file is never read back. Left standing, the next scan
+        // reads the fixed file and then folds.
+        if let Some(why) = unread.get(&into_work) {
+            report.unfolded_works += 1;
+            report.unfoldable.push(format!(
+                "work {from_work} was not folded into work {into_work}, whose hand document \
+                 did not read on this pass ({why}); fix the file and scan again; nothing was \
+                 moved and nothing was deleted"
+            ));
+            continue;
+        }
         let document_path = crate::hand::path_for(conn, from_work)?;
-        let target: Option<(String, String)> = conn
-            .query_row(
-                "SELECT slug, title FROM work WHERE id = ?1",
-                [into_work],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(|e| format!("reading the absorbing work {into_work}: {e}"))?;
         match crate::fold::absorb(conn, from_work, into_work)? {
             crate::fold::Outcome::Folded(moved) => {
+                // **The target is read after the fold, unlike the path.** The
+                // fold can carry the folded work's hand title onto it
+                // (`fold::Moved::hand_carried`), and the orphan report names
+                // the work by the title a person will find it under.
+                let target: Option<(String, String)> = conn
+                    .query_row(
+                        "SELECT slug, title FROM work WHERE id = ?1",
+                        [into_work],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(|e| format!("reading the absorbing work {into_work}: {e}"))?;
+                // **A carried value must reach the target's document**, or a
+                // rebuild from the files loses it: `reconcile` below writes
+                // only a missing document and reports a present one that
+                // disagrees as stale. Not under `Documents::Skip`, which writes
+                // no file; a target whose document did not read never gets
+                // here (see the refusal above). A failed write is
+                // `reconcile`'s to report.
+                if moved.hand_carried > 0 && documents == Documents::Reconcile {
+                    crate::hand::save(conn, into_work)?;
+                }
                 report.emptied_works += 1;
                 report.moved_positions += moved.positions;
                 report.lost_positions += moved.lost_positions;
@@ -851,7 +883,7 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
 /// and every alignment offset derives from it.
 ///
 /// `rel_path` rather than the absolute path, so one volume-less work present
-/// in two roots of one library is still one work — which is what
+/// in two roots is still one work — which is what
 /// `a_volume_less_work_still_matches_itself_on_the_next_derive` pins, and the
 /// same reason [`Candidate::rel_path`] exists for ordering.
 ///
@@ -859,11 +891,11 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
 /// which is §7's chapter case and stays; an entry with a chapter and no
 /// volume never reaches here at all ([`classify`] settles it first).
 ///
-/// **The fourth element is the library.** Last, so a library's groups sort by
-/// title, volume and path, and the rows a pass mints come out in that order.
-/// Two directories of one library group together; a directory of another
-/// library never joins them.
-type GroupKey = (String, Option<u64>, Option<String>, i64);
+/// **No library.** Directories group together whichever libraries hold
+/// them, so a book is one work with one reading position and an edition per
+/// edition key: directories sharing a key share one edition
+/// ([`DeriveReport::merged`]).
+type GroupKey = (String, Option<u64>, Option<String>);
 
 /// One `scan_entry` row, as derivation reads it.
 struct Entry {
@@ -891,7 +923,7 @@ struct Candidate {
     /// The root this entry was walked from.
     ///
     /// **A member has one; a work does not.** The `Group` below collects
-    /// entries across every root of a library, so this is the only level at
+    /// entries across every root in the store, so this is the only level at
     /// which the question has a single answer — see `member.root_id`'s own
     /// comment in migration 6, and spec C1 §5.1.
     root_id: i64,
@@ -910,17 +942,28 @@ struct Candidate {
     /// path. Free text in the schema, so there is nothing to validate it
     /// against — only the same disagreement to settle.
     language: Option<String>,
+    /// The same bytes under other directories, one per directory: one volume
+    /// is one member however many directories hold it (overlapping-libraries
+    /// spec §1), and [`write_roots`] gives each of them a `member_root` row so
+    /// a grant on any of those directories reaches it. `path`, `rel_path` and
+    /// `root_id` above are the primary copy, the one `member.path` names.
+    copies: Vec<CopyAt>,
 }
 
-/// One work, before it is a work: every entry across every root *of one
-/// library* that resolved to the same `(series, volume)`, split by edition
-/// key.
+/// Where one more copy of a [`Candidate`]'s bytes sits. Named for its place
+/// rather than `Copy`, which would shadow the prelude's trait in this module.
+struct CopyAt {
+    root_id: i64,
+    path: String,
+}
+
+/// One work, before it is a work: every entry across every root, whichever
+/// library holds it, that resolved to the same `(series, volume)`, split by
+/// edition key. A copy is not one of them: [`place`] files it under its
+/// primary, wherever its own rules would have put it.
 struct Group {
     series: String,
     volume: Option<f64>,
-    /// The library every entry here was walked from, which is the library
-    /// the work is filed under.
-    library_id: i64,
     editions: BTreeMap<String, Vec<Candidate>>,
 }
 
@@ -932,9 +975,9 @@ struct Group {
 /// of borrows is the shape `taiyaku-cli`'s `AlignWrite` already uses for the
 /// same refusal, with shared borrows where these are mutable.
 struct Sorting<'a> {
-    groups: &'a mut BTreeMap<GroupKey, Group>,
+    staged: &'a mut Vec<Staged>,
     chapter_dirs: &'a mut BTreeSet<(i64, String)>,
-    named_series: &'a mut BTreeSet<(String, i64)>,
+    named_series: &'a mut BTreeSet<String>,
     report: &'a mut DeriveReport,
 }
 
@@ -1165,7 +1208,7 @@ fn nested_in_claim(claims: &BTreeSet<String>, rel_path: &str) -> bool {
     false
 }
 
-/// File one admitted entry — as a member of some work, as one more reason a
+/// Stage one admitted entry for [`place`], or count it as one more reason a
 /// directory is an unattached chapter directory, or as nothing at all.
 ///
 /// The order of the tests below is load-bearing. The chapter case is settled
@@ -1190,7 +1233,7 @@ fn classify(
     // volume never reach here — `nested_in_claim` dropped them, because that
     // question has already been answered for them.
     if resolved.volume.is_none() && resolved.chapter.is_some() {
-        into.named_series.insert((series, root.library_id));
+        into.named_series.insert(series);
         into.chapter_dirs
             .insert((root.id, parent_of(&entry.rel_path).to_string()));
         return Ok(());
@@ -1230,59 +1273,140 @@ fn classify(
         return Ok(());
     };
 
-    into.named_series.insert((series.clone(), root.library_id));
-    let volume = resolved.volume;
-    // No volume here means no chapter either — the branch above returned for
-    // that case — so this is the entry the rules placed in a series and
-    // nothing more. It is keyed to itself. See [`GroupKey`].
-    let alone = if volume.is_none() {
-        Some(entry.rel_path.clone())
-    } else {
-        None
-    };
-    let key = (
-        series.clone(),
-        volume.map(f64::to_bits),
-        alone,
-        root.library_id,
-    );
-    let group = into.groups.entry(key).or_insert_with(|| Group {
+    let path = root
+        .path
+        .join(&entry.rel_path)
+        .to_string_lossy()
+        .into_owned();
+    into.staged.push(Staged {
+        candidate: Candidate {
+            path,
+            rel_path: entry.rel_path,
+            root_id: root.id,
+            sha256,
+            pages,
+            chapter: resolved.chapter,
+            title: resolved.title,
+            kind: resolved.kind,
+            language: resolved.language,
+            copies: Vec::new(),
+        },
         series,
-        volume,
-        library_id: root.library_id,
-        editions: BTreeMap::new(),
-    });
-    let edition = group
-        .editions
-        .entry(
-            resolved
-                .edition_key
-                .unwrap_or_else(|| DEFAULT_EDITION_KEY.to_string()),
-        )
-        .or_default();
-    // Counted here rather than from the finished group, because "how many
-    // entries joined something" and "how many members an edition ended with"
-    // differ by one per edition and this is the number that means something:
-    // one entry joining another's page sequence.
-    if !edition.is_empty() {
-        into.report.merged += 1;
-    }
-    edition.push(Candidate {
-        path: root
-            .path
-            .join(&entry.rel_path)
-            .to_string_lossy()
-            .into_owned(),
-        rel_path: entry.rel_path.clone(),
-        root_id: root.id,
-        sha256,
-        pages,
-        chapter: resolved.chapter,
-        title: resolved.title,
-        kind: resolved.kind,
-        language: resolved.language,
+        volume: resolved.volume,
+        edition_key: resolved
+            .edition_key
+            .unwrap_or_else(|| DEFAULT_EDITION_KEY.to_string()),
     });
     Ok(())
+}
+
+/// One entry [`classify`] admitted and hashed, with where its own directory's
+/// rules file it. [`place`] decides whether it is a member or a copy.
+struct Staged {
+    candidate: Candidate,
+    series: String,
+    volume: Option<f64>,
+    edition_key: String,
+}
+
+/// File every staged entry once every root has been walked. **A byte-identical
+/// file under another directory is a copy, not more pages**, wherever that
+/// directory's rules would file it (the ruling of 2026-11-04): as a member it
+/// would show twice in one edition, or make a second group whose hub hashes
+/// the same `content_key`, and two groups would write one row in turn, the
+/// last one's directory holding it. The primary's rules name it. A volume
+/// that shares only some of its files splits: the rest stay where their own
+/// rules put them.
+fn place(
+    conn: &Connection,
+    staged: Vec<Staged>,
+    named_series: &mut BTreeSet<String>,
+    report: &mut DeriveReport,
+) -> Result<BTreeMap<GroupKey, Group>, String> {
+    let mut by_sha: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (at, entry) in staged.iter().enumerate() {
+        by_sha
+            .entry(entry.candidate.sha256.as_str())
+            .or_default()
+            .push(at);
+    }
+    let mut copies: Vec<Vec<usize>> = vec![Vec::new(); staged.len()];
+    let mut is_copy = vec![false; staged.len()];
+    for (sha256, mut at) in by_sha {
+        let first = staged[at[0]].candidate.root_id;
+        if at.iter().all(|&i| staged[i].candidate.root_id == first) {
+            continue;
+        }
+        // The primary is the first in walk order (roots by id) once held
+        // copies are put first. Two such files under one directory stay two
+        // members: a `member_root` row is per directory, so a second copy
+        // there would have nothing to record it.
+        keep_primaries(conn, sha256, &staged, &mut at)?;
+        let mut primaries: Vec<usize> = Vec::new();
+        for i in at {
+            let root = staged[i].candidate.root_id;
+            let primary = primaries.iter().copied().find(|&p| {
+                staged[p].candidate.root_id != root
+                    && copies[p]
+                        .iter()
+                        .all(|&k| staged[k].candidate.root_id != root)
+            });
+            match primary {
+                Some(p) => {
+                    copies[p].push(i);
+                    is_copy[i] = true;
+                }
+                None => primaries.push(i),
+            }
+        }
+    }
+
+    let mut slots: Vec<Option<Staged>> = staged.into_iter().map(Some).collect();
+    let mut groups: BTreeMap<GroupKey, Group> = BTreeMap::new();
+    for at in 0..slots.len() {
+        if is_copy[at] {
+            continue;
+        }
+        let Some(Staged {
+            mut candidate,
+            series,
+            volume,
+            edition_key,
+        }) = slots[at].take()
+        else {
+            continue;
+        };
+        for &k in &copies[at] {
+            if let Some(copy) = slots[k].take() {
+                candidate.copies.push(CopyAt {
+                    root_id: copy.candidate.root_id,
+                    path: copy.candidate.path,
+                });
+            }
+        }
+        named_series.insert(series.clone());
+        // No volume here means no chapter either — `classify` returned for
+        // that case — so this is the entry the rules placed in a series and
+        // nothing more. It is keyed to itself. See [`GroupKey`].
+        let alone = volume.is_none().then(|| candidate.rel_path.clone());
+        let key = (series.clone(), volume.map(f64::to_bits), alone);
+        let group = groups.entry(key).or_insert_with(|| Group {
+            series,
+            volume,
+            editions: BTreeMap::new(),
+        });
+        let edition = group.editions.entry(edition_key).or_default();
+        // Counted here rather than from the finished group, because "how many
+        // entries joined something" and "how many members an edition ended
+        // with" differ by one per edition and this is the number that means
+        // something: one entry joining another's page sequence. A copy joins
+        // no page sequence and is not one.
+        if !edition.is_empty() {
+            report.merged += 1;
+        }
+        edition.push(candidate);
+    }
+    Ok(groups)
 }
 
 /// Whether `taiyaku-read` can turn what this `scan_entry.format` token names
@@ -1374,44 +1498,25 @@ pub(crate) fn parent_of(rel_path: &str) -> &str {
 /// `taiyaku.library.json` later applied over a scanned work would mint a
 /// second series beside the derived one rather than finding it.
 ///
-/// **Within a library.** The same title in two libraries is two series. The
-/// row found is the library's own, or else the oldest of that title in no
-/// library that
-/// [`crate::libraries::own_or_adoptable_series`] lets it take, which is then
-/// filed under the library. Where two libraries could take one series the
-/// lower library id does, since [`derive_with`] reconciles in `(title,
-/// library)` order.
-fn reconcile_series(conn: &Connection, library_id: i64, sort_title: &str) -> Result<i64, String> {
-    let its = crate::libraries::own_or_adoptable_series("series", "?2");
-    let held: Option<(i64, Option<i64>)> = conn
+/// **Across the store.** The same title in two libraries is one series, so
+/// a work with editions in both has one series to sit in (overlapping-libraries
+/// spec §3.2). The row found is the oldest of that `sort_title`: the one whose
+/// id a dismissed proposal and a reader's links already name, where more than
+/// one exists.
+fn reconcile_series(conn: &Connection, sort_title: &str) -> Result<i64, String> {
+    let held: Option<i64> = conn
         .query_row(
-            &format!(
-                "SELECT id, library_id FROM series
-                  WHERE sort_title = ?1 AND {its}
-                  ORDER BY library_id IS NULL, id
-                  LIMIT 1"
-            ),
-            rusqlite::params![sort_title, library_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            "SELECT id FROM series WHERE sort_title = ?1 ORDER BY id LIMIT 1",
+            [sort_title],
+            |r| r.get(0),
         )
         .optional()
         .map_err(|e| format!("looking up the series `{sort_title}`: {e}"))?;
     let series_id = match held {
-        Some((id, Some(_))) => id,
-        Some((id, None)) => {
-            conn.execute(
-                "UPDATE series SET library_id = ?1 WHERE id = ?2",
-                rusqlite::params![library_id, id],
-            )
-            .map_err(|e| format!("filing the series `{sort_title}` under its library: {e}"))?;
-            id
-        }
+        Some(id) => id,
         None => {
-            conn.execute(
-                "INSERT INTO series (sort_title, library_id) VALUES (?1, ?2)",
-                rusqlite::params![sort_title, library_id],
-            )
-            .map_err(|e| format!("inserting the series `{sort_title}`: {e}"))?;
+            conn.execute("INSERT INTO series (sort_title) VALUES (?1)", [sort_title])
+                .map_err(|e| format!("inserting the series `{sort_title}`: {e}"))?;
             conn.last_insert_rowid()
         }
     };
@@ -1429,7 +1534,7 @@ fn reconcile_series(conn: &Connection, library_id: i64, sort_title: &str) -> Res
     Ok(series_id)
 }
 
-/// Build one group's document and hand it to [`crate::import::scanned_in`], then
+/// Build one group's document and hand it to [`crate::import::scanned`], then
 /// write the columns the document cannot carry — `work.series_id`,
 /// `work.volume` and, through [`write_chapters`], `member.chapter_declared`.
 ///
@@ -1445,8 +1550,18 @@ fn write_work(
     series_id: i64,
     group: &Group,
     documents: Documents,
+    unread: &mut BTreeMap<i64, String>,
     report: &mut DeriveReport,
 ) -> Result<i64, String> {
+    // **One commit for the work, not one per statement — O210.** Every commit
+    // waits for the disk. Everything below runs on `conn` inside this scope —
+    // `Nested` is a state of the connection, not a second handle — and the
+    // import's own `Nested`, like `librarydoc::apply`'s, nests in it as a
+    // `SAVEPOINT`. Opened before `held_work` reads, so the address it finds is
+    // the one the import writes over.
+    let mut tx = crate::Nested::open(conn, "write_work")
+        .map_err(|e| format!("starting to write a work of `{}`: {e}", group.series))?;
+    let held = held_work(conn, series_id, group)?;
     let mut editions = BTreeMap::new();
     for (key, candidates) in &group.editions {
         let ordered = in_page_order(candidates);
@@ -1472,15 +1587,6 @@ fn write_work(
         );
     }
 
-    // **One commit for the work, not one per statement — O210.** Every commit
-    // waits for the disk. Everything below runs on `conn` inside this scope —
-    // `Nested` is a state of the connection, not a second handle — and the
-    // import's own `Nested`, like `librarydoc::apply`'s, nests in it as a
-    // `SAVEPOINT`. Opened before `held_work` reads, so the address it finds is
-    // the one the import writes over.
-    let mut tx = crate::Nested::open(conn, "write_work")
-        .map_err(|e| format!("starting to write a work of `{}`: {e}", group.series))?;
-    let held = held_work(conn, series_id, group)?;
     // Only a genuinely new work chooses one, and then the choice is arbitrary
     // but permanent: whichever key sorts first among the editions it has
     // today. **The hub is fixed when the work is created** — `identity.rs`'s
@@ -1526,7 +1632,7 @@ fn write_work(
         hub: hub_key,
         // **Empty because a walk has nothing to say here, and empty does not
         // mean deleted.** Solving is `taiyaku align`'s, not the scanner's, so
-        // this document declares no correspondence — and `import::scanned_in`
+        // this document declares no correspondence — and `import::scanned`
         // reads that as silence rather than as an answer: it leaves the work's
         // `alignment`, `run` and `page_flag` rows exactly as they were. See
         // `import::scanned`'s own doc for the rule and for what it costs — an
@@ -1537,12 +1643,12 @@ fn write_work(
     // **Counted before the import, because afterwards the row already holds
     // the new key and the move is unobservable.** `content_key` is recomputed
     // here rather than returned from `import` — a sha256 over a handful of
-    // hex digests, against leaving `import::scanned_in`'s signature answering
+    // hex digests, against leaving `import::scanned`'s signature answering
     // two questions instead of one.
     //
     // **`rekeyed_from` is captured in the same breath, for
     // [`crate::hand::rename_for_rekey`] near the end of this function.**
-    // `held_key` is this row's `content_key` before `import::scanned_in`
+    // `held_key` is this row's `content_key` before `import::scanned`
     // overwrites it — the only place that value is still readable — so it is
     // saved here rather than re-derived from `work.content_key` after the
     // fact, which is what a caller with no memory of `held` would have to do.
@@ -1556,8 +1662,7 @@ fn write_work(
     // The second identity probe: this work's address, for a work that has no
     // document to be addressed by. Without it, the changed files above would
     // mint a second row and leave the reader's progress on the first.
-    let work_id =
-        crate::import::scanned_in(conn, &doc, group.library_id, held.map(|(id, _, _)| id))?;
+    let work_id = crate::import::scanned(conn, &doc, held.map(|(id, _, _)| id))?;
     // **Counted after the import, where `rekeyed` above had to be counted
     // before it.** The two are not the same shape: a `content_key` is
     // overwritten by the import, so the old value is gone once it returns,
@@ -1569,7 +1674,7 @@ fn write_work(
 
     // **Before the read-back below.** `write_roots` only issues
     // `UPDATE member SET root_id = ?` from the group's own candidates, matched
-    // on `(edition key, ordinal)` — `import::scanned_in`, just above, is the
+    // on `(edition key, ordinal)` — `import::scanned`, just above, is the
     // only thing either depends on, so nothing here needs the guard or the
     // read-back to have run first. The read-back does need this to have run
     // first: on a work being minted for the first time, `member.root_id` would
@@ -1582,7 +1687,7 @@ fn write_work(
     //
     // **`write_chapters` stays below, and that is not an oversight.** It looks
     // like the same shape — another targeted update keyed on
-    // `(edition key, ordinal)` from `import::scanned_in`'s own rows — but it
+    // `(edition key, ordinal)` from `import::scanned`'s own rows — but it
     // has a real ordering dependency the read-back's `apply` call creates:
     // `librarydoc::apply`'s `apply_members` clears *every* member's chapter for
     // this work unconditionally, then rewrites only the entries the hand
@@ -1615,7 +1720,7 @@ fn write_work(
     // that column NULL: `held_member_meta` restores it by matching the old and
     // new rows on `sha256`, and a repacked archive's hash is exactly what
     // changed. `write_roots`, just above, is what restores it, by `(edition
-    // key, ordinal)` instead — and it runs *after* `import::scanned_in`
+    // key, ordinal)` instead — and it runs *after* `import::scanned`
     // returns, so it cannot have run yet at any point inside `import_with`.
     // Calling the rename there would, for a work with exactly one member, find
     // `path_for` answering `None` and leave the document unmoved, reported as
@@ -1650,8 +1755,8 @@ fn write_work(
     // read-back below arms the marker itself, because a `.library.json` file
     // sits on disk with nothing in `migrated_document` yet to say so.
     //
-    // **Content matching finds this row.** `import::scanned_in`'s own
-    // `find_by_key` probes `content_key`, within the group's library, before
+    // **Content matching finds this row.** `import::scanned`'s own
+    // `find_by_key` probes `content_key`, across the store, before
     // it ever falls back to the address `held_work` computed above, and
     // `content_key` is a hash over the hub edition's members — untouched by a
     // hand-set `series_id` or `volume`. So a work whose hand metadata has
@@ -1689,7 +1794,10 @@ fn write_work(
                         crate::migrate::LIBRARY,
                         !empty,
                     )?,
-                    Err(why) => report.unreadable_hand.push(why),
+                    Err(why) => {
+                        unread.insert(work_id, why.clone());
+                        report.unreadable_hand.push(why);
+                    }
                 }
             }
             Ok(None) => {}
@@ -1707,7 +1815,10 @@ fn write_work(
             // unscanned"*. On a fresh database every work is marker-less, so
             // every document is read on that one pass — exactly when a single
             // bad file is most likely to be met.
-            Err(why) => report.unreadable_hand.push(why),
+            Err(why) => {
+                unread.insert(work_id, why.clone());
+                report.unreadable_hand.push(why);
+            }
         }
     }
     // **No `absorbed` guard here — the provenance columns answer it per field
@@ -1850,10 +1961,10 @@ fn digests_by_work(conn: &Connection) -> Result<BTreeMap<i64, Vec<HeldDigest>>, 
 /// **(4) is what keeps an imported work safe.** `006_member_root.sql` states
 /// that NULL means "under no root", "which is exactly true of an imported
 /// work" — so a hand-imported `taiyaku.json` naming the same archive is never
-/// superseded by a scan. A scanned work whose root was removed also reads
-/// NULL throughout (`member.root_id` is `ON DELETE SET NULL`) and is likewise
-/// left alone: the safe direction of an ambiguity this function must not
-/// resolve on its own.
+/// superseded by a scan. A member of a removed root that `scan::take_root`
+/// found no copy of elsewhere reads NULL too (`ON DELETE SET NULL`), and its
+/// work is likewise left alone: the safe direction of an ambiguity this
+/// function must not resolve on its own.
 ///
 /// **(2) is deliberately "every member", never "any".** A work half of whose
 /// material moved is not emptied, and treating it as superseded would later
@@ -1981,8 +2092,15 @@ fn superseded(
     Ok(found)
 }
 
+/// `ORDER BY` text putting a `work` row some directory holds — one with a
+/// member under a root — before one none does. See [`held_work`].
+const HELD_FIRST: &str = "NOT EXISTS (SELECT 1 FROM edition held_e
+                                     JOIN member held_m ON held_m.edition_id = held_e.id
+                                    WHERE held_e.work_id = work.id
+                                      AND held_m.root_id IS NOT NULL)";
+
 /// The `work` row this group already sits on, as `(id, hub, content_key)`, or
-/// `None` for a group this library has never written.
+/// `None` for a group no derive has written.
 ///
 /// **Looked up by address rather than by `content_key`**, which cannot be
 /// computed until the hub is known — this is the one lookup that breaks that
@@ -1995,10 +2113,10 @@ fn superseded(
 ///
 /// `ORDER BY … id LIMIT 1` because two rows really can sit at one address, and
 /// reading the hub off whichever one SQLite happened to return would make the
-/// answer depend on the page order of a b-tree. The oldest row wins, which is
-/// the one a reader's progress is on. That is the oldest of the group's own
-/// library, and a row in no library only where the library has none at
-/// the address.
+/// answer depend on the page order of a b-tree. **A row some directory holds
+/// wins over one none does** (an imported work placed here by hand), then the
+/// oldest, which is the one a reader's progress is on: taking the imported row
+/// would strand the row these files were already derived onto.
 ///
 /// **One derive can produce that state on its own.** `derive/tests.rs`'s
 /// `a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive` is the
@@ -2039,49 +2157,45 @@ fn held_work(
     series_id: i64,
     group: &Group,
 ) -> Result<Option<(i64, String, String)>, String> {
-    // Both statements look only at the works
-    // `libraries::own_or_adoptable_work` allows the group's library, its own
-    // before one in none. A hand-set `series_id_hand` can point a work at a
-    // series of another library, so a row at this address is not always
-    // this library's.
-    let its = crate::libraries::own_or_adoptable_work("work", "?3");
+    // Both statements order by `HELD_FIRST`, so they cannot differ on which
+    // of two rows at one address is this group's.
     if group.volume.is_some() {
         return conn
             .query_row(
                 &format!(
                     "SELECT id, hub, content_key FROM work
                       WHERE series_id = ?1 AND volume IS ?2
-                        AND {its}
-                      ORDER BY library_id IS NULL, id LIMIT 1"
+                      ORDER BY {HELD_FIRST}, id LIMIT 1"
                 ),
-                rusqlite::params![series_id, group.volume, group.library_id],
+                rusqlite::params![series_id, group.volume],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(|e| format!("looking up an existing work at this volume: {e}"));
     }
-    for candidate in group.editions.values().flatten() {
+    // Every copy's path as well as the primary's: the work may hold this
+    // volume under a directory other than the one walked first.
+    let paths = group
+        .editions
+        .values()
+        .flatten()
+        .flat_map(|c| std::iter::once(&c.path).chain(c.copies.iter().map(|k| &k.path)));
+    for path in paths {
         let held: Option<(i64, String, String)> = conn
             .query_row(
                 &format!(
                     "SELECT work.id, work.hub, work.content_key FROM work
                       WHERE work.series_id = ?1 AND work.volume IS NULL
-                        AND {its}
                         AND EXISTS (SELECT 1 FROM edition
                                       JOIN member ON member.edition_id = edition.id
                                      WHERE edition.work_id = work.id AND member.path = ?2)
-                      ORDER BY work.library_id IS NULL, work.id LIMIT 1"
+                      ORDER BY {HELD_FIRST}, work.id LIMIT 1"
                 ),
-                rusqlite::params![series_id, candidate.path, group.library_id],
+                rusqlite::params![series_id, path],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
-            .map_err(|e| {
-                format!(
-                    "looking up an existing work holding `{}`: {e}",
-                    candidate.path
-                )
-            })?;
+            .map_err(|e| format!("looking up an existing work holding `{path}`: {e}"))?;
         if held.is_some() {
             return Ok(held);
         }
@@ -2089,12 +2203,53 @@ fn held_work(
     Ok(None)
 }
 
+/// Put first, among one digest's staged entries in walk order, those whose
+/// directory a held member of those bytes, in an edition of the entry's own
+/// key, already names; [`place`] makes the first of them the primary. **Sticky**
+/// because `hand::path_for` resolves through the hub's first `member.root_id`,
+/// and the primary's rules name the work: a copy under a lower id would
+/// otherwise move the document's address and rename the work. Read by the
+/// bytes across the store, so a work a hand series or volume moved keeps it.
+fn keep_primaries(
+    conn: &Connection,
+    sha256: &str,
+    staged: &[Staged],
+    at: &mut [usize],
+) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT DISTINCT member.root_id FROM member
+               JOIN edition ON edition.id = member.edition_id
+              WHERE edition.key = ?1 AND member.sha256 = ?2
+                AND member.root_id IS NOT NULL",
+        )
+        .map_err(|e| format!("reading where the store holds a copy: {e}"))?;
+    let mut held: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
+    for &i in at.iter() {
+        let key = staged[i].edition_key.as_str();
+        if held.contains_key(key) {
+            continue;
+        }
+        let roots = stmt
+            .query_map(rusqlite::params![key, sha256], |r| r.get::<_, i64>(0))
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .map_err(|e| format!("reading where the store holds `{sha256}`: {e}"))?;
+        held.insert(key, roots);
+    }
+    // Stable, so walk order decides among the held and among the rest.
+    at.sort_by_key(|&i| {
+        let entry = &staged[i];
+        !held[entry.edition_key.as_str()].contains(&entry.candidate.root_id)
+    });
+    Ok(())
+}
+
 /// How many editions of `work_id` this derive did not derive — see
 /// [`DeriveReport::kept_editions`].
 ///
 /// Read back rather than diffed against what was there before: the keys this
 /// derive wrote are `doc.editions`, and every other edition on the row is by
-/// definition one [`crate::import::scanned_in`] left standing.
+/// definition one [`crate::import::scanned`] left standing.
 fn kept_editions(conn: &Connection, work_id: i64, doc: &Sidecar) -> Result<usize, String> {
     let mut stmt = conn
         .prepare("SELECT key FROM edition WHERE work_id = ?1")
@@ -2164,7 +2319,7 @@ fn title_of(group: &Group, hub_key: &str) -> String {
 }
 
 /// Write the chapter numbers the rules resolved onto the member rows
-/// `import::scanned_in` just wrote.
+/// `import::scanned` just wrote.
 ///
 /// **Cleared first, and scoped by `chapter_source` — and the write below is
 /// scoped the same way.** A rule edit that stops resolving a chapter must not
@@ -2216,7 +2371,7 @@ fn write_chapters(conn: &Connection, work_id: i64, group: &Group) -> Result<(), 
     Ok(())
 }
 
-/// Write each member's root onto the rows `import::scanned_in` just wrote.
+/// Write each member's root and `member_root` rows onto `import::scanned`'s.
 ///
 /// **The same shape as [`write_chapters`], and for the same reason**: the
 /// sidecar format has no field for a root and must not gain one, because a
@@ -2237,18 +2392,17 @@ fn write_chapters(conn: &Connection, work_id: i64, group: &Group) -> Result<(), 
 /// `ORDER BY ordinal`.
 ///
 /// **A member whose root vanished between `group` being built and this write
-/// running does not fail the derive.** `group`'s `Candidate::root_id` values
-/// were read before this call, and `derive_with` holds no transaction of its
-/// own (see that function's own doc) — so a concurrent
-/// [`crate::scan::remove_root`] committing in that window deletes the `root`
-/// row this `UPDATE` is about to write, and the `member.root_id` foreign key
-/// refuses it. Caught specifically — [`is_foreign_key_violation`] — and
-/// turned into the same `NULL` `schema/006_member_root.sql`'s own `ON DELETE
-/// SET NULL` writes for every other member of that root, rather than
-/// propagated: see [`DeriveReport::root_removed_mid_derive`] for why this is
-/// safe to treat as ordinary rather than as a hard failure. Any other error
-/// this statement can return — a locked database, a genuinely malformed
-/// statement — propagates unchanged.
+/// running does not fail the derive.** `group`'s root ids were read before
+/// this call, and `derive_with` holds no transaction of its own (see that
+/// function's own doc) — so a concurrent [`crate::scan::remove_root`]
+/// committing in that window deletes a `root` row the `UPDATE` of
+/// `member.root_id` or an `INSERT` into `member_root` is about to name, and
+/// the foreign key refuses it. Caught specifically, by
+/// [`is_foreign_key_violation`]: the column becomes the `NULL` migration 6's
+/// `ON DELETE SET NULL` writes, a copy's row is skipped, and either is counted
+/// in [`DeriveReport::root_removed_mid_derive`] rather than propagated. Any
+/// other error from these statements — a locked database, a genuinely
+/// malformed statement — propagates unchanged.
 fn write_roots(
     conn: &Connection,
     work_id: i64,
@@ -2258,22 +2412,31 @@ fn write_roots(
     for (key, candidates) in &group.editions {
         let ordered = in_page_order(candidates);
         for (ordinal, candidate) in (0_i64..).zip(ordered) {
-            let result = conn.execute(
-                "UPDATE member SET root_id = ?1
-                  WHERE ordinal = ?2
-                    AND edition_id = (SELECT id FROM edition
-                                       WHERE work_id = ?3 AND key = ?4)",
-                rusqlite::params![candidate.root_id, ordinal, work_id, key],
-            );
-            match result {
-                Ok(_) => {}
+            let failed = |e: rusqlite::Error| {
+                format!("recording the root of `{key}` member {ordinal} on work {work_id}: {e}")
+            };
+            let Some(member_id) = conn
+                .query_row(
+                    "SELECT member.id FROM member
+                       JOIN edition ON edition.id = member.edition_id
+                      WHERE edition.work_id = ?1 AND edition.key = ?2 AND member.ordinal = ?3",
+                    rusqlite::params![work_id, key, ordinal],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(failed)?
+            else {
+                continue;
+            };
+            let primary = match conn.execute(
+                "UPDATE member SET root_id = ?1 WHERE id = ?2",
+                rusqlite::params![candidate.root_id, member_id],
+            ) {
+                Ok(_) => Some(candidate.root_id),
                 Err(e) if is_foreign_key_violation(&e) => {
                     conn.execute(
-                        "UPDATE member SET root_id = NULL
-                          WHERE ordinal = ?1
-                            AND edition_id = (SELECT id FROM edition
-                                               WHERE work_id = ?2 AND key = ?3)",
-                        rusqlite::params![ordinal, work_id, key],
+                        "UPDATE member SET root_id = NULL WHERE id = ?1",
+                        [member_id],
                     )
                     .map_err(|e| {
                         format!(
@@ -2282,11 +2445,29 @@ fn write_roots(
                         )
                     })?;
                     report.root_removed_mid_derive += 1;
+                    None
                 }
-                Err(e) => {
-                    return Err(format!(
-                        "recording the root of `{key}` member {ordinal} on work {work_id}: {e}"
-                    ));
+                Err(e) => return Err(failed(e)),
+            };
+            // Exactly the primary's directory and each copy's, written after
+            // the column rather than left to migration 018's triggers:
+            // `member_root_on_update` drops the old directory's row when the
+            // primary moves though a copy may still sit there, and the
+            // import's restore may have put back one that holds no copy now.
+            conn.execute("DELETE FROM member_root WHERE member_id = ?1", [member_id])
+                .map_err(failed)?;
+            for root_id in primary
+                .into_iter()
+                .chain(candidate.copies.iter().map(|k| k.root_id))
+            {
+                match conn.execute(
+                    "INSERT INTO member_root (member_id, root_id) VALUES (?1, ?2)",
+                    rusqlite::params![member_id, root_id],
+                ) {
+                    Ok(_) => {}
+                    // A copy's directory removed mid-pass, as for the primary.
+                    Err(e) if is_foreign_key_violation(&e) => report.root_removed_mid_derive += 1,
+                    Err(e) => return Err(failed(e)),
                 }
             }
         }
@@ -2325,7 +2506,7 @@ fn in_page_order(candidates: &[Candidate]) -> Vec<&Candidate> {
 }
 
 /// Write the edition kind and language the rules resolved onto the `edition`
-/// rows [`crate::import::scanned_in`] just wrote.
+/// rows [`crate::import::scanned`] just wrote.
 ///
 /// # Why these two do not join the never-overwrite list
 ///
@@ -2467,8 +2648,8 @@ pub(crate) fn unattached_chapter_dirs(
     Ok(dirs)
 }
 
-/// Every `(root id, rel_path)`, across every root of `library`, that the
-/// rules currently resolve to `series` — every `scan_entry` there [`admit`]
+/// Every `(root id, rel_path)`, across every root, that the rules currently
+/// resolve to `series` — every `scan_entry` there [`admit`]
 /// would place in this series, with unreadable and series-less entries
 /// already excluded by that function.
 ///
@@ -2495,9 +2676,8 @@ pub(crate) fn unattached_chapter_dirs(
 /// `accept` needs is "where does this series' material live", not "which of
 /// it is a member".
 ///
-/// **Within `library`.** Only that library's directories answer, so the same
-/// title in another library contributes nothing. A `library` of `None` has no
-/// directory and answers empty.
+/// **Across every library.** A subject spread over two libraries' directories
+/// is answered with both, so `proposals::common_directory_pattern` refuses it.
 ///
 /// # Errors
 ///
@@ -2505,14 +2685,11 @@ pub(crate) fn unattached_chapter_dirs(
 /// roots cannot be read, or a `scan_entry` row will not project.
 pub(crate) fn rel_paths_for_series(
     conn: &Connection,
-    library: Option<i64>,
     series: &str,
 ) -> Result<Vec<(i64, String)>, String> {
-    Ok(
-        rel_paths_by_series(conn, &BTreeSet::from([(library, series)]))?
-            .remove(&(library, series.to_string()))
-            .unwrap_or_default(),
-    )
+    Ok(rel_paths_by_series(conn, &BTreeSet::from([series]))?
+        .remove(series)
+        .unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -2535,18 +2712,16 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
-/// What [`rel_paths_by_series`] answers: each `(library, title)` asked about,
-/// with the `(root id, rel_path)` of every entry that resolves to it. Named
-/// because `clippy::type_complexity` refuses the type written out.
-pub(crate) type RelPathsBySeries = BTreeMap<(Option<i64>, String), Vec<(i64, String)>>;
+/// What [`rel_paths_by_series`] answers: each title asked about, with the
+/// `(root id, rel_path)` of every entry that resolves to it.
+pub(crate) type RelPathsBySeries = BTreeMap<String, Vec<(i64, String)>>;
 
 /// [`rel_paths_for_series`] for several series in **one** pass.
 ///
-/// Each series is asked about as `(library, title)`, and is answered from
-/// that library's directories only. Every pair asked about is a key of the
-/// answer, holding an empty `Vec` where nothing resolved to it — "no
-/// entries" is an answer here, not an absence — which is what a pair whose
-/// library is `None` always holds, since no directory is in no library.
+/// Each series is asked about by title, and is answered from every root.
+/// Every title asked about is a key of the answer, holding an empty `Vec`
+/// where nothing resolved to it — "no entries" is an answer here, not an
+/// absence.
 ///
 /// **The pass is what costs, not the filter.** Each call compiles every rule
 /// in the library ([`Engine::load`]), reads every root, `SELECT`s every
@@ -2556,7 +2731,7 @@ pub(crate) type RelPathsBySeries = BTreeMap<(Option<i64>, String), Vec<(i64, Str
 /// at once, so it pays for the whole sweep once rather than twice.
 pub(crate) fn rel_paths_by_series(
     conn: &Connection,
-    series: &BTreeSet<(Option<i64>, &str)>,
+    series: &BTreeSet<&str>,
 ) -> Result<RelPathsBySeries, String> {
     #[cfg(test)]
     REL_PATHS_BY_SERIES_CALLS.with(|c| c.set(c.get() + 1));
@@ -2565,7 +2740,7 @@ pub(crate) fn rel_paths_by_series(
     let mut report = DeriveReport::default();
     let mut found: RelPathsBySeries = series
         .iter()
-        .map(|(library, title)| ((*library, (*title).to_string()), Vec::new()))
+        .map(|title| ((*title).to_string(), Vec::new()))
         .collect();
 
     for root in &roots {
@@ -2573,7 +2748,7 @@ pub(crate) fn rel_paths_by_series(
             let Some(admitted) = admit(&engine, root, entry, &mut report) else {
                 continue;
             };
-            if let Some(paths) = found.get_mut(&(Some(root.library_id), admitted.series)) {
+            if let Some(paths) = found.get_mut(&admitted.series) {
                 paths.push((root.id, admitted.entry.rel_path));
             }
         }

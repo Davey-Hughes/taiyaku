@@ -1465,3 +1465,133 @@ fn a_missing_member_falls_back_to_the_comic_type() {
         crate::download::CBZ_TYPE
     );
 }
+
+/// Spec §3.8's downloads, over
+/// [`crate::test_support::router_over_an_edition_merged_from_two_libraries`].
+mod narrowing {
+    use crate::test_support::{self, EditionMergedFromTwoLibraries, Reader};
+    use axum::http::{StatusCode, header};
+
+    /// `raw`'s member files on disk, in order, as every account shares them;
+    /// first stating the fixture's shape: part2, which Manga does not see, is
+    /// not the last.
+    fn raw_members(merged: &EditionMergedFromTwoLibraries) -> Vec<std::path::PathBuf> {
+        let work = merged.state.find_blocking(&merged.slug).expect("the work");
+        let paths: Vec<std::path::PathBuf> = work.sidecar().editions["raw"]
+            .members
+            .iter()
+            .map(|member| std::path::PathBuf::from(&member.path))
+            .collect();
+        let files: Vec<&str> = paths
+            .iter()
+            .map(|path| path.file_name().and_then(|f| f.to_str()).expect("named"))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                "Foo v01 part1.cbz",
+                "Foo v01 part2.cbz",
+                "Foo v01 part3.cbz"
+            ],
+            "the fixture: raw's hidden-to-Manga member is not the last"
+        );
+        paths
+    }
+
+    /// Every entry of the zip `bytes`, by name in its own order.
+    fn entries(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("parses as a zip");
+        (0..archive.len())
+            .map(|i| {
+                let mut entry = archive.by_index(i).expect("an entry");
+                let mut read = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut read).expect("reads the entry");
+                (entry.name().expect("a name").into_owned(), read)
+            })
+            .collect()
+    }
+
+    async fn downloaded(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        uri: &str,
+    ) -> axum::http::Response<Vec<u8>> {
+        let uri = format!("/api/works/{}/raw/{uri}", merged.slug);
+        merged.get(reader, &uri, None).await
+    }
+
+    /// Manga's download of `raw` is a cbz of part1's and part3's pages, six
+    /// in order, and no page of part2.
+    #[tokio::test]
+    async fn manga_alones_download_zips_part1_and_part3() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let members = raw_members(&merged);
+        let pages: Vec<Vec<u8>> = [&members[0], &members[2]]
+            .into_iter()
+            .flat_map(|path| entries(&std::fs::read(path).expect("reads a member")))
+            .map(|(_, bytes)| bytes)
+            .collect();
+        assert_eq!(pages.len(), 6, "part1's 2 pages and part3's 4");
+
+        let sent = downloaded(&merged, Reader::MangaOnly, "download").await;
+        assert_eq!(sent.status(), StatusCode::OK);
+        assert_eq!(
+            sent.headers()[header::CONTENT_TYPE],
+            crate::download::CBZ_TYPE
+        );
+        let zipped = entries(sent.body());
+        let names: Vec<&str> = zipped.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "ComicInfo.xml",
+                "0001.png",
+                "0002.png",
+                "0003.png",
+                "0004.png",
+                "0005.png",
+                "0006.png"
+            ]
+        );
+        let sent_pages: Vec<Vec<u8>> = zipped.into_iter().skip(1).map(|(_, b)| b).collect();
+        assert!(sent_pages == pages, "part1's pages, then part3's, in order");
+    }
+
+    /// Kids sees one member of `raw`, so its download is that file, passed
+    /// through.
+    #[tokio::test]
+    async fn kids_alones_download_is_part2_passed_through() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let members = raw_members(&merged);
+        let sent = downloaded(&merged, Reader::KidsOnly, "download").await;
+        assert_eq!(sent.status(), StatusCode::OK);
+        assert!(
+            *sent.body() == std::fs::read(&members[1]).expect("reads part2"),
+            "part2 byte for byte"
+        );
+    }
+
+    /// Manga's members are numbered as its document lists them: 1 is part3,
+    /// and there is no 2.
+    #[tokio::test]
+    async fn manga_alones_member_ordinals_are_its_documents() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let members = raw_members(&merged);
+        let second = downloaded(&merged, Reader::MangaOnly, "members/1/download").await;
+        assert_eq!(second.status(), StatusCode::OK);
+        assert!(
+            *second.body() == std::fs::read(&members[2]).expect("reads part3"),
+            "Manga's member 1 is part3"
+        );
+        let past = downloaded(&merged, Reader::MangaOnly, "members/2/download").await;
+        assert_eq!(past.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            String::from_utf8_lossy(past.body()),
+            format!(
+                "`raw` of `{}` has 2 members; there is no member 2",
+                merged.slug
+            )
+        );
+    }
+}

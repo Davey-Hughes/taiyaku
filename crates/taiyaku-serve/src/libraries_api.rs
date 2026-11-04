@@ -21,7 +21,8 @@
 //! handler runs is not in this shape: an over-size body's 413, a path that is
 //! not UTF-8, and a method a route does not mount. The guard's 401 is
 //! `{"error":"unauthorized"}`. The one refusal with a second key is a move's
-//! 409, `{"error", "volumes"}`, which lists the volumes that stand in its way.
+//! 409, `{"error", "volumes"}`, whose `volumes` is always empty: see
+//! `relocate::MoveError::Refused`.
 //!
 //! Every read or write of the library is made on the blocking pool, and a
 //! handler that derives or probes takes
@@ -136,6 +137,30 @@ pub(crate) async fn list_libraries(
         Ok(Ok(libraries)) => Json(serde_json::json!({ "libraries": libraries })).into_response(),
         Ok(Err(no_answer)) => no_answer.into_response(),
         Err(why) => admin_panicked("listing libraries", &why),
+    }
+}
+
+/// `GET /api/library/split-editions`: every edition some library holds part
+/// of and not all of, which an account granted that library alone sees
+/// narrowed (spec §3.8), as [`libraries::split_editions`] lists them.
+pub(crate) async fn list_split_editions(
+    State(state): State<Arc<ServeState>>,
+    Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
+) -> Response {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
+        return refusal;
+    }
+    let built = tokio::task::spawn_blocking(move || {
+        let conn = state.library.conn();
+        libraries::split_editions(&conn).map_err(AdminAnswer::Failed)
+    })
+    .await;
+
+    match built {
+        Ok(Ok(editions)) => Json(serde_json::json!({ "editions": editions })).into_response(),
+        Ok(Err(no_answer)) => no_answer.into_response(),
+        Err(why) => admin_panicked("listing the split editions", &why),
     }
 }
 
@@ -541,13 +566,8 @@ fn moved_json(moved: &relocate::Moved) -> serde_json::Value {
     let relocate::Moved {
         library_id,
         library,
-        works_kept,
-        works_joined,
-        works_split,
-        series_joined,
-        positions,
-        notes,
-        alignments_dropped,
+        gains_sight,
+        loses_sight,
         library_removed,
         grants_removed,
         left_with_no_library,
@@ -555,13 +575,8 @@ fn moved_json(moved: &relocate::Moved) -> serde_json::Value {
     serde_json::json!({
         "library_id": library_id,
         "library": library,
-        "works_kept": works_kept,
-        "works_joined": works_joined,
-        "works_split": works_split,
-        "series_joined": series_joined,
-        "positions": positions,
-        "notes": notes,
-        "alignments_dropped": alignments_dropped,
+        "gains_sight": gains_sight,
+        "loses_sight": loses_sight,
         "library_removed": library_removed,
         "grants_removed": grants_removed,
         "left_with_no_library": left_with_no_library,
@@ -570,22 +585,22 @@ fn moved_json(moved: &relocate::Moved) -> serde_json::Value {
 
 /// `POST /api/library/roots/{id}/move`: move a directory to another library or
 /// to a new one, or with `?dry_run=true` answer what that would do. `body` is
-/// `{"library": id}` or `{"new_library": name}`; [`relocate`] is where the
-/// move is.
+/// `{"library": id}` or `{"new_library": name}`; [`relocate`] makes the move.
 ///
 /// **A scan reserved on any directory of either library refuses it**, the directory's
 /// own library and the target, as [`delete_library`] refuses a removal: a scan
 /// that is queued holds no job lock, so the lock alone would not see it.
 ///
 /// **Then it asks for [`ServeState::library_job`] and does not wait for it.**
-/// A move derives the whole store, and under a scan's derive or a rule save it
-/// would file works by rules or facts the other is replacing. So it answers
-/// 409 at once where one holds the lock, as `config_api::save_rules` does, for
-/// the rehearsal as for the move: the rehearsal runs the same derives.
+/// A scan and a rule save each derive, reading which library each directory
+/// is in, and a move would change that under them. So it answers 409 at once
+/// where one holds the lock, as `config_api::save_rules` does, for the
+/// rehearsal as for the move.
 ///
-/// **A refusal is a 409 with its sentence and its volumes**, all of them
-/// where the sentence names the first few. Where a scan or a rule save is the
-/// reason, `volumes` is empty.
+/// **A refusal is a 409 with its sentence**, and `volumes` empty: the two
+/// checks above are the only ones that answer 409, and nothing a move would
+/// do to a work or a reader's place refuses it. The job lock is the store's,
+/// so a scan of any library, a rule save, a stamp or another move holds it.
 pub(crate) async fn move_dir(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -668,9 +683,8 @@ pub(crate) async fn move_dir(
     .await;
 
     match moved {
-        Ok(Ok((moved, derived))) => Json(serde_json::json!({
+        Ok(Ok(moved)) => Json(serde_json::json!({
             "moved": moved_json(&moved),
-            "derive": derive_report_json(&derived),
             "dry_run": dry_run,
         }))
         .into_response(),

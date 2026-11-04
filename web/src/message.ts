@@ -127,17 +127,3 @@ export function refusalOf(err: unknown, notDone: string): string {
     ? reasonOf(err)
     : `${notDone}: ${reasonOf(err)}`
 }
-
-/**
- * The volumes a refused move lists beside its sentence, or none. The
- * sentence names the first few; this is all of them. Read from the same body
- * as `sentenceOf`'s, and answering none for a failure that is not a
- * response, a body that is not an object, or a `volumes` that is not a list
- * of strings.
- */
-export function volumesOf(err: unknown): string[] {
-  const volumes = objectOf(answerOf(messageOf(err))?.body)?.volumes
-  return Array.isArray(volumes) && volumes.every((v) => typeof v === 'string')
-    ? volumes
-    : []
-}

@@ -20,7 +20,7 @@ import {
   tick,
 } from './support/libraries'
 import { mount, rerender } from './support/mount'
-import { keptGrid } from './support/reads'
+import { keptGrid, keptSplitEditions } from './support/reads'
 import { expectRowsWired, row, section } from './support/settingsRows'
 import { cellValue } from './support/table'
 import { watchDrawn } from './support/wait'
@@ -1001,8 +1001,9 @@ describe('LibraryPage, a library and its directories', () => {
     expect(onChanged).toHaveBeenCalledWith(true)
   })
 
-  it('marks the Library views stale when the library’s own scan ends', async () => {
+  it('marks the Library views and the split editions stale when the library’s own scan ends', async () => {
     const grid = await keptGrid()
+    const split = await keptSplitEditions()
     vi.mocked(api.libraryScanStatus).mockResolvedValue({
       ...idle(7),
       running: true,
@@ -1010,11 +1011,14 @@ describe('LibraryPage, a library and its directories', () => {
     })
     const { host } = await shown()
     expect(grid.stale()).toBe(false)
+    expect(split.stale()).toBe(false)
     vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
     await tick()
     expect(host.querySelector('.library-page > .scanning')).toBeNull()
     expect(grid.stale()).toBe(true)
     expect(grid.sent()).toBe(1)
+    expect(split.stale()).toBe(true)
+    expect(split.sent()).toBe(1)
   })
 
   it('frees the library once the directory’s scan has ended', async () => {

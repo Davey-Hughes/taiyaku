@@ -32,6 +32,7 @@ import { Cover } from './Cover'
 import {
   type AlignmentCard,
   type EditionCard,
+  libraryParam,
   type SeriesCard,
   unreadable,
   work as fetchWork,
@@ -417,6 +418,16 @@ export function Series() {
     id !== undefined && /^\d+$/.test(id) && Number.isSafeInteger(Number(id))
       ? Number(id)
       : undefined
+  const [params, setParams] = useSearchParams()
+  // **The library the page was opened from** (spec §3.6): its tile counted
+  // what that library holds, so the page lists that. A `?library=` that is no
+  // library id names a library that does not exist, which answers as a series
+  // that does not exist, so nothing is asked.
+  const library = libraryParam(params.get('library'))
+  const body =
+    seriesId === undefined || library === 'invalid'
+      ? undefined
+      : seriesRead(seriesId, library)
 
   // **Only the series the address names is drawn**, and only once its read
   // is in hand: `usePage` answers for the address it is given, so a move to
@@ -427,17 +438,16 @@ export function Series() {
     answers: [answer],
     failures: [failed],
     loadingDrawn,
-  } = usePage<[Loaded]>(seriesId === undefined ? [] : [seriesRead(seriesId)])
+  } = usePage<[Loaded]>(body === undefined ? [] : [body])
   const loaded = ready ? answer : undefined
   useDocumentTitle(loaded?.series.title)
   useKeptScroll(ready)
   const failure =
-    seriesId === undefined
+    body === undefined
       ? `${id ?? ''} is not a series`
       : failed === undefined
         ? undefined
         : messageOf(failed)
-  const [params, setParams] = useSearchParams()
   /**
    * Writes a chosen edition into the address with `replace`, as the Library
    * view writes its chip: a choice adds no entry for Back to walk out of.

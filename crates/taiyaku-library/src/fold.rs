@@ -38,14 +38,15 @@
 //! **What this module is *not* asked to decide.** Which work is superseded
 //! and which absorbed it is `derive::superseded`'s answer, reached from
 //! member digests, paths and roots. [`absorb`] is handed that pair and asks
-//! five questions of its own — which edition of the target holds each edition
+//! six questions of its own — which edition of the target holds each edition
 //! of the superseded work's archives; whether anything the reader owns is on
 //! a key neither side can name; whether every row addressed by slot — the
 //! folded work's and the surviving work's own alike — can name the same page
 //! and half afterwards, and whether the flags it would write would move a span
 //! of an alignment the surviving work holds; whether one reader holds one note id on both
-//! works with two copies that differ; and whether the ground truth meeting on
-//! a mapped edition was drawn against the same archives on the two sides —
+//! works with two copies that differ; whether the ground truth meeting on a
+//! mapped edition was drawn against the same archives on the two sides; and
+//! whether the two works hold different hand-set titles, volumes or series —
 //! and refuses the whole fold when the answer to any of them is wrong. Two
 //! copies of one note id that agree in every column are not a wrong answer:
 //! they are one note, and the superseded work's copy is dropped (O78).
@@ -160,6 +161,16 @@ pub struct Moved {
     /// the surviving work no longer has an answer for, or a person's
     /// correction it did not keep.
     pub uncarried_alignments: usize,
+    /// Work-level hand values — a title, a volume, a series — that only
+    /// `from_work` held and this fold wrote onto `into_work`, between zero
+    /// and three.
+    ///
+    /// **Carried, not counted in [`Self::discarded`].** These are a person's
+    /// answer about the work itself, and the target is that work, so a value
+    /// the target lacks has one place to go. Where both hold one and they
+    /// differ, [`absorb`] refuses instead: choosing one person's answer over
+    /// another's is not this fold's to do.
+    pub hand_carried: usize,
 }
 
 /// What [`absorb`] did.
@@ -1311,13 +1322,134 @@ fn carry_alignments(
     Ok(())
 }
 
+/// One work's work-level hand values: `title_hand`, `volume_hand` and
+/// `series_id_hand`, the three `librarydoc::apply` writes for the work itself
+/// rather than for one of its editions.
+struct HandValues {
+    title: Option<String>,
+    volume: Option<f64>,
+    series: Option<i64>,
+}
+
+fn hand_values(conn: &Connection, work_id: i64) -> Result<HandValues, String> {
+    conn.query_row(
+        "SELECT title_hand, volume_hand, series_id_hand FROM work WHERE id = ?1",
+        [work_id],
+        |row| {
+            Ok(HandValues {
+                title: row.get(0)?,
+                volume: row.get(1)?,
+                series: row.get(2)?,
+            })
+        },
+    )
+    .map_err(|e| format!("reading work {work_id}'s hand-set values: {e}"))
+}
+
+/// Each value `from_work` and `into_work` both hold and hold differently, as
+/// `<field> <from's value> on work <from> against <into's value> on work
+/// <into>` — [`absorb`]'s seventh refusal.
+///
+/// **Refused, because each is a person's answer about the work itself** and
+/// the fold makes the two works one. The same value on both is one answer.
+/// A series is named by its title as well as its id, for the reader.
+fn hand_clashes(
+    conn: &Connection,
+    from_work: i64,
+    into_work: i64,
+    from: &HandValues,
+    into: &HandValues,
+) -> Result<Vec<String>, String> {
+    let against = |field: &str, ours: String, theirs: String| {
+        format!("{field} {ours} on work {from_work} against {theirs} on work {into_work}")
+    };
+    let mut clashes = Vec::new();
+    if let (Some(ours), Some(theirs)) = (&from.title, &into.title)
+        && ours != theirs
+    {
+        clashes.push(against("title", format!("`{ours}`"), format!("`{theirs}`")));
+    }
+    if let (Some(ours), Some(theirs)) = (from.volume, into.volume)
+        && ours != theirs
+    {
+        clashes.push(against("volume", ours.to_string(), theirs.to_string()));
+    }
+    if let (Some(ours), Some(theirs)) = (from.series, into.series)
+        && ours != theirs
+    {
+        clashes.push(against(
+            "series",
+            series_named(conn, ours)?,
+            series_named(conn, theirs)?,
+        ));
+    }
+    Ok(clashes)
+}
+
+fn series_named(conn: &Connection, series_id: i64) -> Result<String, String> {
+    use rusqlite::OptionalExtension as _;
+
+    let title: Option<String> = conn
+        .query_row(
+            "SELECT sort_title FROM series WHERE id = ?1",
+            [series_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("reading series {series_id}'s title: {e}"))?;
+    Ok(match title {
+        Some(title) => format!("{series_id} `{title}`"),
+        None => series_id.to_string(),
+    })
+}
+
+/// Write onto `into_work` each hand value only `from_work` holds, with the
+/// effective column beside it, and return how many were written.
+///
+/// **The effective column as `librarydoc::apply` writes it**: `title`,
+/// `volume` and `series_id` take the hand value. Every reader displays the
+/// effective column, and the target must read right from the moment the fold
+/// commits, not from its next derive.
+fn carry_hand_values(
+    conn: &Connection,
+    into_work: i64,
+    from: &HandValues,
+    into: &HandValues,
+) -> Result<usize, String> {
+    let mut carried = 0;
+    if let (Some(title), None) = (&from.title, &into.title) {
+        conn.execute(
+            "UPDATE work SET title_hand = ?1, title = ?1 WHERE id = ?2",
+            rusqlite::params![title, into_work],
+        )
+        .map_err(|e| format!("carrying a hand title onto work {into_work}: {e}"))?;
+        carried += 1;
+    }
+    if let (Some(volume), None) = (from.volume, into.volume) {
+        conn.execute(
+            "UPDATE work SET volume_hand = ?1, volume = ?1 WHERE id = ?2",
+            rusqlite::params![volume, into_work],
+        )
+        .map_err(|e| format!("carrying a hand volume onto work {into_work}: {e}"))?;
+        carried += 1;
+    }
+    if let (Some(series), None) = (from.series, into.series) {
+        conn.execute(
+            "UPDATE work SET series_id_hand = ?1, series_id = ?1 WHERE id = ?2",
+            rusqlite::params![series, into_work],
+        )
+        .map_err(|e| format!("carrying a hand series onto work {into_work}: {e}"))?;
+        carried += 1;
+    }
+    Ok(carried)
+}
+
 /// Move every reader row off `from_work` onto `into_work` and delete
 /// `from_work`.
 ///
-/// Returns [`Outcome::Refused`] — nothing moved, nothing deleted — on six
-/// counts, each checked before the first move so that a refusal costs the
-/// database nothing. Every one of the six is a `SELECT`, which is what keeps
-/// that property true as the list grows:
+/// Returns [`Outcome::Refused`] — nothing moved, nothing deleted — on seven
+/// counts, each a `SELECT` made before the first move, so that a refusal
+/// costs the database nothing however long the list grows:
 ///
 /// 1. **`from_work == into_work`.** Every edition would map to itself, every
 ///    move would be a no-op, and the `DELETE` would take the work whole. See
@@ -1346,7 +1478,7 @@ fn carry_alignments(
 ///    re-keyed: the id is one the reader's own sidecar names, and rewriting it
 ///    silently is worse than declining. **Copies that agree in every column
 ///    are not refused (O78)**: they are one note, and the superseded work's
-///    copy is dropped — after the sixth check below, so that a fold refused
+///    copy is dropped — after the last check below, so that a fold refused
 ///    over anything has written nothing — and counted in
 ///    [`Moved::dropped_notes`].
 /// 6. **Ground truth meeting on one target edition that cannot be given one
@@ -1356,12 +1488,13 @@ fn carry_alignments(
 ///    *different* lists meeting is one half of it. The other is a side holding
 ///    boxes and **no** list, which the fold would otherwise hand the other
 ///    side's — a claim those boxes never had.
+/// 7. **A hand-set title, volume or series both works hold, with two values**
+///    — see [`hand_clashes`]. One only `from_work` holds is carried instead.
 ///
-/// **Arms 4, 5 and 6 are refusals about a state neither side can be told to
-/// fix from here, which is the point.** All three leave the duplicate work
-/// visibly standing, which is recoverable and which an operator can act on,
-/// where a note on the wrong page, a re-keyed note and a mis-attributed box
-/// are none of those.
+/// **Arms 4 to 7 refuse over a state neither side can be told to fix from
+/// here, which is the point.** Each leaves the duplicate work visibly
+/// standing, which an operator can act on, where a note on the wrong page, a
+/// re-keyed note, a mis-attributed box or an overwritten title is not.
 ///
 /// # Errors
 ///
@@ -1522,6 +1655,22 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
         )));
     }
 
+    // **Read with the other refusals, written just before the delete.** Both
+    // works' values are read here, while the read can still refuse at the
+    // cost of nothing; the carry below acts on these same values, and nothing
+    // between here and there writes `work`.
+    let from_hand = hand_values(&tx, from_work)?;
+    let into_hand = hand_values(&tx, into_work)?;
+    let clashes = hand_clashes(&tx, from_work, into_work, &from_hand, &into_hand)?;
+    if !clashes.is_empty() {
+        return Ok(Outcome::Refused(format!(
+            "work {from_work} and work {into_work} hold different hand-set values — {}; \
+             keeping either would discard a person's answer about the other, which is not \
+             this fold's to choose; nothing was moved and nothing was deleted",
+            clashes.join(", "),
+        )));
+    }
+
     // **The identical note copies go first, and only now.** After the last
     // refusal above, so every refusal is still a `SELECT` and a fold refused
     // over one conflicting id has not touched the identical ones beside it;
@@ -1575,6 +1724,19 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
     // can be counted at all.
     moved.discarded = discarded(&tx, from_work)?;
 
+    // **Before the delete, which cascades to `from_work`'s marker.** A value
+    // carried out of a work whose document held it must reach the target's
+    // document, or a rebuild from the files loses it. `derive` saves that
+    // document after a carry where it may write files. Where it may not, the
+    // armed marker makes the target owe one: `hand::reconcile` writes it if
+    // missing, and reports it stale if present. A target that took nothing
+    // owes no new document.
+    moved.hand_carried = carry_hand_values(&tx, into_work, &from_hand, &into_hand)?;
+    if moved.hand_carried > 0 && crate::migrate::absorbed(&tx, from_work, crate::migrate::LIBRARY)?
+    {
+        crate::migrate::record_absorbed(&tx, into_work, crate::migrate::LIBRARY, true)?;
+    }
+
     // **Last, and only after every move above.** `progress`, `note`,
     // `truth_page`, `truth_box` and `truth_member` all reference `work(id)
     // ON DELETE CASCADE`; a delete before the moves takes every one of them,
@@ -1587,269 +1749,6 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
     tx.commit()
         .map_err(|e| format!("committing the fold of work {from_work}: {e}"))?;
     Ok(Outcome::Folded(moved))
-}
-
-/// What [`rehome_editions`] carried.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Rehomed {
-    pub positions: usize,
-    pub notes: usize,
-    pub truth_pages: usize,
-    /// Alignments between a rehomed edition and one that stayed. An
-    /// alignment names two editions of one work, and these two are editions
-    /// of two works now.
-    pub alignments_dropped: usize,
-}
-
-/// What [`rehome_editions`] did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Rehoming {
-    Done(Rehomed),
-    /// Nothing was moved and nothing deleted. As with [`Outcome::Refused`],
-    /// a refusal is an outcome and not an error.
-    Refused(String),
-}
-
-/// Give `into_work` the edition rows `keys` of `from_work`, in place of its
-/// own editions of those keys, with everything a reader put on them.
-///
-/// **For a work a directory move divides** (`crate::relocate`). The derive that
-/// follows the move leaves `from_work` holding editions whose archives now
-/// belong to another library, and makes `into_work` there with fresh
-/// editions over the same archives. [`absorb`] cannot carry them: it moves a
-/// whole work and deletes it, and `from_work` keeps its other editions.
-///
-/// **The row moves, not a copy of it.** `into_work`'s fresh edition is
-/// deleted and `from_work`'s is re-parented in its place, so its spread
-/// flags, credit flags, label and declared chapters are still on it, and a
-/// slot names the page it named. That is why this needs none of
-/// [`plan_slots`]: nothing about the edition changed but the work it is in.
-///
-/// Refused, each read before the first write:
-///
-/// 1. `from_work == into_work`.
-/// 2. A key either work does not hold, or held over different archives:
-///    member digests are compared in ordinal order, as [`edition_map`]
-///    compares them.
-/// 3. A key that is `from_work`'s hub. A work's content key and its hand
-///    document are its hub's, so a work goes where its hub goes and what is
-///    rehomed is the rest.
-/// 4. `into_work` already holding a position, a note, a ground-truth page or
-///    an alignment on one of the keys. Its edition is expected fresh, and
-///    merging two readers' rows is [`absorb`]'s job, with its refusals.
-/// 5. A note id one reader holds on both works: `note`'s key is
-///    `(user_id, work_id, id)`.
-/// 6. A key named more than once.
-/// 7. `into_work`'s edition of a key carrying anything a person made: a
-///    label, kind or language set by hand, a chapter number set by hand, a
-///    flag on a page (a credit flag, or a spread flag, which a scan never
-///    writes and which comes from an imported document or a fold), or a
-///    credit of the edition. The edition is
-///    deleted, and these would go with it. The twin of an ordinary divided
-///    work is fresh, made by the derive a moment before, and holds none.
-///    One that has been read or edited since is a long-lived work's, and the
-///    row that would replace it cannot carry what is on it.
-///
-/// # Errors
-///
-/// Returns an error if SQLite fails.
-pub(crate) fn rehome_editions(
-    conn: &Connection,
-    from_work: i64,
-    into_work: i64,
-    keys: &[String],
-) -> Result<Rehoming, String> {
-    let refuse = |why: String| {
-        Ok(Rehoming::Refused(format!(
-            "{why}; nothing was moved and nothing was deleted"
-        )))
-    };
-    if from_work == into_work {
-        return refuse(format!("work {from_work} cannot give editions to itself"));
-    }
-    // A key named twice would be moved by the first pass and deleted as the
-    // fresh edition by the second.
-    for (at, key) in keys.iter().enumerate() {
-        if keys[..at].contains(key) {
-            return refuse(format!("edition `{key}` is named twice"));
-        }
-    }
-
-    let tx = crate::Nested::open(conn, "rehome_editions")
-        .map_err(|e| format!("starting to rehome editions of work {from_work}: {e}"))?;
-
-    let hub: String = tx
-        .query_row("SELECT hub FROM work WHERE id = ?1", [from_work], |r| {
-            r.get(0)
-        })
-        .map_err(|e| format!("reading the hub of work {from_work}: {e}"))?;
-    let source = digests_by_edition(&tx, from_work)?;
-    let target = digests_by_edition(&tx, into_work)?;
-    let digests = |held: &[(String, Vec<String>)], key: &str| {
-        held.iter()
-            .find(|(held_key, _)| held_key == key)
-            .map(|(_, digests)| digests.clone())
-    };
-    for key in keys {
-        if *key == hub {
-            return refuse(format!(
-                "`{key}` is the hub edition of work {from_work}, and a work goes where its hub \
-                 goes"
-            ));
-        }
-        let (Some(ours), Some(theirs)) = (digests(&source, key), digests(&target, key)) else {
-            return refuse(format!(
-                "work {from_work} and work {into_work} do not both hold an edition `{key}`"
-            ));
-        };
-        if ours != theirs {
-            return refuse(format!(
-                "edition `{key}` of work {from_work} and of work {into_work} do not hold the \
-                 same archives in the same order"
-            ));
-        }
-        for (table, column) in [
-            ("progress", "edition"),
-            ("note", "edition"),
-            ("truth_page", "edition"),
-            ("alignment", "from_key"),
-            ("alignment", "to_key"),
-        ] {
-            let held: i64 = tx
-                .query_row(
-                    &format!("SELECT count(*) FROM {table} WHERE work_id = ?1 AND {column} = ?2"),
-                    rusqlite::params![into_work, key],
-                    |r| r.get(0),
-                )
-                .map_err(|e| format!("reading {table} of work {into_work}: {e}"))?;
-            if held > 0 {
-                return refuse(format!(
-                    "work {into_work} already holds {held} {table} row(s) on edition `{key}`"
-                ));
-            }
-        }
-    }
-    for key in keys {
-        for (what, sql) in [
-            (
-                "a label, kind or language set by hand",
-                "SELECT count(*) FROM edition WHERE work_id = ?1 AND key = ?2
-                    AND (label_hand IS NOT NULL OR kind_hand IS NOT NULL
-                         OR language_hand IS NOT NULL)",
-            ),
-            (
-                "a chapter number set by hand",
-                "SELECT count(*) FROM member m JOIN edition e ON e.id = m.edition_id
-                  WHERE e.work_id = ?1 AND e.key = ?2
-                    AND m.chapter_declared IS NOT NULL AND m.chapter_source = 'hand'",
-            ),
-            (
-                "a flag on a page",
-                "SELECT count(*) FROM page_flag f JOIN edition e ON e.id = f.edition_id
-                  WHERE e.work_id = ?1 AND e.key = ?2",
-            ),
-            (
-                "a credit",
-                "SELECT count(*) FROM credit c JOIN edition e ON e.id = c.edition_id
-                  WHERE e.work_id = ?1 AND e.key = ?2",
-            ),
-        ] {
-            let held: i64 = tx
-                .query_row(sql, rusqlite::params![into_work, key], |r| r.get(0))
-                .map_err(|e| format!("reading what a person put on work {into_work}: {e}"))?;
-            if held > 0 {
-                return refuse(format!(
-                    "work {into_work} already holds {what} on edition `{key}`, which replacing \
-                     the edition would delete"
-                ));
-            }
-        }
-    }
-    let shared: i64 = tx
-        .query_row(
-            "SELECT count(*) FROM note ours JOIN note theirs
-                ON theirs.user_id = ours.user_id AND theirs.id = ours.id
-             WHERE ours.work_id = ?1 AND theirs.work_id = ?2",
-            [from_work, into_work],
-            |r| r.get(0),
-        )
-        .map_err(|e| format!("reading the notes of works {from_work} and {into_work}: {e}"))?;
-    if shared > 0 {
-        return refuse(format!(
-            "one reader holds {shared} note id(s) on both work {from_work} and work {into_work}"
-        ));
-    }
-
-    let mut moved = Rehomed::default();
-
-    // An alignment both of whose editions go, goes. One with an edition on
-    // each side is between two works now, and is dropped and counted.
-    let alignments: Vec<(i64, String, String)> = tx
-        .prepare("SELECT id, from_key, to_key FROM alignment WHERE work_id = ?1")
-        .map_err(|e| format!("reading the alignments of work {from_work}: {e}"))?
-        .query_map([from_work], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .map_err(|e| format!("reading the alignments of work {from_work}: {e}"))?
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("reading the alignments of work {from_work}: {e}"))?;
-    for (id, from_key, to_key) in alignments {
-        match (keys.contains(&from_key), keys.contains(&to_key)) {
-            (true, true) => {
-                tx.execute(
-                    "UPDATE alignment SET work_id = ?2 WHERE id = ?1",
-                    [id, into_work],
-                )
-                .map_err(|e| format!("moving alignment {id}: {e}"))?;
-            }
-            (false, false) => {}
-            _ => {
-                tx.execute("DELETE FROM run WHERE alignment_id = ?1", [id])
-                    .and_then(|_| tx.execute("DELETE FROM alignment WHERE id = ?1", [id]))
-                    .map_err(|e| format!("dropping alignment {id}: {e}"))?;
-                moved.alignments_dropped += 1;
-            }
-        }
-    }
-
-    for key in keys {
-        tx.execute(
-            "DELETE FROM edition WHERE work_id = ?1 AND key = ?2",
-            rusqlite::params![into_work, key],
-        )
-        .map_err(|e| format!("removing the fresh edition `{key}` of work {into_work}: {e}"))?;
-        tx.execute(
-            "UPDATE edition SET work_id = ?2 WHERE work_id = ?1 AND key = ?3",
-            rusqlite::params![from_work, into_work, key],
-        )
-        .map_err(|e| format!("moving edition `{key}` to work {into_work}: {e}"))?;
-
-        moved.positions += move_positions(&tx, from_work, into_work, key, key)?;
-        // `move_positions` copies, and `absorb` leaves the source rows to the
-        // delete of the work. This work stays, so they are deleted here.
-        tx.execute(
-            "DELETE FROM progress WHERE work_id = ?1 AND edition = ?2",
-            rusqlite::params![from_work, key],
-        )
-        .map_err(|e| format!("clearing moved positions off work {from_work}: {e}"))?;
-        moved.notes += move_notes(&tx, from_work, into_work, key, key)?;
-        let (pages, _) = move_truth(&tx, from_work, into_work, key, key)?;
-        moved.truth_pages += pages;
-        // `move_truth` copies too. `truth_box` goes with its page.
-        tx.execute(
-            "DELETE FROM truth_page WHERE work_id = ?1 AND edition = ?2",
-            rusqlite::params![from_work, key],
-        )
-        .and_then(|_| {
-            tx.execute(
-                "DELETE FROM truth_member WHERE work_id = ?1 AND edition = ?2",
-                rusqlite::params![from_work, key],
-            )
-        })
-        .map_err(|e| format!("clearing moved ground truth off work {from_work}: {e}"))?;
-    }
-
-    tx.commit()
-        .map_err(|e| format!("committing the rehoming of work {from_work}'s editions: {e}"))?;
-    Ok(Rehoming::Done(moved))
 }
 
 /// A reader's place, carried across with its history.

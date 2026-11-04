@@ -707,7 +707,7 @@ pub struct Removal {
     pub left_with_no_library: Vec<String>,
 }
 
-/// Every work whose *every* member sits under root `?1` — the works
+/// Every work whose *every* member sits under root `?1` alone — the works
 /// [`take_root`] deletes, and what [`Removal::works`] counts.
 ///
 /// **A subquery, reused by parameter rather than materialised into a
@@ -718,38 +718,38 @@ pub struct Removal {
 /// list of a size decided at runtime, and there is only ever one definition
 /// of "the works this root alone accounts for" to keep in step.
 ///
-/// **A work is "under" `?1` when every one of its members is, checked
-/// against every *other* member of the same work — not merely "this work has
-/// a member under `?1`."** A work with one member on `?1` and another member
-/// on some other, surviving root (`a_work_spanning_two_roots_gives_each_member_its_own_root`,
-/// `derive/tests.rs`) still has material once `?1` is gone; only the work
-/// whose material is entirely `?1`'s is a work removing `?1` actually
-/// destroys.
+/// **Read from `member_root`, every directory that holds a copy of a member,
+/// not from `member.root_id`, the one copy its path names** (the
+/// overlapping-libraries spec, §3.5). A member held under `?1` and under
+/// another directory still has its bytes once `?1` is gone, and so does a work
+/// with a member on some other, surviving root
+/// (`a_work_spanning_two_roots_gives_each_member_its_own_root`,
+/// `derive/tests.rs`); only the work whose material is entirely `?1`'s is a
+/// work removing `?1` actually destroys.
 ///
-/// **A member whose `root_id` is `NULL` excludes its work from this list
-/// too**, on either side of the comparison. `NULL` means an imported work —
-/// `schema/006_member_root.sql`'s own reading — or, in principle, a
-/// scan-derived member from before its first derive since that migration;
-/// neither is evidence that a work lives under `?1`, and a work is kept
-/// standing rather than guessed away.
+/// **A member with no `member_root` row at all excludes its work too.** No row
+/// means an imported work, whose files no directory accounts for; that is no
+/// evidence that the work lives under `?1`, and a work is kept standing rather
+/// than guessed away.
 ///
 /// **Computed before `?1`'s own `root` row is deleted, and it has to be.**
-/// `member.root_id` is the only record of which root a member came from, and
-/// `schema/006_member_root.sql`'s `ON DELETE SET NULL` erases exactly that
-/// the instant the `root` row goes — the same column O54 records as the one
-/// that excludes a member from every root grant once it reads `NULL`.
-/// [`take_root`] reads this before it deletes anything, and [`apply_removal`] and
-/// [`apply_library_removal`] reach it through that.
+/// `member_root` rows `CASCADE` with their root, so the rows naming `?1` are
+/// gone the instant the `root` row goes. [`take_root`] reads this before it
+/// deletes anything, and [`apply_removal`] and [`apply_library_removal`] reach
+/// it through that.
 const DOOMED_WORKS: &str = "
     SELECT DISTINCT e.work_id
-      FROM member m
+      FROM member_root mr
+      JOIN member m ON m.id = mr.member_id
       JOIN edition e ON e.id = m.edition_id
-     WHERE m.root_id = ?1
+     WHERE mr.root_id = ?1
        AND NOT EXISTS (
              SELECT 1 FROM member m2
              JOIN edition e2 ON e2.id = m2.edition_id
             WHERE e2.work_id = e.work_id
-              AND (m2.root_id IS NULL OR m2.root_id != ?1)
+              AND (NOT EXISTS (SELECT 1 FROM member_root r2 WHERE r2.member_id = m2.id)
+                   OR EXISTS (SELECT 1 FROM member_root r2
+                               WHERE r2.member_id = m2.id AND r2.root_id != ?1))
            )";
 
 /// The accounts, by name and in name order, that see no library once library
@@ -789,18 +789,14 @@ pub(crate) fn only_grant_holders(
 }
 
 /// Count what root `id` alone accounts for, then delete it: its works, the
-/// members it supplied to works that survive it, and the root. Nothing is
+/// members it alone holds on works that survive it, and the root. Nothing is
 /// derived and no account is named; [`apply_removal`] and
-/// [`apply_library_removal`] do both around it.
+/// [`apply_library_removal`] do both around it, in one transaction.
 ///
-/// **A member `DOOMED_WORKS` excluded, on a work that survives on some other
-/// root, is deleted here too — explicitly, not left to strand.** Once its
-/// own work is spared the works delete, that member's `root_id` still names
-/// `id`, and the `root` row deleted last would otherwise leave it `NULL`
-/// through `schema/006_member_root.sql`'s own `ON DELETE SET NULL` — the
-/// exact O54 shape, on a smaller scale, that removal exists to rule out. The
-/// work stays, since it has material elsewhere; the one member that does not
-/// is taken with the root that supplied it.
+/// A member whose every `member_root` row is `id`'s is deleted, not left under
+/// no directory (O54). One with a copy elsewhere is kept, and where `id` held
+/// its `root_id` and `path` they are re-pointed here at that copy; see
+/// [`repoint_kept_members`].
 fn take_root(conn: &Connection, id: i64) -> Result<Removal, String> {
     let works: i64 = conn
         .query_row(
@@ -829,10 +825,17 @@ fn take_root(conn: &Connection, id: i64) -> Result<Removal, String> {
         [id],
     )
     .map_err(|e| format!("deleting the works root {id} alone accounts for: {e}"))?;
-    conn.execute("DELETE FROM member WHERE root_id = ?1", [id])
-        .map_err(|e| {
-            format!("clearing what root {id} alone still held on a work that survives it: {e}")
-        })?;
+    conn.execute(
+        "DELETE FROM member
+          WHERE id IN (SELECT member_id FROM member_root WHERE root_id = ?1)
+            AND NOT EXISTS (SELECT 1 FROM member_root other
+                             WHERE other.member_id = member.id AND other.root_id != ?1)",
+        [id],
+    )
+    .map_err(|e| {
+        format!("clearing what root {id} alone still held on a work that survives it: {e}")
+    })?;
+    repoint_kept_members(conn, id)?;
     conn.execute("DELETE FROM root WHERE id = ?1", [id])
         .map_err(|e| format!("removing root {id}: {e}"))?;
 
@@ -842,6 +845,57 @@ fn take_root(conn: &Connection, id: i64) -> Result<Removal, String> {
         notes: usize::try_from(notes).unwrap_or(usize::MAX),
         left_with_no_library: Vec::new(),
     })
+}
+
+/// Re-point each member whose `root_id` is `id` at a copy another directory
+/// holds: the oldest such directory's entry of the same `sha256`, lowest
+/// `rel_path` first, or nowhere where none holds one. A member left at NULL
+/// keeps its work from being superseded (`derive::superseded`'s condition 4).
+/// Re-pointed, the old work is folded into the work the copy's rules file it
+/// in, carrying its readers' rows, where the derive writes none of its
+/// editions, every member left lands on that one work, and `fold::absorb`
+/// finds there the same archives in the same order; else both stay (O243).
+fn repoint_kept_members(conn: &Connection, id: i64) -> Result<(), String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT m.id, r.id, r.path, se.rel_path
+               FROM member m
+               JOIN member_root mr ON mr.member_id = m.id AND mr.root_id <> ?1
+               JOIN root r ON r.id = mr.root_id
+               JOIN scan_entry se ON se.root_id = r.id AND se.sha256 = m.sha256
+              WHERE m.root_id = ?1
+              ORDER BY m.id, r.id, se.rel_path",
+        )
+        .map_err(|e| format!("reading the copies of what root {id} held: {e}"))?;
+    let copies = statement
+        .query_map([id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+        .map_err(|e| format!("reading the copies of what root {id} held: {e}"))?;
+    let mut repointed = HashSet::new();
+    for (member_id, root_id, root_path, rel_path) in copies {
+        if !repointed.insert(member_id) {
+            continue;
+        }
+        // Joined as `derive::classify` joins a candidate's path, so the
+        // derive matches it to the copy's entry.
+        let path = Path::new(&root_path)
+            .join(&rel_path)
+            .to_string_lossy()
+            .into_owned();
+        conn.execute(
+            "UPDATE member SET root_id = ?1, path = ?2 WHERE id = ?3",
+            rusqlite::params![root_id, path, member_id],
+        )
+        .map_err(|e| format!("re-pointing member {member_id} at root {root_id}: {e}"))?;
+    }
+    Ok(())
 }
 
 /// The library root `id` is the last directory of, which removing it deletes.
@@ -880,11 +934,11 @@ fn emptied_by_removing(conn: &Connection, id: i64) -> Result<Option<i64>, String
 /// root briefly missing cannot delete a library's pages
 /// (`schema/006_member_root.sql`). A bare delete would leave every work,
 /// edition, member, note and reading position standing with `member.root_id`
-/// quietly `NULL` — invisible to every grant (O54) — asserting evidence that
-/// is gone. This function does the rest of the job: [`DOOMED_WORKS`] names
-/// what `?1` alone accounts for, deleted explicitly and before the `root` row
-/// goes, and `derive_with` re-derives everything else — `series`,
-/// `kept_editions` on a work that only partly depended on `?1`, and
+/// quietly `NULL` and no `member_root` row — invisible to every grant (O54) —
+/// asserting evidence that is gone. This function does the rest of the job:
+/// [`DOOMED_WORKS`] names what `?1` alone accounts for, deleted explicitly and
+/// before the `root` row goes, and `derive_with` re-derives everything else —
+/// `series`, `kept_editions` on a work that only partly depended on `?1`, and
 /// `crate::proposals::raise` for whatever the loss changes.
 ///
 /// **Always derives under [`crate::derive::Documents::Skip`], never

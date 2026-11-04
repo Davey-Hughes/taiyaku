@@ -22,6 +22,7 @@ import { RootRow } from '../src/RootRow'
 import { Libraries } from '../src/Libraries'
 import { RuleForm } from '../src/RuleForm'
 import * as rulesApi from '../src/rules'
+import * as splitApi from '../src/splitEditions'
 import type { Rule } from '../src/rules'
 import { answerAbout } from './support/aboutPage'
 import { emptyDerive } from './support/derive'
@@ -106,6 +107,11 @@ vi.mock('../src/rules', async (importOriginal) => ({
 vi.mock('../src/users', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/users')>()),
   listUsers: vi.fn(),
+}))
+
+vi.mock('../src/splitEditions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/splitEditions')>()),
+  listSplitEditions: vi.fn(),
 }))
 
 const root: config.Root = {
@@ -618,6 +624,25 @@ function answerPages() {
     users: [user(), user({ id: 2, name: 'sam', role: 'user' })],
   })
   vi.mocked(backupApi.listBackups).mockResolvedValue({ backups: [] })
+  vi.mocked(splitApi.listSplitEditions).mockResolvedValue({
+    editions: [
+      {
+        work: 'foo',
+        title: 'Foo',
+        edition: 'raw',
+        pages: 5,
+        members: [
+          {
+            path: 'Foo 01.cbz',
+            pages: 2,
+            directories: [{ root: 3, path: '/srv/manga', library: 1 }],
+          },
+          { path: 'Foo 02.cbz', pages: 3, directories: [] },
+        ],
+        libraries: [{ id: 1, name: 'Manga', members: 1, pages: 2 }],
+      },
+    ],
+  })
   vi.mocked(rulesApi.listRules).mockResolvedValue({
     rules: [rule],
     complaints: [],
@@ -708,6 +733,13 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
       [
         ['Rules', 2],
         ['Preview', 3],
+      ],
+    ],
+    [
+      '/config/split-editions',
+      [
+        ['Split editions', 2],
+        ['Foo\u00a0·\u00a0raw', 3],
       ],
     ],
   ])(

@@ -234,6 +234,49 @@ async fn the_plan_route_names_the_formats_it_will_not_write() {
     );
 }
 
+/// And a member held under two directories is named as the reason it is not
+/// in the plan.
+#[tokio::test]
+async fn the_plan_route_names_a_member_held_under_two_directories() {
+    let (router, state, fixture) = test_support::router_over_a_scanned_cbz();
+    grant_can_stamp(&state);
+    let slug = a_slug(&state);
+    let copy = fixture.path().join("copy");
+    std::fs::create_dir_all(copy.join("Scanned")).expect("creates the copy's directory");
+    std::fs::copy(
+        fixture
+            .path()
+            .join("tree")
+            .join("Scanned")
+            .join("Scanned - v01.cbz"),
+        copy.join("Scanned").join("Scanned - v01.cbz"),
+    )
+    .expect("copies the archive");
+    {
+        let conn = state.library.conn();
+        let root = taiyaku_library::scan::add_root(&conn, &copy).expect("adds the copy's root");
+        taiyaku_library::scan::scan_root(&conn, &root).expect("scans it");
+        taiyaku_library::derive::derive(&conn).expect("derives");
+    }
+
+    let json = get_json(
+        &router,
+        &format!("/api/library/works/{slug}/stamp-comicinfo"),
+    )
+    .await;
+
+    assert_eq!(
+        json["archives"].as_array().expect("an array").len(),
+        0,
+        "nothing to stamp: {json}"
+    );
+    assert_eq!(
+        json["skipped_formats"],
+        serde_json::json!(["copied"]),
+        "and the screen is told why: {json}"
+    );
+}
+
 /// And a member whose bytes are gone is reported rather than swallowed.
 #[tokio::test]
 async fn the_plan_route_reports_a_member_it_could_not_read() {

@@ -18,8 +18,9 @@ import { listRoots } from './config'
 import { listProposals } from './curation'
 import { libraryScanStatus, listLibraries } from './libraries'
 import { grid, home, narrowedTo, oneSeries, search, status } from './library'
-import { invalidatePrefix, read } from './reads'
+import { invalidate, invalidatePrefix, read } from './reads'
 import { listRules } from './rules'
+import { listSplitEditions } from './splitEditions'
 import { listUsers } from './users'
 
 /** Every library and its directories: Configuration → Libraries' list. */
@@ -55,11 +56,14 @@ export const homeRead = (library: number | undefined) =>
     return home(library)
   })
 
-/** Series `id` and its works: a series page's body. */
-export const seriesRead = (id: number) =>
-  read(`/api/library/series/${id}`, async () => {
+/**
+ * Series `id` and its works, or only what `library` holds of them: a series
+ * page's body. The two are separate entries, as their addresses are.
+ */
+export const seriesRead = (id: number, library?: number) =>
+  read(narrowedTo(`/api/library/series/${id}`, library), async () => {
     await progressSaved()
-    return oneSeries(id)
+    return oneSeries(id, library)
   })
 
 /** The hits for `q` in a library, or in every library: search's body. */
@@ -84,9 +88,14 @@ export const LIBRARY_VIEWS: readonly string[] = [
   '/api/library/search',
 ]
 
-/** Marks every Library view address kept stale, and reads now the ones drawn. */
+/**
+ * Marks every Library view address kept stale, and reads now the ones drawn,
+ * and the split editions with them: every write that changes which works a
+ * library's views hold changes which editions are split as well.
+ */
 export function invalidateLibraryViews(): void {
   invalidatePrefix(...LIBRARY_VIEWS)
+  void invalidate(SPLIT_EDITIONS)
 }
 
 /**
@@ -97,6 +106,16 @@ export const USERS = read('/api/library/users', () => listUsers())
 
 /** The backups the server holds: Configuration → Backup's list. */
 export const BACKUPS = read('/api/library/backups', () => listBackups())
+
+/**
+ * The editions split between libraries: Configuration → Split editions'
+ * list. Each opening of the tab asks again, as `usePage` reads an address on
+ * every arrival; `invalidateLibraryViews` marks it, so an opening after a
+ * scan waits for the new list rather than drawing the one from before.
+ */
+export const SPLIT_EDITIONS = read('/api/library/split-editions', () =>
+  listSplitEditions(),
+)
 
 /** The rule list as stored: what Configuration → Rules edits. */
 export const RULES = read('/api/library/rules', () => listRules())

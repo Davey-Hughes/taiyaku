@@ -1594,3 +1594,55 @@ fn the_grant_clause_still_filters_even_though_no_route_can_supply_a_grant() {
         "member_owner: `Only` with no directory sees nothing"
     );
 }
+
+/// A member is under every directory it has a `member_root` row for, so each
+/// resolver finds a copy held under two directories through a grant of the
+/// one its `root_id` does not name (overlapping-libraries spec §3.4).
+#[test]
+fn each_resolver_finds_a_copy_through_the_directory_its_root_id_does_not_name() {
+    let library = test_support::library();
+    let conn = library.conn();
+    conn.execute_batch(
+        "INSERT INTO root (id, path) VALUES (1, '/primary'), (2, '/copy'), (3, '/neither');
+         INSERT INTO series (id, sort_title) VALUES (1, 'Series');
+         INSERT INTO work (id, content_key, slug, series_id, title, reading, hub)
+         VALUES (1, 'k', 'copied-v01', 1, 'Copied', 'rtl', 'raw');
+         INSERT INTO edition (id, work_id, key, label) VALUES (1, 1, 'raw', 'Raw');
+         INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id)
+         VALUES (1, 1, 0, '/primary/a.cbz', 'a', 1, 1);
+         INSERT INTO member_root (member_id, root_id) VALUES (1, 2);",
+    )
+    .expect("one work of one member, its primary copy under 1 and a copy under 2");
+
+    let copy = Access::Only(vec![2]);
+    assert_eq!(
+        super::work_by_slug(&conn, &copy, "copied-v01").expect("the copy's grant"),
+        1
+    );
+    assert_eq!(
+        super::works_in_series(&conn, &copy, 1).expect("the copy's grant"),
+        vec![1]
+    );
+    assert_eq!(
+        super::edition_owner(&conn, &copy, 1).expect("the copy's grant"),
+        (1, "raw".to_string())
+    );
+    assert_eq!(
+        super::member_owner(&conn, &copy, 1).expect("the copy's grant"),
+        (1, "a".to_string())
+    );
+
+    let neither = Access::Only(vec![3]);
+    assert!(matches!(
+        super::work_by_slug(&conn, &neither, "copied-v01"),
+        Err(super::NoAnswer::Missing)
+    ));
+    assert!(matches!(
+        super::edition_owner(&conn, &neither, 1),
+        Err(super::NoAnswer::Missing)
+    ));
+    assert!(matches!(
+        super::member_owner(&conn, &neither, 1),
+        Err(super::NoAnswer::Missing)
+    ));
+}

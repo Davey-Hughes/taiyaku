@@ -6,7 +6,7 @@
 // a function *returning* a fully-qualified collection has whole-body mutants
 // that fail to compile and are reported `unviable` — never run, and invisible
 // in the survivor list, because an unviable mutant is not a survivor.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -18,6 +18,7 @@ use axum::{
     routing::get,
 };
 
+use taiyaku_core::FromFull;
 use taiyaku_library::account::Access;
 
 use crate::{ServeState, Work};
@@ -74,39 +75,6 @@ impl IntoResponse for NotAPageIndex {
     fn into_response(self) -> Response {
         bad_request(self.0)
     }
-}
-
-/// The member `sha256` and within-member offset a page's `ETag` is derived
-/// from — found without reading a single byte, so a route can answer a
-/// matching `If-None-Match` before doing any of the work that would produce
-/// those bytes: a zip decompression from disk, or an HTTP round trip to
-/// Stump.
-///
-/// The same lookup and the same wording `ServeState::page` uses on its own
-/// way to the bytes (`lib.rs`), duplicated here rather than shared with it,
-/// because the two callers want different things back: this one needs only
-/// the location, `ServeState::page` needs only the bytes, and threading a
-/// location out through it would make every caller that has no use for an
-/// `ETag` pay to compute one. `get_thumb` already draws this same split, for
-/// the same reason — its own locate-then-generate call inside
-/// `spawn_blocking` is the same shape, one level further in.
-pub(crate) fn locate_member(
-    work: &Work,
-    edition: &str,
-    index: u32,
-) -> Result<(String, u32), String> {
-    let sidecar = work.sidecar();
-    let found = sidecar
-        .editions
-        .get(edition)
-        .ok_or_else(|| format!("no edition `{edition}` in {}", work.path.display()))?;
-    let (position, within) = found.locate(index).ok_or_else(|| {
-        format!(
-            "`{edition}` has {} pages; there is no page {index}",
-            found.total_pages()
-        )
-    })?;
-    Ok((found.members[position].sha256.clone(), within))
 }
 
 /// A page's `ETag`: the member's `sha256` and the page's offset within it —
@@ -174,7 +142,7 @@ pub(crate) fn if_none_match_hits(headers: &HeaderMap, tag: &str) -> bool {
 ///
 /// **No `Last-Modified` alongside it, deliberately.** It would need the
 /// member file's mtime, which needs a `stat`, on the async worker, on every
-/// request — putting disk I/O back on the one path `locate_member` above is
+/// request — putting disk I/O back on the one path `EditionView::locate` is
 /// written to keep clear of. It would also be the weaker validator of the two:
 /// these bytes are addressed by content, and mtime is not, so re-downloading a
 /// byte-identical archive would invalidate a cache entry that is still correct.
@@ -271,15 +239,15 @@ pub(crate) fn sidecar_etag(sidecar: &taiyaku_core::Sidecar) -> String {
     format!("\"{hex}\"")
 }
 
-/// A notes or truth document's `ETag`: a SHA-256 over exactly the bytes being
-/// sent.
+/// A notes or truth document's `ETag` as `Access::Every` is sent it: a
+/// SHA-256 over exactly the bytes being sent.
 ///
 /// Lives in `crate::notes` as `etag_for`, beside `notes::to_json`, the
 /// projection it is computed over — the two are the invariant `notes.rs`'s and
 /// `truth.rs`'s own doc comments state, and keeping them in the same module is
-/// what makes that visible rather than asserted. Re-exported here as
-/// `notes_etag`, the name every call site in this file, and every test that
-/// reaches it through `super::*`, uses.
+/// what makes that visible rather than asserted. Routes take it through
+/// `View::etag_naming_numbering`; tests, as `notes_etag`.
+#[cfg(test)]
 pub(crate) use crate::notes::etag_for as notes_etag;
 
 /// Whether a request's `If-Match` names `tag`.
@@ -303,7 +271,7 @@ pub(crate) fn if_match_hits(headers: &HeaderMap, tag: &str) -> Option<bool> {
 /// carries the status and the wording together, which is the point: one
 /// answer to one question, wherever it is asked.
 #[derive(Debug)]
-struct NoSuchWork(String);
+pub(crate) struct NoSuchWork(String);
 
 impl IntoResponse for NoSuchWork {
     fn into_response(self) -> Response {
@@ -314,8 +282,8 @@ impl IntoResponse for NoSuchWork {
 /// The work a route names, or the refusal to send instead, for a handler on
 /// a runtime worker. `ServeState::find` decides the wording and does the
 /// refresh a miss needs off the worker. This only wraps it in the
-/// `Response`-carrying type `get_sidecar` and `serve_page` want.
-async fn work(state: &Arc<ServeState>, id: &str) -> Result<Arc<Work>, NoSuchWork> {
+/// `Response`-carrying type the view's loaders (`view.rs`) want.
+pub(crate) async fn work(state: &Arc<ServeState>, id: &str) -> Result<Arc<Work>, NoSuchWork> {
     state.find(id).await.map_err(NoSuchWork)
 }
 
@@ -350,7 +318,7 @@ impl IntoResponse for NoProgress {
 /// **Applies the caller's grant.** A list that answered every work the server
 /// held would hand a restricted account the id, title, series and volume of
 /// every work outside every root it was granted — the same shape of gap
-/// `refuse_if_hidden` closes on the page routes and
+/// `view::of_edition` closes on the page routes and
 /// `opds::visible_editions_by_work` closes on the OPDS mirror.
 ///
 /// **Filtered `editions` too, and the `cover` URL built from a visible one.**
@@ -360,13 +328,13 @@ impl IntoResponse for NoProgress {
 /// `editions` array and build its `cover` from `sidecar.hub` unconditionally,
 /// so a hidden hub's key would reach the client through a thumbnail URL.
 /// Filtered per edition, through `works::summary`'s `visible` parameter — the
-/// same per-edition question `get_sidecar` and `patch_alignments` ask via
-/// `visible_editions_or_refuse`, asked here for every work in the library at
-/// once so this route stays a list rather than becoming a lookup.
+/// same per-edition question `get_sidecar` and `patch_alignments` ask through
+/// `view::flags_or_refuse`, asked here for every work in the library at once
+/// so this route stays a list rather than becoming a lookup.
 ///
 /// **A list, not a lookup: filtered, not refused.** A restricted account gets
 /// the works it may see and simply does not learn about the rest; refusing
-/// the whole route the way `refuse_if_hidden` refuses a single edition would
+/// the whole route the way `view::of_edition` refuses a single edition would
 /// hide the library from every restricted reader, not just the parts outside
 /// their grant.
 ///
@@ -375,7 +343,7 @@ impl IntoResponse for NoProgress {
 /// be an N+1 at the edition level: `browse::visible_editions` answers every
 /// work's visible edition set in one round trip, and this filter is then only
 /// a `HashSet` lookup per edition. `Access::Every` skips that query entirely,
-/// the same short-circuit `refuse_if_hidden` applies.
+/// the same short-circuit `view::of_edition` applies.
 ///
 /// **Not a home screen.** Nothing here builds one.
 ///
@@ -425,55 +393,6 @@ async fn list_works(
     }
 }
 
-/// Refuse a work or edition the caller's grant hides, as a 404.
-///
-/// **The page routes apply the grant themselves**, or spec C1's per-root
-/// sharing would be a browse filter rather than a boundary: a restricted reader
-/// who knew a slug could read every page of every root, because
-/// `/api/works/{slug}/{edition}/pages/N` would never ask. Browse would hide the
-/// work and the bytes would be served anyway.
-///
-/// **404, not 403**, matching every other refusal here: telling an
-/// unauthorised caller which slugs are real is the enumeration this project
-/// refuses elsewhere.
-///
-/// [`on_the_grant`] answers `Access::Every` without touching the database, so
-/// the ordinary single-reader deployment pays nothing for this. Any other
-/// access is asked on the blocking pool, through it (O115).
-///
-/// **Progress, notes and truth name a work and no edition, so they ask
-/// [`visible_editions_or_refuse`] instead** (O60): a work the grant hides
-/// whole is refused there as it is here.
-pub(crate) async fn refuse_if_hidden(
-    state: &Arc<ServeState>,
-    extensions: &axum::http::Extensions,
-    slug: &str,
-    edition: &str,
-) -> Option<Response> {
-    let (slug, edition) = (slug.to_string(), edition.to_string());
-    on_the_grant(state, extensions, None, move |conn, principal| {
-        edition_refusal(conn, &principal.access, &slug, &edition)
-    })
-    .await
-    .unwrap_or_else(Some)
-}
-
-/// [`refuse_if_hidden`]'s question, asked on a connection the caller already
-/// holds: the refusal to send when `slug`'s `edition` keeps no member inside
-/// `access`.
-fn edition_refusal(
-    conn: &rusqlite::Connection,
-    access: &Access,
-    slug: &str,
-    edition: &str,
-) -> Option<Response> {
-    match taiyaku_library::browse::edition_visible(conn, access, slug, edition) {
-        Ok(true) => None,
-        Ok(false) => Some(not_found(format!("no work `{slug}`"))),
-        Err(why) => Some((StatusCode::INTERNAL_SERVER_ERROR, why).into_response()),
-    }
-}
-
 /// `check`, asked of the library on the blocking pool for a reader whose
 /// access is not `Every`; `unrestricted` for `Every`, without asking; and a
 /// 401 for a request with no principal, which must see nothing rather than
@@ -486,8 +405,8 @@ fn edition_refusal(
 /// mutex on a tokio worker thread, stalling the whole worker, before its own
 /// `spawn_blocking` ran. `serve_page`'s reasoning about the async worker
 /// applies to the check as it does to the read behind it. `opds::works` asks
-/// through this and `opds::work_feed` through
-/// [`visible_editions_or_refuse`] (O119).
+/// through this and `opds::work_feed` through [`crate::view::of_work`]
+/// (O119).
 ///
 /// **`Every` never leaves the async worker**: it is answered without the
 /// library, so the unrestricted reader pays for neither the query nor the trip
@@ -496,8 +415,9 @@ fn edition_refusal(
 /// `Err` is the refusal to send: the 401, or a 500 when `check` panicked.
 #[expect(
     clippy::result_large_err,
-    reason = "the `Err` carries a `Response`, for `visible_editions_or_refuse`'s reason: a \
-              routing handler's refusal path, called once per request"
+    reason = "the `Err` carries a `Response`, as every refusal-returning function in this file \
+              does: a routing handler's own refusal path, called once per request, not a hot \
+              loop, so the bytes clippy measures are not worth an indirection at every call site"
 )]
 pub(crate) async fn on_the_grant<T: Send + 'static>(
     state: &Arc<ServeState>,
@@ -524,7 +444,7 @@ pub(crate) async fn on_the_grant<T: Send + 'static>(
         })
 }
 
-/// **403, not 404, and that is the design.** `refuse_if_hidden` above answers
+/// **403, not 404, and that is the design.** `view::of_edition` answers
 /// 404 because an edition outside the grant does not admit that it exists;
 /// this answers 403 because the caller *may* see this edition and may not have
 /// a copy of it — a different fact that a 404 would lie about.
@@ -599,118 +519,47 @@ pub(crate) fn refuse_if_cannot_stamp(extensions: &axum::http::Extensions) -> Opt
     })
 }
 
-/// Which editions of `slug` this caller may see, or the refusal to send
-/// instead — [`refuse_if_hidden`]'s whole-work counterpart, for a route that
-/// has no single edition to check against: the document `get_sidecar`
-/// returns lists every edition, and the rows `patch_alignments` writes are
-/// not scoped to one edition either, since a correction names two.
-///
-/// **Data-carrying, unlike `refuse_if_hidden`.** A work-level answer alone —
-/// does `slug` keep any edition under a granted root? — would let a caller
-/// send back the whole document regardless: a grant that let the work through
-/// would gate nothing inside it, and a hidden edition's key, label, member
-/// path and `sha256` would leak through `get_sidecar` and `patch_alignments`
-/// alike. `browse::work` already answers the finer question —
-/// `WorkCard::editions` is "only the editions this caller may see", its own
-/// contract — so this returns that set instead of discarding it, and
-/// `get_sidecar` and `patch_alignments` filter with it via
-/// [`filter_sidecar_editions`] rather than reinventing the rule.
-///
-/// `Ok(None)`: a caller whose access is `Access::Every`, and the database is
-/// never touched, the same short-circuit `refuse_if_hidden` applies. A
-/// restricted caller is asked on the blocking pool, through [`on_the_grant`]
-/// (O115), which refuses a request with no principal.
-/// `Ok(Some(keys))`: a restricted caller; `keys` is `slug`'s visible
-/// edition set, and a caller with nothing to filter still gets a real
-/// (possibly full) set rather than `None`, so it cannot be mistaken for
-/// "unrestricted" downstream.
-/// `Err`: the refusal to send instead. `browse::work` answers `None` for a
-/// work outside the grant exactly as it does for one that does not exist,
-/// so this refuses identically either way — the same rule `refuse_if_hidden`
-/// states for [`taiyaku_library::browse::edition_visible`].
-///
-/// **`opds::work_feed` asks it too (O119)**, for the feed that names a
-/// work's editions — the same question, and the same 404 for a work outside
-/// the grant.
-#[expect(
-    clippy::result_large_err,
-    reason = "the `Err` carries a `Response`, which every other refusal-returning function in \
-              this file also does (`NoSuchWork`, `NoPrincipal`, `NoNotes`, `NoTruth` all wrap \
-              one for the identical reason their own doc comments give); this is a routing \
-              handler's own refusal path, called once per request, not a hot loop, so the 128 \
-              bytes clippy measures are not worth an indirection at every call site"
-)]
-pub(crate) async fn visible_editions_or_refuse(
-    state: &Arc<ServeState>,
-    extensions: &axum::http::Extensions,
-    slug: &str,
-) -> Result<Option<HashSet<String>>, Response> {
-    let slug = slug.to_string();
-    on_the_grant(state, extensions, Ok(None), move |conn, principal| {
-        visible_editions(conn, principal, &slug).map(Some)
-    })
-    .await
-    .and_then(|answer| answer)
-}
-
-/// [`visible_editions_or_refuse`]'s question, asked on a connection the caller
-/// already holds, for a caller whose access is not `Every`.
-#[expect(
-    clippy::result_large_err,
-    reason = "the `Err` carries a `Response`, for `visible_editions_or_refuse`'s reason"
-)]
-fn visible_editions(
-    conn: &rusqlite::Connection,
-    principal: &crate::auth::Principal,
-    slug: &str,
-) -> Result<HashSet<String>, Response> {
-    match taiyaku_library::browse::work(conn, &principal.access, principal.user_id, slug) {
-        Ok(Some(detail)) => Ok(detail.card.editions.into_iter().map(|e| e.key).collect()),
-        Ok(None) => Err(not_found(format!("no work `{slug}`"))),
-        Err(why) => Err((StatusCode::INTERNAL_SERVER_ERROR, why).into_response()),
-    }
-}
-
-/// [`visible_editions_or_refuse`] for `patch_alignments`, and then
-/// [`refuse_if_hidden`]'s question for each side of the correction, in one
-/// trip to the blocking pool on one connection.
-///
-/// **One trip rather than three.** It takes the library's mutex once rather
-/// than three times, and it keeps all three questions inside what
-/// `routes::tests::no_grant_check_stalls_the_runtime` measures, which is a
-/// call's first wait on that mutex. They are asked in this order: the work,
-/// then `from`, then `to`.
+/// [`crate::view::flags_or_refuse`] for `patch_alignments`, and each side of
+/// the correction with no visible member in those flags refused as the work
+/// is, a 404 naming it, so that a refusal tells no one which slugs are real
+/// and the sides are judged by the one answer the view is built from. On the
+/// blocking pool, as `routes::tests::no_grant_check_stalls_the_runtime`
+/// measures, the work first, then `from`, then `to`.
 ///
 /// `sides` is `None` for a body that did not parse. The handler refuses that
 /// body only after this has answered, so a hidden work is still refused
 /// before a malformed correction is.
 #[expect(
     clippy::result_large_err,
-    reason = "the `Err` carries a `Response`, for `visible_editions_or_refuse`'s reason"
+    reason = "the `Err` carries a `Response`, for `on_the_grant`'s reason"
 )]
-async fn visible_editions_for_a_correction(
+async fn visible_members_for_a_correction(
     state: &Arc<ServeState>,
     extensions: &axum::http::Extensions,
     slug: &str,
     sides: Option<(String, String)>,
-) -> Result<Option<HashSet<String>>, Response> {
+) -> Result<Option<HashMap<String, Vec<taiyaku_library::browse::SeenMember>>>, Response> {
     let slug = slug.to_string();
     on_the_grant(state, extensions, Ok(None), move |conn, principal| {
-        let visible = visible_editions(conn, principal, &slug)?;
+        let flags = crate::view::flags_or_refuse(conn, &principal.access, &slug, None)?;
         for side in sides.iter().flat_map(|(from, to)| [from, to]) {
-            if let Some(refusal) = edition_refusal(conn, &principal.access, &slug, side) {
-                return Err(refusal);
+            let seen = flags
+                .get(side)
+                .is_some_and(|members| members.iter().any(|member| member.visible));
+            if !seen {
+                return Err(not_found(format!("no work `{slug}`")));
             }
         }
-        Ok(Some(visible))
+        Ok(Some(flags))
     })
     .await
     .and_then(|answer| answer)
 }
 
 /// A copy of `sidecar` with every edition and alignment outside `visible`
-/// removed — what [`get_sidecar`] and [`patch_alignments`] send a restricted
-/// caller instead of the document verbatim.
+/// removed — what [`crate::view::View::build`] starts a restricted caller's
+/// document from, and what [`crate::view::View::visible_editions_in_full`] checks
+/// a notes write against.
 ///
 /// **Both `editions` and `alignments` are filtered, not only the former.**
 /// An alignment names two editions on the wire (`from`/`to`); one naming a
@@ -725,10 +574,9 @@ async fn visible_editions_for_a_correction(
 /// sorted; the first surviving one is the deterministic fallback, the same
 /// tiebreak `works::summary` uses for a list entry's cover when its hub is
 /// hidden. The caller is expected to have already refused a `slug` with no
-/// visible edition at all (`visible_editions_or_refuse` never returns an
-/// empty set for one — `browse::work` answers `None` first), so this always
-/// finds a fallback when it needs one.
-fn filter_sidecar_editions(
+/// visible edition at all (`View::build` answers `None` for one), so this
+/// always finds a fallback when it needs one.
+pub(crate) fn filter_sidecar_editions(
     sidecar: &taiyaku_core::Sidecar,
     visible: &HashSet<String>,
 ) -> taiyaku_core::Sidecar {
@@ -745,70 +593,31 @@ fn filter_sidecar_editions(
     filtered
 }
 
-/// The sidecar a write is validated against for this caller: `found`'s own
-/// for a caller with no grant limits, and [`filter_sidecar_editions`]'s copy
-/// for one whose access is not `Every`.
-///
-/// **So an edition outside the grant is refused in the words an edition the
-/// work does not have is refused in**, by the check that already refuses the
-/// second (O60). `put_progress` and `put_notes` each look an edition up in
-/// this document and are given no second question to ask.
-fn sidecar_as_seen(found: &Work, visible: Option<&HashSet<String>>) -> Arc<taiyaku_core::Sidecar> {
-    let sidecar = found.sidecar();
-    match visible {
-        Some(keys) => Arc::new(filter_sidecar_editions(&sidecar, keys)),
-        None => sidecar,
-    }
-}
-
 async fn get_sidecar(
     State(state): State<Arc<ServeState>>,
     AxPath(id): AxPath<String>,
     headers: HeaderMap,
     request_extensions: axum::http::Extensions,
 ) -> Response {
-    // The document lists every edition, so a grant that hides the whole work
-    // must refuse it, and a grant that only hides *some* of it must filter
-    // the rest — `visible_editions_or_refuse` answers both.
-    let visible = match visible_editions_or_refuse(&state, &request_extensions, &id).await {
-        Ok(visible) => visible,
+    let view = match crate::view::of_work(&state, &request_extensions, &id).await {
+        Ok(view) => view,
         Err(refusal) => return refusal,
     };
-    let found = match work(&state, &id).await {
-        Ok(found) => found,
-        Err(missing) => return missing.into_response(),
-    };
-    let sidecar = found.sidecar();
-    // The `ETag` is computed over the **full** document regardless of what
-    // this response sends: it is the resource's own fingerprint, and it is
-    // what `patch_alignments`'s `If-Match` validates against — a tag over a
-    // caller-specific projection would never match that check, and a
-    // restricted reader's own correction would fail its precondition every
-    // time. Filtering changes the body, not the version being agreed on.
-    // The cost of that choice: the tag is also a change-detection oracle
-    // over content this caller cannot see — a restricted reader's next
-    // `If-None-Match` answers 200 whenever a *withheld* edition changes,
-    // never a 304, even though nothing in the body they can see moved. Never
-    // a *shared* cache, though — `every_guarded_response_refuses_a_shared_cache`
-    // covers that half — so the leak is "something changed," not what.
-    let tag = sidecar_etag(&sidecar);
+    let sidecar = view.sidecar();
+    // The `ETag` is over the document this account is sent (spec §3.8): two
+    // accounts sent different documents must not revalidate each other's
+    // copies, and a withheld edition changing must not change this one's tag.
+    // `patch_alignments` compares `If-Match` with the same view's tag.
+    let tag = sidecar_etag(sidecar);
     if if_none_match_hits(&headers, &tag) {
         return not_modified(&tag, None);
     }
-    let body = match &visible {
-        Some(keys) => filter_sidecar_editions(&sidecar, keys).to_json(),
-        // Served verbatim from the parsed document rather than by
-        // re-reading the file, so what the client resolves against is
-        // exactly what this server holds — and exactly what the `ETag`
-        // above was computed over.
-        None => sidecar.to_json(),
-    };
     (
         [
             (header::CONTENT_TYPE, "application/json"),
             (header::ETAG, tag.as_str()),
         ],
-        body,
+        sidecar.to_json(),
     )
         .into_response()
 }
@@ -842,9 +651,10 @@ async fn get_page(
     headers: HeaderMap,
     request_extensions: axum::http::Extensions,
 ) -> Response {
-    if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &edition).await {
-        return refusal;
-    }
+    let view = match crate::view::of_edition(&state, &request_extensions, &id, &edition).await {
+        Ok(view) => view,
+        Err(refusal) => return refusal,
+    };
     if let Some(refusal) = refuse_if_cannot_stream(&request_extensions) {
         return refusal;
     }
@@ -866,7 +676,7 @@ async fn get_page(
         .filter(|edge| *edge > 1)
         .map(|edge| edge.min(crate::cover::MAX_FIT_LONG_EDGE));
 
-    serve_page(state, id, edition, index, long_edge, None, &headers).await
+    serve_page(state, view, index, long_edge, None, &headers).await
 }
 
 /// A page, at `long_edge` or as the archive holds it, after whatever refusals
@@ -884,8 +694,7 @@ async fn get_page(
 /// `304` is `PAGE_CACHE_CONTROL`.
 async fn serve_page(
     state: Arc<ServeState>,
-    id: String,
-    edition: String,
+    view: crate::view::EditionView,
     index: u32,
     long_edge: Option<u32>,
     version: Option<&str>,
@@ -898,12 +707,15 @@ async fn serve_page(
     // `304` without a zip decompression or an HTTP round trip to Stump ever
     // happening — the whole point of sending a validator in the first
     // place.
-    let found = match work(&state, &id).await {
-        Ok(found) => found,
-        Err(missing) => return missing.into_response(),
+    let index = match view.page_to_full(index) {
+        Ok(index) => index,
+        Err(message) => return not_found(message),
     };
-    let (sha256, offset) = match locate_member(&found, &edition, index) {
-        Ok(pair) => pair,
+    // Located, tagged and read in the sidecar `view` checked its flags
+    // against, never the work's current one, which a refresh can have
+    // replaced since with members the flags never named.
+    let (sha256, offset) = match view.locate(index) {
+        Ok((member, offset)) => (member.sha256.clone(), offset),
         Err(message) => return not_found(message),
     };
     let tag = page_etag(&sha256, offset, long_edge);
@@ -935,13 +747,12 @@ async fn serve_page(
     // `PageSource` stays synchronous deliberately. The boundary belongs here,
     // where there is exactly one of it, rather than in each implementation.
     let fetched = tokio::task::spawn_blocking(move || {
-        let found = state.find_blocking(&id)?;
         let Some(edge) = long_edge else {
-            return state.page(&found, &edition, index);
+            return state.page(&view, index);
         };
         let dir = state.thumb_cache_dir();
         let fitted = crate::cover::cached_or_generated_page(&dir, &sha256, offset, edge, || {
-            state.page(&found, &edition, index)
+            state.page(&view, index)
         })?;
         match fitted {
             // A resize always writes JPEG, and says so rather than echoing
@@ -1024,12 +835,12 @@ fn tile_edge(w: Option<&str>) -> Option<u32> {
 /// own bytes and type.)
 ///
 /// The tile sends `Cache-Control` and **no `ETag`**, which is not an oversight.
-/// `get_page` can answer a `304` before doing any work because `locate_member`
-/// derives the tag from the in-memory sidecar; here the member `sha256` and
-/// offset are found inside `spawn_blocking`, one level in, so a validator would
-/// arrive too late to skip anything a tile costs. Adding the tag would mean
-/// hoisting the lookup out here, which is its own change. A library cover does
-/// carry one: it is served by `serve_page`, whose lookup runs out here.
+/// `get_page` can answer a `304` before doing any work because
+/// `EditionView::locate` derives the tag from the in-memory sidecar; here the
+/// member `sha256` and offset are found inside `spawn_blocking`, one level in,
+/// so a validator would arrive too late to skip anything a tile costs. Adding
+/// one would mean hoisting the lookup out here, its own change. A library cover
+/// does carry one: it is served by `serve_page`, whose lookup runs out here.
 ///
 /// **`?w=` makes page 0 a library cover** (O133): at 256, 512 or 768 px on its
 /// long edge (`cover::COVER_LONG_EDGES`) it is served by `serve_page`, exactly
@@ -1052,16 +863,17 @@ async fn get_thumb(
     headers: HeaderMap,
     request_extensions: axum::http::Extensions,
 ) -> Response {
-    if let Some(refusal) = refuse_if_hidden(&state, &request_extensions, &id, &edition).await {
-        return refusal;
-    }
+    let view = match crate::view::of_edition(&state, &request_extensions, &id, &edition).await {
+        Ok(view) => view,
+        Err(refusal) => return refusal,
+    };
     let index = match page_index(&raw, &edition) {
         Ok(index) => index,
         Err(refusal) => return refusal.into_response(),
     };
     if let Some(edge) = cover_edge(index, first_query_value(&query, "w")) {
         let version = first_query_value(&query, "v");
-        return serve_page(state, id, edition, index, Some(edge), version, &headers).await;
+        return serve_page(state, view, index, Some(edge), version, &headers).await;
     }
     // O134. Below `cover_edge` deliberately: page 0 at a *cover* size stays
     // O133's cover — the page route's own answer, validator and all — and a
@@ -1072,22 +884,19 @@ async fn get_thumb(
     let edge = tile_edge(first_query_value(&query, "w"))
         .filter(|_| can_stream(&request_extensions))
         .unwrap_or(crate::cover::THUMB_LONG_EDGE);
+    let index = match view.page_to_full(index) {
+        Ok(index) => index,
+        Err(message) => return not_found(message),
+    };
     // Decoding blocks and can allocate up to `MAX_DECODE_ALLOC`; `serve_page`'s
-    // reasoning applies unchanged.
+    // reasoning applies unchanged, and so does its reason to locate in the
+    // sidecar `view` checked.
     let fetched = tokio::task::spawn_blocking(move || {
-        let found = state.find_blocking(&id)?;
-        let sidecar = found.sidecar();
-        let ed = sidecar
-            .editions
-            .get(&edition)
-            .ok_or_else(|| format!("no edition `{edition}` in work `{id}`"))?;
-        let (member, offset) = ed
-            .locate(index)
-            .ok_or_else(|| format!("`{edition}` has no page {index} in work `{id}`"))?;
-        let sha = ed.members[member].sha256.clone();
+        let (member, offset) = view.locate(index)?;
+        let sha = member.sha256.clone();
         let dir = state.thumb_cache_dir();
         crate::cover::cached_or_generated_thumb(&dir, &sha, offset, edge, || {
-            state.page(&found, &edition, index).map(|p| p.bytes)
+            state.page(&view, index).map(|p| p.bytes)
         })
     })
     .await;
@@ -1128,6 +937,15 @@ enum NoNotes {
     Refused(String),
     Precondition(StatusCode, String),
     Failed(String),
+}
+
+impl From<crate::notes::Invalid> for NoNotes {
+    fn from(why: crate::notes::Invalid) -> Self {
+        match why {
+            crate::notes::Invalid::Missing(message) => Self::NotFound(message),
+            crate::notes::Invalid::Refused(message) => Self::Refused(message),
+        }
+    }
 }
 
 impl IntoResponse for NoNotes {
@@ -1200,9 +1018,10 @@ async fn get_notes(
     // holds. Asked here, where the work is looked up. For an account with no
     // grant limits the question is answered without the library
     // (`on_the_grant`).
-    if let Err(refusal) = visible_editions_or_refuse(&state, &extensions, &id).await {
-        return refusal;
-    }
+    let view = match crate::view::of_work(&state, &extensions, &id).await {
+        Ok(view) => view,
+        Err(refusal) => return refusal,
+    };
     let loaded = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id).map_err(NoNotes::NotFound)?;
         // Writing notes requires `If-Match`, and a client that had never seen a
@@ -1215,13 +1034,14 @@ async fn get_notes(
         let notes = crate::notes::load(&state.library, &found, user_id)
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
-        crate::notes::to_json(&notes).map_err(NoNotes::Failed)
+        // The body is the part of the document this account is sent, under the
+        // tag `put_notes` checks `If-Match` against (spec §3.8).
+        crate::notes::tagged_for(&notes, &view).map_err(NoNotes::Failed)
     })
     .await;
 
     match loaded {
-        Ok(Ok(json)) => {
-            let tag = notes_etag(&json);
+        Ok(Ok((tag, json))) => {
             if if_none_match_hits(&headers, &tag) {
                 return not_modified(&tag, None);
             }
@@ -1279,10 +1099,10 @@ async fn put_notes(
     };
 
     // O60, as `get_notes` asks it: after the body is parsed, so a body that
-    // is not notes is refused as that whatever work it names. The answer is
-    // kept for `notes::validate_against` below.
-    let visible = match visible_editions_or_refuse(&state, &extensions, &id).await {
-        Ok(visible) => visible,
+    // is not notes is refused as that whatever work it names. The view is
+    // kept to translate the notes and validate them below.
+    let view = match crate::view::of_work(&state, &extensions, &id).await {
+        Ok(view) => view,
         Err(refusal) => return refusal,
     };
 
@@ -1301,7 +1121,8 @@ async fn put_notes(
         let current = crate::notes::load(&state.library, &found, user_id)
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
-        let tag = notes_etag(&crate::notes::to_json(&current).map_err(NoNotes::Failed)?);
+        let tag =
+            view.etag_naming_numbering(&crate::notes::to_json(&current).map_err(NoNotes::Failed)?);
         match if_match_hits(&headers, &tag) {
             None => {
                 return Err(NoNotes::Precondition(
@@ -1323,6 +1144,10 @@ async fn put_notes(
             Some(true) => {}
         }
 
+        // In the stored numbering, with the notes this account is not sent
+        // kept (spec §3.8).
+        let mut merged = crate::notes::as_stored(incoming, &current, &view)?;
+
         // Validated against what is stored, and therefore inside the guard
         // rather than ahead of it: an anchor that has not moved since the last
         // write is not re-checked, which is what stops one note left pointing
@@ -1330,33 +1155,29 @@ async fn put_notes(
         // follows it — including the one that would remove it. See
         // `notes::validate_against`.
         crate::notes::validate_against(
-            &incoming,
+            &merged,
             &found.id,
-            &sidecar_as_seen(&found, visible.as_ref()),
+            &view.visible_editions_in_full(),
             &current,
-        )
-        .map_err(|why| match why {
-            crate::notes::Invalid::Missing(message) => NoNotes::NotFound(message),
-            crate::notes::Invalid::Refused(message) => NoNotes::Refused(message),
-        })?;
+        )?;
+        // In id order, the order `notes::load` reads, so the answer's `ETag`
+        // is the one the next write is checked against.
+        merged.notes.sort_by(|a, b| a.id.cmp(&b.id));
 
-        crate::notes::store(&state.library, &found, user_id, &incoming).map_err(NoNotes::Failed)?;
-        crate::notes::to_json(&incoming).map_err(NoNotes::Failed)
+        crate::notes::store(&state.library, &found, user_id, &merged).map_err(NoNotes::Failed)?;
+        crate::notes::tagged_for(&merged, &view).map_err(NoNotes::Failed)
     })
     .await;
 
     match written {
-        Ok(Ok(json)) => {
-            let tag = notes_etag(&json);
-            (
-                [
-                    (header::CONTENT_TYPE, "application/json"),
-                    (header::ETAG, tag.as_str()),
-                ],
-                json,
-            )
-                .into_response()
-        }
+        Ok(Ok((tag, json))) => (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::ETAG, tag.as_str()),
+            ],
+            json,
+        )
+            .into_response(),
         Ok(Err(refusal)) => refusal.into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1368,22 +1189,32 @@ async fn put_notes(
 
 /// Why a truth request could not be answered.
 ///
-/// `NoNotes`'s split, minus `Refused`: nothing here validates an incoming
-/// document against the sidecar the way `notes::validate_against` does — a
-/// truth document names no slot and no edition list to check a page against
-/// — so there is no third kind of client mistake to tell apart from a
-/// missing work.
+/// `NoNotes`'s split, with `Forbidden` in place of `Refused`: a truth document
+/// names no slot to check, so the one client mistake besides a missing work
+/// or edition is an entry for an edition the account sees only in part
+/// (`truth::Unwritable`).
 #[derive(Debug)]
 enum NoTruth {
     NotFound(String),
+    Forbidden(String),
     Precondition(StatusCode, String),
     Failed(String),
+}
+
+impl From<crate::truth::Unwritable> for NoTruth {
+    fn from(why: crate::truth::Unwritable) -> Self {
+        match why {
+            crate::truth::Unwritable::Missing(message) => Self::NotFound(message),
+            crate::truth::Unwritable::PartlyVisible(message) => Self::Forbidden(message),
+        }
+    }
 }
 
 impl IntoResponse for NoTruth {
     fn into_response(self) -> Response {
         match self {
             Self::NotFound(message) => not_found(message),
+            Self::Forbidden(message) => (StatusCode::FORBIDDEN, message).into_response(),
             Self::Precondition(status, message) => (status, message).into_response(),
             Self::Failed(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
         }
@@ -1405,24 +1236,25 @@ async fn get_truth(
     headers: HeaderMap,
 ) -> Response {
     // O60, as `get_notes` asks it. A truth document is shared, and a caller
-    // whose grant hides the whole work is not told the work exists.
-    if let Err(refusal) = visible_editions_or_refuse(&state, &extensions, &id).await {
-        return refusal;
-    }
+    // whose grant hides the whole work is not told the work exists. The view
+    // names the editions it is sent whole, and the numbering its tag names.
+    let view = match crate::view::of_work(&state, &extensions, &id).await {
+        Ok(view) => view,
+        Err(refusal) => return refusal,
+    };
     // A read of `state.library` — `serve_page`'s reasoning about the async
     // worker applies unchanged (O12).
-    let loaded = tokio::task::spawn_blocking(move || -> Result<String, NoTruth> {
+    let loaded = tokio::task::spawn_blocking(move || -> Result<(String, String), NoTruth> {
         let found = state.find_blocking(&id).map_err(NoTruth::NotFound)?;
         let doc = crate::truth::load(&state.library, &found)
             .map_err(NoTruth::Failed)?
             .unwrap_or_default();
-        Ok(crate::truth::to_json(&doc))
+        Ok(crate::truth::tagged_for(&doc, &view))
     })
     .await;
 
     match loaded {
-        Ok(Ok(json)) => {
-            let tag = notes_etag(&json);
+        Ok(Ok((tag, json))) => {
             if if_none_match_hits(&headers, &tag) {
                 return not_modified(&tag, None);
             }
@@ -1478,10 +1310,12 @@ async fn put_truth(
         Err(why) => return bad_request(why),
     };
 
-    // O60, as `put_notes` asks it: after the body is parsed.
-    if let Err(refusal) = visible_editions_or_refuse(&state, &extensions, &id).await {
-        return refusal;
-    }
+    // O60, as `put_notes` asks it: after the body is parsed. The view is kept:
+    // the write keeps what the account is not sent.
+    let view = match crate::view::of_work(&state, &extensions, &id).await {
+        Ok(view) => view,
+        Err(refusal) => return refusal,
+    };
 
     // Serialising, hashing and writing all block, and the read-compare-write
     // below holds an exclusive lock across the write — `serve_page`'s reasoning
@@ -1502,7 +1336,7 @@ async fn put_truth(
         let current = crate::truth::load(&state.library, &found)
             .map_err(NoTruth::Failed)?
             .unwrap_or_default();
-        let tag = notes_etag(&crate::truth::to_json(&current));
+        let tag = view.etag_naming_numbering(&crate::truth::to_json(&current));
         match if_match_hits(&headers, &tag) {
             None => {
                 return Err(NoTruth::Precondition(
@@ -1524,23 +1358,23 @@ async fn put_truth(
             Some(true) => {}
         }
 
-        crate::truth::store(&state.library, &found, &incoming).map_err(NoTruth::Failed)?;
-        Ok(crate::truth::to_json(&incoming))
+        // Every entry the account is not sent whole kept, and one it changed
+        // refused (spec §3.8, O191).
+        let merged = crate::truth::as_stored(incoming, &current, &view, &found.id)?;
+        crate::truth::store(&state.library, &found, &merged).map_err(NoTruth::Failed)?;
+        Ok(crate::truth::tagged_for(&merged, &view))
     })
     .await;
 
     match written {
-        Ok(Ok(json)) => {
-            let tag = notes_etag(&json);
-            (
-                [
-                    (header::CONTENT_TYPE, "application/json"),
-                    (header::ETAG, tag.as_str()),
-                ],
-                json,
-            )
-                .into_response()
-        }
+        Ok(Ok((tag, json))) => (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::ETAG, tag.as_str()),
+            ],
+            json,
+        )
+            .into_response(),
         Ok(Err(refusal)) => refusal.into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1560,10 +1394,10 @@ async fn get_progress(
         Err(missing) => return missing.into_response(),
     };
 
-    // O60, as `get_notes` asks it. The answer is kept: it is the set of
-    // editions this caller may be told of.
-    let visible = match visible_editions_or_refuse(&state, &extensions, &id).await {
-        Ok(visible) => visible,
+    // O60, as `get_notes` asks it. The view is kept: it names the editions
+    // this caller may be told of, and numbers a narrowed one's slots.
+    let view = match crate::view::of_work(&state, &extensions, &id).await {
+        Ok(view) => view,
         Err(refusal) => return refusal,
     };
 
@@ -1574,11 +1408,19 @@ async fn get_progress(
         crate::progress::load(&state.library, &found, user_id)
             .map(|mut positions| {
                 // A position on an edition outside the grant is left out, as
-                // `get_sidecar` leaves the edition out. With none left the
+                // `get_sidecar` leaves the edition out, and so is one past a
+                // narrowed edition's end; one on a page it hides is sent as
+                // the nearest page before it (spec §3.8). With none left the
                 // answer below is 204, nothing recorded.
-                if let Some(keys) = &visible {
-                    positions.retain(|position| keys.contains(&position.edition));
-                }
+                positions.retain_mut(|position| {
+                    match view.slot_from_full(&position.edition, position.slot) {
+                        Some(FromFull::Visible(slot) | FromFull::Hidden { fallback: slot }) => {
+                            position.slot = slot;
+                            true
+                        }
+                        Some(FromFull::Outside) | None => false,
+                    }
+                });
                 positions
             })
             .map_err(NoProgress::Failed)
@@ -1616,10 +1458,10 @@ async fn put_progress(
         Err(missing) => return missing.into_response(),
     };
 
-    // O60, as `get_notes` asks it. The answer is kept for the edition check
+    // O60, as `get_notes` asks it. The view is kept for the edition check
     // below.
-    let visible = match visible_editions_or_refuse(&state, &extensions, &id).await {
-        Ok(visible) => visible,
+    let view = match crate::view::of_work(&state, &extensions, &id).await {
+        Ok(view) => view,
         Err(refusal) => return refusal,
     };
 
@@ -1630,8 +1472,9 @@ async fn put_progress(
     let stored = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id).map_err(NoProgress::NotFound)?;
         // The document this caller is shown (O60), so an edition outside the
-        // grant is refused just below as one the work does not have.
-        let sidecar = sidecar_as_seen(&found, visible.as_ref());
+        // grant is refused just below as one the work does not have, and a
+        // narrowed one's slots are counted as this caller numbers them.
+        let sidecar = view.sidecar();
         let edition = sidecar.editions.get(&progress.edition).ok_or_else(|| {
             NoProgress::NotFound(format!("no edition `{}` in work `{id}`", progress.edition))
         })?;
@@ -1653,12 +1496,16 @@ async fn put_progress(
                       unlikely, could."
         )]
         let slots = edition.slots(sidecar.work.reading).len() as u32;
-        if progress.slot >= slots {
-            return Err(NoProgress::NotFound(format!(
-                "`{}` has {slots} slots in work `{id}`; there is no slot {}",
-                progress.edition, progress.slot
-            )));
-        }
+        let slot = view
+            .slot_to_full(&progress.edition, progress.slot)
+            .filter(|_| progress.slot < slots)
+            .ok_or_else(|| {
+                NoProgress::NotFound(format!(
+                    "`{}` has {slots} slots in work `{id}`; there is no slot {}",
+                    progress.edition, progress.slot
+                ))
+            })?;
+        let progress = crate::Progress { slot, ..progress };
         crate::progress::store(&state.library, &found, user_id, &progress)
             .map_err(NoProgress::Failed)
     })
@@ -1822,15 +1669,15 @@ fn one_slot(text: &str, side: &str) -> Result<taiyaku_core::Slot, Response> {
 /// is then served from. That is worse than a response leak: a read leak costs
 /// the caller who triggered it a fact they should not have; this write would
 /// cost every other reader a fact they did not ask this caller to assert.
-/// Each side is asked [`refuse_if_hidden`]'s question — the exact
-/// per-edition one `/pages`, `/thumb` and the download routes already ask,
-/// through the same [`edition_refusal`] rather than another spelling of it —
+/// Each side is asked whether any member of it is visible, the answer
+/// [`crate::view::of_edition`]'s flags give the page and download routes,
 /// before the body is otherwise parsed, in
-/// [`visible_editions_for_a_correction`].
+/// [`visible_members_for_a_correction`]. A side the caller sees only in part
+/// is refused with 403 once the view is built (spec §3.8).
 ///
-/// **What is stored is never filtered — only what is returned.** `visible`
-/// is read once, before the write, and used solely to shape the HTTP
-/// response; the file and the `alignment`/`run` rows below always hold the
+/// **What is stored is never filtered — only what is returned.** `flags`
+/// are read once, before the write, and shape only the response and both
+/// tags; the file and the `alignment`/`run` rows below always hold the
 /// complete, unfiltered document, because a correction is shared library
 /// truth and a caller-specific projection of it must never reach disk. The
 /// per-side checks above are what keep an invisible edition from reaching
@@ -1839,9 +1686,9 @@ fn one_slot(text: &str, side: &str) -> Result<taiyaku_core::Slot, Response> {
 /// `#[allow(clippy::result_large_err)]` because everything under this
 /// handler — `one_slot`'s calls, the `spawn_blocking` closure and the
 /// `Work::update` closure nested inside it — resolves a `Response` as its
-/// error type, and clippy checks each closure as its own item (`works.rs`'s
-/// `a_replaced_sidecar_is_what_the_next_reader_sees` says the same thing at
-/// its own call site).
+/// error type, and clippy checks each closure as its own item
+/// (`works/tests.rs`'s `a_replaced_sidecar_is_what_the_next_reader_sees`
+/// says the same thing at its own call site).
 #[allow(clippy::result_large_err)]
 async fn patch_alignments(
     State(state): State<Arc<ServeState>>,
@@ -1859,19 +1706,18 @@ async fn patch_alignments(
         .ok()
         .map(|correction| (correction.from.clone(), correction.to.clone()));
     // **The write-authorization half of Finding 1, not merely its response
-    // leak.** `visible` only shapes what this handler sends back; on its own
-    // it never asks whether the correction's own `from`/`to` are inside the
+    // leak.** `flags` only shape what this handler sends back; on their own
+    // they never ask whether the correction's own `from`/`to` are inside the
     // grant. A reader granted only `en` on a work that also holds a withheld
     // `raw` could name `raw` on either side and have it written into the
     // shared `alignment`/`run` rows every other reader of this work is served
     // from — worse than a read leak, because the write is not scoped to the
-    // caller who made it. Each side is asked `refuse_if_hidden`'s question,
-    // the exact per-edition one `/pages`, `/thumb` and the download routes
-    // already ask, through the same `edition_refusal` rather than a second
-    // spelling of it.
-    let visible =
-        match visible_editions_for_a_correction(&state, &request_extensions, &id, sides).await {
-            Ok(visible) => visible,
+    // caller who made it. Each side is asked whether any member of it is
+    // visible, in the flags `view::of_edition` reads for the page and
+    // download routes.
+    let flags =
+        match visible_members_for_a_correction(&state, &request_extensions, &id, sides).await {
+            Ok(flags) => flags,
             Err(refusal) => return refusal,
         };
     let correction: Correction = match parsed {
@@ -1916,8 +1762,37 @@ async fn patch_alignments(
         // one correction — a person dragging a filmstrip tile — briefly
         // blocks the other library readers.
         let conn = state.library.conn();
+        // The view of a document, as this caller is sent it: `If-Match` names
+        // the tag `get_sidecar` sent it, which is over its view.
+        let seen = |sidecar: &Arc<taiyaku_core::Sidecar>| {
+            crate::view::View::build(Arc::clone(sidecar), flags.as_ref())
+                .ok_or_else(|| not_found(format!("no work `{id}`")))
+        };
         found.update(|current| {
-            let tag = sidecar_etag(current);
+            let view = seen(current)?;
+            // A narrowed edition's runs are in a numbering this caller is not
+            // sent, which is why its document leaves them out (spec §3.8). A
+            // side the store shows but the view hides, its flags not numbering
+            // these members, fails closed as a hidden side does.
+            for side in [&correction.from, &correction.to] {
+                if view
+                    .visible()
+                    .is_some_and(|keys| !keys.contains(side.as_str()))
+                {
+                    return Err(not_found(format!("no work `{id}`")));
+                }
+                if view.narrowed(side).is_some() {
+                    return Err((
+                        StatusCode::FORBIDDEN,
+                        format!(
+                            "`{side}` of `{id}` is only partly visible to this account, so its \
+                             alignments cannot be corrected here"
+                        ),
+                    )
+                        .into_response());
+                }
+            }
+            let tag = sidecar_etag(view.sidecar());
             match if_match_hits(&headers, &tag) {
                 None => {
                     return Err((
@@ -1961,6 +1836,12 @@ async fn patch_alignments(
                     };
                     (status, why.to_string()).into_response()
                 })?;
+            // The answer is the document `get_sidecar` would send this caller
+            // next, so the next correction's `If-Match` holds. It is built
+            // before the write so that nothing fallible follows the write: a
+            // refusal here leaves the file, the rows and memory as they were.
+            let next = std::sync::Arc::new(next);
+            let sent = seen(&next)?;
 
             // The file, then the rows, then memory. A failed write leaves the
             // served document exactly as it was, so a client that gets a 500
@@ -2016,16 +1897,14 @@ async fn patch_alignments(
                 crate::alignments::store(&conn, &found, &next)
                     .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
             }
-            // The response is filtered to this caller's grant, the same
-            // question `get_sidecar` answers with the same helper — `json`
-            // above stays the full document that was stored.
-            let response_json = match &visible {
-                Some(keys) => filter_sidecar_editions(&next, keys).to_json(),
-                None => json,
+            // `json` above stays the full document that was stored; the
+            // answer and its tag are this caller's view of it.
+            let response_json = if flags.is_some() {
+                sent.sidecar().to_json()
+            } else {
+                json
             };
-
-            let next = std::sync::Arc::new(next);
-            let tag = sidecar_etag(&next);
+            let tag = sidecar_etag(sent.sidecar());
             Ok((next, (response_json, tag)))
         })
     })
@@ -2280,6 +2159,10 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             axum::routing::get(crate::libraries_api::library_scan_status)
                 .post(crate::libraries_api::start_library_scan),
         ),
+        (
+            "/api/library/split-editions",
+            get(crate::libraries_api::list_split_editions),
+        ),
         // The directory browser behind "add a directory": directories beneath the
         // prefixes the server was started with, and nowhere else.
         ("/api/library/dirs", get(crate::dirs_api::list_dirs)),
@@ -2351,7 +2234,7 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum GrantPosture {
     /// A lookup, not a list: a work or edition the grant hides must answer
-    /// 404 — `browse::work`'s or `browse::edition_visible`'s own contract,
+    /// 404 — `browse::work`'s or `view::flags_or_refuse`'s own contract,
     /// answering a hidden work exactly as it answers one that does not
     /// exist.
     Refuses,
@@ -2398,19 +2281,19 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         // the read of a work the caller sees part of leaves out a position on
         // an edition outside the grant.
         ("/api/works/{work}/progress", RefusesAndFilters),
-        // A work outside the grant is refused. The document is the reader's
-        // own and is sent whole, so there is no filtering to declare.
-        ("/api/works/{work}/notes", Refuses),
+        // A work outside the grant is refused, and the read of a work the
+        // caller sees part of leaves out a note on an edition outside the
+        // grant; a write keeps it (spec §3.8).
+        ("/api/works/{work}/notes", RefusesAndFilters),
         // `get_truth` and `put_truth` refuse a work outside the grant. For a
-        // work the caller sees part of, the document is sent whole and
-        // written whole, the edition outside the grant included (O191),
-        // which is why this is `Refuses` and not `RefusesAndFilters`.
-        ("/api/works/{work}/truth", Refuses),
+        // work the caller sees part of, the read leaves out the entry of an
+        // edition outside the grant, and a write keeps it (spec §3.8, O191).
+        ("/api/works/{work}/truth", RefusesAndFilters),
         // `patch_alignments` filters its response to the visible editions, as
         // `get_sidecar` does (`Filters`), and refuses outright (404) a
         // correction that itself names an edition outside the grant, before
         // `Sidecar::correct` or the write beneath it runs
-        // (`visible_editions_for_a_correction`): a reader granted `en` alone
+        // (`visible_members_for_a_correction`): a reader granted `en` alone
         // could otherwise write `alignment`/`run` rows for `raw`, shared state
         // every reader who *can* see `raw` is then served from, which is worse
         // than a read leak.
@@ -2716,6 +2599,14 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
             },
         ),
         (
+            "/api/library/split-editions",
+            GrantIndependent {
+                reason: "admin-only; lists every library's share of each \
+                          edition the libraries split, a fact about the whole \
+                          store that the grants are set against",
+            },
+        ),
+        (
             "/api/library/dirs",
             GrantIndependent {
                 reason: "admin-only; names directories beneath the prefixes \
@@ -2795,7 +2686,7 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         ("/opds/v1.2/works/{work}/{edition}/pages/{number}", Refuses),
         ("/opds/v1.2/works/{work}/{edition}/cover", Refuses),
         // The same handler as `/api/works/{work}/{edition}/download` behind
-        // the same `refuse_if_hidden`, so necessarily the same posture.
+        // the same `view::of_edition`, so necessarily the same posture.
         // Driven rather than declared: `grant_proof_concrete` substitutes
         // `{work}` and `{edition}`, so the `Refuses` loops pick this up
         // against both a wholly-hidden work and one split across roots with
@@ -2808,12 +2699,128 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         // the grant's.
         ("/opds/v1.2/libraries/{library}/works", RefusesAndFilters),
         ("/opds/v1.2/libraries/by-work", Filters),
-        // The same 404, and the works filed in the library listed with the
-        // editions the grant allows.
+        // The same 404, and the works under the library's directories listed
+        // with every edition the grant allows.
         (
             "/opds/v1.2/libraries/{library}/works/by-work",
             RefusesAndFilters,
         ),
+    ]
+}
+
+/// What a route does with an edition an account sees only part of (spec
+/// §3.8, "Every route declares it"), declared beside [`GrantPosture`] for
+/// the same reason: `auth::tests::every_route_declares_what_it_does_with_a_narrowed_edition`
+/// drives each declaration against a narrowed edition, so a route added
+/// later cannot forget. `#[cfg(test)]` for `GrantPosture`'s reason.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum NarrowingPosture {
+    /// It takes a page index or a member ordinal in the account's numbering
+    /// and reads the full numbering's.
+    Translates,
+    /// It sends a document, list or count built from the account's view.
+    Narrows,
+    /// It sends a whole document and takes it back whole, keeping what the
+    /// account is not sent.
+    KeepsUnseen,
+    /// It refuses a request that names a narrowed edition.
+    Refuses,
+    /// It reads no edition's pages; `reason` says why.
+    NoPages { reason: &'static str },
+}
+
+/// The table [`NarrowingPosture`]'s doc describes: every entry of
+/// [`guarded_routes`], in its order.
+#[cfg(test)]
+pub(crate) fn narrowing_postures() -> Vec<(&'static str, NarrowingPosture)> {
+    use NarrowingPosture::{KeepsUnseen, Narrows, NoPages, Refuses, Translates};
+    const OWN: NarrowingPosture = NoPages {
+        reason: "the caller's own account or this build, naming no work",
+    };
+    const ADMIN: NarrowingPosture = NoPages {
+        reason: "administrators only, and an administrator is never narrowed",
+    };
+    vec![
+        ("/api/works", Narrows),
+        ("/api/works/{work}", Narrows),
+        ("/api/works/{work}/{edition}/pages/{index}", Translates),
+        (
+            "/api/works/{work}/{edition}/pages/{index}/thumb",
+            Translates,
+        ),
+        ("/api/works/{work}/{edition}/download", Narrows),
+        (
+            "/api/works/{work}/{edition}/members/{ordinal}/download",
+            Translates,
+        ),
+        ("/api/works/{work}/progress", Translates),
+        ("/api/works/{work}/notes", KeepsUnseen),
+        ("/api/works/{work}/truth", KeepsUnseen),
+        ("/api/works/{work}/alignments", Refuses),
+        ("/api/me", OWN),
+        ("/api/about", OWN),
+        ("/api/keys", OWN),
+        ("/api/keys/{id}", OWN),
+        ("/api/sessions", OWN),
+        ("/api/sessions/{id}", OWN),
+        ("/api/password", OWN),
+        ("/api/library/home", Narrows),
+        ("/api/library/series", Narrows),
+        ("/api/library/series/{id}", Narrows),
+        ("/api/library/series/{id}/cover", Narrows),
+        ("/api/library/works/{slug}", Narrows),
+        ("/api/library/search", Narrows),
+        ("/api/library/status", Narrows),
+        ("/api/library/proposals", ADMIN),
+        ("/api/library/proposals/{id}", ADMIN),
+        ("/api/library/proposals/{id}/resolution", ADMIN),
+        ("/api/library/proposals/{id}/accept", ADMIN),
+        ("/api/library/proposals/{id}/dismiss", ADMIN),
+        ("/api/library/works/{slug}", ADMIN),
+        ("/api/library/series/{id}", ADMIN),
+        ("/api/library/editions/{id}", ADMIN),
+        ("/api/library/members/{id}", ADMIN),
+        ("/api/library/works/{slug}/stamp-comicinfo", ADMIN),
+        ("/api/library/rules", ADMIN),
+        ("/api/library/rules/{id}", ADMIN),
+        ("/api/library/rules/preview", ADMIN),
+        ("/api/library/rules/import", ADMIN),
+        ("/api/library/roots", ADMIN),
+        ("/api/library/roots/{id}", ADMIN),
+        ("/api/library/roots/{id}/move", ADMIN),
+        ("/api/library/roots/{id}/scan", ADMIN),
+        ("/api/library/libraries", ADMIN),
+        ("/api/library/libraries/{id}", ADMIN),
+        ("/api/library/libraries/{id}/dirs", ADMIN),
+        ("/api/library/libraries/{id}/scan", ADMIN),
+        ("/api/library/split-editions", ADMIN),
+        ("/api/library/dirs", ADMIN),
+        ("/api/library/users", ADMIN),
+        ("/api/library/users/{id}", ADMIN),
+        ("/api/library/users/{id}/sessions/{sid}", ADMIN),
+        ("/api/library/users/{id}/keys/{kid}", ADMIN),
+        ("/api/library/backups", ADMIN),
+        ("/api/library/backups/{name}", ADMIN),
+        (
+            "/opds/v1.2/catalog",
+            NoPages {
+                reason: "static navigation entries naming no work",
+            },
+        ),
+        ("/opds/v1.2/works", Narrows),
+        ("/opds/v1.2/works/{work}", Narrows),
+        (
+            "/opds/v1.2/works/{work}/{edition}/pages/{number}",
+            Translates,
+        ),
+        // Page 0, so it translates the account's page 0.
+        ("/opds/v1.2/works/{work}/{edition}/cover", Translates),
+        ("/opds/v1.2/works/{work}/{edition}/download", Narrows),
+        ("/opds/v1.2/libraries", Narrows),
+        ("/opds/v1.2/libraries/{library}/works", Narrows),
+        ("/opds/v1.2/libraries/by-work", Narrows),
+        ("/opds/v1.2/libraries/{library}/works/by-work", Narrows),
     ]
 }
 

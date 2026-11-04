@@ -4,7 +4,6 @@ import type * as config from '../src/config'
 import * as api from '../src/libraries'
 import { MoveRoot } from '../src/MoveRoot'
 import { deferred, flush } from './support/async'
-import { emptyDerive } from './support/derive'
 import './support/dialog'
 import { holdOf } from './support/held'
 import { press, typeInto } from './support/input'
@@ -43,23 +42,23 @@ const answer = (
   moved: {
     library_id: 7,
     library: 'Manga',
-    works_kept: 12,
-    works_joined: 3,
-    works_split: 0,
-    series_joined: 2,
-    positions: 5,
-    notes: 1,
-    alignments_dropped: 0,
+    gains_sight: [],
+    loses_sight: [],
     library_removed: null,
     grants_removed: 0,
     left_with_no_library: [],
     ...over,
   },
-  // The rehearsal and the move find different things: a report kept from
-  // the move can only have come from the move.
-  derive: { ...emptyDerive, lost_positions: dry_run ? 2 : 6 },
   dry_run,
 })
+
+/** The sentence a 409 for a scan that holds the move gives. */
+const SCAN_HELD =
+  'a scan of /media/Manga/Chapters is running; move the directory once it has finished'
+const scanHeld = (dry_run = true) =>
+  new Error(
+    `/api/library/roots/3/move${dry_run ? '?dry_run=true' : ''}: 409 ${JSON.stringify({ error: SCAN_HELD, volumes: [] })}`,
+  )
 
 function shown(onMoved = vi.fn(), onCancel = vi.fn()) {
   const host = mount(
@@ -185,75 +184,87 @@ describe('MoveRoot', () => {
       'See what this would do',
       'move-counts',
       'left-with-no-library',
-      'removal-derive',
       'settings-actions',
     ])
 
-    vi.mocked(api.moveCost).mockRejectedValue(
-      new Error(
-        '/api/library/roots/3/move?dry_run=true: 409 {"error":"x","volumes":["A v01"]}',
-      ),
-    )
+    vi.mocked(api.moveCost).mockRejectedValue(scanHeld())
     await press(see(host))
     expect(foot()).toEqual(['Cancel'])
     expect(parts()).toEqual([
       'Move to',
       'See what this would do',
       'alert',
-      'move-volumes',
       'settings-actions',
     ])
   })
 
-  it('says what the move would do before it offers to make it', async () => {
+  it('names who will gain and who will lose sight of the directory before it offers the move, and counts no works', async () => {
+    vi.mocked(api.moveCost).mockResolvedValue(
+      answer({ gains_sight: ['kim'], loses_sight: ['ana'] }),
+    )
     const { host } = shown()
     await choose(host, '7')
     expect(confirm(host)).toBeNull()
     await press(see(host))
 
     expect(api.moveCost).toHaveBeenCalledWith(3, { library: 7 })
-    const said = host.querySelector('.move-counts')?.textContent ?? ''
-    expect(said).toContain('12 works keep their address')
-    expect(said).toContain(
-      '3 works join a work Manga already holds, as another edition',
-    )
-    expect(said).toContain('0 works are split between the two libraries')
-    expect(said).toContain('5 in-progress positions and 1 note go with them')
-    expect(said).toContain('2 series already in Manga gain volumes')
-    expect(said).not.toContain('alignment')
-    expect(said).not.toContain('is removed')
-    expect(said).toContain('Moving this directory from Chapters to Manga: ')
+    expect(
+      [...host.querySelectorAll('.move-counts > p')].map((p) => p.textContent),
+    ).toEqual([
+      'Moving this directory from Chapters to Manga: kim will gain sight of it, and ana will lose sight of it.',
+    ])
+    const dialog = host.querySelector('dialog') as HTMLElement
+    expect(dialog.textContent).not.toMatch(/work|undefined|\d/)
     expect(confirm(host)?.textContent).toBe('Move')
   })
 
-  it('says what is dropped and what goes with the directory’s last library', async () => {
+  it('says no account will gain or lose sight of the directory where none will', async () => {
+    const { host } = shown()
+    await choose(host, '7')
+    await press(see(host))
+    expect(host.querySelector('.move-counts')?.textContent).toBe(
+      'Moving this directory from Chapters to Manga: no account will gain or lose sight of it.',
+    )
+    expect(confirm(host)?.textContent).toBe('Move')
+  })
+
+  it('says no account will gain sight where none will, and names everyone who will lose it', async () => {
     vi.mocked(api.moveCost).mockResolvedValue(
-      answer({
-        works_kept: 1,
-        works_joined: 0,
-        works_split: 1,
-        series_joined: 0,
-        positions: 1,
-        notes: 0,
-        alignments_dropped: 1,
-        library_removed: 'Chapters',
-        grants_removed: 2,
-      }),
+      answer({ loses_sight: ['ana', 'bo', 'cy'] }),
     )
     const { host } = shown()
     await choose(host, '7')
     await press(see(host))
-    const said = host.querySelector('.move-counts')?.textContent ?? ''
-    expect(said).toContain('1 work keeps its address')
-    expect(said).toContain('1 work is split between the two libraries')
-    expect(said).toContain('1 in-progress position and 0 notes go with them')
-    expect(said).toContain(
-      '1 alignment between editions the move separates is dropped',
+    expect(host.querySelector('.move-counts')?.textContent).toBe(
+      'Moving this directory from Chapters to Manga: no account will gain sight of it, and ana, bo and cy will lose sight of it.',
     )
-    expect(said).toContain(
-      'Chapters has no other directory, so it is removed, with 2 grants.',
+  })
+
+  it('names everyone who will gain sight, and says no account will lose it where none will', async () => {
+    vi.mocked(api.moveCost).mockResolvedValue(
+      answer({ gains_sight: ['kim', 'lee'] }),
     )
-    expect(said).not.toContain('gain volumes')
+    const { host } = shown()
+    await choose(host, '7')
+    await press(see(host))
+    expect(host.querySelector('.move-counts')?.textContent).toBe(
+      'Moving this directory from Chapters to Manga: kim and lee will gain sight of it, and no account will lose sight of it.',
+    )
+  })
+
+  it('says what goes with the directory’s last library, one grant as one', async () => {
+    vi.mocked(api.moveCost).mockResolvedValue(
+      answer({ library_removed: 'Chapters', grants_removed: 1 }),
+    )
+    const { host } = shown()
+    await choose(host, '7')
+    await press(see(host))
+    expect(
+      [...host.querySelectorAll('.move-counts > p')].map((p) => p.textContent),
+    ).toEqual([
+      'Moving this directory from Chapters to Manga: no account will gain or lose sight of it.',
+      'Chapters has no other directory, so it is removed, with 1 grant.',
+    ])
   })
 
   it('names the accounts left with no library under the counts, and still offers the confirm', async () => {
@@ -291,60 +302,22 @@ describe('MoveRoot', () => {
     expect(host.textContent).not.toContain('will see no library')
   })
 
-  it('says one series gains, and leaves out the grants there are none of', async () => {
+  it('leaves out the grants there are none of', async () => {
     vi.mocked(api.moveCost).mockResolvedValue(
-      answer({
-        series_joined: 1,
-        library_removed: 'Chapters',
-        grants_removed: 0,
-      }),
+      answer({ library_removed: 'Chapters', grants_removed: 0 }),
     )
     const { host } = shown()
     await choose(host, '7')
     await press(see(host))
     const said = host.querySelector('.move-counts')?.textContent ?? ''
-    expect(said).toContain('1 series already in Manga gains volumes.')
     expect(said).toContain('Chapters has no other directory, so it is removed.')
     expect(said).not.toContain('grant')
   })
 
-  it('says a join there is, even where the target is a library the move makes', async () => {
-    vi.mocked(api.moveCost).mockResolvedValue(
-      answer({ library: 'Extras', library_id: 9, works_joined: 2 }),
-    )
-    const { host } = shown()
-    await choose(host, 'new')
-    await typeInto(
-      host.querySelector('input[name="new-library"]') as HTMLInputElement,
-      'Extras',
-    )
-    await press(see(host))
-    expect(host.querySelector('.move-counts')?.textContent).toContain(
-      '2 works join a work Extras already holds',
-    )
-  })
-
-  it('leaves out the join where the target is a library the move makes', async () => {
-    vi.mocked(api.moveCost).mockResolvedValue(
-      answer({ library: 'Extras', library_id: 9, works_joined: 0 }),
-    )
-    const { host } = shown()
-    await choose(host, 'new')
-    await typeInto(
-      host.querySelector('input[name="new-library"]') as HTMLInputElement,
-      'Extras',
-    )
-    await press(see(host))
-    const said = host.querySelector('.move-counts')?.textContent ?? ''
-    expect(said).toContain(
-      'Moving this directory from Chapters to Extras: 12 works keep their address and 0 works are split between the two libraries.',
-    )
-    expect(said).not.toContain('join')
-  })
-
   it('makes the move once, for the target it rehearsed, and hands back what it did', async () => {
-    // Counts that differ from the rehearsal's: the move's own are the ones kept.
-    const done = answer({ positions: 9, notes: 4 }, false)
+    // An answer that differs from the rehearsal's: the move's own is the one
+    // handed back.
+    const done = answer({ gains_sight: ['kim'] }, false)
     const held = deferred<api.MoveAnswer>()
     vi.mocked(api.moveDir).mockReturnValue(held.promise)
     const { host, onMoved } = shown()
@@ -419,23 +392,15 @@ describe('MoveRoot', () => {
     expect(confirm(host)).toBeNull()
   })
 
-  it("draws a refusal's sentence and its volumes, and offers no confirm", async () => {
-    vi.mocked(api.moveCost).mockRejectedValue(
-      new Error(
-        '/api/library/roots/3/move?dry_run=true: 409 {"error":"`Manga` already holds volumes of /media/Manga/Chapters under the same edition key: A v01 (raw) and 1 more. Nothing was changed","volumes":["A v01 (raw)","B v02 (raw)"]}',
-      ),
-    )
+  it("draws a refusal's sentence, and offers no confirm", async () => {
+    vi.mocked(api.moveCost).mockRejectedValue(scanHeld())
     const { host } = shown()
     await choose(host, '7')
     await press(see(host))
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'under the same edition key',
-    )
     expect(
-      [...host.querySelectorAll('.move-volumes li')].map(
-        (li) => li.textContent,
-      ),
-    ).toEqual(['A v01 (raw)', 'B v02 (raw)'])
+      [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
+    ).toEqual([SCAN_HELD])
+    expect(host.querySelector('.move-counts')).toBeNull()
     expect(confirm(host)).toBeNull()
   })
 
@@ -460,22 +425,14 @@ describe('MoveRoot', () => {
   })
 
   it('drops the rehearsal when the move itself is refused, and keeps the refusal', async () => {
-    vi.mocked(api.moveDir).mockRejectedValue(
-      new Error(
-        '/api/library/roots/3/move: 409 {"error":"`Manga` already holds volumes of /media/Manga/Chapters","volumes":["A v01 (raw)"]}',
-      ),
-    )
+    vi.mocked(api.moveDir).mockRejectedValue(scanHeld(false))
     const { host } = shown()
     await choose(host, '7')
     await press(see(host))
     await press(confirm(host) as Element)
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'already holds',
-    )
-    expect(host.querySelectorAll('.move-volumes li')).toHaveLength(1)
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(SCAN_HELD)
     expect(confirm(host)).toBeNull()
     expect(host.querySelector('.move-counts')).toBeNull()
-    expect(host.querySelector('.removal-derive')).toBeNull()
     expect(holdOf(see(host))).toBe('free')
   })
 
@@ -491,33 +448,21 @@ describe('MoveRoot', () => {
     expect(host.querySelector('.move-counts')).toBeNull()
   })
 
-  it('takes the old list away when the next refusal lists none', async () => {
+  it('takes the old refusal away when the rehearsal is asked for again', async () => {
     const second = deferred<api.MoveAnswer>()
     vi.mocked(api.moveCost)
-      .mockRejectedValueOnce(
-        new Error(
-          '/api/library/roots/3/move?dry_run=true: 409 {"error":"x","volumes":["A v01 (raw)"]}',
-        ),
-      )
+      .mockRejectedValueOnce(scanHeld())
       .mockReturnValueOnce(second.promise)
     const { host } = shown()
     await choose(host, '7')
     await press(see(host))
-    expect(host.querySelector('.move-volumes')).not.toBeNull()
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(SCAN_HELD)
     await press(see(host))
     // Gone while the next answer is awaited, not only once it has come.
-    expect(host.querySelector('.move-volumes')).toBeNull()
-    await flush(() =>
-      second.reject(
-        new Error(
-          '/api/library/roots/3/move?dry_run=true: 409 {"error":"a scan is running","volumes":[]}',
-        ),
-      ),
-    )
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'is running',
-    )
-    expect(host.querySelector('.move-volumes')).toBeNull()
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    await flush(() => second.resolve(answer()))
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.querySelector('.move-counts')).not.toBeNull()
   })
 
   it('draws no rehearsal answered after its library left the list', async () => {
@@ -584,7 +529,6 @@ describe('MoveRoot', () => {
       'is running',
     )
     expect(onMoved).not.toHaveBeenCalled()
-    expect(host.querySelector('.move-volumes')).toBeNull()
   })
 
   it('holds the rehearsal while no name is typed, and while a spaces-only one is', async () => {
@@ -775,22 +719,6 @@ describe('MoveRoot', () => {
       expect(nameBox(host).value).toBe('Volumes')
       expect(host.querySelector('.move-counts')).not.toBeNull()
     })
-  })
-
-  it('draws a list that names one volume twice, once each', async () => {
-    vi.mocked(api.moveCost).mockRejectedValue(
-      new Error(
-        '/api/library/roots/3/move?dry_run=true: 409 {"error":"x","volumes":["A v01 (raw)","A v01 (raw)"]}',
-      ),
-    )
-    // React reports a repeated key by `console.error`.
-    const complaint = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const { host } = shown()
-    await choose(host, '7')
-    await press(see(host))
-    expect(host.querySelectorAll('.move-volumes li')).toHaveLength(2)
-    expect(complaint).not.toHaveBeenCalled()
-    complaint.mockRestore()
   })
 
   describe('when something else in the library begins', () => {

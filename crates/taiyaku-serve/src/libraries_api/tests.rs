@@ -1861,12 +1861,16 @@ async fn a_removal_reports_its_works_positions_and_notes_each_by_its_own_count()
         taiyaku_library::derive::derive(&conn).expect("derives");
 
         let works_of = |library: i64| -> Vec<i64> {
-            conn.prepare("SELECT id FROM work WHERE library_id = ?1 ORDER BY id")
-                .expect("prepares")
-                .query_map([library], |row| row.get(0))
-                .expect("queries")
-                .collect::<Result<_, _>>()
-                .expect("reads")
+            conn.prepare(
+                "SELECT DISTINCT e.work_id FROM edition e
+                   JOIN member m ON m.edition_id = e.id JOIN root r ON r.id = m.root_id
+                  WHERE r.library_id = ?1 ORDER BY 1",
+            )
+            .expect("prepares")
+            .query_map([library], |row| row.get(0))
+            .expect("queries")
+            .collect::<Result<_, _>>()
+            .expect("reads")
         };
         let b_works = works_of(b_id);
         let a_works = works_of(a_id);
@@ -2650,11 +2654,7 @@ async fn the_whole_flow_over_a_file_backed_store() {
         "no directory's slot outlives its library"
     );
     let conn = state.library.conn();
-    for (table, column) in [
-        ("library", "id"),
-        ("root", "library_id"),
-        ("work", "library_id"),
-    ] {
+    for (table, column) in [("library", "id"), ("root", "library_id")] {
         let rows: i64 = conn
             .query_row(
                 &format!("SELECT count(*) FROM {table} WHERE {column} = ?1"),
@@ -2804,7 +2804,8 @@ async fn moved(
 }
 
 /// Two libraries of one directory each. The rehearsal says what the move would
-/// do and changes nothing; the move does it.
+/// do and changes nothing; the move does it. `ann`, granted both, sees the
+/// directory before and after; `bo`, granted root-a alone, gains it.
 #[tokio::test]
 async fn a_dir_is_rehearsed_and_then_moved_to_another_library() {
     let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
@@ -2812,17 +2813,39 @@ async fn a_dir_is_rehearsed_and_then_moved_to_another_library() {
     let a = the_library(&listed, "root-a")["id"]
         .as_i64()
         .expect("an id");
+    let b = the_library(&listed, "root-b")["id"]
+        .as_i64()
+        .expect("an id");
     let dir = the_library(&listed, "root-b")["dirs"][0]["id"]
         .as_i64()
         .expect("a directory id");
+    {
+        let conn = state.library.conn();
+        for (name, granted) in [("ann", &[a, b][..]), ("bo", &[a][..])] {
+            let account = taiyaku_library::account::add(&conn, name, "pw", "user").expect("adds");
+            for library in granted {
+                taiyaku_library::account::grant_library(&conn, account, *library).expect("grants");
+            }
+        }
+    }
     let to = serde_json::json!({ "library": a });
     let stored = the_store(&state);
 
     let (status, rehearsed) = moved(&router, dir, true, &to).await;
     assert_eq!(status, StatusCode::OK, "{rehearsed}");
+    assert_eq!(keys_of(&rehearsed), ["dry_run", "moved"], "{rehearsed}");
     assert_eq!(rehearsed["dry_run"], true);
     assert_eq!(rehearsed["moved"]["library"], "root-a");
-    assert_eq!(rehearsed["moved"]["works_kept"], 1, "{rehearsed}");
+    assert_eq!(
+        rehearsed["moved"]["gains_sight"],
+        serde_json::json!(["bo"]),
+        "{rehearsed}"
+    );
+    assert_eq!(
+        rehearsed["moved"]["loses_sight"],
+        serde_json::json!([]),
+        "{rehearsed}"
+    );
     assert_eq!(
         rehearsed["moved"]["library_removed"], "root-b",
         "{rehearsed}"
@@ -2830,21 +2853,15 @@ async fn a_dir_is_rehearsed_and_then_moved_to_another_library() {
     assert_eq!(
         keys_of(&rehearsed["moved"]),
         [
-            "alignments_dropped",
+            "gains_sight",
             "grants_removed",
             "left_with_no_library",
             "library",
             "library_id",
             "library_removed",
-            "notes",
-            "positions",
-            "series_joined",
-            "works_joined",
-            "works_kept",
-            "works_split",
+            "loses_sight",
         ]
     );
-    assert!(rehearsed["derive"].is_object(), "{rehearsed}");
     assert_eq!(get_json(&router, "/api/library/libraries").await, listed);
     assert_eq!(the_store(&state), stored, "the rehearsal changed the store");
 
@@ -2947,8 +2964,11 @@ async fn a_dir_is_moved_to_a_library_made_for_it() {
     .await;
 
     assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(keys_of(&done), ["dry_run", "moved"], "{done}");
     assert_eq!(done["moved"]["library"], "Extras");
     assert_eq!(done["moved"]["library_removed"], serde_json::Value::Null);
+    assert_eq!(done["moved"]["gains_sight"], serde_json::json!([]));
+    assert_eq!(done["moved"]["loses_sight"], serde_json::json!([]));
     let after = get_json(&router, "/api/library/libraries").await;
     assert_eq!(the_library(&after, "Extras")["dirs"][0]["id"], dir);
     assert_eq!(
@@ -2958,66 +2978,6 @@ async fn a_dir_is_moved_to_a_library_made_for_it() {
             .len(),
         1
     );
-}
-
-/// The same volume under the same edition key in both libraries: 409, the
-/// volume named in the sentence and listed beside it, and nothing changed.
-#[tokio::test]
-async fn a_refused_move_is_a_409_naming_its_volumes() {
-    let (router, state, fixture) = test_support::router_over_a_single_scanned_work();
-    let mut ids = Vec::new();
-    for name in ["One", "Two"] {
-        let (status, made) = answered(
-            &router,
-            Method::POST,
-            "/api/library/libraries",
-            &serde_json::json!({ "name": name, "dirs": [a_dir_of(&fixture, name, "Same")] }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{made}");
-        let id = made["library"]["id"].as_i64().expect("an id");
-        let (status, _) = answered(
-            &router,
-            Method::POST,
-            &format!("/api/library/libraries/{id}/scan"),
-            &serde_json::json!({}),
-        )
-        .await;
-        assert_eq!(status, StatusCode::ACCEPTED);
-        until_the_library_scan_ends(&router, id).await;
-        ids.push((
-            id,
-            made["library"]["dirs"][0]["id"]
-                .as_i64()
-                .expect("a directory"),
-        ));
-    }
-    let stored = the_store(&state);
-
-    for dry_run in [true, false] {
-        let (status, refused) = moved(
-            &router,
-            ids[0].1,
-            dry_run,
-            &serde_json::json!({ "library": ids[1].0 }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
-        assert_eq!(keys_of(&refused), ["error", "volumes"], "{refused}");
-        assert!(
-            refused["error"]
-                .as_str()
-                .expect("an error")
-                .contains("same edition key"),
-            "{refused}"
-        );
-        assert_eq!(
-            refused["volumes"].as_array().expect("volumes").len(),
-            1,
-            "{refused}"
-        );
-    }
-    assert_eq!(the_store(&state), stored);
 }
 
 #[tokio::test]
@@ -3326,13 +3286,8 @@ fn moved_is_written_with_each_value_under_its_own_key() {
     let moved = taiyaku_library::relocate::Moved {
         library_id: 11,
         library: "Target".to_string(),
-        works_kept: 22,
-        works_joined: 33,
-        works_split: 44,
-        series_joined: 55,
-        positions: 66,
-        notes: 77,
-        alignments_dropped: 88,
+        gains_sight: vec!["cy".to_string(), "di".to_string()],
+        loses_sight: vec!["ed".to_string()],
         library_removed: Some("Left".to_string()),
         grants_removed: 99,
         left_with_no_library: vec!["ann".to_string(), "bo".to_string()],
@@ -3340,13 +3295,8 @@ fn moved_is_written_with_each_value_under_its_own_key() {
     let expected = serde_json::json!({
         "library_id": 11,
         "library": "Target",
-        "works_kept": 22,
-        "works_joined": 33,
-        "works_split": 44,
-        "series_joined": 55,
-        "positions": 66,
-        "notes": 77,
-        "alignments_dropped": 88,
+        "gains_sight": ["cy", "di"],
+        "loses_sight": ["ed"],
         "library_removed": "Left",
         "grants_removed": 99,
         "left_with_no_library": ["ann", "bo"],
@@ -3354,11 +3304,15 @@ fn moved_is_written_with_each_value_under_its_own_key() {
     assert_eq!(super::moved_json(&moved), expected);
 
     let kept = taiyaku_library::relocate::Moved {
+        gains_sight: Vec::new(),
+        loses_sight: Vec::new(),
         library_removed: None,
         left_with_no_library: Vec::new(),
         ..moved
     };
     let mut expected = expected;
+    expected["gains_sight"] = serde_json::json!([]);
+    expected["loses_sight"] = serde_json::json!([]);
     expected["library_removed"] = serde_json::Value::Null;
     expected["left_with_no_library"] = serde_json::json!([]);
     assert_eq!(super::moved_json(&kept), expected);
@@ -3420,4 +3374,150 @@ async fn no_library_is_made_or_renamed_called_a_dot_name() {
         }
     }
     assert_eq!(the_store(&state), stored);
+}
+
+#[tokio::test]
+async fn listing_split_editions_refuses_a_reader() {
+    a_reader_is_refused(Method::GET, "/api/library/split-editions").await;
+}
+
+#[tokio::test]
+async fn listing_split_editions_refuses_nobody() {
+    an_unsigned_request_is_refused(Method::GET, "/api/library/split-editions").await;
+}
+
+/// The merged edition's fixture (spec §3.8): `raw` is part1 and part3 under
+/// Manga's `m` and part2 under Kids' `k`, so it is listed with each library's
+/// share; `en` and `fr`, under Manga's directories alone, are not.
+#[tokio::test]
+async fn an_edition_merged_from_two_libraries_is_listed_with_each_librarys_share() {
+    let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+    let (members, roots) = {
+        let conn = merged.state.library.conn();
+        let members: Vec<(String, i64, i64)> = conn
+            .prepare(
+                "SELECT m.path, m.pages, r.library_id FROM member m
+                   JOIN edition e ON e.id = m.edition_id JOIN root r ON r.id = m.root_id
+                  WHERE e.key = 'raw' ORDER BY m.ordinal",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect()
+            })
+            .expect("reads raw's members");
+        let roots: Vec<(i64, String)> = ["m", "k"]
+            .iter()
+            .map(|name| {
+                let root = taiyaku_library::scan::roots(&conn)
+                    .expect("lists the roots")
+                    .into_iter()
+                    .find(|root| root.path.ends_with(name))
+                    .unwrap_or_else(|| panic!("no directory {name}"));
+                (root.id, root.path.display().to_string())
+            })
+            .collect();
+        (members, roots)
+    };
+    let shape: Vec<(&str, i64, i64)> = members
+        .iter()
+        .map(|(path, pages, library)| {
+            let file = std::path::Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("a file name");
+            (file, *pages, *library)
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            ("Foo v01 part1.cbz", 2, 70),
+            ("Foo v01 part2.cbz", 3, 80),
+            ("Foo v01 part3.cbz", 4, 70),
+        ],
+        "the fixture: Kids holds 1 member of 3 pages, Manga 2 of 6"
+    );
+    let under = |(root, path): &(i64, String), library: i64| {
+        serde_json::json!([{
+            "root": root,
+            "path": path,
+            "library": library,
+        }])
+    };
+    let (m, k) = (&roots[0], &roots[1]);
+    let response = merged
+        .get(
+            test_support::Reader::Administrator,
+            "/api/library/split-editions",
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let listed: serde_json::Value = serde_json::from_slice(response.body()).expect("JSON");
+    assert_eq!(
+        listed,
+        serde_json::json!({ "editions": [{
+            "work": merged.slug,
+            "title": "Foo v01.cbz",
+            "edition": "raw",
+            "pages": 9,
+            "members": [
+                { "path": members[0].0, "pages": 2, "directories": under(m, 70) },
+                { "path": members[1].0, "pages": 3, "directories": under(k, 80) },
+                { "path": members[2].0, "pages": 4, "directories": under(m, 70) },
+            ],
+            "libraries": [
+                { "id": 80, "name": "Kids", "members": 1, "pages": 3 },
+                { "id": 70, "name": "Manga", "members": 2, "pages": 6 },
+            ],
+        }]})
+    );
+}
+
+/// A byte-identical copy is one member held under a directory of each
+/// library, so neither library holds only part of it.
+#[tokio::test]
+async fn a_copy_in_two_libraries_is_not_listed_as_split() {
+    let (router, state, _fixture, _slug) =
+        test_support::router_over_a_copy_granted_through_its_second_directory();
+    state
+        .library
+        .conn()
+        .execute(
+            "UPDATE user SET role = 'admin', every_library = 1 WHERE id = 1",
+            [],
+        )
+        .expect("the fixture account administers again");
+    let held: (i64, Vec<String>) = {
+        let conn = state.library.conn();
+        let members = conn
+            .query_row("SELECT count(*) FROM member", [], |r| r.get(0))
+            .expect("counts the members");
+        let libraries = conn
+            .prepare(
+                "SELECT l.name FROM member_root mr JOIN root r ON r.id = mr.root_id
+                   JOIN library l ON l.id = r.library_id ORDER BY l.name",
+            )
+            .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+            .expect("reads where the members are held");
+        (members, libraries)
+    };
+    assert_eq!(
+        held,
+        (1, vec!["A".to_string(), "B".to_string()]),
+        "the fixture: a copy, one member held under a directory of each library"
+    );
+    assert_eq!(
+        get_json(&router, "/api/library/split-editions").await,
+        serde_json::json!({ "editions": [] })
+    );
+}
+
+#[tokio::test]
+async fn a_store_with_no_split_edition_lists_none() {
+    let (router, _state, _fixture) = test_support::router_over_a_single_scanned_work();
+    assert_eq!(
+        get_json(&router, "/api/library/split-editions").await,
+        serde_json::json!({ "editions": [] })
+    );
 }

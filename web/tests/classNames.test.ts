@@ -132,6 +132,7 @@ const HOOKS: Record<string, string[]> = {
     'asking',
     'consequences',
     'containers',
+    'copied',
     'formats',
     'key-held',
     'key-moved',

@@ -22,14 +22,15 @@
  * runs when a directory is added and at no other time, so a directory added in
  * this session has a watch state and one read from the list does not.
  *
- * **A removal's re-derive report, or a move's, is kept here, and drawn one
- * level up.** What was removed or moved has no page to draw it on, so the
+ * **A removal's re-derive report, or what a move did, is kept here, and drawn
+ * one level up.** What was removed or moved has no page to draw it on, so the
  * report belongs to the page above it: a library's removal to the table, a
  * directory's to its library's page, or to the table where the library went
  * with its last directory. The screen goes up to that page when the answer
  * comes, if the person is still where they asked, and the report takes focus
- * there: the button that had it went with the page. The report is the one place
- * a lost position or an unwritable document is said.
+ * there: the button that had it went with the page. A removal's report is the
+ * one place a lost position or an unwritable document is said; a move derives
+ * nothing, so its report says who gained and lost sight of the directory.
  *
  * **An answer that comes once the person has gone to another page of the
  * screen is said on the page they are on**, as `configPages.tsx` says for
@@ -111,6 +112,7 @@ import {
   LIBRARY_STATUS,
   ROOTS,
   RULES,
+  SPLIT_EDITIONS,
   USERS as USER_LIST,
 } from './pageReads'
 import { entryOf, invalidate, readSet } from './reads'
@@ -120,15 +122,16 @@ import { PageHeader } from './settingsLayout'
 import { SideBySide } from './SideBySide'
 import { usePage } from './usePage'
 
-/** What a removal or a move found, whose it was, and the page it is drawn on. */
+/** What a removal found or a move did, whose it was, and the page it is drawn on. */
 interface Report {
   at: string
   /** Taken when the answer itself moved the person to the report's page. */
   focus?: boolean
   name: string
-  derive: Derived
+  /** A removal's: what re-deriving after it found. A move derives nothing. */
+  derive?: Derived
   /** A move's: what it did, and where from. Absent for a removal's. */
-  move?: { moved: Moved; from?: string; newLibrary: boolean }
+  move?: { moved: Moved; from?: string }
 }
 
 /**
@@ -389,15 +392,7 @@ export function Libraries() {
         {
           at: gone || left === undefined ? LIBRARIES : libraryPath(left.name),
           name: path,
-          derive: answer.derive,
-          move: {
-            moved: answer.moved,
-            from: left?.name,
-            // A target the screen does not draw is one the move made.
-            newLibrary: !drawn.current?.some(
-              (one) => one.id === answer.moved.library_id,
-            ),
-          },
+          move: { moved: answer.moved, from: left?.name },
         },
         // The directory is not drawn in its new library: the read that
         // follows does that.
@@ -442,9 +437,10 @@ export function Libraries() {
       const moves = named && `${to}${at.rest}` !== page
       if (moves) renamedTo.current = `${to}${at.rest}`
       reread()
-      // Each account's grants name the libraries it is granted, so Users
-      // keeps the old name until it reads them again.
-      void invalidate(USER_LIST)
+      // Each account's grants name the libraries it is granted, and each
+      // split edition the libraries holding it, so Users and Split editions
+      // keep the old name until they read them again.
+      void invalidate(USER_LIST, SPLIT_EDITIONS)
       startTransition(() => {
         setLibraries((list) =>
           list?.map((one) => (one.id === id ? { ...one, name } : one)),
@@ -490,17 +486,8 @@ export function Libraries() {
               shown.move.from === undefined ? '' : ` from ${shown.move.from}`
             } to ${shown.move.moved.library}.`}
       </p>
-      {shown.move !== undefined && (
-        <>
-          <MoveCounts
-            moved={shown.move.moved}
-            past
-            newLibrary={shown.move.newLibrary}
-          />
-          <p>What deriving after the move found:</p>
-        </>
-      )}
-      <DeriveSection derive={shown.derive} />
+      {shown.move !== undefined && <MoveCounts moved={shown.move.moved} past />}
+      {shown.derive !== undefined && <DeriveSection derive={shown.derive} />}
     </div>
   )
 

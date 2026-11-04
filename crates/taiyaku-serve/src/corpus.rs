@@ -128,10 +128,12 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
         // check report a disagreement with neither side wrong.
         let sequenced = taiyaku_read::read_members_in_order(&members).expect("aligner sequences");
 
+        let whole = crate::view::EditionView::build(std::sync::Arc::clone(work), key, None)
+            .expect("an edition is never hidden from `Access::Every`");
         for (index, page) in sequenced.iter().enumerate() {
             let index_u32 = sequenced_index(index);
             let served = state
-                .page(work, key, index_u32)
+                .page(&whole, index_u32)
                 .unwrap_or_else(|e| panic!("{key} page {index}: {e}"));
             assert_eq!(
                 served.bytes, page.bytes,

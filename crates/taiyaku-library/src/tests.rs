@@ -14,6 +14,122 @@ pub(crate) fn tempdir(label: &str) -> TempDir {
     TempDir::new(&format!("lib-{label}"))
 }
 
+/// Spec §1's copy: `Foo/Foo v01.cbz` under `a` (library `A`, id 70) and the
+/// same bytes under `b` (library `B`, id 80), derived into one work of one
+/// member with a `member_root` row for each. The library ids are apart from
+/// the directories', so a grant reading one as the other sees nothing.
+///
+/// `b` is added first, so it holds the primary copy: a grant of `A` reaches the
+/// member only through its `member_root` row, and removing `b` must re-point
+/// it at `a`'s copy.
+pub(crate) struct CopiedVolume {
+    pub(crate) library: Library,
+    pub(crate) a: crate::scan::Root,
+    pub(crate) b: crate::scan::Root,
+    _dirs: [TempDir; 2],
+}
+
+impl CopiedVolume {
+    pub(crate) fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.library.conn()
+    }
+}
+
+/// `Foo/Foo v01.cbz` under `first`, and the same bytes copied to the same
+/// place under `second`.
+pub(crate) fn a_copy_of_one_volume() -> (TempDir, TempDir) {
+    a_copy_of("Foo v01.cbz")
+}
+
+/// `Foo/<name>` under `first`, and the same bytes copied to the same place
+/// under `second`.
+pub(crate) fn a_copy_of(name: &str) -> (TempDir, TempDir) {
+    let first = tempdir("copy-first");
+    let archive = first.path().join("Foo").join(name);
+    crate::scan::tests::write_archive(&archive, 3);
+    let second = tempdir("copy-second");
+    std::fs::create_dir_all(second.path().join("Foo")).expect("mkdir");
+    std::fs::copy(&archive, second.path().join("Foo").join(name)).expect("copies");
+    (first, second)
+}
+
+/// Every `member_root` row's directory, in id order.
+pub(crate) fn member_root_ids(conn: &Connection) -> Vec<i64> {
+    let mut stmt = conn
+        .prepare("SELECT root_id FROM member_root ORDER BY root_id")
+        .expect("prepare");
+    stmt.query_map([], |r| r.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("rows")
+}
+
+/// The one member's `(root_id, path)`.
+pub(crate) fn the_member(conn: &Connection) -> (Option<i64>, String) {
+    conn.query_row("SELECT root_id, path FROM member", [], |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })
+    .expect("the one member")
+}
+
+pub(crate) fn a_volume_copied_into_two_libraries() -> CopiedVolume {
+    let (b, a) = a_copy_of_one_volume();
+    let library = Library::open_in_memory().expect("open");
+    let (ra, rb) = {
+        let conn = library.conn();
+        conn.execute(
+            "INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B')",
+            [],
+        )
+        .expect("two libraries, numbered apart from their directories");
+        let rb = crate::scan::add_root_in(&conn, b.path(), crate::scan::InLibrary::Named("B"))
+            .expect("adds b");
+        let ra = crate::scan::add_root_in(&conn, a.path(), crate::scan::InLibrary::Named("A"))
+            .expect("adds a");
+        crate::scan::scan_root(&conn, &rb).expect("scans b");
+        crate::scan::scan_root(&conn, &ra).expect("scans a");
+        crate::derive::derive(&conn).expect("derives");
+        (ra, rb)
+    };
+    let fixture = CopiedVolume {
+        library,
+        a: ra,
+        b: rb,
+        _dirs: [a, b],
+    };
+    {
+        let conn = fixture.conn();
+        let mut both = vec![fixture.a.id, fixture.b.id];
+        both.sort_unstable();
+        assert_eq!(
+            (the_member(&conn), member_root_ids(&conn)),
+            (
+                (
+                    Some(fixture.b.id),
+                    fixture
+                        .b
+                        .path
+                        .join("Foo")
+                        .join("Foo v01.cbz")
+                        .display()
+                        .to_string()
+                ),
+                both
+            ),
+            "the fixture: one member, its primary copy b's, held under both"
+        );
+        // `the_member` reads the first row only, and `member_root_ids` every
+        // member's rows, so neither alone tells one member from two.
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM member", [], |r| r.get::<_, i64>(0))
+                .expect("counts"),
+            1,
+            "the fixture: one member, not one per copy"
+        );
+    }
+    fixture
+}
+
 /// A library on disk, holding one derived work with a hand-set title recorded
 /// under `<root>/.taiyaku/` — one member whose `content_key` a repack can
 /// move, and a document a `Documents::Skip` derivation must leave alone.

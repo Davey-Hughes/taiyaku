@@ -158,7 +158,9 @@ export function libraryParam(
 
 /**
  * `path` narrowed to one library, or as it is for every library. Exported for
- * `pageReads.ts`, whose store addresses must be the paths these calls send.
+ * `pageReads.ts`, whose store addresses must be the paths these calls send,
+ * and for `SeriesGrid.tsx`, whose tiles write a series page's `?library=` as
+ * the page sends it on.
  */
 export const narrowedTo = (path: string, library?: number) =>
   library === undefined
@@ -171,9 +173,13 @@ export const home = (library?: number) =>
 export const grid = (library?: number) =>
   getJson<Grid>(narrowedTo('/api/library/series', library))
 
-export const oneSeries = (id: number) =>
+/**
+ * Series `id`, or only what `library` holds of it: a series opened from a
+ * library's page counts and lists what that page's tile counted (spec §3.6).
+ */
+export const oneSeries = (id: number, library?: number) =>
   getJson<{ series: SeriesDetail; works: WorkCard[] }>(
-    `/api/library/series/${id}`,
+    narrowedTo(`/api/library/series/${id}`, library),
   )
 
 /**

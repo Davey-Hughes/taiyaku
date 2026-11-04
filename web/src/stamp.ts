@@ -33,10 +33,11 @@ export interface StampPlan {
   archives: Archive[]
   total_bytes: number
   /**
-   * The formats this work holds that a stamp will not write — `rar`, `7z`, or
-   * `unreadable` for a member nothing could open. **Distinct from the plan
-   * being short:** "4 archives" reads as "all of them" unless the screen can
-   * also say the rar was left alone.
+   * The formats this work holds that a stamp will not write — `rar`, `7z`,
+   * `unreadable` for a member nothing could open, or `copied` for one held in
+   * more than one directory. **Distinct from the plan being short:** "4
+   * archives" reads as "all of them" unless the screen can also say the rar
+   * was left alone.
    */
   skipped_formats: string[]
 }

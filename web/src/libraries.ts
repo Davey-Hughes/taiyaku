@@ -11,13 +11,13 @@
  * here, and so is moving a directory from one library to another.
  */
 import { getJson, sendJson } from './api'
-import type { Added, Derived, RemovalAnswer, Root } from './config'
+import type { Added, RemovalAnswer, Root } from './config'
 
 /** One library, as `GET /api/library/libraries` sends it. */
 export interface Library {
   id: number
   name: string
-  /** The works filed under it. */
+  /** The works with a file under its directories. */
   works: number
   /** EPUB and PDF entries its scans recorded, which nothing reads yet. */
   books: number
@@ -136,20 +136,14 @@ export interface Moved {
   library_id: number
   /** That library's name. */
   library: string
-  /** Works whose address does not change. */
-  works_kept: number
-  /** Works that join a work the target already holds, as another edition. */
-  works_joined: number
-  /** Works whose editions end up in two libraries. */
-  works_split: number
-  /** Series the target already holds that gain volumes from the directory. */
-  series_joined: number
-  /** Reading positions that go with the directory's editions. */
-  positions: number
-  /** Notes that go with the directory's editions. */
-  notes: number
-  /** Alignments between editions that the move separates, which are dropped. */
-  alignments_dropped: number
+  /**
+   * The accounts, by name and in name order, that see the directory after the
+   * move and not before. An administrator and an account that sees every
+   * library see it either way, so neither is named.
+   */
+  gains_sight: string[]
+  /** The accounts that see it before the move and not after, named the same way. */
+  loses_sight: string[]
   /** The name of the directory's old library, where the move empties and removes it. */
   library_removed: string | null
   /** Grants that went with that library. */
@@ -161,6 +155,13 @@ export interface Moved {
   left_with_no_library: string[]
 }
 
+/** `names` as a sentence lists them: `a`, `a and b`, `a, b and c`. */
+export function namesOf(names: string[]): string {
+  return names.length < 2
+    ? names.join('')
+    : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
 /**
  * What a removal's or a move's rehearsal says of the accounts it leaves
  * seeing no library, under its counts. `what` is the library as the dialog
@@ -170,10 +171,7 @@ export interface Moved {
  * pronoun, so nothing is assumed of whoever holds it.
  */
 export function noLibrarySentence(names: string[], what: string): string {
-  const who =
-    names.length < 2
-      ? names.join('')
-      : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  const who = namesOf(names)
   const after = names.length < 2 ? who : 'they'
   return `${who} can see only ${what}. After this, ${after} will see no library until an administrator grants one.`
 }
@@ -181,15 +179,12 @@ export function noLibrarySentence(names: string[], what: string): string {
 /** `POST /api/library/roots/{id}/move`'s answer, a rehearsal's or a move's. */
 export interface MoveAnswer {
   moved: Moved
-  /** What deriving the store after the move found. */
-  derive: Derived
   dry_run: boolean
 }
 
 /**
  * What moving directory `rootId` to `to` would do, without doing it. A move
- * that would be refused is refused here in the same words, with the volumes
- * that stand in its way.
+ * that would be refused is refused here in the same words.
  */
 export const moveCost = (rootId: number, to: MoveTarget): Promise<MoveAnswer> =>
   expectBody(

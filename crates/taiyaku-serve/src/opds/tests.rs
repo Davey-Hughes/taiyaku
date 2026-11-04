@@ -1218,14 +1218,14 @@ fn work_with_a_pageless_first_member(dir: &std::path::Path) -> crate::Work {
 
 // ---------------------------------------------------------------------------
 // The grant gap: `opds.rs` must apply spec C1's per-root visibility, as the
-// `/api/…` side does through `refuse_if_hidden` and `get_sidecar`'s use of
+// `/api/…` side does through `view::of_edition` and `get_sidecar`'s use of
 // `browse::work`. `taiyaku library user grant-library` ships grants for real,
 // so a restricted account reading the bytes of a root it does not hold through
 // these routes is not theoretical.
 //
 // Every fixture below imports through `taiyaku_library::import::scanned`
 // into a real library database rather than handing `ServeState` an
-// in-memory-only `Work` — `edition_visible`/`browse::work` read `work`,
+// in-memory-only `Work` — `visible_members`/`browse::work` read `work`,
 // `edition` and `member` rows, and a work absent from those tables cannot
 // exercise the grant at all, only the "work does not exist" path. And the
 // page/cover fixture writes a real, decodable image rather than reusing
@@ -1369,8 +1369,7 @@ fn library_of(state: &ServeState, dir: i64) -> i64 {
 ///
 /// Each directory is a library of its own, `Manga & Comics` and `withheld`
 /// ([`two_dirs_numbered_apart_from_their_libraries`]), so the work is
-/// O191's shape: one work, an edition under each library's directory. It is
-/// imported before the directories exist, so `work.library_id` is NULL.
+/// O191's shape: one work, an edition under each library's directory.
 fn router_with_two_editions_split_across_roots(
     dir: &std::path::Path,
 ) -> (axum::Router, std::sync::Arc<ServeState>) {
@@ -1436,8 +1435,7 @@ fn router_with_two_editions_split_across_roots(
 /// feed's test needs: a work it must keep naming beside one it must not.
 ///
 /// Each directory is a library of its own, `Manga & Comics` and `withheld`
-/// ([`two_dirs_numbered_apart_from_their_libraries`]). Both works are
-/// imported before the directories exist, so `work.library_id` is NULL.
+/// ([`two_dirs_numbered_apart_from_their_libraries`]).
 fn router_with_two_works_one_withheld(
     dir: &std::path::Path,
 ) -> (axum::Router, std::sync::Arc<ServeState>) {
@@ -1751,7 +1749,8 @@ fn subsection(href: &str) -> String {
     format!(r#"<link rel="subsection" type="{ATOM};kind=navigation" href="{href}"/>"#)
 }
 
-/// The catalog leads to both library views, and to every work.
+/// The catalog leads to both library views, and to every work, and says what
+/// the by-work view lists.
 #[tokio::test]
 async fn the_catalog_links_to_the_libraries() {
     let tmp = crate::test_support::Fixture::new("opds-catalog-libraries");
@@ -1769,6 +1768,13 @@ async fn the_catalog_links_to_the_libraries() {
             "the catalog must lead to {href}: {body}"
         );
     }
+    let by_work = entry(&body, "taiyaku:libraries:by-work");
+    assert!(
+        by_work.contains(
+            r#"<content type="text">Each library, with the works under its directories, each with every edition you may read</content>"#
+        ),
+        "{by_work}"
+    );
 }
 
 /// Unrestricted: both libraries, each linking to its works, in
@@ -1934,9 +1940,10 @@ async fn a_library_s_works_feed_counts_only_the_editions_under_its_dirs() {
     );
 }
 
-/// Unrestricted: both libraries again, each linking to the works filed in it.
+/// Unrestricted: both libraries again, each linking to its works with every
+/// edition.
 #[tokio::test]
-async fn the_by_work_libraries_feed_links_each_library_to_its_filed_works() {
+async fn the_by_work_libraries_feed_links_each_library_to_its_works_with_every_edition() {
     let tmp = crate::test_support::Fixture::new("opds-libraries-by-work");
     let (_router, state) = router_with_two_works_one_withheld(&tmp);
     let held = library_of(&state, 1);
@@ -1964,7 +1971,7 @@ async fn the_by_work_libraries_feed_links_each_library_to_its_filed_works() {
         assert!(entry.contains(&format!("<title>{name}</title>")), "{entry}");
         assert!(
             entry.contains(&format!(
-                r#"<content type="text">The works filed in {name}</content>"#
+                r#"<content type="text">Every edition you may read of the works in {name}</content>"#
             )),
             "{entry}"
         );
@@ -1982,27 +1989,18 @@ async fn the_by_work_libraries_feed_links_each_library_to_its_filed_works() {
     assert!(at(held) < at(withheld), "held before withheld: {body}");
 }
 
-/// The four answers that tell the two views apart, over O191's shape with
-/// the work filed in the held directory's library. By work, the held library
-/// lists it with both editions and the withheld library lists nothing; by
-/// directory, each lists it with the edition under its own directory. The by-work
-/// feed names itself apart from the by-directory one: its id, its title, with
-/// the library's name escaped, and its `self` link.
-///
-/// The fixture imports its work before its directories exist, so derive never
-/// filed it: `work.library_id` is set here by hand.
+/// The four answers that tell the two views apart, over a work with an
+/// edition under each library's directories. By work, each library lists it
+/// with both editions; by directory, each lists it with the edition under its
+/// own directory. The by-work feed names itself apart from the by-directory one:
+/// its id, its title, with the library's name escaped, and its `self` link.
 #[tokio::test]
-async fn the_by_work_feed_lists_a_work_under_the_library_it_is_filed_in_with_every_edition() {
-    let tmp = crate::test_support::Fixture::new("opds-by-work-filed");
+async fn the_by_work_feed_lists_a_work_under_each_library_holding_it_with_every_edition() {
+    let tmp = crate::test_support::Fixture::new("opds-by-work-held");
     let (_router, state) = router_with_two_editions_split_across_roots(&tmp);
     let held = library_of(&state, 1);
     let withheld = library_of(&state, 2);
     let slug = state.works.snapshot()[0].id.clone();
-    state
-        .library
-        .conn()
-        .execute("UPDATE work SET library_id = ?1", [held])
-        .expect("files the work in the held directory's library");
     let app = feed_router().with_state(state);
     let by_work = |library: i64| format!("/opds/v1.2/libraries/{library}/works/by-work");
     let by_dir = |library: i64| format!("/opds/v1.2/libraries/{library}/works");
@@ -2027,7 +2025,7 @@ async fn the_by_work_feed_lists_a_work_under_the_library_it_is_filed_in_with_eve
     assert_eq!(
         listed_as(&app, &by_work(held), &slug).await.as_deref(),
         Some("2 editions"),
-        "the library the work is filed in lists it with every edition"
+        "a library a directory of which holds an edition lists it with every edition"
     );
     assert_eq!(
         listed_as(&app, &by_dir(held), &slug).await.as_deref(),
@@ -2035,14 +2033,9 @@ async fn the_by_work_feed_lists_a_work_under_the_library_it_is_filed_in_with_eve
         "by directory, the same library counts the edition under its directory"
     );
     assert_eq!(
-        listed_as(&app, &by_work(withheld), &slug).await,
-        None,
-        "the work is not filed in the withheld directory's library"
-    );
-    let (_, withheld_by_work) = fetch(&app, &by_work(withheld)).await;
-    assert!(
-        !withheld_by_work.contains("<entry>"),
-        "the withheld directory's library has no work filed in it: {withheld_by_work}"
+        listed_as(&app, &by_work(withheld), &slug).await.as_deref(),
+        Some("2 editions"),
+        "the withheld directory holds the other edition, so its library lists the work too"
     );
     assert_eq!(
         listed_as(&app, &by_dir(withheld), &slug).await.as_deref(),
@@ -2051,12 +2044,9 @@ async fn the_by_work_feed_lists_a_work_under_the_library_it_is_filed_in_with_eve
     );
 }
 
-/// Granted the held directory's library, in which the work is filed: its
-/// by-work feed counts the one edition the grant allows, and the withheld
-/// directory's library is refused as by directory.
-///
-/// The fixture imports its work before its directories exist, so derive never
-/// filed it: `work.library_id` is set here by hand.
+/// Granted the held directory's library, which holds one of the work's
+/// editions: its by-work feed counts the one edition the grant allows, and the
+/// withheld directory's library is refused as by directory.
 #[tokio::test]
 async fn a_restricted_reader_s_by_work_feed_counts_only_the_editions_the_grant_allows() {
     let tmp = crate::test_support::Fixture::new("opds-by-work-restricted");
@@ -2064,11 +2054,6 @@ async fn a_restricted_reader_s_by_work_feed_counts_only_the_editions_the_grant_a
     let held = library_of(&state, 1);
     let withheld = library_of(&state, 2);
     let slug = state.works.snapshot()[0].id.clone();
-    state
-        .library
-        .conn()
-        .execute("UPDATE work SET library_id = ?1", [held])
-        .expect("files the work in the held directory's library");
 
     assert_eq!(
         listed_as(
@@ -2090,10 +2075,10 @@ async fn a_restricted_reader_s_by_work_feed_counts_only_the_editions_the_grant_a
     assert_eq!(body, format!("no library {withheld}"));
 }
 
-/// An imported work, its members under no directory and `work.library_id`
-/// NULL, is fed by `/opds/v1.2/works` and by no library's by-work feed. The
-/// other work is filed in the held directory's library by hand, so the held
-/// library's feed is not empty for want of anything to list.
+/// An imported work, its members under no directory, is fed by
+/// `/opds/v1.2/works` and by no library's by-work feed. The other work is
+/// under the held directory, so the held library's feed is not empty for want
+/// of anything to list.
 #[tokio::test]
 async fn an_imported_work_is_in_no_by_work_feed() {
     let tmp = crate::test_support::Fixture::new("opds-by-work-imported");
@@ -2103,25 +2088,12 @@ async fn an_imported_work_is_in_no_by_work_feed() {
     {
         let conn = state.library.conn();
         conn.execute(
-            "UPDATE work SET library_id = ?1 WHERE title = 'Visible Work'",
-            [held],
-        )
-        .expect("files Visible Work in the held directory's library");
-        conn.execute(
             "UPDATE member SET root_id = NULL WHERE edition_id IN \
              (SELECT e.id FROM edition e JOIN work w ON w.id = e.work_id \
                WHERE w.title = 'Hidden Work')",
             [],
         )
         .expect("leaves Hidden Work's members under no directory");
-        let unfiled: Option<i64> = conn
-            .query_row(
-                "SELECT library_id FROM work WHERE title = 'Hidden Work'",
-                [],
-                |r| r.get(0),
-            )
-            .expect("Hidden Work");
-        assert_eq!(unfiled, None, "Hidden Work is filed in no library");
     }
     let app = feed_router().with_state(state);
 
@@ -2139,7 +2111,7 @@ async fn an_imported_work_is_in_no_by_work_feed() {
         assert_eq!(
             body.contains("Visible Work"),
             library == held,
-            "{uri}: Visible Work is filed in the held directory's library: {body}"
+            "{uri}: Visible Work is under the held directory: {body}"
         );
     }
 }
@@ -2237,4 +2209,187 @@ fn every_route_is_under_the_version_the_feed_claims() {
         paths.contains(&catalog.as_str()),
         "{catalog} is not one of the routes: {paths:?}"
     );
+}
+
+/// Spec §3.8's narrowing on the OPDS routes, over
+/// [`crate::test_support::router_over_an_edition_merged_from_two_libraries`].
+mod narrowing {
+    use super::*;
+    use crate::test_support::{self, EditionMergedFromTwoLibraries, Reader};
+
+    async fn fetched(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        path: &str,
+    ) -> axum::http::Response<Vec<u8>> {
+        let uri = format!("/opds/v1.2/works/{}{path}", merged.slug);
+        let response = merged.get(reader, &uri, None).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "{reader:?}'s {uri}: {}",
+            String::from_utf8_lossy(response.body())
+        );
+        response
+    }
+
+    /// `raw`'s `pse:count` in `reader`'s feed of the work.
+    async fn raw_count(merged: &EditionMergedFromTwoLibraries, reader: Reader) -> String {
+        let feed = fetched(merged, reader, "").await;
+        let feed = String::from_utf8_lossy(feed.body());
+        let entry = feed
+            .split("<entry>")
+            .find(|entry| entry.contains(":raw</id>"))
+            .unwrap_or_else(|| panic!("no `raw` entry in {reader:?}'s feed: {feed}"));
+        entry
+            .split(r#"pse:count=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_else(|| panic!("no pse:count in {entry}"))
+            .to_string()
+    }
+
+    /// The centre pixel of a decodable page or cover.
+    fn centre(bytes: &[u8]) -> [u8; 3] {
+        let image = image::load_from_memory(bytes)
+            .expect("a decodable image")
+            .to_rgb8();
+        image.get_pixel(image.width() / 2, image.height() / 2).0
+    }
+
+    /// Within JPEG's drift of each other: the fixture's pages are 40 apart.
+    fn near(one: [u8; 3], other: [u8; 3]) -> bool {
+        one.iter().zip(other).all(|(a, b)| a.abs_diff(b) <= 12)
+    }
+
+    #[tokio::test]
+    async fn a_narrowed_editions_pse_count_is_its_own() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        assert_eq!(
+            raw_count(&merged, Reader::Administrator).await,
+            "9",
+            "the fixture: raw is 9 pages whole"
+        );
+        assert_eq!(raw_count(&merged, Reader::MangaOnly).await, "6");
+        assert_eq!(raw_count(&merged, Reader::KidsOnly).await, "3");
+    }
+
+    #[tokio::test]
+    async fn the_pse_streams_narrowed_page_is_the_full_page_it_translates_to() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let full = fetched(&merged, Reader::Administrator, "/raw/pages/5").await;
+        assert!(
+            full.body()
+                != fetched(&merged, Reader::Administrator, "/raw/pages/2")
+                    .await
+                    .body(),
+            "the fixture: pages 2 and 5 differ"
+        );
+        let narrowed = fetched(&merged, Reader::MangaOnly, "/raw/pages/2").await;
+        assert!(narrowed.body() == full.body(), "Manga's page 2 is page 5");
+        assert_eq!(
+            narrowed.headers().get(header::ETAG),
+            full.headers().get(header::ETAG)
+        );
+    }
+
+    /// The type `raw`'s acquisition link in `reader`'s feed declares, and
+    /// the address it links.
+    async fn raw_acquisition(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+    ) -> (String, String) {
+        let feed = fetched(merged, reader, "").await;
+        let feed = String::from_utf8_lossy(feed.body());
+        let link = feed
+            .split("<entry>")
+            .find(|entry| entry.contains(":raw</id>"))
+            .and_then(|entry| {
+                entry
+                    .split(r#"rel="http://opds-spec.org/acquisition" type=""#)
+                    .nth(1)
+            })
+            .unwrap_or_else(|| panic!("no acquisition link of `raw` in {reader:?}'s feed: {feed}"));
+        let declared = link.split('"').next().expect("a type").to_string();
+        let href = link
+            .split(r#"href=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("an href")
+            .to_string();
+        (declared, href)
+    }
+
+    /// An account that sees one member of a merged edition, a file that is
+    /// not a `.cbz`, is advertised that file's own type and is sent that file:
+    /// the feed's type and the download it links describe one thing.
+    #[tokio::test]
+    async fn a_narrowed_editions_one_member_is_advertised_and_sent_as_itself() {
+        let merged =
+            test_support::router_over_an_edition_merged_from_two_libraries_with_part2_named(
+                "Foo v01 part2.cbr",
+            );
+        let work = merged.state.find_blocking(&merged.slug).expect("the work");
+        let sidecar = work.sidecar();
+        let files: Vec<&str> = sidecar.editions["raw"]
+            .members
+            .iter()
+            .map(|member| member.path.rsplit('/').next().expect("a file name"))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                "Foo v01 part1.cbz",
+                "Foo v01 part2.cbr",
+                "Foo v01 part3.cbz"
+            ],
+            "the fixture: Kids' one member of raw is not a .cbz"
+        );
+        let on_disk = std::fs::read(&sidecar.editions["raw"].members[1].path).expect("part2");
+
+        let (declared, href) = raw_acquisition(&merged, Reader::KidsOnly).await;
+        assert_eq!(declared, "application/vnd.comicbook-rar");
+        let sent = merged.get(Reader::KidsOnly, &href, None).await;
+        assert_eq!(sent.status(), StatusCode::OK, "{href}");
+        assert_eq!(
+            sent.headers()[header::CONTENT_TYPE].to_str().unwrap(),
+            declared,
+            "{href} is sent as the feed declared it"
+        );
+        assert!(sent.body() == &on_disk, "{href} is part2 byte for byte");
+    }
+
+    /// Kids' cover of `raw` is part2's first page, and is kept under part2:
+    /// the administrator's, asked after it, is still part1's.
+    #[tokio::test]
+    async fn kids_alones_cover_of_raw_is_part2s_first_page() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let part1 = centre(
+            fetched(&merged, Reader::Administrator, "/raw/pages/0")
+                .await
+                .body(),
+        );
+        let part2 = centre(
+            fetched(&merged, Reader::Administrator, "/raw/pages/2")
+                .await
+                .body(),
+        );
+        assert!(
+            !near(part1, part2),
+            "the fixture: part1's and part2's first pages differ"
+        );
+        let cover = fetched(&merged, Reader::KidsOnly, "/raw/cover").await;
+        assert!(
+            near(centre(cover.body()), part2),
+            "Kids' cover is part2's first page: {:?}, against {part2:?}",
+            centre(cover.body())
+        );
+        let whole = fetched(&merged, Reader::Administrator, "/raw/cover").await;
+        assert!(
+            near(centre(whole.body()), part1),
+            "the administrator's cover is part1's first page, not one kept under part1 \
+             for Kids: {:?}, against {part1:?}",
+            centre(whole.body())
+        );
+    }
 }

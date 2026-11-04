@@ -12,6 +12,7 @@ import {
   USERS,
 } from '../src/configAddress'
 import * as rules from '../src/rules'
+import * as splitApi from '../src/splitEditions'
 import {
   accounts,
   answerPairs,
@@ -75,6 +76,10 @@ vi.mock('../src/backup', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/backup')>()),
   listBackups: vi.fn(),
 }))
+vi.mock('../src/splitEditions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/splitEditions')>()),
+  listSplitEditions: vi.fn(),
+}))
 // The build's label at the sidebar's foot asks for the build; answered here,
 // so the request never leaves the test.
 vi.mock('../src/about', async (importOriginal) => {
@@ -90,6 +95,26 @@ const ACCOUNTS = accounts(40)
 
 /** Directories enough that the library's page is taller than the window. */
 const MANGA = manga(40)
+
+/** A path with no space or hyphen in it, longer than any box is wide. */
+const LONG = `/media/${'AkagaminoShirayukihime'.repeat(12)}/v01.cbz`
+
+/** One split edition, whose file and directory are both `LONG`. */
+const SPLIT: splitApi.SplitEdition = {
+  work: 'shirayuki',
+  title: 'Shirayuki',
+  edition: 'en',
+  pages: 9,
+  members: [
+    {
+      path: LONG,
+      pages: 4,
+      directories: [{ root: MANGA.dirs[2].id, path: LONG, library: MANGA.id }],
+    },
+    { path: 'v02.cbz', pages: 5, directories: [] },
+  ],
+  libraries: [{ id: MANGA.id, name: MANGA.name, members: 1, pages: 4 }],
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -110,6 +135,7 @@ beforeEach(() => {
     overrides: [],
   })
   vi.mocked(backup.listBackups).mockResolvedValue({ backups: [] })
+  vi.mocked(splitApi.listSplitEditions).mockResolvedValue({ editions: [SPLIT] })
 })
 
 /** The width a scrollbar takes in this launch: 0 where scrollbars are hidden. */
@@ -251,8 +277,9 @@ describe('within a scrollbar’s width above the breakpoint, the layout holds', 
 
 /**
  * Each Configuration tab and the pages under it. Libraries, New library,
- * Rules and Backup are shorter than the window and draw no split; the Users
- * table, with forty accounts, is taller.
+ * Rules, Backup and Split editions are shorter than the window and draw no
+ * split; the Users table, with forty accounts, is taller. Split editions
+ * holds `LONG`, which its box is too narrow for.
  */
 const SCREENS = [
   LIBRARIES,
@@ -264,6 +291,7 @@ const SCREENS = [
   accountPath(ACCOUNTS[2].name),
   '/config/rules',
   '/config/backup',
+  '/config/split-editions',
 ]
 
 describe('every Configuration screen keeps the gutter the pair keeps', () => {
@@ -284,5 +312,27 @@ describe('every Configuration screen keeps the gutter the pair keeps', () => {
         )
       },
     )
+  }
+})
+
+describe('a split edition’s long path', () => {
+  // The gutter holds whether or not the path breaks, so the box is what
+  // shows it does: a path that ran on would widen what scrolls past it.
+  for (const width of [1920, 390]) {
+    it(`breaks inside its box, the file and its directory, at ${width} px`, async () => {
+      const host = await configAt(width, 1200, '/config/split-editions')
+      const box = need(host, '.split-editions .settings-box')
+      const paths = [
+        need(box, '.split-edition-file code'),
+        need(box, '.split-edition-dirs a code'),
+      ]
+      expect(paths.map((path) => path.textContent)).toEqual([LONG, LONG])
+      for (const path of paths) {
+        expect(path.getBoundingClientRect().height).toBeGreaterThan(
+          2 * Number.parseFloat(getComputedStyle(path).lineHeight),
+        )
+      }
+      expect(box.scrollWidth).toBeLessThanOrEqual(box.clientWidth)
+    })
   }
 })

@@ -832,40 +832,27 @@ fn apply_series(
         .as_str();
     let reading = series.reading.map(direction_text);
 
-    let library: Option<i64> = conn
-        .query_row(
-            "SELECT library_id FROM work WHERE id = ?1",
-            [work_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("reading the library of work {work_id}: {e}"))?;
-
-    let series_id = match find_series_by_title(conn, library, &series.titles)? {
+    let series_id = match find_series_by_title(conn, &series.titles)? {
         Some(id) => {
             // **Not `sort_title` — O114.** A series this document found by one
             // of its titles keeps its `sort_title`, the key
             // `derive::reconcile_series` finds it by. A series minted below has
             // no scanned name, so it takes the primary title.
-            //
-            // **A series in no library is filed with the work it is found
-            // for**, as `derive::reconcile_series` files one it takes. A work
-            // in no library files nothing.
             conn.execute(
                 "UPDATE series
                     SET reading_hand = ?1,
-                        reading      = COALESCE(?1, reading),
-                        library_id   = COALESCE(library_id, ?3)
+                        reading      = COALESCE(?1, reading)
                   WHERE id = ?2",
-                params![reading, id, library],
+                params![reading, id],
             )
             .map_err(|e| format!("updating series {id}: {e}"))?;
             id
         }
         None => {
             conn.execute(
-                "INSERT INTO series (sort_title, reading, reading_hand, library_id)
-                 VALUES (?1, ?2, ?2, ?3)",
-                params![sort_title, reading, library],
+                "INSERT INTO series (sort_title, reading, reading_hand)
+                 VALUES (?1, ?2, ?2)",
+                params![sort_title, reading],
             )
             .map_err(|e| format!("inserting series: {e}"))?;
             conn.last_insert_rowid()
@@ -1015,28 +1002,15 @@ fn forget_orphaned_series(conn: &Connection, series_id: Option<i64>) -> Result<(
 /// order, so re-applying the same document always resolves to the series it
 /// resolved to before.
 ///
-/// **Within the work's library — Part F1**: among the series
-/// [`crate::libraries::own_or_adoptable_series`] allows it. A work in no
-/// library (an imported one) finds a series in any. Where several series hold
-/// one title, a series in a library is answered before one in none, and then
-/// the oldest.
-fn find_series_by_title(
-    conn: &Connection,
-    library: Option<i64>,
-    titles: &[SeriesTitle],
-) -> Result<Option<i64>, String> {
-    let its = crate::libraries::own_or_adoptable_series("s", "?2");
+/// **Across the store**: a library does not decide what a series is
+/// (overlapping-libraries spec §3.1). Where several series hold one title, the
+/// oldest answers, so the same text always resolves to the same series.
+fn find_series_by_title(conn: &Connection, titles: &[SeriesTitle]) -> Result<Option<i64>, String> {
     for title in titles {
         let found: Option<i64> = conn
             .query_row(
-                &format!(
-                    "SELECT st.series_id FROM series_title st JOIN series s ON s.id = st.series_id
-                      WHERE st.title = ?1
-                        AND (?2 IS NULL OR {its})
-                      ORDER BY s.library_id IS NULL, st.series_id
-                      LIMIT 1"
-                ),
-                params![title.title, library],
+                "SELECT series_id FROM series_title WHERE title = ?1 ORDER BY series_id LIMIT 1",
+                [&title.title],
                 |row| row.get(0),
             )
             .optional()
@@ -1085,11 +1059,10 @@ fn find_series_by_title(
 /// `series` field. This function never runs that decision, so it can neither
 /// mint a `series` row nor delete one.
 ///
-/// **Refuses a title text another series holds, where the two are in one
-/// library or either is in none.** For a work in a library,
-/// [`find_series_by_title`] chooses between that library's own series and
-/// those in none that it may take. Two series in two libraries may share a
-/// title, and do whenever both libraries hold it.
+/// **Refuses a title text another series holds.** [`find_series_by_title`]
+/// resolves a document's titles by text across the store, so a title two
+/// series held would resolve to only one of them, and [`apply_series`] would
+/// move a work meant for the other onto it.
 /// Checked before anything else here writes, against every title in
 /// `titles`, not only the primary, since [`find_series_by_title`] tries
 /// every one of a document's titles in turn.
@@ -1110,9 +1083,8 @@ fn find_series_by_title(
 /// not reachable through it. Returns an error if more than one of `titles`
 /// is marked `primary` — this function's own doc comment above has the
 /// reason. Returns an error if any of `titles` names text a *different*
-/// series already holds, in this series' library or with either of the two
-/// in none — this function's own doc comment above has the reason. Also
-/// returns an error if SQLite fails.
+/// series already holds — this function's own doc comment above has the
+/// reason. Also returns an error if SQLite fails.
 pub fn set_series_titles(
     conn: &Connection,
     series_id: i64,
@@ -1140,14 +1112,7 @@ pub fn set_series_titles(
     for title in titles {
         let collision: Option<i64> = tx
             .query_row(
-                "SELECT st.series_id
-                   FROM series_title st
-                   JOIN series other ON other.id = st.series_id
-                   JOIN series edited ON edited.id = ?2
-                  WHERE st.title = ?1 AND st.series_id != ?2
-                    AND (other.library_id = edited.library_id
-                         OR other.library_id IS NULL
-                         OR edited.library_id IS NULL)",
+                "SELECT series_id FROM series_title WHERE title = ?1 AND series_id != ?2",
                 params![title.title, series_id],
                 |row| row.get(0),
             )

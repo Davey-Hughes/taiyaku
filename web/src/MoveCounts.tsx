@@ -3,18 +3,33 @@
  * and the kept report's after the move are this one rendering, so they cannot
  * drift apart.
  *
- * **Zero is drawn** for the three things a work can do and for what goes
- * with them: a sentence that leaves a count out reads as a count that could
- * not be taken. The one exception is the join where the target is a library
- * the move makes and nothing joined: nothing can join a work there, so a
- * zero would describe something that cannot happen. A count that is not zero
- * is always said.
+ * **A move changes only which library holds the directory** (spec §3.5), so
+ * what it says is who gains sight of the directory, who loses it, and the
+ * library it empties.
+ *
+ * **Both lists are said, an empty one as no account**: a sentence that leaves
+ * one out reads as a list that could not be read. Where both are empty, that
+ * is said once.
  */
-import type { Moved } from './libraries'
+import { type Moved, namesOf } from './libraries'
 
-/** `n` of a thing with its verb, in the number the count is. */
+/** `n` of a thing, in the number the count is. */
 function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
+}
+
+/**
+ * Who gains sight of the directory and who loses it, as one clause with no
+ * stop. `none` is "no account" as the clause's first words are written.
+ */
+function sightOf(moved: Moved, past: boolean, none: string): string {
+  const { gains_sight: gains, loses_sight: loses } = moved
+  if (gains.length === 0 && loses.length === 0) {
+    return `${none} ${past ? 'gained or lost' : 'will gain or lose'} sight of it`
+  }
+  const gained = gains.length === 0 ? none : namesOf(gains)
+  const lost = loses.length === 0 ? 'no account' : namesOf(loses)
+  return `${gained} ${past ? 'gained' : 'will gain'} sight of it, and ${lost} ${past ? 'lost' : 'will lose'} sight of it`
 }
 
 export interface MoveCountsProps {
@@ -26,65 +41,17 @@ export interface MoveCountsProps {
   from?: string
   /** Said as done, not as about to be. */
   past?: boolean
-  /** The target is a library the move makes, so it holds no work to join. */
-  newLibrary?: boolean
 }
 
-export function MoveCounts({
-  moved,
-  from,
-  past = false,
-  newLibrary = false,
-}: MoveCountsProps) {
-  const keeps = past
-    ? count(moved.works_kept, 'work kept its', 'works kept their')
-    : count(moved.works_kept, 'work keeps its', 'works keep their')
-  const joins = past
-    ? count(moved.works_joined, 'work joined', 'works joined')
-    : count(moved.works_joined, 'work joins', 'works join')
-  const split = past
-    ? count(moved.works_split, 'work was', 'works were')
-    : count(moved.works_split, 'work is', 'works are')
-  const holds = past ? 'already held' : 'already holds'
+export function MoveCounts({ moved, from, past = false }: MoveCountsProps) {
   const grants = count(moved.grants_removed, 'grant', 'grants')
   return (
     <div className="move-counts">
       <p className="counts">
-        {from !== undefined &&
-          `Moving this directory from ${from} to ${moved.library}: `}
-        {keeps} address
-        {newLibrary && moved.works_joined === 0
-          ? ' and '
-          : `, ${joins} a work ${moved.library} ${holds}, as another edition, and `}
-        {split} split between the two libraries.
+        {from === undefined
+          ? `${sightOf(moved, past, 'No account')}.`
+          : `Moving this directory from ${from} to ${moved.library}: ${sightOf(moved, past, 'no account')}.`}
       </p>
-      <p>
-        {count(
-          moved.positions,
-          'in-progress position',
-          'in-progress positions',
-        )}{' '}
-        and {count(moved.notes, 'note', 'notes')} {past ? 'went' : 'go'} with
-        them.
-      </p>
-      {moved.series_joined > 0 && (
-        <p>
-          {count(moved.series_joined, 'series', 'series')} already in{' '}
-          {moved.library}{' '}
-          {past ? 'gained' : moved.series_joined === 1 ? 'gains' : 'gain'}{' '}
-          volumes.
-        </p>
-      )}
-      {moved.alignments_dropped > 0 && (
-        <p>
-          {count(
-            moved.alignments_dropped,
-            `alignment between editions the move ${past ? 'separated was' : 'separates is'}`,
-            `alignments between editions the move ${past ? 'separated were' : 'separates are'}`,
-          )}{' '}
-          dropped.
-        </p>
-      )}
       {moved.library_removed !== null && (
         <p>
           {moved.library_removed} {past ? 'had' : 'has'} no other directory, so

@@ -25,6 +25,8 @@ import {
   USERS as USER_LIST,
 } from '../src/pageReads'
 import { RuleEditor } from '../src/RuleEditor'
+import { SplitEditions } from '../src/SplitEditions'
+import * as splitApi from '../src/splitEditions'
 import * as rulesApi from '../src/rules'
 import { deferred, flush } from './support/async'
 import './support/dialog'
@@ -77,6 +79,10 @@ vi.mock('../src/users', async (importOriginal) => ({
 vi.mock('../src/library', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/library')>()),
   status: vi.fn(),
+}))
+vi.mock('../src/splitEditions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/splitEditions')>()),
+  listSplitEditions: vi.fn(),
 }))
 vi.mock('../src/libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/libraries')>()),
@@ -151,6 +157,7 @@ async function at(entry = TABLE) {
           <Route path={NEW_LIBRARY} element={screen} />
           <Route path="/config/users" element={<p className="other-tab" />} />
           <Route path="/config/rules" element={<RuleEditor />} />
+          <Route path="/config/split-editions" element={<SplitEditions />} />
         </Routes>
         <Steering />
         <Sidebar />
@@ -376,19 +383,13 @@ const movedAnswer = (
   moved: {
     library_id: 2,
     library: 'Comics',
-    works_kept: 1,
-    works_joined: 0,
-    works_split: 0,
-    series_joined: 0,
-    positions: 0,
-    notes: 0,
-    alignments_dropped: 0,
+    gains_sight: [],
+    loses_sight: [],
     library_removed: null,
     grants_removed: 0,
     left_with_no_library: [],
     ...moved,
   },
-  derive: emptyDerive,
   dry_run,
 })
 
@@ -2475,7 +2476,7 @@ describe('Libraries, making one', () => {
     expect(
       page.querySelector('.page-header .page-description')?.textContent,
     ).toBe(
-      'A library starts with one directory. More can be added on its page: the directories of one library are derived together, so a chapter release in one joins its volume in another as a second edition.',
+      'A library starts with one directory. More can be added on its page. Every directory is derived together, whichever library holds it: a library decides who sees its directories.',
     )
     expect(helpOf(row(page, 'Name'))).toBeNull()
     expect(helpOf(row(page, 'Directory path'))?.textContent).toBe(
@@ -2829,27 +2830,23 @@ describe('Libraries, a library’s removal', () => {
 })
 
 describe('Libraries, a directory’s move', () => {
-  it('keeps what deriving after the move found, named for the directory and the library, once the list has reloaded', async () => {
+  it('keeps what the move did, named for the directory and the library, from an answer that holds no derive, once the list has reloaded', async () => {
+    // A move derives nothing, so its answer holds no `derive`. The
+    // rehearsal's answer differs from the move's: the kept report can only
+    // have the move's.
     const answer = (dry_run: boolean): api.MoveAnswer => ({
       moved: {
         library_id: 2,
         library: 'Comics',
-        works_kept: 1,
-        works_joined: 0,
-        works_split: 0,
-        series_joined: 2,
-        // The rehearsal's counts differ from the move's: the kept report
-        // can only have the move's.
-        positions: dry_run ? 1 : 3,
-        notes: 0,
-        alignments_dropped: 0,
+        gains_sight: dry_run ? [] : ['kim', 'lee'],
+        loses_sight: ['ana'],
         library_removed: null,
         grants_removed: 0,
         left_with_no_library: [],
       },
-      derive: { ...emptyDerive, lost_positions: dry_run ? 2 : 6 },
       dry_run,
     })
+    expect(Object.keys(answer(false))).toEqual(['moved', 'dry_run'])
     vi.mocked(api.moveCost).mockResolvedValue(answer(true))
     vi.mocked(api.moveDir).mockResolvedValue(answer(false))
     vi.mocked(api.listLibraries).mockResolvedValue({
@@ -2870,25 +2867,14 @@ describe('Libraries, a directory’s move', () => {
     const report = host.querySelector(
       '.library-page > .removal-report',
     ) as HTMLElement
-    expect(report.querySelector(':scope > p')?.textContent).toBe(
-      'Moved /media/Manga/Chapters from Manga to Comics.',
+    // What the move did, in the past tense, and nothing a derive found.
+    expect([...report.querySelectorAll('p')].map((p) => p.textContent)).toEqual(
+      [
+        'Moved /media/Manga/Chapters from Manga to Comics.',
+        'kim and lee gained sight of it, and ana lost sight of it.',
+      ],
     )
-    // What the move did leads, in the past tense, before what deriving found.
-    const did = report.querySelector('.move-counts')?.textContent ?? ''
-    expect(did).toContain(
-      '1 work kept its address, 0 works joined a work Comics already held, as another edition, and 0 works were split between the two libraries.',
-    )
-    expect(did).toContain('3 in-progress positions and 0 notes went with them.')
-    expect(did).toContain('2 series already in Comics gained volumes.')
-    expect(
-      [...report.querySelectorAll(':scope > p')].map((p) => p.textContent),
-    ).toEqual([
-      'Moved /media/Manga/Chapters from Manga to Comics.',
-      'What deriving after the move found:',
-    ])
-    expect(
-      report.querySelector('[data-field="lost_positions"] dd')?.textContent,
-    ).toBe('6')
+    expect(report.querySelector('.derived')).toBeNull()
     expect(paths(host)).toEqual(['/media/Manga/Volumes'])
     await follow(host, '‹ Libraries')
     await follow(host, 'Comics')
@@ -2913,31 +2899,27 @@ describe('Libraries, a directory’s move', () => {
     return host.querySelector('.removal-report') as HTMLElement
   }
 
-  it('leaves the join out of the kept report where the target was made by the move', async () => {
-    const report = await keptReport('new', {
-      library: 'Extras',
-      library_id: 9,
-      works_kept: 2,
-    })
-    expect(report.querySelector('.move-counts')?.textContent).toContain(
-      '2 works kept their address and 0 works were split between the two libraries.',
+  it('says no account gained or lost sight in the kept report where none did', async () => {
+    const report = await keptReport('new', { library: 'Extras', library_id: 9 })
+    expect(report.querySelector('.move-counts')?.textContent).toBe(
+      'No account gained or lost sight of it.',
     )
-    expect(report.textContent).not.toContain('joined')
   })
 
-  it('says what the move dropped and removed, in the past tense', async () => {
+  it('says what the move removed, in the past tense', async () => {
     const report = await keptReport('2', {
-      alignments_dropped: 2,
+      loses_sight: ['ana'],
       library_removed: 'Manga',
       grants_removed: 3,
     })
-    const did = report.querySelector('.move-counts')?.textContent ?? ''
-    expect(did).toContain(
-      '2 alignments between editions the move separated were dropped.',
-    )
-    expect(did).toContain(
+    expect(
+      [...report.querySelectorAll('.move-counts > p')].map(
+        (p) => p.textContent,
+      ),
+    ).toEqual([
+      'No account gained sight of it, and ana lost sight of it.',
       'Manga had no other directory, so it was removed, with 3 grants.',
-    )
+    ])
   })
 
   it('drops a moved directory from its library at once when the list that follows cannot be read', async () => {
@@ -3464,6 +3446,64 @@ describe('Libraries, addressed by name', () => {
     expect(link(host, '‹ Tom & Jerry/Extras?').getAttribute('href')).toBe(
       `${TABLE}/Tom%20%26%20Jerry%2FExtras%3F`,
     )
+  })
+
+  it('waits on a return to Split editions after a rename for the list that says the new name', async () => {
+    /** Foo's raw, split between Manga's directory and Kids', as `named` names Manga. */
+    const split = (named: string): { editions: splitApi.SplitEdition[] } => ({
+      editions: [
+        {
+          work: 'foo',
+          title: 'Foo',
+          edition: 'raw',
+          pages: 9,
+          members: [
+            {
+              path: 'Foo v01 part1.cbz',
+              pages: 6,
+              directories: [{ root: 10, path: '/media/Manga', library: 1 }],
+            },
+            {
+              path: 'Foo v01 part2.cbz',
+              pages: 3,
+              directories: [{ root: 30, path: '/media/Kids', library: 3 }],
+            },
+          ],
+          libraries: [
+            { id: 3, name: 'Kids', members: 1, pages: 3 },
+            { id: 1, name: named, members: 1, pages: 6 },
+          ],
+        },
+      ],
+    })
+    const links = (host: HTMLElement) =>
+      [...host.querySelectorAll('.split-edition-dirs a')].map((a) =>
+        a.getAttribute('href'),
+      )
+    mangaRenamedBy('Comix')
+    vi.mocked(splitApi.listSplitEditions).mockResolvedValue(split('Manga'))
+    const host = await at('/config/split-editions')
+    expect(links(host)).toEqual([
+      `${TABLE}/Manga/dirs/10`,
+      `${TABLE}/Kids/dirs/30`,
+    ])
+
+    await go(TABLE)
+    await follow(host, 'Manga')
+    await renameTo(host, 'Comix')
+    expect(libraryTitle(host)).toBe('Comix')
+    const again = deferred<{ editions: splitApi.SplitEdition[] }>()
+    vi.mocked(splitApi.listSplitEditions).mockReturnValue(again.promise)
+
+    await go('/config/split-editions')
+    expect(host.querySelector('.split-editions > .settings-section')).toBeNull()
+    expect(links(host)).toEqual([])
+
+    await flush(() => again.resolve(split('Comix')))
+    expect(links(host)).toEqual([
+      `${TABLE}/Comix/dirs/10`,
+      `${TABLE}/Kids/dirs/30`,
+    ])
   })
 
   it('replaces the address with the new name as a rename lands, so Back goes past the old one, which then names nothing', async () => {

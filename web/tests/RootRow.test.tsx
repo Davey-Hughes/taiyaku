@@ -400,22 +400,18 @@ describe('RootRow', () => {
       from: { id: 5, name: 'Chapters' },
       targets: [{ id: 7, name: 'Manga' }],
     }
+    // The rehearsal and the move answer differently: what is handed up can
+    // only be the move's.
     const answered = (dry_run: boolean): api.MoveAnswer => ({
       moved: {
         library_id: 7,
         library: 'Manga',
-        works_kept: 1,
-        works_joined: 0,
-        works_split: 0,
-        series_joined: 0,
-        positions: 0,
-        notes: 0,
-        alignments_dropped: 0,
+        gains_sight: dry_run ? [] : ['kim'],
+        loses_sight: [],
         library_removed: null,
         grants_removed: 0,
         left_with_no_library: [],
       },
-      derive: { ...emptyDerive, lost_positions: dry_run ? 2 : 6 },
       dry_run,
     })
     const mounted = async (
@@ -2193,18 +2189,12 @@ describe('RootRow, an edit still in its box when the row goes', () => {
       moved: {
         library_id: 7,
         library: 'Manga',
-        works_kept: 1,
-        works_joined: 0,
-        works_split: 0,
-        series_joined: 0,
-        positions: 0,
-        notes: 0,
-        alignments_dropped: 0,
+        gains_sight: [],
+        loses_sight: [],
         library_removed: null,
         grants_removed: 0,
         left_with_no_library: [],
       },
-      derive: emptyDerive,
       dry_run,
     })
     vi.mocked(api.moveCost).mockResolvedValue(answer(true))

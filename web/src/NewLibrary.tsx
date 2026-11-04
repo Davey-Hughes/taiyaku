@@ -134,7 +134,7 @@ export function NewLibrary({
       <PageHeader
         back={{ to: LIBRARIES, label: 'Libraries' }}
         title="New library"
-        description="A library starts with one directory. More can be added on its page: the directories of one library are derived together, so a chapter release in one joins its volume in another as a second edition."
+        description="A library starts with one directory. More can be added on its page. Every directory is derived together, whichever library holds it: a library decides who sees its directories."
       />
       {notices}
       <Section>

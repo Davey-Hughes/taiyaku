@@ -9,6 +9,7 @@
 //! hashes, so it is portable and lives here alongside the lookup.
 
 mod credits;
+mod narrow;
 mod regions;
 mod route;
 mod sidecar;
@@ -17,6 +18,7 @@ mod solve;
 mod truth;
 
 pub use credits::{UnpairedRun, unpaired_runs};
+pub use narrow::{FromFull, Narrowed};
 pub use regions::{
     Axis, Region, RegionDoc, RegionEdition, RegionMember, VERSION as REGIONS_VERSION,
 };

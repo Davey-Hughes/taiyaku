@@ -747,8 +747,8 @@ fn migration_6_adds_member_root_id_leaving_existing_members_null() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_seventeen() {
-    assert_eq!(SCHEMA_VERSION, 17);
+fn the_schema_version_is_eighteen() {
+    assert_eq!(SCHEMA_VERSION, 18);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -1730,32 +1730,30 @@ fn a_library_goes_when_its_last_root_moves_away_and_its_works_stay() {
     let library = crate::Library::open_in_memory().expect("library");
     let conn = library.conn();
     conn.execute_batch(TWO_DIR_LIBRARY).expect("seeds");
-    conn.execute(
-        "INSERT INTO work (id, content_key, slug, title, reading, hub, library_id)
-         VALUES (1, 'k', 's', 'T', 'rtl', 'raw', 80)",
-        [],
+    conn.execute_batch(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (1, 'k', 's', 'T', 'rtl', 'raw');
+         INSERT INTO edition (id, work_id, key, label) VALUES (10, 1, 'raw', 'Raw');
+         INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id)
+         VALUES (100, 10, 0, '/srv/other/v01.cbz', 'h', 1, 9);",
     )
-    .expect("a work in Other");
+    .expect("a work under Other's directory");
 
     conn.execute("UPDATE root SET library_id = 70 WHERE id = 9", [])
         .expect("moves Other's one directory into Shelf");
 
-    // Counted with its NULL in the predicate: `SELECT library_id FROM work
-    // WHERE id = 1` reads NULL for a deleted work too, and could not tell SET
-    // NULL from CASCADE.
-    let (libraries, unfiled): (i64, i64) = conn
+    let (libraries, works, held): (i64, i64, i64) = conn
         .query_row(
             "SELECT (SELECT count(*) FROM library WHERE id = 80),
-                    (SELECT count(*) FROM work WHERE id = 1 AND library_id IS NULL)",
+                    (SELECT count(*) FROM work WHERE id = 1),
+                    (SELECT count(*) FROM member_root WHERE member_id = 100 AND root_id = 9)",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .expect("reads");
     assert_eq!(libraries, 0, "Other had no directory left");
-    assert_eq!(
-        unfiled, 1,
-        "its work is kept, in no library, for the next derive to adopt"
-    );
+    assert_eq!(works, 1, "its work is kept");
+    assert_eq!(held, 1, "and still held under the directory that moved");
 }
 
 /// [`TWO_DIR_LIBRARY`], two accounts, and `grants` as `(user_id,
@@ -1823,25 +1821,439 @@ fn the_last_root_of_an_accounts_only_library_can_be_deleted_or_moved_away() {
 }
 
 #[test]
-fn a_content_key_is_unique_within_a_library_and_a_slug_across_all_of_them() {
+fn a_content_key_and_a_slug_are_each_unique_across_the_store() {
     let conn = Connection::open_in_memory().expect("in-memory connection");
     conn.pragma_update(None, "foreign_keys", "ON")
         .expect("foreign keys");
     migrate(&conn).expect("migrates");
-    conn.execute_batch(TWO_DIR_LIBRARY).expect("seeds");
-    let insert = |key: &str, slug: &str, library: i64| {
+    let insert = |key: &str, slug: &str| {
         conn.execute(
-            "INSERT INTO work (content_key, slug, title, reading, hub, library_id)
-             VALUES (?1, ?2, 'T', 'rtl', 'raw', ?3)",
-            rusqlite::params![key, slug, library],
+            "INSERT INTO work (content_key, slug, title, reading, hub)
+             VALUES (?1, ?2, 'T', 'rtl', 'raw')",
+            rusqlite::params![key, slug],
         )
     };
-    insert("same", "in-shelf", 70).expect("the first copy");
-    insert("same", "in-other", 80).expect("the same content in another library is its own work");
-    let twice =
-        insert("same", "in-shelf-again", 70).expect_err("the same content twice in one library");
+    insert("same", "first").expect("the first work of this content");
+    let twice = insert("same", "second").expect_err("the same content is one work");
     assert!(twice.to_string().contains("work.content_key"), "{twice}");
-    let slug =
-        insert("fresh", "in-shelf", 80).expect_err("a slug names one work across every library");
+    let slug = insert("fresh", "first").expect_err("a slug names one work");
     assert!(slug.to_string().contains("work.slug"), "{slug}");
+}
+
+/// A store at version 17 holding two copies of one volume, filed under
+/// libraries A and B, in two series of one title. Each copy holds one of
+/// everything that names a work or its edition, and each series one of
+/// everything that names a series, so the rows of the copy that goes stand
+/// beside the rows of the one that stays. Work 3 has its own content and is
+/// placed in series 2 by hand, and series 1's cover is the younger copy.
+const SCHEMA_17_COPIES: &str = "
+    INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');
+    INSERT INTO root (id, path, library_id) VALUES (7, '/srv/a', 70), (8, '/srv/b', 80);
+    INSERT INTO series (id, sort_title, library_id) VALUES (1, 'Foo', 70), (2, 'Foo', 80);
+    INSERT INTO series_title (series_id, title, kind, is_primary) VALUES
+      (1, 'Foo', 'english', 1), (2, 'Foo', 'english', 1), (2, 'Fuu', 'alt', 0);
+    INSERT INTO tag (id, name) VALUES (1, 'drama');
+    INSERT INTO series_tag (series_id, tag_id) VALUES (1, 1), (2, 1);
+    INSERT INTO external_id (series_id, provider, external_id) VALUES
+      (1, 'anilist', '1'), (2, 'anilist', '2');
+    INSERT INTO proposal (id, kind, subject_id, target_id, score, reason) VALUES
+      (1, 'same-series', 2, NULL, 1.0, 'names series 2 as its subject'),
+      (2, 'edition-of', 1, 2, 1.0, 'names series 2 as its target'),
+      (3, 'same-series', 1, NULL, 1.0, 'names series 1 alone');
+    INSERT INTO work (id, content_key, slug, series_id, series_id_hand, title, reading, hub,
+                      library_id) VALUES
+      (1, 'same', 'foo-a', 1, NULL, 'Foo', 'rtl', 'raw', 70),
+      (2, 'same', 'foo-b', 2, NULL, 'Foo', 'rtl', 'raw', 80),
+      (3, 'own', 'foo-2', 2, 2, 'Foo 2', 'rtl', 'raw', 80);
+    UPDATE series SET cover_work_id = 2 WHERE id = 1;
+    INSERT INTO edition (id, work_id, key, label) VALUES (10, 1, 'raw', 'Raw'), (20, 2, 'raw', 'Raw');
+    INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id) VALUES
+      (100, 10, 0, '/srv/a/Foo/v01.cbz', 'h', 10, 7),
+      (200, 20, 0, '/srv/b/Foo/v01.cbz', 'h', 10, 8);
+    INSERT INTO page_flag (edition_id, kind, page) VALUES (10, 'spread', 3), (20, 'spread', 3);
+    INSERT INTO alignment (id, work_id, from_key, to_key, by) VALUES
+      (11, 1, 'raw', 'en', 'solver'), (21, 2, 'raw', 'en', 'solver');
+    INSERT INTO run (alignment_id, ordinal, a_start_page, a_end_page) VALUES (11, 0, 1, 9), (21, 0, 1, 9);
+    INSERT INTO truth_page (work_id, edition, page) VALUES (1, 'raw', 2), (2, 'raw', 2);
+    INSERT INTO truth_box (work_id, edition, page, x, y, w, h, kind) VALUES
+      (1, 'raw', 2, 0, 0, 1, 1, 'text'), (2, 'raw', 2, 0, 0, 1, 1, 'text');
+    INSERT INTO truth_member (work_id, edition, ordinal, sha256) VALUES (1, 'raw', 0, 'h'), (2, 'raw', 0, 'h');
+    INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, 1, 'raw', 3), (1, 2, 'raw', 5);
+    INSERT INTO note (user_id, id, work_id, edition, slot, body, created, updated) VALUES
+      (1, 'n1', 1, 'raw', 2, 'kept', 'now', 'now'), (1, 'n2', 2, 'raw', 2, 'gone', 'now', 'now');
+    INSERT INTO work_tag (work_id, tag_id) VALUES (1, 1), (2, 1);
+    INSERT INTO person (id, name) VALUES (1, 'Author');
+    INSERT INTO credit (person_id, role, work_id, edition_id, series_id) VALUES
+      (1, 'author', 1, NULL, NULL), (1, 'author', 2, NULL, NULL),
+      (1, 'translator', NULL, 10, NULL), (1, 'translator', NULL, 20, NULL),
+      (1, 'artist', NULL, NULL, 1), (1, 'artist', NULL, NULL, 2);
+    INSERT INTO collection (id, name) VALUES (1, 'Shelf');
+    INSERT INTO collection_item (collection_id, ordinal, work_id, series_id) VALUES
+      (1, 0, 1, NULL), (1, 1, 2, NULL), (1, 2, NULL, 1), (1, 3, NULL, 2);
+    INSERT INTO migrated_document (work_id, document) VALUES (1, 'library'), (2, 'library');
+";
+
+/// Every table that names a work, its edition or its alignment, with the ids
+/// it names, so the copy that stays and the one that goes read side by side.
+const ROWS_NAMING_A_WORK: &str = "
+    SELECT 'work', group_concat(id) FROM (SELECT id FROM work ORDER BY id)
+    UNION ALL SELECT 'edition of work', group_concat(work_id) FROM (SELECT work_id FROM edition ORDER BY 1)
+    UNION ALL SELECT 'member of edition', group_concat(edition_id) FROM (SELECT edition_id FROM member ORDER BY 1)
+    UNION ALL SELECT 'page_flag of edition', group_concat(edition_id) FROM (SELECT edition_id FROM page_flag ORDER BY 1)
+    UNION ALL SELECT 'credit of edition', group_concat(edition_id) FROM (SELECT edition_id FROM credit WHERE edition_id IS NOT NULL ORDER BY 1)
+    UNION ALL SELECT 'credit of work', group_concat(work_id) FROM (SELECT work_id FROM credit WHERE work_id IS NOT NULL ORDER BY 1)
+    UNION ALL SELECT 'alignment of work', group_concat(work_id) FROM (SELECT work_id FROM alignment ORDER BY 1)
+    UNION ALL SELECT 'run of alignment', group_concat(alignment_id) FROM (SELECT alignment_id FROM run ORDER BY 1)
+    UNION ALL SELECT 'truth_page of work', group_concat(work_id) FROM (SELECT work_id FROM truth_page ORDER BY 1)
+    UNION ALL SELECT 'truth_box of work', group_concat(work_id) FROM (SELECT work_id FROM truth_box ORDER BY 1)
+    UNION ALL SELECT 'truth_member of work', group_concat(work_id) FROM (SELECT work_id FROM truth_member ORDER BY 1)
+    UNION ALL SELECT 'progress of work', group_concat(work_id) FROM (SELECT work_id FROM progress ORDER BY 1)
+    UNION ALL SELECT 'note of work', group_concat(work_id) FROM (SELECT work_id FROM note ORDER BY 1)
+    UNION ALL SELECT 'work_tag of work', group_concat(work_id) FROM (SELECT work_id FROM work_tag ORDER BY 1)
+    UNION ALL SELECT 'collection_item of work', group_concat(work_id) FROM (SELECT work_id FROM collection_item WHERE work_id IS NOT NULL ORDER BY 1)
+    UNION ALL SELECT 'migrated_document of work', group_concat(work_id) FROM (SELECT work_id FROM migrated_document ORDER BY 1)
+";
+
+/// Every table that names a series, with the ids it names.
+const ROWS_NAMING_A_SERIES: &str = "
+    SELECT 'series', group_concat(id) FROM (SELECT id FROM series ORDER BY id)
+    UNION ALL SELECT 'series_title of series', group_concat(series_id) FROM (SELECT series_id FROM series_title ORDER BY 1)
+    UNION ALL SELECT 'series_tag of series', group_concat(series_id) FROM (SELECT series_id FROM series_tag ORDER BY 1)
+    UNION ALL SELECT 'external_id of series', group_concat(series_id) FROM (SELECT series_id FROM external_id ORDER BY 1)
+    UNION ALL SELECT 'credit of series', group_concat(series_id) FROM (SELECT series_id FROM credit WHERE series_id IS NOT NULL ORDER BY 1)
+    UNION ALL SELECT 'collection_item of series', group_concat(series_id) FROM (SELECT series_id FROM collection_item WHERE series_id IS NOT NULL ORDER BY 1)
+    UNION ALL SELECT 'proposal', group_concat(id) FROM (SELECT id FROM proposal ORDER BY id)
+";
+
+/// `sql`'s `(label, ids)` rows, an empty table reading as an empty string.
+fn census(conn: &Connection, sql: &str) -> Vec<(String, String)> {
+    let mut stmt = conn.prepare(sql).expect(sql);
+    stmt.query_map([], |row| {
+        Ok((
+            row.get(0)?,
+            row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        ))
+    })
+    .expect(sql)
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .expect(sql)
+}
+
+/// `labels` paired with `ids`, in order, for comparing with a [`census`].
+fn expected(labels: &[&str], ids: &[&str]) -> Vec<(String, String)> {
+    assert_eq!(labels.len(), ids.len(), "one id list per label");
+    labels
+        .iter()
+        .zip(ids)
+        .map(|(label, ids)| ((*label).to_string(), (*ids).to_string()))
+        .collect()
+}
+
+const WORK_LABELS: [&str; 16] = [
+    "work",
+    "edition of work",
+    "member of edition",
+    "page_flag of edition",
+    "credit of edition",
+    "credit of work",
+    "alignment of work",
+    "run of alignment",
+    "truth_page of work",
+    "truth_box of work",
+    "truth_member of work",
+    "progress of work",
+    "note of work",
+    "work_tag of work",
+    "collection_item of work",
+    "migrated_document of work",
+];
+
+const SERIES_LABELS: [&str; 7] = [
+    "series",
+    "series_title of series",
+    "series_tag of series",
+    "external_id of series",
+    "credit of series",
+    "collection_item of series",
+    "proposal",
+];
+
+/// [`SCHEMA_17_COPIES`] at version 17, foreign keys on as `Library::open`
+/// sets them.
+fn a_schema_17_store_with_copies() -> Connection {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..17]).expect("migrates to 17");
+    conn.execute_batch(SCHEMA_17_COPIES)
+        .expect("seeds two copies of one volume");
+    conn
+}
+
+/// **Migration 18 keeps the oldest copy and takes the rest whole.** Of the
+/// two works of one content key, work 1 stands with every row naming it, and
+/// work 2 goes with every row naming it, its edition or its alignment. Of the
+/// two series titled `Foo`, series 1 stands and series 2 goes with its titles,
+/// tags, external ids, credits, collection place and both proposals naming it.
+#[test]
+fn migration_18_keeps_the_oldest_copy_of_a_work_and_of_a_series_and_takes_the_rest() {
+    let conn = a_schema_17_store_with_copies();
+    assert_eq!(
+        census(&conn, ROWS_NAMING_A_WORK),
+        expected(
+            &WORK_LABELS,
+            &[
+                "1,2,3", "1,2", "10,20", "10,20", "10,20", "1,2", "1,2", "11,21", "1,2", "1,2",
+                "1,2", "1,2", "1,2", "1,2", "1,2", "1,2",
+            ]
+        ),
+        "the fixture: each copy holds one row of every table naming a work"
+    );
+    assert_eq!(
+        census(&conn, ROWS_NAMING_A_SERIES),
+        expected(
+            &SERIES_LABELS,
+            &["1,2", "1,2,2", "1,2", "1,2", "1,2", "1,2", "1,2,3"]
+        ),
+        "the fixture: each series holds a row of every table naming a series, series 2 two titles"
+    );
+
+    migrate(&conn).expect("migrates to 18");
+
+    assert_eq!(
+        census(&conn, ROWS_NAMING_A_WORK),
+        expected(
+            &WORK_LABELS,
+            &[
+                "1,3", "1", "10", "10", "10", "1", "1", "11", "1", "1", "1", "1", "1", "1", "1",
+                "1",
+            ]
+        ),
+        "work 1 stands with its rows, and work 2 went with every row naming it"
+    );
+    assert_eq!(
+        census(&conn, ROWS_NAMING_A_SERIES),
+        expected(&SERIES_LABELS, &["1", "1", "1", "1", "1", "1", "3"]),
+        "series 1 stands with its rows, and series 2 went with every row naming it"
+    );
+}
+
+/// **A work of the series that went is moved to the one kept**, by both its
+/// derived and its hand placement, and a cover naming the copy that went is
+/// cleared: `series.cover_work_id` has no foreign key to refuse it.
+#[test]
+fn migration_18_moves_works_to_the_kept_series_and_clears_a_cover_that_went() {
+    let conn = a_schema_17_store_with_copies();
+
+    migrate(&conn).expect("migrates to 18");
+
+    assert_eq!(
+        rows_of(
+            &conn,
+            "SELECT series_id, series_id_hand FROM work WHERE id = 3"
+        ),
+        vec![vec!["Integer(1)".to_string(), "Integer(1)".to_string()]],
+        "work 3 is in series 1, by derivation and by hand"
+    );
+    assert_eq!(
+        rows_of(&conn, "SELECT cover_work_id FROM series WHERE id = 1"),
+        vec![vec!["Null".to_string()]],
+        "series 1's cover named the copy that went"
+    );
+}
+
+/// **The store migration 18 leaves opens with its constraints met.** No
+/// foreign key is left dangling, the search index holds the kept works and
+/// agrees with `work`, and a second work of a kept content key is refused.
+#[test]
+fn migration_18_leaves_no_orphan_a_search_index_of_the_kept_works_and_one_work_per_content() {
+    let conn = a_schema_17_store_with_copies();
+
+    migrate(&conn).expect("migrates to 18");
+
+    assert_eq!(
+        rows_of(&conn, "SELECT * FROM pragma_foreign_key_check"),
+        Vec::<Vec<String>>::new(),
+        "no row names one that went"
+    );
+    let matching = {
+        let mut stmt = conn
+            .prepare("SELECT rowid FROM work_fts WHERE work_fts MATCH 'Foo' ORDER BY rowid")
+            .expect("prepares");
+        stmt.query_map([], |r| r.get::<_, i64>(0))
+            .expect("searches")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("reads")
+    };
+    assert_eq!(
+        matching,
+        vec![1, 3],
+        "the search index holds the kept works"
+    );
+    conn.execute(
+        "INSERT INTO work_fts (work_fts) VALUES ('integrity-check')",
+        [],
+    )
+    .expect("the search index agrees with work");
+
+    let twice = conn
+        .execute(
+            "INSERT INTO work (content_key, slug, title, reading, hub)
+             VALUES ('same', 'foo-again', 'Foo', 'rtl', 'raw')",
+            [],
+        )
+        .expect_err("a second work of work 1's content");
+    assert!(twice.to_string().contains("work.content_key"), "{twice}");
+}
+
+/// Every index and trigger `work` had at version 17 is back after 18's
+/// rebuild, word for word, as at version 15.
+#[test]
+fn migration_18_recreates_every_index_and_trigger_work_had() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    migrate_with(&conn, &MIGRATIONS[..17]).expect("migrates to 17");
+    let objects = "SELECT type, name, sql FROM sqlite_master \
+                   WHERE tbl_name = 'work' AND type IN ('index', 'trigger') AND sql IS NOT NULL \
+                   ORDER BY name";
+    let before = rows_of(&conn, objects);
+    assert_eq!(before.len(), 7, "the index and six triggers: {before:?}");
+
+    migrate(&conn).expect("migrates to 18");
+
+    assert_eq!(
+        rows_of(&conn, objects),
+        before,
+        "the rebuild lost or changed an index or trigger on work"
+    );
+}
+
+/// The `(member_id, root_id)` rows of `member_root`.
+const MEMBER_ROOTS: &str = "SELECT member_id, root_id FROM member_root ORDER BY member_id, root_id";
+
+/// **A member's directories are a set that holds its `root_id`.** Migration
+/// 18 fills it from the members it finds, a member under no directory holding
+/// none; afterwards an insert adds the directory and a move replaces it. A
+/// removed directory takes its rows and leaves the member, including a row no
+/// `root_id` names, which only the cascade reaches; a deleted member takes its
+/// rows.
+#[test]
+fn member_root_holds_each_members_directory_whoever_writes_it() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..17]).expect("migrates to 17");
+    conn.execute_batch(
+        "INSERT INTO library (id, name) VALUES (70, 'A');
+         INSERT INTO root (id, path, library_id) VALUES (7, '/srv/a', 70), (8, '/srv/b', 70);
+         INSERT INTO work (id, content_key, slug, title, reading, hub) VALUES (1, 'k', 's', 'T', 'rtl', 'raw');
+         INSERT INTO edition (id, work_id, key, label) VALUES (10, 1, 'raw', 'Raw');
+         INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id) VALUES
+           (100, 10, 0, '/srv/a/v01.cbz', 'a', 1, 7),
+           (101, 10, 1, '/docs/v02.cbz', 'b', 1, NULL);",
+    )
+    .expect("a member under a directory and one under none");
+
+    migrate(&conn).expect("migrates to 18");
+    assert_eq!(
+        rows_of(&conn, MEMBER_ROOTS),
+        vec![vec!["Integer(100)".to_string(), "Integer(7)".to_string()]],
+        "the migration filled the set from member.root_id"
+    );
+
+    conn.execute(
+        "INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id)
+         VALUES (102, 10, 2, '/srv/b/v03.cbz', 'c', 1, 8)",
+        [],
+    )
+    .expect("inserts a member under /srv/b");
+    conn.execute(
+        "INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id)
+         VALUES (103, 10, 3, '/docs/v04.cbz', 'd', 1, NULL)",
+        [],
+    )
+    .expect("inserts a member under no directory");
+    assert_eq!(
+        rows_of(&conn, MEMBER_ROOTS),
+        vec![
+            vec!["Integer(100)".to_string(), "Integer(7)".to_string()],
+            vec!["Integer(102)".to_string(), "Integer(8)".to_string()],
+        ],
+        "an inserted member's directory joins the set, and none joins for none"
+    );
+
+    conn.execute("UPDATE member SET root_id = 7 WHERE id = 102", [])
+        .expect("moves member 102 to /srv/a");
+    assert_eq!(
+        rows_of(&conn, MEMBER_ROOTS),
+        vec![
+            vec!["Integer(100)".to_string(), "Integer(7)".to_string()],
+            vec!["Integer(102)".to_string(), "Integer(7)".to_string()],
+        ],
+        "the new directory replaced the old one"
+    );
+
+    conn.execute(
+        "INSERT INTO member_root (member_id, root_id) VALUES (100, 8)",
+        [],
+    )
+    .expect("a second copy of member 100, under /srv/b");
+    conn.execute("DELETE FROM root WHERE id = 8", [])
+        .expect("removes /srv/b");
+    assert_eq!(
+        rows_of(&conn, MEMBER_ROOTS),
+        vec![
+            vec!["Integer(100)".to_string(), "Integer(7)".to_string()],
+            vec!["Integer(102)".to_string(), "Integer(7)".to_string()],
+        ],
+        "the removed directory holds nothing, though no member's root_id named it"
+    );
+
+    conn.execute("DELETE FROM member WHERE id = 102", [])
+        .expect("deletes member 102");
+    assert_eq!(
+        rows_of(&conn, MEMBER_ROOTS),
+        vec![vec!["Integer(100)".to_string(), "Integer(7)".to_string()]],
+        "a deleted member's directories went with it"
+    );
+
+    conn.execute("DELETE FROM root WHERE id = 7", [])
+        .expect("removes /srv/a");
+    assert_eq!(
+        rows_of(&conn, MEMBER_ROOTS),
+        Vec::<Vec<String>>::new(),
+        "the removed directory holds nothing"
+    );
+    assert_eq!(
+        rows_of(&conn, "SELECT count(*) FROM member"),
+        vec![vec!["Integer(3)".to_string()]],
+        "and no member went with a directory"
+    );
+}
+
+/// `table`'s column names.
+fn columns_of(conn: &Connection, table: &str) -> Vec<String> {
+    let mut stmt = conn
+        .prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+        .expect("prepares");
+    stmt.query_map([table], |r| r.get(0))
+        .expect("reads")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("reads")
+}
+
+/// **A library no longer decides what a work or a series is**: a fresh store
+/// reaches 18, and neither table has a `library_id` to file it by.
+#[test]
+fn a_fresh_store_reaches_18_and_files_no_work_or_series_under_a_library() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    migrate(&conn).expect("migrates");
+    assert_eq!(version(&conn).expect("reads the version"), 18);
+    for table in ["work", "series"] {
+        let columns = columns_of(&conn, table);
+        assert!(!columns.is_empty(), "{table} exists");
+        assert!(
+            !columns.iter().any(|c| c == "library_id"),
+            "{table} has no library: {columns:?}"
+        );
+    }
 }

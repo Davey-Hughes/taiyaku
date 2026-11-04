@@ -202,7 +202,6 @@ describe('admin.css lets a path break and its list drop under its label', () => 
     '.config-table td.lead',
     '.remove-root .confirm',
     '.remove-library .confirm',
-    '.move-volumes li',
     '.libraries p',
     '.users p',
     '.config-table td.wraps',

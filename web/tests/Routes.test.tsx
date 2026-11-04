@@ -205,7 +205,15 @@ describe('the routes', () => {
     expect(host.querySelector('[data-testid="reader"]')).toBeNull()
     expect(host.querySelector('.library')).not.toBeNull()
     expect(host.querySelector('.sidebar')).not.toBeNull()
-    expect(vi.mocked(library.oneSeries)).toHaveBeenCalledWith(1)
+    expect(vi.mocked(library.oneSeries)).toHaveBeenLastCalledWith(1, undefined)
+  })
+
+  it('routes a series opened from a library into the series page with that library — spec §3.6', async () => {
+    at('/series/1?library=2')
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(vi.mocked(library.oneSeries)).toHaveBeenLastCalledWith(1, 2)
   })
 
   /**
@@ -281,6 +289,9 @@ describe('the routes', () => {
       expect(host.querySelector('.search-hits .grid .title')?.textContent).toBe(
         'Hello Series',
       )
+      expect(
+        host.querySelector('.search-hits .grid a')?.getAttribute('href'),
+      ).toBe('/series/3?library=2')
     })
 
     it('leaves an empty library behind, so the search is of every library', async () => {

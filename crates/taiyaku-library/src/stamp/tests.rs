@@ -1005,6 +1005,52 @@ fn a_relative_member_path_is_joined_to_its_root_and_an_absolute_one_is_not() {
     );
 }
 
+/// **A member held under two directories never enters a plan.** Stamping the
+/// copy `member.path` names would leave the other's bytes different, and the
+/// next derive would split the one member into two.
+#[test]
+fn a_member_held_under_two_directories_never_enters_a_plan() {
+    let fixture = one_work();
+    let copy = crate::tests::tempdir("stamp-copy");
+    std::fs::create_dir_all(copy.path().join("Series")).expect("mkdir");
+    std::fs::copy(
+        fixture.archive("Series - v01.cbz"),
+        copy.path().join("Series").join("Series - v01.cbz"),
+    )
+    .expect("copies the archive");
+    let conn = fixture.conn();
+    assert_eq!(
+        plan(&conn, fixture.work_id).expect("plans").len(),
+        1,
+        "the fixture: stampable while one directory holds it"
+    );
+    assert!(!copied(&conn, fixture.work_id).expect("reads"));
+
+    let root = crate::scan::add_root(&conn, copy.path()).expect("adds the copy's root");
+    crate::scan::scan_root(&conn, &root).expect("scans it");
+    crate::derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM member_root mr JOIN member m ON m.id = mr.member_id
+               JOIN edition e ON e.id = m.edition_id WHERE e.work_id = ?1",
+            [fixture.work_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .expect("counts"),
+        2,
+        "the fixture: one member of this work, held under both"
+    );
+    assert!(
+        plan(&conn, fixture.work_id).expect("plans").is_empty(),
+        "a copied member is left out"
+    );
+    assert!(
+        copied(&conn, fixture.work_id).expect("reads"),
+        "and a caller can say why"
+    );
+}
+
 /// `member_paths` answers every member, not just the stampable ones — which
 /// is what lets a caller say what a stamp is leaving alone.
 #[test]

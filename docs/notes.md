@@ -24711,6 +24711,10 @@ at accept. A grant names a library and resolves to its folders. The CLI
 gained `library libraries`, `scan --library` and `user
 grant-library|revoke-library`; `scan --add` says which library the folder
 went to and whether it made it, and `user list` shows each account's grants.
+*(2026-11-03: the overlapping-libraries PR 1 has since made derivation and
+proposals run across the whole store, and no proposal is refused for having
+its two series in different libraries. See
+`docs/superpowers/specs/2026-11-02-overlapping-libraries-design.md`.)*
 
 **Migration 15 files a work under its hub edition's library** because
 `hand::path_for` addresses a work's document off the hub edition's root, so
@@ -26372,3 +26376,188 @@ UTF-8, and sets the flag, and `raw_copy_file` copies that name and flag. None of
 found it in volumes of several series in the test library, Hunter × Hunter
 among them, most often naming something other than the stored bytes, so by
 that reading a stamp of those volumes writes the field's name.
+
+## Overlapping libraries PR 1 on the test library (2026-11-03)
+
+A store made by `main` 6067071d, opened, migrated and rescanned by this
+branch's release build, on a copy of the test library at
+`/home/davey/temp/manga-test`. The commands and their output are in
+`.superpowers/sdd/overlap-evidence/pr1/drive/`, which is not committed.
+
+**The store `main` made.** The copy hardlinked the library's 1915 archives and
+copied its three `cover.jpg` files. `main` scanned it as the library Manga,
+then a second directory holding a `cp` of Bocchi the Rock! v05 as the library
+Kids. At schema 17 that store held 1897 works and 136 series: the two copies
+were works 102 (Manga) and 1897 (Kids) with one content key, and the series
+Bocchi the Rock! was there twice, ids 8 and 136. Through `main`'s server the
+admin read page 6 of each copy and recorded slot 6 on work 102 and slot 11 on
+work 1897.
+
+**Opening a copy of it.** `taiyaku library libraries` on the branch migrated
+the copy to schema 18: 1896 works and 135 series. Work 102 kept its id, its
+slug `bocchi-the-rock----v05--2024--cbz` and its position at slot 6; work
+1897's row, edition, member, position and full-text entry were gone, and so
+were series 136 and its title. `PRAGMA foreign_key_check` printed nothing.
+Kids listed no work until the next scan.
+
+**The rescan.** `taiyaku library scan` left work 102 with one member and a
+`member_root` row for each of the two directories, under the content key it
+had at schema 17, with the position at slot 6. Kids listed one work again, and
+one work held that content key (O194).
+
+**What an account granted one library is served.** Before serving, a third
+directory under Manga, with its own edition key `alt`, gave work 102 a second
+edition only Manga reaches, and a fourth under Kids held a different file
+named as v06 (O239, below). Served on 127.0.0.1:4399, an account granted only
+Kids got two entries from `/api/works`, v05 once with the edition `raw`, while
+the admin got v05 once with `alt` and `raw`. That account's request for a page
+of `alt` and its position write on `alt` were each answered 404. Its own
+position on v05 (slot 20) and the admin's (slot 6) were kept apart.
+
+**O238 and O239, as their rows read.** On a further copy of the store, a
+symlink inside one directory to a series directory in it gave one edition of
+two members with one `sha256`. The different v06 under Kids joined the v06
+under Manga as one `raw` edition of two members, and that derive reported
+`1 merged` and `1 rekeyed`; the work kept its id and slug. **What O239's row
+does not say:** the account granted only Kids was sent a document naming both
+files and was served page 137 of that edition, whose bytes only the file under
+Manga's directory holds, while `/api/library/works/<slug>` and the series page
+told the same account one member and 8 pages. The admin was told two members
+and 138 pages.
+
+**Nothing under the test library was written.** `find
+/home/davey/temp/manga-test -newer` the marker touched before the copy printed
+nothing at the end, and the sha256 of its `library.db` and its three
+`cover.jpg` files were the same before and after.
+
+## Narrowing a merged edition on the test library (2026-11-04)
+
+The second part of the overlapping-libraries PR 1 (spec §3.8, decisions 6–11)
+narrows an edition that a library's directories hold some of and not all of,
+for an account granted some of the libraries holding it and not all, and lists
+each such edition on Configuration → Split editions. It was driven on the scratch
+store of "Overlapping libraries PR 1 on the test library", under that drive's
+isolation rules. The commands and their output are in
+`.superpowers/sdd/overlap-evidence/pr1/drive/`, which is not committed.
+
+**The case.** A release build of 80a82bb8 served a copy of that store, at
+schema 18 and not migrated on open, which holds O239's case: Bocchi the Rock!
+v06 has one `raw` edition of two members, an 8-page file under Kids'
+directory first and a 130-page file under Manga's second (`T19-store.log`,
+`T19-sql-case.log`).
+
+**What administrators are shown.** `GET /api/library/split-editions` listed
+that edition alone, with both files and their directories, Kids seeing one
+file of 8 pages and Manga one of 130 (`T19-admin.log`). The tab drew the same
+as "Kids sees 1 of 2 files, 8 of 138 pages", with Manga's line under it, and
+each file's path above the directories holding it, each linking to its page,
+and did not scroll sideways on a narrow screen (`T19-browser.log` and two screenshots).
+
+**An account granted only Manga** was sent the edition as one file of 130
+pages. Its pages 0 to 129 were byte for byte the administrator's pages 8 to
+137, and its page 130 was refused
+(`T19-manga-pages.log`, `T19-manga-pages-extra.log`); its thumbs and cover
+were taken the same way (`T19-manga-thumbs.log`). A position and a note it
+wrote on its page 20 read back on 20 and were stored on slot 28, the full
+numbering, and one past its last page was refused
+(`T19-manga-progress-notes.log`).
+
+**An account granted only Kids** was sent the 8-page file as the whole
+edition, the administrator's first 8 pages, and its page 137 was refused with
+404 (`T19-reader.log`). For each account granted one library, the work
+document, the library work route, the series page and the home card gave one
+page count. The administrator's work document and library work route gave 138
+pages, while its series page gave the share of the library it was opened from,
+130 from Manga's and 8 from Kids' (`T19-libraries.log`). The user ruled on
+2026-11-04 that a series page counts an edition by what the account opens,
+whichever library it was opened from, and `browse::editions_by_work` now does,
+so that page gives what the work document gives. Each library's works count
+matched the works its account was served (`T19-libraries.log`). **Both of what "Overlapping libraries PR 1 on the test
+library" found under O239 are closed:** a Kids-only account is no longer
+served a page only the Manga file holds, and the reader and the library
+routes no longer disagree on its page count. Neither limited account could
+read the administrators' route (`T19-manga.log`, `T19-reader.log`), and
+nothing under the test library was written (`T19-isolation-before.log`,
+`T19-isolation-after.log`).
+
+**Read, not driven (no stamp was run): a stamp hides the stamped edition from
+every account with a limit until the registry reads the library again.** The
+view reads which members an account
+sees from the store (`browse::visible_members`) and hides an edition whose
+flags are not of the sidecar's members, by `sha256` and path, in order
+(`view::Seen::of`). `stamp::apply` rewrites an archive in place and updates
+`member.sha256`, so from the stamp until the registry holds the new sidecar,
+that check fails for the edition, whether the account sees it whole or
+narrowed. A live registry reads the library again at its next poll, which
+comes every `REFRESH_EVERY`, since the write moves the structure counter;
+`serve` given sidecars on its command line builds `Works::fixed`,
+which never reads it again, so there the edition stays hidden until a
+restart. `Access::Every` reads no flags and is not affected. This fails
+closed, as spec §3.8 asks of flags that do not number an edition's members.
+
+## PR 1 after its fixes, on the test library (2026-11-04)
+
+The third drive of the overlapping-libraries PR 1, after its whole-branch
+fixes: a release build of ed0a17b9 on a fresh copy of the store `main` made
+for "Overlapping libraries PR 1 on the test library", under that drive's
+isolation rules (`TF-build.log`, `TF-1-open.log`). The commands and their
+output are in `.superpowers/sdd/overlap-evidence/pr1/drive/`, which is not
+committed.
+
+**Opening and rescanning.** The open migrated the copy to the first drive's
+counts, 1896 works and 135 series, and the older copy of the shared v05 kept
+its slug, its series and its reader's position (`TF-1-open.log`). A rescan
+held v05's one file under both libraries' directories, as one member named
+by the older directory (`TF-2a-rescan.log`). With the first drive's two
+extra directories added, the derive reported what that drive's did
+(`TF-2b-extra-scan.log`).
+
+**The real library made no collapse of its own.** The only byte-identical
+pair in the store was the planted copy of v05 (`TF-2a-rescan.log`,
+`TF-2d-real-library-copies.log`).
+
+**A rescan with nothing changed rewrote nothing it counts.** It reported
+nothing rekeyed, folded or moved, and left the work, series, search-index and
+position rows as they were. The edition and member rows were deleted and
+written again under new ids, by the scan-scope import `main` has too
+(`TF-2c-rescan-unchanged.log`).
+
+**Narrowing.** The account granted only Manga was sent v06 as Manga's file
+alone, its pages byte for byte the administrator's after Kids' file and the
+page past its end refused; the account granted only Kids was sent Kids' file
+alone (`TF-3-manga-pages.log`, `TF-3-reader-pages.log`, `TF-3-narrowing.log`).
+A position and a note the Manga account wrote read back in its numbering and
+were stored in the full one (`TF-3-notes-progress.log`).
+
+**The series page counts by sight** (decision 15). v06's edition counted 138
+pages for the administrator from either library's page, 130 for the Manga
+account and 8 for the Kids account, so the administrator's series page and
+its library work route now agree, as "Narrowing a merged edition on the test
+library" expected (`TF-3-series.log`).
+
+**Removing a copy's directory kept the work and its positions.** Removing
+Kids' directory, which held only the copy of v05, removed no work, position
+or note, as its rehearsal had said; v05 kept its id and both readers'
+positions, and its file is now held under Manga's directory alone
+(`TF-4-removal.log`). The Kids account can no longer open v05, since no
+directory of its library holds it, and its position stays in the store.
+
+**What was not driven.** The test library holds no byte-identical pair beyond
+the planted copy, so no partial copy split per file on real material; that
+rests on its tests. Removing the directory v05's member is named by, which
+re-points the member at the other directory's copy, was only rehearsed, and
+the directory was not removed (`TF-4-removal.log`).
+
+**Nothing under the test library was written** (`TF-isolation-before.log`,
+`TF-isolation-after.log`).
+
+## Copies collapse per file, in the order they arrived (2026-11-04)
+
+A volume whose files became copies one at a time stays split (spec, the
+observation after decision 15). A scratch derive test on the branch held
+`c001` of a volume under A and `c002` under B, then gave each directory a
+copy of the other's file and scanned both: the derive kept two works of one
+file each, each held under both directories, where a fresh store over the
+same two directories made one work of the two files. Each file keeps the
+primary it was first held under, as decisions 13 and 14 say; no ruling
+covers the result.

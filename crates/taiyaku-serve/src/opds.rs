@@ -145,7 +145,7 @@ async fn catalog() -> Response {
     <id>taiyaku:libraries:by-work</id>
     <title>Libraries (by work)</title>
     <updated>1970-01-01T00:00:00Z</updated>
-    <content type="text">Each library, with the works filed in it</content>
+    <content type="text">Each library, with the works under its directories, each with every edition you may read</content>
     <link rel="subsection" type="{ATOM};kind=navigation" href="/opds/v1.2/libraries/by-work"/>
   </entry>
 </feed>
@@ -164,8 +164,9 @@ fn granted(extensions: &axum::http::Extensions) -> Access {
 enum View {
     /// A library's works are those with an edition under its directories.
     Dirs,
-    /// A library's works are those `work.library_id` files in it.
-    Filed,
+    /// A library's works are those with an edition under its directories, each
+    /// with every edition the grant allows.
+    ByWork,
 }
 
 /// The navigation feed of `libraries`, each entry linking to that library's
@@ -175,10 +176,10 @@ fn libraries_body(libraries: &[taiyaku_library::browse::LibraryEntry], view: Vie
     // entry, and what follows the library's own id and link in that view.
     let (feed_id, title, content, suffix, href_suffix) = match view {
         View::Dirs => ("taiyaku:libraries", "Libraries", "The works in", "", ""),
-        View::Filed => (
+        View::ByWork => (
             "taiyaku:libraries:by-work",
             "Libraries (by work)",
-            "The works filed in",
+            "Every edition you may read of the works in",
             ":by-work",
             "/by-work",
         ),
@@ -220,12 +221,13 @@ pub(crate) async fn libraries(
     libraries_in(state, &extensions, View::Dirs).await
 }
 
-/// Every library this caller may read, each linking to the works filed in it.
+/// Every library this caller may read, each linking to its works with every
+/// edition the grant allows.
 pub(crate) async fn libraries_by_work(
     State(state): State<Arc<ServeState>>,
     extensions: axum::http::Extensions,
 ) -> Response {
-    libraries_in(state, &extensions, View::Filed).await
+    libraries_in(state, &extensions, View::ByWork).await
 }
 
 /// The feed of libraries both views write, asked of `browse::status` on the
@@ -277,8 +279,9 @@ pub(crate) async fn library_works(
     .await
 }
 
-/// One library's works as the store files them: `work.library_id`, with
-/// every edition the grant allows, wherever its files are.
+/// One library's works whole: each work with a member under its directories
+/// ([`taiyaku_library::browse::held_in`]), with every edition the grant
+/// allows, wherever that edition's files are.
 ///
 /// `visible_editions` with the caller's own access answers every edition of
 /// every work for `Access::Every`, which is what an unrestricted caller is
@@ -291,19 +294,19 @@ pub(crate) async fn library_works_by_work(
 ) -> Response {
     let access = granted(&extensions);
     let feed_state = Arc::clone(&state);
-    crate::library_api::on_the_library(state, "the library's filed works", move |conn| {
+    crate::library_api::on_the_library(state, "the library's works by work", move |conn| {
         let scope = match taiyaku_library::browse::library_scope(conn, &access, library) {
             Ok(Some(scope)) => scope,
             Ok(None) => return missing(format!("no library {library}")),
-            Err(why) => return crate::library_api::failed("the library's filed works", &why),
+            Err(why) => return crate::library_api::failed("the library's works by work", &why),
         };
-        let filed = match taiyaku_library::browse::filed_in(conn, library) {
-            Ok(filed) => filed,
-            Err(why) => return crate::library_api::failed("the library's filed works", &why),
+        let held = match taiyaku_library::browse::held_in(conn, library) {
+            Ok(held) => held,
+            Err(why) => return crate::library_api::failed("the library's works by work", &why),
         };
         match taiyaku_library::browse::visible_editions(conn, &access) {
             Ok(mut visible) => {
-                visible.retain(|slug, _| filed.contains(slug));
+                visible.retain(|slug, _| held.contains(slug));
                 works_feed(
                     &feed_state,
                     Some(&visible),
@@ -312,7 +315,7 @@ pub(crate) async fn library_works_by_work(
                     &format!("/opds/v1.2/libraries/{library}/works/by-work"),
                 )
             }
-            Err(why) => crate::library_api::failed("the library's filed works", &why),
+            Err(why) => crate::library_api::failed("the library's works by work", &why),
         }
     })
     .await
@@ -334,8 +337,8 @@ pub(crate) async fn library_works_by_work(
 /// worker thread, stalling the whole worker.
 #[expect(
     clippy::result_large_err,
-    reason = "the `Err` carries a `Response`, for `routes::visible_editions_or_refuse`'s reason: \
-              a handler's refusal path, called once per request"
+    reason = "the `Err` carries a `Response`, for `routes::on_the_grant`'s reason: a \
+              handler's refusal path, called once per request"
 )]
 async fn visible_editions_by_work(
     state: &Arc<ServeState>,
@@ -353,7 +356,7 @@ async fn visible_editions_by_work(
 /// Every work this caller may see, with its editions.
 ///
 /// **A grant must not name a work it hides**, or the entry itself is the
-/// leak `refuse_if_hidden` exists to close everywhere else on this server.
+/// leak `view::of_edition` exists to close everywhere else on this server.
 /// **Nor may the edition *count* say more than the entry does** — this feed
 /// names no edition directly, only `{count} editions`, but a count computed
 /// over `sidecar.editions` rather than the caller's visible subset still
@@ -361,7 +364,7 @@ async fn visible_editions_by_work(
 /// which is a smaller leak than a key or a path and a leak all the same.
 ///
 /// **One query for the whole feed, not one per work.** A loop calling
-/// `browse::edition_visible` per work here would be an N+1 over every work the
+/// `browse::visible_members` per work here would be an N+1 over every work the
 /// server holds, so `browse::visible_editions` (the same bulk query
 /// `routes::list_works` already uses for the identical `/api/works` question)
 /// answers every work's visible edition set in one round trip, in
@@ -505,29 +508,26 @@ pub(crate) async fn work_feed(
 
     // A grant restricts which *editions* of a work may be named here, not
     // only whether the work itself may — the same distinction
-    // `refuse_if_hidden` draws for the page and cover routes below, applied
-    // to a feed rather than a single fetch. `routes::visible_editions_or_refuse`
-    // answers both halves in one round trip through `browse::work`: a 404 for
-    // a work with no edition inside the grant (the one `get_sidecar` sends for
-    // the identical case, from the same function), `Some` carrying only the
-    // editions that survive otherwise — `WorkCard::editions`'s own contract.
-    // It asks on the blocking pool. Reused rather than reimplemented, and cheap
-    // for the one work this route addresses: `works_of`'s row plus one
-    // `editions_by_work` call, not one query per edition.
+    // `view::of_edition` draws for the page and cover routes below, applied
+    // to a feed rather than a single fetch. `view::of_work` answers both
+    // halves in one query on the blocking pool: a 404 for a work with no
+    // edition inside the grant (the one `get_sidecar` sends for the identical
+    // case, from the same function), and otherwise the work as the account is
+    // sent it, a narrowed edition narrowed, so `pse:count` counts the pages
+    // `stream_page` serves it.
     // **Absent means "may download"**, as `routes::refuse_if_cannot_download`
     // reads it. `can_download` is a capability, not a grant: it narrows what a
     // reader may do with what they can see, so reading it permissively widens
     // nothing. What a request with no principal sees is the grant's to
-    // decide, and `visible_editions_or_refuse` below answers it 401.
+    // decide, and `view::of_work` below answers it 401.
     let may_download = extensions
         .get::<crate::auth::Principal>()
         .is_none_or(|principal| principal.can_download);
 
-    let visible_editions: Option<HashSet<String>> =
-        match crate::routes::visible_editions_or_refuse(&state, &extensions, &id).await {
-            Ok(visible) => visible,
-            Err(refusal) => return refusal,
-        };
+    let view = match crate::view::of_work(&state, &extensions, &id).await {
+        Ok(view) => view,
+        Err(refusal) => return refusal,
+    };
 
     let work_id = escape(&work.id);
     // See the note in `works_feed`: `work.id` is already URL-safe by
@@ -535,12 +535,12 @@ pub(crate) async fn work_feed(
     // encoding this one too keeps the rule uniform rather than one route
     // relying on a guarantee made in another module.
     let work_href = escape(&percent_encode(&work.id));
-    let sidecar = work.sidecar();
+    let sidecar = view.sidecar();
     let title = escape(&sidecar.work.title);
     // Only a reader who may download is sent to the blocking pool: the page
     // link the others get names no type this server has to find out.
     let types = if may_download {
-        match advertised_types(&state, &id, &sidecar, visible_editions.as_ref()).await {
+        match advertised_types(&state, &id, sidecar).await {
             Ok(types) => types,
             Err(refusal) => return refusal,
         }
@@ -550,9 +550,6 @@ pub(crate) async fn work_feed(
 
     let mut entries = String::new();
     for (key, edition) in &sidecar.editions {
-        if visible_editions.as_ref().is_some_and(|v| !v.contains(key)) {
-            continue;
-        }
         // Two layers, two variables: `key_x` is XML-escaped display text —
         // the atom `<id>` a reader never sees rendered as a link — and
         // `key_href` is percent-encoded for the `href`s below. An edition
@@ -641,34 +638,31 @@ pub(crate) async fn work_feed(
 /// bind-mounts its library from a FUSE share, where nothing promises that
 /// is quick.
 ///
-/// One trip for the whole feed. Only the editions `visible` admits are asked
-/// about, which are the ones the feed names, and `sidecar` is the snapshot the
-/// feed builds its entries from, so a type and its entry describe one document.
+/// One trip for the whole feed. `sidecar` is the work as the account is sent
+/// it, the snapshot the feed builds its entries from, so a type and its entry
+/// describe one document.
 ///
 /// `Err` is the refusal to send: a 404 if `id` names no work, which the handler
 /// has already refused before asking, and a 500 if the task panicked.
 #[expect(
     clippy::result_large_err,
-    reason = "the `Err` carries a `Response`, for `routes::visible_editions_or_refuse`'s \
-              reason: a routing handler's refusal path, called once per request"
+    reason = "the `Err` carries a `Response`, for `routes::on_the_grant`'s reason: a \
+              routing handler's refusal path, called once per request"
 )]
 async fn advertised_types(
     state: &Arc<ServeState>,
     id: &str,
     sidecar: &Arc<taiyaku_core::Sidecar>,
-    visible: Option<&HashSet<String>>,
 ) -> Result<HashMap<String, &'static str>, Response> {
     let state = Arc::clone(state);
     let id = id.to_string();
     let sidecar = Arc::clone(sidecar);
-    let visible = visible.cloned();
     let typed = tokio::task::spawn_blocking(move || {
         let work = state.find_blocking(&id)?;
         Ok::<_, String>(
             sidecar
                 .editions
                 .iter()
-                .filter(|(key, _)| visible.as_ref().is_none_or(|v| v.contains(*key)))
                 .map(|(key, edition)| {
                     (
                         key.clone(),
@@ -702,13 +696,13 @@ pub(crate) async fn stream_page(
 ) -> Response {
     // Grant first (404, it does not exist for you), capability second (403,
     // you may see it and may not have it) — the order every other refusal
-    // pair on this server follows. `refuse_if_hidden` is the exact check
-    // `get_page` sends for the `/api/…` page route; reused rather than
+    // pair on this server follows. `view::of_edition` is the exact check
+    // `get_page` makes for the `/api/…` page route; reused rather than
     // reimplemented, so that this rule has one spelling.
-    if let Some(refusal) = crate::routes::refuse_if_hidden(&state, &extensions, &id, &edition).await
-    {
-        return refusal;
-    }
+    let view = match crate::view::of_edition(&state, &extensions, &id, &edition).await {
+        Ok(view) => view,
+        Err(refusal) => return refusal,
+    };
     if let Some(refusal) = crate::routes::refuse_if_cannot_stream(&extensions) {
         return refusal;
     }
@@ -717,7 +711,7 @@ pub(crate) async fn stream_page(
         Err(refusal) => return refusal.into_response(),
     };
     // **PSE counts from 0**, so this is taiyaku's own index unchanged. There
-    // is no conversion here and there must not be one:
+    // is no 1-based conversion here and there must not be one:
     // `tests::pse_page_numbers_are_taiyaku_indices_unchanged` pins page 0 as
     // the first page and `pse:count` as one past the end.
     //
@@ -726,20 +720,19 @@ pub(crate) async fn stream_page(
     // `…/pages/{pageNumber}?zero_based=true` — it converts *for* PSE. So a
     // server whose PSE stream is 1-based disagrees with Stump, the other
     // implementation of the same feed.
-    let index = number;
+    let index = match view.page_to_full(number) {
+        Ok(index) => index,
+        Err(e) => return missing(e),
+    };
 
     // O1: the same validator the `/api/…` page route sends, checked the same
     // way and for the same reason — Panels reaches pages through *this*
     // route, not the `/api/…` one, and O5 already recorded once what fixing
-    // only the other route is worth. `crate::routes::locate_member` reads
-    // nothing but the in-memory sidecar, so a match is answered before the
+    // only the other route is worth. `EditionView::locate` reads nothing but
+    // the sidecar the view checked, so a match is answered before the
     // decompression or Stump round trip below ever runs.
-    let found = match state.find(&id).await {
-        Ok(found) => found,
-        Err(e) => return missing(e),
-    };
-    let (sha256, offset) = match crate::routes::locate_member(&found, &edition, index) {
-        Ok(pair) => pair,
+    let (sha256, offset) = match view.locate(index) {
+        Ok((member, offset)) => (member.sha256.clone(), offset),
         Err(e) => return missing(e),
     };
     // `None`: the OPDS stream serves the member's own bytes at full size and
@@ -751,11 +744,7 @@ pub(crate) async fn stream_page(
         return crate::routes::not_modified(&tag, Some(crate::routes::PAGE_CACHE_CONTROL));
     }
 
-    let fetched = tokio::task::spawn_blocking(move || {
-        let found = state.find_blocking(&id)?;
-        state.page(&found, &edition, index)
-    })
-    .await;
+    let fetched = tokio::task::spawn_blocking(move || state.page(&view, index)).await;
 
     match fetched {
         Ok(Ok(page)) => (
@@ -788,29 +777,23 @@ pub(crate) async fn cover(
     // check beside it: `refuse_if_cannot_stream`'s own doc says covers and
     // thumbnails follow browse, not `can_stream` — an account that may not
     // read pages here must still be able to see what it could download.
-    if let Some(refusal) = crate::routes::refuse_if_hidden(&state, &extensions, &id, &edition).await
-    {
-        return refusal;
-    }
+    let view = match crate::view::of_edition(&state, &extensions, &id, &edition).await {
+        Ok(view) => view,
+        Err(refusal) => return refusal,
+    };
     let fetched = tokio::task::spawn_blocking(move || {
-        let work = state.find_blocking(&id)?;
-        let sidecar = work.sidecar();
-        let found = sidecar
-            .editions
-            .get(&edition)
-            .ok_or_else(|| format!("no edition `{edition}` in work `{id}`"))?;
+        let first = view.page_to_full(0)?;
         // Keyed on whichever member `Edition::locate(0)` actually resolves
         // page 0 to, not `members.first()` unconditionally. `locate` steps over
         // a member recorded with zero pages, so a first member with none would
         // make `members.first()` name a different member than the one
-        // `state.page(work, &edition, 0)` below actually reads bytes from —
-        // caching the generated cover under the wrong member's hash.
-        let (position, _within) = found
-            .locate(0)
-            .ok_or_else(|| format!("`{edition}` has no pages"))?;
-        let cover_member = &found.members[position];
+        // `state.page` below actually reads bytes from — caching the generated
+        // cover under the wrong member's hash. A narrowed edition's page 0 is
+        // the first page of its first visible member, so the member's hash
+        // still names its cover.
+        let (cover_member, _within) = view.locate(first)?;
         crate::cover::cached_or_generated(&state.cache_dir, &cover_member.sha256, || {
-            state.page(&work, &edition, 0).map(|p| p.bytes)
+            state.page(&view, first).map(|p| p.bytes)
         })
     })
     .await;

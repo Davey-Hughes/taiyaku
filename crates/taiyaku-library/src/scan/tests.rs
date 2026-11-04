@@ -2381,7 +2381,7 @@ fn what_a_removal_touches(conn: &Connection) -> Vec<String> {
     for sql in [
         "SELECT 'root', id, path, library_id FROM root ORDER BY id",
         "SELECT 'library', id, name, NULL FROM library ORDER BY id",
-        "SELECT 'work', id, slug, library_id FROM work ORDER BY id",
+        "SELECT 'work', id, slug, NULL FROM work ORDER BY id",
         "SELECT 'member', id, path, root_id FROM member ORDER BY id",
         "SELECT 'scan_entry', id, rel_path, root_id FROM scan_entry ORDER BY id",
         "SELECT 'grant', user_id, library_id, NULL FROM user_library ORDER BY 2, 3",
@@ -2611,7 +2611,6 @@ fn rows_of_library(conn: &Connection, library: i64) -> Vec<String> {
         "SELECT 'library', id FROM library WHERE id = ?1",
         "SELECT 'root', id FROM root WHERE library_id = ?1",
         "SELECT 'grant', user_id FROM user_library WHERE library_id = ?1",
-        "SELECT 'work', id FROM work WHERE library_id = ?1",
     ] {
         let mut statement = conn.prepare(sql).expect(sql);
         let read = statement
@@ -2651,7 +2650,12 @@ fn removing_a_library_takes_each_dirs_works_and_the_library() {
     );
     assert_eq!(rows_of_library(&conn, shelf), Vec::<String>::new());
     let left: Vec<String> = conn
-        .prepare("SELECT l.name FROM work w JOIN library l ON l.id = w.library_id ORDER BY 1")
+        .prepare(
+            "SELECT DISTINCT l.name FROM work w
+               JOIN edition e ON e.work_id = w.id JOIN member m ON m.edition_id = e.id
+               JOIN root r ON r.id = m.root_id JOIN library l ON l.id = r.library_id
+              ORDER BY 1",
+        )
         .expect("prepares")
         .query_map([], |r| r.get(0))
         .expect("reads")
@@ -4315,4 +4319,162 @@ fn mark_derive_failed_leaves_the_dir_that_took_a_removed_ones_id_alone() {
         status, None,
         "the correction may not land on the new directory"
     );
+}
+
+/// Spec §3.5: removing one of a copy's two directories keeps the work, its
+/// position and its note and counts nothing; removing the other takes all
+/// three. The dry run counts the same both times.
+///
+/// `b`, removed first, holds the primary copy, so the derive after it must
+/// re-point the member at `a`'s. The hand-set chapter shows the member was
+/// kept: one deleted with `b` is rebuilt from `a`'s scan with no hand value.
+#[test]
+fn removing_one_directory_of_a_copy_keeps_the_work_and_removing_the_other_takes_it() {
+    let copy = crate::tests::a_volume_copied_into_two_libraries();
+    let conn = copy.conn();
+    let work_id: i64 = conn
+        .query_row("SELECT id FROM work", [], |r| r.get(0))
+        .expect("the one work");
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
+        [work_id],
+    )
+    .expect("a position");
+    conn.execute(
+        "INSERT INTO note (id, user_id, work_id, edition, slot, body, created, updated)
+         VALUES ('note-copy', 1, ?1, 'raw', 2, 'a note', datetime('now'), datetime('now'))",
+        [work_id],
+    )
+    .expect("a note");
+    conn.execute(
+        "UPDATE member SET chapter_declared = 99.0, chapter_source = 'hand'",
+        [],
+    )
+    .expect("a hand-set chapter");
+    let held = |conn: &Connection| -> (Vec<i64>, i64, i64) {
+        let works = conn
+            .prepare("SELECT id FROM work")
+            .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+            .expect("lists the works");
+        let count = |table: &str| -> i64 {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .expect("counts")
+        };
+        (works, count("progress"), count("note"))
+    };
+
+    let (cost, _) = removal_cost(&conn, copy.b.id).expect("costs b");
+    let (removal, _) = remove_root(&conn, copy.b.id).expect("removes b");
+    assert_eq!(
+        (removal.works, removal.positions, removal.notes),
+        (0, 0, 0),
+        "a's copy holds the work: {removal:?}"
+    );
+    assert_eq!(cost, removal, "the dry run counts the same");
+    assert_eq!(
+        held(&conn),
+        (vec![work_id], 1, 1),
+        "the work stays, with its position and its note"
+    );
+    let chapter: (Option<f64>, Option<String>) = conn
+        .query_row(
+            "SELECT chapter_declared, chapter_source FROM member",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the one member");
+    assert_eq!(
+        chapter,
+        (Some(99.0), Some("hand".to_string())),
+        "the member is kept, not rebuilt"
+    );
+    assert_eq!(
+        (
+            crate::tests::the_member(&conn),
+            crate::tests::member_root_ids(&conn)
+        ),
+        (
+            (
+                Some(copy.a.id),
+                copy.a
+                    .path
+                    .join("Foo")
+                    .join("Foo v01.cbz")
+                    .display()
+                    .to_string()
+            ),
+            vec![copy.a.id]
+        ),
+        "the member is re-pointed at a's copy, not left under no directory"
+    );
+
+    let (cost, _) = removal_cost(&conn, copy.a.id).expect("costs a");
+    let (removal, _) = remove_root(&conn, copy.a.id).expect("removes a");
+    assert_eq!(
+        (removal.works, removal.positions, removal.notes),
+        (1, 1, 1),
+        "nothing else holds the work now: {removal:?}"
+    );
+    assert_eq!(cost, removal, "the dry run counts the same");
+    assert_eq!(held(&conn), (Vec::new(), 0, 0), "the work goes, with both");
+}
+
+/// A member whose primary directory `b` went with no removal around it, as
+/// one can between a derive reading the roots and writing them, has its
+/// `root_id` `NULL` and a copy recorded under `a` alone. It is `a`'s: removing
+/// `a` counts its work and takes it, rather than leaving a work with no member.
+#[test]
+fn removing_the_one_directory_recording_a_member_takes_its_work_whatever_its_root_id() {
+    let copy = crate::tests::a_volume_copied_into_two_libraries();
+    let conn = copy.conn();
+    conn.execute("DELETE FROM root WHERE id = ?1", [copy.b.id])
+        .expect("b's directory goes with no removal around it");
+    assert_eq!(
+        crate::tests::member_root_ids(&conn),
+        [copy.a.id],
+        "the fixture: the member is recorded under a's copy alone"
+    );
+    let (cost, _) = removal_cost(&conn, copy.a.id).expect("costs a");
+    let (removal, _) = remove_root(&conn, copy.a.id).expect("removes a");
+    assert_eq!(removal.works, 1, "a alone held the work: {removal:?}");
+    assert_eq!(cost, removal, "the dry run counts the same");
+    let works: i64 = conn
+        .query_row("SELECT count(*) FROM work", [], |r| r.get(0))
+        .expect("counts");
+    assert_eq!(works, 0, "no work is left standing with no member");
+}
+
+/// A work with a member under the removed directory and an imported member,
+/// which has no `member_root` row, is kept and not counted: the imported
+/// member is no evidence that the work lived under the directory alone.
+#[test]
+fn removing_a_directory_keeps_a_work_that_also_holds_an_imported_member() {
+    let dir = crate::tests::tempdir("removal-imported-member");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, dir.path()).expect("adds the directory");
+    conn.execute_batch(&format!(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (1, 'k', 'w', 'W', 'rtl', 'raw');
+         INSERT INTO edition (id, work_id, key, label) VALUES (1, 1, 'raw', 'Raw');
+         INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id) VALUES
+           (1, 1, 0, '{}/a.cbz', 'a', 1, {}),
+           (2, 1, 1, '/imported/b.cbz', 'b', 1, NULL);",
+        dir.path().display(),
+        root.id
+    ))
+    .expect("a work of a member under the directory and an imported one");
+
+    let (cost, _) = removal_cost(&conn, root.id).expect("costs");
+    let (removal, _) = remove_root(&conn, root.id).expect("removes");
+    assert_eq!(
+        removal.works, 0,
+        "the work is not the directory's alone: {removal:?}"
+    );
+    assert_eq!(cost, removal, "the dry run counts the same");
+    let works: Vec<i64> = conn
+        .prepare("SELECT id FROM work")
+        .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+        .expect("lists the works");
+    assert_eq!(works, [1], "the work stays");
 }

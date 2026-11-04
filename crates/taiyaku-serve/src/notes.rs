@@ -26,8 +26,10 @@
 /// other is meant.
 pub use taiyaku_library::{Note, Notes, Region};
 
+use taiyaku_core::{Direction, Edition, FromFull};
 use taiyaku_library::Library;
 
+use crate::view::View;
 use crate::works::{self, Work};
 
 /// How far outside `[0, 1]` a region may stray before it is refused.
@@ -78,16 +80,16 @@ pub fn validate(notes: &Notes, work: &Work, stored: &Notes) -> Result<(), Invali
 /// or a slot an edition shrank past — refuses *every* future write on that
 /// work, forever, including the writes that would have removed it.
 ///
-/// So a stale note survives as something a reader can see (the review list
-/// already marks a note it cannot reach from here) and delete, rather than as
-/// something that quietly bricks their notes. What is still refused is a
-/// *new* bad anchor, and moving an existing note onto one — the cases where
-/// this write is what makes the anchor wrong.
+/// So a stale note survives rather than bricking every write. An account with
+/// no grant limits is sent it (the review list marks it) and can delete it;
+/// one with limits is not sent a note on an edition the work no longer has,
+/// as `get_progress` leaves out such a position, and its writes keep it. What
+/// is refused is a *new* bad anchor, or a note moved onto one.
 ///
 /// **Against the sidecar it is handed, which need not be the work's whole
-/// one.** `routes::put_notes` hands it the document a caller is shown, so an
-/// edition their grant hides is an edition the work does not have, here and
-/// in the refusal's words (O60).
+/// one.** `routes::put_notes` hands it the editions a caller sees, whole, so
+/// an edition their grant hides is an edition the work does not have, here
+/// and in the refusal's words (O60).
 ///
 /// # Errors
 ///
@@ -141,29 +143,9 @@ pub fn validate_against(
                     note.id, note.edition, work
                 ))
             })?;
-
-            // Slots, not pages: a joined spread is one page and two slots, and
-            // a note on one half must not be refused because the page count is
-            // smaller. O3 established this on progress, for the same reason.
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "edition.slots(reading).len() is at most twice the edition's page \
-                          count (crate::expand's flat_map in taiyaku-core/src/slot.rs emits \
-                          at most two Slots per page), and a page count is bounded by what a \
-                          book can physically contain, far below u32::MAX. Kept as an \
-                          #[expect] rather than a try_from().expect() helper: this runs on \
-                          the write path of a client-supplied notes document against a \
-                          sidecar, which a re-solve or a hand edit can change, not an \
-                          in-process invariant — adding a panic here would trade a truncation \
-                          that cannot happen for a request failure that, however unlikely, \
-                          could."
-            )]
-            let slots = edition.slots(sidecar.work.reading).len() as u32;
+            let slots = slot_count(edition, sidecar.work.reading);
             if note.slot >= slots {
-                return Err(Invalid::Missing(format!(
-                    "note `{}` names slot {} of `{}`, which has {slots} slots",
-                    note.id, note.slot, note.edition
-                )));
+                return Err(past_the_end(note, slots));
             }
         }
 
@@ -212,6 +194,135 @@ pub fn validate_against(
     Ok(())
 }
 
+/// What a note's slot is checked against: slots, not pages, because a
+/// joined spread is one page and two slots, and a note on one half must not
+/// be refused because the page count is smaller. O3 established this on
+/// progress, for the same reason.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "edition.slots(reading).len() is at most twice the edition's page \
+              count (crate::expand's flat_map in taiyaku-core/src/slot.rs emits \
+              at most two Slots per page), and a page count is bounded by what a \
+              book can physically contain, far below u32::MAX. Kept as an \
+              #[expect] rather than a try_from().expect() helper: this runs on \
+              the write path of a client-supplied notes document against a \
+              sidecar, which a re-solve or a hand edit can change, not an \
+              in-process invariant — adding a panic here would trade a truncation \
+              that cannot happen for a request failure that, however unlikely, \
+              could."
+)]
+fn slot_count(edition: &Edition, reading: Direction) -> u32 {
+    edition.slots(reading).len() as u32
+}
+
+fn past_the_end(note: &Note, slots: u32) -> Invalid {
+    Invalid::Missing(format!(
+        "note `{}` names slot {} of `{}`, which has {slots} slots",
+        note.id, note.slot, note.edition
+    ))
+}
+
+/// The slot a stored `note` has in `view`'s document, or `None` when the
+/// account is not sent it: on an edition it is not sent, or on a narrowed
+/// edition's hidden page or past its end.
+fn seen_at(note: &Note, view: &View) -> Option<u32> {
+    match view.slot_from_full(&note.edition, note.slot)? {
+        FromFull::Visible(slot) => Some(slot),
+        FromFull::Hidden { .. } | FromFull::Outside => None,
+    }
+}
+
+/// `stored` as `view`'s account is sent it (spec §3.8): the notes it is sent,
+/// in its numbering.
+pub(crate) fn as_seen(stored: &Notes, view: &View) -> Notes {
+    let notes = stored
+        .notes
+        .iter()
+        .filter_map(|note| {
+            let slot = seen_at(note, view)?;
+            Some(Note {
+                slot,
+                ..note.clone()
+            })
+        })
+        .collect();
+    Notes {
+        work: stored.work.clone(),
+        notes,
+    }
+}
+
+/// `incoming`, written by `view`'s account, as it replaces `stored` (spec
+/// §3.8): in the stored numbering, with every note of `stored` the account is
+/// not sent kept as it is, because a write replaces the whole document and
+/// would otherwise delete them. In the client's order, the kept notes after
+/// its own, so [`validate_against`] refuses the first faulty note it sent.
+///
+/// # Errors
+///
+/// `Invalid::Missing`, in [`validate_against`]'s words, for a slot past a
+/// narrowed edition's end. `Invalid::Refused` for a note with the id of one
+/// the account is not sent, unless it is that note unchanged: a client that
+/// read the note before it was left out sends it back as it was.
+pub(crate) fn as_stored(incoming: Notes, stored: &Notes, view: &View) -> Result<Notes, Invalid> {
+    // `Access::Every` is sent every note in the stored numbering, so nothing
+    // is translated or held back.
+    if view.visible().is_none() {
+        return Ok(incoming);
+    }
+    let unseen: Vec<&Note> = stored
+        .notes
+        .iter()
+        .filter(|note| seen_at(note, view).is_none())
+        .collect();
+    let reading = view.sidecar().work.reading;
+    let mut notes = Vec::with_capacity(incoming.notes.len() + unseen.len());
+    for note in &incoming.notes {
+        let mut note = note.clone();
+        if let Some(narrowed) = view.narrowed(&note.edition) {
+            let slots = slot_count(narrowed.edition(), reading);
+            note.slot = narrowed
+                .slot_to_full(note.slot, reading)
+                .ok_or_else(|| past_the_end(&note, slots))?;
+        }
+        if unseen
+            .iter()
+            .any(|held| held.id == note.id && **held != note)
+        {
+            return Err(Invalid::Refused(format!(
+                "note `{}` is held on a page you are not shown, and cannot be changed from here",
+                note.id
+            )));
+        }
+        notes.push(note);
+    }
+    for held in unseen {
+        if !incoming.notes.iter().any(|note| note.id == held.id) {
+            notes.push(held.clone());
+        }
+    }
+    Ok(Notes {
+        work: incoming.work,
+        notes,
+    })
+}
+
+/// The `ETag` and body `view`'s account is sent for `stored`, the tag naming
+/// its numbering (spec §3.8, decision 11). `put_notes` answers with this so
+/// its tag is the next read's.
+///
+/// # Errors
+///
+/// What [`to_json`] returns.
+pub(crate) fn tagged_for(stored: &Notes, view: &View) -> Result<(String, String), String> {
+    let json = to_json(stored)?;
+    let tag = view.etag_naming_numbering(&json);
+    if view.visible().is_none() {
+        return Ok((tag, json));
+    }
+    Ok((tag, to_json(&as_seen(stored, view))?))
+}
+
 /// A work with nothing written on it yet.
 ///
 /// The route hands this back where `load` answers `None`, so a client that has
@@ -228,9 +339,9 @@ pub fn empty(id: &str) -> Notes {
 /// The one serialisation of a notes document.
 ///
 /// Shared by the projection `load` returns, the body of a response, and the
-/// `ETag` over that body (`etag_for`, below), so a validator can never be
-/// computed over bytes a client was not sent — the failure mode that would
-/// make a conditional write silently unconditional.
+/// `ETag` taken over the stored document (`etag_for`, below), so a read's
+/// validator and the one a write is checked against hash the same bytes: two
+/// serialisations could disagree, and every conditional write would fail.
 ///
 /// # Errors
 ///
@@ -297,23 +408,25 @@ pub fn store(library: &Library, work: &Work, user_id: i64, notes: &Notes) -> Res
     taiyaku_library::state::put_notes(&conn, work_id, user_id, notes)
 }
 
-/// A notes or truth document's `ETag`: a SHA-256 over exactly the bytes being
-/// sent.
+/// The `ETag` of a notes or truth document as `Access::Every` is sent it: a
+/// SHA-256 over exactly the bytes being sent. `view::View::etag_naming_numbering`
+/// tags both documents, through this for `Access::Every`.
 ///
-/// Takes the serialised text rather than the document, because both callers
-/// already hold it — `to_json` and `truth::to_json` are each the one
+/// Takes the serialised text rather than the document, because its caller
+/// already holds it: `to_json` and `truth::to_json` are each the one
 /// serialisation of their document, and hashing a second copy built here
-/// would be the drift this exists to rule out. Shared by `get_truth`/
-/// `put_truth` in `routes.rs` rather than given a `truth_etag` wrapper of its
-/// own: the hash has nothing document-specific in it, so a second name for
-/// the same bytes would be indirection with no behaviour behind it. Lives
-/// here rather than in `routes.rs`: this is where `to_json` is, and the two
-/// belong together for the same reason `to_json`'s own doc comment gives.
+/// would be the drift this exists to rule out. One function for both, as the
+/// hash has nothing document-specific in it. It lives beside `to_json` for
+/// the reason `to_json`'s own doc comment gives.
 pub(crate) fn etag_for(json: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(json.as_bytes());
-    let digest = hasher.finalize();
+    quoted_hex(&hasher.finalize())
+}
+
+/// `digest` as an `ETag`: quoted lowercase hex.
+pub(crate) fn quoted_hex(digest: &[u8]) -> String {
     let hex = digest.iter().fold(String::new(), |mut hex, b| {
         use std::fmt::Write as _;
         let _ = write!(hex, "{b:02x}");

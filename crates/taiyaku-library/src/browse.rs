@@ -8,27 +8,31 @@
 //! # The filter, which is the reason this module exists rather than a handful
 //! # of queries at the call sites
 //!
-//! Every public function but [`filed_in`] takes the caller's [`Access`]:
+//! Every public function but [`held_in`] takes the caller's [`Access`]:
 //! `Every` applies no filter, `Only` keeps what lies under its directories, and
 //! **`Only` with no directory keeps nothing** — its clause is a false literal, never
 //! a clause left out, so a grant emptied by any path cannot read as every
-//! library ([`Access::grant_clause`]). `filed_in` reads no grant, and its doc
+//! library ([`Access::grant_clause`]). `held_in` reads no grant, and its doc
 //! says how its caller applies one.
 //!
 //! The filter is applied to **editions**: an edition survives if its members
-//! do, and a work is listed if it keeps at least one edition. A member under
-//! no root — every member of every imported work — has `root_id` NULL, and
-//! `IN (…)` excludes NULL by SQL's own rules, so that case needs no branch.
+//! do, and a work is listed if it keeps at least one edition. A member is
+//! under every directory it has a `member_root` row for, so a copy held in two
+//! libraries is read through either grant (overlapping-libraries spec §3.4).
+//! A member under no directory — every member of every imported work — has no
+//! row, and `EXISTS` over none is false, so that case needs no branch.
 //!
 //! A listing narrowed to one library reads the directories that library and the
 //! grant share in place of the grant, so a library's page lists what an
 //! account granted only that library would see.
 //!
 //! An **alignment** names two editions, so it survives only if *both* of them
-//! do — both inside the directories the listing reads. One clause says so —
-//! `pair_clause` — and `alignments_of`, `WorkCard::aligned` and
-//! `SeriesCard::aligned` all read it, since a grid drawing `⇄ 1` beside a work
-//! page listing no pair is one screen contradicting itself.
+//! do — both inside the directories the listing reads, and both seen whole by
+//! the account, since its runs and counts are in the full numbering of each
+//! (spec §3.8). One clause says so — `pair_clause` — and `alignments_of`,
+//! `WorkCard::aligned` and `SeriesCard::aligned` all read it, since a grid
+//! drawing `⇄ 1` beside a work page listing no pair is one screen
+//! contradicting itself.
 //!
 //! Filtering after the query was the alternative and is wrong twice over: it
 //! reads rows the caller may not see into memory before deciding, and it makes
@@ -297,8 +301,24 @@ fn root_clause(access: &Access) -> String {
 fn root_clause_for(alias: &str, access: &Access) -> String {
     access.grant_clause(|holes| {
         format!(
-            "EXISTS (SELECT 1 FROM member rm WHERE rm.edition_id = {alias}.id \
-             AND rm.root_id IN ({holes}))"
+            "EXISTS (SELECT 1 FROM member rm WHERE rm.edition_id = {alias}.id AND {})",
+            member_under("rm", holes)
+        )
+    })
+}
+
+/// The `AND` keeping edition `alias` only when the caller sees every member of
+/// it, so it is sent whole: [`member_clause_for`]'s rule, negated. An
+/// alignment's runs, `slots` and `paired` count both its editions in full, so
+/// one touching an edition the account sees narrowed tells it the hidden
+/// members' size; the work document leaves those out (`View::build` in
+/// `taiyaku-serve`), and [`pair_clause`] reads this to leave out the same.
+/// Nothing for `Access::Every`, which sees every edition whole.
+fn whole_clause_for(alias: &str, access: &Access) -> String {
+    access.grant_clause(|holes| {
+        format!(
+            "NOT EXISTS (SELECT 1 FROM member hm WHERE hm.edition_id = {alias}.id AND NOT {})",
+            member_under("hm", holes)
         )
     })
 }
@@ -324,7 +344,26 @@ pub(crate) fn holes(n: usize) -> String {
 /// added with `library scan --add` carry no `edition_key`, both fall back to
 /// `raw`, and derivation merges their members into one edition.
 fn member_clause(access: &Access) -> String {
-    access.grant_clause(|holes| format!("m.root_id IN ({holes})"))
+    member_clause_for("m", access)
+}
+
+/// [`member_clause`], against a member alias the caller names, so
+/// [`page_zero_hash`] reads it rather than spelling it again. `alias` is a
+/// literal at every call site.
+fn member_clause_for(alias: &str, access: &Access) -> String {
+    access.grant_clause(|holes| member_under(alias, holes))
+}
+
+/// Whether member `alias` has a `member_root` row naming one of the `holes`
+/// directories: the one rule for which members an account sees (spec §3.8).
+/// [`member_clause_for`], [`root_clause_for`], [`whole_clause_for`] and
+/// `taiyaku-serve`'s metadata lookups read it, so a change to what reaches a
+/// member changes all of them. `alias` is a literal at every call site.
+pub fn member_under(alias: &str, holes: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM member_root mr \
+         WHERE mr.member_id = {alias}.id AND mr.root_id IN ({holes}))"
+    )
 }
 
 /// One library a listing is narrowed to: its name, and the directories of it the
@@ -390,7 +429,8 @@ fn narrowed(
 }
 
 /// The two `AND EXISTS` halves that keep an alignment row `a` only when
-/// **both** of the editions it names survive the filter.
+/// **both** of the editions it names survive `access`'s filter and `account`
+/// sees both whole ([`whole_clause_for`]).
 ///
 /// **One definition, read by both questions the `alignment` table answers**,
 /// because two definitions can disagree: with an `en`↔`raw` pair and a grant of
@@ -402,19 +442,33 @@ fn narrowed(
 /// A listing narrowed to one library reaches both sides through `access`
 /// itself, which is only that library's directories (see [`library_scope`]), so a
 /// pair half of which is under another library's directory is counted by nobody.
+/// `account` is the caller's grant, as for [`page_zero_hash`]: what it opens.
 ///
-/// `fe` and `te` rather than `e` twice: see [`root_clause_for`]. Contributes
-/// **two** parameter groups, the from side first, each of them
-/// [`Access::bound`].
-fn pair_clause(access: &Access) -> String {
-    let from = root_clause_for("fe", access);
-    let to = root_clause_for("te", access);
+/// `fe` and `te`: see [`root_clause_for`]. It binds [`pair_bound`]'s values.
+fn pair_clause(access: &Access, account: &Access) -> String {
+    let from = format!(
+        "{}{}",
+        root_clause_for("fe", access),
+        whole_clause_for("fe", account)
+    );
+    let to = format!(
+        "{}{}",
+        root_clause_for("te", access),
+        whole_clause_for("te", account)
+    );
     format!(
         "EXISTS (SELECT 1 FROM edition fe \
                   WHERE fe.work_id = a.work_id AND fe.key = a.from_key{from}) \
          AND EXISTS (SELECT 1 FROM edition te \
                   WHERE te.work_id = a.work_id AND te.key = a.to_key{to})"
     )
+}
+
+/// The values [`pair_clause`] binds, in hole order: for the from side and then
+/// the to side, `access`'s directories and then `account`'s.
+fn pair_bound<'a>(access: &'a Access, account: &'a Access) -> impl Iterator<Item = i64> + 'a {
+    let side = || access.bound().iter().chain(account.bound()).copied();
+    side().chain(side())
 }
 
 /// Whether work `w` carries an alignment this caller may see, as an expression.
@@ -424,11 +478,11 @@ fn pair_clause(access: &Access) -> String {
 /// would count the *unfiltered* alignment set, the exact number the module
 /// header says filtering in Rust would produce.
 ///
-/// Requires `w` in scope, and contributes [`pair_clause`]'s two groups. The
-/// correlation `a.work_id = w.id` is written first so those groups still bind
+/// Requires `w` in scope, and contributes [`pair_bound`]'s values. The
+/// correlation `a.work_id = w.id` is written first so those values still bind
 /// ahead of whatever the caller's own statement carries.
-fn aligned_clause(access: &Access) -> String {
-    let pair = pair_clause(access);
+fn aligned_clause(access: &Access, account: &Access) -> String {
+    let pair = pair_clause(access, account);
     format!("EXISTS (SELECT 1 FROM alignment a WHERE a.work_id = w.id AND {pair})")
 }
 
@@ -465,24 +519,22 @@ fn cover_edition(access: &Access) -> String {
     )
 }
 
-/// The `sha256` of the member holding edition `alias`'s page 0, as a scalar
-/// subquery: NULL when none of its members holds a page.
+/// The `sha256` of the member holding edition `alias`'s page 0 as `account`
+/// is served it, as a scalar subquery: NULL when none it sees holds a page.
 ///
-/// Page 0 is in the first member by `ordinal` that holds pages, where
-/// `Edition::locate` finds it for the page routes, so a cover address
-/// versioned by this hash names the bytes the thumbnail route serves.
-///
-/// **No grant filter.** The page routes locate page 0 in the whole edition
-/// once the edition is visible, so it can sit in a member under a directory
-/// the caller is not granted; a hash read through the grant would version the
-/// address by a member the route does not serve it from.
-///
-/// `pm`, not `m`: [`editions_by_work`] has a `member m` in scope (see
-/// [`root_clause`]). `alias` is a literal at every call site.
-fn page_zero_hash(alias: &str) -> String {
+/// The page routes narrow an edition to the members `account` sees (spec
+/// §3.8) and locate page 0 in the first that holds pages, so a version read
+/// past the grant would name bytes the thumbnail route does not send, which
+/// it then serves without `COVER_CACHE_CONTROL`. `account` is the caller's
+/// grant, never a listing's library, which the route does not know.
+fn page_zero_hash(alias: &str, account: &Access) -> String {
+    // `member_clause`'s rule: `Access::Every` adds no SQL, any other one
+    // `Access::bound` group. `pm`, not `m`: `editions_by_work` has a
+    // `member m` in scope (see `root_clause`). `alias` is always a literal.
+    let seen = member_clause_for("pm", account);
     format!(
         "(SELECT pm.sha256 FROM member pm
-           WHERE pm.edition_id = {alias}.id AND pm.pages > 0
+           WHERE pm.edition_id = {alias}.id AND pm.pages > 0{seen}
            ORDER BY pm.ordinal LIMIT 1)"
     )
 }
@@ -511,22 +563,33 @@ pub fn series(
     user_id: i64,
     library: Option<i64>,
 ) -> Result<Vec<SeriesCard>, String> {
-    let Some(access) = narrowed(conn, access, library)? else {
+    let Some(listed) = narrowed(conn, access, library)? else {
         return Ok(Vec::new());
     };
-    let aligned = aligned_clause(&access);
-    let clause = root_clause(&access);
-    let cover = cover_edition(&access);
-    let page = page_zero_hash("ce");
-    // Placeholders bind in text order, all anonymous — three groups of the
-    // directory list, `user_id`, and a fourth group:
+    series_cards(conn, &listed, access, user_id)
+}
+
+/// [`series`] over the directories `access` lists, each cover versioned as
+/// `account` is served it (see [`page_zero_hash`]).
+fn series_cards(
+    conn: &Connection,
+    access: &Access,
+    account: &Access,
+    user_id: i64,
+) -> Result<Vec<SeriesCard>, String> {
+    let aligned = aligned_clause(access, account);
+    let clause = root_clause(access);
+    let cover = cover_edition(access);
+    let page = page_zero_hash("ce", account);
+    // Placeholders bind in text order, all anonymous — `account`'s directory
+    // list, the `aligned` count's, the listed one, `user_id`, and the listed
+    // one again:
     //
-    //   1. the `aligned` count's from side (`fe`), in the `SELECT` list, which
-    //      is the earliest text a parameter can appear in;
-    //   2. its to side (`te`);
-    //   3. the edition join's `{clause}`;
-    //   4. `user_id`, in the progress join below;
-    //   5. the cover edition's `{cover}`, joined to each grouped row `g`.
+    //   0. the cover's `{page}`, first in the outer `SELECT` list;
+    //   1. the `aligned` count's [`pair_bound`], in the inner `SELECT` list;
+    //   2. the edition join's `{clause}`;
+    //   3. `user_id`, in the progress join below;
+    //   4. the cover edition's `{cover}`, joined to each grouped row `g`.
     //
     // The cover is joined outside the grouping, so its subquery runs once per
     // series rather than once per joined work, edition, position and title, and
@@ -535,8 +598,8 @@ pub fn series(
     //
     // The progress join sits *after* the edition join: as a `SELECT`-list
     // subquery its parameter would bind ahead of every group above, and the
-    // filter's own parameters are the only thing allowed in front of it —
-    // which is also why the `aligned` count may live where it does.
+    // filters' own parameters are the only thing allowed in front of it —
+    // which is also why `aligned` and the cover may sit where they do.
     //
     // **`aligned` is an `EXISTS` rather than a `LEFT JOIN alignment a`.** The
     // join could carry the same restriction in its `ON`, but it would sit below
@@ -567,10 +630,9 @@ pub fn series(
            LEFT JOIN work cw ON cw.id = ce.work_id
           ORDER BY 2 COLLATE NOCASE"
     );
-    let mut params: Vec<i64> = Vec::new();
-    for _ in 0..3 {
-        params.extend(access.bound().iter().copied());
-    }
+    let mut params: Vec<i64> = account.bound().to_vec();
+    params.extend(pair_bound(access, account));
+    params.extend(access.bound().iter().copied());
     params.push(user_id);
     params.extend(access.bound().iter().copied());
 
@@ -611,20 +673,25 @@ pub fn series(
 /// parameter count. This is left unguarded, because a guard would be code no
 /// library can execute.
 ///
-/// Placeholders bind in text order, all anonymous: the member join's roots,
-/// then the `EXISTS` clause's roots, then `work_ids`. See the module header.
+/// Placeholders bind in text order, anonymous: `account`'s roots for page 0
+/// and the member join, `access`'s for the `EXISTS` clause, then `work_ids`.
 fn editions_by_work(
     conn: &Connection,
     access: &Access,
+    account: &Access,
     work_ids: &[i64],
 ) -> Result<HashMap<i64, Vec<EditionCard>>, String> {
     if work_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let joined = member_clause(access);
+    // `access` lists the editions and `account` counts them: the reader and
+    // the download serve an edition by the account's own grant, so a cell or
+    // download label counting a `?library=` listing's share would promise
+    // fewer pages than they give (spec §3.6, decision 15).
+    let joined = member_clause(account);
     let clause = root_clause(access);
     let wanted = holes(work_ids.len());
-    let page = page_zero_hash("e");
+    let page = page_zero_hash("e", account);
     let sql = format!(
         "SELECT e.work_id, e.id, e.key, e.label, COUNT(m.id), COALESCE(SUM(m.pages), 0),
                 {page}
@@ -634,11 +701,12 @@ fn editions_by_work(
           GROUP BY e.id
           ORDER BY e.work_id, e.key"
     );
-    let mut params: Vec<&dyn rusqlite::ToSql> = access
+    let mut params: Vec<&dyn rusqlite::ToSql> = account
         .bound()
         .iter()
         .map(|r| r as &dyn rusqlite::ToSql)
         .collect();
+    params.extend(account.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
     params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
     params.extend(work_ids.iter().map(|w| w as &dyn rusqlite::ToSql));
 
@@ -664,7 +732,7 @@ fn editions_by_work(
         .map_err(|e| format!("reading editions: {e}"))?;
 
     let edition_ids: Vec<i64> = rows.iter().map(|(_, id, _)| *id).collect();
-    let missing = missing_by_edition(conn, access, &edition_ids)?;
+    let missing = missing_by_edition(conn, account, &edition_ids)?;
 
     let mut by_work: HashMap<i64, Vec<EditionCard>> = HashMap::new();
     for (work_id, edition_id, card) in rows {
@@ -756,7 +824,8 @@ pub fn missing_by_edition(
         .collect())
 }
 
-/// One work's alignments, with both sides restricted to the caller's roots.
+/// One work's alignments, with both sides restricted to the caller's roots
+/// and seen whole by it.
 ///
 /// [`pair_clause`] comes **before** `a.work_id = ?` so its parameters bind
 /// first, which is this module's one parameter rule — text order. Written the
@@ -769,7 +838,7 @@ fn alignments_of(
     access: &Access,
     work_id: i64,
 ) -> Result<Vec<AlignmentCard>, String> {
-    let pair = pair_clause(access);
+    let pair = pair_clause(access, access);
     let sql = format!(
         "SELECT a.from_key, a.to_key, a.verdict, a.slots, a.paired
            FROM alignment a
@@ -777,8 +846,7 @@ fn alignments_of(
             AND a.work_id = ?
           ORDER BY a.from_key, a.to_key"
     );
-    let mut params: Vec<i64> = access.bound().to_vec();
-    params.extend(access.bound().iter().copied());
+    let mut params: Vec<i64> = pair_bound(access, access).collect();
     params.push(work_id);
 
     let mut stmt =
@@ -806,20 +874,22 @@ fn alignments_of(
 ///
 /// `predicate` and `order` are SQL fragments over `w`, never caller text: every
 /// call site below passes a literal. Their parameters bind **after** the roots,
-/// in text order.
+/// in text order. `account` is the caller's grant, which the edition cards'
+/// counts and page 0 are read through when `access` lists one library of it.
 fn works_of(
     conn: &Connection,
     access: &Access,
+    account: &Access,
     user_id: i64,
     predicate: &str,
     extra: &[&dyn rusqlite::ToSql],
     order: &str,
 ) -> Result<Vec<WorkCard>, String> {
-    let aligned = aligned_clause(access);
+    let aligned = aligned_clause(access, account);
     let clause = root_clause(access);
-    // Placeholders bind in text order, all anonymous: `aligned`'s two root
-    // groups in the `SELECT` list, then the edition join's roots, then
-    // `extra`. See the module header.
+    // Placeholders bind in text order, all anonymous: `aligned`'s
+    // [`pair_bound`] in the `SELECT` list, then the edition join's roots,
+    // then `extra`. See the module header.
     let sql = format!(
         "SELECT DISTINCT w.id, w.slug, w.title, w.volume, w.hub, {aligned}
            FROM work w
@@ -827,12 +897,9 @@ fn works_of(
           WHERE {predicate}
           ORDER BY {order}"
     );
-    let mut params: Vec<&dyn rusqlite::ToSql> = access
-        .bound()
-        .iter()
-        .map(|r| r as &dyn rusqlite::ToSql)
-        .collect();
-    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
+    let paired: Vec<i64> = pair_bound(access, account).collect();
+    let mut params: Vec<&dyn rusqlite::ToSql> =
+        paired.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
     params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
     params.extend_from_slice(extra);
 
@@ -855,7 +922,7 @@ fn works_of(
     // **O85: the editions for the whole set, not one work at a time.** Two
     // statements for any number of works.
     let ids: Vec<i64> = rows.iter().map(|(id, ..)| *id).collect();
-    let mut editions = editions_by_work(conn, access, &ids)?;
+    let mut editions = editions_by_work(conn, access, account, &ids)?;
     let positions = opens_by_work(conn, user_id, &ids)?;
 
     Ok(rows
@@ -950,6 +1017,13 @@ fn opens_by_work(
 
 /// One series and its works, or `None` if this caller cannot see it.
 ///
+/// **Narrowed by `library` as [`series`] is**, card and works alike, so the
+/// page a library's tile opens counts and lists what the tile counted (spec
+/// §3.6): a series can hold works under several libraries' directories. Each
+/// edition's files and pages are still the account's (`editions_by_work`). A
+/// library outside the grant, or holding nothing of the series, answers
+/// `None`, the answer for a series that does not exist.
+///
 /// # Errors
 ///
 /// Returns an error if the query fails.
@@ -958,8 +1032,12 @@ pub fn one_series(
     access: &Access,
     user_id: i64,
     id: i64,
+    library: Option<i64>,
 ) -> Result<Option<(SeriesCard, Vec<WorkCard>)>, String> {
-    let Some(card) = series(conn, access, user_id, None)?
+    let Some(listed) = narrowed(conn, access, library)? else {
+        return Ok(None);
+    };
+    let Some(card) = series_cards(conn, &listed, access, user_id)?
         .into_iter()
         .find(|c| c.id == id)
     else {
@@ -967,6 +1045,7 @@ pub fn one_series(
     };
     let works = works_of(
         conn,
+        &listed,
         access,
         user_id,
         "w.series_id = ?",
@@ -991,10 +1070,17 @@ pub fn work(
     user_id: i64,
     slug: &str,
 ) -> Result<Option<WorkDetail>, String> {
-    let Some(card) = works_of(conn, access, user_id, "w.slug = ?", &[&slug], "w.id")?
-        .into_iter()
-        .next()
-    else {
+    let Some(card) = works_of(
+        conn,
+        access,
+        access,
+        user_id,
+        "w.slug = ?",
+        &[&slug],
+        "w.id",
+    )?
+    .into_iter()
+    .next() else {
         return Ok(None);
     };
     let alignments = alignments_of(conn, access, card.id)?;
@@ -1007,14 +1093,14 @@ pub fn work(
 /// no field for it — so this is every hand-imported work in the library.
 ///
 /// **A restricted account sees none of them**, and that needs no branch: an
-/// imported member's `root_id` is NULL, and `IN (…)` excludes NULL. That is
-/// §5.1's rule applying unchanged, not a second one.
+/// imported member has no `member_root` row, so no grant's `EXISTS` finds one.
+/// That is §5.1's rule applying unchanged, not a second one.
 ///
 /// **A library narrowing leaves every imported work out of this, by that same
-/// rule rather than a new one.** An imported member's `root_id` is NULL, and
-/// the narrowed directory list is never empty ([`library_scope`]), so `IN (…)`
-/// excludes every imported work: an imported work is in no library, and asking
-/// for a library asks for what is in it.
+/// rule rather than a new one.** An imported member has no `member_root` row,
+/// and the narrowed directory list is never empty ([`library_scope`]), so the
+/// clause excludes every imported work: an imported work is in no library, and
+/// asking for a library asks for what is in it.
 ///
 /// # Errors
 ///
@@ -1025,12 +1111,24 @@ pub fn unfiled(
     user_id: i64,
     library: Option<i64>,
 ) -> Result<Vec<WorkCard>, String> {
-    let Some(access) = narrowed(conn, access, library)? else {
+    let Some(listed) = narrowed(conn, access, library)? else {
         return Ok(Vec::new());
     };
+    unfiled_cards(conn, &listed, access, user_id)
+}
+
+/// [`unfiled`] over the directories `access` lists, as [`series_cards`] is
+/// [`series`].
+fn unfiled_cards(
+    conn: &Connection,
+    access: &Access,
+    account: &Access,
+    user_id: i64,
+) -> Result<Vec<WorkCard>, String> {
     works_of(
         conn,
-        &access,
+        access,
+        account,
         user_id,
         "w.series_id IS NULL",
         &[],
@@ -1125,7 +1223,7 @@ pub fn search(
             unfiled: Vec::new(),
         });
     }
-    let Some(access) = narrowed(conn, access, library)? else {
+    let Some(listed) = narrowed(conn, access, library)? else {
         return Ok(SearchResults {
             series: Vec::new(),
             unfiled: Vec::new(),
@@ -1140,14 +1238,14 @@ pub fn search(
     // queries, so a hit this caller may not see is dropped by exactly the same
     // code that decides every other screen — one filter, one place to read.
     let cap = usize::try_from(LIST_CAP).unwrap_or(usize::MAX);
-    let series_hits = series(conn, &access, user_id, None)?
+    let series_hits = series_cards(conn, &listed, access, user_id)?
         .into_iter()
         .filter(|c| matched.contains(&c.id))
         .take(cap)
         .collect();
 
     let unfiled_ids = matching_unfiled_works(conn, &matcher, trimmed)?;
-    let unfiled_hits = unfiled(conn, &access, user_id, None)?
+    let unfiled_hits = unfiled_cards(conn, &listed, access, user_id)?
         .into_iter()
         .filter(|w| unfiled_ids.contains(&w.id))
         .take(cap)
@@ -1287,7 +1385,7 @@ pub fn home(
     user_id: i64,
     library: Option<i64>,
 ) -> Result<Home, String> {
-    let Some(access) = narrowed(conn, access, library)? else {
+    let Some(listed) = narrowed(conn, access, library)? else {
         return Ok(Home {
             continuing: Vec::new(),
             added: Vec::new(),
@@ -1296,7 +1394,8 @@ pub fn home(
     };
     let continuing = works_of(
         conn,
-        &access,
+        &listed,
+        access,
         user_id,
         "w.id IN (SELECT work_id FROM progress
                    WHERE user_id = ? AND completed_at IS NULL)",
@@ -1305,7 +1404,8 @@ pub fn home(
     )?;
     let read = works_of(
         conn,
-        &access,
+        &listed,
+        access,
         user_id,
         "w.id IN (SELECT work_id FROM progress
                    WHERE user_id = ? AND completed_at IS NOT NULL)
@@ -1317,7 +1417,15 @@ pub fn home(
     // **`LIMIT` in the SQL, not `.take()` afterwards.** It keeps the rows read
     // proportional to what the route returns rather than to the size of
     // the library.
-    let added = works_of(conn, &access, user_id, "1 = 1", &[], "w.id DESC LIMIT 20")?;
+    let added = works_of(
+        conn,
+        &listed,
+        access,
+        user_id,
+        "1 = 1",
+        &[],
+        "w.id DESC LIMIT 20",
+    )?;
 
     let cap = usize::try_from(LIST_CAP).unwrap_or(usize::MAX);
     Ok(Home {
@@ -1393,7 +1501,7 @@ fn cover_target(
     series_id: i64,
 ) -> rusqlite::Result<Option<CoverTarget>> {
     let cover = cover_edition(access);
-    let page = page_zero_hash("ce");
+    let page = page_zero_hash("ce", access);
     let sql = format!(
         "SELECT cw.id, cw.slug, ce.key, {page}
            FROM series s
@@ -1401,11 +1509,13 @@ fn cover_target(
            LEFT JOIN work cw ON cw.id = ce.work_id
           WHERE s.id = ?"
     );
+    // `{page}`'s roots, then `{cover}`'s, in text order.
     let mut params: Vec<&dyn rusqlite::ToSql> = access
         .bound()
         .iter()
         .map(|r| r as &dyn rusqlite::ToSql)
         .collect();
+    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
     params.push(&series_id);
     query_row(conn, &sql, params.as_slice(), |row| cover_at(row, 0))
 }
@@ -1425,41 +1535,81 @@ fn cover_at(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Option<Cover
     }))
 }
 
-/// Whether `slug`'s `edition` holds a member this caller may see.
+/// One member of an edition as [`visible_members`] reads it from the store.
+/// The caller pairs these with the sidecar's members by position, and
+/// `sha256` and `path` let it check the pairing: its sidecar may predate a
+/// scan that moved another member to an ordinal, and a flag paired with the
+/// wrong member would send an account a member its grant hides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeenMember {
+    pub sha256: String,
+    pub path: String,
+    pub visible: bool,
+}
+
+/// For each edition key of the work (or only `edition`), its members in
+/// ordinal order, each with whether `access` sees it. Not asked for
+/// `Access::Every`.
 ///
-/// **The page routes' grant check.** Without it a restricted reader who knew a
-/// slug could read every page of every root: browse would hide the work and the
-/// bytes would be served anyway.
-///
-/// Answers `true` for [`Access::Every`] without asking the store.
+/// **What narrowing a merged edition reads (spec §3.8).** `visible` is
+/// [`member_clause`]'s test, so a member is visible here exactly when browse
+/// counts it. Ordinal order is the order the sidecar lists an edition's
+/// members in. An edition with no member has no entry.
 ///
 /// # Errors
 ///
 /// Returns an error if the query fails.
-pub fn edition_visible(
+pub fn visible_members(
     conn: &Connection,
     access: &Access,
     slug: &str,
-    edition: &str,
-) -> Result<bool, String> {
-    if *access == Access::Every {
-        return Ok(true);
-    }
-    let joined = member_clause(access);
+    edition: Option<&str>,
+) -> Result<HashMap<String, Vec<SeenMember>>, String> {
+    // `1` and the clause's leading ` AND …` make the flag; the clause's holes
+    // come first in the text, so its roots are bound before the slug.
+    let seen = member_clause(access);
+    let only = if edition.is_some() {
+        " AND e.key = ?"
+    } else {
+        ""
+    };
     let sql = format!(
-        "SELECT 1 FROM work w
+        "SELECT e.key, m.sha256, m.path, 1{seen}
+           FROM work w
            JOIN edition e ON e.work_id = w.id
-          WHERE w.slug = ? AND e.key = ?
-            AND EXISTS (SELECT 1 FROM member m
-                         WHERE m.edition_id = e.id{joined})
-          LIMIT 1"
+           JOIN member m ON m.edition_id = e.id
+          WHERE w.slug = ?{only}
+          ORDER BY e.key, m.ordinal"
     );
-    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&slug, &edition];
-    params.extend(access.bound().iter().map(|r| r as &dyn rusqlite::ToSql));
-    let found: Option<i64> = query_row(conn, &sql, params.as_slice(), |row| row.get(0))
-        .optional()
-        .map_err(|e| format!("checking visibility of `{slug}`/`{edition}`: {e}"))?;
-    Ok(found.is_some())
+    let mut params: Vec<&dyn rusqlite::ToSql> = access
+        .bound()
+        .iter()
+        .map(|r| r as &dyn rusqlite::ToSql)
+        .collect();
+    params.push(&slug);
+    if let Some(key) = &edition {
+        params.push(key);
+    }
+    let mut stmt =
+        prepare(conn, &sql).map_err(|e| format!("preparing `{slug}`'s member listing: {e}"))?;
+    let rows = stmt
+        .query_map(params.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                SeenMember {
+                    sha256: row.get(1)?,
+                    path: row.get(2)?,
+                    visible: row.get(3)?,
+                },
+            ))
+        })
+        .map_err(|e| format!("listing `{slug}`'s visible members: {e}"))?;
+    let mut out: HashMap<String, Vec<SeenMember>> = HashMap::new();
+    for row in rows {
+        let (key, member) = row.map_err(|e| format!("reading `{slug}`'s visible members: {e}"))?;
+        out.entry(key).or_default().push(member);
+    }
+    Ok(out)
 }
 
 /// Every edition key this caller may see, for every work, keyed by slug.
@@ -1475,8 +1625,8 @@ pub fn edition_visible(
 ///
 /// This is [`root_clause`] alone — no library narrowing, no alignment, no
 /// `member_clause` — because the question is only "does this edition keep a
-/// member under one of these roots", which is the same question
-/// [`edition_visible`] answers one edition at a time. A work with zero
+/// member under one of these roots", which [`visible_members`] answers
+/// member by member for one work. A work with zero
 /// visible editions has no key in the returned map at all, rather than an
 /// entry mapping to an empty set — a caller that iterates the map's keys
 /// never sees such a work named.
@@ -1519,10 +1669,12 @@ pub fn visible_editions(
     Ok(out)
 }
 
-/// The slugs of the works `work.library_id` files in `library`, which is the
-/// store's own answer to which library a work is in. A listing narrowed to a
-/// library reads its directories instead (see [`library_scope`]); this is for the
-/// one view that asks the column.
+/// The slugs of the works with a member under one of `library`'s
+/// directories. A work is in each library a directory of which holds one of its
+/// editions, so this names it in several where its editions are spread. A
+/// listing narrowed to a library keeps only the editions under its directories
+/// (see [`library_scope`]); this is for the one view that lists each such work
+/// whole.
 ///
 /// **It reads no grant**, so its caller intersects the answer with what
 /// [`visible_editions`] allows, as `opds::library_works_by_work` does.
@@ -1530,13 +1682,21 @@ pub fn visible_editions(
 /// # Errors
 ///
 /// Returns an error if the query fails.
-pub fn filed_in(conn: &Connection, library: i64) -> Result<HashSet<String>, String> {
-    let mut stmt = prepare(conn, "SELECT slug FROM work WHERE library_id = ?")
-        .map_err(|e| format!("preparing the works filed in library {library}: {e}"))?;
+pub fn held_in(conn: &Connection, library: i64) -> Result<HashSet<String>, String> {
+    let mut stmt = prepare(
+        conn,
+        "SELECT DISTINCT w.slug FROM work w
+           JOIN edition e ON e.work_id = w.id
+           JOIN member m ON m.edition_id = e.id
+           JOIN member_root mr ON mr.member_id = m.id
+           JOIN root r ON r.id = mr.root_id
+          WHERE r.library_id = ?",
+    )
+    .map_err(|e| format!("preparing the works held in library {library}: {e}"))?;
     stmt.query_map([library], |row| row.get::<_, String>(0))
-        .map_err(|e| format!("listing the works filed in library {library}: {e}"))?
+        .map_err(|e| format!("listing the works held in library {library}: {e}"))?
         .collect::<rusqlite::Result<HashSet<String>>>()
-        .map_err(|e| format!("reading the works filed in library {library}: {e}"))
+        .map_err(|e| format!("reading the works held in library {library}: {e}"))
 }
 
 /// One library as the sidebar lists it.
@@ -1607,4 +1767,4 @@ pub fn status(conn: &Connection, access: &Access) -> Result<Status, String> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

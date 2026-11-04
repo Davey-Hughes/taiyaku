@@ -1184,6 +1184,30 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   })
 
   /**
+   * `copied` is not a format either: a file held in more than one directory,
+   * which a stamp leaves alone so its copies stay one book.
+   */
+  it('gives a file held in two directories its own sentence, not a place in the format list', async () => {
+    vi.mocked(stamp.stampPlan).mockResolvedValue({
+      archives: [],
+      total_bytes: 0,
+      skipped_formats: ['copied'],
+    })
+    const host = mount(
+      <MetadataEditor slug="w" title="t" onPatch={noop} canStamp />,
+    )
+
+    await click(planButton(host)!)
+
+    const skipped = host.querySelector('.stamp-comicinfo .skipped')
+    expect(skipped?.querySelector('.formats')).toBeNull()
+    expect(skipped?.textContent).not.toMatch(/holds copied/i)
+    expect(skipped?.querySelector('.copied')?.textContent).toMatch(
+      /held in more than one directory/i,
+    )
+  })
+
+  /**
    * `unknown` is the other non-format, and it means something different: the
    * file was read and matched no signature `taiyaku_read` carries. Same
    * treatment, its own sentence.

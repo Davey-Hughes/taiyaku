@@ -52,6 +52,7 @@ mod stamp;
 mod stump;
 mod truth;
 mod users_api;
+mod view;
 mod web;
 mod works;
 
@@ -289,43 +290,39 @@ impl ServeState {
         Err(no_work(id))
     }
 
-    /// One page of an edition, by its index in that edition's flat sequence.
+    /// One page of `view`'s edition, by its full index in that edition's flat
+    /// sequence, located in the sidecar `view` checked
+    /// ([`crate::view::EditionView::locate`]).
     ///
-    /// This is where a flat index becomes a member and an offset, once, for
-    /// every source and every route — the API, the OPDS stream and the cover
-    /// all arrive here. The failure messages name what was missing, because a
+    /// Every source and every route — the API, the OPDS stream and the cover
+    /// — arrives here. The failure messages name what was missing, because a
     /// reader shown a blank page with no explanation is the failure this
     /// project exists to avoid.
     ///
     /// # Errors
     ///
-    /// Returns an error if `edition` names no edition in `work`'s sidecar, if
-    /// `index` is at or past that edition's total page count (the message
-    /// then states how many pages it has), or if the underlying source
-    /// (`PageSource::page`) fails to produce the page it located — a local
-    /// read failure, or, over Stump, a failed fetch. Every case appends
-    /// `work.path` to the source's own message.
+    /// Returns an error if the edition is not in that sidecar, if `index` is
+    /// at or past its total page count (the message then states how many
+    /// pages it has), or if the underlying source (`PageSource::page`) fails
+    /// to produce the page it located — a local read failure, or, over Stump,
+    /// a failed fetch. Every case appends the work's path to the source's own
+    /// message.
     ///
     /// **Both callers in `routes.rs` — `get_page` and `get_thumb` — map every
     /// `Err` from this function to `404 not_found`, never `500`.** A local
     /// read failure that has nothing to do with what the client asked for —
     /// a permission refusal, a corrupted archive — is therefore reported to
     /// a client identically to a page that genuinely does not exist.
-    pub fn page(&self, work: &Work, edition: &str, index: u32) -> Result<ServedPage, String> {
-        let sidecar = work.sidecar();
-        let found = sidecar
-            .editions
-            .get(edition)
-            .ok_or_else(|| format!("no edition `{edition}` in {}", work.path.display()))?;
-        let (position, within) = found.locate(index).ok_or_else(|| {
-            format!(
-                "`{edition}` has {} pages; there is no page {index}",
-                found.total_pages()
-            )
-        })?;
+    pub(crate) fn page(
+        &self,
+        view: &crate::view::EditionView,
+        index: u32,
+    ) -> Result<ServedPage, String> {
+        let (member, within) = view.locate(index)?;
+        let work = view.work();
         let root = work.path.parent().unwrap_or(std::path::Path::new("."));
         self.source
-            .page(root, &found.members[position], within)
+            .page(root, member, within)
             .map_err(|e| format!("{e} ({})", work.path.display()))
     }
 }

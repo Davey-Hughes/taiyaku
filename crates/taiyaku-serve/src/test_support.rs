@@ -1741,9 +1741,6 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
     let library = library();
     {
         let conn = library.conn();
-        // **Both roots are directories of one library.** A series is one
-        // library's, so two roots in libraries of their own would hold two
-        // series of this title, one volume in each.
         let one_library = taiyaku_library::scan::InLibrary::Named("Manga");
         let a =
             taiyaku_library::scan::add_root_in(&conn, &root_a, one_library).expect("adds root a");
@@ -1836,13 +1833,9 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         // Scanned *after* `root_a`/`root_b` below, deliberately: the ordering
         // this fixture's own doc comment relies on comes from `derive`'s own
         // `BTreeMap<GroupKey, _>`, not from scan order, and proving that is
-        // the point of scanning it out of title order here.
-        //
-        // **All three roots are directories of one library.** `root_a` and
-        // `root_b` for the plain fixture's reason, and the unrelated root so
-        // that its series is one a document on the shared series' works could
-        // resolve onto: `librarydoc::find_series_by_title` looks within the
-        // work's library.
+        // the point of scanning it out of title order here. Its series is one
+        // a document on the shared series' works could resolve onto, since
+        // `librarydoc::find_series_by_title` resolves a title across the store.
         let one_library = taiyaku_library::scan::InLibrary::Named("Manga");
         let a =
             taiyaku_library::scan::add_root_in(&conn, &root_a, one_library).expect("adds root a");
@@ -1891,6 +1884,97 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
     (router, state, fixture, root_a)
+}
+
+/// The ids [`router_over_a_series_in_two_libraries`] answers.
+pub(crate) struct SeriesInTwoLibraries {
+    pub(crate) series: i64,
+    pub(crate) manga: i64,
+    pub(crate) kids: i64,
+}
+
+/// Series `Foo`, volumes 1 to 4 under the directory of a library `Manga` and
+/// volume 5 under the directory of a library `Kids`, scanned and derived as one
+/// series: spec §3.6's case, where `Kids`' tile counts one volume of a series
+/// that holds five. The fixture account is the administrator, granted both.
+///
+/// **The libraries are numbered 70 and 80**, apart from the directories, so a
+/// narrowing that read a library id as a directory id finds nothing rather
+/// than the directory that happens to share its number.
+///
+/// # Panics
+///
+/// Panics if either tree cannot be written, if a scan or the derive fails, or
+/// if the result is not five works of one series.
+pub(crate) fn router_over_a_series_in_two_libraries() -> (
+    axum::Router,
+    std::sync::Arc<ServeState>,
+    Fixture,
+    SeriesInTwoLibraries,
+) {
+    let fixture = Fixture::new("a-series-in-two-libraries");
+    let manga_dir = fixture.path().join("manga");
+    let kids_dir = fixture.path().join("kids");
+    for volume in 1..=4 {
+        write_pages(
+            &manga_dir.join("Foo").join(format!("Foo - v{volume:02}")),
+            2,
+        );
+    }
+    write_pages(&kids_dir.join("Foo").join("Foo - v05"), 2);
+
+    let library = library();
+    let series = {
+        let conn = library.conn();
+        conn.execute(
+            "INSERT INTO library (id, name) VALUES (70, 'Manga'), (80, 'Kids')",
+            [],
+        )
+        .expect("two libraries, numbered apart from their directories");
+        for (dir, name) in [(&manga_dir, "Manga"), (&kids_dir, "Kids")] {
+            let root = taiyaku_library::scan::add_root_in(
+                &conn,
+                dir,
+                taiyaku_library::scan::InLibrary::Named(name),
+            )
+            .unwrap_or_else(|e| panic!("adds {name}'s directory: {e}"));
+            taiyaku_library::scan::scan_root(&conn, &root)
+                .unwrap_or_else(|e| panic!("scans {name}'s directory: {e}"));
+        }
+        taiyaku_library::derive::derive(&conn).expect("derives the library");
+        let ids: Vec<i64> = conn
+            .prepare("SELECT id FROM series")
+            .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+            .expect("lists the series");
+        let [id] = <[i64; 1]>::try_from(ids)
+            .unwrap_or_else(|ids| panic!("one series, `Foo`, not {ids:?}"));
+        id
+    };
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    assert_eq!(
+        works.len(),
+        5,
+        "one series, five volumes: five works, not {}",
+        works.len()
+    );
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works: crate::Works::fixed(works),
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: fixture.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
+        library_job: Default::default(),
+        dirs: Vec::new(),
+    });
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
+    let ids = SeriesInTwoLibraries {
+        series,
+        manga: 70,
+        kids: 80,
+    };
+    (router, state, fixture, ids)
 }
 
 /// A `GET` against `router`, driven with `oneshot` and no socket.
@@ -2238,10 +2322,23 @@ pub(crate) fn authenticating(
     router: axum::Router,
     library: &taiyaku_library::Library,
 ) -> axum::Router {
+    authenticating_as(router, library, 1)
+}
+
+/// [`authenticating`], as the account `user_id` rather than the fixture's own.
+///
+/// # Panics
+///
+/// As [`authenticating`].
+pub(crate) fn authenticating_as(
+    router: axum::Router,
+    library: &taiyaku_library::Library,
+    user_id: i64,
+) -> axum::Router {
     let token = taiyaku_library::credential::mint_token();
     {
         let conn = library.conn();
-        taiyaku_library::account::open_session(&conn, 1, &token, Some("the suite"), None)
+        taiyaku_library::account::open_session(&conn, user_id, &token, Some("the suite"), None)
             .expect("opens the fixture session");
     }
     let cookie = format!("{}={token}", crate::session::COOKIE_NAME);
@@ -2422,37 +2519,69 @@ pub(crate) fn router_over_a_granted_two_dir_library(
     (router, state)
 }
 
-/// What migration 15 leaves where one work gathered an edition from each of
-/// two directories, once the next derive has run: the directories are libraries of
-/// their own, `Manga` and `Other`. The work is filed under `Manga`, its hub
-/// edition `en`'s library, and still holds the edition `raw`, whose member is
-/// under `Other`'s directory. `Other` has a work of its own over the same directory.
+/// One work whose editions sit in two libraries: its hub edition `en` under
+/// `Manga`'s directory and `raw` under `Other`'s. The derive spans the store
+/// (spec §3.2), so the two directories' volumes are one work whichever library
+/// holds each directory.
 ///
-/// The fixture account is granted `Manga` alone. Answers the old work's slug
-/// and the new one's, in that order.
+/// The fixture account is granted `Manga` alone, so the work is partly visible
+/// to it: `en` and not `raw` (spec §1, "What an account sees"). `Other` is
+/// made first, as library 90, so neither library's id is a root's id and a
+/// grant read as a root id would show. Answers the work's slug.
 ///
 /// # Panics
 ///
-/// Panics if the tree cannot be written, a scan or derive fails, or the
-/// derives do not leave the two works described.
-pub(crate) fn router_over_a_work_keeping_another_librarys_edition() -> (
-    axum::Router,
-    std::sync::Arc<ServeState>,
-    Fixture,
-    [String; 2],
-) {
-    let fixture = Fixture::new("kept-edition");
+/// Panics if the tree cannot be written, a scan or the derive fails, or the
+/// derive does not leave the one work described.
+pub(crate) fn router_over_a_work_whose_editions_sit_in_two_libraries()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture, String) {
+    work_whose_editions_sit_in_two_libraries(Granted::Hub)
+}
+
+/// [`router_over_a_work_whose_editions_sit_in_two_libraries`]'s work, with the
+/// fixture account granted `Other` alone: the work is reached through its
+/// edition `raw`, which is not the hub, and `en` is outside the grant.
+///
+/// # Panics
+///
+/// As [`router_over_a_work_whose_editions_sit_in_two_libraries`].
+pub(crate) fn router_over_a_work_granted_through_its_other_edition()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture, String) {
+    work_whose_editions_sit_in_two_libraries(Granted::Other)
+}
+
+/// Which of the two libraries the fixture account is granted.
+enum Granted {
+    Hub,
+    Other,
+}
+
+fn work_whose_editions_sit_in_two_libraries(
+    granted: Granted,
+) -> (axum::Router, std::sync::Arc<ServeState>, Fixture, String) {
+    let fixture = Fixture::new("two-library-work");
     let hub = fixture.path().join("hub");
     let other = fixture.path().join("other");
     write_pages(&hub.join("Series").join("Series - v01"), 2);
     write_pages(&other.join("Series").join("Series - v01"), 3);
 
     let library = library();
-    let slugs = {
+    let slug = {
         let conn = library.conn();
-        let one_library = taiyaku_library::scan::InLibrary::Named("Manga");
-        let h = taiyaku_library::scan::add_root_in(&conn, &hub, one_library).expect("adds hub");
-        let o = taiyaku_library::scan::add_root_in(&conn, &other, one_library).expect("adds other");
+        conn.execute("INSERT INTO library (id, name) VALUES (90, 'Other')", [])
+            .expect("a library for the other directory");
+        let h = taiyaku_library::scan::add_root_in(
+            &conn,
+            &hub,
+            taiyaku_library::scan::InLibrary::Named("Manga"),
+        )
+        .expect("adds hub");
+        let o = taiyaku_library::scan::add_root_in(
+            &conn,
+            &other,
+            taiyaku_library::scan::InLibrary::Id(90),
+        )
+        .expect("adds other");
         taiyaku_library::scan::update_root(
             &conn,
             h.id,
@@ -2467,36 +2596,41 @@ pub(crate) fn router_over_a_work_keeping_another_librarys_edition() -> (
         }
         taiyaku_library::derive::derive(&conn).expect("derives one work of two editions");
 
-        conn.execute("INSERT INTO library (id, name) VALUES (90, 'Other')", [])
-            .expect("a library for the other directory");
-        conn.execute("UPDATE root SET library_id = 90 WHERE id = ?1", [o.id])
-            .expect("as migration 15 files each root under a library of its own");
-        taiyaku_library::derive::derive(&conn).expect("the first derive within libraries");
-
-        let slug_in = |library: i64| -> String {
-            conn.query_row(
-                "SELECT slug FROM work WHERE library_id = ?1",
-                [library],
-                |r| r.get(0),
-            )
-            .expect("one work in each library")
-        };
-        let slugs = [slug_in(h.library_id), slug_in(90)];
-        let kept: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM edition e JOIN work w ON w.id = e.work_id
+        let slugs: Vec<String> = conn
+            .prepare("SELECT slug FROM work")
+            .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+            .expect("lists the works");
+        let [slug] = <[String; 1]>::try_from(slugs).expect("the fixture: one work in the store");
+        let placed: Vec<(String, i64, i64)> = conn
+            .prepare(
+                "SELECT e.key, m.root_id, r.library_id FROM edition e
+                   JOIN work w ON w.id = e.work_id
                    JOIN member m ON m.edition_id = e.id
-                  WHERE w.slug = ?1 AND e.key = 'raw' AND m.root_id = ?2",
-                rusqlite::params![slugs[0], o.id],
-                |r| r.get(0),
+                   JOIN root r ON r.id = m.root_id
+                  WHERE w.slug = ?1 ORDER BY e.key",
             )
-            .expect("counts the kept edition's members");
+            .and_then(|mut stmt| {
+                stmt.query_map([&slug], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect()
+            })
+            .expect("lists where the work's members are");
         assert_eq!(
-            kept, 1,
-            "the fixture: Manga's work keeps `raw`, its member under Other's directory"
+            placed,
+            [
+                ("en".to_string(), h.id, h.library_id),
+                ("raw".to_string(), o.id, 90)
+            ],
+            "the fixture: `en`'s member under Manga's directory, `raw`'s under Other's"
         );
-        grant_root(&conn, h.id);
-        slugs
+        assert_ne!(h.library_id, 90, "the fixture: two libraries");
+        grant_root(
+            &conn,
+            match granted {
+                Granted::Hub => h.id,
+                Granted::Other => o.id,
+            },
+        );
+        slug
     };
     let works = crate::works::from_library(&library).expect("projects the scanned works");
     let state = std::sync::Arc::new(ServeState {
@@ -2511,7 +2645,382 @@ pub(crate) fn router_over_a_work_keeping_another_librarys_edition() -> (
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
-    (router, state, fixture, slugs)
+    (router, state, fixture, slug)
+}
+
+/// Who [`router_over_an_edition_merged_from_two_libraries`] answers as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reader {
+    /// Granted `Manga` alone: `raw`'s first and third members, `en` and `fr`.
+    MangaOnly,
+    /// Granted `Kids` alone: `raw`'s second member and nothing else.
+    KidsOnly,
+    /// Granted both libraries, so sees everything through `Access::Only`.
+    Both,
+    /// The fixture account, an administrator: everything through `Access::Every`.
+    Administrator,
+}
+
+/// What [`router_over_an_edition_merged_from_two_libraries`] answers.
+pub(crate) struct EditionMergedFromTwoLibraries {
+    pub(crate) state: std::sync::Arc<ServeState>,
+    pub(crate) slug: String,
+    readers: Vec<(Reader, i64, axum::Router)>,
+    /// The tree on disk, removed when this is dropped.
+    _fixture: Fixture,
+}
+
+impl EditionMergedFromTwoLibraries {
+    /// A router presenting `reader`'s session.
+    pub(crate) fn router(&self, reader: Reader) -> &axum::Router {
+        &self.reader(reader).2
+    }
+
+    /// `reader`'s account id.
+    pub(crate) fn user_id(&self, reader: Reader) -> i64 {
+        self.reader(reader).1
+    }
+
+    /// `request` as `reader`, its body read whole.
+    pub(crate) async fn send(
+        &self,
+        reader: Reader,
+        request: axum::http::Request<axum::body::Body>,
+    ) -> axum::http::Response<Vec<u8>> {
+        use tower::ServiceExt as _;
+        let response = self
+            .router(reader)
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("the router answers");
+        let (parts, body) = response.into_parts();
+        let bytes = axum::body::to_bytes(body, 1 << 20)
+            .await
+            .expect("reads the body");
+        axum::http::Response::from_parts(parts, bytes.to_vec())
+    }
+
+    /// `GET uri` as `reader`, with `If-None-Match` when given.
+    pub(crate) async fn get(
+        &self,
+        reader: Reader,
+        uri: &str,
+        if_none_match: Option<&str>,
+    ) -> axum::http::Response<Vec<u8>> {
+        let mut request = axum::http::Request::get(uri);
+        if let Some(tag) = if_none_match {
+            request = request.header(axum::http::header::IF_NONE_MATCH, tag);
+        }
+        self.send(reader, request.body(axum::body::Body::empty()).unwrap())
+            .await
+    }
+
+    fn reader(&self, reader: Reader) -> &(Reader, i64, axum::Router) {
+        self.readers
+            .iter()
+            .find(|(who, _, _)| *who == reader)
+            .expect("every reader has an account")
+    }
+}
+
+/// The solid colour of page `page` of the `archive`th archive
+/// [`router_over_an_edition_merged_from_two_libraries`] writes, 40 apart in a
+/// channel from every other page's, so a thumb or a cover drawn from the wrong
+/// page reads as another colour.
+fn merged_page_colour(archive: u8, page: u8) -> image::Rgb<u8> {
+    image::Rgb([20 + 40 * archive, 20 + 40 * page, 128])
+}
+
+/// One volume, `Foo v01`, as one work of editions `raw`, `en` and `fr`, with
+/// `raw` merged from two libraries (spec §3.8, O239): Manga's `m` holds part1
+/// (2 pages) and part3 (4), Kids' `k` part2 (3); Manga's `m-en` and `m-fr`
+/// hold `en` (5) and `fr` (6). So `raw`'s full pages are part1 0–1, part2 2–4
+/// and part3 5–8, and Manga alone's hidden member is not the last. Alignments
+/// `raw`↔`en` (over `raw`'s full 9 slots) and `en`↔`fr` carry counts, each page
+/// is an image of its own colour, and libraries 70 and 80 are numbered apart
+/// from the directories.
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written, a scan or the derive fails, or the
+/// store is not the shape above.
+pub(crate) fn router_over_an_edition_merged_from_two_libraries() -> EditionMergedFromTwoLibraries {
+    router_over_an_edition_merged_from_two_libraries_with_part2_named("Foo v01 part2.cbz")
+}
+
+/// [`router_over_an_edition_merged_from_two_libraries`] with part2's file
+/// named `part2`: a zip whatever its name, which the scan reads by its bytes,
+/// so a name with another extension gives Kids alone one member whose
+/// passthrough is typed by that extension.
+///
+/// # Panics
+///
+/// As [`router_over_an_edition_merged_from_two_libraries`].
+pub(crate) fn router_over_an_edition_merged_from_two_libraries_with_part2_named(
+    part2: &str,
+) -> EditionMergedFromTwoLibraries {
+    let fixture = Fixture::new("merged-edition");
+    let dir = |name: &str| fixture.path().join(name);
+    for (archive, (root, file, pages)) in (0_u8..).zip([
+        ("m", "Foo v01 part1.cbz", 2_u8),
+        ("m", "Foo v01 part3.cbz", 4),
+        ("m-en", "Foo v01.cbz", 5),
+        ("m-fr", "Foo v01.cbz", 6),
+        ("k", part2, 3),
+    ]) {
+        std::fs::create_dir_all(dir(root)).expect("mkdir");
+        let file_handle = std::fs::File::create(dir(root).join(file)).expect("creates the archive");
+        let mut zip = zip::ZipWriter::new(file_handle);
+        for page in 0..pages {
+            zip.start_file(
+                format!("{page:03}.png"),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .expect("starts an entry");
+            zip.write_all(&png(image::RgbImage::from_pixel(
+                16,
+                16,
+                merged_page_colour(archive, page),
+            )))
+            .expect("writes an entry");
+        }
+        zip.finish().expect("finishes the archive");
+    }
+
+    let library = library();
+    let (slug, accounts) = {
+        let conn = library.conn();
+        conn.execute(
+            "INSERT INTO library (id, name) VALUES (70, 'Manga'), (80, 'Kids')",
+            [],
+        )
+        .expect("two libraries, numbered apart from their directories");
+        for (root, library_id, key) in [
+            ("m", 70, None),
+            ("m-en", 70, Some("en")),
+            ("m-fr", 70, Some("fr")),
+            ("k", 80, None),
+        ] {
+            let added = taiyaku_library::scan::add_root_in(
+                &conn,
+                &dir(root),
+                taiyaku_library::scan::InLibrary::Id(library_id),
+            )
+            .unwrap_or_else(|e| panic!("adds {root}: {e}"));
+            if let Some(key) = key {
+                taiyaku_library::scan::update_root(
+                    &conn,
+                    added.id,
+                    &taiyaku_library::scan::RootPatch {
+                        edition_key: Some(Some(key.to_string())),
+                        ..Default::default()
+                    },
+                )
+                .unwrap_or_else(|e| panic!("keys {root} as `{key}`: {e}"));
+            }
+        }
+        for root in taiyaku_library::scan::roots(&conn).expect("lists the roots") {
+            taiyaku_library::scan::scan_root(&conn, &root).expect("scans");
+        }
+        taiyaku_library::derive::derive(&conn).expect("derives one work of three editions");
+
+        let (work_id, slug): (i64, String) = conn
+            .query_row("SELECT id, slug FROM work", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .expect("the fixture: one work in the store");
+        let placed: Vec<(String, String, i64, i64)> = conn
+            .prepare(
+                "SELECT e.key, m.path, m.pages, r.library_id FROM edition e
+                   JOIN member m ON m.edition_id = e.id
+                   JOIN root r ON r.id = m.root_id
+                  WHERE e.work_id = ?1 ORDER BY e.key, m.ordinal",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([work_id], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?
+                .collect()
+            })
+            .expect("lists where the work's members are");
+        let placed: Vec<(&str, &str, i64, i64)> = placed
+            .iter()
+            .map(|(key, path, pages, library_id)| {
+                let file = std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("a member names its file");
+                (key.as_str(), file, *pages, *library_id)
+            })
+            .collect();
+        assert_eq!(
+            placed,
+            [
+                ("en", "Foo v01.cbz", 5, 70),
+                ("fr", "Foo v01.cbz", 6, 70),
+                ("raw", "Foo v01 part1.cbz", 2, 70),
+                ("raw", part2, 3, 80),
+                ("raw", "Foo v01 part3.cbz", 4, 70),
+            ],
+            "the fixture: `raw` merged from Manga's and Kids' directories, part2 in Kids"
+        );
+
+        for (from, to, slots, paired) in [("raw", "en", 9, 7), ("en", "fr", 5, 5)] {
+            conn.execute(
+                "INSERT INTO alignment \
+                     (work_id, from_key, to_key, by, verdict, slots, paired, avg_run) \
+                 VALUES (?1, ?2, ?3, 'hand', 'sound', ?4, ?5, 2.0)",
+                rusqlite::params![work_id, from, to, slots, paired],
+            )
+            .expect("seeds an alignment");
+            conn.execute(
+                "INSERT INTO run \
+                     (alignment_id, ordinal, a_start_page, a_end_page, b_start_page, b_end_page) \
+                 VALUES (?1, 0, 0, 1, 0, 1)",
+                [conn.last_insert_rowid()],
+            )
+            .expect("seeds a run pairing the first two pages straight across");
+        }
+
+        let mut accounts = vec![(Reader::Administrator, 1)];
+        for (reader, name, libraries) in [
+            (Reader::MangaOnly, "manga", &[70][..]),
+            (Reader::KidsOnly, "kids", &[80][..]),
+            (Reader::Both, "both", &[70, 80][..]),
+        ] {
+            conn.execute(
+                "INSERT INTO user (name, password_hash, role) VALUES (?1, ?2, 'user')",
+                [name, FIXTURE_PHC],
+            )
+            .expect("adds a reader");
+            let id = conn.last_insert_rowid();
+            for library_id in libraries {
+                taiyaku_library::account::grant_library(&conn, id, *library_id)
+                    .expect("grants a library");
+            }
+            accounts.push((reader, id));
+        }
+        (slug, accounts)
+    };
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works: crate::Works::fixed(works),
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: fixture.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
+        library_job: Default::default(),
+        dirs: Vec::new(),
+    });
+    let router = crate::build_router(state.clone());
+    let readers = accounts
+        .into_iter()
+        .map(|(reader, id)| {
+            (
+                reader,
+                id,
+                authenticating_as(router.clone(), &state.library, id),
+            )
+        })
+        .collect();
+    EditionMergedFromTwoLibraries {
+        state,
+        slug,
+        readers,
+        _fixture: fixture,
+    }
+}
+
+/// Spec §1's copy: one volume's pages under directory `b`, in library `B`, and
+/// the same bytes at the same place under `a`, in library `A`, scanned and
+/// derived into one work of one member with a `member_root` row for each.
+///
+/// `b` is added first, so its copy is the primary one (`member.root_id`), and
+/// the fixture account is granted `A` alone: it reaches the member only
+/// through `a`'s `member_root` row. Answers the work's slug.
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written, a scan or the derive fails, or the
+/// derive does not leave the one member described.
+pub(crate) fn router_over_a_copy_granted_through_its_second_directory()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture, String) {
+    let fixture = Fixture::new("copy-in-two-libraries");
+    let a = fixture.path().join("a");
+    let b = fixture.path().join("b");
+    let volume = std::path::Path::new("Series").join("Series - v01");
+    write_pages(&b.join(&volume), 2);
+    std::fs::create_dir_all(a.join(&volume)).expect("mkdir");
+    for page in std::fs::read_dir(b.join(&volume)).expect("lists b's pages") {
+        let page = page.expect("a page").path();
+        std::fs::copy(
+            &page,
+            a.join(&volume).join(page.file_name().expect("named")),
+        )
+        .expect("copies a page");
+    }
+
+    let library = library();
+    let slug = {
+        let conn = library.conn();
+        conn.execute(
+            "INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B')",
+            [],
+        )
+        .expect("two libraries, numbered apart from their directories");
+        let rb = taiyaku_library::scan::add_root_in(
+            &conn,
+            &b,
+            taiyaku_library::scan::InLibrary::Named("B"),
+        )
+        .expect("adds b");
+        let ra = taiyaku_library::scan::add_root_in(
+            &conn,
+            &a,
+            taiyaku_library::scan::InLibrary::Named("A"),
+        )
+        .expect("adds a");
+        for root in [&rb, &ra] {
+            taiyaku_library::scan::scan_root(&conn, root).expect("scans");
+        }
+        taiyaku_library::derive::derive(&conn).expect("derives one work of one member");
+        let (slug, root_id, roots): (String, i64, String) = conn
+            .query_row(
+                "SELECT w.slug, m.root_id,
+                        (SELECT group_concat(root_id) FROM
+                           (SELECT root_id FROM member_root WHERE member_id = m.id
+                             ORDER BY root_id))
+                   FROM work w JOIN edition e ON e.work_id = w.id
+                   JOIN member m ON m.edition_id = e.id",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("the fixture: one work of one member");
+        assert_eq!(
+            (root_id, roots),
+            (rb.id, format!("{},{}", rb.id, ra.id)),
+            "the fixture: the primary copy b's, held under both"
+        );
+        grant_root(&conn, ra.id);
+        slug
+    };
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works: crate::Works::fixed(works),
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: fixture.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
+        library_job: Default::default(),
+        dirs: Vec::new(),
+    });
+    let router = authenticating(crate::build_router(state.clone()), &state.library);
+    (router, state, fixture, slug)
 }
 
 mod pinned {

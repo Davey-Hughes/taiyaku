@@ -166,8 +166,9 @@ export function RemoveLibrary({
           )}
           <p className="irreversible">
             Nothing here can be undone from this screen. The files on disk are
-            untouched; what goes is everything this library derived from them,
-            and everything anybody recorded against it.
+            untouched; what goes is everything derived from files no other
+            library's directories hold, and everything anybody recorded against
+            a work that goes.
           </p>
         </>
       )}

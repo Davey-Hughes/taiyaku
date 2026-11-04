@@ -125,6 +125,7 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/libraries/{id}",
         "/api/library/libraries/{id}/dirs",
         "/api/library/libraries/{id}/scan",
+        "/api/library/split-editions",
         "/api/library/dirs",
         // Spec C4 §4's user administration — admin-gated *inside* each
         // handler, the identical reasoning the scan comment just above gives,
@@ -1155,14 +1156,14 @@ fn library_of(state: &ServeState, dir: i64) -> i64 {
 /// real edition id and member id to address, neither reachable from the slug
 /// alone the way the read routes' own ids are.
 ///
-/// **Real bytes, not placeholders.** `refuse_if_hidden` and
-/// `visible_editions_or_refuse` both answer 404 before any of these routes
-/// opens a member, so the 404 asserted here must come from that refusal and
-/// not from a file read that found nothing. With real, decodable images in
-/// place, a route that opened a member would find a page there, which is
-/// what makes the loop below a proof rather than a coincidence. It is the
-/// same reason `opds::tests::router_with_a_real_page_under_a_withheld_root`
-/// insists on real bytes.
+/// **Real bytes, not placeholders.** `view::of_edition`, `view::of_work` and,
+/// for the alignment route, `routes::visible_members_for_a_correction` answer
+/// 404 before any of these routes opens a member, so the 404 asserted here
+/// must come from that refusal and not from a file read that found nothing.
+/// With real, decodable images in place, a route that opened a member would
+/// find a page there, which makes the loop below a proof rather than a
+/// coincidence. `opds::tests::router_with_a_real_page_under_a_withheld_root`
+/// insists on real bytes for the same reason.
 ///
 /// Each directory is a library of its own, numbered apart from the directories
 /// ([`two_dirs_numbered_apart_from_their_libraries`]), which the two OPDS
@@ -1387,8 +1388,7 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
 ///
 /// Each directory is a library of its own, numbered apart from the directories
 /// ([`two_dirs_numbered_apart_from_their_libraries`]), so the work is
-/// O191's shape: an edition under each library's directory. It is imported
-/// before the directories exist, so `work.library_id` is NULL.
+/// O191's shape: an edition under each library's directory.
 fn one_work_two_editions_split_across_roots(
     dir: &std::path::Path,
 ) -> (axum::Router, Arc<ServeState>) {
@@ -1521,11 +1521,10 @@ fn one_work_two_editions_split_across_roots(
 ///   editions, so `patch_alignments`'s response-filter can be proven without
 ///   the request 404ing before a response is even built.
 ///
-/// The withheld hub is deliberate too: `get_sidecar`'s `ETag` is computed
-/// over the full document specifically so it agrees with what
-/// `patch_alignments` recomputes from the same full document — a tag over
-/// the filtered projection a restricted reader sees would drift the moment
-/// `raw` changes, even though nothing this reader can see moved.
+/// The withheld hub is deliberate too: `get_sidecar`'s `ETag` is over the
+/// document this reader is sent, which leaves the hub out, and
+/// `patch_alignments` must compare `If-Match` with a tag over that same
+/// document rather than the full one.
 fn one_work_three_editions_hub_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeState>) {
     let root = dir;
     let shelf = root.to_string_lossy().into_owned();
@@ -1716,7 +1715,7 @@ async fn every_route_declares_its_grant_posture() {
     );
     assert_eq!(
         table.len() - driven,
-        37,
+        38,
         "the remaining guarded routes must be GrantIndependent — \
          see the `driven` assertion just above, which this one is the other \
          half of. A new admin-only route is GrantIndependent: it changes who \
@@ -1771,7 +1770,7 @@ async fn every_route_declares_its_grant_posture() {
         let path = grant_proof_concrete(pattern);
         // **O133: the tile route's cover sizes are driven too.** With `?w=` at
         // a cover size, page 0 is served by `serve_page`, which asks no grant
-        // of its own, so `get_thumb`'s `refuse_if_hidden` is all that keeps a
+        // of its own, so `get_thumb`'s `view::of_edition` is all that keeps a
         // withheld edition's cover hidden.
         let sized = (*pattern == "/api/works/{work}/{edition}/pages/{index}/thumb")
             .then(|| format!("{path}?w=768"));
@@ -2028,14 +2027,6 @@ async fn every_route_declares_its_grant_posture() {
          library's directory and no other: {body}"
     );
     proven_filters.insert("/opds/v1.2/libraries/{library}/works");
-    // **Both works filed by hand in the granted directory's library**, which
-    // derive never did: the fixture imports them before its directories exist.
-    // Filed there, only the grant keeps `Hidden Work` out of the by-work feed.
-    works_state
-        .library
-        .conn()
-        .execute("UPDATE work SET library_id = ?1", [works_visible])
-        .expect("files both works in the granted directory's library");
     let (status, body) = get_with_credential(&format!(
         "/opds/v1.2/libraries/{works_visible}/works/by-work"
     ))
@@ -2048,8 +2039,8 @@ async fn every_route_declares_its_grant_posture() {
     );
     assert!(
         !body.contains("Hidden Work"),
-        "/opds/v1.2/libraries/{{library}}/works/by-work named a work filed in the \
-         library whose only edition is outside the grant: {body}"
+        "/opds/v1.2/libraries/{{library}}/works/by-work named a work whose only \
+         edition is under the other library's directory: {body}"
     );
     proven_filters.insert("/opds/v1.2/libraries/{library}/works/by-work");
 
@@ -2831,21 +2822,89 @@ async fn every_route_declares_its_grant_posture() {
     );
     proven_filters.insert("/api/works/{work}/progress");
 
-    // The OPDS library feeds, split: a fixture of its own, so no proof above
-    // reads a store with the work filed by hand. The work is filed in the
-    // granted directory's library, and both of that library's feeds count the
-    // one edition the grant allows: by directory because the other edition is
+    // `/api/works/{work}/notes` and `/api/works/{work}/truth` — the read
+    // leaves out a note or a truth entry on an edition outside the grant
+    // (spec §3.8, O191), and names the one on `en`.
+    {
+        let split_work = split_state
+            .find_blocking(&split_slug)
+            .expect("the split work");
+        let note = |edition: &str| crate::notes::Note {
+            id: format!("01{edition}"),
+            edition: edition.to_string(),
+            slot: 0,
+            region: None,
+            color: None,
+            body: "b".into(),
+            created: "c".into(),
+            updated: "u".into(),
+        };
+        let notes = crate::notes::Notes {
+            work: split_slug.clone(),
+            notes: vec![note("raw"), note("en")],
+        };
+        crate::notes::store(&split_state.library, &split_work, 1, &notes).expect("stores notes");
+        let mut truth = taiyaku_core::TruthDoc::new();
+        for edition in ["raw", "en"] {
+            let looked_at = taiyaku_core::TruthEdition {
+                members: Vec::new(),
+                pages: std::collections::BTreeMap::from([(0, Vec::new())]),
+            };
+            truth.editions.insert(edition.to_string(), looked_at);
+        }
+        crate::truth::store(&split_state.library, &split_work, &truth).expect("stores truth");
+    }
+    for (pattern, named) in [
+        ("/api/works/{work}/notes", "notes"),
+        ("/api/works/{work}/truth", "truth"),
+    ] {
+        let response = split_router
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/works/{split_slug}/{named}"))
+                    .header("authorization", &credential)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router answers");
+        let status = response.status();
+        let body = crate::test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::OK, "{pattern}: {body}");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        let editions: Vec<String> = if named == "notes" {
+            json["notes"]
+                .as_array()
+                .expect("a notes array")
+                .iter()
+                .map(|n| n["edition"].as_str().expect("a string").to_string())
+                .collect()
+        } else {
+            json["editions"]
+                .as_object()
+                .expect("an editions object")
+                .keys()
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            editions,
+            vec!["en"],
+            "{pattern} is classified RefusesAndFilters but named an edition outside the \
+             grant: {body}"
+        );
+        proven_filters.insert(pattern);
+    }
+
+    // The OPDS library feeds, split: one work with an edition under each
+    // library's directory. Both of the granted library's feeds count the one
+    // edition the grant allows: by directory because the other edition is
     // under the other library's directory, and by work because it is outside
     // the grant.
     let tmp5 = crate::test_support::Fixture::new("grant-posture-split-libraries");
     let (libraries_router, libraries_state) = one_work_two_editions_split_across_roots(&tmp5);
     let libraries_slug = libraries_state.works.snapshot()[0].id.clone();
     let granted_library = library_of(&libraries_state, 1);
-    libraries_state
-        .library
-        .conn()
-        .execute("UPDATE work SET library_id = ?1", [granted_library])
-        .expect("files the work in the granted directory's library");
     for (pattern, uri) in [
         (
             "/opds/v1.2/libraries/{library}/works",
@@ -2911,6 +2970,449 @@ async fn every_route_declares_its_grant_posture() {
              {posture:?}, not Filters or RefusesAndFilters"
         );
     }
+}
+
+/// One request as `reader` over the merged fixture: its status, `ETag` and
+/// body, a redirect's `Location` after the body, as it names what is sent.
+async fn asked(
+    merged: &crate::test_support::EditionMergedFromTwoLibraries,
+    reader: crate::test_support::Reader,
+    method: axum::http::Method,
+    uri: &str,
+    if_match: Option<&str>,
+    body: Option<String>,
+) -> (StatusCode, Option<String>, Vec<u8>) {
+    let mut request = Request::builder().method(method).uri(uri);
+    if let Some(tag) = if_match {
+        request = request.header(header::IF_MATCH, tag);
+    }
+    if body.is_some() {
+        request = request.header(header::CONTENT_TYPE, "application/json");
+    }
+    let response = merged
+        .send(
+            reader,
+            request
+                .body(body.map_or_else(Body::empty, Body::from))
+                .unwrap(),
+        )
+        .await;
+    let tag = response
+        .headers()
+        .get(header::ETAG)
+        .map(|tag| tag.to_str().unwrap().to_string());
+    let status = response.status();
+    let location = response.headers().get(header::LOCATION).cloned();
+    let mut body = response.into_body();
+    if let Some(location) = location {
+        body.extend_from_slice(location.as_bytes());
+    }
+    (status, tag, body)
+}
+
+/// **The enumeration test for narrowing** (spec §3.8, "Every route declares
+/// it"): `routes::narrowing_postures`'s route set is `guarded_routes`'s, and
+/// each declaration that is not `NoPages` is driven as Manga alone over
+/// [`crate::test_support::router_over_an_edition_merged_from_two_libraries`],
+/// whose `raw` Manga sees as part1 and part3, part2 (pages 2 to 4) hidden, so
+/// a route that did not translate would answer Manga's page 2 with part2's.
+#[tokio::test]
+async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
+    use crate::routes::NarrowingPosture;
+    use crate::test_support::Reader;
+    use axum::http::Method;
+
+    let guarded: Vec<&'static str> = guarded_routes().into_iter().map(|(path, _)| path).collect();
+    let table = crate::routes::narrowing_postures();
+    let declared: Vec<&'static str> = table.iter().map(|(path, _)| *path).collect();
+    assert_eq!(
+        declared, guarded,
+        "routes::narrowing_postures's route set must equal guarded_routes's, in its order"
+    );
+    // The drive below walks `table` itself, so a route moved to `NoPages` is
+    // not driven and failing but not driven at all; only a count it does not
+    // compute can see it, as `every_route_declares_its_grant_posture`'s does.
+    let counted = |posture: fn(&NarrowingPosture) -> bool| {
+        table
+            .iter()
+            .filter(|(_, declared)| posture(declared))
+            .count()
+    };
+    assert_eq!(
+        [
+            counted(|p| matches!(p, NarrowingPosture::Narrows)),
+            counted(|p| matches!(p, NarrowingPosture::Translates)),
+            counted(|p| matches!(p, NarrowingPosture::KeepsUnseen)),
+            counted(|p| matches!(p, NarrowingPosture::Refuses)),
+        ],
+        [17, 6, 2, 1],
+        "the Narrows, Translates, KeepsUnseen and Refuses routes, each driven below: a route \
+         moved between them, or added, without its count moving here is one this suite no \
+         longer proves what it was declared to do"
+    );
+    assert_eq!(
+        counted(|p| matches!(p, NarrowingPosture::NoPages { .. })),
+        38,
+        "the NoPages routes, declared and not driven: a route moved here from a driven posture \
+         moves this count and one above, and a new route that reads no pages moves this alone"
+    );
+
+    let merged = crate::test_support::router_over_an_edition_merged_from_two_libraries();
+    let slug = merged.slug.clone();
+    let work = merged.state.find_blocking(&slug).expect("the work");
+    let raw = work.sidecar().editions["raw"].clone();
+    let pages: Vec<u32> = raw.members.iter().map(|member| member.pages).collect();
+    assert_eq!(
+        pages,
+        [2, 3, 4],
+        "the fixture: raw is part1, part2 and part3"
+    );
+    let part2 = raw.members[1].clone();
+    assert!(
+        part2.path.ends_with("part2.cbz"),
+        "the fixture: Manga's hidden member is not the last: {}",
+        part2.path
+    );
+    let series: i64 = merged
+        .state
+        .library
+        .conn()
+        .query_row(
+            "SELECT series_id FROM work WHERE slug = ?1",
+            [&slug],
+            |row| row.get(0),
+        )
+        .expect("the work's series");
+
+    // O60's walk's placeholders, Manga's page and member in its numbering and
+    // the administrator's in the full one.
+    let concrete = |pattern: &str, reader: Reader| -> String {
+        let (page, member) = if reader == Reader::MangaOnly {
+            ("2", "1")
+        } else {
+            ("5", "2")
+        };
+        let path = pattern
+            .replace("{work}", &slug)
+            .replace("{slug}", &slug)
+            .replace("{edition}", "raw")
+            .replace("{index}", page)
+            .replace("{number}", page)
+            .replace("{ordinal}", member)
+            .replace("{id}", &series.to_string())
+            .replace("{library}", "70");
+        assert!(
+            !path.contains('{'),
+            "{pattern} carries a placeholder this walk has no value for: {path}"
+        );
+        if pattern == "/api/library/search" {
+            format!("{path}?q=Foo")
+        } else {
+            path
+        }
+    };
+    let names_part2 = |body: &[u8]| -> bool {
+        let text = String::from_utf8_lossy(body);
+        text.contains(&part2.sha256) || text.contains("part2")
+    };
+
+    // What `KeepsUnseen` reads back: a note and a truth box on part2's page 3,
+    // marked, beside ones Manga is sent.
+    let note = |id: &str, edition: &str, slot: u32, body: &str| crate::notes::Note {
+        id: id.into(),
+        edition: edition.into(),
+        slot,
+        region: None,
+        color: None,
+        body: body.into(),
+        created: "c".into(),
+        updated: "u".into(),
+    };
+    crate::notes::store(
+        &merged.state.library,
+        &work,
+        merged.user_id(Reader::MangaOnly),
+        &crate::notes::Notes {
+            work: slug.clone(),
+            notes: vec![
+                note("n1", "raw", 1, "on part1"),
+                note("n2", "raw", 3, "on part2"),
+                note("n3", "raw", 5, "on part3"),
+                note("n4", "en", 0, "on en"),
+            ],
+        },
+    )
+    .expect("stores notes");
+    let boxed = |text: &str| taiyaku_core::TruthRegion {
+        x: 0.1,
+        y: 0.1,
+        w: 0.2,
+        h: 0.2,
+        axis: None,
+        kind: taiyaku_core::Kind::Dialogue,
+        ignore: false,
+        text: Some(text.into()),
+    };
+    let entry = |key: &str, pages: Vec<(u32, &str)>| taiyaku_core::TruthEdition {
+        members: work.sidecar().editions[key]
+            .members
+            .iter()
+            .map(|member| taiyaku_core::RegionMember {
+                sha256: member.sha256.clone(),
+            })
+            .collect(),
+        pages: pages
+            .into_iter()
+            .map(|(page, text)| (page, vec![boxed(text)]))
+            .collect(),
+    };
+    let mut truth = taiyaku_core::TruthDoc::new();
+    truth.editions.insert(
+        "raw".into(),
+        entry("raw", vec![(3, "on part2"), (5, "on part3")]),
+    );
+    truth
+        .editions
+        .insert("en".into(), entry("en", vec![(0, "on en")]));
+    crate::truth::store(&merged.state.library, &work, &truth).expect("stores truth");
+    let held = |pattern: &str| -> String {
+        if pattern.ends_with("/notes") {
+            let notes = crate::notes::load(
+                &merged.state.library,
+                &work,
+                merged.user_id(Reader::MangaOnly),
+            )
+            .expect("reads notes")
+            .expect("notes are held");
+            crate::notes::to_json(&notes).expect("serialises")
+        } else {
+            crate::truth::load(&merged.state.library, &work)
+                .expect("reads truth")
+                .expect("truth is held")
+                .to_json()
+        }
+    };
+
+    let mut named_by_the_administrator = Vec::new();
+    let mut alike_for_both = Vec::new();
+    for (pattern, posture) in &table {
+        if let NarrowingPosture::NoPages { reason } = posture {
+            assert!(!reason.is_empty(), "{pattern} states no reason");
+            continue;
+        }
+        let manga = concrete(pattern, Reader::MangaOnly);
+        match posture {
+            NarrowingPosture::NoPages { .. } => unreachable!("declared, not driven"),
+            // Progress takes its slot in the body: Manga's slot 2 is stored
+            // as the administrator's 5.
+            NarrowingPosture::Translates if pattern.ends_with("/progress") => {
+                for (reader, slot) in [(Reader::MangaOnly, 2), (Reader::Administrator, 5)] {
+                    let position = format!(r#"{{"edition":"raw","slot":{slot}}}"#);
+                    let (status, _, said) = asked(
+                        &merged,
+                        reader,
+                        Method::PUT,
+                        &concrete(pattern, reader),
+                        None,
+                        Some(position),
+                    )
+                    .await;
+                    assert!(
+                        status.is_success(),
+                        "{pattern}, {reader:?}: {status} {}",
+                        String::from_utf8_lossy(&said)
+                    );
+                }
+                let stored = |reader: Reader| -> Vec<(String, u32)> {
+                    crate::progress::load(&merged.state.library, &work, merged.user_id(reader))
+                        .expect("reads progress")
+                        .into_iter()
+                        .map(|position| (position.edition, position.slot))
+                        .collect()
+                };
+                assert_eq!(
+                    stored(Reader::MangaOnly),
+                    stored(Reader::Administrator),
+                    "{pattern}: Manga's slot 2 is stored as the administrator's 5"
+                );
+            }
+            // The cover is page 0, which Manga's numbering shares with the
+            // full one, so it is driven as Kids alone, whose page 0 is the
+            // full page 2. No route sends that page at the cover's size, so
+            // the two are compared by colour, every page having its own.
+            NarrowingPosture::Translates
+                if *pattern == "/opds/v1.2/works/{work}/{edition}/cover" =>
+            {
+                let full = concrete(pattern, Reader::Administrator);
+                let (status, _, kids) =
+                    asked(&merged, Reader::KidsOnly, Method::GET, &full, None, None).await;
+                assert_eq!(status, StatusCode::OK, "{full}");
+                let thumb = format!("/api/works/{slug}/raw/pages/2/thumb");
+                let (status, _, page_2) = asked(
+                    &merged,
+                    Reader::Administrator,
+                    Method::GET,
+                    &thumb,
+                    None,
+                    None,
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK, "{thumb}");
+                let colour = |jpeg: &[u8]| -> [u8; 3] {
+                    let image = image::load_from_memory(jpeg).expect("decodes").to_rgb8();
+                    image.get_pixel(image.width() / 2, image.height() / 2).0
+                };
+                let (cover, page) = (colour(&kids), colour(&page_2));
+                assert!(
+                    cover.iter().zip(page).all(|(a, b)| a.abs_diff(b) <= 8),
+                    "{pattern}: Kids' cover is {cover:?}, the full page 2 {page:?}"
+                );
+            }
+            // Manga's page 2 (member 1) answers as the administrator's page 5
+            // (member 2). A pattern naming no page or member would compare
+            // one answer with itself, so it must be one of the cases above.
+            NarrowingPosture::Translates => {
+                assert!(
+                    ["{index}", "{number}", "{ordinal}"]
+                        .iter()
+                        .any(|placeholder| pattern.contains(placeholder)),
+                    "{pattern} translates but names no page or member, so this drive cannot \
+                     tell it from a route that does not"
+                );
+                let (status, _, mangas) =
+                    asked(&merged, Reader::MangaOnly, Method::GET, &manga, None, None).await;
+                assert_eq!(status, StatusCode::OK, "{manga}");
+                let full = concrete(pattern, Reader::Administrator);
+                let (_, _, administrators) = asked(
+                    &merged,
+                    Reader::Administrator,
+                    Method::GET,
+                    &full,
+                    None,
+                    None,
+                )
+                .await;
+                assert!(
+                    mangas == administrators,
+                    "{pattern}: Manga's {manga} does not answer as the administrator's {full}"
+                );
+            }
+            // Manga's answer names neither part2's `sha256` nor its file, and
+            // differs from Both's, which sees `raw` whole through
+            // `Access::Only` and otherwise as Manga does. Which of the
+            // administrator's answers name part2, and which routes answer the
+            // two alike, are pinned below, so a route whose answer stops
+            // proving anything here shows.
+            NarrowingPosture::Narrows => {
+                let (status, _, body) =
+                    asked(&merged, Reader::MangaOnly, Method::GET, &manga, None, None).await;
+                assert!(
+                    status == StatusCode::OK || status == StatusCode::TEMPORARY_REDIRECT,
+                    "{manga}: {status}"
+                );
+                assert!(
+                    !names_part2(&body),
+                    "{pattern}: Manga's answer names part2: {}",
+                    String::from_utf8_lossy(&body)
+                );
+                let (_, _, administrators) = asked(
+                    &merged,
+                    Reader::Administrator,
+                    Method::GET,
+                    &manga,
+                    None,
+                    None,
+                )
+                .await;
+                if names_part2(&administrators) {
+                    named_by_the_administrator.push(*pattern);
+                }
+                let (boths_status, _, boths) =
+                    asked(&merged, Reader::Both, Method::GET, &manga, None, None).await;
+                assert_eq!(boths_status, status, "{pattern}: Both's answer to {manga}");
+                if body == boths {
+                    alike_for_both.push(*pattern);
+                }
+            }
+            // Manga's read sends nothing of part2's pages, and a write of what
+            // it sent leaves the store as it was.
+            NarrowingPosture::KeepsUnseen => {
+                let before = held(pattern);
+                let (status, tag, body) =
+                    asked(&merged, Reader::MangaOnly, Method::GET, &manga, None, None).await;
+                let text = String::from_utf8_lossy(&body).into_owned();
+                assert_eq!(status, StatusCode::OK, "{manga}: {text}");
+                assert!(
+                    !text.contains("on part2") && !names_part2(&body),
+                    "{pattern}: Manga is sent part2's pages: {text}"
+                );
+                let (status, _, said) = asked(
+                    &merged,
+                    Reader::MangaOnly,
+                    Method::PUT,
+                    &manga,
+                    tag.as_deref(),
+                    Some(text),
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::OK,
+                    "{pattern}: {}",
+                    String::from_utf8_lossy(&said)
+                );
+                assert_eq!(
+                    held(pattern),
+                    before,
+                    "{pattern}: a write of what Manga was sent changed the store"
+                );
+            }
+            // A correction naming `raw` is refused with 403 naming it.
+            NarrowingPosture::Refuses => {
+                let (_, tag, _) = asked(
+                    &merged,
+                    Reader::MangaOnly,
+                    Method::GET,
+                    &format!("/api/works/{slug}"),
+                    None,
+                    None,
+                )
+                .await;
+                let (status, _, said) = asked(
+                    &merged,
+                    Reader::MangaOnly,
+                    Method::PATCH,
+                    &manga,
+                    tag.as_deref(),
+                    Some(r#"{"from":"raw","to":"en","a":"0","b":"0"}"#.to_string()),
+                )
+                .await;
+                let said = String::from_utf8_lossy(&said);
+                assert_eq!(status, StatusCode::FORBIDDEN, "{pattern}: {said}");
+                assert!(said.contains("`raw`"), "{pattern}: {said}");
+            }
+        }
+    }
+    assert_eq!(
+        named_by_the_administrator,
+        ["/api/works/{work}"],
+        "the Narrows routes whose administrator's answer names part2, so that Manga's \
+         leaving it out is seen: the work document alone, the others sending counts and covers, \
+         which name no member"
+    );
+    assert_eq!(
+        alike_for_both,
+        [
+            "/api/works",
+            "/api/library/series/{id}/cover",
+            "/opds/v1.2/works",
+            "/opds/v1.2/libraries/{library}/works",
+            "/opds/v1.2/libraries/{library}/works/by-work",
+        ],
+        "the Narrows routes whose answer to Manga is the same as to Both: lists naming a work's \
+         editions or counting them, and a cover redirect naming page 0 of the hub, none naming \
+         a member, a page or a page count"
+    );
 }
 
 /// **A reader granted only `en` learns nothing of the withheld `raw` edition
@@ -3069,14 +3571,11 @@ async fn patch_alignments_refuses_a_correction_naming_a_withheld_edition() {
 /// would otherwise abort the test before (b) or (c) ever ran, and (c) — the
 /// `from`-side write guard — has no other coverage anywhere.
 ///
-/// (a) **The ETag is computed over the full, unfiltered document.** A
-/// restricted reader's own `GET` → `If-Match` → `PATCH` round trip — on two
-/// editions both inside their grant — must succeed. Mutating `get_sidecar`'s
-/// `let tag = sidecar_etag(&sidecar)` to a tag over the filtered projection
-/// instead makes this assertion fail with 412: the reader's `GET` hands back
-/// a tag over `{en, fr}` alone, while `patch_alignments` always recomputes
-/// its own comparison tag over the full (unfiltered) document, so the two
-/// never agree again for a restricted reader.
+/// (a) **`get_sidecar` and `patch_alignments` take the tag over one
+/// document.** A restricted reader's own `GET` → `If-Match` → `PATCH` round
+/// trip — on two editions both inside their grant — must succeed. Taking
+/// either tag over the full document instead makes this assertion fail with
+/// 412: the reader's `GET` hands back a tag over `{en, fr}` alone.
 #[tokio::test]
 async fn a_restricted_readers_own_etag_round_trips_through_a_correction_between_visible_editions() {
     let tmp = crate::test_support::Fixture::new("grant-posture-triple-etag");
@@ -3122,13 +3621,12 @@ async fn a_restricted_readers_own_etag_round_trips_through_a_correction_between_
 
 /// (b) **`patch_alignments`'s response is filtered**, on a correction
 /// between two *visible* editions (`en`/`fr`) so the request does not 404
-/// before a response is even built. Mutating the `Some(keys) =>
-/// filter_sidecar_editions(&next, keys).to_json()` arm to return the
-/// unfiltered `json` instead makes this assertion fail: the 200 body then
-/// names `raw`. See the doc comment above the `(a)` test, just above this
-/// one, for why this is its own test rather than a second assertion tacked
-/// onto that one: this property must still be checked (and reported) even
-/// when `(a)` itself is broken.
+/// before a response is even built. Answering with the unfiltered `json`
+/// instead makes this assertion fail: the 200 body then names `raw`. See the
+/// doc comment above the `(a)` test, just above this one, for why this is its
+/// own test rather than a second assertion tacked onto that one: this
+/// property must still be checked (and reported) even when `(a)` itself is
+/// broken.
 #[tokio::test]
 async fn a_correction_between_visible_editions_omits_the_withheld_one_from_its_response() {
     let tmp = crate::test_support::Fixture::new("grant-posture-triple-response-filter");
@@ -3429,6 +3927,7 @@ const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
     "/api/library/libraries/{id}",
     "/api/library/libraries/{id}/dirs",
     "/api/library/libraries/{id}/scan",
+    "/api/library/split-editions",
     "/api/library/dirs",
     "/api/library/proposals",
     "/api/library/proposals/{id}",

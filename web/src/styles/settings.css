@@ -614,7 +614,7 @@ section:has(.callout[data-over-focus]) :focus-visible {
    so at 390 it stands where the page's own boxes do. Its top stays
    `--dialog-top` from the window's whatever it holds, at a desk's width a
    step lower than a page's head would sit, so that it reads as laid over
-   the page: a rehearsal's answer or an opened disclosure grows it downward,
+   the page: a rehearsal's answer grows it downward,
    where a box centred in the window would rise by half of what it gained
    and take the fields being read with it. Once its foot reaches the gutter
    it scrolls inside itself, and not the page. The top margin pins it; the
@@ -876,7 +876,8 @@ section:has(.callout[data-over-focus]) :focus-visible {
     pointer-events: auto;
   }
 
-  .backup-rows a {
+  .backup-rows a,
+  .split-edition-dirs a {
     display: inline-flex;
     align-items: center;
     min-height: 44px;
@@ -896,6 +897,51 @@ section:has(.callout[data-over-focus]) :focus-visible {
 
 .backup-rows a:is(:hover, :focus-visible) {
   text-decoration: underline;
+}
+
+/* A split edition in its box: its title, a line per library, then its
+   files, each over the directories holding it. Lists of lines, not of
+   things to pick, so they draw no markers; a file's directories are set in
+   under it, so which file a directory holds is read from where it sits. A
+   path can run longer than the box with nowhere to break. */
+.split-edition-title {
+  margin: 0;
+  font-size: var(--text-body);
+}
+
+.split-edition-sees,
+.split-edition-files,
+.split-edition-dirs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.split-edition-sees,
+.split-edition-files {
+  margin-top: var(--space-2);
+}
+
+.split-edition-files > li + li {
+  margin-top: var(--space-2);
+}
+
+.split-edition-file {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.split-edition-dirs {
+  padding-inline-start: var(--space-4);
+  overflow-wrap: anywhere;
+}
+
+/* How to give a directory's files an edition of their own, under the
+   list, at the list's measure. */
+.split-edition-how {
+  max-width: var(--config-measure);
+  margin: var(--space-4) 0 0;
+  color: var(--muted);
 }
 
 /* A list and the end of its tree side by side: Users and an account, a

@@ -2725,27 +2725,23 @@ fn one_pass_answers_for_every_series_it_was_asked_about() {
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("derive");
 
-    let library = Some(root.library_id);
     let asked = std::collections::BTreeSet::from([
-        (library, "Go-Toubun no Hanayome"),
-        (library, "Kaguya-sama - Fan Translated"),
-        (library, "A Series Nothing Here Is"),
+        "Go-Toubun no Hanayome",
+        "Kaguya-sama - Fan Translated",
+        "A Series Nothing Here Is",
     ]);
     let together = derive::rel_paths_by_series(&conn, &asked).expect("one pass");
-    let answered = |title: &str| &together[&(library, title.to_string())];
+    let answered = |title: &str| &together[title];
 
     assert_eq!(
-        together
-            .keys()
-            .map(|(library, title)| (*library, title.as_str()))
-            .collect::<Vec<_>>(),
+        together.keys().map(String::as_str).collect::<Vec<_>>(),
         asked.iter().copied().collect::<Vec<_>>(),
         "every title asked about is answered, including the one with nothing under it",
     );
-    for (library, title) in &asked {
+    for title in &asked {
         assert_eq!(
             *answered(title),
-            derive::rel_paths_for_series(&conn, *library, title).expect("one at a time"),
+            derive::rel_paths_for_series(&conn, title).expect("one at a time"),
             "`{title}` is answered the same either way",
         );
     }
@@ -3909,6 +3905,10 @@ fn folding_a_work_away_orphans_its_hand_document_on_the_same_pass() {
             Ok((r.get(0)?, r.get(1)?))
         })
         .expect("exactly one work remains once the fold has run");
+    assert_eq!(
+        target_title, "Hand Set",
+        "the target carries the folded work's hand title"
+    );
     let absorbed = second.orphan_documents[0].absorbed_into.as_ref().expect(
         "a document stranded by a fold must name the work that absorbed \
              it, not merely that it is now orphaned",
@@ -3919,6 +3919,371 @@ fn folding_a_work_away_orphans_its_hand_document_on_the_same_pass() {
         "the orphan must point at the work the fold actually moved the \
          reader's material onto, not merely at *some* work"
     );
+}
+
+/// A hand title through `librarydoc::apply`, the route a person's edit takes.
+fn set_hand_title(conn: &Connection, work_id: i64, title: Option<&str>) {
+    let mut doc = crate::librarydoc::of(conn, work_id).expect("projecting");
+    doc.title = title.map(str::to_string);
+    crate::librarydoc::apply(conn, work_id, &doc).expect("applying");
+}
+
+/// **The derive's own fold carries a hand title, and is refused while the two
+/// works hold different ones** — `fold::absorb`'s rule, reached through
+/// `derive_with`'s `superseded` path over real directories.
+///
+/// The second derive writes the target's document after the carry, which is
+/// what keeps the carried title through a rebuild from the files alone.
+#[test]
+fn a_derives_fold_carries_a_hand_title_and_is_refused_while_the_two_works_differ() {
+    let tree = crate::tests::tempdir("derive-fold-carries-hand-title");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let colour = two_works_before_the_fold(&tree, &conn);
+    let base: i64 = conn
+        .query_row("SELECT id FROM work WHERE id <> ?1", [colour], |r| r.get(0))
+        .expect("the base work");
+    set_hand_title(&conn, colour, Some("Colour By Hand"));
+    crate::hand::save(&conn, colour).expect("saving the colour work's document");
+    set_hand_title(&conn, base, Some("Base By Hand"));
+    write_the_fold_rule(&conn);
+
+    let refused = derive::derive(&conn).expect("the refusing derive");
+    assert_eq!(
+        (refused.emptied_works, refused.unfolded_works),
+        (0, 1),
+        "{refused:?}"
+    );
+    assert!(
+        refused.unfoldable.len() == 1
+            && refused.unfoldable[0].contains("`Colour By Hand`")
+            && refused.unfoldable[0].contains("`Base By Hand`"),
+        "the refusal names both titles: {:?}",
+        refused.unfoldable
+    );
+    let titles: Vec<(i64, String)> = conn
+        .prepare("SELECT id, title FROM work ORDER BY id")
+        .expect("preparing")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("reading the works")
+        .collect::<rusqlite::Result<_>>()
+        .expect("reading a work");
+    let mut expected = vec![
+        (base, "Base By Hand".to_string()),
+        (colour, "Colour By Hand".to_string()),
+    ];
+    expected.sort();
+    assert_eq!(
+        titles, expected,
+        "both works stand, each with its own title"
+    );
+
+    set_hand_title(&conn, base, None);
+    let folded = derive::derive(&conn).expect("the folding derive");
+    assert_eq!(
+        (folded.emptied_works, folded.unfolded_works),
+        (1, 0),
+        "{folded:?}"
+    );
+    let (title_hand, title): (Option<String>, String) = conn
+        .query_row(
+            "SELECT title_hand, title FROM work WHERE id = ?1",
+            [base],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the target");
+    assert_eq!(
+        (title_hand.as_deref(), title.as_str()),
+        (Some("Colour By Hand"), "Colour By Hand"),
+        "the target carries the folded work's title"
+    );
+    let path = crate::hand::path_for(&conn, base)
+        .expect("addressing")
+        .expect("a rooted work has an address");
+    let written = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the target's document at {}: {e}", path.display()));
+    assert_eq!(
+        crate::librarydoc::LibraryDoc::from_json(&written)
+            .expect("parsing the target's document")
+            .title
+            .as_deref(),
+        Some("Colour By Hand"),
+        "the target's own document holds the carried title"
+    );
+}
+
+/// The colour work holds a saved hand volume and the base work a saved hand
+/// title, each in its own document, and the fold rule is written. Returns the
+/// base work's id and its document's address.
+///
+/// **The volume is the folded work's, not the target's.** A hand volume on the
+/// base would move it off the group's address, and the derive would then
+/// reconcile the group onto the colour work and fold the base away instead.
+fn a_volume_to_carry_onto_a_documented_target(
+    tree: &crate::tests::TempDir,
+    conn: &Connection,
+) -> (i64, std::path::PathBuf) {
+    let colour = two_works_before_the_fold(tree, conn);
+    let base: i64 = conn
+        .query_row("SELECT id FROM work WHERE id <> ?1", [colour], |r| r.get(0))
+        .expect("the base work");
+    let mut doc = crate::librarydoc::of(conn, colour).expect("projecting");
+    doc.volume = Some(4.5);
+    crate::librarydoc::apply(conn, colour, &doc).expect("applying");
+    crate::hand::save(conn, colour).expect("saving the colour work's document");
+    set_hand_title(conn, base, Some("Base By Hand"));
+    let saved = crate::hand::save(conn, base).expect("saving the base work's document");
+    assert!(
+        saved.persisted,
+        "the base work's own document is on disk: {saved:?}"
+    );
+    write_the_fold_rule(conn);
+    let path = crate::hand::path_for(conn, base)
+        .expect("addressing")
+        .expect("a rooted work has an address");
+    (base, path)
+}
+
+/// **A carried value reaches a target document that already held another
+/// field.** `hand::reconcile` writes only a missing document and reports one
+/// that disagrees with the rows as stale, so without the derive's own save the
+/// file would lack the volume and a rebuild from the files would lose it.
+#[test]
+fn a_carry_onto_a_target_with_its_own_document_rewrites_that_document() {
+    let tree = crate::tests::tempdir("derive-fold-carry-rewrites-document");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let (_, path) = a_volume_to_carry_onto_a_documented_target(&tree, &conn);
+
+    let report = derive::derive(&conn).expect("the folding derive");
+
+    assert_eq!(
+        (report.emptied_works, report.unfolded_works),
+        (1, 0),
+        "{report:?}"
+    );
+    let on_disk = crate::librarydoc::LibraryDoc::from_json(
+        &std::fs::read_to_string(&path).expect("the target's document"),
+    )
+    .expect("parsing the target's document");
+    assert_eq!(
+        (on_disk.title.as_deref(), on_disk.volume),
+        (Some("Base By Hand"), Some(4.5)),
+        "the target's document holds its own title and the carried volume"
+    );
+    assert!(
+        report.stale_documents.is_empty(),
+        "nothing is stale: {:?}",
+        report.stale_documents
+    );
+}
+
+/// **Under `Documents::Skip` the carry writes no file.** The rows carry the
+/// volume; every file under the root is byte-identical.
+#[test]
+fn a_carry_under_documents_skip_writes_no_document() {
+    let tree = crate::tests::tempdir("derive-fold-carry-skip-writes-nothing");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let (base, _) = a_volume_to_carry_onto_a_documented_target(&tree, &conn);
+    let before = crate::tests::tree_snapshot(tree.path());
+
+    let report = derive::derive_with(&conn, derive::Documents::Skip).expect("the folding derive");
+
+    assert_eq!(
+        (report.emptied_works, report.unfolded_works),
+        (1, 0),
+        "{report:?}"
+    );
+    let volume_hand: Option<f64> = conn
+        .query_row("SELECT volume_hand FROM work WHERE id = ?1", [base], |r| {
+            r.get(0)
+        })
+        .expect("the target");
+    assert_eq!(volume_hand, Some(4.5), "the rows carry it");
+    assert_eq!(
+        crate::tests::tree_snapshot(tree.path()),
+        before,
+        "no file under the root changed"
+    );
+}
+
+/// **A fold onto a target whose document this pass could not read or apply is
+/// refused**, and the file stays as the person left it. The clash check reads
+/// rows and cannot see what that document holds, and a fold that carries a
+/// value would arm the target, so the fixed file would never be read back.
+/// Left standing with its marker unrecorded, the target's fixed file is read
+/// on the next scan, and that scan folds. Both of the read-back's failures: a
+/// file that does not parse, and one that parses and names an edition the
+/// target lacks.
+#[test]
+fn a_fold_onto_a_target_whose_document_did_not_read_waits_for_the_fixed_file() {
+    use rusqlite::OptionalExtension as _;
+
+    let unparseable = |_: &Connection, _: i64| "{ not a library document".to_string();
+    let unappliable = |conn: &Connection, base: i64| {
+        let mut doc = crate::librarydoc::of(conn, base).expect("projecting");
+        doc.editions.insert(
+            "nonexistent-edition".to_string(),
+            crate::librarydoc::EditionMeta::default(),
+        );
+        doc.to_json()
+    };
+    type Document = fn(&Connection, i64) -> String;
+    let cases: [(&str, Document); 2] = [
+        ("does not parse", unparseable),
+        ("does not apply", unappliable),
+    ];
+    for (case, document) in cases {
+        let tree = crate::tests::tempdir("derive-fold-onto-unread-target");
+        let library = Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        let colour = two_works_before_the_fold(&tree, &conn);
+        let base: i64 = conn
+            .query_row("SELECT id FROM work WHERE id <> ?1", [colour], |r| r.get(0))
+            .expect("the base work");
+        set_hand_title(&conn, colour, Some("Colour By Hand"));
+        crate::hand::save(&conn, colour).expect("saving the colour work's document");
+        let path = crate::hand::path_for(&conn, base)
+            .expect("addressing")
+            .expect("a rooted work has an address");
+        let text = document(&conn, base);
+        std::fs::create_dir_all(path.parent().expect("an address has a directory"))
+            .expect("the documents directory");
+        std::fs::write(&path, &text).expect("the target's document");
+        write_the_fold_rule(&conn);
+
+        let refused = derive::derive(&conn).expect("the refusing derive");
+
+        assert_eq!(
+            (refused.emptied_works, refused.unfolded_works),
+            (0, 1),
+            "{case}: {refused:?}"
+        );
+        let shown = path.display().to_string();
+        for named in [
+            format!("work {colour}"),
+            format!("work {base}"),
+            shown.clone(),
+            "nothing was moved and nothing was deleted".to_string(),
+        ] {
+            assert!(
+                refused.unfoldable.len() == 1 && refused.unfoldable[0].contains(&named),
+                "{case}: the refusal names {named:?}: {:?}",
+                refused.unfoldable
+            );
+        }
+        assert!(
+            refused
+                .unreadable_hand
+                .iter()
+                .any(|why| why.starts_with(&shown)),
+            "{case}: the pass reports it unreadable: {:?}",
+            refused.unreadable_hand
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the target's document"),
+            text,
+            "{case}: the document is as the person left it"
+        );
+        let standing: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM work WHERE id IN (?1, ?2)",
+                [colour, base],
+                |r| r.get(0),
+            )
+            .expect("counting the two works");
+        assert_eq!(standing, 2, "{case}: both works stand");
+        let marker: Option<i64> = conn
+            .query_row(
+                "SELECT absorbed FROM migrated_document WHERE work_id = ?1 AND document = 'library'",
+                [base],
+                |r| r.get(0),
+            )
+            .optional()
+            .expect("reading the target's marker");
+        assert_eq!(marker, None, "{case}: the target's marker is unrecorded");
+
+        let mut fixed = crate::librarydoc::of(&conn, base).expect("projecting");
+        fixed.tags = vec!["Fixed By Hand".to_string()];
+        std::fs::write(&path, fixed.to_json()).expect("the fixed document");
+        let folded = derive::derive(&conn).expect("the folding derive");
+
+        assert_eq!(
+            (folded.emptied_works, folded.unfolded_works),
+            (1, 0),
+            "{case}: {folded:?}"
+        );
+        let on_disk = crate::librarydoc::LibraryDoc::from_json(
+            &std::fs::read_to_string(&path).expect("the target's document"),
+        )
+        .expect("parsing the target's document");
+        assert_eq!(
+            (on_disk.tags, on_disk.title.as_deref()),
+            (vec!["Fixed By Hand".to_string()], Some("Colour By Hand")),
+            "{case}: the fixed file was read, and the fold then carried the title"
+        );
+    }
+}
+
+/// **The save follows the carry, not the folded work's marker.** A hand title
+/// set in the rows alone leaves the colour work unarmed, so `absorb` arms
+/// nothing, and the target's document is still written.
+#[test]
+fn a_carry_from_an_unarmed_work_still_writes_the_targets_document() {
+    let tree = crate::tests::tempdir("derive-fold-carry-from-unarmed");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let colour = two_works_before_the_fold(&tree, &conn);
+    let base: i64 = conn
+        .query_row("SELECT id FROM work WHERE id <> ?1", [colour], |r| r.get(0))
+        .expect("the base work");
+    set_hand_title(&conn, colour, Some("Colour By Hand"));
+    write_the_fold_rule(&conn);
+
+    let report = derive::derive(&conn).expect("the folding derive");
+
+    assert_eq!(
+        (report.emptied_works, report.unfolded_works),
+        (1, 0),
+        "{report:?}"
+    );
+    let path = crate::hand::path_for(&conn, base)
+        .expect("addressing")
+        .expect("a rooted work has an address");
+    let on_disk = crate::librarydoc::LibraryDoc::from_json(
+        &std::fs::read_to_string(&path).expect("the target's document"),
+    )
+    .expect("parsing the target's document");
+    assert_eq!(on_disk.title.as_deref(), Some("Colour By Hand"));
+}
+
+/// **A fold that carries nothing writes nothing.** The target's own hand
+/// title lives in the rows alone; making it durable is not this fold's to do,
+/// so its address stays empty.
+#[test]
+fn a_fold_that_carries_nothing_writes_no_document_for_its_target() {
+    let tree = crate::tests::tempdir("derive-fold-carries-nothing");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let colour = two_works_before_the_fold(&tree, &conn);
+    let base: i64 = conn
+        .query_row("SELECT id FROM work WHERE id <> ?1", [colour], |r| r.get(0))
+        .expect("the base work");
+    set_hand_title(&conn, base, Some("Base By Hand"));
+    write_the_fold_rule(&conn);
+
+    let report = derive::derive(&conn).expect("the folding derive");
+
+    assert_eq!(
+        (report.emptied_works, report.unfolded_works),
+        (1, 0),
+        "{report:?}"
+    );
+    let path = crate::hand::path_for(&conn, base)
+        .expect("addressing")
+        .expect("a rooted work has an address");
+    assert!(!path.exists(), "no document at {}", path.display());
 }
 
 /// **`report.repaired_documents += found.repaired` accumulates once per root
@@ -4452,7 +4817,6 @@ fn write_roots_survives_a_root_deleted_after_its_own_group_was_built() {
     let mut group = super::Group {
         series: "Series".to_string(),
         volume: Some(1.0),
-        library_id: root.library_id,
         editions: std::collections::BTreeMap::new(),
     };
     group.editions.insert(
@@ -4473,6 +4837,7 @@ fn write_roots_survives_a_root_deleted_after_its_own_group_was_built() {
             title: None,
             kind: None,
             language: None,
+            copies: Vec::new(),
         }],
     );
     let mut report = derive::DeriveReport::default();
@@ -4553,7 +4918,6 @@ fn write_roots_propagates_a_non_foreign_key_error_rather_than_treating_it_as_a_v
     let mut group = super::Group {
         series: "Series".to_string(),
         volume: Some(1.0),
-        library_id: root.library_id,
         editions: std::collections::BTreeMap::new(),
     };
     group.editions.insert(
@@ -4574,6 +4938,7 @@ fn write_roots_propagates_a_non_foreign_key_error_rather_than_treating_it_as_a_v
             title: None,
             kind: None,
             language: None,
+            copies: Vec::new(),
         }],
     );
     let mut report = derive::DeriveReport::default();
@@ -4851,18 +5216,7 @@ fn two_releases_told_apart_only_by_their_directories_are_two_works() {
     assert_eq!(titles, ["[Oshi no Ko]", "[Oshi no Ko] - Fan Translated"]);
 }
 
-// --- Part F1: within a library ----------------------------------------------
-
-/// Copy every page of `from` into a new directory `to`, byte for byte.
-/// `write_pages` bakes its own directory into each page, so two calls never
-/// collide; a copy is how a test asks for the same bytes twice.
-fn copy_pages(from: &std::path::Path, to: &std::path::Path) {
-    std::fs::create_dir_all(to).expect("mkdir");
-    for entry in std::fs::read_dir(from).expect("lists") {
-        let entry = entry.expect("entry");
-        std::fs::copy(entry.path(), to.join(entry.file_name())).expect("copies a page");
-    }
-}
+// --- One derive across libraries (overlapping-libraries spec §3.2) ----------
 
 /// The one integer `sql` answers with: a count, or an id where the fixture
 /// holds one row.
@@ -4870,65 +5224,183 @@ fn scalar(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get(0)).expect(sql)
 }
 
-/// Every `(id, library_id)` of `table`, by id.
-fn filed(conn: &Connection, table: &str) -> Vec<(i64, Option<i64>)> {
-    conn.prepare(&format!("SELECT id, library_id FROM {table} ORDER BY id"))
-        .expect("prepares")
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .expect("reads")
-        .collect::<rusqlite::Result<_>>()
-        .expect("reads")
+/// A directory of its own library for `dir`, with its edition key set to
+/// `edition` where one is given, scanned.
+fn scanned_root(conn: &Connection, dir: &std::path::Path, edition: Option<&str>) -> scan::Root {
+    let root = scan::add_root(conn, dir).expect("a library of its own");
+    if let Some(edition) = edition {
+        scan::update_root(
+            conn,
+            root.id,
+            &scan::RootPatch {
+                edition_key: Some(Some(edition.to_string())),
+                ..Default::default()
+            },
+        )
+        .expect("sets the directory's edition");
+    }
+    let root = scan::roots(conn)
+        .expect("lists")
+        .into_iter()
+        .find(|r| r.id == root.id)
+        .expect("the directory just added");
+    scan::scan_root(conn, &root).expect("scans");
+    root
 }
 
-/// Every `(work id, root id)` a member joins, by work.
-fn member_roots(conn: &Connection) -> Vec<(i64, i64)> {
-    conn.prepare(
-        "SELECT e.work_id, m.root_id FROM member m JOIN edition e ON e.id = m.edition_id \
-         ORDER BY e.work_id, m.root_id",
-    )
-    .expect("prepares")
-    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-    .expect("reads")
-    .collect::<rusqlite::Result<_>>()
-    .expect("reads")
-}
-
+/// Spec decision 4: a volume under one library's directory and its chapter
+/// release under another's, each directory setting its own edition key, are
+/// one work with an edition from each, in one series.
 #[test]
-fn the_same_title_in_two_libraries_makes_two_series_and_two_works() {
+fn a_volume_and_its_chapter_release_in_two_libraries_are_one_work_of_two_editions() {
+    let volumes = crate::tests::tempdir("derive-across-volume");
+    write_pages(&volumes.path().join("Series").join("Series - v01"), 3);
+    let chapters = crate::tests::tempdir("derive-across-chapters");
+    for chapter in ["c001", "c002"] {
+        write_pages(
+            &chapters
+                .path()
+                .join("Series")
+                .join(format!("Series - v01 - {chapter}")),
+            2,
+        );
+    }
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let a = scanned_root(&conn, volumes.path(), None);
+    let b = scanned_root(&conn, chapters.path(), Some("en"));
+    assert_ne!(a.library_id, b.library_id, "the fixture: two libraries");
+
+    let report = derive::derive(&conn).expect("derives");
+
+    assert_eq!(report.works, 1, "written once, from one group");
+    assert_eq!(scalar(&conn, "SELECT count(*) FROM work"), 1, "one work");
+    assert_eq!(
+        edition_keys(&conn),
+        vec!["en", "raw"],
+        "with an edition from each library's directory"
+    );
+    assert_eq!(
+        scalar(
+            &conn,
+            "SELECT count(*) FROM member m JOIN edition e ON e.id = m.edition_id WHERE e.key = 'en'"
+        ),
+        2,
+        "the chapter release's two files in its edition"
+    );
+    assert_eq!(
+        scalar(&conn, "SELECT count(*) FROM series"),
+        1,
+        "one series"
+    );
+    let again = derive::derive(&conn).expect("derives again");
+    assert_eq!(
+        (again.works, again.rekeyed, again.kept_editions),
+        (1, 0, 0),
+        "and a second pass finds the work as the first left it"
+    );
+}
+
+/// The same title in two libraries is one series, and where each directory
+/// sets its own edition key, one volume 1 with an edition from each.
+#[test]
+fn the_same_title_in_two_libraries_is_one_series_and_one_work() {
     let ecchi = crate::tests::tempdir("derive-lib-ecchi");
     write_pages(&ecchi.path().join("Series").join("Series - v01"), 2);
     let volumes = crate::tests::tempdir("derive-lib-volumes");
     write_pages(&volumes.path().join("Series").join("Series - v01"), 3);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    for dir in [&ecchi, &volumes] {
-        let root = scan::add_root(&conn, dir.path()).expect("a library of its own");
-        scan::scan_root(&conn, &root).expect("scans");
-    }
+    scanned_root(&conn, ecchi.path(), None);
+    scanned_root(&conn, volumes.path(), Some("en"));
+
+    let report = derive::derive(&conn).expect("derives");
+
+    assert_eq!(report.works, 1, "written once, from one group");
+
+    assert_eq!(
+        scalar(
+            &conn,
+            "SELECT count(*) FROM series WHERE sort_title = 'Series'"
+        ),
+        1,
+        "one series of that title"
+    );
+    assert_eq!(
+        scalar(&conn, "SELECT count(*) FROM work"),
+        1,
+        "one volume 1"
+    );
+    assert_eq!(edition_keys(&conn), vec!["en", "raw"]);
+}
+
+/// `Foo` in two libraries is one series, holding both libraries' volumes, and
+/// nothing proposes it as the same series as itself.
+#[test]
+fn foo_in_two_libraries_is_one_series_and_raises_no_proposal() {
+    let one = crate::tests::tempdir("derive-foo-one");
+    write_pages(&one.path().join("Foo").join("Foo - v01"), 2);
+    let two = crate::tests::tempdir("derive-foo-two");
+    write_pages(&two.path().join("Foo").join("Foo - v02"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    scanned_root(&conn, one.path(), None);
+    scanned_root(&conn, two.path(), None);
+
+    let report = derive::derive(&conn).expect("derives");
+
+    assert_eq!(report.series, 1);
+    assert_eq!(
+        scalar(
+            &conn,
+            "SELECT count(*) FROM series WHERE sort_title = 'Foo'"
+        ),
+        1,
+        "one `Foo`"
+    );
+    assert_eq!(
+        scalar(&conn, "SELECT count(DISTINCT series_id) FROM work"),
+        1,
+        "holding both volumes"
+    );
+    assert_eq!(scalar(&conn, "SELECT count(*) FROM work"), 2);
+    assert_eq!(
+        scalar(&conn, "SELECT count(*) FROM proposal"),
+        0,
+        "and no proposal of any kind"
+    );
+}
+
+/// Where two series already share a `sort_title`, the derive files both
+/// libraries' volumes under the older and leaves the younger as it was.
+#[test]
+fn a_title_two_series_share_is_reconciled_onto_the_older() {
+    let one = crate::tests::tempdir("derive-older-series-one");
+    write_pages(&one.path().join("Foo").join("Foo - v01"), 2);
+    let two = crate::tests::tempdir("derive-older-series-two");
+    write_pages(&two.path().join("Foo").join("Foo - v02"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch(
+        "INSERT INTO series (id, sort_title) VALUES (1, 'Foo'), (2, 'Foo');
+         INSERT INTO series_title (series_id, title, is_primary)
+         VALUES (1, 'Foo', 1), (2, 'Foo', 1);",
+    )
+    .expect("two series of one title");
+    scanned_root(&conn, one.path(), None);
+    scanned_root(&conn, two.path(), None);
 
     derive::derive(&conn).expect("derives");
 
     assert_eq!(
-        scalar(
-            &conn,
-            "SELECT count(DISTINCT library_id) FROM series WHERE sort_title = 'Series'"
-        ),
+        scalar(&conn, "SELECT count(*) FROM work WHERE series_id = 1"),
         2,
-        "one series of that title per library"
+        "both volumes in the older series"
     );
     assert_eq!(
-        scalar(&conn, "SELECT count(*) FROM work"),
+        scalar(&conn, "SELECT count(*) FROM series"),
         2,
-        "one volume 1 per library"
-    );
-    assert_eq!(
-        scalar(
-            &conn,
-            "SELECT count(*) FROM work w JOIN series s ON s.id = w.series_id \
-             WHERE w.library_id IS NOT s.library_id"
-        ),
-        0,
-        "every work sits in a series of its own library"
+        "nothing minted"
     );
 }
 
@@ -4977,206 +5449,126 @@ fn two_dirs_of_one_library_still_make_one_work_of_a_volume_and_its_other_release
     );
 }
 
-#[test]
-fn byte_identical_volumes_in_two_libraries_are_two_works_with_two_slugs() {
-    let ecchi = crate::tests::tempdir("derive-lib-copy-a");
-    let first = ecchi.path().join("Series").join("Series - v01");
-    write_pages(&first, 3);
-    let volumes = crate::tests::tempdir("derive-lib-copy-b");
-    copy_pages(&first, &volumes.path().join("Series").join("Series - v01"));
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    for dir in [&ecchi, &volumes] {
-        let root = scan::add_root(&conn, dir.path()).expect("adds");
-        scan::scan_root(&conn, &root).expect("scans");
-    }
-
-    derive::derive(&conn).expect("derives");
-    let ids = |conn: &Connection| -> Vec<(i64, String, String)> {
-        conn.prepare("SELECT id, slug, content_key FROM work ORDER BY id")
-            .expect("prepares")
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .expect("reads")
+/// Every row a relabel must leave alone, as text: each series, each work's
+/// id, slug, series and key, each edition, and each position and note.
+fn identities(conn: &Connection) -> Vec<String> {
+    let rows = |sql: &str| -> Vec<String> {
+        conn.prepare(sql)
+            .expect(sql)
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect(sql)
             .collect::<rusqlite::Result<_>>()
-            .expect("reads")
+            .expect(sql)
     };
-    let first_pass = ids(&conn);
-    derive::derive(&conn).expect("derives again");
-
-    assert_eq!(first_pass.len(), 2, "two works");
-    assert_eq!(
-        first_pass[0].2, first_pass[1].2,
-        "with one content key between them"
-    );
-    assert_ne!(
-        first_pass[0].1, first_pass[1].1,
-        "and two slugs, since a slug names one work"
-    );
-    assert_eq!(
-        ids(&conn),
-        first_pass,
-        "a second pass finds each library's own again"
-    );
+    [
+        "SELECT 'series ' || id || ' ' || sort_title FROM series ORDER BY id",
+        "SELECT 'work ' || id || ' ' || slug || ' ' || series_id || ' ' || content_key
+           FROM work ORDER BY id",
+        "SELECT 'edition ' || work_id || ' ' || key FROM edition ORDER BY work_id, key",
+        "SELECT 'progress ' || work_id || ' ' || edition || ' ' || slot FROM progress
+          ORDER BY work_id",
+        "SELECT 'note ' || work_id || ' ' || id FROM note ORDER BY work_id",
+    ]
+    .iter()
+    .flat_map(|sql| rows(sql))
+    .collect()
 }
 
-/// Spec decision 5: a directory moved into another library takes its reading
-/// history with it. Its library keeps another directory, so the old works stay
-/// in it until the fold carries them across.
+/// Spec §3.5: Move relabels a directory's library, and the derive after it
+/// changes no work, slug, series, edition or position. One directory moves out
+/// of a library that keeps another, and one out of a library it was alone in,
+/// which goes.
 #[test]
-fn a_dir_moved_to_another_library_carries_positions_and_notes_through_the_fold() {
-    let kept = crate::tests::tempdir("derive-lib-move-kept");
+fn relabelling_a_directorys_library_changes_no_work_series_edition_or_position() {
+    let kept = crate::tests::tempdir("derive-relabel-kept");
     write_pages(&kept.path().join("Kept").join("Kept - v01"), 2);
-    let moved = crate::tests::tempdir("derive-lib-move-moved");
+    let moved = crate::tests::tempdir("derive-relabel-moved");
     write_pages(&moved.path().join("Moved").join("Moved - v01"), 3);
-    let elsewhere = crate::tests::tempdir("derive-lib-move-elsewhere");
-    write_pages(&elsewhere.path().join("Else").join("Else - v01"), 4);
+    let alone = crate::tests::tempdir("derive-relabel-alone");
+    write_pages(&alone.path().join("Alone").join("Alone - v01"), 4);
+    let elsewhere = crate::tests::tempdir("derive-relabel-elsewhere");
+    write_pages(&elsewhere.path().join("Moved").join("Moved - v02"), 5);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let k = scan::add_root_in(&conn, kept.path(), scan::InLibrary::Named("A")).expect("adds");
     let m = scan::add_root_in(&conn, moved.path(), scan::InLibrary::Named("A")).expect("adds");
+    let l = scan::add_root(&conn, alone.path()).expect("adds");
     let e = scan::add_root_in(&conn, elsewhere.path(), scan::InLibrary::Named("B")).expect("adds");
-    for root in [&k, &m, &e] {
+    for root in [&k, &m, &l, &e] {
         scan::scan_root(&conn, root).expect("scans");
     }
     derive::derive(&conn).expect("derives");
-    let before: i64 = conn
-        .query_row("SELECT id FROM work WHERE title LIKE 'Moved%'", [], |r| {
-            r.get(0)
-        })
-        .expect("the moved directory's work");
-    conn.execute(
-        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
-        [before],
-    )
-    .expect("a position");
+    for (title, slot) in [("Moved - v01", 2), ("Alone - v01", 3)] {
+        conn.execute(
+            "INSERT INTO progress (user_id, work_id, edition, slot)
+             SELECT 1, id, 'raw', ?2 FROM work WHERE title = ?1",
+            rusqlite::params![title, slot],
+        )
+        .expect("a position on each directory about to move");
+    }
     conn.execute(
         "INSERT INTO note (user_id, id, work_id, edition, slot, body, created, updated)
-         VALUES (1, 'n', ?1, 'raw', 1, 'kept', 'now', 'now')",
-        [before],
+         SELECT 1, 'n', id, 'raw', 1, 'kept', 'now', 'now' FROM work WHERE title = 'Moved - v01'",
+        [],
     )
     .expect("a note");
+    let before = identities(&conn);
+    assert_eq!(
+        before.iter().filter(|r| r.starts_with("progress ")).count(),
+        2,
+        "the fixture: both positions written"
+    );
 
-    conn.execute(
-        "UPDATE root SET library_id = ?1 WHERE id = ?2",
-        [e.library_id, m.id],
-    )
-    .expect("moves the directory into B");
+    crate::relocate::move_root(&conn, m.id, crate::relocate::Target::Library(e.library_id))
+        .expect("moves a directory out of a library that keeps another");
+    let gone =
+        crate::relocate::move_root(&conn, l.id, crate::relocate::Target::Library(e.library_id))
+            .expect("moves a directory out of a library it was alone in");
+    assert!(
+        gone.library_removed.is_some(),
+        "the fixture: that library went"
+    );
     let report = derive::derive(&conn).expect("re-derives");
 
-    let (after, library_id): (i64, i64) = conn
-        .query_row(
-            "SELECT w.id, w.library_id FROM work w
-               JOIN edition ed ON ed.work_id = w.id JOIN member mb ON mb.edition_id = ed.id
-              WHERE mb.root_id = ?1",
-            [m.id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .expect("the moved directory's material has one work");
-    assert_eq!(library_id, e.library_id, "filed under B");
     assert_eq!(
-        report.emptied_works, 1,
-        "the old work was folded into the new one"
-    );
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!("SELECT count(*) FROM work WHERE id = {before}")
-        ),
-        0
-    );
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!("SELECT count(*) FROM progress WHERE work_id = {after} AND slot = 2")
-        ),
-        1,
-        "the position came with it"
-    );
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!("SELECT count(*) FROM note WHERE work_id = {after}")
-        ),
-        1,
-        "and the note"
-    );
-}
-
-/// The other half of a move: a directory alone in its library empties it, the
-/// library goes (migration 15's trigger) and its works are left in none. The
-/// next derive adopts them, so nothing is minted and nothing folded.
-#[test]
-fn a_dir_moved_out_of_a_library_it_was_alone_in_keeps_its_works() {
-    let moved = crate::tests::tempdir("derive-lib-alone-moved");
-    write_pages(&moved.path().join("Moved").join("Moved - v01"), 3);
-    let elsewhere = crate::tests::tempdir("derive-lib-alone-elsewhere");
-    write_pages(&elsewhere.path().join("Else").join("Else - v01"), 4);
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let m = scan::add_root(&conn, moved.path()).expect("adds");
-    let e = scan::add_root(&conn, elsewhere.path()).expect("adds");
-    for root in [&m, &e] {
-        scan::scan_root(&conn, root).expect("scans");
-    }
-    derive::derive(&conn).expect("derives");
-    let before: (i64, String) = conn
-        .query_row(
-            "SELECT id, slug FROM work WHERE title LIKE 'Moved%'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .expect("the work");
-
-    conn.execute(
-        "UPDATE root SET library_id = ?1 WHERE id = ?2",
-        [e.library_id, m.id],
-    )
-    .expect("moves the directory");
-    let report = derive::derive(&conn).expect("re-derives");
-
-    let after: (i64, String, i64) = conn
-        .query_row(
-            "SELECT id, slug, library_id FROM work WHERE title LIKE 'Moved%'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .expect("the work");
-    assert_eq!(
-        (after.0, after.1.clone()),
+        identities(&conn),
         before,
-        "the same row and the same slug"
+        "every series, work, slug, edition, position and note as it was"
     );
-    assert_eq!(after.2, e.library_id);
-    assert_eq!(report.emptied_works, 0, "nothing needed folding");
     assert_eq!(
-        scalar(
-            &conn,
-            "SELECT count(*) FROM series WHERE library_id IS NULL"
-        ),
-        0
+        (report.rekeyed, report.emptied_works, report.kept_editions),
+        (0, 0, 0),
+        "nothing rekeyed, folded or left behind"
     );
 }
 
+/// Several series hold the title `Series`: the one the files named, and a
+/// younger one a correction gave it as an alternative. A hand document naming
+/// it finds the oldest in the store, whichever library its work is in.
 #[test]
-fn a_hand_document_finds_its_series_in_its_own_library() {
+fn a_hand_document_finds_the_oldest_series_of_its_title_across_libraries() {
     let first = crate::tests::tempdir("derive-lib-doc-a");
     write_pages(&first.path().join("Series").join("Series - v01"), 2);
     let second = crate::tests::tempdir("derive-lib-doc-b");
     write_pages(&second.path().join("Series").join("Series - v02"), 3);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    for dir in [&first, &second] {
-        let root = scan::add_root(&conn, dir.path()).expect("adds");
-        scan::scan_root(&conn, &root).expect("scans");
-    }
+    scanned_root(&conn, first.path(), None);
+    scanned_root(&conn, second.path(), None);
     derive::derive(&conn).expect("derives");
-    let (work, own_series): (i64, i64) = conn
+    let (work, oldest): (i64, i64) = conn
         .query_row(
             "SELECT id, series_id FROM work WHERE volume = 2.0",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .expect("the second library's volume");
+    conn.execute_batch(
+        "INSERT INTO series (sort_title) VALUES ('Shirizu');
+         INSERT INTO series_title (series_id, title, is_primary)
+         VALUES (last_insert_rowid(), 'Series', 0);",
+    )
+    .expect("a younger series holding the title too");
     let doc = crate::librarydoc::LibraryDoc::from_json(
         r#"{"taiyaku_library":1,"updated":"2026-10-05T00:00:00Z",
             "series":{"chosen":true,"titles":[{"title":"Series","kind":"romaji","primary":true}]}}"#,
@@ -5185,242 +5577,172 @@ fn a_hand_document_finds_its_series_in_its_own_library() {
 
     crate::librarydoc::apply(&conn, work, &doc).expect("applies");
 
-    let series: i64 = conn
-        .query_row("SELECT series_id FROM work WHERE id = ?1", [work], |r| {
-            r.get(0)
-        })
-        .expect("reads");
     assert_eq!(
-        series, own_series,
-        "the title also names the first library's series"
+        scalar(
+            &conn,
+            &format!("SELECT series_id FROM work WHERE id = {work}")
+        ),
+        oldest,
+        "the oldest series of that title, which both libraries' volumes are in"
+    );
+    assert_eq!(
+        scalar(&conn, "SELECT count(DISTINCT series_id) FROM work"),
+        1
     );
 }
 
+/// A series a hand document names for the first time is minted once, and a
+/// document naming the same title on a work under another library's
+/// directory, or on a work no directory holds, finds it.
 #[test]
-fn a_series_and_a_work_in_no_library_are_adopted_by_the_next_derive() {
-    let dir = crate::tests::tempdir("derive-lib-adopt");
+fn a_hand_document_naming_a_new_series_mints_one_the_next_document_finds() {
+    let dir = crate::tests::tempdir("derive-lib-doc-mint");
     write_pages(&dir.path().join("Series").join("Series - v01"), 2);
+    let elsewhere = crate::tests::tempdir("derive-lib-doc-mint-elsewhere");
+    write_pages(&elsewhere.path().join("Other").join("Other - v01"), 3);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, dir.path()).expect("adds");
-    scan::scan_root(&conn, &root).expect("scans");
+    let root = scanned_root(&conn, dir.path(), None);
+    let other = scanned_root(&conn, elsewhere.path(), None);
+    assert_ne!(
+        root.library_id, other.library_id,
+        "the fixture: two libraries"
+    );
     derive::derive(&conn).expect("derives");
-    let before = (
-        scalar(&conn, "SELECT id FROM series"),
-        scalar(&conn, "SELECT id FROM work"),
-    );
-    conn.execute_batch("UPDATE work SET library_id = NULL; UPDATE series SET library_id = NULL;")
-        .expect("as migration 15 leaves a workless series, or a move leaves both");
+    let scanned = work_under(&conn, &root).0;
+    let in_other = work_under(&conn, &other).0;
+    let imported = crate::import::sidecar(
+        &conn,
+        &taiyaku_core::Sidecar::from_json(
+            r#"{"taiyaku":1,"work":{"title":"Imported","reading":"rtl"},
+                "editions":{"raw":{"label":"raw","members":[
+                  {"path":"raw/imported.cbz","sha256":"aa","pages":2}]}},
+                "hub":"raw","alignments":[]}"#,
+        )
+        .expect("parses"),
+        std::path::Path::new("/x/taiyaku.json"),
+    )
+    .expect("imports a work no directory holds");
+    let doc = crate::librarydoc::LibraryDoc::from_json(
+        r#"{"taiyaku_library":1,"updated":"2026-10-05T00:00:00Z",
+            "series":{"chosen":true,
+                      "titles":[{"title":"Named By Hand","kind":"romaji","primary":true}]}}"#,
+    )
+    .expect("parses");
 
-    derive::derive(&conn).expect("derives again");
+    crate::librarydoc::apply(&conn, scanned, &doc).expect("applies");
+    crate::librarydoc::apply(&conn, in_other, &doc).expect("applies");
+    crate::librarydoc::apply(&conn, imported, &doc).expect("applies");
 
     assert_eq!(
-        scalar(&conn, "SELECT count(*) FROM series"),
-        1,
-        "no second series"
-    );
-    assert_eq!(
-        scalar(&conn, "SELECT count(*) FROM work"),
-        1,
-        "no second work"
-    );
-    assert_eq!(
-        (
-            scalar(&conn, "SELECT id FROM series"),
-            scalar(&conn, "SELECT id FROM work")
+        scalar(
+            &conn,
+            "SELECT count(*) FROM series WHERE sort_title = 'Named By Hand'"
         ),
-        before,
-        "the same rows"
+        1,
+        "minted once"
     );
     assert_eq!(
         scalar(
             &conn,
+            "SELECT count(*) FROM work w JOIN series s ON s.id = w.series_id
+              WHERE s.sort_title = 'Named By Hand'"
+        ),
+        3,
+        "and all three works are in it"
+    );
+}
+
+/// Three series of one title, made by hand: a hand document on any work,
+/// whichever library holds it or none, finds the oldest and mints nothing.
+#[test]
+fn a_hand_document_resolves_one_title_to_the_oldest_series_in_the_store() {
+    let dir = crate::tests::tempdir("derive-lib-doc-three");
+    write_pages(&dir.path().join("Else").join("Else - v01"), 2);
+    let elsewhere = crate::tests::tempdir("derive-lib-doc-three-elsewhere");
+    write_pages(&elsewhere.path().join("Other").join("Other - v01"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute_batch(
+        "INSERT INTO series (id, sort_title)
+         VALUES (1, 'Series'), (2, 'Series Two'), (3, 'Series Three');
+         INSERT INTO series_title (series_id, title, is_primary)
+         VALUES (1, 'Series', 1), (2, 'Series', 0), (3, 'Series', 0);",
+    )
+    .expect("three series of one title");
+    let root = scanned_root(&conn, dir.path(), None);
+    let other = scanned_root(&conn, elsewhere.path(), None);
+    assert_ne!(
+        root.library_id, other.library_id,
+        "the fixture: two libraries"
+    );
+    derive::derive(&conn).expect("derives");
+    let scanned = work_under(&conn, &root).0;
+    let in_other = work_under(&conn, &other).0;
+    let imported = crate::import::scanned(
+        &conn,
+        &taiyaku_core::Sidecar::from_json(
+            r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+                "editions":{"raw":{"label":"raw","members":[
+                  {"path":"raw/v01.cbz","sha256":"bb","pages":2}]}},
+                "hub":"raw","alignments":[]}"#,
+        )
+        .expect("parses"),
+        None,
+    )
+    .expect("a work no directory holds");
+    let doc = crate::librarydoc::LibraryDoc::from_json(
+        r#"{"taiyaku_library":1,"updated":"2026-10-05T00:00:00Z",
+            "series":{"chosen":true,"titles":[{"title":"Series","kind":"romaji","primary":true}]}}"#,
+    )
+    .expect("parses");
+
+    crate::librarydoc::apply(&conn, scanned, &doc).expect("applies");
+    crate::librarydoc::apply(&conn, in_other, &doc).expect("applies");
+    crate::librarydoc::apply(&conn, imported, &doc).expect("applies");
+
+    assert_eq!(
+        scalar(
+            &conn,
             &format!(
-                "SELECT count(*) FROM work WHERE library_id = {}",
-                root.library_id
+                "SELECT count(*) FROM work
+                  WHERE id IN ({scanned}, {in_other}, {imported}) AND series_id = 1"
             )
         ),
-        1
+        3,
+        "all three find the oldest"
     );
     assert_eq!(
-        filed(&conn, "series"),
-        vec![(before.0, Some(root.library_id))],
-        "and the series is filed under the library with its work"
-    );
-}
-
-/// `work`'s `UNIQUE (content_key, library_id)` does not compare NULLs, so two
-/// works in no library can hold one key: here two libraries each held a copy
-/// of a volume, and each lost its directory to a move. Each work goes to the
-/// library its own directory moved to, and the series go the same way.
-///
-/// The older directory goes to the higher library, so taking the older row for
-/// the lower library would give each library the other's directory's work.
-#[test]
-fn two_works_in_no_library_sharing_a_key_each_go_with_their_own_dir() {
-    let ecchi = crate::tests::tempdir("derive-lib-two-unfiled-a");
-    let first = ecchi.path().join("Series").join("Series - v01");
-    write_pages(&first, 3);
-    let volumes = crate::tests::tempdir("derive-lib-two-unfiled-b");
-    copy_pages(&first, &volumes.path().join("Series").join("Series - v01"));
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let a = scan::add_root(&conn, ecchi.path()).expect("adds");
-    let b = scan::add_root(&conn, volumes.path()).expect("adds");
-    for root in [&a, &b] {
-        scan::scan_root(&conn, root).expect("scans");
-    }
-    derive::derive(&conn).expect("derives");
-    let works: Vec<i64> = filed(&conn, "work").into_iter().map(|(id, _)| id).collect();
-    let series: Vec<i64> = filed(&conn, "series")
-        .into_iter()
-        .map(|(id, _)| id)
-        .collect();
-    let members_before = member_roots(&conn);
-    assert_eq!(
-        members_before,
-        vec![(works[0], a.id), (works[1], b.id)],
-        "the fixture: the older work holds the first directory's copy"
-    );
-
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'C'), (80, 'D');")
-        .expect("two more libraries");
-    conn.execute("UPDATE root SET library_id = 80 WHERE id = ?1", [a.id])
-        .expect("moves the first directory to the higher library");
-    conn.execute("UPDATE root SET library_id = 70 WHERE id = ?1", [b.id])
-        .expect("moves the second directory to the lower");
-    assert_eq!(
-        (
-            scalar(&conn, "SELECT count(*) FROM work WHERE library_id IS NULL"),
-            scalar(&conn, "SELECT count(DISTINCT content_key) FROM work"),
+        scalar(
+            &conn,
+            "SELECT count(*) FROM series WHERE sort_title LIKE 'Series%'"
         ),
-        (2, 1),
-        "the fixture: two works in no library, with one key"
-    );
-
-    let report = derive::derive(&conn).expect("re-derives");
-
-    assert_eq!(
-        filed(&conn, "work"),
-        vec![(works[0], Some(80)), (works[1], Some(70))],
-        "the same two rows, each under the library its directory moved to"
-    );
-    assert_eq!(
-        filed(&conn, "series"),
-        vec![(series[0], Some(80)), (series[1], Some(70))],
-        "and their series the same way"
-    );
-    assert_eq!(report.emptied_works, 0, "nothing was minted to fold into");
-    assert_eq!(
-        member_roots(&conn),
-        members_before,
-        "each work still holds its own directory's copy"
+        3,
+        "and nothing was minted"
     );
 }
 
-/// Migration 15 leaves a series holding no work in no library, and says the
-/// first library whose files name it adopts it. First is the lowest library
-/// id; the next library to name the title mints its own.
+/// A work no directory holds can sit at a scanned work's address: an
+/// imported `taiyaku.json` a person placed in a scanned series, at a volume
+/// the directory also holds. When the volume changes on disk, the scanned work
+/// follows the files; the older imported work is not taken for it.
 #[test]
-fn a_series_in_no_library_goes_to_the_first_library_whose_files_name_it() {
-    let one = crate::tests::tempdir("derive-lib-series-adopt-a");
-    write_pages(&one.path().join("Series").join("Series - v01"), 2);
-    let two = crate::tests::tempdir("derive-lib-series-adopt-b");
-    write_pages(&two.path().join("Series").join("Series - v01"), 3);
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    conn.execute("INSERT INTO series (sort_title) VALUES ('Series')", [])
-        .expect("a series in no library, holding no work");
-    let unfiled = conn.last_insert_rowid();
-    let a = scan::add_root(&conn, one.path()).expect("adds");
-    let b = scan::add_root(&conn, two.path()).expect("adds");
-    assert!(
-        a.library_id < b.library_id,
-        "the fixture: the first directory's library is the lower"
-    );
-    for root in [&a, &b] {
-        scan::scan_root(&conn, root).expect("scans");
-    }
-
-    derive::derive(&conn).expect("derives");
-
-    let series = filed(&conn, "series");
-    assert_eq!(
-        series.len(),
-        2,
-        "one per library, the adopted one among them"
-    );
-    assert_eq!(
-        series[0],
-        (unfiled, Some(a.library_id)),
-        "the lower library took the series that was there"
-    );
-    assert_eq!(
-        series[1].1,
-        Some(b.library_id),
-        "and the other library minted its own"
-    );
-}
-
-/// A work in no library can sit at a library's own address: an imported
-/// `taiyaku.json` a person placed in a scanned series, at a volume the
-/// library also holds. When the library's volume changes on disk, its own
-/// work follows the files; the older work in no library is not taken for it.
-#[test]
-fn a_work_follows_its_files_before_an_older_one_in_no_library_at_its_address() {
-    the_librarys_own_work_follows_its_files(
-        "derive-lib-own-first",
-        "Series - v01",
-        Some(1.0),
-        None,
-    );
+fn a_work_follows_its_files_before_an_older_one_no_directory_holds_at_its_address() {
+    a_held_work_follows_its_files("derive-held-first", "Series - v01", Some(1.0));
 }
 
 /// The same for a work with no volume, whose address is its files' own path:
-/// the imported work names the path the library's one-shot is at.
+/// the imported work names the path the directory's one-shot is at.
 #[test]
-fn a_volume_less_work_follows_its_files_before_an_older_one_in_no_library() {
-    the_librarys_own_work_follows_its_files(
-        "derive-lib-own-first-oneshot",
-        "Some Oneshot",
-        None,
-        None,
-    );
+fn a_volume_less_work_follows_its_files_before_an_older_one_no_directory_holds() {
+    a_held_work_follows_its_files("derive-held-first-oneshot", "Some Oneshot", None);
 }
 
-/// A work of another library can sit at this library's address too, where a
-/// person set its series by hand before the two were separate libraries. It
-/// is not this library's to take, older or not.
-#[test]
-fn a_work_of_another_library_at_this_address_is_not_taken_for_this_librarys_own() {
-    the_librarys_own_work_follows_its_files(
-        "derive-lib-other-library",
-        "Series - v01",
-        Some(1.0),
-        Some(70),
-    );
-}
-
-#[test]
-fn a_volume_less_work_of_another_library_naming_this_path_is_not_taken_for_this_librarys_own() {
-    the_librarys_own_work_follows_its_files(
-        "derive-lib-other-library-oneshot",
-        "Some Oneshot",
-        None,
-        Some(70),
-    );
-}
-
-/// One member, `Series/<name>`, scanned into a library after another work
-/// was imported. The imported work is filed under `older_in` — another
-/// library, or none — and placed at the scanned one's address, `volume` and
-/// member path both. Then the member's files change.
-fn the_librarys_own_work_follows_its_files(
-    label: &str,
-    name: &str,
-    volume: Option<f64>,
-    older_in: Option<i64>,
-) {
+/// One member, `Series/<name>`, scanned after another work was imported. The
+/// imported work, whose members are under no directory, is placed at the
+/// scanned one's address, `volume` and member path both. Then the member's
+/// files change.
+fn a_held_work_follows_its_files(label: &str, name: &str, volume: Option<f64>) {
     let dir = crate::tests::tempdir(label);
     let volume_dir = dir.path().join("Series").join(name);
     write_pages(&volume_dir, 2);
@@ -5439,13 +5761,12 @@ fn the_librarys_own_work_follows_its_files(
         std::path::Path::new("/x/taiyaku.json"),
     )
     .expect("imports, before anything is scanned, so it is the older row");
-    let root = scan::add_root(&conn, dir.path()).expect("adds");
-    scan::scan_root(&conn, &root).expect("scans");
+    let root = scanned_root(&conn, dir.path(), None);
     derive::derive(&conn).expect("derives");
     let (scanned, series, key_before, derived_volume): (i64, i64, String, Option<f64>) = conn
         .query_row(
-            "SELECT id, series_id, content_key, volume FROM work WHERE library_id = ?1",
-            [root.library_id],
+            "SELECT id, series_id, content_key, volume FROM work WHERE id != ?1",
+            [imported],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .expect("the scanned work");
@@ -5457,20 +5778,10 @@ fn the_librarys_own_work_follows_its_files(
         derived_volume, volume,
         "the fixture: the scanned work is at the address this case is about"
     );
-    if let Some(other) = older_in {
-        // A row is enough to file a work under. The crate makes no library
-        // without a directory, and this one's directories are not the subject.
-        conn.execute(
-            "INSERT INTO library (id, name) VALUES (?1, 'Other')",
-            [other],
-        )
-        .expect("another library");
-    }
     conn.execute(
-        "UPDATE work SET series_id = ?1, series_id_hand = ?1, volume = ?2, volume_hand = ?2,
-                         library_id = ?3
-          WHERE id = ?4",
-        rusqlite::params![series, volume, older_in, imported],
+        "UPDATE work SET series_id = ?1, series_id_hand = ?1, volume = ?2, volume_hand = ?2
+          WHERE id = ?3",
+        rusqlite::params![series, volume, imported],
     )
     .expect("a person places the imported work at the scanned one's address");
     conn.execute(
@@ -5481,14 +5792,15 @@ fn the_librarys_own_work_follows_its_files(
         [scanned, imported],
     )
     .expect("and it names the scanned member's own path, which is a volume-less address");
-    let imported_before: (Option<i64>, String) = conn
-        .query_row(
-            "SELECT library_id, content_key FROM work WHERE id = ?1",
+    let imported_key = |conn: &Connection| -> String {
+        conn.query_row(
+            "SELECT content_key FROM work WHERE id = ?1",
             [imported],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
         )
-        .expect("reads");
-    assert_eq!(imported_before.0, older_in, "the fixture");
+        .expect("reads")
+    };
+    let imported_before = imported_key(&conn);
 
     std::fs::write(volume_dir.join("002.jpg"), b"one more page").expect("write");
     // A directory member is re-hashed only when its `mtime` moves; see
@@ -5508,35 +5820,25 @@ fn the_librarys_own_work_follows_its_files(
             |r| r.get(0),
         )
         .expect("the scanned work is still there");
-    assert_ne!(
-        key_after, key_before,
-        "the library's own work followed its files"
-    );
+    assert_ne!(key_after, key_before, "the scanned work followed its files");
     assert_eq!(report.rekeyed, 1);
-    let imported_after: (Option<i64>, String) = conn
-        .query_row(
-            "SELECT library_id, content_key FROM work WHERE id = ?1",
-            [imported],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .expect("reads");
     assert_eq!(
-        imported_after, imported_before,
-        "and the imported work is as it was, where it was"
+        imported_key(&conn),
+        imported_before,
+        "and the imported work is as it was"
     );
     assert_eq!(scalar(&conn, "SELECT count(*) FROM work"), 2);
 }
 
-/// What migration 15 leaves where one work gathered editions from two roots:
-/// the work filed under its hub edition's library, and the other root in a
-/// library of its own. The next derive gives that library a work of its own.
-/// The old work keeps the edition it held from that directory, as a scan keeps
-/// any edition it did not name, and the derive counts it.
+/// One work gathered editions from two directories of one library, and one
+/// directory is then moved to another library. The work stays whole: the same
+/// row with both editions, and the position on the moved directory's edition
+/// stays on it.
 #[test]
-fn a_work_left_spanning_two_libraries_is_split_and_keeps_the_other_librarys_edition() {
-    let hub = crate::tests::tempdir("derive-lib-split-hub");
+fn a_work_spanning_two_libraries_stays_whole() {
+    let hub = crate::tests::tempdir("derive-lib-whole-hub");
     write_pages(&hub.path().join("Series").join("Series - v01"), 2);
-    let other = crate::tests::tempdir("derive-lib-split-other");
+    let other = crate::tests::tempdir("derive-lib-whole-other");
     write_pages(&other.path().join("Series").join("Series - v01"), 3);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -5555,29 +5857,17 @@ fn a_work_left_spanning_two_libraries_is_split_and_keeps_the_other_librarys_edit
         scan::scan_root(&conn, &root).expect("scans");
     }
     derive::derive(&conn).expect("derives");
-    let spanning = scalar(&conn, "SELECT id FROM work");
-    assert_eq!(
-        scalar(&conn, "SELECT count(*) FROM work WHERE hub = 'en'"),
-        1,
-        "the fixture: one work, its hub the first directory's edition"
-    );
+    let whole = scalar(&conn, "SELECT id FROM work");
     conn.execute(
         "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
-        [spanning],
+        [whole],
     )
-    .expect("a position on the edition about to be split off");
+    .expect("a position on the edition whose directory is about to move");
 
-    conn.execute("INSERT INTO library (id, name) VALUES (90, 'Other')", [])
-        .expect("a library for the other directory");
-    conn.execute("UPDATE root SET library_id = 90 WHERE id = ?1", [o.id])
-        .expect("as migration 15 files each root under a library of its own");
-    let report = derive::derive(&conn).expect("the first derive within libraries");
+    crate::relocate::move_root(&conn, o.id, crate::relocate::Target::New("Other"))
+        .expect("moves the other directory to a library of its own");
+    let report = derive::derive(&conn).expect("re-derives");
 
-    let works = filed(&conn, "work");
-    assert_eq!(works.len(), 2, "one work per library");
-    assert_eq!(works[0], (spanning, Some(h.library_id)));
-    assert_eq!(works[1].1, Some(90));
-    let split = works[1].0;
     let editions: Vec<(i64, String)> = conn
         .prepare("SELECT work_id, key FROM edition ORDER BY work_id, key")
         .expect("prepares")
@@ -5587,437 +5877,41 @@ fn a_work_left_spanning_two_libraries_is_split_and_keeps_the_other_librarys_edit
         .expect("reads");
     assert_eq!(
         editions,
-        vec![
-            (spanning, "en".to_string()),
-            (spanning, "raw".to_string()),
-            (split, "raw".to_string()),
-        ],
-        "the old work still holds the other directory's edition"
+        vec![(whole, "en".to_string()), (whole, "raw".to_string())],
+        "one work, holding both directories' editions"
     );
-    assert_eq!(report.kept_editions, 1, "which the derive counts");
     assert_eq!(
-        report.emptied_works, 0,
-        "and it is not folded: this derive wrote the old work too"
+        (report.works, report.kept_editions, report.rekeyed),
+        (1, 0, 0),
+        "written from one group, with nothing left behind or rekeyed"
     );
     assert_eq!(
         scalar(
             &conn,
-            &format!(
-                "SELECT count(*) FROM progress WHERE work_id = {spanning} AND edition = 'raw'"
-            )
-        ),
-        1,
-        "so the position stays on the old work's copy of that edition"
-    );
-}
-
-/// A library with a series of its own keeps it, though an older series of
-/// the same title sits in no library: here another library's, left there
-/// when its directory was removed.
-#[test]
-fn a_library_keeps_its_own_series_before_an_older_one_in_no_library() {
-    let gone = crate::tests::tempdir("derive-lib-own-series-gone");
-    write_pages(&gone.path().join("Series").join("Series - v01"), 2);
-    let kept = crate::tests::tempdir("derive-lib-own-series-kept");
-    write_pages(&kept.path().join("Series").join("Series - v01"), 3);
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let g = scan::add_root(&conn, gone.path()).expect("adds");
-    let k = scan::add_root(&conn, kept.path()).expect("adds");
-    for root in [&g, &k] {
-        scan::scan_root(&conn, root).expect("scans");
-    }
-    derive::derive(&conn).expect("derives");
-    let series = filed(&conn, "series");
-    assert_eq!(
-        series.iter().map(|(_, l)| *l).collect::<Vec<_>>(),
-        vec![Some(g.library_id), Some(k.library_id)],
-        "the fixture: the older series is the first library's"
-    );
-    let (older, own) = (series[0].0, series[1].0);
-    conn.execute("DELETE FROM root WHERE id = ?1", [g.id])
-        .expect("the first directory goes, and its library with it");
-    assert_eq!(
-        filed(&conn, "series"),
-        vec![(older, None), (own, Some(k.library_id))],
-        "the fixture: the older series is left in no library"
-    );
-
-    derive::derive(&conn).expect("re-derives");
-
-    assert_eq!(
-        filed(&conn, "series"),
-        vec![(older, None), (own, Some(k.library_id))],
-        "the library adopted nothing, having a series of its own"
-    );
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!(
-                "SELECT series_id FROM work WHERE library_id = {}",
-                k.library_id
-            )
-        ),
-        own,
-        "and its work is still in it"
-    );
-}
-
-/// A series a hand document names for the first time is filed where the work
-/// is, and a work in no library mints one in none.
-#[test]
-fn a_hand_document_naming_a_new_series_mints_it_in_the_works_library() {
-    let dir = crate::tests::tempdir("derive-lib-doc-mint");
-    write_pages(&dir.path().join("Series").join("Series - v01"), 2);
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let root = scan::add_root(&conn, dir.path()).expect("adds");
-    scan::scan_root(&conn, &root).expect("scans");
-    derive::derive(&conn).expect("derives");
-    let scanned = scalar(&conn, "SELECT id FROM work");
-    let imported = crate::import::sidecar(
-        &conn,
-        &taiyaku_core::Sidecar::from_json(
-            r#"{"taiyaku":1,"work":{"title":"Imported","reading":"rtl"},
-                "editions":{"raw":{"label":"raw","members":[
-                  {"path":"raw/imported.cbz","sha256":"aa","pages":2}]}},
-                "hub":"raw","alignments":[]}"#,
-        )
-        .expect("parses"),
-        std::path::Path::new("/x/taiyaku.json"),
-    )
-    .expect("imports a work in no library");
-    let naming = |title: &str| {
-        crate::librarydoc::LibraryDoc::from_json(&format!(
-            r#"{{"taiyaku_library":1,"updated":"2026-10-05T00:00:00Z",
-                "series":{{"chosen":true,
-                           "titles":[{{"title":"{title}","kind":"romaji","primary":true}}]}}}}"#
-        ))
-        .expect("parses")
-    };
-
-    crate::librarydoc::apply(&conn, scanned, &naming("Named By Hand")).expect("applies");
-    crate::librarydoc::apply(&conn, imported, &naming("Named For An Import")).expect("applies");
-
-    let library_of = |title: &str| -> Option<i64> {
-        conn.query_row(
-            "SELECT library_id FROM series WHERE sort_title = ?1",
-            [title],
-            |r| r.get(0),
-        )
-        .expect("the series was minted")
-    };
-    assert_eq!(library_of("Named By Hand"), Some(root.library_id));
-    assert_eq!(library_of("Named For An Import"), None);
-}
-
-/// Three series of one title: the oldest in no library, and one in each of
-/// two libraries. A hand document on a work of the second library finds that
-/// library's, though both others are older. On a work of a third library,
-/// which has none of that title, it finds the one in no library and neither
-/// of the others. On a work in no library it finds the older of the two that
-/// are filed.
-#[test]
-fn a_hand_document_resolves_one_title_by_the_works_library() {
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    conn.execute_batch(
-        "INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B'), (90, 'C');
-         INSERT INTO series (id, sort_title, library_id)
-         VALUES (1, 'Series', NULL), (2, 'Series', 70), (3, 'Series', 80);
-         INSERT INTO series_title (series_id, title, is_primary)
-         VALUES (1, 'Series', 1), (2, 'Series', 1), (3, 'Series', 1);",
-    )
-    .expect("three series of one title");
-    let member = |sha: &str| {
-        taiyaku_core::Sidecar::from_json(&format!(
-            r#"{{"taiyaku":1,"work":{{"title":"T","reading":"rtl"}},
-                "editions":{{"raw":{{"label":"raw","members":[
-                  {{"path":"raw/v01.cbz","sha256":"{sha}","pages":2}}]}}}},
-                "hub":"raw","alignments":[]}}"#
-        ))
-        .expect("parses")
-    };
-    let in_b = crate::import::scanned_in(&conn, &member("aa"), 80, None).expect("a work in B");
-    let in_c = crate::import::scanned_in(&conn, &member("cc"), 90, None).expect("a work in C");
-    let in_none = crate::import::scanned(&conn, &member("bb"), None).expect("a work in none");
-    let doc = crate::librarydoc::LibraryDoc::from_json(
-        r#"{"taiyaku_library":1,"updated":"2026-10-05T00:00:00Z",
-            "series":{"chosen":true,"titles":[{"title":"Series","kind":"romaji","primary":true}]}}"#,
-    )
-    .expect("parses");
-
-    crate::librarydoc::apply(&conn, in_b, &doc).expect("applies");
-    crate::librarydoc::apply(&conn, in_none, &doc).expect("applies");
-    crate::librarydoc::apply(&conn, in_c, &doc).expect("applies, and files the series it finds");
-
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!("SELECT series_id FROM work WHERE id = {in_b}")
-        ),
-        3,
-        "B's own series, the youngest of the three"
-    );
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!("SELECT series_id FROM work WHERE id = {in_c}")
-        ),
-        1,
-        "the series in no library, where C has none and the others are not C's"
-    );
-    assert_eq!(
-        scalar(&conn, "SELECT count(*) FROM series"),
-        3,
-        "and nothing was minted"
-    );
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!("SELECT series_id FROM work WHERE id = {in_none}")
-        ),
-        2,
-        "a filed series before the one in none, and the older of the filed"
-    );
-    assert_eq!(
-        filed(&conn, "series"),
-        vec![(1, Some(90)), (2, Some(70)), (3, Some(80))],
-        "C's work filed the series it found, and the work in none left A's filed"
-    );
-}
-
-// --- Part F1: a row in no library goes with its directories ----------------------
-
-/// The work holding a member under `root`, as `(id, slug, library_id,
-/// series_id, content_key)`.
-fn work_under(conn: &Connection, root: &scan::Root) -> (i64, String, Option<i64>, i64, String) {
-    conn.query_row(
-        "SELECT w.id, w.slug, w.library_id, w.series_id, w.content_key FROM work w
-           JOIN edition e ON e.work_id = w.id JOIN member m ON m.edition_id = e.id
-          WHERE m.root_id = ?1",
-        [root.id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-    )
-    .expect("the root's one work")
-}
-
-/// A directory alone in its library is moved to another library, which leaves
-/// its work and series in none. Before the next derive a third library, with
-/// a lower id, scans for the first time a directory holding `Series/Series -
-/// v01` too: a byte-for-byte copy, or the same volume with other bytes.
-///
-/// The moved directory's work goes with its directory, and so does its series. The
-/// lower library gets a series and a work of its own.
-fn a_moved_dirs_work_goes_with_its_dir(label: &str, copy: bool) {
-    let other = crate::tests::tempdir(&format!("{label}-other"));
-    let read = crate::tests::tempdir(&format!("{label}-read"));
-    let first = read.path().join("Series").join("Series - v01");
-    write_pages(&first, 3);
-    let others = other.path().join("Series").join("Series - v01");
-    if copy {
-        copy_pages(&first, &others);
-    } else {
-        write_pages(&others, 5);
-    }
-    let dest = crate::tests::tempdir(&format!("{label}-dest"));
-    write_pages(&dest.path().join("Else").join("Else - v01"), 4);
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let c = scan::add_root(&conn, other.path()).expect("adds, and does not scan yet");
-    let a = scan::add_root(&conn, read.path()).expect("adds");
-    let b = scan::add_root(&conn, dest.path()).expect("adds");
-    assert!(
-        c.library_id < b.library_id,
-        "the fixture: the other library is the lower, so its group is written first"
-    );
-    for root in [&a, &b] {
-        scan::scan_root(&conn, root).expect("scans");
-    }
-    derive::derive(&conn).expect("derives");
-    let before = work_under(&conn, &a);
-    conn.execute(
-        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
-        [before.0],
-    )
-    .expect("a position on the directory about to move");
-
-    conn.execute(
-        "UPDATE root SET library_id = ?1 WHERE id = ?2",
-        [b.library_id, a.id],
-    )
-    .expect("moves the read directory, alone in its library, into the destination");
-    assert_eq!(
-        (
-            scalar(&conn, "SELECT count(*) FROM work WHERE library_id IS NULL"),
-            scalar(
-                &conn,
-                "SELECT count(*) FROM series WHERE library_id IS NULL"
-            ),
-        ),
-        (1, 1),
-        "the fixture: the move left the work and its series in no library"
-    );
-    scan::scan_root(&conn, &c).expect("the other directory is scanned for the first time");
-    let report = derive::derive(&conn).expect("re-derives");
-
-    assert_eq!(
-        work_under(&conn, &a),
-        (
-            before.0,
-            before.1.clone(),
-            Some(b.library_id),
-            before.3,
-            before.4.clone()
-        ),
-        "the same row, slug, series and key, filed under the library its directory moved to"
-    );
-    assert_eq!(report.rekeyed, 0, "nothing's files changed");
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!(
-                "SELECT count(*) FROM progress WHERE work_id = {} AND slot = 2",
-                before.0
-            )
+            &format!("SELECT count(*) FROM progress WHERE work_id = {whole} AND edition = 'raw'")
         ),
         1,
         "and the position is still on it"
     );
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!("SELECT library_id FROM series WHERE id = {}", before.3)
-        ),
-        b.library_id,
-        "its series went with it"
-    );
-    let others_work = work_under(&conn, &c);
-    assert_ne!(
-        others_work.0, before.0,
-        "the other library has a work of its own"
-    );
-    assert_eq!(others_work.2, Some(c.library_id));
-    assert_ne!(others_work.3, before.3, "in a series of its own");
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!(
-                "SELECT count(*) FROM progress WHERE work_id = {}",
-                others_work.0
-            )
-        ),
-        0,
-        "which nobody has read"
-    );
 }
 
-#[test]
-fn a_moved_dirs_work_is_not_taken_by_a_lower_library_scanning_a_copy_of_it() {
-    a_moved_dirs_work_goes_with_its_dir("derive-lib-held-copy", true);
-}
-
-#[test]
-fn a_moved_dirs_work_is_not_taken_by_a_lower_library_scanning_the_same_volume() {
-    a_moved_dirs_work_goes_with_its_dir("derive-lib-held-volume", false);
-}
-
-/// The series alone: the lower library names the title with another volume,
-/// so no work of the two is at one address or holds one key.
-#[test]
-fn a_series_in_no_library_goes_with_its_works_dir_and_not_to_a_library_naming_its_title() {
-    let named = crate::tests::tempdir("derive-lib-series-held-named");
-    write_pages(&named.path().join("Series").join("Series - v02"), 2);
-    let held = crate::tests::tempdir("derive-lib-series-held-held");
-    write_pages(&held.path().join("Series").join("Series - v01"), 3);
-    let dest = crate::tests::tempdir("derive-lib-series-held-dest");
-    write_pages(&dest.path().join("Else").join("Else - v01"), 4);
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let n = scan::add_root(&conn, named.path()).expect("adds, and does not scan yet");
-    let h = scan::add_root(&conn, held.path()).expect("adds");
-    let d = scan::add_root(&conn, dest.path()).expect("adds");
-    assert!(
-        n.library_id < d.library_id,
-        "the fixture: the library naming the title is reconciled first"
-    );
-    for root in [&h, &d] {
-        scan::scan_root(&conn, root).expect("scans");
-    }
-    derive::derive(&conn).expect("derives");
-    let before = work_under(&conn, &h);
-    conn.execute(
-        "UPDATE root SET library_id = ?1 WHERE id = ?2",
-        [d.library_id, h.id],
+/// The work holding a member under `root`, as `(id, slug, series_id,
+/// content_key)`.
+fn work_under(conn: &Connection, root: &scan::Root) -> (i64, String, i64, String) {
+    conn.query_row(
+        "SELECT w.id, w.slug, w.series_id, w.content_key FROM work w
+           JOIN edition e ON e.work_id = w.id JOIN member m ON m.edition_id = e.id
+          WHERE m.root_id = ?1",
+        [root.id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )
-    .expect("moves the directory, alone in its library");
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!(
-                "SELECT count(*) FROM series WHERE id = {} AND library_id IS NULL",
-                before.3
-            )
-        ),
-        1,
-        "the fixture: its series is in no library"
-    );
-    scan::scan_root(&conn, &n).expect("the naming directory is scanned for the first time");
-
-    derive::derive(&conn).expect("re-derives");
-
-    let series: Vec<(i64, Option<i64>)> = conn
-        .prepare("SELECT id, library_id FROM series WHERE sort_title = 'Series' ORDER BY id")
-        .expect("prepares")
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .expect("reads")
-        .collect::<rusqlite::Result<_>>()
-        .expect("reads");
-    assert_eq!(series.len(), 2, "one per library");
-    assert_eq!(
-        series[0],
-        (before.3, Some(d.library_id)),
-        "the old series went to the library its work's directory is in"
-    );
-    assert_eq!(
-        series[1].1,
-        Some(n.library_id),
-        "and the library naming the title minted its own"
-    );
-    assert_eq!(
-        work_under(&conn, &h).3,
-        before.3,
-        "the work is still in its series"
-    );
-    assert_eq!(work_under(&conn, &n).3, series[1].0);
-}
-
-/// Two series of one title in no library, neither holding a work: a library
-/// naming the title takes the older and leaves the other.
-#[test]
-fn a_library_takes_the_older_of_two_series_in_no_library() {
-    let dir = crate::tests::tempdir("derive-lib-series-older");
-    write_pages(&dir.path().join("Series").join("Series - v01"), 2);
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    conn.execute_batch("INSERT INTO series (id, sort_title) VALUES (1, 'Series'), (2, 'Series');")
-        .expect("two series in no library");
-    let root = scan::add_root(&conn, dir.path()).expect("adds");
-    scan::scan_root(&conn, &root).expect("scans");
-
-    derive::derive(&conn).expect("derives");
-
-    assert_eq!(
-        filed(&conn, "series"),
-        vec![(1, Some(root.library_id)), (2, None)],
-        "the older is filed, the other left, and none is minted"
-    );
+    .expect("the root's one work")
 }
 
 /// A work imported from a `taiyaku.json` has no member under any root, so
-/// the library whose files match its key takes it.
+/// the derive whose files match its key takes it.
 #[test]
-fn an_imported_work_is_taken_by_the_library_whose_files_match_it() {
+fn an_imported_work_is_taken_by_the_derive_whose_files_match_it() {
     let dir = crate::tests::tempdir("derive-lib-imported");
     let volume = dir.path().join("Series").join("Series - v01");
     write_pages(&volume, 2);
@@ -6033,121 +5927,31 @@ fn an_imported_work_is_taken_by_the_library_whose_files_match_it() {
     .expect("parses");
     let imported = crate::import::sidecar(&conn, &doc, std::path::Path::new("/x/taiyaku.json"))
         .expect("imports");
-    assert_eq!(
-        filed(&conn, "work"),
-        vec![(imported, None)],
-        "the fixture: imported into no library"
-    );
-    let root = scan::add_root(&conn, dir.path()).expect("adds");
-    scan::scan_root(&conn, &root).expect("scans");
+    let root = scanned_root(&conn, dir.path(), None);
 
     derive::derive(&conn).expect("derives");
 
     assert_eq!(
-        filed(&conn, "work"),
-        vec![(imported, Some(root.library_id))],
-        "the same row, filed under the library, and no second work"
+        work_under(&conn, &root).0,
+        imported,
+        "the same row, its member now under the directory"
     );
-}
-
-/// A hand document on a work of one library does not find a series in no
-/// library whose work is under another library's directory, though it holds the
-/// title. It mints one in the work's own library.
-#[test]
-fn a_hand_document_does_not_find_a_series_in_no_library_that_another_librarys_dir_holds() {
-    let held = crate::tests::tempdir("derive-lib-doc-held-held");
-    write_pages(&held.path().join("Series").join("Series - v01"), 3);
-    let dest = crate::tests::tempdir("derive-lib-doc-held-dest");
-    write_pages(&dest.path().join("Else").join("Else - v01"), 4);
-    let own = crate::tests::tempdir("derive-lib-doc-held-own");
-    write_pages(&own.path().join("Other").join("Other - v01"), 2);
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let h = scan::add_root(&conn, held.path()).expect("adds");
-    let d = scan::add_root(&conn, dest.path()).expect("adds");
-    let o = scan::add_root(&conn, own.path()).expect("adds");
-    for root in [&h, &d, &o] {
-        scan::scan_root(&conn, root).expect("scans");
-    }
-    derive::derive(&conn).expect("derives");
-    let held_series = work_under(&conn, &h).3;
-    let work = work_under(&conn, &o).0;
-    conn.execute(
-        "UPDATE root SET library_id = ?1 WHERE id = ?2",
-        [d.library_id, h.id],
-    )
-    .expect("moves the directory, alone in its library, and nothing derives yet");
     assert_eq!(
-        scalar(
-            &conn,
-            &format!("SELECT count(*) FROM series WHERE id = {held_series} AND library_id IS NULL")
-        ),
+        scalar(&conn, "SELECT count(*) FROM work"),
         1,
-        "the fixture: the series is in no library"
-    );
-    let doc = crate::librarydoc::LibraryDoc::from_json(
-        r#"{"taiyaku_library":1,"updated":"2026-10-05T00:00:00Z",
-            "series":{"chosen":true,"titles":[{"title":"Series","kind":"romaji","primary":true}]}}"#,
-    )
-    .expect("parses");
-
-    crate::librarydoc::apply(&conn, work, &doc).expect("applies");
-
-    let found = scalar(
-        &conn,
-        &format!("SELECT series_id FROM work WHERE id = {work}"),
-    );
-    assert_ne!(found, held_series, "not the moved directory's series");
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!("SELECT library_id FROM series WHERE id = {found}")
-        ),
-        o.library_id,
-        "one minted in the work's own library"
-    );
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!("SELECT count(*) FROM series WHERE id = {held_series} AND library_id IS NULL")
-        ),
-        1,
-        "and the other is left for its directory's library"
+        "and no second work"
     );
 }
 
-/// A work in no library, held by another library's directory, can sit at this
-/// library's address: a person set its series and volume by hand, and then
-/// its directory was moved. When this library gains a volume at that address,
-/// the work is not taken for it. It goes with its own directory, unchanged.
-#[test]
-fn a_work_another_librarys_dir_holds_is_not_taken_at_this_librarys_address() {
-    a_work_another_librarys_dir_holds_stays_its_own(
-        "derive-lib-held-address",
-        "Zeta - v01",
-        "Series - v01",
-        Some(1.0),
-    );
-}
-
-/// The same for a work with no volume, whose address is a member's path.
-#[test]
-fn a_volume_less_work_another_librarys_dir_holds_is_not_taken_at_this_librarys_path() {
-    a_work_another_librarys_dir_holds_stays_its_own(
-        "derive-lib-held-path",
-        "Zeta Oneshot",
-        "Some Oneshot",
-        None,
-    );
-}
-
-/// `Zeta/<held>` alone in a library, and `Series/Series - v02` in another.
-/// The held work is placed by hand in `Series` at `volume`, naming the path
-/// `Series/<gained>` will have, and its directory is moved to a third library.
-/// Then `Series/<gained>` appears and everything is derived. `Series` sorts
-/// before `Zeta`, so the gaining library's group is written while the held
-/// work is still in no library.
-fn a_work_another_librarys_dir_holds_stays_its_own(
+/// `Zeta/<held>` in one library, and `Series/Series - v02` in another. The
+/// held work is placed by hand in `Series` at `volume`, naming the path
+/// `Series/<gained>` will have. Then `Series/<gained>` appears in the other
+/// library and everything is derived.
+///
+/// The gained files are at the held work's address, and a row some directory
+/// holds is that address's work: they land on it, as they would were both
+/// directories in one library, and no second work is minted at the address.
+fn a_work_placed_at_an_address_takes_the_files_that_appear_there(
     label: &str,
     held: &str,
     gained: &str,
@@ -6155,21 +5959,15 @@ fn a_work_another_librarys_dir_holds_stays_its_own(
 ) {
     let held_dir = crate::tests::tempdir(&format!("{label}-held"));
     write_pages(&held_dir.path().join("Zeta").join(held), 3);
-    let dest = crate::tests::tempdir(&format!("{label}-dest"));
-    write_pages(&dest.path().join("Else").join("Else - v01"), 4);
     let own = crate::tests::tempdir(&format!("{label}-own"));
     write_pages(&own.path().join("Series").join("Series - v02"), 2);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let h = scan::add_root(&conn, held_dir.path()).expect("adds");
-    let d = scan::add_root(&conn, dest.path()).expect("adds");
-    let o = scan::add_root(&conn, own.path()).expect("adds");
-    for root in [&h, &d, &o] {
-        scan::scan_root(&conn, root).expect("scans");
-    }
+    let h = scanned_root(&conn, held_dir.path(), None);
+    let o = scanned_root(&conn, own.path(), None);
     derive::derive(&conn).expect("derives");
     let before = work_under(&conn, &h);
-    let own_series = work_under(&conn, &o).3;
+    let own_series = work_under(&conn, &o).2;
     conn.execute(
         "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
         [before.0],
@@ -6193,39 +5991,43 @@ fn a_work_another_librarys_dir_holds_stays_its_own(
         rusqlite::params![gained_path, before.0],
     )
     .expect("and it names the path the gained member will have");
-    conn.execute(
-        "UPDATE root SET library_id = ?1 WHERE id = ?2",
-        [d.library_id, h.id],
-    )
-    .expect("moves the held directory, alone in its library");
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!(
-                "SELECT count(*) FROM work WHERE id = {} AND library_id IS NULL",
-                before.0
-            )
-        ),
-        1,
-        "the fixture: the held work is in no library"
-    );
     write_pages(&own.path().join("Series").join(gained), 2);
     scan::scan_root(&conn, &o).expect("rescans");
 
     let report = derive::derive(&conn).expect("re-derives");
 
-    let after = work_under(&conn, &h);
+    let gained_works: Vec<i64> = conn
+        .prepare(
+            "SELECT e.work_id FROM edition e JOIN member m ON m.edition_id = e.id
+              WHERE m.path = ?1 ORDER BY e.work_id",
+        )
+        .expect("prepares")
+        .query_map([&gained_path], |r| r.get(0))
+        .expect("reads")
+        .collect::<rusqlite::Result<_>>()
+        .expect("reads");
     assert_eq!(
-        (after.0, after.1.clone(), after.2, after.4.clone()),
-        (
-            before.0,
-            before.1.clone(),
-            Some(d.library_id),
-            before.4.clone()
-        ),
-        "the same row, slug and key, filed under the library its directory moved to"
+        gained_works,
+        vec![before.0],
+        "the gained member has one work: the one at that address"
     );
-    assert_eq!(report.rekeyed, 0, "it was not taken for other files");
+    assert_eq!(report.rekeyed, 1, "which was rekeyed to the gained files");
+    assert_ne!(
+        work_under(&conn, &h).0,
+        before.0,
+        "and the held directory's own files mint a work of their own"
+    );
+    assert_eq!(
+        scalar(
+            &conn,
+            &format!(
+                "SELECT count(*) FROM work WHERE series_id = {own_series} AND volume IS {}",
+                volume.map_or("NULL".to_string(), |v| v.to_string())
+            )
+        ),
+        1,
+        "and no second work there"
+    );
     assert_eq!(
         scalar(
             &conn,
@@ -6235,87 +6037,59 @@ fn a_work_another_librarys_dir_holds_stays_its_own(
             )
         ),
         1,
-        "and the position is still on it"
+        "the position stays on the row, which now holds the gained files"
     );
-    let gained_work: (i64, Option<i64>) = conn
-        .query_row(
-            "SELECT w.id, w.library_id FROM work w
-               JOIN edition e ON e.work_id = w.id JOIN member m ON m.edition_id = e.id
-              WHERE m.path = ?1",
-            [&gained_path],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .expect("the gained member has one work");
-    assert_ne!(
-        gained_work.0, before.0,
-        "a work of the gaining library's own"
-    );
-    assert_eq!(gained_work.1, Some(o.library_id));
 }
 
-/// Two works in no library can sit at one of a library's addresses: two
-/// imported `taiyaku.json`s a person placed at one series and volume. When
-/// the library gains a volume there, it takes the older and leaves the other.
 #[test]
-fn a_library_takes_the_older_of_two_works_in_no_library_at_its_address() {
-    the_older_of_two_works_at_one_address_is_taken(
-        "derive-lib-older-none",
+fn a_work_placed_at_an_address_takes_the_volume_that_appears_there() {
+    a_work_placed_at_an_address_takes_the_files_that_appear_there(
+        "derive-placed-address",
+        "Zeta - v01",
         "Series - v01",
         Some(1.0),
-        false,
+    );
+}
+
+/// The same for a work with no volume, whose address is a member's path.
+#[test]
+fn a_volume_less_work_placed_at_a_path_takes_the_files_that_appear_there() {
+    a_work_placed_at_an_address_takes_the_files_that_appear_there(
+        "derive-placed-path",
+        "Zeta Oneshot",
+        "Some Oneshot",
+        None,
+    );
+}
+
+/// Two works no directory holds can sit at one address: two imported
+/// `taiyaku.json`s a person placed at one series and volume. When files
+/// appear there, they go to the older and leave the other.
+#[test]
+fn the_older_of_two_works_at_one_address_takes_the_files() {
+    the_older_of_two_works_at_one_address_is_taken(
+        "derive-older-address",
+        "Series - v01",
+        Some(1.0),
     );
 }
 
 /// The same for works with no volume, whose address is a member's path.
 #[test]
-fn a_library_takes_the_older_of_two_volume_less_works_in_no_library_at_its_path() {
-    the_older_of_two_works_at_one_address_is_taken(
-        "derive-lib-older-none-path",
-        "Some Oneshot",
-        None,
-        false,
-    );
-}
-
-/// And where both works are the library's own, its files go to the older.
-#[test]
-fn a_librarys_files_go_to_the_older_of_its_two_works_at_one_address() {
-    the_older_of_two_works_at_one_address_is_taken(
-        "derive-lib-older-own",
-        "Series - v01",
-        Some(1.0),
-        true,
-    );
-}
-
-/// The same for works with no volume.
-#[test]
-fn a_librarys_files_go_to_the_older_of_its_two_volume_less_works_at_one_path() {
-    the_older_of_two_works_at_one_address_is_taken(
-        "derive-lib-older-own-path",
-        "Some Oneshot",
-        None,
-        true,
-    );
+fn the_older_of_two_volume_less_works_at_one_path_takes_the_files() {
+    the_older_of_two_works_at_one_address_is_taken("derive-older-path", "Some Oneshot", None);
 }
 
 /// `Series/Series - v02` in a library, and two imported works placed by hand
-/// in `Series` at `volume`, each naming the path `Series/<gained>` will have:
-/// in no library, or with `own` both filed under the library. Then
-/// `Series/<gained>` appears. Neither imported work holds its content, so the
-/// group finds a row by its address alone.
-fn the_older_of_two_works_at_one_address_is_taken(
-    label: &str,
-    gained: &str,
-    volume: Option<f64>,
-    own: bool,
-) {
+/// in `Series` at `volume`, each naming the path `Series/<gained>` will have.
+/// Then `Series/<gained>` appears. Neither imported work holds its content,
+/// so the group finds a row by its address alone.
+fn the_older_of_two_works_at_one_address_is_taken(label: &str, gained: &str, volume: Option<f64>) {
     let dir = crate::tests::tempdir(label);
     write_pages(&dir.path().join("Series").join("Series - v02"), 2);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let root = scan::add_root(&conn, dir.path()).expect("adds");
-    scan::scan_root(&conn, &root).expect("scans");
+    let root = scanned_root(&conn, dir.path(), None);
     derive::derive(&conn).expect("derives");
     let series = scalar(&conn, "SELECT series_id FROM work");
     let gained_path = root
@@ -6324,7 +6098,6 @@ fn the_older_of_two_works_at_one_address_is_taken(
         .join(gained)
         .to_string_lossy()
         .into_owned();
-    let placed_in = own.then_some(root.library_id);
     let place = |sha: &str, document: &str| -> i64 {
         let work = crate::import::sidecar(
             &conn,
@@ -6337,12 +6110,11 @@ fn the_older_of_two_works_at_one_address_is_taken(
             .expect("parses"),
             std::path::Path::new(document),
         )
-        .expect("imports a work in no library");
+        .expect("imports a work no directory holds");
         conn.execute(
-            "UPDATE work SET series_id = ?1, series_id_hand = ?1, volume = ?2, volume_hand = ?2,
-                             library_id = ?3
-              WHERE id = ?4",
-            rusqlite::params![series, volume, placed_in, work],
+            "UPDATE work SET series_id = ?1, series_id_hand = ?1, volume = ?2, volume_hand = ?2
+              WHERE id = ?3",
+            rusqlite::params![series, volume, work],
         )
         .expect("a person places it at the address");
         conn.execute(
@@ -6356,31 +6128,24 @@ fn the_older_of_two_works_at_one_address_is_taken(
     let older = place("aa", "/x/taiyaku.json");
     let younger = place("bb", "/y/taiyaku.json");
     assert!(older < younger, "the fixture");
-    let row = |work: i64| -> (Option<i64>, String) {
-        conn.query_row(
-            "SELECT library_id, content_key FROM work WHERE id = ?1",
-            [work],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
+    let key = |work: i64| -> String {
+        conn.query_row("SELECT content_key FROM work WHERE id = ?1", [work], |r| {
+            r.get(0)
+        })
         .expect("reads")
     };
-    let (older_before, younger_before) = (row(older), row(younger));
+    let (older_before, younger_before) = (key(older), key(younger));
 
     write_pages(&dir.path().join("Series").join(gained), 3);
     scan::scan_root(&conn, &root).expect("rescans");
     derive::derive(&conn).expect("re-derives");
 
-    let older_after = row(older);
-    assert_eq!(older_after.0, Some(root.library_id));
     assert_ne!(
-        older_after.1, older_before.1,
+        key(older),
+        older_before,
         "the older work was taken for the gained files"
     );
-    assert_eq!(
-        row(younger),
-        younger_before,
-        "and the younger is as it was, where it was"
-    );
+    assert_eq!(key(younger), younger_before, "and the younger is as it was");
     assert_eq!(
         scalar(&conn, "SELECT count(*) FROM work"),
         3,
@@ -6388,122 +6153,40 @@ fn the_older_of_two_works_at_one_address_is_taken(
     );
 }
 
-/// The legitimate adoption at an address: a directory alone in its library is
-/// moved, and its volume's bytes change before the next derive, so content
-/// finds nothing and only the address does.
-#[test]
-fn a_dir_moved_out_of_its_library_and_then_changed_keeps_its_work() {
-    let moved = crate::tests::tempdir("derive-lib-moved-changed");
-    let volume_dir = moved.path().join("Moved").join("Moved - v01");
-    write_pages(&volume_dir, 3);
-    let elsewhere = crate::tests::tempdir("derive-lib-moved-changed-elsewhere");
-    write_pages(&elsewhere.path().join("Else").join("Else - v01"), 4);
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let m = scan::add_root(&conn, moved.path()).expect("adds");
-    let e = scan::add_root(&conn, elsewhere.path()).expect("adds");
-    for root in [&m, &e] {
-        scan::scan_root(&conn, root).expect("scans");
-    }
-    derive::derive(&conn).expect("derives");
-    let before = work_under(&conn, &m);
-    conn.execute(
-        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
-        [before.0],
-    )
-    .expect("a position");
-
-    conn.execute(
-        "UPDATE root SET library_id = ?1 WHERE id = ?2",
-        [e.library_id, m.id],
-    )
-    .expect("moves the directory");
-    std::fs::write(volume_dir.join("003.jpg"), b"one more page").expect("write");
-    // A directory member is re-hashed only when its `mtime` moves; see
-    // `a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress`.
-    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
-    std::fs::File::open(&volume_dir)
-        .expect("open the member directory")
-        .set_times(std::fs::FileTimes::new().set_modified(later))
-        .expect("stamp it as changed");
-    scan::scan_root(&conn, &m).expect("rescans");
-    let report = derive::derive(&conn).expect("re-derives");
-
-    let after = work_under(&conn, &m);
-    assert_eq!(
-        (after.0, after.1.clone(), after.2, after.3),
-        (before.0, before.1.clone(), Some(e.library_id), before.3),
-        "the same row, slug and series, filed under the new library"
-    );
-    assert_ne!(after.4, before.4, "having followed its files");
-    assert_eq!(report.rekeyed, 1);
-    assert_eq!(
-        scalar(&conn, "SELECT count(*) FROM work WHERE title LIKE 'Moved%'"),
-        1,
-        "no second work was minted for the changed files"
-    );
-    assert_eq!(
-        scalar(
-            &conn,
-            &format!(
-                "SELECT count(*) FROM progress WHERE work_id = {} AND slot = 2",
-                before.0
-            )
-        ),
-        1,
-        "and the position is still on it"
-    );
-}
-
 /// A directory holding only chapters makes no work, and still names a series:
-/// its library's. The chapter directory's root id is another library's id here,
-/// which is what tells the two apart.
+/// the one of its title, which a volume directory in another library names
+/// too.
 #[test]
-fn a_chapter_only_dir_names_its_librarys_series() {
+fn a_chapter_only_dir_names_the_series_of_its_title() {
     let volumes = crate::tests::tempdir("derive-lib-chapters-volumes");
     write_pages(&volumes.path().join("Series").join("Series - v01"), 2);
     let chapters = crate::tests::tempdir("derive-lib-chapters-chapters");
     write_pages(&chapters.path().join("Series").join("Series - c001"), 1);
     write_pages(&chapters.path().join("Series").join("Series - c002"), 1);
-    let other = crate::tests::tempdir("derive-lib-chapters-other");
-    write_pages(&other.path().join("Else").join("Else - v01"), 4);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let v =
-        scan::add_root_in(&conn, volumes.path(), scan::InLibrary::Named("Manga")).expect("adds");
-    let c =
-        scan::add_root_in(&conn, chapters.path(), scan::InLibrary::Named("Manga")).expect("adds");
-    let o = scan::add_root(&conn, other.path()).expect("adds");
-    assert_eq!(
-        (c.library_id, c.id),
-        (v.library_id, o.library_id),
-        "the fixture: the chapter directory is in `Manga`, and its root id is the other library's id"
-    );
-    for root in [&v, &c, &o] {
-        scan::scan_root(&conn, root).expect("scans");
-    }
+    let v = scanned_root(&conn, volumes.path(), None);
+    let c = scanned_root(&conn, chapters.path(), None);
+    assert_ne!(v.library_id, c.library_id, "the fixture: two libraries");
 
     let report = derive::derive(&conn).expect("derives");
 
     assert_eq!(report.unattached_chapter_dirs, 1);
-    let series: Vec<(String, Option<i64>)> = conn
-        .prepare("SELECT sort_title, library_id FROM series ORDER BY sort_title, id")
+    let series: Vec<String> = conn
+        .prepare("SELECT sort_title FROM series ORDER BY sort_title, id")
         .expect("prepares")
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map([], |r| r.get(0))
         .expect("reads")
         .collect::<rusqlite::Result<_>>()
         .expect("reads");
     assert_eq!(
         series,
-        vec![
-            ("Else".to_string(), Some(o.library_id)),
-            ("Series".to_string(), Some(v.library_id)),
-        ],
-        "one `Series`, filed under the library both of its directories are in"
+        vec!["Series".to_string()],
+        "one `Series`, named by both libraries' directories"
     );
 }
 
-// --- Part F1: a title two libraries share ------------------------------------
+// --- A title belongs to one series across the store ---------------------------
 
 fn titled(titles: &[(&str, bool)]) -> Vec<crate::librarydoc::SeriesTitle> {
     titles
@@ -6520,179 +6203,1483 @@ fn titled(titles: &[(&str, bool)]) -> Vec<crate::librarydoc::SeriesTitle> {
         .collect()
 }
 
+/// A title one series holds is refused to every other: one of the same
+/// library, one of another library, and one no directory names.
 #[test]
-fn a_title_two_libraries_share_can_be_set_on_the_series_of_each() {
-    let one = crate::tests::tempdir("derive-lib-titles-a");
+fn a_title_another_series_holds_is_refused_across_the_store() {
+    let one = crate::tests::tempdir("derive-titles-one");
     write_pages(&one.path().join("Series").join("Series - v01"), 2);
-    let two = crate::tests::tempdir("derive-lib-titles-b");
-    write_pages(&two.path().join("Series").join("Series - v01"), 3);
+    write_pages(&one.path().join("Same").join("Same - v01"), 3);
+    let two = crate::tests::tempdir("derive-titles-two");
+    write_pages(&two.path().join("Other").join("Other - v01"), 4);
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    for dir in [&one, &two] {
-        let root = scan::add_root(&conn, dir.path()).expect("adds");
-        scan::scan_root(&conn, &root).expect("scans");
-    }
+    scanned_root(&conn, one.path(), None);
+    scanned_root(&conn, two.path(), None);
     derive::derive(&conn).expect("derives");
-    let series = filed(&conn, "series");
-    assert_eq!(series.len(), 2, "the fixture: a `Series` in each library");
-    let titles = titled(&[("Series", true), ("Shirizu", false)]);
-
-    for (id, _) in &series {
-        crate::librarydoc::set_series_titles(&conn, *id, &titles)
-            .expect("the title its library's files gave it, and one more");
-    }
-
-    assert_eq!(
+    conn.execute_batch(
+        "INSERT INTO series (sort_title) VALUES ('Loose');
+         INSERT INTO series_title (series_id, title, is_primary)
+         VALUES (last_insert_rowid(), 'Loose', 1);",
+    )
+    .expect("a series no directory names");
+    let id_of = |title: &str| {
         scalar(
             &conn,
-            "SELECT count(*) FROM series_title WHERE title IN ('Series', 'Shirizu')"
-        ),
-        4,
-        "both titles on both series"
-    );
-}
-
-#[test]
-fn a_title_another_series_of_the_same_library_holds_is_still_refused() {
-    let dir = crate::tests::tempdir("derive-lib-titles-one");
-    write_pages(&dir.path().join("Series").join("Series - v01"), 2);
-    write_pages(&dir.path().join("Other").join("Other - v01"), 3);
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let root = scan::add_root(&conn, dir.path()).expect("adds");
-    scan::scan_root(&conn, &root).expect("scans");
-    derive::derive(&conn).expect("derives");
-    let other = scalar(&conn, "SELECT id FROM series WHERE sort_title = 'Other'");
-    let held = scalar(&conn, "SELECT id FROM series WHERE sort_title = 'Series'");
-
-    let refused = crate::librarydoc::set_series_titles(
-        &conn,
-        other,
-        &titled(&[("Other", true), ("Series", false)]),
-    )
-    .expect_err("two series of one library cannot share a title");
-
-    assert_eq!(
-        refused,
-        format!(
-            "title `Series` already belongs to series {held}; refusing to give series {other} \
-             the same text"
+            &format!("SELECT id FROM series WHERE sort_title = '{title}'"),
         )
-    );
-}
-
-#[test]
-fn a_title_is_still_refused_where_either_series_is_in_no_library() {
-    let dir = crate::tests::tempdir("derive-lib-titles-none");
-    write_pages(&dir.path().join("Series").join("Series - v01"), 2);
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let root = scan::add_root(&conn, dir.path()).expect("adds");
-    scan::scan_root(&conn, &root).expect("scans");
-    derive::derive(&conn).expect("derives");
-    let filed_series = scalar(&conn, "SELECT id FROM series WHERE sort_title = 'Series'");
-    conn.execute("INSERT INTO series (sort_title) VALUES ('Loose')", [])
-        .expect("a series in no library");
-    let loose = conn.last_insert_rowid();
-    conn.execute(
-        "INSERT INTO series_title (series_id, title, is_primary) VALUES (?1, 'Loose', 1)",
-        [loose],
-    )
-    .expect("with its title");
-
-    let onto_the_filed = crate::librarydoc::set_series_titles(
-        &conn,
-        filed_series,
-        &titled(&[("Series", true), ("Loose", false)]),
-    )
-    .expect_err("the other series is in no library");
-    let onto_the_loose = crate::librarydoc::set_series_titles(
-        &conn,
-        loose,
-        &titled(&[("Loose", true), ("Series", false)]),
-    )
-    .expect_err("the edited series is in no library");
-
-    assert_eq!(
-        onto_the_filed,
-        format!(
-            "title `Loose` already belongs to series {loose}; refusing to give series \
-             {filed_series} the same text"
-        )
-    );
-    assert_eq!(
-        onto_the_loose,
-        format!(
-            "title `Series` already belongs to series {filed_series}; refusing to give series \
-             {loose} the same text"
-        )
-    );
-}
-
-/// A hand document that attaches a work in a library to a series in no
-/// library files the series under that library. A work in no library files
-/// nothing.
-#[test]
-fn a_hand_document_files_the_series_in_no_library_it_attaches_a_filed_work_to() {
-    let dir = crate::tests::tempdir("derive-lib-doc-files");
-    write_pages(&dir.path().join("Series").join("Series - v01"), 2);
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let root = scan::add_root(&conn, dir.path()).expect("adds");
-    scan::scan_root(&conn, &root).expect("scans");
-    derive::derive(&conn).expect("derives");
-    let scanned = scalar(&conn, "SELECT id FROM work");
-    let imported = crate::import::sidecar(
-        &conn,
-        &taiyaku_core::Sidecar::from_json(
-            r#"{"taiyaku":1,"work":{"title":"Imported","reading":"rtl"},
-                "editions":{"raw":{"label":"raw","members":[
-                  {"path":"raw/imported.cbz","sha256":"aa","pages":2}]}},
-                "hub":"raw","alignments":[]}"#,
-        )
-        .expect("parses"),
-        std::path::Path::new("/x/taiyaku.json"),
-    )
-    .expect("imports a work in no library");
-    conn.execute_batch(
-        "INSERT INTO series (id, sort_title) VALUES (80, 'Loose'), (90, 'Looser');
-         INSERT INTO series_title (series_id, title, is_primary)
-         VALUES (80, 'Loose', 1), (90, 'Looser', 1);",
-    )
-    .expect("two series in no library");
-    let naming = |title: &str| {
-        crate::librarydoc::LibraryDoc::from_json(&format!(
-            r#"{{"taiyaku_library":1,"updated":"2026-10-05T00:00:00Z",
-                "series":{{"chosen":true,
-                           "titles":[{{"title":"{title}","kind":"romaji","primary":true}}]}}}}"#
-        ))
-        .expect("parses")
     };
+    let held = id_of("Series");
 
-    crate::librarydoc::apply(&conn, scanned, &naming("Loose")).expect("applies");
-    crate::librarydoc::apply(&conn, imported, &naming("Looser")).expect("applies");
+    for title in ["Same", "Other", "Loose"] {
+        let edited = id_of(title);
+        let refused = crate::librarydoc::set_series_titles(
+            &conn,
+            edited,
+            &titled(&[(title, true), ("Series", false)]),
+        )
+        .expect_err("a title another series holds");
+        assert_eq!(
+            refused,
+            format!(
+                "title `Series` already belongs to series {held}; refusing to give series \
+                 {edited} the same text"
+            ),
+            "refused for `{title}`"
+        );
+    }
+}
+
+// --- A volume held under two directories (overlapping-libraries findings §0) -
+
+use crate::tests::{a_copy_of, a_copy_of_one_volume, member_root_ids, the_member};
+
+/// Spec §1: a byte-identical volume in two libraries is one work, with one
+/// position per account. The second library's copy joins the member the
+/// first made, so the work keeps its key, slug and position, and either
+/// directory's `member_root` row leads to it.
+#[test]
+fn a_volume_held_in_two_libraries_is_one_work_of_one_member() {
+    let (first, second) = a_copy_of_one_volume();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let a = scanned_root(&conn, first.path(), None);
+    derive::derive(&conn).expect("derives the first library");
+    let (work_id, key, slug): (i64, String, String) = conn
+        .query_row("SELECT id, content_key, slug FROM work", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .expect("the one work");
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
+        [work_id],
+    )
+    .expect("a position");
+    let b = scanned_root(&conn, second.path(), None);
+    assert_ne!(a.library_id, b.library_id, "the fixture: two libraries");
+
+    let report = derive::derive(&conn).expect("derives both");
+
+    assert_eq!(
+        (report.members, report.merged, report.rekeyed),
+        (1, 0, 0),
+        "one member, no merge and no rekey"
+    );
+    assert_eq!(
+        conn.query_row("SELECT id, content_key, slug FROM work", [], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .expect("still one work"),
+        (work_id, key, slug),
+        "the same work, its key that of one member"
+    );
+    assert_eq!(
+        scalar(&conn, "SELECT count(*) FROM member"),
+        1,
+        "one member"
+    );
+    assert_eq!(member_root_ids(&conn), vec![a.id, b.id], "held under both");
+    for root in [a.id, b.id] {
+        let slots: Vec<i64> = conn
+            .prepare(
+                "SELECT p.slot FROM member_root mr
+                   JOIN member m ON m.id = mr.member_id
+                   JOIN edition e ON e.id = m.edition_id
+                   JOIN progress p ON p.work_id = e.work_id
+                  WHERE mr.root_id = ?1",
+            )
+            .expect("prepare")
+            .query_map([root], |r| r.get(0))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert_eq!(slots, vec![2], "one position, read through root {root}");
+    }
+}
+
+/// Two byte-identical files under one directory stay two members of one
+/// page sequence: a `member_root` row is per directory, so a second copy
+/// there would have nothing to record it.
+#[test]
+fn two_byte_identical_files_under_one_directory_stay_two_members() {
+    let dir = crate::tests::tempdir("derive-copy-one-directory");
+    let archive = dir.path().join("Foo").join("Foo v01.cbz");
+    crate::scan::tests::write_archive(&archive, 3);
+    std::fs::copy(&archive, dir.path().join("Foo").join("Foo v01 again.cbz")).expect("copies");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scanned_root(&conn, dir.path(), None);
+
+    let report = derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        (report.members, report.merged),
+        (2, 1),
+        "two members, one merge"
+    );
+    assert_eq!(member_root_ids(&conn), vec![root.id, root.id], "a row each");
+}
+
+/// A directory of the library called `library` for `dir`, with its edition
+/// key set to `edition` where one is given, scanned.
+fn root_in(
+    conn: &Connection,
+    dir: &std::path::Path,
+    library: &str,
+    edition: Option<&str>,
+) -> scan::Root {
+    let root = scan::add_root_in(conn, dir, scan::InLibrary::Named(library)).expect("adds");
+    if let Some(edition) = edition {
+        scan::update_root(
+            conn,
+            root.id,
+            &scan::RootPatch {
+                edition_key: Some(Some(edition.to_string())),
+                ..Default::default()
+            },
+        )
+        .expect("sets the directory's edition");
+    }
+    let root = scan::roots(conn)
+        .expect("lists")
+        .into_iter()
+        .find(|r| r.id == root.id)
+        .expect("the directory just added");
+    scan::scan_root(conn, &root).expect("scans");
+    root
+}
+
+/// A store with libraries A (70) and B (80) and no directory yet.
+fn libraries_a_and_b() -> Library {
+    let library = Library::open_in_memory().expect("open");
+    library
+        .conn()
+        .execute(
+            "INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B')",
+            [],
+        )
+        .expect("libraries");
+    library
+}
+
+/// Every work with its series and volume, every member with its directory
+/// and path, and every `member_root` row: what an unchanged pass must leave
+/// as it found it.
+fn store_shape(conn: &Connection) -> String {
+    let works: Vec<(i64, String, Option<f64>)> = conn
+        .prepare(
+            "SELECT w.id, s.sort_title, w.volume FROM work w
+               JOIN series s ON s.id = w.series_id ORDER BY w.id",
+        )
+        .and_then(|mut q| {
+            q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect()
+        })
+        .expect("works");
+    let members: Vec<(i64, String, i64, Option<i64>, String)> = conn
+        .prepare(
+            "SELECT e.work_id, e.key, m.ordinal, m.root_id, m.path FROM member m
+               JOIN edition e ON e.id = m.edition_id ORDER BY e.work_id, e.key, m.ordinal",
+        )
+        .and_then(|mut q| {
+            q.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect()
+        })
+        .expect("members");
+    let held: Vec<(String, i64)> = conn
+        .prepare(
+            "SELECT m.path, mr.root_id FROM member_root mr
+               JOIN member m ON m.id = mr.member_id ORDER BY m.path, mr.root_id",
+        )
+        .and_then(|mut q| q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+        .expect("member_root");
+    format!("works {works:?}; members {members:?}; held {held:?}")
+}
+
+/// How far one derive over unchanged files moves the structure counter.
+fn an_unchanged_pass_moves(conn: &Connection) -> i64 {
+    let before = crate::structure::version(conn).expect("reads");
+    derive::derive(conn).expect("derives");
+    crate::structure::version(conn).expect("reads") - before
+}
+
+/// The series of the one work in the store.
+fn the_series(conn: &Connection) -> String {
+    conn.query_row(
+        "SELECT s.sort_title FROM work w JOIN series s ON s.id = w.series_id",
+        [],
+        |r| r.get(0),
+    )
+    .expect("one work in one series")
+}
+
+/// `Foo/Foo v01.cbz` under library A's directory, and the same bytes at
+/// `Bar/Bar v01.cbz` under library B's, so the two directories' rules name
+/// one file in two series. With `b_older`, B's directory is added first and
+/// has the lower root id. Returns A's directory, then B's.
+fn a_copy_under_two_series(
+    b_older: bool,
+) -> (Library, scan::Root, scan::Root, [crate::tests::TempDir; 2]) {
+    let a_dir = crate::tests::tempdir("derive-two-series-a");
+    let archive = a_dir.path().join("Foo").join("Foo v01.cbz");
+    write_archive(&archive, 3);
+    let b_dir = crate::tests::tempdir("derive-two-series-b");
+    std::fs::create_dir_all(b_dir.path().join("Bar")).expect("mkdir");
+    std::fs::copy(&archive, b_dir.path().join("Bar").join("Bar v01.cbz")).expect("copies");
+    let library = libraries_a_and_b();
+    let (a, b) = {
+        let conn = library.conn();
+        if b_older {
+            let b = root_in(&conn, b_dir.path(), "B", None);
+            (root_in(&conn, a_dir.path(), "A", None), b)
+        } else {
+            let a = root_in(&conn, a_dir.path(), "A", None);
+            (a, root_in(&conn, b_dir.path(), "B", None))
+        }
+    };
+    (library, a, b, [a_dir, b_dir])
+}
+
+/// The ruling of 2026-11-04 on overlapping libraries: a byte-identical file
+/// is one work however its directories' rules name it, held under both,
+/// named by the oldest directory's rules, and written once per pass, so it
+/// moves the structure counter as a copy both directories name alike does.
+/// Each library's grant sees it.
+#[test]
+fn a_copy_whose_directories_name_it_in_two_series_is_one_work_held_under_both() {
+    let alike = {
+        let (first, second) = a_copy_of_one_volume();
+        let library = libraries_a_and_b();
+        let conn = library.conn();
+        root_in(&conn, first.path(), "A", None);
+        root_in(&conn, second.path(), "B", None);
+        derive::derive(&conn).expect("derives");
+        an_unchanged_pass_moves(&conn)
+    };
+    for b_older in [false, true] {
+        let (library, a, b, _dirs) = a_copy_under_two_series(b_older);
+        let conn = library.conn();
+        assert_eq!(
+            a.id < b.id,
+            !b_older,
+            "the fixture: the older directory has the lower id"
+        );
+        let report = derive::derive(&conn).expect("derives");
+        let shape = store_shape(&conn);
+        let series = if b_older { "Bar" } else { "Foo" };
+
+        assert_eq!(report.works, 1, "b older {b_older}: written as one work");
+        assert_eq!(
+            scalar(&conn, "SELECT count(*) FROM work"),
+            1,
+            "b older {b_older}: one work"
+        );
+        assert_eq!(
+            scalar(&conn, "SELECT count(*) FROM member"),
+            1,
+            "b older {b_older}: one member"
+        );
+        let mut both = vec![a.id, b.id];
+        both.sort_unstable();
+        assert_eq!(
+            member_root_ids(&conn),
+            both,
+            "b older {b_older}: held under both"
+        );
+        assert_eq!(
+            the_series(&conn),
+            series,
+            "b older {b_older}: named by the older directory's rules"
+        );
+        for pass in 1..=2 {
+            assert_eq!(
+                an_unchanged_pass_moves(&conn),
+                alike,
+                "b older {b_older}, pass {pass}: written once, as a copy named alike is"
+            );
+            assert_eq!(
+                store_shape(&conn),
+                shape,
+                "b older {b_older}, pass {pass}: nothing moves"
+            );
+        }
+        let slug: String = conn
+            .query_row("SELECT slug FROM work", [], |r| r.get(0))
+            .expect("the slug");
+        for root in [a.id, b.id] {
+            let seen =
+                crate::browse::visible_editions(&conn, &crate::account::Access::Only(vec![root]))
+                    .expect("reads");
+            assert_eq!(
+                seen.get(&slug).cloned(),
+                Some(std::collections::HashSet::from(["raw".to_string()])),
+                "b older {b_older}: the grant on directory {root} sees it"
+            );
+        }
+    }
+}
+
+/// Removing either directory keeps the work and its reader's position, and
+/// the next name is the remaining directory's.
+#[test]
+fn removing_either_directory_of_a_copy_named_in_two_series_keeps_the_work() {
+    for b_older in [false, true] {
+        for remove_a in [false, true] {
+            let (library, a, b, _dirs) = a_copy_under_two_series(b_older);
+            let conn = library.conn();
+            derive::derive(&conn).expect("derives");
+            let work_id = scalar(&conn, "SELECT id FROM work");
+            conn.execute(
+                "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
+                [work_id],
+            )
+            .expect("a position");
+            let (gone, kept, series) = if remove_a {
+                (a.id, b.id, "Bar")
+            } else {
+                (b.id, a.id, "Foo")
+            };
+            let label = format!("b older {b_older}, removing {gone}");
+
+            let (removal, _) = scan::remove_root(&conn, gone).expect("removes");
+
+            assert_eq!(
+                (removal.works, removal.positions),
+                (0, 0),
+                "{label}: nothing deleted"
+            );
+            assert_eq!(
+                scalar(&conn, "SELECT id FROM work"),
+                work_id,
+                "{label}: the same work"
+            );
+            assert_eq!(
+                scalar(
+                    &conn,
+                    "SELECT count(*) FROM progress WHERE work_id = (SELECT id FROM work)"
+                ),
+                1,
+                "{label}: its position"
+            );
+            assert_eq!(
+                member_root_ids(&conn),
+                vec![kept],
+                "{label}: held under the other"
+            );
+            assert_eq!(
+                the_series(&conn),
+                series,
+                "{label}: named by the other's rules"
+            );
+        }
+    }
+}
+
+/// A held primary is sticky across series too: a copy arriving under an
+/// older directory whose rules name another series renames nothing.
+#[test]
+fn a_copy_named_in_another_series_arriving_under_an_older_directory_renames_nothing() {
+    let (library, a, b, dirs) = a_copy_under_two_series(false);
+    let conn = library.conn();
+    assert!(a.id < b.id, "the fixture: A's directory is older");
+    let held = dirs[0].path().join("Foo").join("Foo v01.cbz");
+    let aside = crate::tests::tempdir("derive-two-series-aside");
+    std::fs::rename(&held, aside.path().join("Foo v01.cbz")).expect("set aside");
+    scan::scan_root(&conn, &a).expect("rescans A without it");
+    derive::derive(&conn).expect("derives the work under B");
+    let work_id = scalar(&conn, "SELECT id FROM work");
+    let before = (
+        the_member(&conn),
+        crate::hand::path_for(&conn, work_id).expect("an address"),
+    );
+    assert_eq!(before.0.0, Some(b.id), "the fixture: held under B");
+    assert_eq!(the_series(&conn), "Bar", "the fixture: named by B's rules");
+
+    std::fs::rename(aside.path().join("Foo v01.cbz"), &held).expect("the copy arrives");
+    scan::scan_root(&conn, &a).expect("rescans A");
+    derive::derive(&conn).expect("derives again");
 
     assert_eq!(
         (
-            scalar(
-                &conn,
-                &format!("SELECT series_id FROM work WHERE id = {scanned}")
+            the_member(&conn),
+            crate::hand::path_for(&conn, work_id).expect("an address"),
+        ),
+        before,
+        "member.root_id, member.path and the document's address stay"
+    );
+    assert_eq!(the_series(&conn), "Bar", "and the name");
+    assert_eq!(member_root_ids(&conn), vec![a.id, b.id], "held under both");
+}
+
+/// The members of `slug`'s `edition` in page order, each as whether `root`'s
+/// grant sees it.
+fn seen_through(conn: &Connection, root: i64, slug: &str, edition: &str) -> Vec<bool> {
+    crate::browse::visible_members(
+        conn,
+        &crate::account::Access::Only(vec![root]),
+        slug,
+        Some(edition),
+    )
+    .expect("reads")
+    .remove(edition)
+    .unwrap_or_default()
+    .into_iter()
+    .map(|m| m.visible)
+    .collect()
+}
+
+/// The slug of the work in `series`.
+fn slug_in(conn: &Connection, series: &str) -> String {
+    conn.query_row(
+        "SELECT w.slug FROM work w JOIN series s ON s.id = w.series_id WHERE s.sort_title = ?1",
+        [series],
+        |r| r.get(0),
+    )
+    .expect("one work in the series")
+}
+
+/// A volume that shares one of its two files with another directory's
+/// volume splits, per file (the ruling of 2026-11-04): the shared file is a
+/// copy in the older directory's work, which B's grant sees narrowed to it,
+/// and B's other file is a work of its own. The hidden member is the first,
+/// so a narrowing that hid nothing would answer differently.
+#[test]
+fn a_volume_sharing_one_of_its_files_splits_per_file() {
+    let a_dir = crate::tests::tempdir("derive-split-a");
+    let b_dir = crate::tests::tempdir("derive-split-b");
+    let shared = a_dir.path().join("Foo").join("Foo - v01 - c002.cbz");
+    write_archive(&a_dir.path().join("Foo").join("Foo - v01 - c001.cbz"), 3);
+    write_archive(&shared, 4);
+    write_archive(&b_dir.path().join("Bar").join("Bar - v01 - c001.cbz"), 5);
+    std::fs::copy(
+        &shared,
+        b_dir.path().join("Bar").join("Bar - v01 - c002.cbz"),
+    )
+    .expect("copies");
+    let library = libraries_a_and_b();
+    let conn = library.conn();
+    let a = root_in(&conn, a_dir.path(), "A", None);
+    let b = root_in(&conn, b_dir.path(), "B", None);
+    assert!(a.id < b.id, "the fixture: A's directory is older");
+
+    let report = derive::derive(&conn).expect("derives");
+    let shape = store_shape(&conn);
+
+    assert_eq!(report.works, 2, "two works");
+    let foo = slug_in(&conn, "Foo");
+    let bar = slug_in(&conn, "Bar");
+    assert_eq!(
+        seen_through(&conn, a.id, &foo, "raw"),
+        [true, true],
+        "A sees its volume whole"
+    );
+    assert_eq!(
+        seen_through(&conn, b.id, &foo, "raw"),
+        [false, true],
+        "B sees A's volume narrowed to the shared file"
+    );
+    assert_eq!(
+        seen_through(&conn, b.id, &bar, "raw"),
+        [true],
+        "and its other file as a work of its own"
+    );
+    assert!(
+        seen_through(&conn, a.id, &bar, "raw")
+            .iter()
+            .all(|seen| !seen),
+        "which A does not see"
+    );
+    for pass in 1..=2 {
+        let report = derive::derive(&conn).expect("derives");
+        assert_eq!(
+            (report.works, report.rekeyed),
+            (2, 0),
+            "pass {pass}: the same two works, rekeyed by nothing"
+        );
+        assert_eq!(store_shape(&conn), shape, "pass {pass}: nothing moves");
+    }
+}
+
+/// The partial shape that only a per-file collapse settles: B's directories
+/// give its volume a shared `raw` file and a `zh` file of its own, and `raw`
+/// sorts first, so B's group would take `raw` as its hub and hash the key of
+/// A's work. The shared file is a copy in A's work and `zh` is a work of B's.
+#[test]
+fn a_shared_hub_file_beside_an_edition_of_its_own_is_two_works() {
+    let a_dir = crate::tests::tempdir("derive-hub-a");
+    let raw_dir = crate::tests::tempdir("derive-hub-raw");
+    let zh_dir = crate::tests::tempdir("derive-hub-zh");
+    let archive = a_dir.path().join("Foo").join("Foo v01.cbz");
+    write_archive(&archive, 3);
+    std::fs::create_dir_all(raw_dir.path().join("Bar")).expect("mkdir");
+    std::fs::copy(&archive, raw_dir.path().join("Bar").join("Bar v01.cbz")).expect("copies");
+    write_archive(&zh_dir.path().join("Bar").join("Bar v01.cbz"), 4);
+    let library = libraries_a_and_b();
+    let conn = library.conn();
+    let a = root_in(&conn, a_dir.path(), "A", None);
+    let raw = root_in(&conn, raw_dir.path(), "B", None);
+    let zh = root_in(&conn, zh_dir.path(), "B", Some("zh"));
+    assert!(
+        derive::DEFAULT_EDITION_KEY < "zh",
+        "the fixture: the shared edition sorts first, so it would be B's hub"
+    );
+
+    derive::derive(&conn).expect("derives");
+    let shape = store_shape(&conn);
+
+    let foo = slug_in(&conn, "Foo");
+    let bar = slug_in(&conn, "Bar");
+    assert_ne!(foo, bar, "two works");
+    let b_grant = crate::account::Access::Only(vec![raw.id, zh.id]);
+    let b_sees = crate::browse::visible_editions(&conn, &b_grant).expect("reads");
+    let a_sees = crate::browse::visible_editions(&conn, &crate::account::Access::Only(vec![a.id]))
+        .expect("reads");
+    let keys = |key: &str| Some(std::collections::HashSet::from([key.to_string()]));
+    assert_eq!(
+        b_sees.get(&foo).cloned(),
+        keys("raw"),
+        "B sees the shared file in A's work"
+    );
+    assert_eq!(b_sees.get(&bar).cloned(), keys("zh"), "and its own edition");
+    assert_eq!(a_sees.get(&foo).cloned(), keys("raw"), "A sees its work");
+    assert_eq!(a_sees.get(&bar), None, "and not B's edition");
+    for pass in 1..=2 {
+        let report = derive::derive(&conn).expect("derives");
+        assert_eq!(
+            (report.works, report.rekeyed),
+            (2, 0),
+            "pass {pass}: the same two works, rekeyed by nothing"
+        );
+        assert_eq!(store_shape(&conn), shape, "pass {pass}: nothing moves");
+    }
+}
+
+/// What removing a directory leaves of a work whose shared file the other
+/// directory's rules name into another work: one work, the file one member of
+/// it at the kept directory's copy, no member under no directory, the
+/// reader's position carried onto it, and the rehearsal saying the work folds
+/// and the position moves. Answers the reader's slot afterwards.
+fn removing_the_directory_a_shared_file_was_named_by(
+    conn: &Connection,
+    gone: &scan::Root,
+    kept: &scan::Root,
+    slot: i64,
+    label: &str,
+) -> i64 {
+    let (held, sha256, root): (i64, String, Option<i64>) = conn
+        .query_row(
+            "SELECT e.work_id, m.sha256, m.root_id FROM member m
+               JOIN edition e ON e.id = m.edition_id
+              WHERE (SELECT count(*) FROM member_root mr WHERE mr.member_id = m.id) = 2",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("the one member held under both directories");
+    assert_eq!(
+        root,
+        Some(gone.id),
+        "{label}: the fixture: the shared file is named by the directory removed"
+    );
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', ?2)",
+        rusqlite::params![held, slot],
+    )
+    .expect("a position");
+
+    let (cost, rehearsed) = scan::removal_cost(conn, gone.id).expect("rehearses");
+    assert_eq!(
+        (cost.works, cost.positions),
+        (0, 0),
+        "{label}: the rehearsal deletes nothing"
+    );
+    assert_eq!(
+        (
+            rehearsed.emptied_works,
+            rehearsed.moved_positions,
+            rehearsed.lost_positions,
+            rehearsed.unfolded_works,
+        ),
+        (1, 1, 0, 0),
+        "{label}: the rehearsal folds the work and moves the position: {:?}",
+        rehearsed.unfoldable
+    );
+    let (removal, _) = scan::remove_root(conn, gone.id).expect("removes");
+    assert_eq!((removal.works, removal.positions), (0, 0), "{label}");
+
+    assert_eq!(
+        scalar(conn, "SELECT count(*) FROM work"),
+        1,
+        "{label}: no work is left holding the file twice"
+    );
+    let shared: Vec<(i64, Option<i64>, String)> = conn
+        .prepare(
+            "SELECT e.work_id, m.root_id, m.path FROM member m
+               JOIN edition e ON e.id = m.edition_id WHERE m.sha256 = ?1",
+        )
+        .and_then(|mut q| {
+            q.query_map([&sha256], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect()
+        })
+        .expect("the shared file's members");
+    assert_eq!(
+        shared.len(),
+        1,
+        "{label}: one member holds the file: {shared:?}"
+    );
+    let (surviving, root, path) = &shared[0];
+    assert_eq!(*root, Some(kept.id), "{label}: under the kept directory");
+    assert!(
+        path.starts_with(&kept.path.display().to_string()),
+        "{label}: at its copy: {path}"
+    );
+    assert_eq!(
+        scalar(conn, "SELECT count(*) FROM member WHERE root_id IS NULL"),
+        0,
+        "{label}: no member is left under no directory"
+    );
+    let positions: Vec<(i64, String, i64)> = conn
+        .prepare("SELECT work_id, edition, slot FROM progress")
+        .and_then(|mut q| {
+            q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect()
+        })
+        .expect("positions");
+    assert_eq!(
+        positions.len(),
+        1,
+        "{label}: the position survives: {positions:?}"
+    );
+    assert_eq!(
+        (positions[0].0, positions[0].1.as_str()),
+        (*surviving, "raw"),
+        "{label}: on the work holding the file"
+    );
+    for pass in 1..=2 {
+        let report = derive::derive(conn).expect("derives");
+        assert_eq!(
+            (report.works, report.emptied_works, report.unfolded_works),
+            (1, 0, 0),
+            "{label}, pass {pass}: nothing more to fold"
+        );
+    }
+    positions[0].2
+}
+
+/// The reviewer's second shape: B, the older directory, holds a volume of
+/// three chapter files, one of them byte-identical to a chapter A's rules
+/// file under another series; B goes. The shared file becomes a work of
+/// A's, Bar is folded into it, and a reader on the shared file's second page
+/// is on it still where nothing before it went.
+#[test]
+fn removing_the_older_directory_of_a_shared_chapter_folds_its_work_into_the_copys() {
+    for shared_at in [0, 1] {
+        let a_dir = crate::tests::tempdir("derive-fold-a");
+        let b_dir = crate::tests::tempdir("derive-fold-b");
+        let mut pages_before = 0;
+        for (at, pages) in [3_usize, 5, 6].into_iter().enumerate() {
+            let name = format!("Bar - v01 - c00{}.cbz", at + 1);
+            let pages = if at == shared_at { 4 } else { pages };
+            write_archive(&b_dir.path().join("Bar").join(&name), pages);
+            if at < shared_at {
+                pages_before += i64::try_from(pages).expect("a few pages");
+            }
+        }
+        std::fs::create_dir_all(a_dir.path().join("Foo")).expect("mkdir");
+        std::fs::copy(
+            b_dir
+                .path()
+                .join("Bar")
+                .join(format!("Bar - v01 - c00{}.cbz", shared_at + 1)),
+            a_dir
+                .path()
+                .join("Foo")
+                .join(format!("Foo - v01 - c00{}.cbz", shared_at + 1)),
+        )
+        .expect("copies");
+        let library = libraries_a_and_b();
+        let conn = library.conn();
+        let b = root_in(&conn, b_dir.path(), "B", None);
+        let a = root_in(&conn, a_dir.path(), "A", None);
+        assert!(b.id < a.id, "the fixture: B's directory is older");
+        derive::derive(&conn).expect("derives");
+        assert_eq!(
+            scalar(&conn, "SELECT count(*) FROM work"),
+            1,
+            "the fixture: B's volume is one work, the shared file a copy in it"
+        );
+        let label = format!("shared file at {shared_at}");
+
+        let slot = removing_the_directory_a_shared_file_was_named_by(
+            &conn,
+            &b,
+            &a,
+            pages_before + 1,
+            &label,
+        );
+
+        assert_eq!(the_series(&conn), "Foo", "{label}: named by A's rules");
+        if shared_at == 0 {
+            assert_eq!(slot, 1, "{label}: on the shared file's second page");
+        }
+    }
+}
+
+/// Removing the directory a copy is named by hands the name to the oldest
+/// directory left holding it, as a fresh store would: one file under A, B and
+/// C, each naming it in a series of its own; A goes and B's rules name it.
+#[test]
+fn removing_the_primary_directory_of_a_copy_names_it_by_the_oldest_left() {
+    let dirs: Vec<crate::tests::TempDir> = ["Foo", "Bar", "Baz"]
+        .iter()
+        .map(|series| crate::tests::tempdir(&format!("derive-oldest-{series}")))
+        .collect();
+    let archive = dirs[0].path().join("Foo").join("Foo v01.cbz");
+    write_archive(&archive, 3);
+    for (dir, series) in dirs.iter().zip(["Foo", "Bar", "Baz"]).skip(1) {
+        std::fs::create_dir_all(dir.path().join(series)).expect("mkdir");
+        std::fs::copy(
+            &archive,
+            dir.path().join(series).join(format!("{series} v01.cbz")),
+        )
+        .expect("copies");
+    }
+    let library = libraries_a_and_b();
+    let conn = library.conn();
+    let a = root_in(&conn, dirs[0].path(), "A", None);
+    root_in(&conn, dirs[1].path(), "B", None);
+    root_in(&conn, dirs[2].path(), "B", None);
+    derive::derive(&conn).expect("derives");
+    assert_eq!(the_series(&conn), "Foo", "the fixture: named by A's rules");
+
+    scan::remove_root(&conn, a.id).expect("removes");
+
+    assert_eq!(
+        the_series(&conn),
+        "Bar",
+        "named by the older of the two left"
+    );
+}
+
+/// The raw and zh shape with A removed: A's `raw` file is a copy in B's
+/// `raw` directory, whose rules put it beside B's own `zh` edition in Bar. A
+/// goes, and Foo is folded into Bar, the reader on its third page.
+#[test]
+fn removing_the_directory_of_a_shared_hub_file_folds_its_work_into_the_copys() {
+    let a_dir = crate::tests::tempdir("derive-fold-hub-a");
+    let raw_dir = crate::tests::tempdir("derive-fold-hub-raw");
+    let zh_dir = crate::tests::tempdir("derive-fold-hub-zh");
+    let archive = a_dir.path().join("Foo").join("Foo v01.cbz");
+    write_archive(&archive, 3);
+    std::fs::create_dir_all(raw_dir.path().join("Bar")).expect("mkdir");
+    std::fs::copy(&archive, raw_dir.path().join("Bar").join("Bar v01.cbz")).expect("copies");
+    write_archive(&zh_dir.path().join("Bar").join("Bar v01.cbz"), 4);
+    let library = libraries_a_and_b();
+    let conn = library.conn();
+    let a = root_in(&conn, a_dir.path(), "A", None);
+    let raw = root_in(&conn, raw_dir.path(), "B", None);
+    root_in(&conn, zh_dir.path(), "B", Some("zh"));
+    derive::derive(&conn).expect("derives");
+    assert_eq!(
+        scalar(&conn, "SELECT count(*) FROM work"),
+        2,
+        "the fixture: Foo, and Bar's `zh`"
+    );
+
+    let slot = removing_the_directory_a_shared_file_was_named_by(&conn, &a, &raw, 2, "hub");
+
+    assert_eq!(the_series(&conn), "Bar", "named by B's rules");
+    assert_eq!(slot, 2, "on the file's third page");
+    let keys: Vec<String> = conn
+        .prepare("SELECT key FROM edition ORDER BY key")
+        .and_then(|mut q| q.query_map([], |r| r.get(0))?.collect())
+        .expect("keys");
+    assert_eq!(keys, ["raw", "zh"], "Bar holds the file beside its own");
+}
+
+/// The split volume with its older directory removed: A held Foo's c001 and
+/// c002, and B held its own c001 and a copy of c002. Once A goes, B's rules
+/// put c002 in Bar beside B's c001, and Foo's edition, c002 alone, is a run
+/// of Bar's rather than the same list, so the fold is refused (O243). Foo
+/// stays its own work, held under B, with its reader's position, and every
+/// derive reports it unfolded until a fold can carry it.
+#[test]
+fn removing_the_older_directory_of_a_split_volume_leaves_its_work_unfolded() {
+    let a_dir = crate::tests::tempdir("derive-unfolded-a");
+    let b_dir = crate::tests::tempdir("derive-unfolded-b");
+    let shared = a_dir.path().join("Foo").join("Foo - v01 - c002.cbz");
+    write_archive(&a_dir.path().join("Foo").join("Foo - v01 - c001.cbz"), 3);
+    write_archive(&shared, 4);
+    write_archive(&b_dir.path().join("Bar").join("Bar - v01 - c001.cbz"), 5);
+    std::fs::copy(
+        &shared,
+        b_dir.path().join("Bar").join("Bar - v01 - c002.cbz"),
+    )
+    .expect("copies");
+    let library = libraries_a_and_b();
+    let conn = library.conn();
+    let a = root_in(&conn, a_dir.path(), "A", None);
+    let b = root_in(&conn, b_dir.path(), "B", None);
+    derive::derive(&conn).expect("derives");
+    let work_in = |series: &str| {
+        scalar(
+            &conn,
+            &format!(
+                "SELECT w.id FROM work w JOIN series s ON s.id = w.series_id
+                  WHERE s.sort_title = '{series}'"
             ),
-            scalar(
-                &conn,
-                &format!("SELECT series_id FROM work WHERE id = {imported}")
+        )
+    };
+    let (foo, bar) = (work_in("Foo"), work_in("Bar"));
+    let sha256: String = conn
+        .query_row(
+            "SELECT sha256 FROM member WHERE path = ?1",
+            [shared.display().to_string()],
+            |r| r.get(0),
+        )
+        .expect("the shared file's member");
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 4)",
+        [foo],
+    )
+    .expect("a position on c002's second page");
+    let refused = vec![format!(
+        "work {foo} holds edition(s) `raw` with no digest-identical edition on work {bar}; \
+         nothing was moved and nothing was deleted"
+    )];
+
+    let (cost, rehearsed) = scan::removal_cost(&conn, a.id).expect("rehearses");
+    assert_eq!(
+        (cost.works, cost.positions),
+        (0, 0),
+        "the rehearsal deletes nothing"
+    );
+    assert_eq!(
+        (rehearsed.emptied_works, rehearsed.unfolded_works),
+        (0, 1),
+        "the rehearsal says Foo is not folded"
+    );
+    assert_eq!(rehearsed.unfoldable, refused, "in absorb's words");
+    let (removal, derived) = scan::remove_root(&conn, a.id).expect("removes");
+    assert_eq!((removal.works, removal.positions), (0, 0));
+    assert_eq!(
+        (derived.unfolded_works, derived.unfoldable.clone()),
+        (1, refused.clone()),
+        "the removal's own derive"
+    );
+
+    assert_eq!(scalar(&conn, "SELECT count(*) FROM work"), 2, "two works");
+    let foos: Vec<(String, Option<i64>, String)> = conn
+        .prepare(
+            "SELECT m.sha256, m.root_id, m.path FROM member m
+               JOIN edition e ON e.id = m.edition_id WHERE e.work_id = ?1",
+        )
+        .and_then(|mut q| {
+            q.query_map([foo], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect()
+        })
+        .expect("Foo's members");
+    assert_eq!(foos.len(), 1, "Foo holds c002 alone: {foos:?}");
+    assert_eq!(
+        (foos[0].0.as_str(), foos[0].1),
+        (sha256.as_str(), Some(b.id)),
+        "under B"
+    );
+    assert!(
+        foos[0].2.starts_with(&b.path.display().to_string()),
+        "at B's copy: {}",
+        foos[0].2
+    );
+    assert_eq!(
+        scalar(&conn, "SELECT count(*) FROM member WHERE root_id IS NULL"),
+        0,
+        "no member under no directory"
+    );
+    let positions = || -> Vec<(i64, String, i64)> {
+        conn.prepare("SELECT work_id, edition, slot FROM progress")
+            .and_then(|mut q| {
+                q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect()
+            })
+            .expect("positions")
+    };
+    // Past the end of Foo's 4 pages: a removal keeps the old numbering (O244).
+    assert_eq!(
+        positions(),
+        [(foo, "raw".to_string(), 4)],
+        "the position stays on Foo"
+    );
+
+    let shape = store_shape(&conn);
+    for pass in 1..=2 {
+        let report = derive::derive(&conn).expect("derives");
+        assert_eq!(
+            (
+                report.emptied_works,
+                report.unfolded_works,
+                report.unfoldable
+            ),
+            (0, 1, refused.clone()),
+            "pass {pass}: reported unfolded again"
+        );
+        assert_eq!(store_shape(&conn), shape, "pass {pass}: nothing moves");
+        assert_eq!(
+            positions(),
+            [(foo, "raw".to_string(), 4)],
+            "pass {pass}: the position"
+        );
+    }
+}
+
+/// One edition's directory removed from a work of two: B, the oldest
+/// directory, held Bar's `raw` c001, c002 and c003, C held Bar's `en` c001,
+/// and A a copy of c002 under Foo. Once B goes, A's rules file c002 in a work
+/// of Foo, while Bar's `en` keeps Bar written, so `derive::superseded` never
+/// weighs it and its `raw`, c002 alone, stays beside Foo's. Both works hold
+/// the file, as O243's ruling keeps them, with the reader's position where it
+/// was and nothing reported but a kept edition.
+#[test]
+fn removing_the_directory_of_one_of_two_editions_keeps_its_stale_edition_beside_the_copys_work() {
+    let b_dir = crate::tests::tempdir("derive-two-editions-b");
+    let c_dir = crate::tests::tempdir("derive-two-editions-c");
+    let a_dir = crate::tests::tempdir("derive-two-editions-a");
+    let bar = |c: usize| {
+        b_dir
+            .path()
+            .join("Bar")
+            .join(format!("Bar - v01 - c00{c}.cbz"))
+    };
+    write_archive(&bar(1), 3);
+    write_archive(&bar(2), 4);
+    write_archive(&bar(3), 5);
+    write_archive(&c_dir.path().join("Bar").join("Bar - v01 - c001.cbz"), 7);
+    std::fs::create_dir_all(a_dir.path().join("Foo")).expect("mkdir");
+    std::fs::copy(
+        bar(2),
+        a_dir.path().join("Foo").join("Foo - v01 - c002.cbz"),
+    )
+    .expect("copies");
+    let library = libraries_a_and_b();
+    let conn = library.conn();
+    let b = root_in(&conn, b_dir.path(), "B", None);
+    let c = root_in(&conn, c_dir.path(), "B", Some("en"));
+    let a = root_in(&conn, a_dir.path(), "A", None);
+    derive::derive(&conn).expect("derives");
+    assert_eq!(
+        scalar(&conn, "SELECT count(*) FROM work"),
+        1,
+        "the fixture: one work, Bar"
+    );
+    let bar_work = scalar(&conn, "SELECT id FROM work");
+    let sha256: String = conn
+        .query_row(
+            "SELECT sha256 FROM member WHERE path = ?1",
+            [b.path
+                .join("Bar")
+                .join("Bar - v01 - c002.cbz")
+                .display()
+                .to_string()],
+            |r| r.get(0),
+        )
+        .expect("c002's member, named by B");
+    assert_eq!(
+        scalar(
+            &conn,
+            &format!(
+                "SELECT count(*) FROM member_root mr JOIN member m ON m.id = mr.member_id
+                  WHERE m.sha256 = '{sha256}'"
             ),
         ),
-        (80, 90),
-        "the fixture: each work found the series its document names"
+        2,
+        "the fixture: c002 is one member, held under B and A"
     );
-    let filed_series: Vec<(i64, Option<i64>)> = filed(&conn, "series")
-        .into_iter()
-        .filter(|(id, _)| *id == 80 || *id == 90)
-        .collect();
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 4)",
+        [bar_work],
+    )
+    .expect("a position on c002's second page");
+    let reported = |r: &derive::DeriveReport| {
+        (
+            r.emptied_works,
+            r.moved_positions,
+            r.lost_positions,
+            r.unfolded_works,
+            r.kept_editions,
+            r.unfoldable.clone(),
+        )
+    };
+    let kept = (0, 0, 0, 0, 1, Vec::<String>::new());
+
+    let (cost, rehearsed) = scan::removal_cost(&conn, b.id).expect("rehearses");
     assert_eq!(
-        filed_series,
-        vec![(80, Some(root.library_id)), (90, None)],
-        "the filed work's series is filed with it, and the other is left in none"
+        (cost.works, cost.positions),
+        (0, 0),
+        "the rehearsal deletes nothing"
     );
+    assert_eq!(
+        reported(&rehearsed),
+        kept,
+        "the rehearsal reports a kept edition and nothing else"
+    );
+    let (removal, derived) = scan::remove_root(&conn, b.id).expect("removes");
+    assert_eq!((removal.works, removal.positions), (0, 0));
+    assert_eq!(reported(&derived), kept, "the removal's own derive");
+
+    assert_eq!(scalar(&conn, "SELECT count(*) FROM work"), 2, "two works");
+    let foo_work = scalar(
+        &conn,
+        &format!("SELECT id FROM work WHERE id <> {bar_work}"),
+    );
+    let members_of = |work: i64| -> Vec<(String, String, Option<i64>, String)> {
+        conn.prepare(
+            "SELECT e.key, m.sha256, m.root_id, m.path FROM member m
+               JOIN edition e ON e.id = m.edition_id WHERE e.work_id = ?1
+              ORDER BY e.key, m.ordinal",
+        )
+        .and_then(|mut q| {
+            q.query_map([work], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .collect()
+        })
+        .expect("a work's members")
+    };
+    let copy = a
+        .path
+        .join("Foo")
+        .join("Foo - v01 - c002.cbz")
+        .display()
+        .to_string();
+    let en = c
+        .path
+        .join("Bar")
+        .join("Bar - v01 - c001.cbz")
+        .display()
+        .to_string();
+    let bars = members_of(bar_work);
+    assert_eq!(
+        bars.iter()
+            .map(|(key, _, root, path)| (key.as_str(), *root, path.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("en", Some(c.id), en.as_str()),
+            ("raw", Some(a.id), copy.as_str())
+        ],
+        "Bar keeps `en` and its stale `raw`, at A's copy"
+    );
+    assert_eq!(bars[1].1, sha256, "the stale `raw` is c002");
+    assert_eq!(
+        members_of(foo_work),
+        [("raw".to_string(), sha256.clone(), Some(a.id), copy.clone())],
+        "Foo holds c002 at the same path"
+    );
+    assert_eq!(
+        scalar(&conn, "SELECT count(*) FROM member WHERE root_id IS NULL"),
+        0,
+        "no member under no directory"
+    );
+    let positions = || -> Vec<(i64, String, i64)> {
+        conn.prepare("SELECT work_id, edition, slot FROM progress")
+            .and_then(|mut q| {
+                q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect()
+            })
+            .expect("positions")
+    };
+    // Past the end of the stale `raw`'s 4 pages: a removal keeps the old
+    // numbering (O244).
+    assert_eq!(
+        positions(),
+        [(bar_work, "raw".to_string(), 4)],
+        "the position stays on Bar's `raw`"
+    );
+
+    let shape = store_shape(&conn);
+    for pass in 1..=2 {
+        let report = derive::derive(&conn).expect("derives");
+        assert_eq!(reported(&report), kept, "pass {pass}: a kept edition again");
+        assert_eq!(store_shape(&conn), shape, "pass {pass}: nothing moves");
+        assert_eq!(
+            positions(),
+            [(bar_work, "raw".to_string(), 4)],
+            "pass {pass}: the position"
+        );
+    }
+}
+
+/// The primary copy is the one the work already names, so a copy appearing
+/// under a directory of a lower id moves neither `member.path` nor the
+/// work's document address.
+#[test]
+fn a_copy_under_an_older_directory_leaves_the_primary_where_it_was() {
+    the_primary_stays_when_a_copy_arrives_under_an_older_directory("Foo v01.cbz", Address::Derived);
+}
+
+/// And for a work with no volume, which `held_work` finds by a member's path
+/// rather than by its volume: the path it holds is the younger directory's.
+#[test]
+fn a_copy_of_a_volume_less_work_under_an_older_directory_leaves_the_primary_where_it_was() {
+    the_primary_stays_when_a_copy_arrives_under_an_older_directory("Foo.cbz", Address::Derived);
+}
+
+/// And for a work a hand series has moved off the address its files resolve,
+/// which `held_work` cannot find and content still does. Such a work is the
+/// one with a hand document to keep at its address.
+#[test]
+fn a_copy_under_an_older_directory_leaves_the_primary_of_a_work_a_hand_series_moved() {
+    the_primary_stays_when_a_copy_arrives_under_an_older_directory(
+        "Foo v01.cbz",
+        Address::HandSeries,
+    );
+}
+
+/// The same for a hand volume.
+#[test]
+fn a_copy_under_an_older_directory_leaves_the_primary_of_a_work_a_hand_volume_moved() {
+    the_primary_stays_when_a_copy_arrives_under_an_older_directory(
+        "Foo v01.cbz",
+        Address::HandVolume,
+    );
+}
+
+/// And for a volume-less work a hand series moved, whose path probe is
+/// scoped to the series its files resolve.
+#[test]
+fn a_copy_of_a_volume_less_work_under_an_older_directory_leaves_the_primary_a_hand_series_moved() {
+    the_primary_stays_when_a_copy_arrives_under_an_older_directory("Foo.cbz", Address::HandSeries);
+}
+
+/// Where the work sits before the copy arrives.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Address {
+    /// Where its files resolve.
+    Derived,
+    /// In a series a person chose.
+    HandSeries,
+    /// At a volume a person chose.
+    HandVolume,
+}
+
+fn the_primary_stays_when_a_copy_arrives_under_an_older_directory(name: &str, address: Address) {
+    let (first, second) = a_copy_of(name);
+    let held = first.path().join("Foo").join(name);
+    let moved = crate::tests::tempdir("derive-copy-aside");
+    std::fs::rename(&held, moved.path().join(name)).expect("set aside");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let a = scanned_root(&conn, first.path(), None);
+    let b = scanned_root(&conn, second.path(), None);
+    assert!(a.id < b.id, "the fixture: the empty directory is older");
+    derive::derive(&conn).expect("derives the work under the younger");
+    let work_id = scalar(&conn, "SELECT id FROM work");
+    let before = (
+        the_member(&conn),
+        crate::hand::path_for(&conn, work_id).expect("an address"),
+    );
+    assert_eq!(
+        before.0.0,
+        Some(b.id),
+        "the fixture: held under the younger"
+    );
+    let volume: Option<f64> = conn
+        .query_row("SELECT volume FROM work", [], |r| r.get(0))
+        .expect("the work's volume");
+    assert_eq!(
+        volume.is_none(),
+        !name.contains(" v01"),
+        "the fixture: a volume-less work only where the name carries none"
+    );
+    match address {
+        Address::Derived => {}
+        Address::HandSeries => {
+            conn.execute("INSERT INTO series (sort_title) VALUES ('Elsewhere')", [])
+                .expect("a series of a person's choosing");
+            conn.execute(
+                "UPDATE work SET series_id_hand = ?1, series_id = ?1",
+                [conn.last_insert_rowid()],
+            )
+            .expect("a hand series");
+        }
+        Address::HandVolume => {
+            conn.execute("UPDATE work SET volume_hand = 7, volume = 7", [])
+                .expect("a hand volume");
+        }
+    }
+    let at: (String, Option<f64>) = conn
+        .query_row(
+            "SELECT series.sort_title, work.volume FROM work
+               JOIN series ON series.id = work.series_id",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the work's address");
+    assert_eq!(
+        at == ("Foo".to_string(), volume),
+        address == Address::Derived,
+        "the fixture: off the address its files resolve only where a hand value moved it"
+    );
+
+    std::fs::rename(moved.path().join(name), &held).expect("the copy arrives");
+    scan::scan_root(&conn, &a).expect("rescans the older");
+    derive::derive(&conn).expect("derives again");
+
+    assert_eq!(
+        (
+            the_member(&conn),
+            crate::hand::path_for(&conn, work_id).expect("an address"),
+        ),
+        before,
+        "member.root_id, member.path and the document's address stay"
+    );
+    assert_eq!(member_root_ids(&conn), vec![a.id, b.id], "held under both");
+}
+
+/// A document reimport deletes and reinserts the members, and both
+/// directories come back with the member, the column on the one its path
+/// names.
+#[test]
+fn a_document_reimport_over_a_copied_volume_keeps_both_directories() {
+    let (first, second) = a_copy_of_one_volume();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let a = scanned_root(&conn, first.path(), None);
+    let b = scanned_root(&conn, second.path(), None);
+    derive::derive(&conn).expect("derives");
+    let work_id = scalar(&conn, "SELECT id FROM work");
+    let before = the_member(&conn);
+    assert_eq!(member_root_ids(&conn), vec![a.id, b.id], "the fixture");
+
+    let doc = crate::project::sidecar(&conn, work_id).expect("projects");
+    let reimported =
+        crate::import::sidecar(&conn, &doc, &first.path().join("taiyaku.json")).expect("reimports");
+
+    assert_eq!(reimported, work_id, "the same work");
+    assert_eq!(member_root_ids(&conn), vec![a.id, b.id], "both directories");
+    assert_eq!(the_member(&conn), before, "and the primary's");
+}
+
+/// Two directories of one library holding a copy are one member too. A work
+/// that holds the copy twice, its key hashing two digests, is rekeyed once,
+/// and counted.
+#[test]
+fn two_directories_of_one_library_holding_a_copy_are_one_member_rekeyed_once() {
+    let (first, second) = a_copy_of_one_volume();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let mut roots = Vec::new();
+    for dir in [first.path(), second.path()] {
+        let root = scan::add_root_in(&conn, dir, scan::InLibrary::Named("Manga")).expect("adds");
+        scan::scan_root(&conn, &root).expect("scans");
+        roots.push(root);
+    }
+    derive::derive(&conn).expect("derives");
+    let work_id = scalar(&conn, "SELECT id FROM work");
+    // The copy as a second member, keyed on both digests.
+    conn.execute(
+        "INSERT INTO member (edition_id, ordinal, path, sha256, pages, root_id)
+         SELECT edition_id, 1, ?1, sha256, pages, ?2 FROM member",
+        rusqlite::params![
+            second
+                .path()
+                .join("Foo")
+                .join("Foo v01.cbz")
+                .to_string_lossy(),
+            roots[1].id
+        ],
+    )
+    .expect("the second copy as a member");
+    let doubled =
+        crate::identity::content_key(&crate::project::sidecar(&conn, work_id).expect("projects"))
+            .expect("keys");
+    conn.execute(
+        "UPDATE work SET content_key = ?1 WHERE id = ?2",
+        rusqlite::params![doubled, work_id],
+    )
+    .expect("keyed on both");
+
+    let report = derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        (report.members, report.rekeyed),
+        (1, 1),
+        "rekeyed to one member"
+    );
+    assert_eq!(scalar(&conn, "SELECT count(*) FROM member"), 1);
+    assert_eq!(
+        scalar(&conn, "SELECT id FROM work"),
+        work_id,
+        "the same work"
+    );
+    assert_eq!(
+        member_root_ids(&conn),
+        vec![roots[0].id, roots[1].id],
+        "held under both"
+    );
+    let again = derive::derive(&conn).expect("derives again");
+    assert_eq!(again.rekeyed, 0, "once");
+}
+
+/// The derived copy pair, with a group naming the member's candidate as
+/// `write_roots` receives it: primary under `primary`, a copy under `copy`.
+fn copied_group(conn: &Connection, primary: (i64, &str), copy: (i64, &str)) -> super::Group {
+    let mut group = super::Group {
+        series: "Foo".to_string(),
+        volume: Some(1.0),
+        editions: BTreeMap::new(),
+    };
+    let (sha256, pages): (String, u32) = conn
+        .query_row("SELECT sha256, pages FROM member", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .expect("the one member");
+    group.editions.insert(
+        derive::DEFAULT_EDITION_KEY.to_string(),
+        vec![super::Candidate {
+            path: primary.1.to_string(),
+            rel_path: "Foo/Foo v01.cbz".to_string(),
+            root_id: primary.0,
+            sha256,
+            pages,
+            chapter: None,
+            title: None,
+            kind: None,
+            language: None,
+            copies: vec![super::CopyAt {
+                root_id: copy.0,
+                path: copy.1.to_string(),
+            }],
+        }],
+    );
+    group
+}
+
+/// The primary is kept where the same edition holds the bytes, not where
+/// another edition's member of them sits: `raw` holds them under b, the
+/// omnibus under a, and b's entry is put before a's.
+#[test]
+fn keep_primaries_reads_the_candidates_own_edition() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    conn.execute(
+        "INSERT INTO root (id, path) VALUES (1, '/a'), (2, '/b')",
+        [],
+    )
+    .expect("roots");
+    seed_work_at(
+        &conn,
+        1,
+        "held",
+        &[
+            ("raw", "/b/Foo/Foo v01.cbz", "same"),
+            ("omni", "/a/Omni.cbz", "same"),
+        ],
+        Some(2),
+    );
+    conn.execute(
+        "UPDATE member SET root_id = 1 WHERE path = '/a/Omni.cbz'",
+        [],
+    )
+    .expect("the omnibus member under a");
+    let staged: Vec<super::Staged> = [(1, "/a/Foo/Foo v01.cbz"), (2, "/b/Foo/Foo v01.cbz")]
+        .into_iter()
+        .map(|(root_id, path)| {
+            let mut group = copied_group(&conn, (root_id, path), (root_id, path));
+            let mut candidate = group
+                .editions
+                .remove(derive::DEFAULT_EDITION_KEY)
+                .expect("raw")
+                .remove(0);
+            candidate.copies.clear();
+            super::Staged {
+                candidate,
+                series: "Foo".to_string(),
+                volume: Some(1.0),
+                edition_key: derive::DEFAULT_EDITION_KEY.to_string(),
+            }
+        })
+        .collect();
+    let sha256 = staged[0].candidate.sha256.clone();
+    let mut at = [0, 1];
+
+    super::keep_primaries(&conn, &sha256, &staged, &mut at).expect("reads");
+
+    let first = &staged[at[0]].candidate;
+    assert_eq!(
+        (first.root_id, first.path.as_str()),
+        (2, "/b/Foo/Foo v01.cbz"),
+        "the primary is the copy raw holds"
+    );
+}
+
+/// Migration 018's `member_root_on_update` deletes the old directory's row
+/// when the primary moves, though that directory still holds a copy;
+/// `write_roots` writes the rows after the column, so both stay.
+#[test]
+fn a_primary_moving_to_another_copy_keeps_both_directories() {
+    let (first, second) = a_copy_of_one_volume();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let a = scanned_root(&conn, first.path(), None);
+    let b = scanned_root(&conn, second.path(), None);
+    derive::derive(&conn).expect("derives");
+    let work_id = scalar(&conn, "SELECT id FROM work");
+    assert_eq!(
+        the_member(&conn).0,
+        Some(a.id),
+        "the fixture: primary under a"
+    );
+    let group = copied_group(&conn, (b.id, "/b"), (a.id, "/a"));
+    let mut report = derive::DeriveReport::default();
+
+    super::write_roots(&conn, work_id, &group, &mut report).expect("writes");
+
+    assert_eq!(the_member(&conn).0, Some(b.id), "the primary moved");
+    assert_eq!(member_root_ids(&conn), vec![a.id, b.id], "and both stay");
+}
+
+/// A copy's directory removed while the derive runs gets no row and is
+/// counted, as a primary's is; the primary's row stays.
+#[test]
+fn a_copys_directory_removed_mid_derive_is_counted_and_gets_no_row() {
+    let (first, second) = a_copy_of_one_volume();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let a = scanned_root(&conn, first.path(), None);
+    let b = scanned_root(&conn, second.path(), None);
+    derive::derive(&conn).expect("derives");
+    let work_id = scalar(&conn, "SELECT id FROM work");
+    let group = copied_group(&conn, (a.id, "/a"), (b.id, "/b"));
+    conn.execute("DELETE FROM root WHERE id = ?1", [b.id])
+        .expect("removes the copy's directory");
+    let mut report = derive::DeriveReport::default();
+
+    super::write_roots(&conn, work_id, &group, &mut report)
+        .expect("a vanished copy's directory does not fail the write");
+
+    assert_eq!(report.root_removed_mid_derive, 1, "counted");
+    assert_eq!(member_root_ids(&conn), vec![a.id], "the primary's row only");
+    assert_eq!(the_member(&conn).0, Some(a.id));
 }

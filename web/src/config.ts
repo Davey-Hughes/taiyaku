@@ -67,6 +67,7 @@ export const TABS: Tab[] = [
   },
   { path: 'rules', label: 'Rules' },
   { path: 'backup', label: 'Backup' },
+  { path: 'split-editions', label: 'Split editions' },
 ]
 
 /** One `root` row, as `GET /api/library/roots` sends it. */

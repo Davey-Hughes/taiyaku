@@ -776,7 +776,11 @@ describe('the listeners kept per address', () => {
 
 describe('invalidatePrefix', () => {
   const PREFIX = '/api/library/series'
-  const UNDER = ['/api/library/series?library=2', '/api/library/series/17']
+  const UNDER = [
+    '/api/library/series?library=2',
+    '/api/library/series/17',
+    '/api/library/series/17?library=2',
+  ]
   const NOT_UNDER = ['/api/library/seriesX', '/api/library/home']
 
   /** Each of `paths` read and kept with its own path as the answer. */
@@ -786,8 +790,8 @@ describe('invalidatePrefix', () => {
     const paths = [PREFIX, ...UNDER, ...NOT_UNDER]
     for (const path of paths) listen(path)
     const all = await keptAll(paths)
-    const under = all.slice(0, 3)
-    const notUnder = all.slice(3)
+    const under = all.slice(0, 1 + UNDER.length)
+    const notUnder = all.slice(1 + UNDER.length)
     const untouched = notUnder.map((a) => entryOf(a.read))
 
     invalidatePrefix(PREFIX)
@@ -813,8 +817,8 @@ describe('invalidatePrefix', () => {
 
   it('marks stale, and sends nothing for, each address under the prefix nothing draws, and leaves one that only starts with it alone', async () => {
     const all = await keptAll([...UNDER, ...NOT_UNDER])
-    const under = all.slice(0, 2)
-    const notUnder = all.slice(2)
+    const under = all.slice(0, UNDER.length)
+    const notUnder = all.slice(UNDER.length)
     const untouched = notUnder.map((a) => entryOf(a.read))
 
     invalidatePrefix(PREFIX)

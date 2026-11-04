@@ -154,6 +154,13 @@ describe('RemoveRoot', () => {
     )
   })
 
+  it('says a removal takes only what no other directory holds', async () => {
+    const host = await settle()
+    expect(host.querySelector('.irreversible')?.textContent).toBe(
+      'Nothing here can be undone from this screen. The files on disk are untouched; what goes is everything derived from files no other directory holds, and everything anybody recorded against a work that goes.',
+    )
+  })
+
   it('says the library goes too where this is its only directory', async () => {
     const host = await settle(vi.fn(), 'Manga')
     expect(host.querySelector('.last-dir')?.textContent).toBe(

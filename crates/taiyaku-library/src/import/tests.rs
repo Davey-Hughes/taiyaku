@@ -1430,27 +1430,36 @@ fn held_member_meta_keeps_the_earliest_edition_and_ordinal_for_a_shared_hash() {
     );
 }
 
-/// **A hash held under two distinct roots must come back NULL, not either
-/// root — this is the half of `held_member_meta` that is not allowed to be
-/// arbitrary.** Unlike a chapter number, where "the earliest edition wins" is
-/// a coin flip with nothing at stake, a wrongly-restored `root_id` is a
-/// permission-shaped fact stated wrong: an account granted only the root the
-/// member did *not* come from would see a work that does not physically live
-/// there, and one granted the root it actually lives under would lose it.
-/// Reachable without any hypothetical setup — two roots added with
-/// `library scan --add` and no `edition_key` both fall back to `raw` and
-/// derivation merges their members into one edition (O54), and the same file
-/// present under two roots is ordinary — so this fixture is exactly that
-/// shape: one hash, two editions, each edition's copy of it scanned from a
-/// different root.
+/// Each member's `(edition key, member_root directory)` pairs on `work_id`.
+fn member_roots_by_edition(conn: &rusqlite::Connection, work_id: i64) -> Vec<(String, i64)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT edition.key, member_root.root_id FROM member_root
+             JOIN member ON member.id = member_root.member_id
+             JOIN edition ON edition.id = member.edition_id
+             WHERE edition.work_id = ?1
+             ORDER BY edition.key, member_root.root_id",
+        )
+        .expect("preparing");
+    let found = stmt
+        .query_map([work_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("querying");
+    found.map(|r| r.expect("row")).collect()
+}
+
+/// **A hash held under two distinct roots comes back with each row's own
+/// directory, and only its own.** One hash, two editions, each edition's copy
+/// scanned from a different root: an omnibus/standalone pair. The column and
+/// the `member_root` rows follow the held row at the same path, as a derive
+/// would write them, so the omnibus copy under b is not handed a row for a,
+/// and an account granted only a is not shown the omnibus edition.
 #[test]
-fn a_hash_held_under_two_distinct_roots_comes_back_with_no_root_on_either() {
+fn a_hash_held_under_two_distinct_roots_gives_each_row_its_own_directory_alone() {
     let library = Library::open_in_memory().expect("library");
     let conn = library.conn();
     let path = Path::new("/x/taiyaku.json");
 
-    // One hash, two editions — an omnibus/standalone pair, or two roots
-    // merged under the shared `raw` fallback edition key (O54).
+    // One hash, two editions — an omnibus/standalone pair.
     let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
         "editions":{
           "raw":{"label":"R","members":[
@@ -1492,7 +1501,7 @@ fn a_hash_held_under_two_distinct_roots_comes_back_with_no_root_on_either() {
                 "SELECT member.root_id FROM member
                  JOIN edition ON edition.id = member.edition_id
                  WHERE edition.work_id = ?1 AND member.sha256 = 'dup'
-                 ORDER BY edition.id",
+                 ORDER BY edition.key",
             )
             .expect("preparing");
         let found = stmt.query_map([work_id], |r| r.get(0)).expect("querying");
@@ -1503,24 +1512,102 @@ fn a_hash_held_under_two_distinct_roots_comes_back_with_no_root_on_either() {
         2,
         "both editions must still hold the shared hash"
     );
+    assert_eq!(
+        roots,
+        vec![Some(root_b), Some(root_a)],
+        "omni's member keeps b and raw's keeps a, each the root of its own \
+         path, not the first row's"
+    );
+    let slug: String = conn
+        .query_row("SELECT slug FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("the work's slug");
+    let only_a = crate::account::Access::Only(vec![root_a]);
     assert!(
-        roots.iter().all(Option::is_none),
-        "a hash claimed by two distinct roots must come back NULL on both \
-         members rather than either root winning: got {roots:?}"
+        crate::browse::tests::sees_edition(&conn, &only_a, &slug, "raw"),
+        "the fixture: a's grant reaches the edition under a"
+    );
+    assert!(
+        !crate::browse::tests::sees_edition(&conn, &only_a, &slug, "omni"),
+        "and not the omnibus edition, whose copy is under b alone"
+    );
+    assert_eq!(
+        member_roots_by_edition(&conn, work_id),
+        vec![("omni".to_string(), root_b), ("raw".to_string(), root_a)],
+        "each member comes back under its own directory alone"
     );
 }
 
-/// **An unambiguous root must survive even when the row the chapter
-/// tie-break keeps never carried it.** The earlier-sorting row (by
-/// `edition.id, member.ordinal`) is the one with a hand-set chapter and no
-/// root, and a *different*, later-sorting row is the only one that ever
-/// carried a root: that one legitimate root must be restored. This is
-/// reachable without any contrived setup: a hand-corrected chapter on one
-/// copy alongside a scanned copy of identical bytes in another edition is
-/// exactly the ordinary "same hash, two editions" shape the sibling tests
-/// above already establish.
+/// **A path no held row had comes back under its column's directory alone.**
+/// The document moves the member to a path neither directory was seen to
+/// hold. Held under one directory, the column names it and so does the one
+/// row; held under two, the column is NULL and no row comes back, so no grant
+/// gains sight of the member until the next derive scans it.
 #[test]
-fn an_unambiguous_root_survives_even_when_the_chapter_tie_break_row_lacks_it() {
+fn a_path_no_held_row_had_comes_back_under_its_columns_directory_alone() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let doc_at = |sha: &str, member: &str| {
+        taiyaku_core::Sidecar::from_json(&format!(
+            r#"{{"taiyaku":1,"work":{{"title":"T","reading":"rtl"}},
+                "editions":{{"raw":{{"label":"R","members":[
+                  {{"path":"{member}","sha256":"{sha}","pages":10}}]}}}},
+                "hub":"raw","alignments":[]}}"#
+        ))
+        .expect("parses")
+    };
+    conn.execute("INSERT INTO root (path) VALUES ('/a'), ('/b')", [])
+        .expect("roots");
+    let (root_a, root_b) = (1_i64, 2_i64);
+
+    for (sha, held, expected) in [
+        ("one", vec![root_a], (Some(root_a), vec![root_a])),
+        ("two", vec![root_a, root_b], (None, vec![])),
+    ] {
+        // A sidecar of its own per case, so each case's first import mints
+        // its own work rather than matching the last one's by path.
+        let sidecar_path = std::path::PathBuf::from(format!("/x/{sha}/taiyaku.json"));
+        let work_id =
+            sidecar(&conn, &doc_at(sha, "raw/v01.cbz"), &sidecar_path).expect("first import");
+        conn.execute(
+            "UPDATE member SET root_id = ?1 WHERE sha256 = ?2",
+            rusqlite::params![root_a, sha],
+        )
+        .expect("scanned under a");
+        for root in &held[1..] {
+            conn.execute(
+                "INSERT INTO member_root (member_id, root_id)
+                 SELECT id, ?1 FROM member WHERE sha256 = ?2",
+                rusqlite::params![root, sha],
+            )
+            .expect("and copied under b");
+        }
+
+        let again = sidecar(&conn, &doc_at(sha, "raw/moved.cbz"), &sidecar_path).expect("reimport");
+        assert_eq!(again, work_id, "the fixture: a reimport of the same work");
+
+        let column: Option<i64> = conn
+            .query_row("SELECT root_id FROM member WHERE sha256 = ?1", [sha], |r| {
+                r.get(0)
+            })
+            .expect("the member");
+        let rows: Vec<i64> = member_roots_by_edition(&conn, work_id)
+            .into_iter()
+            .map(|(_, root)| root)
+            .collect();
+        assert_eq!((column, rows), expected, "held under {held:?}");
+    }
+}
+
+/// **A held row under no directory comes back under none, though another
+/// edition holds the same bytes under one.** `aaa`'s copy was never scanned
+/// (it is here for its hand-set chapter, and sorts first, so the chapter
+/// tie-break keeps it); `zzz`'s copy was scanned under `/scanned`. Each row
+/// answers from its own path, so `aaa` gets no column and no `member_root`
+/// row, and a grant on `/scanned` is not shown edition `aaa`.
+#[test]
+fn a_held_row_under_no_directory_comes_back_under_none_though_another_edition_has_one() {
     let library = Library::open_in_memory().expect("library");
     let conn = library.conn();
     let path = Path::new("/x/taiyaku.json");
@@ -1543,8 +1630,7 @@ fn an_unambiguous_root_survives_even_when_the_chapter_tie_break_row_lacks_it() {
         .expect("root");
     let root_id = conn.last_insert_rowid();
 
-    // `aaa`'s copy: a hand-set chapter, never scanned under a root — the
-    // edition whose copy of this file was never touched by a scan.
+    // `aaa`'s copy: a hand-set chapter, never scanned under a root.
     conn.execute(
         "UPDATE member SET chapter_declared = 5.0, chapter_source = 'hand'
          WHERE sha256 = 'dup' AND edition_id = (
@@ -1565,30 +1651,41 @@ fn an_unambiguous_root_survives_even_when_the_chapter_tie_break_row_lacks_it() {
     assert_eq!(
         held.declared,
         Some(5.0),
-        "the chapter tie-break must still keep the earlier-sorting row's \
-         value, unchanged by fixing root_id"
+        "the chapter tie-break still keeps the earlier-sorting row's value"
     );
+
+    sidecar(&conn, &doc, path).expect("reimport");
+
     assert_eq!(
-        held.root_id,
-        Some(root_id),
-        "the one unambiguous root must be restored even though the row the \
-         chapter tie-break kept never carried it: declared={:?} source={:?} \
-         root_id={:?}",
-        held.declared,
-        held.source,
-        held.root_id
+        member_roots_by_edition(&conn, work_id),
+        vec![("zzz".to_string(), root_id)],
+        "aaa comes back under no directory, zzz under its own"
+    );
+    let slug: String = conn
+        .query_row("SELECT slug FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("the work's slug");
+    let scanned = crate::account::Access::Only(vec![root_id]);
+    assert!(
+        crate::browse::tests::sees_edition(&conn, &scanned, &slug, "zzz"),
+        "the fixture: the grant reaches the edition scanned under it"
+    );
+    assert!(
+        !crate::browse::tests::sees_edition(&conn, &scanned, &slug, "aaa"),
+        "and not the edition whose copy was never under it"
     );
 }
 
-/// **Two rows agreeing on one root is not ambiguity.** The obvious
-/// wrong-but-plausible implementation of the ambiguity check is "a hash held
-/// by more than one row loses its root," rather than "a hash held by more
-/// than one *distinct non-null root* loses its root" — and that version
-/// passes both `held_member_meta_keeps_the_earliest_edition_and_ordinal_for_
-/// a_shared_hash` and `a_hash_held_under_two_distinct_roots_comes_back_with_
-/// no_root_on_either` above, since neither has two rows sharing the *same*
-/// non-null root. This is that missing shape: one hash, two editions, both
-/// copies scanned under the same root.
+/// **Two rows agreeing on one root is one directory.** For a path no held
+/// row had, the column is restored only where the hash sat under one
+/// directory, and the obvious wrong-but-plausible version of that fallback
+/// counts rows rather than distinct directories — which neither
+/// `held_member_meta_keeps_the_earliest_edition_and_ordinal_for_a_shared_hash`
+/// nor `a_hash_held_under_two_distinct_roots_gives_each_row_its_own_directory_alone`
+/// can see, since neither has two rows sharing the *same* non-null root. This
+/// is that missing shape: one hash, two editions, both copies scanned under
+/// the same root.
 #[test]
 fn two_rows_agreeing_on_the_same_root_still_restore_it() {
     let library = Library::open_in_memory().expect("library");
@@ -1619,8 +1716,12 @@ fn two_rows_agreeing_on_the_same_root_still_restore_it() {
     .expect("stamp both copies with the same root");
 
     let held = held_member_meta(&conn, work_id).expect("held member metadata");
+    // A path neither row held, so the answer is the one-directory fallback
+    // rather than either row's own.
     assert_eq!(
-        held.get("dup").expect("the shared hash is held").root_id,
+        held.get("dup")
+            .expect("the shared hash is held")
+            .root_id("moved/v01.cbz"),
         Some(root_id),
         "two rows carrying the same non-null root must still restore it, \
          not be zeroed as though they disagreed"
@@ -1719,59 +1820,11 @@ fn two_scanned_works_in_one_directory_do_not_collide() {
     assert_eq!(works, 2);
 }
 
-/// The library `work_id` is filed under, or `None` for none.
-fn library_of(conn: &Connection, work_id: i64) -> Option<i64> {
-    conn.query_row(
-        "SELECT library_id FROM work WHERE id = ?1",
-        [work_id],
-        |r| r.get(0),
-    )
-    .expect("reads")
-}
-
-#[test]
-fn scanned_in_finds_its_own_librarys_work_and_not_anothers() {
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
-        .expect("two libraries");
-
-    let in_a = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
-    let in_b = scanned_in(&conn, &doc("aa"), 80, None).expect("into B");
-    let again = scanned_in(&conn, &doc("aa"), 70, None).expect("into A again");
-
-    assert_ne!(
-        in_a, in_b,
-        "the same content in another library is another work"
-    );
-    assert_eq!(again, in_a, "and A finds its own");
-    assert_eq!(
-        (library_of(&conn, in_a), library_of(&conn, in_b)),
-        (Some(70), Some(80))
-    );
-}
-
-#[test]
-fn scanned_in_adopts_a_work_in_no_library() {
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A');")
-        .expect("a library");
-    let unfiled = scanned(&conn, &doc("aa"), None).expect("a work in no library");
-
-    let filed = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
-
-    assert_eq!(filed, unfiled, "the same row");
-    assert_eq!(library_of(&conn, filed), Some(70), "now filed");
-}
-
 #[test]
 fn a_document_import_finds_a_scanned_work_in_any_library() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A');")
-        .expect("a library");
-    let scanned_id = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
+    let scanned_id = scanned(&conn, &doc("aa"), None).expect("a scan's work");
 
     let imported = sidecar(&conn, &doc("aa"), Path::new("/x/taiyaku.json")).expect("imports");
 
@@ -1779,148 +1832,6 @@ fn a_document_import_finds_a_scanned_work_in_any_library() {
         imported, scanned_id,
         "content still decides for a document, across libraries"
     );
-}
-
-/// Two works in no library holding one key, which `work`'s `UNIQUE
-/// (content_key, library_id)` allows since it does not compare NULLs: two
-/// libraries each held a copy and each has gone, as a library goes when its
-/// last directory moves away.
-fn two_unfiled_works_sharing_a_key(conn: &Connection) -> (i64, i64) {
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
-        .expect("two libraries");
-    let older = scanned_in(conn, &doc("aa"), 70, None).expect("into A");
-    let newer = scanned_in(conn, &doc("aa"), 80, None).expect("into B");
-    conn.execute_batch("DELETE FROM library WHERE id IN (70, 80);")
-        .expect("both libraries go");
-    assert!(older < newer, "the fixture: two rows, in this order");
-    assert_eq!(
-        (library_of(conn, older), library_of(conn, newer)),
-        (None, None),
-        "the fixture: both in no library"
-    );
-    (older, newer)
-}
-
-#[test]
-fn scanned_in_adopts_the_older_of_two_works_in_no_library_and_only_that_one() {
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let (older, newer) = two_unfiled_works_sharing_a_key(&conn);
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (90, 'C');")
-        .expect("a third library");
-
-    let adopted = scanned_in(&conn, &doc("aa"), 90, None).expect("into C");
-    let again = scanned_in(&conn, &doc("aa"), 90, None)
-        .expect("into C again, which must not file the other row beside the first");
-
-    assert_eq!(adopted, older, "the older row is the one adopted");
-    assert_eq!(again, older, "and C finds it as its own from then on");
-    assert_eq!(
-        (library_of(&conn, older), library_of(&conn, newer)),
-        (Some(90), None),
-        "one row filed, the other left in no library"
-    );
-}
-
-#[test]
-fn scanned_in_finds_its_own_work_before_an_older_one_in_no_library() {
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
-        .expect("two libraries");
-    let older = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
-    let own = scanned_in(&conn, &doc("aa"), 80, None).expect("into B");
-    conn.execute_batch("DELETE FROM library WHERE id = 70;")
-        .expect("A goes, leaving its work in no library");
-    assert_eq!(library_of(&conn, older), None, "the fixture");
-
-    let found = scanned_in(&conn, &doc("aa"), 80, None).expect("into B again");
-
-    assert_eq!(found, own, "B's own work, though the other row is older");
-    assert_eq!(
-        (library_of(&conn, older), library_of(&conn, own)),
-        (None, Some(80)),
-        "and the older row is left where it was"
-    );
-}
-
-/// A `known` row is the caller's to choose. One of another library is still
-/// the row the import lands on when content finds nothing, and it stays in
-/// the library it is in.
-#[test]
-fn scanned_in_leaves_a_known_work_in_the_library_it_is_in() {
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
-        .expect("two libraries");
-    let in_a = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
-
-    let landed = scanned_in(&conn, &doc("bb"), 80, Some(in_a)).expect("into B, known in A");
-
-    assert_eq!(
-        landed, in_a,
-        "the fixture: no work holds the new key, so the known row is the answer"
-    );
-    assert_eq!(
-        library_of(&conn, in_a),
-        Some(70),
-        "and it is filed where it was"
-    );
-}
-
-/// With no library to look in, an import of a document no work holds takes a
-/// work in a library before one in none, however old the unfiled one is, and
-/// then the oldest.
-#[test]
-fn a_document_import_prefers_a_filed_work_and_then_the_oldest() {
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B'), (90, 'C');")
-        .expect("three libraries");
-    let unfiled = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
-    let older = scanned_in(&conn, &doc("aa"), 80, None).expect("into B");
-    let newer = scanned_in(&conn, &doc("aa"), 90, None).expect("into C");
-    conn.execute_batch("DELETE FROM library WHERE id = 70;")
-        .expect("A goes, leaving the oldest row in no library");
-    assert!(unfiled < older && older < newer, "the fixture");
-
-    let imported = sidecar(&conn, &doc("aa"), Path::new("/x/taiyaku.json")).expect("imports");
-
-    assert_eq!(imported, older, "the older of the two filed works");
-}
-
-/// The document at `document` imported, with a position and a note on its
-/// work; that work taken by library A's scan; the same content scanned into
-/// library B; and A gone, as a library goes with its last directory. Returns the
-/// document's work, which is the older and in no library, and B's.
-fn a_documents_work_in_no_library_beside_a_filed_one(
-    conn: &Connection,
-    document: &Path,
-) -> (i64, i64) {
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
-        .expect("two libraries");
-    let (held, _) = reimport(conn, &doc("aa"), document).expect("imports the document");
-    conn.execute_batch(&format!(
-        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, {held}, 'raw', 2);
-         INSERT INTO note (user_id, id, work_id, edition, slot, body, created, updated)
-         VALUES (1, 'n', {held}, 'raw', 1, 'kept', 'now', 'now');"
-    ))
-    .expect("a position and a note on the document's work");
-    let taken = scanned_in(conn, &doc("aa"), 70, None).expect("A's scan");
-    let filed = scanned_in(conn, &doc("aa"), 80, None).expect("B's scan");
-    conn.execute_batch("DELETE FROM library WHERE id = 70;")
-        .expect("A goes, leaving the document's work in no library");
-    assert_eq!(
-        (taken, library_of(conn, held), library_of(conn, filed)),
-        (held, None, Some(80)),
-        "the fixture: the document's work in no library, and B's work of the same content"
-    );
-    assert_eq!(
-        works_holding(conn, document),
-        vec![held],
-        "the fixture: the document's work holds its path"
-    );
-    (held, filed)
 }
 
 /// The works whose `sidecar_path` is `document`, oldest first.
@@ -1933,15 +1844,26 @@ fn works_holding(conn: &Connection, document: &Path) -> Vec<i64> {
         .expect("reads")
 }
 
-/// A document that already has a work lands on that work again, though it is
-/// in no library and another work of the same content is filed. The work
-/// still holds the document's path, and the position and the note.
+/// A document that already has a work lands on that work again, after a
+/// scan of the same content landed on it too. The work still holds the
+/// document's path, and the position and the note.
 #[test]
 fn a_document_lands_on_the_work_that_already_holds_its_path() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let document = Path::new("/a/series/taiyaku.json");
-    let (held, _filed) = a_documents_work_in_no_library_beside_a_filed_one(&conn, document);
+    let (held, _) = reimport(&conn, &doc("aa"), document).expect("imports the document");
+    conn.execute_batch(&format!(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, {held}, 'raw', 2);
+         INSERT INTO note (user_id, id, work_id, edition, slot, body, created, updated)
+         VALUES (1, 'n', {held}, 'raw', 1, 'kept', 'now', 'now');"
+    ))
+    .expect("a position and a note on the document's work");
+    assert_eq!(
+        scanned(&conn, &doc("aa"), None).expect("a scan of the same content"),
+        held,
+        "the fixture: the scan landed on the document's work"
+    );
 
     let (again, _) = reimport(&conn, &doc("aa"), document).expect("imports again");
 
@@ -1964,94 +1886,6 @@ fn a_document_lands_on_the_work_that_already_holds_its_path() {
         (1, 1),
         "the position and the note are on the work the document landed on"
     );
-}
-
-/// A document no work holds lands by the order every such document does: on
-/// the filed work, though the older work of that content holds the path of
-/// another document.
-#[test]
-fn a_document_no_work_holds_is_not_drawn_to_another_documents_work() {
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    let (_held, filed) = a_documents_work_in_no_library_beside_a_filed_one(
-        &conn,
-        Path::new("/a/series/taiyaku.json"),
-    );
-
-    let imported =
-        sidecar(&conn, &doc("aa"), Path::new("/b/series/taiyaku.json")).expect("imports");
-
-    assert_eq!(imported, filed, "the filed work before the one in none");
-}
-
-/// The same where the work holding the document is in a library, and an older
-/// work of that content is in another: the document lands on its holder, where
-/// the order for a document no work holds would answer the older.
-#[test]
-fn a_document_lands_on_its_holder_though_an_older_work_is_filed_too() {
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
-        .expect("two libraries");
-    let older = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
-    let holder = scanned_in(&conn, &doc("aa"), 80, None).expect("into B");
-    conn.execute_batch("DELETE FROM library WHERE id = 70;")
-        .expect("A goes, leaving the older work in no library");
-    let document = Path::new("/b/series/taiyaku.json");
-    let first = sidecar(&conn, &doc("aa"), document).expect("imports onto B's work");
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (90, 'C');")
-        .expect("a third library");
-    let adopted = scanned_in(&conn, &doc("aa"), 90, None).expect("into C");
-    assert_eq!(
-        (
-            first,
-            adopted,
-            library_of(&conn, older),
-            library_of(&conn, holder),
-            works_holding(&conn, document),
-        ),
-        (holder, older, Some(90), Some(80), vec![holder]),
-        "the fixture: both works filed, the older in C, and B's holding the document"
-    );
-
-    let again = sidecar(&conn, &doc("aa"), document).expect("imports again");
-
-    assert_eq!(
-        again, holder,
-        "the work that holds the document, not the older"
-    );
-    assert_eq!(works_holding(&conn, document), vec![holder]);
-}
-
-/// A scan names no document, so a path plays no part in its lookup: a library
-/// finds its own work, which holds a document's path, before a work in no
-/// library, which holds none.
-#[test]
-fn scanned_in_finds_its_own_work_though_it_holds_a_documents_path() {
-    let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'A'), (80, 'B');")
-        .expect("two libraries");
-    let own = scanned_in(&conn, &doc("aa"), 80, None).expect("into B");
-    let document = Path::new("/b/series/taiyaku.json");
-    let imported = sidecar(&conn, &doc("aa"), document).expect("imports onto B's work");
-    let unfiled = scanned_in(&conn, &doc("aa"), 70, None).expect("into A");
-    conn.execute_batch("DELETE FROM library WHERE id = 70;")
-        .expect("A goes, leaving its work in no library");
-    assert_eq!(
-        (
-            imported,
-            works_holding(&conn, document),
-            library_of(&conn, unfiled)
-        ),
-        (own, vec![own], None),
-        "the fixture: B's work holds a path, and the work in no library does not"
-    );
-
-    let found = scanned_in(&conn, &doc("aa"), 80, None).expect("into B again");
-
-    assert_eq!(found, own, "B's own work");
-    assert_eq!(library_of(&conn, unfiled), None, "and the other is left");
 }
 
 #[test]

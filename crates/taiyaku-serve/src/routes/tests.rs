@@ -448,7 +448,7 @@ async fn progress_past_the_end_of_the_edition_is_refused() {
 /// the corpus — including One Piece v092, which is spreads throughout.
 // The fixture mutation below goes through `Work::update`, whose closure
 // is checked by clippy as its own item — see the same allow on
-// `works.rs`'s `a_replaced_sidecar_is_what_the_next_reader_sees`.
+// `works/tests.rs`'s `a_replaced_sidecar_is_what_the_next_reader_sees`.
 #[allow(clippy::result_large_err)]
 #[tokio::test]
 async fn the_last_slot_of_a_spread_carrying_edition_is_in_range() {
@@ -799,20 +799,20 @@ async fn assert_answered(handler: &str, response: Response, expected: StatusCode
 /// [`no_works_route_stalls_the_runtime`] holds for a handler's own work, held
 /// for the check that runs before it.
 ///
-/// For a reader whose grant names roots, `refuse_if_hidden` and
-/// `visible_editions_or_refuse` read the library to answer. The test above
+/// For a reader whose grant names roots, `view::of_edition` and
+/// `view::of_work` read the library to answer. The test above
 /// drives `Access::Every`, which never reaches the library, so it cannot see
 /// either check's read.
 ///
-/// **Every handler that calls either check.** `refuse_if_hidden` is
+/// **Every handler that calls either check.** `view::of_edition` is
 /// `pub(crate)`, and `opds::stream_page`, `opds::cover`, `download::edition`
 /// and `download::member` call it too. `opds::work_feed` asks
-/// `visible_editions_or_refuse`, and
+/// `view::of_work`, and
 /// [`neither_opds_feed_asks_a_grant_on_the_async_worker`] holds it
 /// beside `opds::works`.
 ///
 /// **And progress, notes and truth**, read and write, which ask
-/// `visible_editions_or_refuse` before their own closure.
+/// `view::of_work` before their own closure.
 ///
 /// **The watchdog measures each call's first wait on the library's mutex**:
 /// [`crate::test_support::the_runtime_stalls_on`] holds it once and lets it go
@@ -889,7 +889,7 @@ async fn no_grant_check_stalls_the_runtime() {
     assert_answered("get_thumb", response, StatusCode::OK).await;
 
     // This watchdog sees a call's first wait, which for a reader with roots is
-    // `refuse_if_hidden`'s, so this re-proves only the grant check on the sized
+    // `view::of_edition`'s, so this re-proves only the grant check on the sized
     // branch; `no_works_route_stalls_the_runtime`, with `Access::Every`, is the
     // test that sees past it into `serve_page`.
     let (stalled, response) = the_runtime_stalls_on(
@@ -1363,7 +1363,12 @@ async fn a_hidden_work_is_refused_before_its_validator_is_answered() {
 
     let (state, _fixture) = crate::test_support::state_whose_grant_waits_on_the_library();
     let found = state.find_blocking("w").expect("the fixture work");
-    let (sha256, offset) = locate_member(&found, "raw", 0).expect("page 0 of `raw`");
+    let whole = crate::view::EditionView::build(Arc::clone(&found), "raw", None)
+        .expect("an edition is never hidden from `Access::Every`");
+    let (sha256, offset) = whole
+        .locate(0)
+        .map(|(member, offset)| (member.sha256.clone(), offset))
+        .expect("page 0 of `raw`");
     let page_tag = page_etag(&sha256, offset, None);
     let sidecar_tag = sidecar_etag(&found.sidecar());
     let if_none_match = |tag: &str| {
@@ -3408,6 +3413,51 @@ async fn a_note_on_a_slot_that_does_not_exist_is_refused_through_the_router() {
     assert!(dupe_message.contains("01J8"), "name the id: {dupe_message}");
 }
 
+/// A body with two faulty notes is refused for the first one it sends, as
+/// `notes::validate_against` reads the body, and a body it accepts is stored
+/// and answered in id order, the order the next read sends.
+#[tokio::test]
+async fn a_notes_body_is_checked_in_its_order_and_answered_in_id_order() {
+    let tmp = crate::test_support::Fixture::new("notes-two-faults");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let app = build_router(state);
+    let tag = etag_of(&app, "/api/works/t/notes").await;
+
+    let (status, message) = write_notes(
+        &app,
+        Some(&tag),
+        r#"{"work":"t","notes":[
+               {"id":"01B","edition":"nope","slot":0,"body":"b","created":"c","updated":"u"},
+               {"id":"01A","edition":"raw","slot":0,"color":"Red","body":"a","created":"c",
+                "updated":"u"}]}"#
+            .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{message}");
+    assert!(
+        message.contains("`01B`") && message.contains("`nope`"),
+        "refused for the note sent first: {message}"
+    );
+
+    let (status, answered) = write_notes(
+        &app,
+        Some(&tag),
+        r#"{"work":"t","notes":[
+               {"id":"01B","edition":"raw","slot":1,"body":"b","created":"c","updated":"u"},
+               {"id":"01A","edition":"raw","slot":0,"body":"a","created":"c","updated":"u"}]}"#
+            .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answered}");
+    let ids: Vec<String> = serde_json::from_str::<crate::notes::Notes>(&answered)
+        .expect("notes")
+        .notes
+        .into_iter()
+        .map(|note| note.id)
+        .collect();
+    assert_eq!(ids, ["01A", "01B"], "answered in id order");
+}
+
 /// The lost-update guard under a genuine race, not a sequence.
 ///
 /// `a_second_writer_holding_the_same_tag_is_refused_rather_than_winning`
@@ -3986,7 +4036,7 @@ async fn correcting_a_work_with_no_document_writes_rows_and_no_file() {
 
 // ---------------------------------------------------------------------------
 // The grant on `list_works` (`GET /api/works`): spec C1's per-root visibility,
-// which also reaches the page routes (`refuse_if_hidden`) and the OPDS
+// which also reaches the page routes (`view::of_edition`) and the OPDS
 // mirror (`opds::visible_editions_by_work`).
 //
 // Mirrors `opds::tests::router_with_two_works_one_withheld` exactly: two
@@ -4209,11 +4259,10 @@ async fn an_account_granted_only_a_library_with_no_dir_sees_nothing() {
             "INSERT INTO series (id, sort_title) VALUES (1, 'W');
              INSERT INTO series_title (series_id, title, kind, is_primary)
              VALUES (1, 'W', 'english', 1);
-             UPDATE work SET series_id = 1, volume = 1.0,
-                             library_id = (SELECT library_id FROM root WHERE id = 1);
+             UPDATE work SET series_id = 1, volume = 1.0;
              INSERT INTO library (id, name) VALUES (90, 'Directoryless');",
         )
-        .expect("files the work under a series and a library, beside one with no directory");
+        .expect("puts the work in a series, beside a library with no directory");
         crate::test_support::grant_root(&conn, 1);
         conn.query_row("SELECT library_id FROM root WHERE id = 1", [], |r| r.get(0))
             .expect("the held directory's library")
@@ -4341,16 +4390,16 @@ async fn a_request_with_no_principal_sees_nothing() {
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
-/// What migration 15 leaves where a work spanned two directories, read by a
-/// reader granted the hub directory's library alone. The old work is theirs,
-/// with its hub edition `en`. The edition `raw` it kept from the other
-/// library's directory is not listed with it, and its pages, thumbnail and
-/// downloads answer as a work that does not exist, here and under OPDS. So
-/// does the other library's own work.
+/// One work with an edition in each of two libraries, read by a reader granted
+/// the hub directory's library alone. The work is listed to them with its hub
+/// edition `en` alone. The edition `raw`, under the other library's directory,
+/// is not named in the list, the sidecar or the OPDS feed, and its pages,
+/// thumbnail and downloads answer as a work that does not exist, here and
+/// under OPDS.
 #[tokio::test]
-async fn a_reader_is_refused_the_edition_a_work_kept_from_a_library_they_are_not_granted() {
-    let (router, _state, _fixture, [old, new]) =
-        crate::test_support::router_over_a_work_keeping_another_librarys_edition();
+async fn a_reader_is_refused_the_edition_a_work_has_under_a_library_they_are_not_granted() {
+    let (router, _state, _fixture, slug) =
+        crate::test_support::router_over_a_work_whose_editions_sit_in_two_libraries();
     let json = |body: String| -> serde_json::Value { serde_json::from_str(&body).expect("json") };
     let get = |path: String| {
         let router = router.clone();
@@ -4369,17 +4418,17 @@ async fn a_reader_is_refused_the_edition_a_work_kept_from_a_library_they_are_not
     assert_eq!(
         json(listed),
         serde_json::json!([{
-            "slug": old,
+            "slug": slug,
             "title": "Series - v01",
             "series": "Series",
             "volume": 1.0,
             "editions": ["en"],
-            "cover": format!("/api/works/{old}/en/pages/0/thumb"),
+            "cover": format!("/api/works/{slug}/en/pages/0/thumb"),
         }]),
-        "the old work alone, with the granted library's edition alone"
+        "the one work, with the granted library's edition alone"
     );
 
-    let (status, sidecar) = get(format!("/api/works/{old}")).await;
+    let (status, sidecar) = get(format!("/api/works/{slug}")).await;
     assert_eq!(status, StatusCode::OK, "{sidecar}");
     let editions: Vec<String> = json(sidecar)["editions"]
         .as_object()
@@ -4387,40 +4436,128 @@ async fn a_reader_is_refused_the_edition_a_work_kept_from_a_library_they_are_not
         .keys()
         .cloned()
         .collect();
-    assert_eq!(editions, ["en"], "the sidecar names no kept edition");
+    assert_eq!(
+        editions,
+        ["en"],
+        "the sidecar names no edition outside the grant"
+    );
 
-    let (status, feed) = get(format!("/opds/v1.2/works/{old}")).await;
+    let (status, feed) = get(format!("/opds/v1.2/works/{slug}")).await;
     assert_eq!(status, StatusCode::OK, "{feed}");
     assert!(feed.contains("/en/"), "{feed}");
     assert!(
         !feed.contains("/raw/"),
-        "the feed names the kept edition: {feed}"
+        "the feed names the edition outside the grant: {feed}"
     );
 
-    let (status, page) = get(format!("/api/works/{old}/en/pages/0")).await;
+    let (status, page) = get(format!("/api/works/{slug}/en/pages/0")).await;
     assert_eq!(status, StatusCode::OK, "the granted edition's page: {page}");
 
     for path in [
-        format!("/api/works/{old}/raw/pages/0"),
-        format!("/api/works/{old}/raw/pages/0/thumb"),
-        format!("/api/works/{old}/raw/download"),
-        format!("/api/works/{old}/raw/members/0/download"),
-        format!("/opds/v1.2/works/{old}/raw/pages/0"),
-        format!("/opds/v1.2/works/{old}/raw/cover"),
-        format!("/opds/v1.2/works/{old}/raw/download"),
+        format!("/api/works/{slug}/raw/pages/0"),
+        format!("/api/works/{slug}/raw/pages/0/thumb"),
+        format!("/api/works/{slug}/raw/download"),
+        format!("/api/works/{slug}/raw/members/0/download"),
+        format!("/opds/v1.2/works/{slug}/raw/pages/0"),
+        format!("/opds/v1.2/works/{slug}/raw/cover"),
+        format!("/opds/v1.2/works/{slug}/raw/download"),
     ] {
         let (status, body) = get(path.clone()).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
-        assert_eq!(body, format!("no work `{old}`"), "{path}");
+        assert_eq!(body, format!("no work `{slug}`"), "{path}");
     }
+}
 
+/// Spec §7, "Access", through the routes: the same work read by a reader
+/// granted the library holding its edition `raw` and not its hub `en`. The
+/// work is listed to them with `raw` alone, whose page and download they are
+/// served; `en`'s page and download answer as a work that does not exist.
+#[tokio::test]
+async fn a_reader_granted_the_library_without_the_hub_is_served_the_work_through_its_other_edition()
+{
+    let (router, _state, _fixture, slug) =
+        crate::test_support::router_over_a_work_granted_through_its_other_edition();
+    let get = |path: String| {
+        let router = router.clone();
+        async move {
+            let response = crate::test_support::get(&router, &path).await;
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        }
+    };
+
+    let (status, listed) = get("/api/works".to_string()).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let listed: serde_json::Value = serde_json::from_str(&listed).expect("json");
+    assert_eq!(
+        listed
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|w| (w["slug"].clone(), w["editions"].clone()))
+            .collect::<Vec<_>>(),
+        [(serde_json::json!(slug), serde_json::json!(["raw"]))],
+        "the one work, with the granted library's edition alone"
+    );
     for path in [
-        format!("/api/works/{new}"),
-        format!("/api/works/{new}/raw/pages/0"),
+        format!("/api/works/{slug}/raw/pages/0"),
+        format!("/api/works/{slug}/raw/download"),
+    ] {
+        let (status, body) = get(path.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+    }
+    for path in [
+        format!("/api/works/{slug}/en/pages/0"),
+        format!("/api/works/{slug}/en/download"),
     ] {
         let (status, body) = get(path.clone()).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
-        assert_eq!(body, format!("no work `{new}`"), "{path}");
+        assert_eq!(body, format!("no work `{slug}`"), "{path}");
+    }
+}
+
+/// Spec §7, "Access": a copy held under a directory of each of two libraries
+/// is one member, and a reader granted the library whose directory does not
+/// hold its primary copy is listed the work and served its page and download.
+#[tokio::test]
+async fn a_reader_granted_the_library_of_a_copys_second_directory_is_served_its_page_and_download()
+{
+    let (router, _state, _fixture, slug) =
+        crate::test_support::router_over_a_copy_granted_through_its_second_directory();
+    let get = |path: String| {
+        let router = router.clone();
+        async move {
+            let response = crate::test_support::get(&router, &path).await;
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        }
+    };
+
+    let (status, listed) = get("/api/works".to_string()).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let listed: serde_json::Value = serde_json::from_str(&listed).expect("json");
+    assert_eq!(
+        listed
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|w| (w["slug"].clone(), w["editions"].clone()))
+            .collect::<Vec<_>>(),
+        [(serde_json::json!(slug), serde_json::json!(["raw"]))],
+        "the copy's work is listed"
+    );
+    for path in [
+        format!("/api/works/{slug}/raw/pages/0"),
+        format!("/api/works/{slug}/raw/download"),
+    ] {
+        let (status, body) = get(path.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
     }
 }
 
@@ -5617,8 +5754,8 @@ async fn a_document_that_does_not_parse_is_refused_before_the_grant_is_asked() {
 
 /// **A position on an edition outside the grant is refused as one on an
 /// edition the work does not have**: same status, same words, with the
-/// edition each names put aside. The work is O191's: the account sees its
-/// `en` and not its `raw`.
+/// edition each names put aside. The work has an edition in each of two
+/// libraries, and the account is granted one: it sees `en` and not `raw`.
 ///
 /// A position on `en` is stored, which shows the route is not refusing this
 /// reader the work, and `en`'s is the only one the store then holds.
@@ -5626,9 +5763,9 @@ async fn a_document_that_does_not_parse_is_refused_before_the_grant_is_asked() {
 async fn a_position_on_an_edition_outside_the_grant_is_refused_as_one_the_work_does_not_have() {
     use axum::http::Method;
 
-    let (router, state, _fixture, [old, _new]) =
-        crate::test_support::router_over_a_work_keeping_another_librarys_edition();
-    let uri = format!("/api/works/{old}/progress");
+    let (router, state, _fixture, slug) =
+        crate::test_support::router_over_a_work_whose_editions_sit_in_two_libraries();
+    let uri = format!("/api/works/{slug}/progress");
     let position = |edition: &str| format!(r#"{{"edition":"{edition}","slot":0}}"#);
 
     let (kept_status, kept) =
@@ -5645,7 +5782,7 @@ async fn a_position_on_an_edition_outside_the_grant_is_refused_as_one_the_work_d
     let (status, body) = answered(&router, Method::PUT, &uri, None, Some(&position("en"))).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
 
-    let found = state.find_blocking(&old).expect("the old work");
+    let found = state.find_blocking(&slug).expect("the work");
     let held = crate::progress::load(&state.library, &found, 1).expect("reads the positions");
     let editions: Vec<&str> = held.iter().map(|p| p.edition.as_str()).collect();
     assert_eq!(editions, ["en"], "the positions the store holds");
@@ -5659,10 +5796,10 @@ async fn a_position_on_an_edition_outside_the_grant_is_refused_as_one_the_work_d
 async fn a_position_read_leaves_out_an_edition_outside_the_grant() {
     use axum::http::Method;
 
-    let (router, state, _fixture, [old, _new]) =
-        crate::test_support::router_over_a_work_keeping_another_librarys_edition();
-    let uri = format!("/api/works/{old}/progress");
-    let found = state.find_blocking(&old).expect("the old work");
+    let (router, state, _fixture, slug) =
+        crate::test_support::router_over_a_work_whose_editions_sit_in_two_libraries();
+    let uri = format!("/api/works/{slug}/progress");
+    let found = state.find_blocking(&slug).expect("the work");
     let hold = |edition: &str| {
         crate::progress::store(
             &state.library,
@@ -5699,27 +5836,26 @@ async fn a_position_read_leaves_out_an_edition_outside_the_grant() {
 
 /// **A new note on an edition outside the grant is refused as one on an
 /// edition the work does not have**, and a note the reader already holds
-/// there is neither withheld from them nor in the way of their next write.
+/// there is neither sent nor lost (O191, spec §3.8).
 ///
 /// The held note is written straight into the store, as one made before the
-/// grant was narrowed would be. It comes back with the document, which is the
-/// reader's own and is sent whole. A write that keeps it where it is and adds
-/// a note on `en` is accepted: `notes::validate_against` does not re-check an
-/// anchor that has not moved.
+/// grant was narrowed would be. The read leaves it out, and a write of what
+/// was read, with a note on `en` added, keeps it as it was. A client that read
+/// it before it was left out sends it back unchanged, and that is kept too.
 #[tokio::test]
 async fn a_new_note_on_an_edition_outside_the_grant_is_refused_and_a_held_one_is_kept() {
     use axum::http::Method;
 
-    let (router, state, _fixture, [old, _new]) =
-        crate::test_support::router_over_a_work_keeping_another_librarys_edition();
-    let uri = format!("/api/works/{old}/notes");
+    let (router, state, _fixture, slug) =
+        crate::test_support::router_over_a_work_whose_editions_sit_in_two_libraries();
+    let uri = format!("/api/works/{slug}/notes");
     let note = |id: &str, edition: &str| {
         format!(
             r#"{{"id":"{id}","edition":"{edition}","slot":0,"body":"b",
                  "created":"2026-08-05T10:00:00Z","updated":"2026-08-05T10:00:00Z"}}"#
         )
     };
-    let doc = |notes: &[String]| format!(r#"{{"work":"{old}","notes":[{}]}}"#, notes.join(","));
+    let doc = |notes: &[String]| format!(r#"{{"work":"{slug}","notes":[{}]}}"#, notes.join(","));
 
     let tag = etag_of(&router, &uri).await;
     let (kept_status, kept) = answered(
@@ -5745,13 +5881,13 @@ async fn a_new_note_on_an_edition_outside_the_grant_is_refused_and_a_held_one_is
     );
     assert_eq!(kept_status, StatusCode::NOT_FOUND, "{kept}");
 
-    let found = state.find_blocking(&old).expect("the old work");
+    let found = state.find_blocking(&slug).expect("the work");
     crate::notes::store(
         &state.library,
         &found,
         1,
         &crate::notes::Notes {
-            work: old.clone(),
+            work: slug.clone(),
             notes: vec![crate::notes::Note {
                 id: "01HELD".into(),
                 edition: "raw".into(),
@@ -5768,10 +5904,34 @@ async fn a_new_note_on_an_edition_outside_the_grant_is_refused_and_a_held_one_is
 
     let (status, body) = answered(&router, Method::GET, &uri, None, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(
-        body.contains("01HELD"),
-        "the reader's own note is sent: {body}"
+    let sent: crate::notes::Notes = serde_json::from_str(&body).expect("a notes document");
+    assert_eq!(
+        sent.notes,
+        [],
+        "the note on the edition outside the grant is not sent: {body}"
     );
+    let ids = || -> Vec<(String, String)> {
+        crate::notes::load(&state.library, &found, 1)
+            .expect("reads the notes")
+            .expect("notes are held")
+            .notes
+            .into_iter()
+            .map(|note| (note.id, note.edition))
+            .collect()
+    };
+    let held = |id: &str, edition: &str| (id.to_string(), edition.to_string());
+
+    let tag = etag_of(&router, &uri).await;
+    let (status, body) = answered(
+        &router,
+        Method::PUT,
+        &uri,
+        Some(&tag),
+        Some(&doc(&[note("01OWN", "en")])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(ids(), [held("01HELD", "raw"), held("01OWN", "en")]);
 
     let tag = etag_of(&router, &uri).await;
     let (status, body) = answered(
@@ -5783,6 +5943,159 @@ async fn a_new_note_on_an_edition_outside_the_grant_is_refused_and_a_held_one_is
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(ids(), [held("01HELD", "raw"), held("01OWN", "en")]);
+}
+
+/// **A notes write read before the account's grant widened is refused with
+/// 412, and stores nothing** (spec §3.8, decision 11). Under the stored
+/// document's tag alone it would pass `If-Match`, and `01HELD`, now seen and
+/// not in the body, would be deleted. A read conditioned on the old tag is
+/// sent the document, not 304.
+#[tokio::test]
+async fn a_notes_write_read_before_the_grant_widened_is_refused() {
+    use axum::http::Method;
+
+    let (router, state, _fixture, slug) =
+        crate::test_support::router_over_a_work_whose_editions_sit_in_two_libraries();
+    let uri = format!("/api/works/{slug}/notes");
+    let note = |id: &str, edition: &str| crate::notes::Note {
+        id: id.into(),
+        edition: edition.into(),
+        slot: 0,
+        region: None,
+        color: None,
+        body: "b".into(),
+        created: "2026-08-05T10:00:00Z".into(),
+        updated: "2026-08-05T10:00:00Z".into(),
+    };
+    let found = state.find_blocking(&slug).expect("the work");
+    let held = crate::notes::Notes {
+        work: slug.clone(),
+        notes: vec![note("01HELD", "raw"), note("01OWN", "en")],
+    };
+    crate::notes::store(&state.library, &found, 1, &held).expect("stores the notes");
+
+    let tag = etag_of(&router, &uri).await;
+    let (status, body) = answered(&router, Method::GET, &uri, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut sent: crate::notes::Notes = serde_json::from_str(&body).expect("a notes document");
+    assert_eq!(
+        sent.notes,
+        [note("01OWN", "en")],
+        "the fixture: `raw` is hidden"
+    );
+
+    taiyaku_library::account::grant_library(&state.library.conn(), 1, 90)
+        .expect("grants `Other`, which holds `raw`");
+    sent.notes.insert(0, note("01NEW", "en"));
+    let (status, body) = answered(
+        &router,
+        Method::PUT,
+        &uri,
+        Some(&tag),
+        Some(&serde_json::to_string(&sent).unwrap()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{body}");
+    assert_eq!(
+        crate::notes::load(&state.library, &found, 1)
+            .expect("reads the notes")
+            .expect("notes are held"),
+        held,
+        "nothing is stored"
+    );
+    let (status, body) = answered_if_none_match(&router, &uri, &tag).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a read under the old tag is sent: {body}"
+    );
+}
+
+/// **A truth read leaves out an edition the account cannot see, and a write
+/// of what was read keeps its entry** (O191). A body that changes the entry
+/// is refused in the words, and with the status, a body naming an edition the
+/// work does not have is refused in.
+#[tokio::test]
+async fn a_truth_write_keeps_the_entry_of_an_edition_the_account_cannot_see() {
+    use axum::http::Method;
+
+    let (router, state, _fixture, slug) =
+        crate::test_support::router_over_a_work_whose_editions_sit_in_two_libraries();
+    let uri = format!("/api/works/{slug}/truth");
+    let found = state.find_blocking(&slug).expect("the work");
+    let entry = |page: u32| taiyaku_core::TruthEdition {
+        members: Vec::new(),
+        pages: std::collections::BTreeMap::from([(page, Vec::new())]),
+    };
+    let mut held = taiyaku_core::TruthDoc::new();
+    held.editions.insert("raw".into(), entry(0));
+    held.editions.insert("en".into(), entry(0));
+    crate::truth::store(&state.library, &found, &held).expect("stores the truth");
+    let stored = || {
+        crate::truth::load(&state.library, &found)
+            .expect("reads the truth")
+            .expect("truth is held")
+            .to_json()
+    };
+    let before = stored();
+
+    let tag = etag_of(&router, &uri).await;
+    let (status, body) = answered(&router, Method::GET, &uri, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut sent = taiyaku_core::TruthDoc::from_json(&body).expect("a truth document");
+    assert_eq!(
+        sent.editions.keys().collect::<Vec<_>>(),
+        ["en"],
+        "the fixture: `raw` is hidden, and its entry is not sent"
+    );
+
+    let refused = |key: &str| {
+        let mut doc = sent.clone();
+        doc.editions.insert(key.into(), entry(1));
+        doc.to_json()
+    };
+    let (raw_status, raw_said) = answered(
+        &router,
+        Method::PUT,
+        &uri,
+        Some(&tag),
+        Some(&refused("raw")),
+    )
+    .await;
+    let (none_status, none_said) =
+        answered(&router, Method::PUT, &uri, Some(&tag), Some(&refused("zz"))).await;
+    assert_eq!(
+        (raw_status, raw_said.replace("`raw`", "`{edition}`")),
+        (none_status, none_said.replace("`zz`", "`{edition}`")),
+        "a hidden edition's entry changed, left, and an edition the work does not have, right"
+    );
+    assert_eq!(raw_status, StatusCode::NOT_FOUND, "{raw_said}");
+    assert_eq!(stored(), before, "nothing is stored");
+
+    sent.editions
+        .get_mut("en")
+        .expect("en")
+        .pages
+        .insert(1, Vec::new());
+    let (status, body) = answered(
+        &router,
+        Method::PUT,
+        &uri,
+        Some(&tag),
+        Some(&sent.to_json()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut expected = held.clone();
+    expected
+        .editions
+        .insert("en".into(), sent.editions["en"].clone());
+    assert_eq!(
+        stored(),
+        expected.to_json(),
+        "en's change stored, raw's entry kept"
+    );
 }
 
 /// **A position on an edition the work no longer has is sent only to an
@@ -5798,10 +6111,10 @@ async fn a_position_on_an_edition_the_work_no_longer_has_is_sent_only_to_an_acco
 {
     use axum::http::Method;
 
-    let (router, state, _fixture, [old, _new]) =
-        crate::test_support::router_over_a_work_keeping_another_librarys_edition();
-    let uri = format!("/api/works/{old}/progress");
-    let found = state.find_blocking(&old).expect("the old work");
+    let (router, state, _fixture, slug) =
+        crate::test_support::router_over_a_work_whose_editions_sit_in_two_libraries();
+    let uri = format!("/api/works/{slug}/progress");
+    let found = state.find_blocking(&slug).expect("the work");
     for edition in ["gone", "en"] {
         crate::progress::store(
             &state.library,
@@ -5839,16 +6152,28 @@ async fn a_position_on_an_edition_the_work_no_longer_has_is_sent_only_to_an_acco
     assert_eq!(named(&body), ["en", "gone"], "unrestricted: {body}");
 }
 
-/// One write whose own checks could answer before the grant does. `if_match`
-/// and `body` are built from the path's slug; `body` is also handed the slug of
-/// a work the account may see, for the request whose body names another work.
+/// One write whose own checks could answer before the grant does. `body` is
+/// built from the path's slug and handed the slug of a work the account may
+/// see, for the request whose body names another work.
 struct OwnCheck {
     label: &'static str,
     document: &'static str,
-    if_match: fn(&str) -> Option<String>,
+    if_match: Tag,
     body: fn(&str, &str) -> String,
     /// What a work the account may see answers it. Never `no work`.
     on_a_granted_work: StatusCode,
+}
+
+/// The `If-Match` an [`OwnCheck`] carries.
+#[derive(Debug, Clone, Copy)]
+enum Tag {
+    Absent,
+    Stale,
+    /// The notes tag the account is sent. To a hidden work, the one an
+    /// unwritten work answers `Access::Every` with, which anyone can compute;
+    /// to a granted one, read first, as an account with grant limits is sent
+    /// a tag naming its numbering (spec §3.8, decision 11).
+    Current,
 }
 
 /// The writes [`a_write_to_a_hidden_work_is_refused_before_its_own_checks_are_made`]
@@ -5859,50 +6184,42 @@ fn writes_that_fail_their_own_checks() -> Vec<OwnCheck> {
         OwnCheck {
             label: "progress, an edition the work lacks",
             document: "progress",
-            if_match: |_| None,
+            if_match: Tag::Absent,
             body: |_, _| r#"{"edition":"nope","slot":0}"#.to_string(),
             on_a_granted_work: StatusCode::NOT_FOUND,
         },
         OwnCheck {
             label: "progress, a slot past the end",
             document: "progress",
-            if_match: |_| None,
+            if_match: Tag::Absent,
             body: |_, _| r#"{"edition":"raw","slot":99}"#.to_string(),
             on_a_granted_work: StatusCode::NOT_FOUND,
         },
         OwnCheck {
             label: "notes, no If-Match",
             document: "notes",
-            if_match: |_| None,
+            if_match: Tag::Absent,
             body: |slug, _| format!(r#"{{"work":"{slug}","notes":[]}}"#),
             on_a_granted_work: StatusCode::PRECONDITION_REQUIRED,
         },
         OwnCheck {
             label: "notes, a stale If-Match",
             document: "notes",
-            if_match: |_| Some("\"stale\"".to_string()),
+            if_match: Tag::Stale,
             body: |slug, _| format!(r#"{{"work":"{slug}","notes":[]}}"#),
             on_a_granted_work: StatusCode::PRECONDITION_FAILED,
         },
         OwnCheck {
             label: "notes, a body that names the granted work",
             document: "notes",
-            if_match: |slug| {
-                Some(notes_etag(
-                    &crate::notes::to_json(&crate::notes::empty(slug)).unwrap(),
-                ))
-            },
+            if_match: Tag::Current,
             body: |_, granted| format!(r#"{{"work":"{granted}","notes":[]}}"#),
             on_a_granted_work: StatusCode::OK,
         },
         OwnCheck {
             label: "notes, the current tag and a note on an edition the work lacks",
             document: "notes",
-            if_match: |slug| {
-                Some(notes_etag(
-                    &crate::notes::to_json(&crate::notes::empty(slug)).unwrap(),
-                ))
-            },
+            if_match: Tag::Current,
             body: |slug, _| {
                 format!(
                     r#"{{"work":"{slug}","notes":[{{"id":"01J8","edition":"nope","slot":1,
@@ -5915,14 +6232,14 @@ fn writes_that_fail_their_own_checks() -> Vec<OwnCheck> {
         OwnCheck {
             label: "truth, no If-Match",
             document: "truth",
-            if_match: |_| None,
+            if_match: Tag::Absent,
             body: |_, _| r#"{"taiyaku_truth":1,"editions":{}}"#.to_string(),
             on_a_granted_work: StatusCode::PRECONDITION_REQUIRED,
         },
         OwnCheck {
             label: "truth, a stale If-Match",
             document: "truth",
-            if_match: |_| Some("\"stale\"".to_string()),
+            if_match: Tag::Stale,
             body: |_, _| r#"{"taiyaku_truth":1,"editions":{}}"#.to_string(),
             on_a_granted_work: StatusCode::PRECONDITION_FAILED,
         },
@@ -5966,11 +6283,18 @@ async fn a_write_to_a_hidden_work_is_refused_before_its_own_checks_are_made() {
     for case in writes_that_fail_their_own_checks() {
         let mut said = Vec::new();
         for slug in [hidden.as_str(), unknown] {
+            let if_match = match case.if_match {
+                Tag::Absent => None,
+                Tag::Stale => Some("\"stale\"".to_string()),
+                Tag::Current => Some(notes_etag(
+                    &crate::notes::to_json(&crate::notes::empty(slug)).unwrap(),
+                )),
+            };
             let (status, body) = answered(
                 &router,
                 Method::PUT,
                 &format!("/api/works/{slug}/{}", case.document),
-                (case.if_match)(slug).as_deref(),
+                if_match.as_deref(),
                 Some(&(case.body)(slug, &granted)),
             )
             .await;
@@ -5983,11 +6307,17 @@ async fn a_write_to_a_hidden_work_is_refused_before_its_own_checks_are_made() {
         );
         assert_eq!(said[0].0, StatusCode::NOT_FOUND, "PUT {}", case.label);
 
+        let uri = format!("/api/works/{granted}/{}", case.document);
+        let if_match = match case.if_match {
+            Tag::Absent => None,
+            Tag::Stale => Some("\"stale\"".to_string()),
+            Tag::Current => Some(etag_of(&router, &uri).await),
+        };
         let (status, body) = answered(
             &router,
             Method::PUT,
-            &format!("/api/works/{granted}/{}", case.document),
-            (case.if_match)(&granted).as_deref(),
+            &uri,
+            if_match.as_deref(),
             Some(&(case.body)(&granted, &granted)),
         )
         .await;
@@ -6088,12 +6418,10 @@ async fn answered_if_none_match(
 /// **A conditional read of a work outside the grant is refused as a read of a
 /// slug no work holds** (O60), before the tag is compared.
 ///
-/// The tag an unwritten work answers with is one anyone can compute. Were the
-/// grant asked below the `If-None-Match` comparison, a hidden work would answer
-/// 304 to it where an unknown slug answers 404. Each read is sent to the hidden
-/// work and to an unknown slug and the two answers are compared, the slug put
-/// aside; then to a work the account may see, which answers 304, so the request
-/// is one the server answers on its merits.
+/// An unwritten work's stored-document tag is one anyone can compute, and a
+/// comparison made above the grant, without the account's view, would hit
+/// it: a hidden work would answer 304 where an unknown slug answers 404. Each
+/// read is sent under it to both, and the answers compared, the slug put aside.
 #[tokio::test]
 async fn a_conditional_read_of_a_hidden_work_is_refused_as_a_slug_no_work_holds() {
     let tmp = crate::test_support::Fixture::new("o60-conditional-read");
@@ -6141,16 +6469,1646 @@ async fn a_conditional_read_of_a_hidden_work_is_refused_as_a_slug_no_work_holds(
             "conditional GET {document}"
         );
 
-        let (status, body) = answered_if_none_match(
-            &router,
-            &format!("/api/works/{granted}/{document}"),
-            &tag(document, &granted),
-        )
-        .await;
+        // A work the account may see answers 304 under the tag it is sent,
+        // which names its view (spec §3.8, decision 11), not the stored
+        // document's.
+        let uri = format!("/api/works/{granted}/{document}");
+        let sent = etag_of(&router, &uri).await;
+        assert_ne!(
+            sent,
+            tag(document, &granted),
+            "{document}: an account with grant limits is sent a tag naming its view"
+        );
+        let (status, body) = answered_if_none_match(&router, &uri, &sent).await;
         assert_eq!(
             status,
             StatusCode::NOT_MODIFIED,
             "conditional GET {document}, of a work the account may see: {body}"
         );
+    }
+
+    // Lifted, the grant leaves the stored document's tag, so the tag the
+    // hidden half sends is one the server hits.
+    taiyaku_library::account::set_every_library(&state.library.conn(), 1).expect("lifts the grant");
+    for document in ["notes", "truth"] {
+        let uri = format!("/api/works/{granted}/{document}");
+        let (status, body) = answered_if_none_match(&router, &uri, &tag(document, &granted)).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_MODIFIED,
+            "conditional GET {document} under the stored document's tag, the grant lifted: {body}"
+        );
+    }
+}
+
+/// Spec §3.8's narrowing, over
+/// [`test_support::router_over_an_edition_merged_from_two_libraries`].
+mod narrowing {
+    use super::*;
+    use crate::test_support::{self, EditionMergedFromTwoLibraries, Reader};
+    use std::collections::{BTreeSet, HashMap};
+    use taiyaku_core::{Member, Sidecar};
+    use taiyaku_library::browse::SeenMember;
+
+    /// `GET uri` as `reader`, with `If-None-Match` when given: the status, the
+    /// `ETag` and the body.
+    async fn fetched(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        uri: &str,
+        if_none_match: Option<&str>,
+    ) -> (StatusCode, Option<String>, String) {
+        let mut request = Request::get(uri);
+        if let Some(tag) = if_none_match {
+            request = request.header(header::IF_NONE_MATCH, tag);
+        }
+        sent(merged, reader, request.body(Body::empty()).unwrap()).await
+    }
+
+    async fn sent(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        request: Request<Body>,
+    ) -> (StatusCode, Option<String>, String) {
+        let response = merged.send(reader, request).await;
+        (
+            response.status(),
+            etag_of(&response),
+            String::from_utf8_lossy(response.body()).into_owned(),
+        )
+    }
+
+    fn etag_of<B>(response: &axum::http::Response<B>) -> Option<String> {
+        response
+            .headers()
+            .get(header::ETAG)
+            .map(|tag| tag.to_str().unwrap().to_string())
+    }
+
+    /// `reader`'s work document and its `ETag`.
+    async fn document(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+    ) -> (serde_json::Value, String) {
+        let (status, tag, body) =
+            fetched(merged, reader, &format!("/api/works/{}", merged.slug), None).await;
+        assert_eq!(status, StatusCode::OK, "{reader:?}'s document: {body}");
+        (
+            serde_json::from_str(&body).expect("the document is JSON"),
+            tag.expect("the document has an ETag"),
+        )
+    }
+
+    /// Each member of `doc`'s `edition`: its file name and page count.
+    fn members(doc: &serde_json::Value, edition: &str) -> Vec<(String, u64)> {
+        doc["editions"][edition]["members"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no edition `{edition}` in {doc}"))
+            .iter()
+            .map(|member| {
+                let path = member["path"].as_str().expect("a path");
+                let file = std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("a file name");
+                (file.to_string(), member["pages"].as_u64().expect("pages"))
+            })
+            .collect()
+    }
+
+    fn files(named: &[(&str, u64)]) -> Vec<(String, u64)> {
+        named
+            .iter()
+            .map(|(file, pages)| ((*file).to_string(), *pages))
+            .collect()
+    }
+
+    fn editions(doc: &serde_json::Value) -> Vec<String> {
+        doc["editions"]
+            .as_object()
+            .expect("an editions object")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    fn alignments(doc: &serde_json::Value) -> BTreeSet<(String, String)> {
+        doc["alignments"]
+            .as_array()
+            .expect("an alignments array")
+            .iter()
+            .map(|a| {
+                (
+                    a["from"].as_str().expect("from").to_string(),
+                    a["to"].as_str().expect("to").to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn pair(from: &str, to: &str) -> (String, String) {
+        (from.to_string(), to.to_string())
+    }
+
+    /// `members` as the store reads them, in this order, each flagged as
+    /// `visible` says.
+    fn read_as(members: &[&Member], visible: &[bool]) -> Vec<SeenMember> {
+        assert_eq!(members.len(), visible.len(), "one flag per member");
+        members
+            .iter()
+            .zip(visible)
+            .map(|(member, &visible)| SeenMember {
+                sha256: member.sha256.clone(),
+                path: member.path.clone(),
+                visible,
+            })
+            .collect()
+    }
+
+    /// Flags for `sidecar`: `raw` as given, and `en` and `fr` visible and read
+    /// of their own members.
+    fn with_raw(sidecar: &Sidecar, raw: Vec<SeenMember>) -> HashMap<String, Vec<SeenMember>> {
+        let whole = |key: &str| {
+            let members: Vec<&Member> = sidecar.editions[key].members.iter().collect();
+            read_as(&members, &vec![true; members.len()])
+        };
+        HashMap::from([
+            ("raw".to_string(), raw),
+            ("en".to_string(), whole("en")),
+            ("fr".to_string(), whole("fr")),
+        ])
+    }
+
+    fn the_work(merged: &EditionMergedFromTwoLibraries) -> Arc<crate::Work> {
+        merged.state.find_blocking(&merged.slug).expect("the work")
+    }
+
+    fn the_sidecar(merged: &EditionMergedFromTwoLibraries) -> Arc<Sidecar> {
+        the_work(merged).sidecar()
+    }
+
+    /// Whether a page route sees `raw` under `flags`.
+    fn a_page_of_raw_is_sent(
+        merged: &EditionMergedFromTwoLibraries,
+        flags: &HashMap<String, Vec<SeenMember>>,
+    ) -> bool {
+        crate::view::EditionView::build(the_work(merged), "raw", Some(flags)).is_some()
+    }
+
+    /// The fixture's shape, from the administrator's document, which every
+    /// test below states first: `raw` is part1, part2 and part3 (9 pages), `en`
+    /// 5 pages, `fr` 6, and both seeded alignments are there. Answers the
+    /// document.
+    async fn the_administrators_document(
+        merged: &EditionMergedFromTwoLibraries,
+    ) -> serde_json::Value {
+        let (doc, _) = document(merged, Reader::Administrator).await;
+        assert_eq!(editions(&doc), ["en", "fr", "raw"], "{doc}");
+        assert_eq!(
+            members(&doc, "raw"),
+            files(&[
+                ("Foo v01 part1.cbz", 2),
+                ("Foo v01 part2.cbz", 3),
+                ("Foo v01 part3.cbz", 4),
+            ]),
+            "the fixture: raw's hidden-to-Manga member is not the last"
+        );
+        assert_eq!(members(&doc, "en"), files(&[("Foo v01.cbz", 5)]));
+        assert_eq!(members(&doc, "fr"), files(&[("Foo v01.cbz", 6)]));
+        assert_eq!(
+            alignments(&doc),
+            BTreeSet::from([pair("raw", "en"), pair("en", "fr")])
+        );
+        doc
+    }
+
+    #[tokio::test]
+    async fn the_merged_edition_fixture_has_the_shape_its_tests_name() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let doc = the_administrators_document(&merged).await;
+        assert_eq!(doc["hub"], "en", "the derive makes `en` the hub: {doc}");
+    }
+
+    /// The store's answer, which narrowing reads: one flag per member in
+    /// ordinal order, for each grant, read of the members the sidecar lists.
+    #[test]
+    fn each_grant_is_flagged_the_members_of_the_merged_edition_it_sees() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let sidecar = the_sidecar(&merged);
+        let conn = merged.state.library.conn();
+        let flags = |reader: Reader| -> HashMap<String, Vec<bool>> {
+            let access = taiyaku_library::account::access_for(&conn, merged.user_id(reader))
+                .expect("reads the access");
+            assert_ne!(access, Access::Every, "{reader:?} is restricted");
+            let read = taiyaku_library::browse::visible_members(&conn, &access, &merged.slug, None)
+                .expect("reads the flags");
+            read.into_iter()
+                .map(|(key, seen)| {
+                    let listed: Vec<&Member> = sidecar.editions[&key].members.iter().collect();
+                    let visible: Vec<bool> = seen.iter().map(|seen| seen.visible).collect();
+                    assert_eq!(
+                        seen,
+                        read_as(&listed, &visible),
+                        "{reader:?}: `{key}` read of the sidecar's members, in its order"
+                    );
+                    (key, visible)
+                })
+                .collect()
+        };
+        let of = |raw: &[bool], en: bool, fr: bool| {
+            HashMap::from([
+                ("raw".to_string(), raw.to_vec()),
+                ("en".to_string(), vec![en]),
+                ("fr".to_string(), vec![fr]),
+            ])
+        };
+        assert_eq!(
+            flags(Reader::MangaOnly),
+            of(&[true, false, true], true, true)
+        );
+        assert_eq!(
+            flags(Reader::KidsOnly),
+            of(&[false, true, false], false, false)
+        );
+        assert_eq!(flags(Reader::Both), of(&[true, true, true], true, true));
+    }
+
+    /// The flags and the sidecar are two reads, so flags that do not number an
+    /// edition's members hide it rather than pairing a member with another's
+    /// flag.
+    #[tokio::test]
+    async fn flags_that_do_not_number_an_editions_members_hide_it() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let sidecar = the_sidecar(&merged);
+        let listed: Vec<&Member> = sidecar.editions["raw"].members.iter().collect();
+        for raw in [
+            read_as(&listed[..2], &[true, true]),
+            read_as(&[listed[0], listed[1], listed[2], listed[2]], &[true; 4]),
+        ] {
+            let flags = with_raw(&sidecar, raw.clone());
+            let view = crate::view::View::build(Arc::clone(&sidecar), Some(&flags))
+                .expect("en and fr are visible");
+            assert_eq!(
+                view.sidecar().editions.keys().collect::<Vec<_>>(),
+                ["en", "fr"],
+                "{} flags for raw's 3 members",
+                raw.len()
+            );
+            assert!(
+                !a_page_of_raw_is_sent(&merged, &flags),
+                "{} flags for raw's 3 members, to a page route",
+                raw.len()
+            );
+        }
+    }
+
+    /// The sidecar can be the registry's copy from before a scan that moved a
+    /// member to another ordinal and kept the count, so flags read of other
+    /// members, or of these in another order, hide the edition too, whether
+    /// they would narrow it or send it whole.
+    #[tokio::test]
+    async fn flags_read_of_other_members_hide_the_edition() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let sidecar = the_sidecar(&merged);
+        let listed: Vec<&Member> = sidecar.editions["raw"].members.iter().collect();
+        assert_ne!(
+            listed[0].sha256, listed[2].sha256,
+            "the fixture: part1 and part3 are different files"
+        );
+        let renamed = Member {
+            path: format!("{}.moved", listed[2].path),
+            ..listed[2].clone()
+        };
+        let replaced = Member {
+            sha256: "0".repeat(64),
+            ..listed[0].clone()
+        };
+        for (case, members) in [
+            (
+                "part1 and part3 exchanged",
+                [listed[2], listed[1], listed[0]],
+            ),
+            ("part3 at another path", [listed[0], listed[1], &renamed]),
+            (
+                "part1 replaced at its path",
+                [&replaced, listed[1], listed[2]],
+            ),
+        ] {
+            for visible in [[true, false, true], [true, true, true]] {
+                let flags = with_raw(&sidecar, read_as(&members, &visible));
+                let view = crate::view::View::build(Arc::clone(&sidecar), Some(&flags))
+                    .expect("en and fr are visible");
+                assert_eq!(
+                    view.sidecar().editions.keys().collect::<Vec<_>>(),
+                    ["en", "fr"],
+                    "{case}, flagged {visible:?}"
+                );
+                assert!(
+                    !a_page_of_raw_is_sent(&merged, &flags),
+                    "{case}, flagged {visible:?}, to a page route"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_narrowed_editions_pages_translate_to_the_full_numbering() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let work = the_work(&merged);
+        let sidecar = work.sidecar();
+        let listed: Vec<&Member> = sidecar.editions["raw"].members.iter().collect();
+        let flags = with_raw(&sidecar, read_as(&listed, &[true, false, true]));
+        let view = crate::view::View::build(Arc::clone(&sidecar), Some(&flags)).expect("visible");
+        assert!(view.narrowed("raw").is_some());
+        assert!(view.narrowed("en").is_none(), "en is sent whole");
+        let edition =
+            |key: &str| crate::view::EditionView::build(Arc::clone(&work), key, Some(&flags));
+        let raw = edition("raw").expect("raw is visible");
+        assert_eq!(
+            (0..7)
+                .map(|page| raw.page_to_full(page))
+                .collect::<Vec<_>>(),
+            [
+                Ok(0),
+                Ok(1),
+                Ok(5),
+                Ok(6),
+                Ok(7),
+                Ok(8),
+                Err("`raw` has 6 pages; there is no page 6".to_string())
+            ]
+        );
+        assert_eq!(
+            edition("en").expect("en is visible").page_to_full(3),
+            Ok(3),
+            "a whole edition's page is itself"
+        );
+        assert!(edition("de").is_none(), "an edition it is not sent");
+    }
+
+    async fn page(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        page: &str,
+        if_none_match: Option<&str>,
+    ) -> axum::http::Response<Vec<u8>> {
+        let uri = format!("/api/works/{}/raw/pages/{page}", merged.slug);
+        let response = merged.get(reader, &uri, if_none_match).await;
+        assert!(
+            [StatusCode::OK, StatusCode::NOT_MODIFIED].contains(&response.status()),
+            "{reader:?}'s {uri}: {}",
+            String::from_utf8_lossy(response.body())
+        );
+        response
+    }
+
+    /// Manga's page 2 is full page 5, part3's first: the same bytes under the
+    /// same `ETag`, so either account's copy revalidates the other's.
+    #[tokio::test]
+    async fn a_narrowed_page_is_the_full_page_it_translates_to() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let full = page(&merged, Reader::Administrator, "5", None).await;
+        assert!(
+            full.body() != page(&merged, Reader::Administrator, "2", None).await.body(),
+            "the fixture: pages 2 and 5 differ"
+        );
+        let narrowed = page(&merged, Reader::MangaOnly, "2", None).await;
+        assert!(narrowed.body() == full.body(), "Manga's page 2 is page 5");
+        assert_eq!(etag_of(&narrowed), etag_of(&full));
+        let past = merged
+            .get(
+                Reader::MangaOnly,
+                &format!("/api/works/{}/raw/pages/6", merged.slug),
+                None,
+            )
+            .await;
+        assert_eq!(past.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            String::from_utf8_lossy(past.body()),
+            "`raw` has 6 pages; there is no page 6"
+        );
+        let revalidated = page(&merged, Reader::MangaOnly, "2", etag_of(&full).as_deref()).await;
+        assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    /// Manga's thumb of page 2 is page 5's. Asked first, on a cold cache: a
+    /// thumb kept under one page's member and drawn from another's would be
+    /// the answer the administrator is then given for one of the two.
+    #[tokio::test]
+    async fn a_narrowed_thumb_is_the_full_pages_thumb() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let narrowed = page(&merged, Reader::MangaOnly, "2/thumb", None).await;
+        let full = page(&merged, Reader::Administrator, "5/thumb", None).await;
+        let hidden = page(&merged, Reader::Administrator, "2/thumb", None).await;
+        assert!(
+            full.body() != hidden.body(),
+            "the thumbs of pages 2 and 5 differ: neither was kept under the other's member"
+        );
+        assert!(
+            narrowed.body() == full.body(),
+            "Manga's thumb of page 2 is page 5's"
+        );
+    }
+
+    #[tokio::test]
+    async fn kids_alones_first_page_is_part2s_first() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let full = page(&merged, Reader::Administrator, "2", None).await;
+        assert!(
+            full.body() != page(&merged, Reader::Administrator, "0", None).await.body(),
+            "the fixture: pages 0 and 2 differ"
+        );
+        let narrowed = page(&merged, Reader::KidsOnly, "0", None).await;
+        assert!(narrowed.body() == full.body(), "Kids' page 0 is page 2");
+        assert_eq!(etag_of(&narrowed), etag_of(&full));
+    }
+
+    /// The series cover is the thumb of the edition Kids sees, `raw`, which
+    /// is drawn from Kids' page 0, at the tile's size and at a cover's.
+    #[tokio::test]
+    async fn kids_alones_series_cover_is_part2s_first_page() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let series: i64 = merged
+            .state
+            .library
+            .conn()
+            .query_row("SELECT series_id FROM work", [], |row| row.get(0))
+            .expect("the fixture: one work, in one series");
+        let tile = page(&merged, Reader::Administrator, "2/thumb", None).await;
+        assert!(
+            tile.body()
+                != page(&merged, Reader::Administrator, "0/thumb", None)
+                    .await
+                    .body(),
+            "the fixture: the thumbs of pages 0 and 2 differ"
+        );
+        // A 16-pixel page fits a cover's size, so the cover is the page itself.
+        let full = page(&merged, Reader::Administrator, "2", None).await;
+        for (query, expected) in [("", &tile), ("?w=256", &full)] {
+            let redirect = merged
+                .get(
+                    Reader::KidsOnly,
+                    &format!("/api/library/series/{series}/cover{query}"),
+                    None,
+                )
+                .await;
+            assert_eq!(redirect.status(), StatusCode::TEMPORARY_REDIRECT, "{query}");
+            let location = redirect.headers()[header::LOCATION].to_str().unwrap();
+            let cover = merged.get(Reader::KidsOnly, location, None).await;
+            assert_eq!(cover.status(), StatusCode::OK, "{location}");
+            assert!(
+                cover.body() == expected.body(),
+                "{location}: Kids' series cover is part2's first page"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn manga_alone_is_sent_raw_as_part1_and_part3() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let whole = the_administrators_document(&merged).await;
+        let (doc, _) = document(&merged, Reader::MangaOnly).await;
+        assert_eq!(
+            members(&doc, "raw"),
+            files(&[("Foo v01 part1.cbz", 2), ("Foo v01 part3.cbz", 4)]),
+            "{doc}"
+        );
+        assert_eq!(
+            doc["editions"]["en"], whole["editions"]["en"],
+            "en is whole"
+        );
+        assert_eq!(
+            doc["editions"]["fr"], whole["editions"]["fr"],
+            "fr is whole"
+        );
+        assert_eq!(
+            alignments(&doc),
+            BTreeSet::from([pair("en", "fr")]),
+            "the alignment touching the narrowed raw is left out"
+        );
+    }
+
+    #[tokio::test]
+    async fn kids_alone_is_sent_raw_as_part2_and_nothing_else() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let (doc, _) = document(&merged, Reader::KidsOnly).await;
+        assert_eq!(editions(&doc), ["raw"], "{doc}");
+        assert_eq!(members(&doc, "raw"), files(&[("Foo v01 part2.cbz", 3)]));
+        assert_eq!(alignments(&doc), BTreeSet::new());
+        assert_eq!(doc["hub"], "raw", "the hub moves to the one edition sent");
+    }
+
+    #[tokio::test]
+    async fn both_libraries_are_sent_raw_whole() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let whole = the_administrators_document(&merged).await;
+        let (doc, _) = document(&merged, Reader::Both).await;
+        assert_eq!(doc, whole, "an account granted every library holding it");
+    }
+
+    /// The tag is over the document sent, so an account narrowed out of part
+    /// of it never revalidates against another's copy.
+    #[tokio::test]
+    async fn a_narrowed_document_has_its_own_etag() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let uri = format!("/api/works/{}", merged.slug);
+        let (_, manga) = document(&merged, Reader::MangaOnly).await;
+        let (_, admin) = document(&merged, Reader::Administrator).await;
+        assert_ne!(manga, admin);
+        for (reader, own, other) in [
+            (Reader::MangaOnly, &manga, &admin),
+            (Reader::Administrator, &admin, &manga),
+        ] {
+            let (status, _, _) = fetched(&merged, reader, &uri, Some(own)).await;
+            assert_eq!(status, StatusCode::NOT_MODIFIED, "{reader:?}, its own tag");
+            let (status, _, _) = fetched(&merged, reader, &uri, Some(other)).await;
+            assert_eq!(status, StatusCode::OK, "{reader:?}, the other's tag");
+        }
+    }
+
+    /// A correction naming an edition Kids alone does not see is refused as
+    /// a work it does not hold, 404, before its body is: a malformed slot
+    /// against `en` answers what one against a key the work lacks answers,
+    /// in the same words (O60), and only a side Kids sees, `raw`, gets as far
+    /// as the slot's 400.
+    #[tokio::test]
+    async fn a_correction_naming_a_side_kids_does_not_see_is_refused_before_its_body() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let (doc, tag) = document(&merged, Reader::KidsOnly).await;
+        assert_eq!(
+            editions(&doc),
+            ["raw"],
+            "the fixture: Kids sees `raw` alone"
+        );
+        let mut answers = Vec::new();
+        for (from, status) in [
+            ("en", StatusCode::NOT_FOUND),
+            ("no-such-edition", StatusCode::NOT_FOUND),
+            ("raw", StatusCode::BAD_REQUEST),
+        ] {
+            let (answered, _, body) = sent(
+                &merged,
+                Reader::KidsOnly,
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/works/{}/alignments", merged.slug))
+                    .header(header::IF_MATCH, &tag)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"from":"{from}","to":"raw","a":"not a slot","b":"0"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(answered, status, "from `{from}`: {body}");
+            answers.push(body);
+        }
+        assert_eq!(
+            answers[0], answers[1],
+            "a side Kids does not see is answered as a side the work lacks"
+        );
+    }
+
+    /// A correction carries the `ETag` of the document its account was sent,
+    /// and is answered with the document that account would be sent next,
+    /// while the document and rows every account shares stay whole.
+    #[tokio::test]
+    async fn manga_alone_corrects_en_to_fr_with_its_own_documents_etag() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let (_, tag) = document(&merged, Reader::MangaOnly).await;
+        let (status, answered_tag, body) = sent(
+            &merged,
+            Reader::MangaOnly,
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/works/{}/alignments", merged.slug))
+                .header(header::IF_MATCH, &tag)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"from":"en","to":"fr","a":"1","b":"0"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (whole, _) = document(&merged, Reader::Administrator).await;
+        assert_eq!(
+            members(&whole, "raw"),
+            files(&[
+                ("Foo v01 part1.cbz", 2),
+                ("Foo v01 part2.cbz", 3),
+                ("Foo v01 part3.cbz", 4),
+            ]),
+            "the document every account shares keeps part2: {whole}"
+        );
+        assert_eq!(
+            alignments(&whole),
+            BTreeSet::from([pair("raw", "en"), pair("en", "fr")]),
+            "and the alignment touching raw"
+        );
+        let stored: BTreeSet<(String, String)> = merged
+            .state
+            .library
+            .conn()
+            .prepare("SELECT from_key, to_key FROM alignment")
+            .and_then(|mut rows| {
+                rows.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect()
+            })
+            .expect("reads the alignment rows");
+        assert_eq!(
+            stored,
+            BTreeSet::from([pair("raw", "en"), pair("en", "fr")]),
+            "the rows keep the alignment touching raw"
+        );
+        let (next, next_tag) = document(&merged, Reader::MangaOnly).await;
+        assert_ne!(next_tag, tag, "the correction changed the document");
+        assert_eq!(answered_tag.as_deref(), Some(next_tag.as_str()));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).expect("JSON"),
+            next,
+            "the answer is the document Manga is sent next"
+        );
+    }
+
+    /// A note `id` on `edition`'s `slot`, its words its own.
+    fn note(id: &str, edition: &str, slot: u32) -> crate::notes::Note {
+        crate::notes::Note {
+            id: id.into(),
+            edition: edition.into(),
+            slot,
+            region: None,
+            color: None,
+            body: format!("{id}'s words"),
+            created: "2026-11-03T10:00:00Z".into(),
+            updated: "2026-11-03T10:00:00Z".into(),
+        }
+    }
+
+    /// Manga's notes as the store holds them, in the full numbering: n1 on
+    /// `raw`'s page 1 (part1), n2 on page 3 (part2, which Manga does not see),
+    /// n3 on page 6 (part3's second, Manga's page 3), and n4 on `en`.
+    fn mangas_notes(merged: &EditionMergedFromTwoLibraries) -> crate::notes::Notes {
+        crate::notes::Notes {
+            work: merged.slug.clone(),
+            notes: vec![
+                note("n1", "raw", 1),
+                note("n2", "raw", 3),
+                note("n3", "raw", 6),
+                note("n4", "en", 0),
+            ],
+        }
+    }
+
+    fn hold_notes(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        notes: &crate::notes::Notes,
+    ) {
+        crate::notes::store(
+            &merged.state.library,
+            &the_work(merged),
+            merged.user_id(reader),
+            notes,
+        )
+        .expect("stores the notes");
+    }
+
+    fn held_notes(merged: &EditionMergedFromTwoLibraries, reader: Reader) -> crate::notes::Notes {
+        crate::notes::load(
+            &merged.state.library,
+            &the_work(merged),
+            merged.user_id(reader),
+        )
+        .expect("reads the notes")
+        .expect("notes are held")
+    }
+
+    /// Each note of a notes body: its id, edition and slot.
+    fn anchors(body: &str) -> Vec<(String, String, u32)> {
+        let doc: crate::notes::Notes = serde_json::from_str(body).expect("a notes document");
+        doc.notes
+            .into_iter()
+            .map(|note| (note.id, note.edition, note.slot))
+            .collect()
+    }
+
+    fn anchor(id: &str, edition: &str, slot: u32) -> (String, String, u32) {
+        (id.to_string(), edition.to_string(), slot)
+    }
+
+    async fn put(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        uri: &str,
+        if_match: Option<&str>,
+        body: String,
+    ) -> (StatusCode, Option<String>, String) {
+        let mut request = Request::put(uri).header(header::CONTENT_TYPE, "application/json");
+        if let Some(tag) = if_match {
+            request = request.header(header::IF_MATCH, tag);
+        }
+        sent(merged, reader, request.body(Body::from(body)).unwrap()).await
+    }
+
+    fn notes_uri(merged: &EditionMergedFromTwoLibraries) -> String {
+        format!("/api/works/{}/notes", merged.slug)
+    }
+
+    fn progress_uri(merged: &EditionMergedFromTwoLibraries) -> String {
+        format!("/api/works/{}/progress", merged.slug)
+    }
+
+    /// The tag names the stored document and Manga's numbering of it (spec
+    /// §3.8, decision 11): neither the body's nor the stored document's alone,
+    /// and the same for every read under the same view, so a write with it is
+    /// accepted.
+    #[tokio::test]
+    async fn manga_alone_is_sent_its_notes_on_the_pages_it_sees_under_a_tag_naming_its_numbering() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(&merged, Reader::MangaOnly, &mangas_notes(&merged));
+        let uri = notes_uri(&merged);
+
+        let (status, tag, body) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            anchors(&body),
+            [
+                anchor("n1", "raw", 1),
+                anchor("n3", "raw", 3),
+                anchor("n4", "en", 0)
+            ],
+            "n2 is on part2, which Manga does not see; n3 is on its page 3: {body}"
+        );
+        let tag = tag.expect("a notes read carries a tag");
+        let stored = crate::notes::to_json(&held_notes(&merged, Reader::MangaOnly)).unwrap();
+        assert_ne!(tag, notes_etag(&stored), "not the stored document's alone");
+        assert_ne!(tag, notes_etag(&body), "not the body's");
+
+        let (_, again, _) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+        assert_eq!(
+            again.as_deref(),
+            Some(tag.as_str()),
+            "the same view, the same tag"
+        );
+        let (status, _, _) = fetched(&merged, Reader::MangaOnly, &uri, Some(&tag)).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        let (status, _, answered) = put(&merged, Reader::MangaOnly, &uri, Some(&tag), body).await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(
+            held_notes(&merged, Reader::MangaOnly),
+            mangas_notes(&merged)
+        );
+    }
+
+    /// A write Manga read while `raw` was narrowed is refused once it sees
+    /// `raw` whole, and stores nothing: applied in the whole numbering it
+    /// would put n3 on part2's page and delete n2 (spec §3.8, decision 11).
+    #[tokio::test]
+    async fn a_notes_write_manga_read_before_it_was_granted_kids_is_refused() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(&merged, Reader::MangaOnly, &mangas_notes(&merged));
+        let uri = notes_uri(&merged);
+        let (_, tag, body) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+
+        taiyaku_library::account::grant_library(
+            &merged.state.library.conn(),
+            merged.user_id(Reader::MangaOnly),
+            80,
+        )
+        .expect("grants Kids");
+        let (whole, _) = document(&merged, Reader::MangaOnly).await;
+        assert_eq!(
+            members(&whole, "raw").len(),
+            3,
+            "the fixture: Manga now sees `raw` whole: {whole}"
+        );
+
+        let (status, _, answered) =
+            put(&merged, Reader::MangaOnly, &uri, tag.as_deref(), body).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{answered}");
+        assert_eq!(
+            held_notes(&merged, Reader::MangaOnly),
+            mangas_notes(&merged),
+            "nothing is stored"
+        );
+    }
+
+    /// The notes tag names a narrowed edition's visible members, so a scan
+    /// that replaces one, with `raw` still narrowed to two, changes it, and
+    /// so does seeing another two of its three; the same view gives the same
+    /// tag (spec §3.8, decision 11).
+    #[tokio::test]
+    async fn the_notes_tag_names_a_narrowed_editions_visible_members() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let tag = |sidecar: &Arc<Sidecar>, raw: &[bool]| {
+            let listed: Vec<&Member> = sidecar.editions["raw"].members.iter().collect();
+            let flags = with_raw(sidecar, read_as(&listed, raw));
+            crate::view::View::build(Arc::clone(sidecar), Some(&flags))
+                .expect("visible")
+                .etag_naming_numbering("{}")
+        };
+        let sidecar = the_sidecar(&merged);
+        let mut rescanned = (*sidecar).clone();
+        rescanned.editions.get_mut("raw").expect("raw").members[2].sha256 = "replaced".into();
+        let mangas = [true, false, true];
+        assert_eq!(
+            tag(&sidecar, &mangas),
+            tag(&sidecar, &mangas),
+            "the same view, the same tag"
+        );
+        assert_ne!(
+            tag(&sidecar, &mangas),
+            tag(&Arc::new(rescanned), &mangas),
+            "part3 replaced"
+        );
+        assert_ne!(
+            tag(&sidecar, &mangas),
+            tag(&sidecar, &[true, true, false]),
+            "two of three either way, but part2 seen in place of part3"
+        );
+        // Part2 is hidden from Manga and before part3, so what Manga is sent
+        // is the same in both, and only where part3 sits in full moves.
+        let mut resized = (*sidecar).clone();
+        resized.editions.get_mut("raw").expect("raw").members[1].pages = 1;
+        assert_ne!(
+            tag(&sidecar, &mangas),
+            tag(&Arc::new(resized), &mangas),
+            "part2 resized, moving part3's pages"
+        );
+        let mut spread = (*sidecar).clone();
+        spread.editions.get_mut("raw").expect("raw").spreads.push(3);
+        assert_ne!(
+            tag(&sidecar, &mangas),
+            tag(&Arc::new(spread), &mangas),
+            "a spread on part2's page 3, moving part3's slots and none of its pages"
+        );
+    }
+
+    /// The notes tag is keyed by every member the account is not sent: part2,
+    /// hidden in a narrowed `raw`, and the member of `fr` when `fr` is hidden.
+    /// So replacing either by a file of as many pages, which moves no page the
+    /// account is sent, changes it (spec §3.8, decision 11).
+    #[tokio::test]
+    async fn the_notes_tag_is_keyed_by_the_members_the_account_is_not_sent() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let tag = |sidecar: &Sidecar, raw: &[bool], fr: bool| {
+            let listed: Vec<&Member> = sidecar.editions["raw"].members.iter().collect();
+            let mut flags = with_raw(sidecar, read_as(&listed, raw));
+            if !fr {
+                flags.remove("fr");
+            }
+            crate::view::View::build(Arc::new(sidecar.clone()), Some(&flags))
+                .expect("visible")
+                .etag_naming_numbering("{}")
+        };
+        let sidecar = (*the_sidecar(&merged)).clone();
+        let replaced = |edition: &str, member: usize| {
+            let mut rescanned = sidecar.clone();
+            let edition = rescanned.editions.get_mut(edition).expect("the edition");
+            edition.members[member].sha256 = "replaced".into();
+            rescanned
+        };
+        let mangas = [true, false, true];
+        assert_ne!(
+            tag(&sidecar, &mangas, true),
+            tag(&replaced("raw", 1), &mangas, true),
+            "part2 replaced"
+        );
+        let whole = [true, true, true];
+        assert_ne!(
+            tag(&sidecar, &whole, false),
+            tag(&replaced("fr", 0), &whole, false),
+            "fr's member replaced, with `raw` sent whole and `fr` hidden"
+        );
+    }
+
+    /// A page route reads from the sidecar its flags were checked against: a
+    /// refresh landing between the check and the read, here reversing `raw`'s
+    /// members so that part2 holds full page 5, does not send Manga part2's
+    /// page as its page 2, and `en`, sent whole, keeps the one member it was
+    /// checked with when the refresh adds part2 to it (spec §3.8, fail closed).
+    #[tokio::test]
+    async fn a_page_is_read_in_the_sidecar_its_flags_were_checked_against() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let uri = format!("/api/works/{}/raw/pages/5", merged.slug);
+        let page_5 = merged.get(Reader::Administrator, &uri, None).await;
+        assert_eq!(page_5.status(), StatusCode::OK, "{uri}");
+
+        let sidecar = the_sidecar(&merged);
+        let raw: Vec<&Member> = sidecar.editions["raw"].members.iter().collect();
+        let flags = with_raw(&sidecar, read_as(&raw, &[true, false, true]));
+        let checked = |edition: &str| {
+            crate::view::EditionView::build(the_work(&merged), edition, Some(&flags))
+                .expect("Manga sees it")
+        };
+        let (raw_view, en_view) = (checked("raw"), checked("en"));
+
+        let mut refreshed = (*sidecar).clone();
+        let editions = &mut refreshed.editions;
+        editions.get_mut("raw").expect("raw").members.reverse();
+        let part2 = editions["raw"].members[1].clone();
+        editions.get_mut("en").expect("en").members.push(part2);
+        the_work(&merged)
+            .reproject(|| Ok(refreshed))
+            .expect("refreshes");
+        assert_eq!(
+            the_sidecar(&merged).editions["raw"]
+                .locate(5)
+                .map(|(member, _)| member),
+            Some(1),
+            "the fixture: in the refreshed sidecar, full page 5 is part2's"
+        );
+
+        let served = serve_page(
+            Arc::clone(&merged.state),
+            raw_view,
+            2,
+            None,
+            None,
+            &axum::http::HeaderMap::new(),
+        )
+        .await;
+        assert_eq!(served.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(served.into_body(), usize::MAX)
+            .await
+            .expect("reads the page");
+        assert!(
+            body[..] == page_5.body()[..],
+            "Manga's page 2 is part3's first, as the flags were checked"
+        );
+        assert_eq!(
+            en_view.edition().map(|edition| edition.members.len()),
+            Some(1),
+            "`en` as it was checked"
+        );
+    }
+
+    /// A write Manga read before a scan resized part2, which it does not see
+    /// and which comes before part3, is refused and stores nothing: applied
+    /// in the new numbering it would move n3 and delete n2, now on part3's
+    /// first page. The administrator's tag stays the stored document's.
+    #[tokio::test]
+    async fn a_notes_write_manga_read_before_a_hidden_member_was_resized_is_refused() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(&merged, Reader::MangaOnly, &mangas_notes(&merged));
+        hold_notes(&merged, Reader::Administrator, &mangas_notes(&merged));
+        let uri = notes_uri(&merged);
+        let (_, tag, body) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+        let (_, administrators, _) = fetched(&merged, Reader::Administrator, &uri, None).await;
+
+        let mut rescanned = (*the_sidecar(&merged)).clone();
+        rescanned.editions.get_mut("raw").expect("raw").members[1].pages = 1;
+        the_work(&merged)
+            .reproject(|| Ok(rescanned))
+            .expect("holds the rescanned document");
+        let (doc, _) = document(&merged, Reader::MangaOnly).await;
+        assert_eq!(
+            members(&doc, "raw"),
+            files(&[("Foo v01 part1.cbz", 2), ("Foo v01 part3.cbz", 4)]),
+            "the fixture: what Manga is sent of `raw` has not changed: {doc}"
+        );
+
+        let (status, _, answered) =
+            put(&merged, Reader::MangaOnly, &uri, tag.as_deref(), body).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{answered}");
+        assert_eq!(
+            held_notes(&merged, Reader::MangaOnly),
+            mangas_notes(&merged),
+            "nothing is stored"
+        );
+        let (_, after, _) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        assert_eq!(after, administrators, "the administrator's tag");
+    }
+
+    /// Manga alone cannot search what it is sent for the tag it is sent under:
+    /// the hidden slots before each member it sees are a few small numbers, so
+    /// a tag over them and over what it is sent alone would give part2's size
+    /// away (spec §3.8, decision 11). Each guess is hashed in the layout
+    /// `View::etag_naming_numbering` gives what the account is sent, from the
+    /// work document and the notes body, whichever editions are narrowed, and
+    /// with and without raw's count of hidden members after them, as a tag
+    /// naming what is hidden by anything but its hashes would.
+    #[tokio::test]
+    async fn manga_alones_notes_tag_cannot_be_found_from_what_it_is_sent() {
+        use sha2::{Digest, Sha256};
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let (doc, _) = document(&merged, Reader::MangaOnly).await;
+        assert_eq!(
+            members(&doc, "raw"),
+            files(&[("Foo v01 part1.cbz", 2), ("Foo v01 part3.cbz", 4)]),
+            "the fixture: part2, hidden, sits between the two Manga sees: {doc}"
+        );
+        assert_eq!(doc["editions"]["raw"]["spreads"], serde_json::json!([]));
+        let (status, tag, body) =
+            fetched(&merged, Reader::MangaOnly, &notes_uri(&merged), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let tag = tag.expect("a notes read carries a tag");
+
+        let mut keys = editions(&doc);
+        keys.sort();
+        let guess = |narrowed: usize, hidden: [u64; 2], counted: Option<u64>| {
+            let mut hasher = Sha256::new();
+            let mut field = |bytes: &[u8]| {
+                hasher.update((bytes.len() as u64).to_le_bytes());
+                hasher.update(bytes);
+            };
+            for (at, key) in keys.iter().enumerate() {
+                field(key.as_bytes());
+                if narrowed & (1 << at) == 0 {
+                    field(&0_u64.to_le_bytes());
+                    continue;
+                }
+                let sent = doc["editions"][key]["members"].as_array().expect("members");
+                field(&(sent.len() as u64).to_le_bytes());
+                let mut pages = Vec::new();
+                for member in sent {
+                    field(member["sha256"].as_str().expect("a sha256").as_bytes());
+                    field(member["path"].as_str().expect("a path").as_bytes());
+                    pages.push(member["pages"].as_u64().expect("pages"));
+                }
+                // Raw's guesses are the hidden pages before each member; any
+                // other edition is guessed narrowed to itself.
+                let mut full = Vec::new();
+                let mut at_full = 0;
+                for (index, count) in pages.iter().enumerate() {
+                    if key == "raw" {
+                        at_full += hidden.get(index).copied().unwrap_or(0);
+                    }
+                    for _ in 0..*count {
+                        full.push(at_full);
+                        at_full += 1;
+                    }
+                }
+                field(&(full.len() as u64).to_le_bytes());
+                for slot in full {
+                    field(&slot.to_le_bytes());
+                }
+            }
+            if let Some(count) = counted {
+                field(b"raw");
+                field(&count.to_le_bytes());
+            }
+            field(body.as_bytes());
+            crate::notes::quoted_hex(&hasher.finalize())
+        };
+
+        let mut found = Vec::new();
+        let counts = [None, Some(0), Some(1), Some(2), Some(3)];
+        for narrowed in 0..1_usize << keys.len() {
+            for before_part1 in 0..40 {
+                for before_part3 in 0..40 {
+                    for counted in counts {
+                        if guess(narrowed, [before_part1, before_part3], counted) == tag {
+                            found.push((narrowed, before_part1, before_part3, counted));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(found, [], "a guess at part2's 3 pages matched the tag");
+    }
+
+    /// `Access::Every`'s notes tag is the stored document's, on a read and on
+    /// a write's answer: it is never narrowed, so it has no numbering to name.
+    #[tokio::test]
+    async fn the_administrators_notes_tag_is_the_stored_documents() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(&merged, Reader::Administrator, &mangas_notes(&merged));
+        let uri = notes_uri(&merged);
+        let stored = || crate::notes::to_json(&held_notes(&merged, Reader::Administrator)).unwrap();
+
+        let (_, tag, body) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        assert_eq!(body, stored(), "sent the stored document");
+        assert_eq!(tag, Some(notes_etag(&stored())));
+
+        let mut doc: crate::notes::Notes = serde_json::from_str(&body).expect("notes");
+        doc.notes.push(note("n5", "raw", 2));
+        let (status, answered_tag, answered) = put(
+            &merged,
+            Reader::Administrator,
+            &uri,
+            tag.as_deref(),
+            serde_json::to_string(&doc).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(answered, stored(), "answered the stored document");
+        assert_eq!(answered_tag, Some(notes_etag(&stored())));
+    }
+
+    #[tokio::test]
+    async fn manga_alones_notes_write_is_stored_translated_and_keeps_the_note_it_is_not_sent() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(&merged, Reader::MangaOnly, &mangas_notes(&merged));
+        let uri = notes_uri(&merged);
+        let (_, tag, body) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+        let mut doc: crate::notes::Notes = serde_json::from_str(&body).expect("notes");
+        doc.notes.push(note("n5", "raw", 2));
+
+        let (status, answered_tag, answered) = put(
+            &merged,
+            Reader::MangaOnly,
+            &uri,
+            tag.as_deref(),
+            serde_json::to_string(&doc).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(
+            held_notes(&merged, Reader::MangaOnly),
+            crate::notes::Notes {
+                work: merged.slug.clone(),
+                notes: vec![
+                    note("n1", "raw", 1),
+                    note("n2", "raw", 3),
+                    note("n3", "raw", 6),
+                    note("n4", "en", 0),
+                    note("n5", "raw", 5),
+                ],
+            },
+            "n2 kept as it was, n3 and n5 in the full numbering"
+        );
+        let (_, next_tag, next) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+        assert_eq!(
+            answered_tag, next_tag,
+            "the answer's ETag is the next read's"
+        );
+        assert_eq!(answered, next, "the answer is what Manga is sent next");
+    }
+
+    #[tokio::test]
+    async fn a_note_given_the_id_of_one_manga_alone_is_not_sent_is_refused() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(&merged, Reader::MangaOnly, &mangas_notes(&merged));
+        let uri = notes_uri(&merged);
+        let (_, tag, _) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+        let doc = crate::notes::Notes {
+            work: merged.slug.clone(),
+            notes: vec![
+                note("n1", "raw", 1),
+                note("n2", "raw", 0),
+                note("n3", "raw", 3),
+                note("n4", "en", 0),
+            ],
+        };
+
+        let (status, _, body) = put(
+            &merged,
+            Reader::MangaOnly,
+            &uri,
+            tag.as_deref(),
+            serde_json::to_string(&doc).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("`n2`"), "the refusal names the note: {body}");
+        assert_eq!(
+            held_notes(&merged, Reader::MangaOnly),
+            mangas_notes(&merged),
+            "nothing is stored"
+        );
+    }
+
+    fn hold_position(merged: &EditionMergedFromTwoLibraries, reader: Reader, slot: u32) {
+        crate::progress::store(
+            &merged.state.library,
+            &the_work(merged),
+            merged.user_id(reader),
+            &crate::Progress {
+                edition: "raw".into(),
+                slot,
+            },
+        )
+        .expect("stores a position");
+    }
+
+    /// `reader`'s positions as it is sent them: each edition and slot, or
+    /// `None` for a 204.
+    async fn positions(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+    ) -> Option<Vec<(String, u64)>> {
+        let (status, _, body) = fetched(merged, reader, &progress_uri(merged), None).await;
+        if status == StatusCode::NO_CONTENT {
+            return None;
+        }
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("a progress document");
+        Some(
+            doc["positions"]
+                .as_array()
+                .expect("positions is an array")
+                .iter()
+                .map(|p| {
+                    (
+                        p["edition"].as_str().expect("an edition").to_string(),
+                        p["slot"].as_u64().expect("a slot"),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_position_on_a_hidden_page_reads_as_the_nearest_page_seen_before_it() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_position(&merged, Reader::MangaOnly, 3);
+        assert_eq!(
+            positions(&merged, Reader::MangaOnly).await,
+            Some(vec![("raw".to_string(), 1)]),
+            "full page 3 is part2's; Manga's nearest before it is page 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_position_before_every_page_kids_sees_reads_as_its_first() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_position(&merged, Reader::KidsOnly, 0);
+        assert_eq!(
+            positions(&merged, Reader::KidsOnly).await,
+            Some(vec![("raw".to_string(), 0)]),
+            "Kids sees no page before part2's, so its first"
+        );
+        hold_position(&merged, Reader::KidsOnly, 1);
+        assert_eq!(
+            positions(&merged, Reader::KidsOnly).await,
+            Some(vec![("raw".to_string(), 0)]),
+            "full page 1 is part1's, before any page Kids sees"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_position_past_a_narrowed_editions_end_is_not_sent() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_position(&merged, Reader::MangaOnly, 9);
+        assert_eq!(positions(&merged, Reader::MangaOnly).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_position_manga_alone_writes_is_stored_in_the_full_numbering() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let uri = progress_uri(&merged);
+        let (status, _, body) = put(
+            &merged,
+            Reader::MangaOnly,
+            &uri,
+            None,
+            r#"{"edition":"raw","slot":2}"#.to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let held = crate::progress::load(
+            &merged.state.library,
+            &the_work(&merged),
+            merged.user_id(Reader::MangaOnly),
+        )
+        .expect("reads the positions");
+        let held: Vec<(&str, u32)> = held.iter().map(|p| (p.edition.as_str(), p.slot)).collect();
+        assert_eq!(held, [("raw", 5)], "Manga's page 2 is full page 5");
+        assert_eq!(
+            positions(&merged, Reader::MangaOnly).await,
+            Some(vec![("raw".to_string(), 2)])
+        );
+
+        let (status, _, body) = put(
+            &merged,
+            Reader::MangaOnly,
+            &uri,
+            None,
+            r#"{"edition":"raw","slot":6}"#.to_string(),
+        )
+        .await;
+        assert_eq!(
+            (status, body.as_str()),
+            (
+                StatusCode::NOT_FOUND,
+                format!(
+                    "`raw` has 6 slots in work `{}`; there is no slot 6",
+                    merged.slug
+                )
+                .as_str()
+            ),
+            "checked against the six pages Manga sees"
+        );
+    }
+
+    /// One box, at `x` across its page.
+    fn a_box(x: f64) -> taiyaku_core::TruthRegion {
+        taiyaku_core::TruthRegion {
+            x,
+            y: 0.1,
+            w: 0.2,
+            h: 0.2,
+            axis: None,
+            kind: taiyaku_core::Kind::Dialogue,
+            ignore: false,
+            text: None,
+        }
+    }
+
+    /// The truth the store holds, in the full numbering: `raw` labelled on
+    /// page 3 (part2, which Manga does not see) and page 5 (part3's first,
+    /// Manga's page 2), and `en` on page 0.
+    fn the_truth(merged: &EditionMergedFromTwoLibraries) -> taiyaku_core::TruthDoc {
+        let sidecar = the_sidecar(merged);
+        let entry = |key: &str, pages: &[u32]| taiyaku_core::TruthEdition {
+            members: sidecar.editions[key]
+                .members
+                .iter()
+                .map(|member| taiyaku_core::RegionMember {
+                    sha256: member.sha256.clone(),
+                })
+                .collect(),
+            pages: pages.iter().map(|&page| (page, vec![a_box(0.1)])).collect(),
+        };
+        let mut doc = taiyaku_core::TruthDoc::new();
+        doc.editions.insert("raw".into(), entry("raw", &[3, 5]));
+        doc.editions.insert("en".into(), entry("en", &[0]));
+        doc
+    }
+
+    fn hold_truth(merged: &EditionMergedFromTwoLibraries, doc: &taiyaku_core::TruthDoc) {
+        crate::truth::store(&merged.state.library, &the_work(merged), doc)
+            .expect("stores the truth");
+    }
+
+    fn held_truth(merged: &EditionMergedFromTwoLibraries) -> String {
+        crate::truth::to_json(
+            &crate::truth::load(&merged.state.library, &the_work(merged))
+                .expect("reads the truth")
+                .expect("truth is held"),
+        )
+    }
+
+    fn truth_uri(merged: &EditionMergedFromTwoLibraries) -> String {
+        format!("/api/works/{}/truth", merged.slug)
+    }
+
+    fn truth_editions(body: &str) -> Vec<String> {
+        taiyaku_core::TruthDoc::from_json(body)
+            .expect("a truth document")
+            .editions
+            .into_keys()
+            .collect()
+    }
+
+    /// Manga alone is sent `en`'s truth and not `raw`'s, whose entry is in a
+    /// numbering it is not sent, under a tag naming its view; the
+    /// administrator's read is the stored document under its own tag.
+    #[tokio::test]
+    async fn manga_alone_reads_truth_for_en_alone_under_its_numberings_etag() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_truth(&merged, &the_truth(&merged));
+        let stored = held_truth(&merged);
+        let uri = truth_uri(&merged);
+
+        let (status, tag, body) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body, stored,
+            "the administrator is sent the stored document"
+        );
+        assert_eq!(
+            tag,
+            Some(notes_etag(&stored)),
+            "under the stored document's tag"
+        );
+
+        let (status, tag, body) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(truth_editions(&body), ["en"], "{body}");
+        let sidecar = the_sidecar(&merged);
+        let listed: Vec<&Member> = sidecar.editions["raw"].members.iter().collect();
+        let flags = with_raw(&sidecar, read_as(&listed, &[true, false, true]));
+        let mangas = crate::view::View::build(Arc::clone(&sidecar), Some(&flags))
+            .expect("visible")
+            .etag_naming_numbering(&stored);
+        assert_eq!(tag, Some(mangas.clone()), "the tag names Manga's view");
+        let (status, _, _) = fetched(&merged, Reader::MangaOnly, &uri, Some(&mangas)).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "Manga's tag hits");
+    }
+
+    /// A truth write read before Manga was granted Kids is refused, and
+    /// stores nothing (decision 11).
+    #[tokio::test]
+    async fn a_truth_write_manga_read_before_it_was_granted_kids_is_refused() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_truth(&merged, &the_truth(&merged));
+        let stored = held_truth(&merged);
+        let uri = truth_uri(&merged);
+        let (_, tag, body) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+
+        taiyaku_library::account::grant_library(
+            &merged.state.library.conn(),
+            merged.user_id(Reader::MangaOnly),
+            80,
+        )
+        .expect("grants Kids");
+        let (status, _, answered) =
+            put(&merged, Reader::MangaOnly, &uri, tag.as_deref(), body).await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{answered}");
+        assert_eq!(held_truth(&merged), stored, "nothing is stored");
+    }
+
+    /// Manga alone writes `en`'s truth back changed: the change is stored,
+    /// `raw`'s entry, which it was not sent, is kept, and the answer is what
+    /// Manga is sent next.
+    #[tokio::test]
+    async fn manga_alones_truth_write_keeps_raws_entry() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let held = the_truth(&merged);
+        hold_truth(&merged, &held);
+        let uri = truth_uri(&merged);
+        let (_, tag, body) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+        let mut doc = taiyaku_core::TruthDoc::from_json(&body).expect("truth");
+        doc.editions
+            .get_mut("en")
+            .expect("en")
+            .pages
+            .insert(4, vec![a_box(0.5)]);
+
+        let (status, answered_tag, answered) = put(
+            &merged,
+            Reader::MangaOnly,
+            &uri,
+            tag.as_deref(),
+            doc.to_json(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        let mut expected = held.clone();
+        expected
+            .editions
+            .insert("en".into(), doc.editions["en"].clone());
+        assert_eq!(
+            held_truth(&merged),
+            expected.to_json(),
+            "en's change is stored and raw's entry kept"
+        );
+        let (_, next_tag, next) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+        assert_eq!(
+            answered_tag, next_tag,
+            "the answer's ETag is the next read's"
+        );
+        assert_eq!(answered, next, "the answer is what Manga is sent next");
+    }
+
+    /// A body that changes `raw`'s entry is refused, as Manga sees `raw` only
+    /// in part, and stores nothing; one that sends `raw`'s stored entry back
+    /// unchanged is accepted.
+    #[tokio::test]
+    async fn a_truth_write_changing_raw_as_manga_alone_is_refused() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let held = the_truth(&merged);
+        hold_truth(&merged, &held);
+        let stored = held_truth(&merged);
+        let uri = truth_uri(&merged);
+        let (_, tag, _) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+
+        let mut changed = held.clone();
+        changed
+            .editions
+            .get_mut("raw")
+            .expect("raw")
+            .pages
+            .insert(0, vec![a_box(0.5)]);
+        let (status, _, answered) = put(
+            &merged,
+            Reader::MangaOnly,
+            &uri,
+            tag.as_deref(),
+            changed.to_json(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{answered}");
+        assert_eq!(
+            answered,
+            format!(
+                "`raw` of `{}` is only partly visible to this account, so its ground truth \
+                 cannot be written here",
+                merged.slug
+            )
+        );
+        assert_eq!(held_truth(&merged), stored, "nothing is stored");
+
+        let (status, _, answered) = put(
+            &merged,
+            Reader::MangaOnly,
+            &uri,
+            tag.as_deref(),
+            held.to_json(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(held_truth(&merged), stored, "raw's entry as it was");
+    }
+
+    async fn corrected(
+        merged: &EditionMergedFromTwoLibraries,
+        body: &'static str,
+    ) -> (StatusCode, String) {
+        let (_, tag) = document(merged, Reader::MangaOnly).await;
+        let (status, _, answered) = sent(
+            merged,
+            Reader::MangaOnly,
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/works/{}/alignments", merged.slug))
+                .header(header::IF_MATCH, &tag)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        (status, answered)
+    }
+
+    /// Correcting `raw` against `en` as Manga alone is refused, as Manga sees
+    /// `raw` only in part, whichever side names it; `en` against `fr` is not.
+    #[tokio::test]
+    async fn correcting_raw_and_en_as_manga_alone_is_refused() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let refusal = format!(
+            "`raw` of `{}` is only partly visible to this account, so its alignments cannot be \
+             corrected here",
+            merged.slug
+        );
+        for body in [
+            r#"{"from":"raw","to":"en","a":"0","b":"0"}"#,
+            r#"{"from":"en","to":"raw","a":"0","b":"0"}"#,
+        ] {
+            let (status, answered) = corrected(&merged, body).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {answered}");
+            assert_eq!(answered, refusal, "{body}");
+        }
+        let (status, answered) =
+            corrected(&merged, r#"{"from":"en","to":"fr","a":"1","b":"0"}"#).await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+    }
+
+    /// A side the store shows Manga but the view hides, its flags not
+    /// numbering the held document's members, is refused as a hidden side is,
+    /// on either side: correcting it would store slots of a numbering this
+    /// account was never sent.
+    // `Work::update`'s closure is checked by clippy as its own item, as on
+    // `works/tests.rs`'s `a_replaced_sidecar_is_what_the_next_reader_sees`.
+    #[allow(clippy::result_large_err)]
+    #[tokio::test]
+    async fn correcting_a_side_the_view_hides_is_refused_as_a_hidden_work() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        the_work(&merged)
+            .update(|current| {
+                let mut next = (**current).clone();
+                let raw = next.editions.get_mut("raw").expect("raw");
+                raw.members.swap(0, 2);
+                Ok((Arc::new(next), ()))
+            })
+            .expect("holds raw with part1 and part3 exchanged");
+        let (doc, _) = document(&merged, Reader::MangaOnly).await;
+        assert_eq!(
+            editions(&doc),
+            ["en", "fr"],
+            "the fixture: the store's flags for raw do not number the held members: {doc}"
+        );
+        let before = the_sidecar(&merged).alignments.clone();
+        for body in [
+            r#"{"from":"raw","to":"en","a":"1","b":"0"}"#,
+            r#"{"from":"en","to":"raw","a":"0","b":"1"}"#,
+        ] {
+            let (status, answered) = corrected(&merged, body).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{body}: {answered}");
+            assert_eq!(answered, format!("no work `{}`", merged.slug), "{body}");
+        }
+        assert_eq!(the_sidecar(&merged).alignments, before, "nothing corrected");
     }
 }

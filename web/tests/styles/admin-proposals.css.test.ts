@@ -333,6 +333,8 @@ describe('admin.css carries a coarse-pointer floor', () => {
   for (const subject of [
     // The download on `/config/backup`, that screen's only per-row action.
     '.backup-rows a',
+    // A split edition's directory links on `/config/split-editions`.
+    '.split-edition-dirs a',
     // The two radios of an account's Sees choice, a box and its words.
     '.settings-choices label',
     // The checkbox rows `Row check` draws: an account's permissions, each
@@ -546,9 +548,9 @@ describe('admin.css carries a coarse-pointer floor', () => {
   })
 
   it('gives the disclosure toggles a 44px row without taking their marker', () => {
-    // The `<details>` toggles — `RuleEditor`'s save-derive, the
-    // removal-derives of `RemoveRoot`, `RemoveLibrary` and `MoveRoot`, and
-    // `MoveRoot`'s move-volumes — which no other rule styles.
+    // The `<details>` toggles — `RuleEditor`'s save-derive and the
+    // removal-derives of `RemoveRoot` and `RemoveLibrary` — which no other
+    // rule styles.
     const summary = ':where(.proposals, .config) summary'
     expect(coarse).toMatch(inRule(summary, 'min-height:\\s*44px'))
     // **`align-content`, not `align-items`.** A `<summary>` is `display:

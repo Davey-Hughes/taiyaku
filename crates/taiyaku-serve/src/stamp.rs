@@ -119,7 +119,14 @@ pub(crate) async fn plan(
                 taiyaku_library::stamp::plan(&conn, work_id).map_err(NoAnswer::Refused)?;
             let paths =
                 taiyaku_library::stamp::member_paths(&conn, work_id).map_err(NoAnswer::Failed)?;
-            let skipped = skipped_formats(&paths);
+            let mut skipped = skipped_formats(&paths);
+            // Not a format, like `unreadable`: a member held under two
+            // directories, which a stamp leaves alone so its copies stay one
+            // member. See `stamp::plan`.
+            if taiyaku_library::stamp::copied(&conn, work_id).map_err(NoAnswer::Failed)? {
+                skipped.push("copied".to_string());
+                skipped.sort_unstable();
+            }
             Ok(serde_json::json!({
                 "archives": planned.iter().map(WireArchive::from).collect::<Vec<_>>(),
                 "total_bytes": planned.iter().map(|p| p.bytes).sum::<u64>(),

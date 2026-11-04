@@ -379,7 +379,8 @@ fn root_grant_clause(work_alias: &str, access: &Access) -> String {
     access.grant_clause(|holes| {
         format!(
             "EXISTS (SELECT 1 FROM edition re JOIN member rm ON rm.edition_id = re.id \
-             WHERE re.work_id = {work_alias}.id AND rm.root_id IN ({holes}))"
+             WHERE re.work_id = {work_alias}.id AND {})",
+            taiyaku_library::browse::member_under("rm", holes)
         )
     })
 }
@@ -406,8 +407,8 @@ pub(crate) fn work_by_slug(
 
 /// The work and edition key an `edition.id` belongs to, or
 /// [`NoAnswer::Missing`] — for an id naming nothing, and for an edition with
-/// no member under a granted root (I8): the same question
-/// [`taiyaku_library::browse::edition_visible`] answers by slug and key, put
+/// no member under a granted root (I8): the question
+/// [`taiyaku_library::browse::visible_members`] answers by slug and key, put
 /// here in terms of the id a PATCH actually carries rather than adding a
 /// second lookup to translate one into the other.
 fn edition_owner(
@@ -417,8 +418,8 @@ fn edition_owner(
 ) -> Result<(i64, String), NoAnswer> {
     let clause = access.grant_clause(|holes| {
         format!(
-            "EXISTS (SELECT 1 FROM member m \
-             WHERE m.edition_id = edition.id AND m.root_id IN ({holes}))"
+            "EXISTS (SELECT 1 FROM member m WHERE m.edition_id = edition.id AND {})",
+            taiyaku_library::browse::member_under("m", holes)
         )
     });
     let sql = format!("SELECT work_id, key FROM edition WHERE id = ?1{clause}");
@@ -433,17 +434,19 @@ fn edition_owner(
 }
 
 /// The work and content hash a `member.id` belongs to, or
-/// [`NoAnswer::Missing`] — for an id naming nothing, and for a member whose
-/// own `root_id` is not one of `access`'s directories (I8). An imported member's `root_id`
-/// is NULL, and `IN (…)` excludes NULL — [`browse::unfiled`]'s own doc
-/// comment states the identical rule for the read side: a restricted grant
-/// sees none of them.
+/// [`NoAnswer::Missing`] — for an id naming nothing, and for a member none of
+/// whose directories is one of `access`'s (I8). A member is under every
+/// directory it has a `member_root` row for, so a copy held in two libraries
+/// resolves through either grant. An imported member has no row —
+/// [`browse::unfiled`]'s own doc comment states the identical rule for the
+/// read side: a restricted grant sees none of them.
 fn member_owner(
     conn: &rusqlite::Connection,
     access: &Access,
     id: i64,
 ) -> Result<(i64, String), NoAnswer> {
-    let clause = access.grant_clause(|holes| format!("member.root_id IN ({holes})"));
+    let clause =
+        access.grant_clause(|holes| taiyaku_library::browse::member_under("member", holes));
     let sql = format!(
         "SELECT edition.work_id, member.sha256
            FROM member JOIN edition ON edition.id = member.edition_id
@@ -842,10 +845,9 @@ fn apply_series_edit(doc: &mut LibraryDoc, edit: &SeriesEdit) {
 /// [`librarydoc::apply_series`]'s resolve-by-title matching. This module's
 /// own doc comment on this section has the reason. `set_series_titles`
 /// refuses outright if any of the corrected titles names text a *different*
-/// series already holds, where the two are in one library or either is in
-/// none — its own doc comment has the reason — so a refusal here aborts the
-/// whole request via `?` before any work's document is touched at all, the
-/// same as an empty `titles` array does.
+/// series already holds — its own doc comment has the reason — so a refusal
+/// here aborts the whole request via `?` before any work's document is
+/// touched at all, the same as an empty `titles` array does.
 ///
 /// **The per-work loop below never resolves series identity by title text
 /// either, regardless.** It calls [`edit_series_member_raw`], not

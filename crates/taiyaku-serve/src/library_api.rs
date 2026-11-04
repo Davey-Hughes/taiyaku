@@ -223,6 +223,14 @@ pub(crate) async fn series(
     .await
 }
 
+/// The optional `?library=` a series page carries: the library whose page it
+/// was opened from (spec §3.6). It narrows the card and the works as it
+/// narrows the grid, and a library holding none of the series is the 404.
+#[derive(serde::Deserialize)]
+pub(crate) struct SeriesQuery {
+    library: Option<i64>,
+}
+
 /// `GET /api/library/series/{id}` — one series and its works.
 ///
 /// **`series.titles` is on this response and on no other — O83.** Every title
@@ -242,9 +250,16 @@ pub(crate) async fn one_series(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
     AxPath(id): AxPath<i64>,
+    Query(query): Query<SeriesQuery>,
 ) -> Response {
     on_the_library(state, "the series", move |conn| {
-        match browse::one_series(conn, &principal.access, principal.user_id, id) {
+        match browse::one_series(
+            conn,
+            &principal.access,
+            principal.user_id,
+            id,
+            query.library,
+        ) {
             Ok(Some((card, works))) => {
                 let titles = match taiyaku_library::librarydoc::series_titles(conn, card.id) {
                     Ok(titles) => titles,

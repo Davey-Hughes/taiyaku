@@ -1336,7 +1336,8 @@
    `.account`'s 40rem is the precedent and the value. */
 .libraries,
 .users,
-.backup {
+.backup,
+.split-editions {
   --config-measure: 40rem;
 }
 
@@ -1676,11 +1677,6 @@
   border-color: var(--accent);
   color: var(--accent);
   font-weight: 600;
-}
-
-/* The volumes a refusal lists are paths. */
-.move-volumes li {
-  overflow-wrap: anywhere;
 }
 
 /* The directory picker under a library's table. Its own box gives way, so its
@@ -2335,10 +2331,9 @@
 
 /* **44 px targets for a finger** — spec §7.1, §12.4a. `shell.css`,
    `library.css` and `reader.css` each carry one, and this block is
-   `admin.css`'s, for all six of its screens. **Six rather than five**:
-   `Config.tsx` draws four tabs — rules, roots, users, backup — and the inbox
-   and `/account` are the other two. Backup's only per-row action is the
-   download link named below.
+   `admin.css`'s, for every screen it draws: each of `Config.tsx`'s tabs,
+   the inbox and `/account`. Backup's only per-row action is the download
+   link named below.
 
    **Scoped to the three roots that hold those screens**, not to `.library`.
    Every one of them sits inside `.library`, but so do the library home,
@@ -2388,16 +2383,15 @@
 
    **The `<summary>` toggles get the floor, and cannot get it the way
    everything else here does.** `RuleEditor`'s save-derive, the
-   removal-derives of `RemoveRoot`, `RemoveLibrary` and `MoveRoot`,
-   `MoveRoot`'s move-volumes and Backup's How backups work are the app's
-   `<details>`, and no other rule sets a `summary`'s `min-height` or
-   `display`. A `<summary>` is `display: list-item`, so unlike a link it
-   takes `min-height` as it stands — but the text then sits at the top of the
-   box. `display: flex` with `align-items: center` does centre it and **deletes
-   the disclosure triangle**: the content's inline-start offset drops to 0
-   and the marker is gone. So this rule keeps `display: list-item` and
-   centres with `align-content`, which a block container honours — 44 px with
-   the text centred and the marker kept.
+   removal-derives of `RemoveRoot` and `RemoveLibrary`, and Backup's How
+   backups work are the app's `<details>`, and no other rule sets a
+   `summary`'s `min-height` or `display`. A `<summary>` is `display:
+   list-item`, so unlike a link it takes `min-height` as it stands — but the
+   text then sits at the top of the box. `display: flex` with `align-items:
+   center` does centre it and **deletes the disclosure triangle**: the
+   content's inline-start offset drops to 0 and the marker is gone. So this
+   rule keeps `display: list-item` and centres with `align-content`, which a
+   block container honours — 44 px with the text centred and the marker kept.
    **`align-content` in block layout is Safari 17.4 and later, and this
    project's own baseline already clears it.** The web UI requires Safari
    17.5 / iOS 17.5 for `light-dark()`, which every colour token needs — spec
