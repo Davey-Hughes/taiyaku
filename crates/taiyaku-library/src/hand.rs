@@ -31,7 +31,7 @@
 //! somewhere else, and editions being added — which is the whole list of
 //! things that actually happen to a library.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -82,11 +82,13 @@ pub fn path_for(conn: &Connection, work_id: i64) -> Result<Option<PathBuf>, Stri
         .optional()
         .map_err(|e| format!("reading the root of work {work_id}: {e}"))?;
 
-    Ok(root.map(|root| {
-        PathBuf::from(root)
-            .join(DIR)
-            .join(format!("{content_key}.library.json"))
-    }))
+    Ok(root.map(|root| PathBuf::from(root).join(DIR).join(file_name(&content_key))))
+}
+
+/// The name of the document kept under `content_key`, inside a root's
+/// `.taiyaku`.
+pub(crate) fn file_name(content_key: &str) -> String {
+    format!("{content_key}.library.json")
 }
 
 /// Whether the root this work's hub edition sits under keeps documents.
@@ -324,47 +326,50 @@ pub fn load(
     Ok(Some((path, doc)))
 }
 
-/// Move this work's document from the address it had under `old_key` to the
-/// one it has now.
-///
-/// **Called from `derive::write_work`, after `write_roots` and the commit that
-/// follows it.** Calling it from `import_with`, right after `tx.commit()`,
-/// cannot work: for a single-member work a repack changes the member's
-/// `sha256`, and `import::replace_editions`'s delete-and-reinsert leaves that
-/// member's `root_id` NULL there, because `held_member_meta` restores it keyed
-/// on `sha256` — exactly what changed — so the lookup misses. [`path_for`]
-/// then answers `None` and the rename is silently skipped. `write_roots`
-/// restores `root_id` by `(edition key, ordinal)` instead, and runs after
-/// `import::scanned` returns — so the call from `derive::write_work`, after
-/// `write_roots`, is the first point at which this can resolve an address at
-/// all. Once `import::scanned` commits, the old key is gone from the row, and
-/// a title-only document carries no series, no volume and no member digests
-/// either (O80) — so nothing can match the file to a work once it strands. See
-/// `derive.rs`'s own comment at the call site for the full account, and see
-/// [`Orphan`] for what a stranded document then looks like.
-///
-/// **Never overwrites.** Two works cannot legitimately share an address, so a
-/// file already at the target means something this was not designed for;
-/// `false` comes back, the correction under the old key survives, and
-/// [`reconcile`] reports it as an orphan for a person to read.
+/// Move the document at `old` to this work's address, after the change that
+/// moved the address commits: a rollback that left the file moved would
+/// strand it where the database never pointed. **Never overwrites:** a file
+/// already there stays, as does the one at `old`, which [`reconcile`] reports
+/// while it lies under a root and nothing reports once a hand-back has removed
+/// its directory (O247). A move into another directory needs that directory's
+/// root to keep documents, so a root that declined them is given no
+/// `.taiyaku`; a rename within one directory, as most rekeys are, creates
+/// nothing and needs none.
 ///
 /// # Errors
 ///
 /// Returns an error if SQLite fails resolving the new address. **Not** if the
-/// rename fails: a root that cannot take the move leaves the document where it
-/// is, which [`reconcile`] then reports.
-pub fn rename_for_rekey(conn: &Connection, work_id: i64, old_key: &str) -> Result<bool, String> {
+/// work is gone, nor if the rename fails: what stays is left where it was
+/// (O247).
+pub fn rename_from(conn: &Connection, work_id: i64, old: &Path) -> Result<bool, String> {
+    // A hand-back's derive can fold the work away before this runs, and
+    // `path_for` refuses a work that is not there.
+    let exists = conn
+        .query_row("SELECT 1 FROM work WHERE id = ?1", [work_id], |_| Ok(()))
+        .optional()
+        .map_err(|e| format!("reading work {work_id}: {e}"))?
+        .is_some();
+    if !exists {
+        return Ok(false);
+    }
     let Some(new_path) = path_for(conn, work_id)? else {
         return Ok(false);
     };
     let Some(dir) = new_path.parent() else {
         return Ok(false);
     };
-    let old_path = dir.join(format!("{old_key}.library.json"));
-    if !old_path.is_file() || new_path.exists() {
+    if !old.is_file() || new_path.exists() {
         return Ok(false);
     }
-    Ok(std::fs::rename(&old_path, &new_path).is_ok())
+    if old.parent() != Some(dir) {
+        if root_keeps_documents(conn, work_id)? != Some(true) {
+            return Ok(false);
+        }
+        if std::fs::create_dir_all(dir).is_err() {
+            return Ok(false);
+        }
+    }
+    Ok(std::fs::rename(old, &new_path).is_ok())
 }
 
 /// A document under `<root>/.taiyaku` that **nothing in the library

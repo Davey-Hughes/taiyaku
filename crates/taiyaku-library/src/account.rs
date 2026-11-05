@@ -113,7 +113,8 @@ pub fn by_api_key(conn: &Connection, secret: &str) -> Result<Option<Account>, St
     Ok(found)
 }
 
-/// What an account may see, as the directories that hold it.
+/// What an account may see: the libraries it was granted, and the directories
+/// they reach.
 ///
 /// Two cases rather than a list where empty means "everything": a list that
 /// can stand for every library turns any path that empties it (a revoke, a
@@ -125,16 +126,46 @@ pub enum Access {
     /// An administrator, or an account set to "Every library", including any
     /// added later.
     Every,
-    /// Only these directories (root ids).
-    Only(Vec<i64>),
+    /// Only these, both ascending. **Two lists, because grants and reach
+    /// answer different questions** (overlapping-libraries spec §4).
+    Only {
+        /// The directories (root ids) the granted libraries reach
+        /// ([`crate::reach`]): which books the account sees.
+        roots: Vec<i64>,
+        /// The libraries granted: which libraries it lists and opens, so a
+        /// library nested in a granted one is not listed for that (libraries
+        /// design §3, "a restricted account sees only granted libraries").
+        libraries: Vec<i64>,
+    },
 }
 
 impl Access {
-    /// Whether a directory is inside this access.
+    /// Whether a directory is inside this access: one the granted libraries
+    /// reach.
     pub fn allows(&self, root_id: i64) -> bool {
         match self {
             Access::Every => true,
-            Access::Only(roots) => roots.contains(&root_id),
+            Access::Only { roots, .. } => roots.contains(&root_id),
+        }
+    }
+
+    /// Whether this access was granted `library`, which is what lists it and
+    /// opens its page. Reaching one of its directories through another library
+    /// does not.
+    pub fn grants(&self, library: i64) -> bool {
+        match self {
+            Access::Every => true,
+            Access::Only { libraries, .. } => libraries.contains(&library),
+        }
+    }
+
+    /// `roots` alone, granting no library: for a test that asks only which
+    /// books a set of directories shows.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn roots(roots: Vec<i64>) -> Self {
+        Access::Only {
+            roots,
+            libraries: Vec::new(),
         }
     }
 
@@ -150,8 +181,8 @@ impl Access {
     pub fn grant_clause(&self, in_dirs: impl FnOnce(&str) -> String) -> String {
         match self {
             Access::Every => String::new(),
-            Access::Only(roots) if roots.is_empty() => " AND 0".to_owned(),
-            Access::Only(roots) => {
+            Access::Only { roots, .. } if roots.is_empty() => " AND 0".to_owned(),
+            Access::Only { roots, .. } => {
                 format!(" AND {}", in_dirs(&crate::browse::holes(roots.len())))
             }
         }
@@ -161,48 +192,46 @@ impl Access {
     pub fn bound(&self) -> &[i64] {
         match self {
             Access::Every => &[],
-            Access::Only(roots) => roots,
+            Access::Only { roots, .. } => roots,
         }
     }
 }
 
 /// What this account may see: every library when its `every_library` is set,
-/// and otherwise the directories of the libraries it was granted, ascending.
+/// and otherwise the libraries it was granted and the directories they reach
+/// ([`crate::reach::of_libraries`], from the `root` rows as they are at each call).
 ///
 /// **"Only these" with no grant sees nothing**, never every library, so that
 /// revoking an account's last grant or removing its only library leaves it
 /// blind rather than widened. An id naming no account reads the same way.
 ///
-/// A grant names a library and the guard filters on directories, so this is where
-/// one becomes the other. **A grant counts whether or not its library still
-/// has a directory** (the `LEFT JOIN`): an account whose grants resolve to no
-/// directory is `Only` with none and sees nothing, never `Every`.
+/// **A grant counts whether or not its library still has a directory**: it is
+/// in `libraries`, and an account whose grants reach no directory sees nothing.
 ///
 /// The role is not read here: `taiyaku-serve`'s `Principal::from_account`
 /// gives an administrator `Every` whatever this answers.
 ///
 /// # Errors
 ///
-/// Returns an error if the query fails.
-pub fn access_for(conn: &Connection, user_id: i64) -> rusqlite::Result<Access> {
+/// Returns an error if a query fails.
+pub fn access_for(conn: &Connection, user_id: i64) -> Result<Access, String> {
     let every = conn
         .query_row(
             "SELECT every_library FROM user WHERE id = ?1",
             params![user_id],
             |row| row.get::<_, bool>(0),
         )
-        .optional()?;
+        .optional()
+        .map_err(|e| format!("reading whether account {user_id} sees every library: {e}"))?;
     if every == Some(true) {
         return Ok(Access::Every);
     }
-    let mut statement = conn.prepare(
-        "SELECT r.id FROM user_library ul LEFT JOIN root r ON r.library_id = ul.library_id
-          WHERE ul.user_id = ?1 ORDER BY r.id",
-    )?;
-    let granted = statement
-        .query_map(params![user_id], |row| row.get::<_, Option<i64>>(0))?
-        .collect::<rusqlite::Result<Vec<Option<i64>>>>()?;
-    Ok(Access::Only(granted.into_iter().flatten().collect()))
+    let libraries = libraries_for(conn, user_id)?;
+    let roots = crate::scan::roots(conn)?;
+    Ok(Access::Only {
+        roots: crate::reach::of_libraries(&roots, &libraries),
+        libraries,
+    })
 }
 
 /// The libraries this account was granted, ascending.

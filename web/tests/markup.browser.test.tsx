@@ -7,6 +7,7 @@ import { AccountMenu } from '../src/AccountMenu'
 import { AccountPage } from '../src/AccountPage'
 import * as config from '../src/config'
 import * as curation from '../src/curation'
+import type { LibraryDir } from '../src/libraries'
 import '../src/index.css'
 import { Login } from '../src/Login'
 import { Proposals } from '../src/Proposals'
@@ -38,7 +39,7 @@ vi.mock('../src/curation', async (importOriginal) => ({
   listProposals: vi.fn(),
 }))
 
-const root = (over: Partial<config.Root> = {}): config.Root => ({
+const root = (over: Partial<LibraryDir> = {}): LibraryDir => ({
   id: 3,
   path: '/srv/manga',
   edition_key: 'en',
@@ -49,6 +50,8 @@ const root = (over: Partial<config.Root> = {}): config.Root => ({
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  nested: [],
+  inside: [],
   ...over,
 })
 

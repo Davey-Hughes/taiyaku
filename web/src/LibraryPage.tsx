@@ -8,27 +8,34 @@
  * move and its removal are `RootRow`'s, on `DirPage`.
  *
  * **Its body waits for the library's scan status** (`pageReads.ts`'s
- * `libraryScan`), for `RootRow`'s reason: a scan started before this page was
- * drawn is still running, and the first body of a first visit says so (spec
- * §4.5). A return draws its body at once from the status kept, and reads it
- * again (below), where that status is not stale; where it is, the return
- * waits for its read as a first visit does. A press of Scan library answered
- * once the page had gone leaves it stale, and so does a directory's own
- * scan, which the directory's page marks (`DirPage`). While the body waits,
- * and while the screen reads the list that names the library, the page draws
- * its header, named as its address spells it until the list names the
- * library and as the list does then, and "Loading…" in its body's place
+ * `libraryScan`), for `RootRow`'s reason: a scan started before this page
+ * was drawn is still running, and the first body of a first visit says so
+ * (spec §4.5). A return draws its body at once from the status kept, and
+ * reads it again (below), where that status is not stale; where it is, the
+ * return waits for its read as a first visit does. A press of Scan library
+ * answered once the page had gone leaves it stale, and so does a directory's
+ * own scan, which the directory's page marks (`DirPage`). While the body
+ * waits, and while the screen reads the list that names the library, the
+ * page draws its header, named as its address spells it until the list names
+ * the library and as the list does then, and "Loading…" in its body's place
  * once the wait has held. That header is the one the drawn page keeps, so
  * whatever has focus in it keeps it as the body comes. A status that cannot
  * be read, with none kept, is drawn as no scan running, as `RootRow`'s is:
- * pressing Scan library is what surfaces a real fault; a failed re-read keeps
- * the status kept. The status says whether any directory of the library is
- * scanning, so a directory's own scan, in a status this page reads, holds
- * its Scan library and Remove… as a scan of the library does, and the
- * directories it names as running say "Scanning…" in the table. A page
- * drawn beside the directory's is not told of that scan and reads nothing
- * for it, so it keeps both free: told, it would take the scan up and draw
- * its report a second time beside the directory's own (spec §9's call 9).
+ * pressing Scan library is what surfaces a real fault; a failed re-read
+ * keeps the status kept. The status says whether any directory a scan of the
+ * library walks is scanning: its own, and each directory inside them that it
+ * shows, which the list names (`LibraryDir`'s `nested`). So a directory's
+ * own scan, in a status this page reads, holds its Scan library and Remove…
+ * as a scan of the library does, and the directories it names as running say
+ * "Scanning…" in the table. A scan running only in directories inside them,
+ * which the table does not list, is said a line for each library whose
+ * request the status names (`scans`), with the topmost folders it walks
+ * here: it is that library's scan, not this one's, which holds its own
+ * directories too. Scan library is held all the same, since the server
+ * refuses it while any directory it walks is being scanned. A page drawn
+ * beside the directory's is not told of that scan and reads nothing for it,
+ * so it keeps both free: told, it would take the scan up and draw its report
+ * a second time beside the directory's own (spec §9's call 9).
  *
  * **A running scan is polled through the store, one read at a time.** The
  * next read is sent a poll's interval after the last has answered: the store
@@ -49,16 +56,21 @@
  * A report is held by its directory's own status, which this page does not
  * otherwise read, so once the library's says nothing is running the status
  * of each directory the page saw the scan hold is read, and whatever report
- * each holds is drawn under its path. Only those: any other directory's status
+ * each holds is drawn under its path, a directory inside one of the
+ * library's among them. Only those: any other directory's status
  * holds a report from another scan, if any, and a directory that joined the
  * library while the scan ran is not in it.
  *
- * **Scans and removals exclude each other.** Scan library and Remove…
- * are held while a scan is known, starting, or the removal dialog is open;
- * the removal's confirm is held while a scan is known. A scan holds neither
- * Rename… nor Add directory…; the removal holds both, and the Directories table
- * draws its paths without links while it is open: a directory's page offers
- * Scan directory, Move… and Remove… on a directory the removal is taking.
+ * **Scans and removals exclude each other.** Scan library and Remove… are
+ * held while a scan is known, starting, or the removal dialog is open; the
+ * removal's confirm is held while a scan is known. Remove… and the confirm
+ * are held too while the status names a removal waiting for a scan around or
+ * inside one of the library's directories (`held_removals`), which the
+ * server refuses the removal for; the status is read again each poll's
+ * interval until it names none. A scan holds neither Rename… nor Add
+ * directory…; the removal holds both, and the Directories table draws its
+ * paths without links while it is open: a directory's page offers Scan
+ * directory, Move… and Remove… on a directory the removal is taking.
  */
 import {
   Fragment,
@@ -86,8 +98,10 @@ import { HeldButton } from './HeldButton'
 import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
 import {
   addDir,
+  folderIn,
   type Library,
   type LibraryScanStatus,
+  type NestedDir,
   renameLibrary,
   startLibraryScan,
 } from './libraries'
@@ -181,6 +195,56 @@ export interface LibraryPageProps {
 interface Watch {
   readonly n: number
   readonly from: 'kept' | 'status' | 'press'
+}
+
+/**
+ * The directories a scan of `library` walks, as the list names them: its own,
+ * and each directory inside them that it shows. The server decides which it
+ * shows; this only gathers what it said.
+ */
+function walkedBy(library: Library): { id: number; path: string }[] {
+  return [...library.dirs, ...shownInside(library)].map(({ id, path }) => ({
+    id,
+    path,
+  }))
+}
+
+/**
+ * The directories inside `library`'s own that it shows, each with the path of
+ * the one it sits in, `outer`.
+ */
+function shownInside(library: Library): (NestedDir & { outer: string })[] {
+  return library.dirs.flatMap((root) =>
+    root.nested
+      .filter((one) => one.shown)
+      .map((one) => ({ ...one, outer: root.path })),
+  )
+}
+
+/**
+ * One line's worth for each of `scans` that walks directories inside
+ * `library`'s own: the library that asked for it, falling back to the
+ * directory's own where none is named, and the folders it walks here, the
+ * topmost only, each once, so two of its directories of one name inside two
+ * of this library's are said once.
+ */
+function scansInside(
+  library: Library,
+  scans: LibraryScanStatus['scans'],
+): { key: string; by: string; folders: string[] }[] {
+  const inside = shownInside(library)
+  return scans.flatMap((scan) => {
+    const walked = inside.filter((one) => scan.root_ids.includes(one.id))
+    const topmost = walked.filter(
+      (one) => !walked.some((other) => one.path.startsWith(`${other.path}/`)),
+    )
+    if (topmost.length === 0) return []
+    const by = scan.library ?? topmost[0].library
+    const folders = [
+      ...new Set(topmost.map((one) => folderIn(one.path, one.outer))),
+    ]
+    return [{ key: `${by}\u0000${folders.join('\u0000')}`, by, folders }]
+  })
 }
 
 /** The directories a library's status names as scanning, by id. */
@@ -277,6 +341,18 @@ export function LibraryPage({
   const [elapsed, setElapsed] = useState<number | null>(null)
   /** The directories the library's status last named as scanning, by id. */
   const [scanning, setScanning] = useState<ReadonlySet<number>>(new Set())
+  /** The scans the library's status last named, by the library that asked. */
+  const [scans, setScans] = useState<LibraryScanStatus['scans']>([])
+  /**
+   * Whether the status last read held the library's removal for a scan
+   * around or inside one of its directories (`held_removals`), which the
+   * server refuses the removal for.
+   */
+  const [removalHeld, setRemovalHeld] = useState(false)
+  /** Bumped as each read made for `removalHeld` settles, to ask again. */
+  const [heldReads, setHeldReads] = useState(0)
+  /** Consecutive failed reads made for `removalHeld`. */
+  const heldMisses = useRef(0)
   /** Every directory drawn as scanning since the scan this page watches began. */
   const covered = useRef<Set<number>>(new Set())
   useEffect(() => {
@@ -315,8 +391,8 @@ export function LibraryPage({
   changed.current = onChanged
   const watchNow = useRef(watch)
   watchNow.current = watch
-  const dirs = useRef(library?.dirs ?? [])
-  dirs.current = library?.dirs ?? []
+  const walked = useRef(library === undefined ? [] : walkedBy(library))
+  walked.current = library === undefined ? [] : walkedBy(library)
 
   const libraryId = library?.id
   // Its address is known only once the list has named the library (§4.5),
@@ -360,16 +436,19 @@ export function LibraryPage({
   const [taken, setTaken] = useState<LibraryScanStatus | undefined>()
   if (ready && status !== taken) {
     setTaken(status)
+    setRemovalHeld((status?.held_removals.length ?? 0) > 0)
     if (running && watch.from !== 'press') {
       if (status !== undefined) {
         setElapsed(status.elapsed_secs)
         setScanning(runningIds(status))
+        setScans(status.scans)
         if (!status.running) endWatch(watch)
         else if (watch.from === 'kept') setWatch({ ...watch, from: 'status' })
       }
     } else if (status?.running === true && !running) {
       setElapsed(status.elapsed_secs)
       setScanning(runningIds(status))
+      setScans(status.scans)
       setRunning(true)
       setWatch({
         n: watch.n + 1,
@@ -434,6 +513,8 @@ export function LibraryPage({
             misses.current = 0
             setElapsed(now.elapsed_secs)
             setScanning(runningIds(now))
+            setScans(now.scans)
+            setRemovalHeld(now.held_removals.length > 0)
             if (now.running) {
               setWatch((was) =>
                 was.from === 'kept' ? { ...was, from: 'status' } : was,
@@ -452,6 +533,7 @@ export function LibraryPage({
             }
             setRunning(false)
             setScanning(new Set())
+            setScans([])
             // The 409's sentence is true while the scan it named is watched,
             // and nothing watches it now.
             setConflict(undefined)
@@ -466,6 +548,42 @@ export function LibraryPage({
     }
   }, [running, libraryId])
 
+  // A scan around or inside one of the library's directories holds its
+  // removal and is no scan this page watches, so while it holds and none of
+  // the library's runs, the status is read again each poll's interval. The
+  // read lands in the store, which hands it to `taken`; the count asks again
+  // whether or not that answer changed anything. Failed reads give the hold
+  // up as the main poll does, and say so.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `heldReads` is what asks again once a read has settled.
+  useEffect(() => {
+    if (!removalHeld || running || libraryId === undefined) return
+    let cancelled = false
+    const timer = setTimeout(() => {
+      readNow(libraryScan(libraryId)).then(
+        () => {
+          if (cancelled) return
+          heldMisses.current = 0
+          setHeldReads((n) => n + 1)
+        },
+        (err: unknown) => {
+          if (cancelled) return
+          heldMisses.current += 1
+          if (heldMisses.current < POLL_MISSES_ALLOWED) {
+            setHeldReads((n) => n + 1)
+            return
+          }
+          heldMisses.current = 0
+          setRemovalHeld(false)
+          setFailure(sentenceOf(err))
+        },
+      )
+    }, SCAN_POLL_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [removalHeld, running, libraryId, heldReads])
+
   // The list is read again for what the scan changed, quietly: no press
   // started that read. A read that fails draws no report for that directory:
   // the table still says when it was last scanned. What the scan found
@@ -477,7 +595,7 @@ export function LibraryPage({
     let cancelled = false
     const scanned = covered.current
     Promise.all(
-      dirs.current
+      walked.current
         .filter((root) => scanned.has(root.id))
         .map((root) =>
           scanStatus(root.id).then(
@@ -583,6 +701,15 @@ export function LibraryPage({
   }
 
   const title = renamed?.from === library.name ? renamed.to : library.name
+  /**
+   * While none of the library's own directories is scanning, a line for each
+   * library whose scan walks directories inside them, which the table does
+   * not list: that library's name and the folders it walks here, the topmost
+   * only, each once.
+   */
+  const scanLines = library.dirs.some((root) => scanning.has(root.id))
+    ? []
+    : scansInside(library, scans)
 
   const scan = () => {
     if (startingRef.current) return
@@ -598,11 +725,15 @@ export function LibraryPage({
     // return before the first poll would draw that.
     const keptStatusStale = () => void invalidate(libraryScan(library.id))
     startLibraryScan(library.id)
-      .then(() => {
+      .then((started) => {
         keptStatusStale()
         startingRef.current = false
         setStarting(false)
-        setScanning(new Set(library.dirs.map((root) => root.id)))
+        // The server's own list: the page's can predate a pattern edit or a
+        // nested add, and a directory it names that the scan did not walk
+        // would have an earlier report drawn as this scan's.
+        setScanning(new Set(started.root_ids))
+        setScans([])
         setRunning(true)
         setWatch((was) => ({ n: was.n + 1, from: 'press' }))
       })
@@ -812,12 +943,27 @@ export function LibraryPage({
           library will need then.
         </p>
       )}
-      {running && (
+      {running && scanLines.length === 0 && (
         <p className="scanning">
           A scan is running in this library…
           {elapsed === null ? '' : ` ${Math.round(elapsed)}s`}
         </p>
       )}
+      {running &&
+        scanLines.map((line) => (
+          <p key={line.key} className="scanning">
+            {line.by} is scanning{' '}
+            {line.folders.map((folder, i) => (
+              <Fragment key={folder}>
+                {i === 0 ? '' : i === line.folders.length - 1 ? ' and ' : ', '}
+                <code>
+                  <PathWithBreaks path={folder} />
+                </code>
+              </Fragment>
+            ))}
+            , which {library.name} shows.
+          </p>
+        ))}
       <Fragment key="notices">{notices}</Fragment>
       {failure !== undefined && <p role="alert">{failure}</p>}
       {conflict !== undefined && <p role="alert">{conflict}</p>}
@@ -930,7 +1076,7 @@ export function LibraryPage({
             type="button"
             name="remove-library"
             onClick={() => setRemoving(true)}
-            held={running || removing}
+            held={running || removalHeld || removing}
             disabled={starting}
           >
             Remove…
@@ -939,7 +1085,7 @@ export function LibraryPage({
         {removing && (
           <RemoveLibrary
             library={library}
-            blocked={running}
+            blocked={running || removalHeld}
             onCancel={() => {
               backToRemove.current = true
               setRemoving(false)

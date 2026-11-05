@@ -2235,7 +2235,7 @@ async fn a_derive_failure_after_a_successful_scan_corrects_last_scan_status() {
         root
     };
 
-    let job = std::sync::Mutex::new(());
+    let job = crate::LibraryJob::default();
     let outcome = crate::scan_jobs::run(
         &library,
         std::slice::from_ref(&root),
@@ -2553,6 +2553,7 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
             started: std::time::Instant::now(),
             done: false,
             report: None,
+            library: None,
         },
     );
 
@@ -2597,6 +2598,7 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
             started: std::time::Instant::now(),
             done: true,
             report: Some(serde_json::json!({})),
+            library: None,
         },
     );
     let response = crate::config_api::start_scan(
@@ -2679,6 +2681,7 @@ async fn the_scan_report_names_what_it_could_not_read() {
         report["scan"]["forgotten_by_exclusion"].is_number(),
         "{report}"
     );
+    assert!(report["scan"]["taken_over"].is_number(), "{report}");
     assert!(report["scan"]["refused"].is_null(), "{report}");
     assert!(report["derive"]["raised"].is_number(), "{report}");
     assert!(report["derive"]["unfoldable"].is_array(), "{report}");
@@ -2991,7 +2994,7 @@ async fn a_scan_does_not_wait_on_the_shared_connections_mutex() {
     held_rx.recv().expect("the holder thread took the mutex");
 
     let started = std::time::Instant::now();
-    let job = std::sync::Mutex::new(());
+    let job = crate::LibraryJob::default();
     let result = crate::scan_jobs::run(
         &library,
         std::slice::from_ref(&root),
@@ -3040,6 +3043,7 @@ async fn a_second_roots_scan_is_not_blocked_by_the_first_roots_own_scan() {
             started: std::time::Instant::now(),
             done: false,
             report: None,
+            library: None,
         },
     );
 
@@ -3137,6 +3141,7 @@ async fn deleting_a_root_clears_its_stale_scan_registry_entry() {
             started: std::time::Instant::now(),
             done: true,
             report: Some(serde_json::json!({ "note": "the deleted root's own report" })),
+            library: None,
         },
     );
 
@@ -3206,6 +3211,7 @@ async fn a_dry_run_delete_leaves_the_scan_registry_entry_alone() {
             started: std::time::Instant::now(),
             done: true,
             report: Some(serde_json::json!({ "note": "a live, finished report" })),
+            library: None,
         },
     );
 
@@ -3282,6 +3288,7 @@ async fn scan_status_carries_both_database_columns_even_with_a_registry_entry() 
             started: std::time::Instant::now() - std::time::Duration::from_millis(500),
             done: false,
             report: None,
+            library: None,
         },
     );
 
@@ -3820,6 +3827,7 @@ async fn a_dir_is_not_removed_while_a_scan_of_it_is_reserved() {
             started,
             done: false,
             report: None,
+            library: None,
         },
     );
 
@@ -3887,6 +3895,7 @@ async fn a_dirs_scan_walks_nothing_when_its_dir_changed_while_it_waited() {
             started,
             done: false,
             report: None,
+            library: None,
         },
     );
     {
@@ -3954,6 +3963,7 @@ async fn a_dirs_scan_lands_only_on_its_own_reservation() {
             started: theirs,
             done: false,
             report: None,
+            library: None,
         },
     );
 
@@ -4044,4 +4054,69 @@ async fn a_dirs_scan_walks_the_settings_the_dir_holds_when_it_starts() {
         0,
         "the walk honoured the exclusion it found"
     );
+}
+
+/// Spec §4: removing a directory hands its files to the directories around and
+/// inside it, so a scan of either holds the removal up as a scan of the
+/// directory itself does. While Manga's scan of `m` is reserved, neither a
+/// rehearsal nor a removal of Kids' `m/kids` goes ahead, nor of `m` while
+/// Kids' scan is: 409 naming the directory being scanned, and nothing removed.
+#[tokio::test]
+async fn a_dir_is_not_removed_while_a_scan_around_or_inside_it_is_reserved() {
+    for inner_removed in [true, false] {
+        let n = test_support::router_over_a_library_nested_in_another();
+        let (removed, scanning) = if inner_removed {
+            (n.m_kids, n.m)
+        } else {
+            (n.m, n.m_kids)
+        };
+        let path = taiyaku_library::scan::roots(&n.state.library.conn())
+            .expect("roots")
+            .into_iter()
+            .find(|root| root.id == scanning)
+            .expect("the directory being scanned")
+            .path
+            .display()
+            .to_string();
+        n.state.scans.lock().unwrap().insert(
+            scanning,
+            crate::ScanProgress {
+                started: std::time::Instant::now(),
+                done: false,
+                report: None,
+                library: None,
+            },
+        );
+
+        for query in ["?dry_run=true", ""] {
+            let response = send_json(
+                &n.admin,
+                Method::DELETE,
+                &format!("/api/library/roots/{removed}{query}"),
+                &serde_json::json!({}),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::CONFLICT,
+                "inner_removed={inner_removed} {query}"
+            );
+            let body: serde_json::Value =
+                serde_json::from_str(&test_support::body_string(response).await).expect("JSON");
+            assert_eq!(
+                body,
+                serde_json::json!({
+                    "error": format!("a scan of {path} is running; remove the directory once it has finished")
+                }),
+                "inner_removed={inner_removed} {query}"
+            );
+            assert!(
+                taiyaku_library::scan::roots(&n.state.library.conn())
+                    .expect("roots")
+                    .iter()
+                    .any(|root| root.id == removed),
+                "inner_removed={inner_removed} {query}: nothing was removed"
+            );
+        }
+    }
 }

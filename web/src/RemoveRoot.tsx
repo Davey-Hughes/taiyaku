@@ -69,9 +69,10 @@ export interface RemoveRootProps {
    */
   lastOf?: string
   /**
-   * Something else in the directory's library has begun, so the counts quoted
-   * here are from before it. The dialog cancels itself when this becomes
-   * true, as its Cancel does, and so not while its removal is out.
+   * A scan of the directory, or of one around or inside it, is reserved, so
+   * the server would refuse the removal and the counts quoted here are from
+   * before it. The dialog cancels itself when this becomes true, as its
+   * Cancel does, and so not while its removal is out.
    */
   held?: boolean
   onCancel: () => void

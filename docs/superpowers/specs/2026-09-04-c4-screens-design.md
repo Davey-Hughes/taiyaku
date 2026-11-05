@@ -188,6 +188,11 @@ The screen renders that message verbatim and adds nothing:
 
 1. **Unreadable or absent path** — the server's own sentence.
 2. **Nesting, in both directions** — the server's own sentence.
+   *Since the overlapping-libraries design of 2026-11-02, only within one
+   library, and the sentence says "of the same library"; across libraries,
+   a directory at or inside a folder a library reads as the pages of one
+   volume is refused by a sentence of its own. See
+   `2026-11-02-overlapping-libraries-design.md` §4.*
 3. **The watch probe** — surfaced by *showing* `watching`, `watch_reason` and
    `interval_secs` from the success body, which is the only one of the three
    that produces something on a *successful* add. C4 §2 asks for the regime to
@@ -617,6 +622,9 @@ Every C4 §7 test that falls in the UI half:
 
 - **Adding a nested root is refused, in both directions**, and the screen draws
   the server's sentence naming which check failed.
+  *Since the overlapping-libraries design of 2026-11-02, only within one
+  library, save a directory at or inside a folder a library reads as the
+  pages of one volume (§4 of `2026-11-02-overlapping-libraries-design.md`).*
 - **Removing a root reports work, position and note counts before acting**, and
   sends no `DELETE` until the dialog is confirmed.
 - **The last admin cannot be deleted, and an admin cannot demote themselves** —

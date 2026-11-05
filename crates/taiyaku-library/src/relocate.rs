@@ -11,10 +11,19 @@
 //! grants with it.
 //!
 //! **What changes is who sees the directory**, so that is what a move answers:
-//! the accounts that gain sight of it and the accounts that lose it.
+//! the accounts that gain sight of it and the accounts that lose it, each
+//! account's sight read by `account::access_for`'s rule, through the
+//! directories its grants reach, before the move and after it.
+//!
+//! **A move into a library is refused inside or around one of that library's
+//! directories** (`scan::beside`, in the add's words). Another library's
+//! directory may still hold it, or sit inside it. The add's directory-member
+//! refusal is not asked: it does not depend on the library.
 //!
 //! **A rehearsal is the move, rolled back**, as `scan::removal_cost` is a
 //! removal rolled back.
+
+use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension as _};
 
@@ -33,9 +42,10 @@ pub enum Target<'a> {
 pub enum MoveError {
     /// No such directory, or no such library.
     Missing(String),
-    /// The caller's own mistake: the directory's own library, or a name for a
-    /// new one that is empty, taken, or one a page address cannot
-    /// hold (`crate::has_no_address`).
+    /// The caller's own mistake: the directory's own library, one with a
+    /// directory it is inside or around (`scan::beside`), or a name for a new
+    /// one that is empty, taken, or one a page address cannot hold
+    /// (`crate::has_no_address`).
     Unusable(String),
     /// The move cannot be made now. This module refuses none: its caller
     /// does, while a scan, a rule save, a stamp or another move is in the way.
@@ -116,14 +126,15 @@ pub struct Moved {
     pub library_id: i64,
     pub library: String,
     /// The accounts, by name and in name order, that see the directory after
-    /// the move and not before: granted the target and not the directory's
-    /// library. An administrator and an every-library account see every
-    /// directory before and after, so neither is named, as in
-    /// `scan::only_grant_holders`.
+    /// the move and not before: whose grants reach it afterwards
+    /// ([`crate::account::access_for`]) and did not. An account granted a
+    /// library that reaches this directory from one around it sees it on both
+    /// sides, so it is not named for a grant of either library. An
+    /// administrator and an every-library account see every directory before
+    /// and after, so neither is named, as in `scan::only_grant_holders`.
     pub gains_sight: Vec<String>,
-    /// The accounts that see the directory before the move and not after:
-    /// granted the directory's library and not the target. Named as
-    /// `gains_sight` names them.
+    /// The accounts that see the directory before the move and not after.
+    /// Named as `gains_sight` names them.
     pub loses_sight: Vec<String>,
     /// The library the directory left, where it was that library's last
     /// directory, and the grants that went with it.
@@ -135,43 +146,51 @@ pub struct Moved {
     pub left_with_no_library: Vec<String>,
 }
 
-/// The accounts granted library `granted` and not library `withheld`, in name
-/// order, under `scan::only_grant_holders`'s filter: an account whose role
-/// is `user` and that does not see every library, the only kind a grant
-/// limits.
-fn granted_only(conn: &Connection, granted: i64, withheld: i64) -> Result<Vec<String>, String> {
-    let failed = |e: rusqlite::Error| {
-        format!("reading who is granted library {granted} and not library {withheld}: {e}")
-    };
-    conn.prepare(
-        "SELECT u.name
-           FROM user_library ul
-           JOIN user u ON u.id = ul.user_id
-          WHERE ul.library_id = ?1
-            AND u.role = 'user'
-            AND u.every_library = 0
-            AND NOT EXISTS (SELECT 1 FROM user_library held
-                             WHERE held.user_id = ul.user_id AND held.library_id = ?2)
-          ORDER BY u.name",
-    )
-    .map_err(failed)?
-    .query_map([granted, withheld], |r| r.get::<_, String>(0))
-    .map_err(failed)?
-    .collect::<Result<Vec<_>, _>>()
-    .map_err(failed)
+/// The accounts that see root `root_id` as the store stands, in name order,
+/// under `scan::only_grant_holders`'s filter: an account whose role is `user`
+/// and that does not see every library, the only kind a grant limits. Each
+/// account's sight is [`crate::account::access_for`]'s, so a move names what
+/// the account is then served.
+fn sighted(conn: &Connection, root_id: i64) -> Result<Vec<String>, String> {
+    let failed = |e: rusqlite::Error| format!("reading who sees root {root_id}: {e}");
+    let limited: Vec<(i64, String)> = conn
+        .prepare(
+            "SELECT id, name FROM user WHERE role = 'user' AND every_library = 0 ORDER BY name",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(failed)?;
+    let mut seeing = Vec::new();
+    for (id, name) in limited {
+        if crate::account::access_for(conn, id)?.allows(root_id) {
+            seeing.push(name);
+        }
+    }
+    Ok(seeing)
 }
 
-/// The move, inside the caller's transaction. Everything it answers is read
-/// before the directory's library changes, while a library the move empties
-/// and its grants are still there to read.
+/// The move, inside the caller's transaction. Everything it answers but
+/// `gains_sight` and `loses_sight` is read before the directory's library
+/// changes, while a library the move empties and its grants are still there
+/// to read; who sees the directory is read on both sides of the change.
 fn apply_move(conn: &Connection, root_id: i64, target: Target<'_>) -> Result<Moved, MoveError> {
     let dir = dir(conn, root_id)?;
     let target_id = resolve(conn, &dir, target)?;
+    // A new library holds no directory to be inside or around.
+    if let Target::Library(_) = target {
+        let refused =
+            crate::scan::beside(conn, Path::new(&dir.path), Some(target_id), Some(dir.id))
+                .map_err(MoveError::Failed)?;
+        if let Some(why) = refused {
+            return Err(MoveError::Unusable(why));
+        }
+    }
     let library = crate::libraries::name_of(conn, target_id)
         .map_err(MoveError::Failed)?
         .unwrap_or_default();
-    let gains_sight = granted_only(conn, target_id, dir.library_id).map_err(MoveError::Failed)?;
-    let loses_sight = granted_only(conn, dir.library_id, target_id).map_err(MoveError::Failed)?;
+    let saw = sighted(conn, dir.id).map_err(MoveError::Failed)?;
     let count = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Result<usize, MoveError> {
         conn.query_row(sql, params, |r| r.get::<_, i64>(0))
             .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
@@ -198,11 +217,20 @@ fn apply_move(conn: &Connection, root_id: i64, target: Target<'_>) -> Result<Mov
         [dir.id, target_id],
     )
     .map_err(|e| MoveError::Failed(format!("moving root {root_id}: {e}")))?;
+    let sees = sighted(conn, dir.id).map_err(MoveError::Failed)?;
     Ok(Moved {
         library_id: target_id,
         library,
-        gains_sight,
-        loses_sight,
+        gains_sight: sees
+            .iter()
+            .filter(|name| !saw.contains(name))
+            .cloned()
+            .collect(),
+        loses_sight: saw
+            .iter()
+            .filter(|name| !sees.contains(name))
+            .cloned()
+            .collect(),
         library_removed: last.then_some(dir.library),
         grants_removed,
         left_with_no_library,

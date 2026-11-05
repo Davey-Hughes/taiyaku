@@ -9,7 +9,7 @@
 //! **The directory rows inside a library's card are `config_api`'s.** A
 //! directory's settings, its own scan and its removal are routes under
 //! `/api/library/roots/{id}`. This module makes libraries, adds directories to
-//! them, removes them whole, scans all of a library's directories at once, and
+//! them, removes them whole, scans every directory a library shows at once, and
 //! moves a directory from one library to another (`/api/library/roots/{id}/move`).
 //!
 //! **A refusal these handlers make is `{"error": "<sentence>"}`**: 400, 404,
@@ -29,6 +29,7 @@
 //! [`taiyaku_library::Library::working`], for the reasons `config_api`'s own
 //! doc gives.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -79,33 +80,64 @@ fn name_from_json(body: &serde_json::Value, missing: &str) -> Result<String, Adm
         .ok_or_else(|| AdminAnswer::Unusable(missing.to_string()))
 }
 
-/// The directories of library `id`, oldest first, or [`AdminAnswer::MissingLibrary`]
-/// where there is no such library.
+/// The directories filed under library `id`, oldest first, or
+/// [`AdminAnswer::MissingLibrary`] where there is no such library.
+///
+/// **Its own directories, not every one it reaches**: what a removal of the
+/// library removes, and whose scan slots it clears. A scan walks
+/// [`walked_dirs_of`].
 fn dirs_of(conn: &rusqlite::Connection, id: i64) -> Result<Vec<scan::Root>, AdminAnswer> {
+    Ok(roots_if_held(conn, id)?
+        .into_iter()
+        .filter(|root| root.library_id == id)
+        .collect())
+}
+
+/// The directories a scan of library `id` walks
+/// ([`taiyaku_library::reach::walked_by`]): every one it reaches, by path, or
+/// [`AdminAnswer::MissingLibrary`] where there is no such library.
+fn walked_dirs_of(conn: &rusqlite::Connection, id: i64) -> Result<Vec<scan::Root>, AdminAnswer> {
+    Ok(taiyaku_library::reach::walked_by(
+        &roots_if_held(conn, id)?,
+        id,
+    ))
+}
+
+/// Every directory, or [`AdminAnswer::MissingLibrary`] where there is no
+/// library `id`.
+fn roots_if_held(conn: &rusqlite::Connection, id: i64) -> Result<Vec<scan::Root>, AdminAnswer> {
     if libraries::name_of(conn, id)
         .map_err(AdminAnswer::Failed)?
         .is_none()
     {
         return Err(AdminAnswer::MissingLibrary(id));
     }
-    Ok(scan::roots(conn)
-        .map_err(AdminAnswer::Failed)?
-        .into_iter()
-        .filter(|root| root.library_id == id)
-        .collect())
+    scan::roots(conn).map_err(AdminAnswer::Failed)
 }
 
 /// Every library as the screen draws it, by name: its id, name, works, the
 /// EPUB and PDF entries its scans recorded, and each directory in
-/// [`root_json`]'s shape, oldest first.
+/// [`root_json`]'s shape, oldest first, with [`nesting_json`]'s two keys.
 fn libraries_json(conn: &rusqlite::Connection) -> Result<Vec<serde_json::Value>, String> {
     let roots = roots_with_last_scan(conn)?;
+    let every = libraries::list(conn)?;
+    let names: HashMap<i64, &str> = every
+        .iter()
+        .map(|library| (library.id, library.name.as_str()))
+        .collect();
+    let plain: Vec<scan::Root> = roots.iter().map(|(root, _, _)| root.clone()).collect();
     let mut rendered = Vec::new();
-    for listed in libraries::list(conn)? {
+    for listed in &every {
         let dirs: Vec<serde_json::Value> = roots
             .iter()
             .filter(|(root, _, _)| root.library_id == listed.id)
-            .map(|(root, at, status)| root_json(root, at.as_deref(), status.as_deref()))
+            .map(|(root, at, status)| {
+                let mut dir = root_json(root, at.as_deref(), status.as_deref());
+                let (nested, inside) = nesting_json(&plain, root, &names);
+                dir["nested"] = nested;
+                dir["inside"] = inside;
+                dir
+            })
             .collect();
         rendered.push(serde_json::json!({
             "id": listed.id,
@@ -116,6 +148,69 @@ fn libraries_json(conn: &rusqlite::Connection) -> Result<Vec<serde_json::Value>,
         }));
     }
     Ok(rendered)
+}
+
+/// What `dir`'s page says of the directories around and inside it, by path,
+/// outermost first, each with its library's name: `nested`, each directory
+/// inside `dir` and whether `dir`'s library shows it (`shown`, with the `id`
+/// the library's scan status names it by), and `inside`, each directory `dir`
+/// sits in and whether that one's library shows `dir`'s books (`shows`).
+/// Each says why one is not shown ([`kept_out_by`]).
+///
+/// **Both are reach**, asked of the outer directory, and worked out here: a
+/// pattern matched in the browser is not the one the walk compiles (C4 §3.2).
+fn nesting_json(
+    roots: &[scan::Root],
+    dir: &scan::Root,
+    names: &HashMap<i64, &str>,
+) -> (serde_json::Value, serde_json::Value) {
+    let mut others: Vec<&scan::Root> = roots
+        .iter()
+        .filter(|other| other.path != dir.path)
+        .collect();
+    // By path, so a directory comes before the directories inside it.
+    others.sort_by(|a, b| a.path.cmp(&b.path));
+    let library = |root: &scan::Root| names.get(&root.library_id).copied();
+
+    let reached = taiyaku_library::reach::reach(roots, &[dir.id]);
+    let nested: Vec<serde_json::Value> = others
+        .iter()
+        // Component-wise: `/mx` is not inside `/m`.
+        .filter(|inner| inner.path.starts_with(&dir.path))
+        .map(|inner| {
+            serde_json::json!({
+                "id": inner.id,
+                "path": inner.path.to_string_lossy(),
+                "library": library(inner),
+                "shown": reached.contains(&inner.id),
+                "kept_out_by": kept_out_by(dir, inner),
+            })
+        })
+        .collect();
+    let inside: Vec<serde_json::Value> = others
+        .iter()
+        .filter(|outer| dir.path.starts_with(&outer.path))
+        .map(|outer| {
+            serde_json::json!({
+                "path": outer.path.to_string_lossy(),
+                "library": library(outer),
+                "shows": taiyaku_library::reach::reach(roots, &[outer.id]).contains(&dir.id),
+                "kept_out_by": kept_out_by(outer, dir),
+            })
+        })
+        .collect();
+    (nested.into(), inside.into())
+}
+
+/// Why `outer`'s library does not show `inner`, nested in it:
+/// `"exclusion"`, one of `outer`'s patterns, or `"dot_name"`, a name on the
+/// way that starts with `.`; `null` where it shows it.
+fn kept_out_by(outer: &scan::Root, inner: &scan::Root) -> serde_json::Value {
+    match taiyaku_library::reach::kept_out(outer, inner) {
+        Some(scan::KeptOut::Exclusion) => "exclusion".into(),
+        Some(scan::KeptOut::DotName) => "dot_name".into(),
+        None => serde_json::Value::Null,
+    }
 }
 
 /// `GET /api/library/libraries`.
@@ -333,7 +428,8 @@ pub(crate) async fn add_dir(
 /// `?dry_run=true` answer what that would cost. The body is
 /// `config_api::delete_root`'s, so one dialog's types read both.
 ///
-/// **A scan reserved on any of its directories refuses it**, 409, for the dry run
+/// **A scan reserved on any of its directories, or on a directory around or
+/// nested in one, refuses it** ([`scan::removal_touches`]), 409, for the dry run
 /// as for the removal. A removal that leaves an account with no library goes
 /// ahead, and the body names those accounts.
 pub(crate) async fn delete_library(
@@ -364,14 +460,16 @@ pub(crate) async fn delete_library(
     let scans_state = Arc::clone(&state);
     let removed = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(AdminAnswer::Failed)?;
-        let dirs = dirs_of(&working, id)?;
-        if let Some(root) = crate::scan_jobs::a_scan_reserved_on(&state, &dirs) {
+        let dirs: Vec<i64> = dirs_of(&working, id)?.iter().map(|root| root.id).collect();
+        let all = scan::roots(&working).map_err(AdminAnswer::Failed)?;
+        if let Some(root) =
+            crate::scan_jobs::a_scan_reserved_on(&state, &scan::removal_touches(&all, &dirs))
+        {
             return Err(AdminAnswer::Refused(crate::scan_jobs::removal_waits_for(
                 root,
                 "the library",
             )));
         }
-        let dirs: Vec<i64> = dirs.iter().map(|root| root.id).collect();
         let (removal, derived) = if dry_run {
             scan::library_removal_cost(&working, id)
         } else {
@@ -410,7 +508,8 @@ pub(crate) async fn delete_library(
     }
 }
 
-/// The directories of library `id` for a scan route, or the answer to give.
+/// The directories a scan of library `id` walks ([`walked_dirs_of`]), for a
+/// scan route, or the answer to give.
 async fn scan_dirs(
     state: &Arc<ServeState>,
     id: i64,
@@ -419,7 +518,7 @@ async fn scan_dirs(
     let lookup_state = Arc::clone(state);
     let found = tokio::task::spawn_blocking(move || {
         let conn = lookup_state.library.conn();
-        dirs_of(&conn, id)
+        walked_dirs_of(&conn, id)
     })
     .await;
     match found {
@@ -428,8 +527,8 @@ async fn scan_dirs(
     }
 }
 
-/// `POST /api/library/libraries/{id}/scan`: walk each directory of the library
-/// in the background, derive once, and answer at once.
+/// `POST /api/library/libraries/{id}/scan`: walk each directory the library
+/// reaches ([`walked_dirs_of`]) in the background, derive once, answer at once.
 ///
 /// **The scan holds the registry slot of each directory.** A scan already
 /// running on one directory refuses the library's, naming the directory, with no
@@ -464,9 +563,12 @@ pub(crate) async fn start_library_scan(
     };
 
     let started = Instant::now();
-    if let Err(refused) = crate::scan_jobs::reserve(&state, &roots, started) {
+    if let Err(refused) = crate::scan_jobs::reserve(&state, &roots, started, id) {
         return AdminAnswer::Refused(refused).into_response();
     }
+    // The answer names them: a page's list can be older than a pattern edit or
+    // a nested add, so a page seeds what is scanning from these, not the list.
+    let root_ids: Vec<i64> = roots.iter().map(|root| root.id).collect();
     crate::scan_jobs::spawn(state, roots, started, crate::scan_jobs::Reread::Library(id));
 
     (
@@ -474,14 +576,20 @@ pub(crate) async fn start_library_scan(
         Json(serde_json::json!({
             "library_id": id,
             "status_url": format!("/api/library/libraries/{id}/scan"),
+            "root_ids": root_ids,
         })),
     )
         .into_response()
 }
 
-/// `GET /api/library/libraries/{id}/scan`: whether a scan of any of the
-/// library's directories is running, and which. A directory's report is read from
-/// that directory's own status route.
+/// `GET /api/library/libraries/{id}/scan`: whether a scan of any directory a
+/// scan of the library walks is running, and which; a directory's report is
+/// read from its own status route. `held_removals` names each of the
+/// library's own directories whose removal waits for a scan around or inside
+/// it ([`scan::removal_touches`]), and `moves_held` says a move would wait for
+/// the job lock ([`crate::LibraryJob::is_held`]), so a page holds what would be
+/// refused. `scans` groups the running directories by the library that
+/// reserved them (`null` where none did).
 pub(crate) async fn library_scan_status(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -495,12 +603,42 @@ pub(crate) async fn library_scan_status(
         Ok(id) => id,
         Err(why) => return why.into_response(),
     };
-    let roots = match scan_dirs(&state, id, "reading a library's scan status").await {
-        Ok(roots) => roots,
-        Err(answer) => return answer.into_response(),
-    };
+    let built = tokio::task::spawn_blocking(move || scan_status_json(&state, id)).await;
+    match built {
+        Ok(Ok(body)) => Json(body).into_response(),
+        Ok(Err(answer)) => answer.into_response(),
+        Err(why) => AdminAnswer::Failed(format!("reading a library's scan status panicked: {why}"))
+            .into_response(),
+    }
+}
 
-    let dirs: Vec<(i64, Option<std::time::Duration>)> = {
+/// How long a reserved scan has run, and the library whose request reserved
+/// it ([`crate::ScanProgress::library`]).
+type Reserved = (std::time::Duration, Option<i64>);
+
+/// [`library_scan_status`]'s body for library `id`.
+///
+/// The shared connection is never held while the registry is locked.
+fn scan_status_json(state: &ServeState, id: i64) -> Result<serde_json::Value, AdminAnswer> {
+    let all = roots_if_held(&state.library.conn(), id)?;
+    let roots = taiyaku_library::reach::walked_by(&all, id);
+    let held_removals: Vec<i64> = all
+        .iter()
+        .filter(|dir| dir.library_id == id)
+        .filter(|dir| {
+            // Its own scan is its own status's to say.
+            let around_or_inside: Vec<scan::Root> = scan::removal_touches(&all, &[dir.id])
+                .into_iter()
+                .filter(|root| root.id != dir.id)
+                .collect();
+            crate::scan_jobs::a_scan_reserved_on(state, &around_or_inside).is_some()
+        })
+        .map(|dir| dir.id)
+        .collect();
+
+    // Each walked directory with, while its scan runs, how long it has run
+    // and the library whose request reserved it.
+    let dirs: Vec<(i64, Option<Reserved>)> = {
         let scans = state
             .scans
             .lock()
@@ -511,14 +649,32 @@ pub(crate) async fn library_scan_status(
                 let running = scans
                     .get(&root.id)
                     .filter(|progress| !progress.done)
-                    .map(|progress| progress.started.elapsed());
+                    .map(|progress| (progress.started.elapsed(), progress.library));
                 (root.id, running)
             })
             .collect()
     };
-    let elapsed = dirs.iter().filter_map(|(_, running)| *running).max();
+    let elapsed = dirs
+        .iter()
+        .filter_map(|(_, running)| running.map(|(elapsed, _)| elapsed))
+        .max();
+    let mut scans: std::collections::BTreeMap<Option<i64>, Vec<i64>> =
+        std::collections::BTreeMap::new();
+    for (root_id, running) in &dirs {
+        if let Some((_, by)) = running {
+            scans.entry(*by).or_default().push(*root_id);
+        }
+    }
+    // Only the libraries that asked for a running scan are named, usually one.
+    let mut names: HashMap<i64, String> = HashMap::new();
+    let conn = state.library.conn();
+    for by in scans.keys().flatten() {
+        if let Some(name) = libraries::name_of(&conn, *by).map_err(AdminAnswer::Failed)? {
+            names.insert(*by, name);
+        }
+    }
 
-    Json(serde_json::json!({
+    Ok(serde_json::json!({
         "library_id": id,
         "running": elapsed.is_some(),
         "elapsed_secs": elapsed.map(|e| e.as_secs_f64()),
@@ -529,8 +685,16 @@ pub(crate) async fn library_scan_status(
                 "running": running.is_some(),
             }))
             .collect::<Vec<_>>(),
+        "held_removals": held_removals,
+        "moves_held": state.library_job.is_held(),
+        "scans": scans
+            .iter()
+            .map(|(by, root_ids)| serde_json::json!({
+                "library": by.and_then(|by| names.get(&by)),
+                "root_ids": root_ids,
+            }))
+            .collect::<Vec<_>>(),
     }))
-    .into_response()
 }
 
 /// Where a move's body says the directory goes.

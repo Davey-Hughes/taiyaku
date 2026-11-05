@@ -3631,7 +3631,7 @@ fn a_title_only_edit_claims_no_volume_and_no_series() {
 /// `a_repacked_volume_takes_its_document_with_it` exercises through a real
 /// archive rewrite, but by corrupting the digest a layer lower instead — see
 /// the comment at the `UPDATE scan_entry` below for why that is needed to get
-/// past `import::scanned`'s own self-healing. `hand::rename_for_rekey` carries
+/// past `import::scanned`'s own self-healing. `hand::rename_from` carries
 /// the document to its new address before `reconcile` ever sees a gap. A
 /// second technique reaching the same rekey is worth keeping alongside the
 /// archive-rewrite test: a fix that works for one route to a changed digest
@@ -3700,7 +3700,7 @@ fn a_rekeyed_digest_takes_its_document_with_it() {
     assert_eq!(
         report.orphan_documents.len(),
         0,
-        "rename_for_rekey carried the document to its new address, rather \
+        "rename_from carried the document to its new address, rather \
          than leaving it stranded under the old key: {report:?}"
     );
 
@@ -3774,7 +3774,7 @@ fn a_work_that_fails_part_way_leaves_none_of_its_rows_behind() {
 /// second scope. A refusal in that second scope then leaves the document at
 /// the address the committed key gives it. Renamed inside the one scope, the
 /// refusal would roll the key back and leave the document under a key the
-/// database never kept — the strand `rename_for_rekey` exists to prevent.
+/// database never kept — the strand `rename_from` exists to prevent.
 #[test]
 fn a_rekeyed_works_document_follows_only_a_committed_key() {
     let dir = archived_volumes();
@@ -4296,7 +4296,7 @@ fn a_fold_that_carries_nothing_writes_no_document_for_its_target() {
 /// **The gap is opened by deleting the settled `.library.json` file
 /// directly, not by rekeying.** `a_rekeyed_digest_takes_its_document_with_it`'s
 /// own comment records why a rekey does not open a gap through a real
-/// derive at all: `rename_for_rekey` carries the document to its new
+/// derive at all: `rename_from` carries the document to its new
 /// address in the same pass, before `reconcile` ever sees anything missing.
 /// Deleting the file after it has settled — the same move
 /// `preview::tests::a_preview_leaves_the_library_tree_byte_identical` uses,
@@ -4378,7 +4378,7 @@ fn repaired_documents_accumulates_across_every_root_that_needed_one() {
 /// planted directly under the root's `.taiyaku`, naming no work this library
 /// has ever held, never reachable through `superseded` at all (a real rekey
 /// does not do it: see `a_rekeyed_digest_takes_its_document_with_it`, where
-/// `rename_for_rekey` carries the document to its new address before
+/// `rename_from` carries the document to its new address before
 /// `reconcile` ever sees a gap). Under the keyed lookup the planted orphan's
 /// path is not in the map, so it reads `None`; under `.values().next()` it
 /// would be handed colour's entry anyway, because a one-entry map hands out the
@@ -4546,11 +4546,11 @@ fn a_repacked_volume_takes_its_document_with_it() {
 }
 
 /// **A page gained while a database is watching**, which is the transition
-/// `rename_for_rekey` exists to carry the document across. A baseline that
+/// `rename_from` exists to carry the document across. A baseline that
 /// never moves the `content_key` does not reach it.
 ///
 /// **The `orphan_documents` assertion inside the scope block is the one that
-/// actually tests `rename_for_rekey`; the title assertion at the end does
+/// actually tests `rename_from`; the title assertion at the end does
 /// not.** Delete the rename and this test would still pass at the end:
 /// `hand::reconcile`'s gap repair re-projects the surviving `work` row and
 /// writes a fresh document at the new address on the very next derive, so
@@ -4656,10 +4656,10 @@ fn title_after_rebuilding(dir: &crate::tests::TempDir) -> String {
 }
 
 /// A preview derivation must not rename, write or delete anything under
-/// `<root>/.taiyaku/`. `hand::rename_for_rekey` is gated on nothing — a rekey
-/// stranding a document is the defect it exists to prevent — so without a
-/// documents policy a rule preview would rename files in someone's library and
-/// the database rollback would not undo it.
+/// `<root>/.taiyaku/`. A rekey's `hand::rename_from` runs whatever the root
+/// keeps — a rekey stranding a document is the defect it exists to prevent —
+/// so without a documents policy a rule preview would rename files in
+/// someone's library and the database rollback would not undo it.
 #[test]
 fn skipping_documents_leaves_the_library_tree_byte_identical() {
     let fixture = crate::tests::library_with_a_kept_document();
@@ -4689,7 +4689,7 @@ fn skipping_documents_leaves_the_library_tree_byte_identical() {
 /// delegation.** `report.rekeyed` increments before either policy's guard
 /// runs, so it is identical whichever policy `derive` actually calls, and
 /// `report.orphan_documents` is populated only inside the reconcile loop —
-/// it reads empty both when `rename_for_rekey` genuinely carried the
+/// it reads empty both when `rename_from` genuinely carried the
 /// document across *and* when a `Skip`-delegating `derive` never populated
 /// it at all, because nothing else in this module writes to it. Neither
 /// counter tells the two apart. The filesystem does: under a correct
@@ -4719,7 +4719,7 @@ fn reconciling_documents_is_what_plain_derive_does() {
     );
     assert!(
         report.orphan_documents.is_empty(),
-        "rename_for_rekey should have carried the document across: {:?}",
+        "rename_from should have carried the document across: {:?}",
         report.orphan_documents
     );
 
@@ -6534,7 +6534,7 @@ fn a_copy_whose_directories_name_it_in_two_series_is_one_work_held_under_both() 
             .expect("the slug");
         for root in [a.id, b.id] {
             let seen =
-                crate::browse::visible_editions(&conn, &crate::account::Access::Only(vec![root]))
+                crate::browse::visible_editions(&conn, &crate::account::Access::roots(vec![root]))
                     .expect("reads");
             assert_eq!(
                 seen.get(&slug).cloned(),
@@ -6642,7 +6642,7 @@ fn a_copy_named_in_another_series_arriving_under_an_older_directory_renames_noth
 fn seen_through(conn: &Connection, root: i64, slug: &str, edition: &str) -> Vec<bool> {
     crate::browse::visible_members(
         conn,
-        &crate::account::Access::Only(vec![root]),
+        &crate::account::Access::roots(vec![root]),
         slug,
         Some(edition),
     )
@@ -6756,9 +6756,9 @@ fn a_shared_hub_file_beside_an_edition_of_its_own_is_two_works() {
     let foo = slug_in(&conn, "Foo");
     let bar = slug_in(&conn, "Bar");
     assert_ne!(foo, bar, "two works");
-    let b_grant = crate::account::Access::Only(vec![raw.id, zh.id]);
+    let b_grant = crate::account::Access::roots(vec![raw.id, zh.id]);
     let b_sees = crate::browse::visible_editions(&conn, &b_grant).expect("reads");
-    let a_sees = crate::browse::visible_editions(&conn, &crate::account::Access::Only(vec![a.id]))
+    let a_sees = crate::browse::visible_editions(&conn, &crate::account::Access::roots(vec![a.id]))
         .expect("reads");
     let keys = |key: &str| Some(std::collections::HashSet::from([key.to_string()]));
     assert_eq!(
@@ -7682,4 +7682,151 @@ fn a_copys_directory_removed_mid_derive_is_counted_and_gets_no_row() {
     assert_eq!(report.root_removed_mid_derive, 1, "counted");
     assert_eq!(member_root_ids(&conn), vec![a.id], "the primary's row only");
     assert_eq!(the_member(&conn).0, Some(a.id));
+}
+
+/// What the comparison below compares: every work, edition, member, position
+/// and note, each by its work's content key rather than its id, and each
+/// member by its path under `top` and its digest. Root ids are left out.
+fn rows_root_ids_aside(conn: &Connection, top: &std::path::Path) -> Vec<String> {
+    let top = top
+        .canonicalize()
+        .expect("canonical")
+        .to_string_lossy()
+        .into_owned();
+    let rows = |sql: &str| -> Vec<String> {
+        conn.prepare(sql)
+            .expect(sql)
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect(sql)
+            .collect::<rusqlite::Result<_>>()
+            .expect(sql)
+    };
+    [
+        "SELECT 'work ' || content_key || ' ' || slug || ' ' || ifnull(volume, '-') || ' '
+                || title || ' ' || ifnull(title_hand, '-') || ' ' || reading || ' ' || hub
+           FROM work ORDER BY content_key",
+        "SELECT 'edition ' || w.content_key || ' ' || e.key
+           FROM edition e JOIN work w ON w.id = e.work_id ORDER BY w.content_key, e.key",
+        "SELECT 'member ' || w.content_key || ' ' || e.key || ' ' || m.ordinal || ' '
+                || m.path || ' ' || m.pages || ' ' || m.sha256
+           FROM member m JOIN edition e ON e.id = m.edition_id JOIN work w ON w.id = e.work_id
+          ORDER BY w.content_key, e.key, m.ordinal",
+        "SELECT 'progress ' || w.content_key || ' ' || p.user_id || ' ' || p.edition || ' '
+                || p.slot
+           FROM progress p JOIN work w ON w.id = p.work_id ORDER BY w.content_key, p.user_id",
+        "SELECT 'note ' || w.content_key || ' ' || n.id || ' ' || n.edition || ' ' || n.slot
+                || ' ' || n.body
+           FROM note n JOIN work w ON w.id = n.work_id ORDER BY w.content_key, n.id",
+    ]
+    .iter()
+    .flat_map(|sql| rows(sql))
+    .map(|row| row.replace(&top, "<top>"))
+    .collect()
+}
+
+/// The plan's "a hand-over does what an in-root rule edit does: no better and
+/// no worse". Store A: Kids, at `m/kids` with `edition_key = en`, takes Bleach
+/// over from Manga. Store B: Manga alone, with a rule on `kids/` that sets
+/// edition `en`. The works, editions, members, positions and notes agree, root
+/// ids aside: each Bleach work keeps `raw` beside `en`, counted in
+/// `kept_editions`, with the reader left on `raw`. The series is the stated
+/// difference: Kids' rules name it from `Bleach/…`, Manga's from `kids/…`.
+#[test]
+fn taking_over_a_nested_directory_leaves_the_rows_an_in_root_rule_edit_leaves() {
+    let (a_top, a, a_manga) =
+        scan::tests::manga_holding("derive-taken-over", scan::tests::NEST_FILES);
+    let (taken, kids) = {
+        let conn = a.conn();
+        scan::tests::read_bleach_v01(&conn, &a_manga);
+        let kids = scan::add_root_checked_in(
+            &conn,
+            &a_manga.path.join("kids"),
+            scan::InLibrary::Named("Kids"),
+        )
+        .expect("adds Kids")
+        .root;
+        conn.execute(
+            "UPDATE root SET edition_key = 'en' WHERE id = ?1",
+            [kids.id],
+        )
+        .expect("Kids names its editions en");
+        let kids = scan::Root {
+            edition_key: Some("en".to_string()),
+            ..kids
+        };
+        scan::scan_root(&conn, &kids).expect("scans Kids");
+        scan::scan_root(&conn, &a_manga).expect("scans Manga");
+        (derive::derive(&conn).expect("derives"), kids.id)
+    };
+    let (b_top, b, b_manga) =
+        scan::tests::manga_holding("derive-rule-edit", scan::tests::NEST_FILES);
+    let edited = {
+        let conn = b.conn();
+        scan::tests::read_bleach_v01(&conn, &b_manga);
+        crate::rules::create(
+            &conn,
+            &crate::rules::NewRule {
+                ordinal: None,
+                enabled: true,
+                root_id: Some(b_manga.id),
+                kind: crate::rules::RuleKind::Prefix,
+                pattern: "kids/".to_string(),
+                match_on: crate::rules::MatchOn::Path,
+                set_edition_key: Some("en".to_string()),
+                set_kind: None,
+                set_language: None,
+                set_series: None,
+                note: None,
+            },
+        )
+        .expect("a rule on kids/ setting en");
+        scan::scan_root(&conn, &b_manga).expect("scans Manga");
+        derive::derive(&conn).expect("derives")
+    };
+
+    assert_eq!(
+        (taken.kept_editions, edited.kept_editions),
+        (2, 2),
+        "each Bleach work keeps raw beside en"
+    );
+    let (a_rows, b_rows) = (
+        rows_root_ids_aside(&a.conn(), a_top.path()),
+        rows_root_ids_aside(&b.conn(), b_top.path()),
+    );
+    assert!(
+        a_rows.iter().any(|row| row.starts_with("progress ")) && a_rows.len() > 10,
+        "the fixture: {a_rows:#?}"
+    );
+    assert_eq!(a_rows, b_rows);
+    let held: Vec<(String, i64)> = a
+        .conn()
+        .prepare(
+            "SELECT e.key, mr.root_id FROM member m JOIN edition e ON e.id = m.edition_id
+               JOIN member_root mr ON mr.member_id = m.id
+              WHERE substr(m.path, 1, length(?1) + 1) = ?1 || '/'
+              ORDER BY e.key, mr.root_id",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([a_manga.path.join("kids").to_string_lossy()], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect()
+        })
+        .expect("reads where Bleach's members are held");
+    assert_eq!(
+        held,
+        [("en", kids), ("en", kids), ("raw", kids), ("raw", kids)]
+            .map(|(key, root)| (key.to_string(), root)),
+        "the kept raw members are Kids' too, so a grant of Kids reaches them"
+    );
+    assert_eq!(
+        (
+            scan::tests::series_names(&a.conn()),
+            scan::tests::series_names(&b.conn())
+        ),
+        (
+            vec!["Bleach".to_string(), "Naruto".to_string()],
+            vec!["Naruto".to_string(), "kids".to_string()]
+        )
+    );
 }

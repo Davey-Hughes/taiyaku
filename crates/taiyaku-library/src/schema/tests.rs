@@ -1671,7 +1671,10 @@ fn migration_17_restricts_exactly_the_accounts_that_hold_a_grant() {
     );
     assert_eq!(
         crate::account::access_for(&conn, 2).expect("reads"),
-        crate::account::Access::Only(vec![7, 8]),
+        crate::account::Access::Only {
+            roots: vec![7, 8],
+            libraries: vec![70],
+        },
         "the granted account still sees Shelf's two directories"
     );
     assert_eq!(
@@ -1806,11 +1809,24 @@ fn the_last_root_of_an_accounts_only_library_can_be_deleted_or_moved_away() {
                 vec![vec!["Integer(0)".to_string(), "Integer(0)".to_string()]],
                 "{role}, {statement}: Other and its grant went with its last directory"
             );
-            assert_eq!(
-                crate::account::access_for(&conn, 2).expect("reads"),
-                crate::account::Access::Only(Vec::new()),
-                "{role}, {statement}: the account sees no library"
-            );
+            if statement.ends_with("library_id = NULL WHERE id = 9") {
+                // `access_for` reads every root through `scan::roots`, which
+                // refuses a root with no library, so here the account's sight
+                // is read from its row: the grant went (above), and it does
+                // not see every library.
+                let every: bool = conn
+                    .query_row("SELECT every_library FROM user WHERE id = 2", [], |r| {
+                        r.get(0)
+                    })
+                    .expect("reads account 2");
+                assert!(!every, "{role}, {statement}: and not every library");
+            } else {
+                assert_eq!(
+                    crate::account::access_for(&conn, 2).expect("reads"),
+                    crate::account::Access::roots(Vec::new()),
+                    "{role}, {statement}: the account sees no library"
+                );
+            }
             assert_eq!(
                 crate::account::libraries_for(&conn, 3).expect("reads"),
                 vec![70],

@@ -734,9 +734,10 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
 
   /**
    * O81's case. `stamp::apply` hard-codes `document_moved: false` when the
-   * key did not move, and `hand::rename_for_rekey` answers `false` for five
-   * causes — two of which leave the document stranded at the old key. The
-   * screen must name the uncertainty rather than either reading of it.
+   * key did not move, and for a stamp `hand::rename_from` answers `false`
+   * for five causes — two of which leave the document stranded at the old
+   * key. The screen must name the uncertainty rather than either reading of
+   * it.
    */
   it('warns that a document may be stranded when the key moved and it did not', async () => {
     const host = await stampWith(PLAN, LEFT_BEHIND)
@@ -1108,8 +1109,8 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
    * forecast reading "and its <content_key>.library.json moves with it when
    * it does" would contradict `key-moved-alone` — on screen at the same time,
    * since the plan does not unmount on success — which has to say the document
-   * may be stranded instead. `hand::rename_for_rekey` answers `false` for
-   * five causes, two of which strand it, so the certainty is not
+   * may be stranded instead. For a stamp, `hand::rename_from` answers
+   * `false` for five causes, two of which strand it, so the certainty is not
    * available to promise.
    */
   it('does not promise the document move before the person agrees to it', async () => {

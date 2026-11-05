@@ -2,12 +2,16 @@
 // two directories, its scan status, a removal's dry run, and a poll's turn.
 import { act } from 'react'
 import { vi } from 'vitest'
-import { type RemovalAnswer, type Root, SCAN_POLL_MS } from '../../src/config'
-import type { Library, LibraryScanStatus } from '../../src/libraries'
+import { type RemovalAnswer, SCAN_POLL_MS } from '../../src/config'
+import type {
+  Library,
+  LibraryDir,
+  LibraryScanStatus,
+} from '../../src/libraries'
 import { emptyDerive } from './derive'
 
 /** A directory with only its path and a daily scan set. */
-export const dir = (id: number, path: string): Root => ({
+export const dir = (id: number, path: string): LibraryDir => ({
   id,
   path,
   edition_key: null,
@@ -18,6 +22,8 @@ export const dir = (id: number, path: string): Root => ({
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  nested: [],
+  inside: [],
 })
 
 /** Manga, library 7, of directories 1 (Volumes) and 2 (Chapters). */
@@ -33,6 +39,9 @@ export const manga = (over: Partial<Library> = {}): Library => ({
 /** The status of library `id` while nothing in it is scanning. */
 export const idle = (id: number): LibraryScanStatus => ({
   library_id: id,
+  held_removals: [],
+  moves_held: false,
+  scans: [],
   running: false,
   elapsed_secs: null,
   dirs: [],
@@ -48,6 +57,9 @@ export const scanningIn = (
   ...ids: number[]
 ): LibraryScanStatus => ({
   library_id: library.id,
+  held_removals: [],
+  moves_held: false,
+  scans: [],
   running: true,
   elapsed_secs: 3,
   dirs: library.dirs.map((one) => ({

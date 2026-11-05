@@ -99,8 +99,8 @@ const NOVELS_DIR_PAGE = `${TABLE}/Light%20novels/dirs/3`
 const dir = (
   id: number,
   path: string,
-  over: Partial<config.Root> = {},
-): config.Root => ({
+  over: Partial<librariesApi.LibraryDir> = {},
+): librariesApi.LibraryDir => ({
   id,
   path,
   edition_key: 'en',
@@ -111,6 +111,8 @@ const dir = (
   keeps_documents: false,
   last_scan_at: '2026-10-05T21:14:09Z',
   last_scan_status: 'ok',
+  nested: [],
+  inside: [],
   ...over,
 })
 
@@ -216,6 +218,9 @@ beforeEach(() => {
   vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
     Promise.resolve({
       library_id: id,
+      held_removals: [],
+      moves_held: false,
+      scans: [],
       running: false,
       elapsed_secs: null,
       dirs: [],
@@ -1121,12 +1126,16 @@ describe('the Libraries screen in the real Shell', () => {
       vi.mocked(librariesApi.startLibraryScan).mockResolvedValue({
         library_id: 1,
         status_url: '/x',
+        root_ids: LONG_MANGA.dirs.map((one) => one.id),
       })
       listLongManga()
       const host = await shell(width, height, MANGA_PAGE)
       vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
         Promise.resolve({
           library_id: id,
+          held_removals: [],
+          moves_held: false,
+          scans: [],
           running: id === 1 && scanning,
           elapsed_secs: 1,
           dirs: [],
@@ -1214,6 +1223,9 @@ describe('the Libraries screen in the real Shell', () => {
     vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
       Promise.resolve({
         library_id: id,
+        held_removals: [],
+        moves_held: false,
+        scans: [],
         running: id === 1 && scanning,
         elapsed_secs: scanning ? 1 : null,
         dirs:
@@ -1240,6 +1252,7 @@ describe('the Libraries screen in the real Shell', () => {
             excluded_files: 0,
             bad_exclude_patterns: [],
             forgotten_by_exclusion: 0,
+            taken_over: 0,
           },
           derive: emptyDerive,
         },

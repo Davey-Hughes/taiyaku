@@ -510,7 +510,13 @@ fn granting_a_library_by_name_resolves_it_to_the_row() {
 
     assert_eq!(
         grants_of_davey(&db),
-        (vec![a.library_id], account::Access::Only(vec![a.id, b.id])),
+        (
+            vec![a.library_id],
+            account::Access::Only {
+                roots: vec![a.id, b.id],
+                libraries: vec![a.library_id],
+            }
+        ),
         "the library named, and so each of its directories"
     );
 }
@@ -526,7 +532,7 @@ fn revoking_a_library_takes_the_grant_back() {
 
     assert_eq!(
         grants_of_davey(&db),
-        (Vec::new(), account::Access::Only(Vec::new())),
+        (Vec::new(), account::Access::roots(Vec::new())),
         "the grant is gone, and the account sees no library rather than every library"
     );
 }
@@ -637,7 +643,10 @@ fn granting_names_the_library_it_was_given_and_not_another() {
         grants_of_davey(&db),
         (
             vec![wanted.library_id],
-            account::Access::Only(vec![wanted.id])
+            account::Access::Only {
+                roots: vec![wanted.id],
+                libraries: vec![wanted.library_id],
+            }
         ),
         "the named library, not {}",
         other.library_id
@@ -661,7 +670,10 @@ fn revoking_names_the_library_it_was_given_and_not_another() {
         grants_of_davey(&db),
         (
             vec![other.library_id],
-            account::Access::Only(vec![other.id])
+            account::Access::Only {
+                roots: vec![other.id],
+                libraries: vec![other.library_id],
+            }
         ),
         "the library that was not named is still granted"
     );

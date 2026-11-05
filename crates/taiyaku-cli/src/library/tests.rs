@@ -1351,6 +1351,7 @@ fn scan_report(added: usize, updated: usize, gone: usize) -> taiyaku_library::sc
         excluded_files: 0,
         bad_exclude_patterns: Vec::new(),
         forgotten_by_exclusion: 0,
+        taken_over: 0,
     }
 }
 
@@ -1373,6 +1374,25 @@ fn scan_summary_names_unreadable_directories_when_present() {
     let line = scan_summary(&report);
     assert!(line.contains("1 unreadable directories"), "{line}");
     assert!(line.contains("/library/lost+found"), "{line}");
+}
+
+/// Spec §4: rows a nested directory's scan took from the directory around
+/// it are named, and never folded into `gone`.
+#[test]
+fn scan_summary_names_rows_taken_over_when_present() {
+    let mut report = scan_report(3, 1, 0);
+    report.taken_over = 4;
+    let line = scan_summary(&report);
+    assert_eq!(
+        line,
+        "  3 added, 1 updated, 0 gone; 4 taken over from the directory around it"
+    );
+}
+
+#[test]
+fn scan_summary_omits_rows_taken_over_when_none() {
+    let line = scan_summary(&scan_report(3, 1, 2));
+    assert!(!line.contains("taken over"), "{line}");
 }
 
 #[test]
@@ -2261,74 +2281,71 @@ fn roots_and_members(db: &std::path::Path) -> (i64, i64) {
     )
 }
 
-/// O47: `--add` must go through `scan::add_root_checked_in`, not the unchecked
-/// `scan::add_root`, since a root inside one already held double-counts every
-/// file beneath it. This pins that `--add` takes the refusal, and that a
-/// refused `--add` adds nothing.
-#[test]
-fn scan_add_refuses_a_root_inside_a_known_root() {
-    let dir = scratch("scan-add-inside");
+/// `scan --add` of `added` after `first`, each into `--library` where one is
+/// named, into a fresh store under `dir` holding one volume of one page.
+fn add_twice(
+    dir: &std::path::Path,
+    first: &str,
+    added: &str,
+    library: Option<&str>,
+) -> (std::path::PathBuf, Result<(), String>) {
     let tree = dir.join("library");
     std::fs::create_dir_all(tree.join("Series/Series - v01")).expect("mkdir");
     std::fs::write(tree.join("Series/Series - v01/000.jpg"), b"page").expect("write");
     let db = dir.join("library.db");
-    command(&[
-        "scan".into(),
-        "--add".into(),
-        tree.display().to_string(),
-        "--db".into(),
-        db.display().to_string(),
-    ])
-    .expect("adds and scans the outer root");
-
-    let err = command(&[
-        "scan".into(),
-        "--add".into(),
-        tree.join("Series").display().to_string(),
-        "--db".into(),
-        db.display().to_string(),
-    ])
-    .expect_err("a root inside a known root must be refused");
-    assert!(err.contains(" is inside "), "{err}");
-    assert!(
-        err.contains(", which is already a directory of the library"),
-        "{err}"
-    );
-    assert_eq!(
-        roots_and_members(&db),
-        (1, 1),
-        "a refused --add must add no root and no member"
-    );
+    let add = |path: &str| {
+        let mut args: Vec<String> = vec!["scan".into(), "--add".into()];
+        args.push(tree.join(path).display().to_string());
+        args.extend(["--db".into(), db.display().to_string()]);
+        if let Some(name) = library {
+            args.extend(["--library".into(), name.to_string()]);
+        }
+        command(&args)
+    };
+    add(first).expect("adds and scans the first root");
+    (db.clone(), add(added))
 }
 
-/// The same mistake the other way round: a root that would contain one already
-/// held, added second, double-counts the inner root's files exactly as well.
-#[test]
-fn scan_add_refuses_a_root_containing_a_known_root() {
-    let dir = scratch("scan-add-containing");
-    let tree = dir.join("library");
-    std::fs::create_dir_all(tree.join("Series/Series - v01")).expect("mkdir");
-    std::fs::write(tree.join("Series/Series - v01/000.jpg"), b"page").expect("write");
-    let db = dir.join("library.db");
-    command(&[
-        "scan".into(),
-        "--add".into(),
-        tree.join("Series").display().to_string(),
-        "--db".into(),
-        db.display().to_string(),
-    ])
-    .expect("adds and scans the inner root");
+/// The work `db` holds, as (works, members, pages summed over its members).
+fn works_members_and_pages(db: &std::path::Path) -> (i64, i64, i64) {
+    let library = taiyaku_library::Library::open(db).expect("open");
+    let conn = library.conn();
+    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).expect("count") };
+    (
+        count("SELECT count(*) FROM work"),
+        count("SELECT count(*) FROM member"),
+        count("SELECT coalesce(sum(pages), 0) FROM member"),
+    )
+}
 
-    let err = command(&[
-        "scan".into(),
-        "--add".into(),
-        tree.display().to_string(),
-        "--db".into(),
-        db.display().to_string(),
-    ])
-    .expect_err("a root containing a known root must be refused");
+/// The `scan_entry` rows `db` holds, and the distinct paths on disk they are
+/// for: equal when each file and directory is scanned once.
+fn entries_and_paths(db: &std::path::Path) -> (i64, i64) {
+    let library = taiyaku_library::Library::open(db).expect("open");
+    let conn = library.conn();
+    conn.query_row(
+        "SELECT count(*), count(DISTINCT CASE e.rel_path WHEN '' THEN r.path
+                                       ELSE r.path || '/' || e.rel_path END)
+           FROM scan_entry e JOIN root r ON r.id = e.root_id",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .expect("counts the entries")
+}
+
+/// O47: `--add` goes through `scan::add_root_checked_in`, not the unchecked
+/// `scan::add_root`. A root inside one of the library it joins is refused and
+/// adds nothing. As a library of its own it is added (overlapping-libraries
+/// spec §4), and the overlap is read once: one member, its page counted once,
+/// and one `scan_entry` for each of the three directories.
+#[test]
+fn scan_add_takes_a_root_inside_a_known_root_only_into_another_library() {
+    let dir = scratch("scan-add-inside-same");
+    let (db, refused) = add_twice(dir.path(), ".", "Series", Some("Manga"));
+    let err = refused.expect_err("a root inside a root of its library must be refused");
+    assert!(err.contains(" is inside "), "{err}");
     assert!(
-        err.contains(" holds `Series`, which is already a directory of the library"),
+        err.contains(", which is already a directory of the same library, `Manga`"),
         "{err}"
     );
     assert_eq!(
@@ -2336,6 +2353,38 @@ fn scan_add_refuses_a_root_containing_a_known_root() {
         (1, 1),
         "a refused --add must add no root and no member"
     );
+
+    let dir = scratch("scan-add-inside-own");
+    let (db, added) = add_twice(dir.path(), ".", "Series", None);
+    added.expect("a root inside another library's is added");
+    assert_eq!(roots_and_members(&db).0, 2);
+    assert_eq!(works_members_and_pages(&db), (1, 1, 1));
+    assert_eq!(entries_and_paths(&db), (3, 3));
+}
+
+/// The same the other way round: a root that would contain one already held,
+/// added second.
+#[test]
+fn scan_add_takes_a_root_containing_a_known_root_only_into_another_library() {
+    let dir = scratch("scan-add-containing-same");
+    let (db, refused) = add_twice(dir.path(), "Series", ".", Some("Manga"));
+    let err = refused.expect_err("a root containing a root of its library must be refused");
+    assert!(
+        err.contains(" holds `Series`, which is already a directory of the same library, `Manga`"),
+        "{err}"
+    );
+    assert_eq!(
+        roots_and_members(&db),
+        (1, 1),
+        "a refused --add must add no root and no member"
+    );
+
+    let dir = scratch("scan-add-containing-own");
+    let (db, added) = add_twice(dir.path(), "Series", ".", None);
+    added.expect("a root containing another library's is added");
+    assert_eq!(roots_and_members(&db).0, 2);
+    assert_eq!(works_members_and_pages(&db), (1, 1, 1));
+    assert_eq!(entries_and_paths(&db), (3, 3));
 }
 
 #[test]
@@ -2473,6 +2522,83 @@ fn libraries_and_dirs(db: &Path) -> Vec<(String, Vec<PathBuf>)> {
         .collect();
     held.sort();
     held
+}
+
+/// A store under `dir` where Manga holds `m` and Kids `m/kids`, each added
+/// and walked by `scan --add`, and then a new file in each, `new-m.txt` and
+/// `new-kids.txt`, which only a walk of that directory records under it.
+/// Answers the store and the two directories.
+fn nested_store(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let db = dir.join("library.db");
+    let m = a_dir(&dir.join("m"));
+    scan_add(&db, &m, Some("Manga")).expect("adds Manga's directory");
+    let kids = a_dir(&m.join("kids"));
+    scan_add(&db, &kids, Some("Kids")).expect("adds Kids' directory inside it");
+    std::fs::write(m.join("new-m.txt"), b"x").expect("writes m's new file");
+    std::fs::write(kids.join("new-kids.txt"), b"x").expect("writes m/kids' new file");
+    (db, m, kids)
+}
+
+/// Whether the directory at `root` holds an entry for `rel_path`.
+fn recorded(db: &Path, root: &Path, rel_path: &str) -> bool {
+    let library = Library::open(db).expect("open");
+    let conn = library.conn();
+    conn.query_row(
+        "SELECT count(*) FROM scan_entry e JOIN root r ON r.id = e.root_id
+          WHERE r.path = ?1 AND e.rel_path = ?2",
+        [root.display().to_string(), rel_path.to_string()],
+        |r| r.get::<_, i64>(0),
+    )
+    .expect("counts")
+        == 1
+}
+
+/// `scan --library NAME --no-derive` against `db`.
+fn scan_library(db: &Path, name: &str) -> Result<(), String> {
+    command(&[
+        "scan".to_string(),
+        "--library".to_string(),
+        name.to_string(),
+        "--no-derive".to_string(),
+        "--db".to_string(),
+        db.display().to_string(),
+    ])
+}
+
+/// Spec §4's N and its decision 16: `scan --library Manga` walks
+/// `m` and Kids' `m/kids` nested in it, each as its own root; `--library Kids`
+/// walks `m/kids` alone; with `m` excluding `kids/`, `--library Manga` walks
+/// `m` alone.
+#[test]
+fn scan_of_a_library_walks_every_directory_it_reaches() {
+    let dir = scratch("scan-library-reach-manga");
+    let (db, m, kids) = nested_store(&dir);
+    scan_library(&db, "Manga").expect("scans Manga");
+    assert!(recorded(&db, &m, "new-m.txt"), "m is walked");
+    assert!(recorded(&db, &kids, "new-kids.txt"), "m/kids is walked");
+
+    let dir = scratch("scan-library-reach-kids");
+    let (db, m, kids) = nested_store(&dir);
+    scan_library(&db, "Kids").expect("scans Kids");
+    assert!(!recorded(&db, &m, "new-m.txt"), "m is not walked");
+    assert!(recorded(&db, &kids, "new-kids.txt"), "m/kids is walked");
+
+    let dir = scratch("scan-library-reach-excluded");
+    let (db, m, kids) = nested_store(&dir);
+    Library::open(&db)
+        .expect("open")
+        .conn()
+        .execute(
+            "UPDATE root SET exclude_globs = 'kids/' WHERE path = ?1",
+            [m.display().to_string()],
+        )
+        .expect("excludes kids/ from Manga's directory");
+    scan_library(&db, "Manga").expect("scans Manga");
+    assert!(recorded(&db, &m, "new-m.txt"), "m is walked");
+    assert!(
+        !recorded(&db, &kids, "new-kids.txt"),
+        "m/kids, which m excludes, is not"
+    );
 }
 
 /// `--add` with no `--library` makes a library for the directory. A library

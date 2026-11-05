@@ -514,9 +514,9 @@ pub struct DeriveReport {
 /// **Two call sites, and both of them write.** `derive` calls
 /// [`crate::hand::reconcile`] per root, which writes a missing document back
 /// where the root keeps them, and `write_work` calls
-/// [`crate::hand::rename_for_rekey`], which renames a document when a work's
-/// `content_key` moves and is gated on nothing at all — a rekey stranding a
-/// document is the defect it exists to prevent.
+/// [`crate::hand::rename_from`], which renames a document when a work's
+/// `content_key` moves, even inside a root that keeps none — a rekey
+/// stranding a document is the defect it exists to prevent.
 ///
 /// **[`Documents::Skip`] suppresses writes, never reads.** `hand::load` stays
 /// on: a hand-set title is part of the structure a preview claims to predict,
@@ -562,7 +562,7 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
 /// is open yet, so `Nested` takes the real-`BEGIN` branch for each work and
 /// each fold and a derive is atomic per work — save a work rekeyed under
 /// [`Documents::Reconcile`], which commits before and after
-/// [`crate::hand::rename_for_rekey`] (see [`write_work`]) — and not across
+/// [`crate::hand::rename_from`] (see [`write_work`]) — and not across
 /// the store: the right grain for that case, since a store that
 /// half-derives has half its works current, not none of them.
 ///
@@ -1647,17 +1647,17 @@ fn write_work(
     // two questions instead of one.
     //
     // **`rekeyed_from` is captured in the same breath, for
-    // [`crate::hand::rename_for_rekey`] near the end of this function.**
+    // [`crate::hand::rename_from`] near the end of this function.**
     // `held_key` is this row's `content_key` before `import::scanned`
     // overwrites it — the only place that value is still readable — so it is
     // saved here rather than re-derived from `work.content_key` after the
     // fact, which is what a caller with no memory of `held` would have to do.
     let mut rekeyed_from = None;
-    if let Some((_, _, held_key)) = &held
+    if let Some((held_id, _, held_key)) = &held
         && *held_key != crate::identity::content_key(&doc)?
     {
         report.rekeyed += 1;
-        rekeyed_from = Some(held_key.clone());
+        rekeyed_from = Some((held_key.clone(), crate::hand::path_for(conn, *held_id)?));
     }
     // The second identity probe: this work's address, for a work that has no
     // document to be addressed by. Without it, the changed files above would
@@ -1727,12 +1727,25 @@ fn write_work(
     // an orphan, which `a_repacked_volume_takes_its_document_with_it` catches.
     // Waiting until here is what lets one derive do what the store spec §4.4
     // asks of it.
-    if let Some(old_key) = rekeyed_from
+    if let Some((old_key, held_at)) = rekeyed_from
         && documents == Documents::Reconcile
     {
         tx.commit()
             .map_err(|e| format!("committing work {work_id} before its rekey: {e}"))?;
-        crate::hand::rename_for_rekey(conn, work_id, &old_key)?;
+        // The address before the import, when the document is there: a scan
+        // that carried it into a nested directory (`scan::carry_documents`)
+        // left it there, and this rekey can readdress the work back out.
+        // Otherwise the old key in the directory the work is addressed in now,
+        // where the document stays when a directory that keeps no documents
+        // refused the carry.
+        let old = match held_at.filter(|at| at.is_file()) {
+            Some(at) => Some(at),
+            None => crate::hand::path_for(conn, work_id)?
+                .map(|now| now.with_file_name(crate::hand::file_name(&old_key))),
+        };
+        if let Some(old) = old {
+            crate::hand::rename_from(conn, work_id, &old)?;
+        }
         tx = crate::Nested::open(conn, "write_work")
             .map_err(|e| format!("resuming work {work_id} after its rekey: {e}"))?;
     }

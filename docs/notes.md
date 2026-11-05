@@ -14767,9 +14767,10 @@ Design §6 is corrected against this measurement rather than left to say
 
 ### After the fix, driven again on real archives
 
-`hand::rename_for_rekey` is this branch's prevention half. It was driven on
-the same two events as the measurement above, to confirm the files-changing
-cause is closed rather than argued closed.
+`hand::rename_for_rekey` (now `hand::rename_from`) is this branch's
+prevention half. It was driven on the same two events as the measurement
+above, to confirm the files-changing cause is closed rather than argued
+closed.
 
 Three `.cbz` files out of `corpus/` into one root under `target/` —
 **copied rather than hardlinked**, since two of the three get rewritten:

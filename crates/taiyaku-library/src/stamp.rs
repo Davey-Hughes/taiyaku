@@ -160,7 +160,7 @@ pub struct Applied {
     pub members: Vec<(i64, String)>,
     /// `Some` when the hub edition moved and the work's identity with it.
     pub content_key: Option<String>,
-    /// What [`crate::hand::rename_for_rekey`] answered.
+    /// What [`crate::hand::rename_from`] answered.
     pub document_moved: bool,
     /// Whether a sidecar was rewritten. `false` for a scanned work, which
     /// has none — see [`apply`].
@@ -286,6 +286,12 @@ pub fn apply(
     // `identity::content_key` alone and is not restated here.
     let new_key = crate::identity::content_key(&crate::project::sidecar(&tx, work_id)?)?;
     let moved_key = (new_key != old_key).then(|| new_key.clone());
+    // The document's address under the old key, read before the key moves:
+    // afterwards the rows name only the new one.
+    let moved_from = match &moved_key {
+        Some(_) => crate::hand::path_for(&tx, work_id)?,
+        None => None,
+    };
     if moved_key.is_some() {
         tx.execute(
             "UPDATE work SET content_key = ?1 WHERE id = ?2",
@@ -298,8 +304,8 @@ pub fn apply(
 
     // Both of these project the rows the transaction just committed, so they
     // run after it rather than inside it.
-    let document_moved = match &moved_key {
-        Some(_) => crate::hand::rename_for_rekey(conn, work_id, &old_key)?,
+    let document_moved = match &moved_from {
+        Some(old) => crate::hand::rename_from(conn, work_id, old)?,
         None => false,
     };
     let sidecar_rewritten = sidecar_path.is_some();

@@ -374,7 +374,7 @@ describe('RootRow', () => {
     expect(holdOf(press(host, 'Remove…'))).toBe('held')
   })
 
-  it('is held while another directory of its library is scanning: Scan directory and Remove… are held and send nothing', async () => {
+  it('is held while its library’s status says it is being scanned: Scan directory and Remove… are held and send nothing', async () => {
     const host = await settle()
     await act(async () => {
       rerender(<RootRow root={root()} held onChanged={vi.fn()} />)
@@ -692,6 +692,7 @@ describe('RootRow', () => {
           excluded_files: 0,
           bad_exclude_patterns: [],
           forgotten_by_exclusion: 0,
+          taken_over: 0,
         },
         derive: emptyDerive,
       } as config.ScanOutcome,
@@ -1121,6 +1122,7 @@ describe('RootRow', () => {
           excluded_files: 0,
           bad_exclude_patterns: [],
           forgotten_by_exclusion: 0,
+          taken_over: 0,
         },
         derive: {
           series: 1,

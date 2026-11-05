@@ -84,3 +84,9 @@ rusqlite = { version = "0.38", features = ["trace", "hooks"] }
 # syscalls `rewrite_one` makes, through the one strace parser `atomic`'s tests
 # already use rather than a second copy of it. And for O117's `TempDir`.
 taiyaku-read = { path = "../taiyaku-read", features = ["test-support"] }
+
+# Exposes `account::Access::roots` to other crates' tests. Enabled only from a
+# `[dev-dependencies]` entry, so it reaches test builds and `--all-features`
+# builds and no binary this workspace ships.
+[features]
+test-support = []

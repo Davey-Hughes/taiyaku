@@ -1771,7 +1771,7 @@ async fn the_catalog_links_to_the_libraries() {
     let by_work = entry(&body, "taiyaku:libraries:by-work");
     assert!(
         by_work.contains(
-            r#"<content type="text">Each library, with the works under its directories, each with every edition you may read</content>"#
+            r#"<content type="text">Each library, with the works it shows, each with every edition you may read</content>"#
         ),
         "{by_work}"
     );
@@ -1913,6 +1913,78 @@ async fn a_library_outside_the_grant_is_refused_as_one_that_does_not_exist() {
         "a library outside the grant must be refused in the words one that \
          does not exist is"
     );
+}
+
+/// Spec §4's N: the account granted Kids, whose directory sits inside Manga's,
+/// is refused Manga's feed by id, by directory and by work, in the words a
+/// library that does not exist is, and no feed it is served names Manga or
+/// Manga's book. Kids' own feed opens.
+#[tokio::test]
+async fn a_library_around_the_grant_is_refused_and_named_in_no_feed() {
+    let n = crate::test_support::router_over_a_library_nested_in_another();
+
+    for view in ["works", "works/by-work"] {
+        let (status, refused) = fetch(
+            &n.kids_reader,
+            &format!("/opds/v1.2/libraries/{}/{view}", n.manga),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{view}: {refused}");
+        assert!(!refused.contains("Manga"), "{view} names Manga: {refused}");
+        let (_, unknown) = fetch(
+            &n.kids_reader,
+            &format!("/opds/v1.2/libraries/999999/{view}"),
+        )
+        .await;
+        assert_eq!(
+            refused.replace(&n.manga.to_string(), "{library}"),
+            unknown.replace("999999", "{library}"),
+            "{view}"
+        );
+    }
+
+    for (uri, names) in [
+        ("/opds/v1.2/libraries".to_owned(), "<title>Kids</title>"),
+        (
+            "/opds/v1.2/libraries/by-work".to_owned(),
+            "<title>Kids</title>",
+        ),
+        ("/opds/v1.2/works".to_owned(), "Kids Book"),
+        (
+            format!("/opds/v1.2/libraries/{}/works", n.kids),
+            "Kids Book",
+        ),
+    ] {
+        let (status, feed) = fetch(&n.kids_reader, &uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {feed}");
+        assert!(feed.contains(names), "{uri} must name {names}: {feed}");
+        assert!(!feed.contains("Manga"), "{uri} names Manga: {feed}");
+    }
+}
+
+/// Spec §4's N, the account granted Manga, whose directory holds Kids': Manga's
+/// by-work feed names Kids' book beside Manga's, and neither libraries feed
+/// lists Kids, which the account reaches and was not granted.
+#[tokio::test]
+async fn a_librarys_by_work_feed_names_what_it_reaches_and_no_feed_lists_a_library_not_granted() {
+    let n = crate::test_support::router_over_a_library_nested_in_another();
+
+    let uri = format!("/opds/v1.2/libraries/{}/works/by-work", n.manga);
+    let (status, feed) = fetch(&n.manga_reader, &uri).await;
+    assert_eq!(status, StatusCode::OK, "{feed}");
+    for book in ["Manga Book", "Kids Book"] {
+        assert!(feed.contains(book), "{uri} must name {book}: {feed}");
+    }
+
+    for uri in ["/opds/v1.2/libraries", "/opds/v1.2/libraries/by-work"] {
+        let (status, feed) = fetch(&n.manga_reader, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {feed}");
+        assert!(
+            feed.contains("<title>Manga"),
+            "{uri} must list Manga: {feed}"
+        );
+        assert!(!feed.contains("Kids"), "{uri} lists Kids: {feed}");
+    }
 }
 
 /// O191's shape: one work, an edition under each library's directory. A

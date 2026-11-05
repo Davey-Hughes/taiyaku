@@ -403,6 +403,9 @@ beforeEach(() => {
   vi.mocked(api.libraryScanStatus).mockImplementation((id) =>
     Promise.resolve({
       library_id: id,
+      held_removals: [],
+      moves_held: false,
+      scans: [],
       running: false,
       elapsed_secs: null,
       dirs: [],
@@ -534,7 +537,7 @@ describe('Libraries, the table', () => {
       id: number,
       at: string | null,
       status: string | null,
-    ): config.Root => ({
+    ): api.LibraryDir => ({
       ...dir(id, `/media/${id}`),
       last_scan_at: at,
       last_scan_status: status,
@@ -2480,7 +2483,7 @@ describe('Libraries, making one', () => {
     )
     expect(helpOf(row(page, 'Name'))).toBeNull()
     expect(helpOf(row(page, 'Directory path'))?.textContent).toBe(
-      'The server checks that it can read the directory and that it overlaps no other directory.',
+      'The server checks that it can read the directory. It may sit inside or around another library’s directory.',
     )
     expect(page.querySelector('.why')).toBeNull()
   })
@@ -2567,7 +2570,7 @@ describe('Libraries, a probe', () => {
         holdOf(button(host, text)),
       )
     const host = await at('/config/libraries/Manga/dirs/10')
-    expect(held(host)).toEqual(['held', 'held', 'held'])
+    expect(held(host)).toEqual(['free', 'held', 'free'])
 
     await go('/config/libraries/Manga/dirs/11')
     expect(dirTitle(host)).toBe('/media/Manga/Chapters')
@@ -2780,11 +2783,15 @@ describe('Libraries, a library’s removal', () => {
     vi.mocked(api.startLibraryScan).mockResolvedValue({
       library_id: 2,
       status_url: '/api/library/libraries/2/scan',
+      root_ids: comics.dirs.map((one) => one.id),
     })
     const host = await at('/config/libraries/Comics')
     vi.mocked(api.libraryScanStatus).mockImplementation((id) =>
       Promise.resolve({
         library_id: id,
+        held_removals: [],
+        moves_held: false,
+        scans: [],
         running: id === 2,
         elapsed_secs: 1,
         dirs: [],
@@ -2812,6 +2819,9 @@ describe('Libraries, a library’s removal', () => {
         ? mangaStatus.promise
         : Promise.resolve({
             library_id: id,
+            held_removals: [],
+            moves_held: false,
+            scans: [],
             running: true,
             elapsed_secs: 1,
             dirs: [],

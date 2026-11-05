@@ -913,6 +913,9 @@ fn a_rekey_never_overwrites_a_document_already_at_the_new_address() {
     doc.title = Some("Old".to_string());
     crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
     super::save(&conn, work_id).expect("saving");
+    let old = super::path_for(&conn, work_id)
+        .expect("addressing")
+        .expect("an address");
 
     conn.execute(
         "UPDATE work SET content_key = 'new' WHERE id = ?1",
@@ -929,7 +932,7 @@ fn a_rekey_never_overwrites_a_document_already_at_the_new_address() {
     )
     .expect("planting a document at the new address");
 
-    let moved = super::rename_for_rekey(&conn, work_id, "abc123").expect("renaming");
+    let moved = super::rename_from(&conn, work_id, &old).expect("renaming");
 
     assert!(!moved, "the rename refused");
     assert!(
@@ -1254,7 +1257,7 @@ fn an_off_root_still_reports_a_document_nothing_addresses() {
     );
 }
 
-/// **The spec claims `rename_for_rekey` needs no change in an off root; this
+/// **The spec claims a rekey's rename needs no change in an off root; this
 /// is what makes that a checked claim rather than a reading.** It looks for a
 /// file at the old address and finds none, so it answers `false` and touches
 /// nothing — no new branch, no new failure mode, and in particular it does
@@ -1270,6 +1273,9 @@ fn a_rekey_in_an_off_root_moves_nothing_and_creates_nothing() {
     doc.title = Some("Hand Set".to_string());
     crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
     super::save(&conn, work_id).expect("saving writes nothing here");
+    let old = super::path_for(&conn, work_id)
+        .expect("addressing")
+        .expect("an address");
 
     conn.execute(
         "UPDATE work SET content_key = 'moved' WHERE id = ?1",
@@ -1277,11 +1283,69 @@ fn a_rekey_in_an_off_root_moves_nothing_and_creates_nothing() {
     )
     .expect("rekeying");
 
-    let moved = super::rename_for_rekey(&conn, work_id, "abc123").expect("renaming");
+    let moved = super::rename_from(&conn, work_id, &old).expect("renaming");
 
     assert!(!moved, "there was no document to move: {moved}");
     assert!(
         !dir.path().join(".taiyaku").exists(),
         "and asking to move one did not create the directory"
     );
+}
+
+/// A rename within one directory creates nothing, so a rekey still carries a
+/// document its root kept before it declined documents, where `load` reads it
+/// back after a rebuild.
+#[test]
+fn a_rekey_in_an_off_root_still_carries_a_document_kept_before_it_declined() {
+    let dir = crate::tests::tempdir("hand-rekey-declined-later");
+    let root = dir.path().to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    super::save(&conn, work_id).expect("saving");
+    let old = super::path_for(&conn, work_id)
+        .expect("addressing")
+        .expect("an address");
+    assert!(old.is_file(), "the fixture: a document was kept");
+    conn.execute("UPDATE root SET keeps_documents = 0", [])
+        .expect("declining documents");
+    conn.execute(
+        "UPDATE work SET content_key = 'moved' WHERE id = ?1",
+        [work_id],
+    )
+    .expect("rekeying");
+
+    let moved = super::rename_from(&conn, work_id, &old).expect("renaming");
+
+    let new = dir.path().join(".taiyaku/moved.library.json");
+    assert_eq!(
+        (moved, new.is_file(), old.exists()),
+        (true, true, false),
+        "carried to the new key"
+    );
+}
+
+/// A work gone before its document moves, folded away by the derive a
+/// hand-back runs, has no address to take it: nothing moves and nothing fails.
+#[test]
+fn a_work_that_is_gone_moves_nothing() {
+    let dir = crate::tests::tempdir("hand-rename-gone");
+    let root = dir.path().to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+    super::save(&conn, work_id).expect("saving");
+    let old = super::path_for(&conn, work_id)
+        .expect("addressing")
+        .expect("an address");
+    conn.execute_batch("DELETE FROM member; DELETE FROM edition; DELETE FROM work;")
+        .expect("the work goes");
+
+    let moved = super::rename_from(&conn, work_id, &old).expect("not an error");
+
+    assert_eq!((moved, old.is_file()), (false, true), "left where it was");
 }

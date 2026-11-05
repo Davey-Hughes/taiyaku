@@ -137,7 +137,7 @@ describe('SplitEditions', () => {
       'Split editions',
     )
     expect(header.querySelector('.page-description')?.textContent).toBe(
-      "An edition is split when a library's directories hold some of its files and not all of them. An account granted only some of those libraries sees only their files, with the pages renumbered. An account granted every library listed sees every file a directory holds, and an account that sees every library, as an administrator does, sees the whole edition.",
+      'An edition is split when a library shows some of its files and not all of them. An account granted only some of those libraries sees only their files, with the pages renumbered. An account granted every library listed sees every file a directory holds, and an account that sees every library, as an administrator does, sees the whole edition.',
     )
   })
 

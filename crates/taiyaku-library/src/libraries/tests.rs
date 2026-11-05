@@ -636,3 +636,119 @@ fn a_copy_held_in_two_libraries_is_not_split() {
     );
     assert_eq!(split_editions(&conn).expect("lists"), []);
 }
+
+/// A store with no directory reaches none, so nothing is split, and the
+/// answer is an empty list rather than SQL with an empty `VALUES`.
+#[test]
+fn a_store_with_no_directory_splits_no_edition() {
+    let library = Library::open_in_memory().expect("open");
+    assert_eq!(split_editions(&library.conn()).expect("lists"), []);
+}
+
+/// Spec §4's N, Manga holding `m` and Kids `m/kids`, a book in each: Manga
+/// counts Kids' work beside its own, Kids its own alone, and each lists its own
+/// directory alone.
+#[test]
+fn a_library_counts_the_works_of_the_directories_it_reaches() {
+    let n = crate::reach::tests::nested_libraries(false);
+    let conn = n.library.conn();
+    let counted: Vec<(String, usize, usize)> = list(&conn)
+        .expect("lists")
+        .into_iter()
+        .map(|l| (l.name, l.dirs.len(), l.works))
+        .collect();
+    assert_eq!(
+        counted,
+        [
+            ("Kids".to_string(), 1, 1),
+            ("Manga".to_string(), 1, 2),
+            ("Tiny".to_string(), 0, 0),
+        ]
+    );
+}
+
+/// Manga's own directory holds no EPUB or PDF entry; the PDF under Kids'
+/// directory nested in it is counted for both, so Manga is not "no readable
+/// files yet".
+#[test]
+fn books_counts_the_entries_of_the_directories_a_library_reaches() {
+    let n = crate::reach::tests::nested_libraries(false);
+    let conn = n.library.conn();
+    conn.execute(
+        "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
+         VALUES (?1, 'k.pdf', 'file', 'pdf', 1, 1)",
+        [n.m_kids],
+    )
+    .expect("a PDF under Kids' directory");
+
+    assert_eq!(books(&conn, n.manga).expect("counts"), 1);
+    assert_eq!(books(&conn, n.kids).expect("counts"), 1);
+}
+
+/// Spec §4's N, each library by the directories it reaches. `nested`'s `raw`
+/// has `nested-0` under `m` and `nested-1` under Kids' `m/kids`: whole for
+/// Manga, which reaches both, and split for Kids. `copied`'s `raw` has
+/// `copied-0` under `m` with a copy under `m/kids`, and `copied-1` under
+/// `m/kids`: whole for both, so not a case, though Manga's own directory
+/// holds only the first.
+#[test]
+fn a_library_holds_the_members_under_the_directories_it_reaches() {
+    let n = crate::reach::tests::nested_libraries(false);
+    let conn = n.library.conn();
+    seed_work(
+        &conn,
+        "nested",
+        &[("raw", Some(n.m)), ("raw", Some(n.m_kids))],
+    );
+    seed_work(
+        &conn,
+        "copied",
+        &[("raw", Some(n.m)), ("raw", Some(n.m_kids))],
+    );
+    conn.execute(
+        "INSERT INTO member_root (member_id, root_id)
+         SELECT id, ?1 FROM member WHERE path = 'copied-0'",
+        [n.m_kids],
+    )
+    .expect("a copy of copied-0 under m/kids");
+    set_pages(&conn, "nested-0", 2);
+    set_pages(&conn, "nested-1", 3);
+    let roots = crate::scan::roots(&conn).expect("roots");
+    let dir = |id: i64| roots.iter().find(|root| root.id == id).expect("a root");
+
+    assert_eq!(
+        split_editions(&conn).expect("lists"),
+        [SplitEdition {
+            work: "nested".to_string(),
+            title: "nested".to_string(),
+            edition: "raw".to_string(),
+            pages: 5,
+            members: vec![
+                SplitMember {
+                    path: "nested-0".to_string(),
+                    pages: 2,
+                    directories: vec![held_under(dir(n.m), n.manga)],
+                },
+                SplitMember {
+                    path: "nested-1".to_string(),
+                    pages: 3,
+                    directories: vec![held_under(dir(n.m_kids), n.kids)],
+                },
+            ],
+            libraries: vec![
+                SplitLibrary {
+                    id: n.kids,
+                    name: "Kids".to_string(),
+                    members: 1,
+                    pages: 3,
+                },
+                SplitLibrary {
+                    id: n.manga,
+                    name: "Manga".to_string(),
+                    members: 2,
+                    pages: 5,
+                },
+            ],
+        }]
+    );
+}

@@ -32,10 +32,22 @@
 //! already holds. Hashing is skipped entirely: `sha256` stays NULL until
 //! `derive.rs` needs it, per §3.
 //!
-//! **This module writes nothing to the library tree.** §10. The one file the
+//! **Each file is scanned once, under the deepest directory that holds it**
+//! (overlapping-libraries spec §4). A directory of another library may sit
+//! inside this one's. The walk does not descend into it (`measure_dir`), and
+//! rows this directory already held under it are neither counted gone nor
+//! counted toward §8.1's refusal: they wait for the nested directory's scan,
+//! which takes them over, with the members under them (`take_over`), and
+//! counts them toward its own §8.1 refusal. A symlink to it is skipped too,
+//! but rows recorded through one are forgotten, since no scan takes them.
+//!
+//! **This module writes nothing to the library tree but the hand documents it
+//! moves.** §10. When a directory takes a work's files over or hands them
+//! back, the work's document under `.taiyaku` moves with them, into a root
+//! that keeps documents (`carry_documents`). Otherwise the one file the
 //! scanner ever creates is `watch.rs`'s probe, which is not this.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -287,10 +299,10 @@ pub struct Added {
 /// pre-check against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddRootError {
-    /// `path` itself: it does not exist, this process cannot read it, or it
-    /// overlaps a root already held, nested in either direction. The
-    /// message already names which, and for an overlap, the colliding root
-    /// by path and id. Or the library it would join cannot be named: an
+    /// `path` itself: it does not exist, this process cannot read it, or
+    /// `clash` refuses it against the roots held. The message already names
+    /// which, and for a clash, the colliding directory and its library by
+    /// name. Or the library it would join cannot be named: an
     /// [`InLibrary::Named`] that [`crate::libraries::usable_name`] refuses,
     /// or an [`InLibrary::Own`] whose two possible names are both taken,
     /// which the message names. Or an [`InLibrary::Id`] no library holds.
@@ -298,8 +310,8 @@ pub enum AddRootError {
     /// refuses or that is already a library's, or two of the directories
     /// given overlapping.
     Unusable(String),
-    /// The store itself failed: [`roots`] (the overlap check's own read),
-    /// the library-name lookup, the insert inside [`add_root_in`], or the
+    /// The store itself failed: opening or committing the transaction, `clash`'s
+    /// own reads, the library-name lookup, the insert inside [`add_root_in`], or the
     /// post-insert [`update_root`] write that records the watch probe's
     /// interval.
     Failed(String),
@@ -336,18 +348,16 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 ///    was — "readable by the server process" is a different question from
 ///    "exists", and on a containerised deployment it is exactly the
 ///    question that differs.
-/// 2. **Not nested inside, or around, any root already held — checked both
-///    directions**, against every existing root's own canonical path.
-///    [`Path::starts_with`] compares whole path components rather than
-///    bytes, so `/srv/manga2` is never mistaken for something inside
-///    `/srv/manga`; comparing the *canonical* form on both sides (this
-///    function's own candidate and every stored [`Root::path`], which
-///    [`add_root`] canonicalises before it ever reaches a row) is what
-///    keeps a symlink or a `..` from slipping a nested path past a raw
-///    string comparison. Overlapping roots double-count every file beneath
-///    the overlap, and the symptom — duplicate works — looks nothing like
-///    the cause, so the refusal names the existing directory it overlaps with,
-///    and that directory's library, rather than only saying "nested."
+/// 2. **No clash with the roots held, compared inside the insert's own
+///    transaction** (O204), so a directory another writer adds meanwhile is
+///    compared too. `clash` refuses a directory equal to any library's,
+///    inside or around one of the library it joins, or inside a directory
+///    member of any root. Both sides are canonical (this function's candidate,
+///    and every stored [`Root::path`], which [`add_root`] canonicalises), so a
+///    symlink or a `..` cannot slip a nested path past the comparison, and
+///    [`Path::starts_with`] compares whole components, so `/srv/manga2` is not
+///    inside `/srv/manga`. The refusal names the directory it meets and that
+///    directory's library.
 /// 3. **The watcher probe, run now rather than left for the first scan.**
 ///    [`crate::watch::probe`] answers whether this root can be watched at
 ///    all — spec B §8's experiment — run at the moment a root is added
@@ -357,8 +367,8 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 ///    answer is written to `scan_interval_secs` immediately, not left at
 ///    the column default until some later call happens to set it.
 ///
-/// **And the library it joins can be named**, checked with the first two,
-/// before anything is written: an [`InLibrary::Named`] needs a name
+/// **And the library it joins can be named**, checked in the same
+/// transaction, before anything is written: an [`InLibrary::Named`] needs a name
 /// [`crate::libraries::usable_name`] takes, and an [`InLibrary::Own`] needs a
 /// name the `root_gets_a_library` trigger can give it (see
 /// `own_library_clash`). Otherwise the first would surface as a store fault
@@ -378,8 +388,8 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 /// # Errors
 ///
 /// Returns [`AddRootError::Unusable`] if `path` cannot be canonicalised (it
-/// must exist), if the canonical path cannot be read as a directory, if it
-/// is inside or contains a root already held, or if the library it would
+/// must exist), if the canonical path cannot be read as a directory, if
+/// `clash` refuses it, or if the library it would
 /// join cannot be named (an [`InLibrary::Id`] no library holds is one) —
 /// every one of those is this caller's own mistake,
 /// an `error` a person can act on. A path already held is refused as one,
@@ -387,7 +397,8 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 /// itself, which is what the nesting check alone would say of an equal path.
 ///
 /// Returns [`AddRootError::Failed`] if the store itself refuses along the
-/// way — the overlap check's own read ([`roots`]), the library-name lookup,
+/// way — opening or committing the transaction, `clash`'s own reads, the
+/// library-name lookup,
 /// the insert ([`add_root_in`]), or the write that records the watch probe's
 /// interval ([`update_root`]) — none of which is this caller's mistake to
 /// fix.
@@ -396,9 +407,12 @@ pub fn add_root_checked_in(
     path: &Path,
     library: InLibrary<'_>,
 ) -> Result<Added, AddRootError> {
-    let canonical = vetted(conn, path)?;
+    let canonical = readable_dir(path)?;
 
-    match library {
+    let tx = crate::Nested::open(conn, "add_root_checked").map_err(|e| {
+        AddRootError::Failed(format!("starting to add {}: {e}", canonical.display()))
+    })?;
+    let joins = match library {
         InLibrary::Named(name) => {
             if let Err(why) = crate::libraries::usable_name(name) {
                 return Err(AddRootError::Unusable(format!(
@@ -406,14 +420,16 @@ pub fn add_root_checked_in(
                     canonical.display()
                 )));
             }
+            crate::libraries::id_of(&tx, name).map_err(AddRootError::Failed)?
         }
         InLibrary::Own => {
-            if let Some(why) = own_library_clash(conn, &canonical).map_err(AddRootError::Failed)? {
+            if let Some(why) = own_library_clash(&tx, &canonical).map_err(AddRootError::Failed)? {
                 return Err(AddRootError::Unusable(why));
             }
+            None
         }
         InLibrary::Id(id) => {
-            if crate::libraries::name_of(conn, id)
+            if crate::libraries::name_of(&tx, id)
                 .map_err(AddRootError::Failed)?
                 .is_none()
             {
@@ -422,17 +438,24 @@ pub fn add_root_checked_in(
                     canonical.display()
                 )));
             }
+            Some(id)
         }
+    };
+    if let Some(why) = clash(&tx, &canonical, joins).map_err(AddRootError::Failed)? {
+        return Err(AddRootError::Unusable(why));
     }
-
-    let root = add_root_in(conn, &canonical, library).map_err(AddRootError::Failed)?;
+    let root = add_root_in(&tx, &canonical, library).map_err(AddRootError::Failed)?;
+    tx.commit().map_err(|e| {
+        AddRootError::Failed(format!("committing root {}: {e}", canonical.display()))
+    })?;
     probed(conn, root)
 }
 
-/// `path` in canonical form, having checked that it exists, that this
-/// process can list it, and that it is neither inside nor around a root
-/// already held: [`add_root_checked_in`]'s first two validations.
-fn vetted(conn: &Connection, path: &Path) -> Result<PathBuf, AddRootError> {
+/// `path` in canonical form, having checked that it exists and that this
+/// process can list it: [`add_root_checked_in`]'s first validation. Disk only,
+/// so it runs before any transaction rather than holding the write lock
+/// across a slow mount.
+fn readable_dir(path: &Path) -> Result<PathBuf, AddRootError> {
     let canonical = path
         .canonicalize()
         .map_err(|e| AddRootError::Unusable(format!("{}: {e}", path.display())))?;
@@ -440,38 +463,129 @@ fn vetted(conn: &Connection, path: &Path) -> Result<PathBuf, AddRootError> {
     std::fs::read_dir(&canonical).map_err(|e| {
         AddRootError::Unusable(format!("{}: cannot be read: {e}", canonical.display()))
     })?;
+    Ok(canonical)
+}
 
-    for existing in roots(conn).map_err(AddRootError::Failed)? {
-        let chosen = canonical.display();
+/// Why `dir` cannot be a directory of `library` (`None`: one being made), read
+/// from the roots as `conn`'s transaction sees them. Overlapping-libraries spec
+/// §4 refuses:
+/// - a directory equal to any library's, which `root.path`'s UNIQUE would
+///   otherwise refuse as a store fault;
+/// - one inside or around a directory of `library`, whose settings and the
+///   other's would then both govern the files between them;
+/// - one inside or at a directory member of any root (see `reads_as_one_volume`).
+pub(crate) fn clash(
+    conn: &Connection,
+    dir: &Path,
+    library: Option<i64>,
+) -> Result<Option<String>, String> {
+    match beside(conn, dir, library, None)? {
+        Some(why) => Ok(Some(why)),
+        None => at_a_member(conn, dir),
+    }
+}
+
+/// `clash`'s first two refusals, with `except`, the directory a move moves, left
+/// out. A move asks only these: the third does not depend on the library, so
+/// moving a directory changes nothing it asks.
+pub(crate) fn beside(
+    conn: &Connection,
+    dir: &Path,
+    library: Option<i64>,
+    except: Option<i64>,
+) -> Result<Option<String>, String> {
+    let held: Vec<Root> = roots(conn)?
+        .into_iter()
+        .filter(|root| Some(root.id) != except)
+        .collect();
+    let chosen = dir.display();
+    for existing in &held {
+        // Named by its library, which is how the Libraries screen groups its
+        // directories, and not by its id, which no screen shows.
+        let name = || -> Result<String, String> {
+            Ok(crate::libraries::name_of(conn, existing.library_id)?.unwrap_or_default())
+        };
         // Equal paths first: each starts with the other, so the nesting check
         // would call a directory picked again inside itself. A held directory
         // inside the chosen one is named from the chosen one, so the reader is
         // told where it is rather than left to compare two full paths for the
         // part that differs. A chosen directory inside a held one keeps both full
         // paths: the held one is the shorter.
-        let said = if canonical == existing.path {
-            format!("{chosen} is already a directory")
-        } else if canonical.starts_with(&existing.path) {
+        let said = if dir == existing.path {
             format!(
-                "{chosen} is inside {}, which is already a directory",
-                existing.path.display()
+                "{chosen} is already a directory of the library `{}`",
+                name()?
             )
-        } else if let Ok(inner) = existing.path.strip_prefix(&canonical) {
+        } else if Some(existing.library_id) != library {
+            continue;
+        } else if dir.starts_with(&existing.path) {
             format!(
-                "{chosen} holds `{}`, which is already a directory",
-                inner.display()
+                "{chosen} is inside {}, which is already a directory of the same library, `{}`",
+                existing.path.display(),
+                name()?
+            )
+        } else if let Ok(inner) = existing.path.strip_prefix(dir) {
+            format!(
+                "{chosen} holds `{}`, which is already a directory of the same library, `{}`",
+                inner.display(),
+                name()?
             )
         } else {
             continue;
         };
-        // Named by its library, which is how the Libraries screen groups its
-        // directories, and not by its id, which no screen shows.
-        let library = crate::libraries::name_of(conn, existing.library_id)
-            .map_err(AddRootError::Failed)?
-            .map_or_else(String::new, |name| format!(" of the library `{name}`"));
-        return Err(AddRootError::Unusable(format!("{said}{library}")));
+        return Ok(Some(said));
     }
-    Ok(canonical)
+    Ok(None)
+}
+
+/// `clash`'s third refusal.
+fn at_a_member(conn: &Connection, dir: &Path) -> Result<Option<String>, String> {
+    let chosen = dir.display();
+    for existing in &roots(conn)? {
+        let Ok(under) = dir.strip_prefix(&existing.path) else {
+            continue;
+        };
+        for above in under.ancestors() {
+            let rel_path = above.to_string_lossy();
+            if !reads_as_one_volume(conn, existing.id, &rel_path)? {
+                continue;
+            }
+            let name = crate::libraries::name_of(conn, existing.library_id)?.unwrap_or_default();
+            if above == under {
+                return Ok(Some(format!(
+                    "{chosen} is a folder the library `{name}` reads as the pages of one volume"
+                )));
+            }
+            let member = if rel_path.is_empty() {
+                existing.path.clone()
+            } else {
+                existing.path.join(above)
+            };
+            return Ok(Some(format!(
+                "{chosen} is inside {}, which the library `{name}` reads as the pages of one volume",
+                member.display()
+            )));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether root `root_id`'s directory at `rel_path` is a directory member (a
+/// folder of page images read as one volume) or a byte-identical copy of one,
+/// as the last derive left them: the derive hashes only what it stages, onto
+/// each copy's own row, so a copy is found at its own path too. A root inside
+/// one leaves the member's page count short of what the reader serves. A root
+/// at one makes the folder its own nameless top entry, which the seeded rules
+/// read no series from, while spec §4 has the outer's walk skip a nested root,
+/// so the volume would be in neither library.
+fn reads_as_one_volume(conn: &Connection, root_id: i64, rel_path: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM scan_entry e JOIN member m ON m.sha256 = e.sha256
+                         WHERE e.root_id = ?1 AND e.rel_path = ?2 AND e.kind = ?3)",
+        rusqlite::params![root_id, rel_path, Kind::Dir.as_str()],
+        |r| r.get(0),
+    )
+    .map_err(|e| format!("reading whether {rel_path} is read as one volume: {e}"))
 }
 
 /// [`add_root_checked_in`]'s third validation, for a root just inserted: the
@@ -514,9 +628,10 @@ pub struct Created {
 /// A new library called `name` holding each of `paths`: every directory, or no
 /// library and no directory.
 ///
-/// Every path is vetted before anything is written, against the roots held
-/// and against the other paths given. The library and its directories are then
-/// inserted in one transaction. The watch probes run after it commits,
+/// Every path is read from disk and compared with the other paths given before
+/// the transaction opens. Inside it, each is compared with the roots held
+/// (`clash`, as a library being made), and the library and its directories are
+/// inserted. The watch probes run after it commits,
 /// because each waits up to [`PROBE_TIMEOUT`] and a write transaction held
 /// that long would stall every other writer.
 ///
@@ -542,7 +657,7 @@ pub fn create_library(
 
     let mut canonical: Vec<PathBuf> = Vec::with_capacity(paths.len());
     for path in paths {
-        let held = vetted(conn, path)?;
+        let held = readable_dir(path)?;
         if let Some(earlier) = canonical
             .iter()
             .find(|earlier| held.starts_with(earlier) || earlier.starts_with(&held))
@@ -560,10 +675,16 @@ pub fn create_library(
     let tx = crate::Nested::open(conn, "create_library")
         .map_err(|e| AddRootError::Failed(format!("starting to create `{name}`: {e}")))?;
     // Asked inside the transaction: a lookup before it would be a second
-    // statement for another writer to land between, and the name it found
-    // free would then fail at the insert as a store fault, not as the
-    // caller's mistake. The paths are vetted before it because vetting reads
-    // the disk.
+    // statement for another writer to land between. The name it found free, or
+    // the path it found unheld, would then fail at the insert as a store fault,
+    // and a directory another writer recorded would be compared without it and
+    // accepted (O204). The disk was read before it, so the write lock is not
+    // held across a slow mount.
+    for path in &canonical {
+        if let Some(why) = clash(&tx, path, None).map_err(AddRootError::Failed)? {
+            return Err(AddRootError::Unusable(why));
+        }
+    }
     if let Some(held) = crate::libraries::id_of(&tx, name).map_err(AddRootError::Failed)? {
         let stored = crate::libraries::name_of(&tx, held)
             .map_err(AddRootError::Failed)?
@@ -710,13 +831,14 @@ pub struct Removal {
 /// Every work whose *every* member sits under root `?1` alone — the works
 /// [`take_root`] deletes, and what [`Removal::works`] counts.
 ///
+/// **Asked after [`hand_back`]**, so a work is named only where no directory
+/// around or inside `?1` takes its files: those the directory around excludes,
+/// or, with none around, those outside every directory nested in `?1`.
+///
 /// **A subquery, reused by parameter rather than materialised into a
-/// `Vec<i64>` and an `IN (?, ?, …)` built for it.** Three of
-/// [`take_root`]'s statements need this exact set — the work count, the
-/// positions it holds, the notes it holds — and a fourth, the delete, needs
-/// it a fourth time; passing `id` as `?1` to each is simpler than binding a
-/// list of a size decided at runtime, and there is only ever one definition
-/// of "the works this root alone accounts for" to keep in step.
+/// `Vec<i64>` and an `IN (?, ?, …)` built for it.** [`take_root`]'s counts of
+/// works, positions and notes and its delete each need this exact set, and one
+/// definition keeps them in step.
 ///
 /// **Read from `member_root`, every directory that holds a copy of a member,
 /// not from `member.root_id`, the one copy its path names** (the
@@ -786,6 +908,217 @@ pub(crate) fn only_grant_holders(
         .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))
+}
+
+/// Hand what root `removed` holds to the directories that hold its files once
+/// it is gone (spec §4), in the caller's transaction before [`take_root`], so
+/// [`DOOMED_WORKS`] names only what none of them takes, and note in `carried`
+/// each work whose members move. Returns the `scan_entry` rows copied.
+/// **Copied rather than walked again:** a walk cannot run inside the removal's
+/// transaction, and the rehearsal counts without reading the disk.
+/// `dir_state` is not copied, so the receiving directory's next walk lists
+/// those directories whole.
+fn hand_back(tx: &Connection, removed: i64, carried: &mut Carried) -> Result<usize, String> {
+    let all = roots(tx)?;
+    let Some(root) = all.iter().find(|root| root.id == removed) else {
+        return Ok(0);
+    };
+    let failed = |what: &str, e: rusqlite::Error| {
+        format!("handing back {what} of {}: {e}", root.path.display())
+    };
+    let inside: Vec<(&Root, String, Excluder)> = all
+        .iter()
+        .filter_map(|other| {
+            let rel = crate::reach::nested_in(&other.path, &root.path)?;
+            Some((other, rel, Excluder::build(other.exclude_globs.as_deref())))
+        })
+        .collect();
+    let outer = around(&all, root)
+        .into_iter()
+        .max_by_key(|(outer, ..)| outer.path.components().count())
+        .map(|(outer, rel, _)| (outer, rel, Excluder::build(outer.exclude_globs.as_deref())));
+    let rows: Vec<(i64, String, String)> = tx
+        .prepare("SELECT id, rel_path, kind FROM scan_entry WHERE root_id = ?1")
+        .and_then(|mut stmt| {
+            stmt.query_map([removed], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect()
+        })
+        .map_err(|e| failed("the entries", e))?;
+    // The directory whose walk reaches `rel_path` once `removed` is gone, by
+    // id, and the path relative to it; `None` where no walk would.
+    let place = |rel_path: &str, is_dir: bool| -> Option<(i64, String)> {
+        // A path beneath a directory nested in `removed` is that directory's:
+        // `removed` holds one only where it has not scanned since it was added
+        // (`take_over`). The deepest such directory takes it where its walk
+        // would reach it; one its patterns exclude stays for `take_root` to
+        // count, as its first scan would drop it.
+        let nested = inside
+            .iter()
+            .filter(|(_, rel, _)| under_any(rel_path, std::slice::from_ref(rel)))
+            .max_by_key(|(_, rel, _)| rel.len());
+        if let Some((nested, rel, excluder)) = nested {
+            // `rel_path` is `rel` or beneath it, as `under_any` asked.
+            let own = rel_path
+                .strip_prefix(rel.as_str())
+                .map_or(rel_path, |rest| rest.strip_prefix('/').unwrap_or(rest));
+            return excluder
+                .visits(own, is_dir)
+                .then(|| (nested.id, own.to_string()));
+        }
+        // Any other path goes to the deepest directory around, where its walk
+        // would reach it. Asked per file, so a file-level pattern that
+        // governed nothing while the nested directory held the file governs
+        // it again.
+        let (outer, rel, excluder) = outer.as_ref()?;
+        let to_rel = if rel_path.is_empty() {
+            rel.clone()
+        } else {
+            join_rel(rel, rel_path)
+        };
+        excluder
+            .visits(&to_rel, is_dir)
+            .then_some((outer.id, to_rel))
+    };
+    let mut copied = 0;
+    // Each handed member path, joined as `derive::classify` joins it, and the
+    // directory it went to.
+    let mut went_to: HashMap<String, i64> = HashMap::new();
+    for (id, rel_path, kind) in &rows {
+        let Some((to, to_rel)) = place(rel_path, kind == Kind::Dir.as_str()) else {
+            continue;
+        };
+        // A row the receiving directory already holds is kept as it is.
+        copied += tx
+            .execute(
+                "INSERT INTO scan_entry
+                     (root_id, rel_path, kind, format, size, mtime, pages, sha256,
+                      first_seen, last_seen)
+                 SELECT ?1, ?2, kind, format, size, mtime, pages, sha256, first_seen, last_seen
+                   FROM scan_entry WHERE id = ?3
+                 ON CONFLICT (root_id, rel_path) DO NOTHING",
+                rusqlite::params![to, to_rel, id],
+            )
+            .map_err(|e| failed(rel_path, e))?;
+        went_to.insert(root.path.join(rel_path).to_string_lossy().into_owned(), to);
+    }
+    // Each member at a copied row's path follows the row, and migration 018's
+    // trigger moves its `member_root` row. A member left on `removed` is one
+    // `take_root` removes.
+    let members: Vec<(i64, String, i64, Option<String>)> = tx
+        .prepare(
+            "SELECT m.id, m.path, e.work_id, m.format FROM member m
+               JOIN edition e ON e.id = m.edition_id
+              WHERE m.root_id = ?1",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([removed], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect()
+        })
+        .map_err(|e| failed("the members", e))?;
+    // A member with no row, of a file `removed`'s own patterns came to exclude
+    // after its scan took it over, goes where a row at its path would: the
+    // directory around still reaches the file (spec decision 21). One whose
+    // file vanished is left for `take_root`, as before.
+    let held: HashSet<String> = rows
+        .iter()
+        .map(|(_, rel, _)| root.path.join(rel).to_string_lossy().into_owned())
+        .collect();
+    let own = Excluder::build(root.exclude_globs.as_deref());
+    let here = format!("{}/", root.path.to_string_lossy());
+    for (_, path, _, format) in &members {
+        if went_to.contains_key(path) || held.contains(path) {
+            continue;
+        }
+        let Some(rel) = path.strip_prefix(here.as_str()) else {
+            continue;
+        };
+        let is_dir = format.as_deref() == Some("dir");
+        if own.visits(rel, is_dir) {
+            continue;
+        }
+        if let Some((to, _)) = place(rel, is_dir) {
+            went_to.insert(path.clone(), to);
+        }
+    }
+    // Read before any member is re-pointed, and before the removal's derive,
+    // which can rekey the work: afterwards nothing names where its document is.
+    note_addresses(
+        tx,
+        members
+            .iter()
+            .filter(|(_, path, ..)| went_to.contains_key(path))
+            .map(|(_, _, work, _)| *work),
+        carried,
+    )?;
+    for (member, path, ..) in members {
+        if let Some(to) = went_to.get(&path) {
+            tx.execute(
+                "UPDATE member SET root_id = ?1 WHERE id = ?2",
+                rusqlite::params![to, member],
+            )
+            .map_err(|e| failed(&path, e))?;
+        }
+    }
+    Ok(copied)
+}
+
+/// Each work whose hand document a hand-over or a hand-back must carry, with
+/// the address the document is at.
+type Carried = BTreeMap<i64, PathBuf>;
+
+/// Add to `carried` the address of each of `works` it does not hold yet.
+///
+/// **The first address read stands.** A library removal hands back one
+/// directory after another, and a work read again after an earlier directory
+/// moved its members would name where its document now belongs, not where it
+/// is.
+fn note_addresses(
+    conn: &Connection,
+    works: impl IntoIterator<Item = i64>,
+    carried: &mut Carried,
+) -> Result<(), String> {
+    for work in works {
+        if let std::collections::btree_map::Entry::Vacant(slot) = carried.entry(work)
+            && let Some(address) = crate::hand::path_for(conn, work)?
+        {
+            slot.insert(address);
+        }
+    }
+    Ok(())
+}
+
+/// Move each document `carried` names to its work's address now: after the
+/// commit that moved the members, for [`crate::hand::rename_from`]'s reason,
+/// and before the derive that follows, whose `hand::reconcile` would
+/// otherwise report it as an orphan and write a fresh one at the new address.
+fn carry_documents(conn: &Connection, carried: &Carried) -> Result<(), String> {
+    for (work, old) in carried {
+        crate::hand::rename_from(conn, *work, old)?;
+    }
+    Ok(())
+}
+
+/// Each of `all` that a scan must not run beside while the directories
+/// `removed` go: those directories, each directory nested in one and each
+/// directory around one. [`hand_back`] gives files to the nested ones and to
+/// the deepest directory around only; refusing the others is conservative.
+pub fn removal_touches(all: &[Root], removed: &[i64]) -> Vec<Root> {
+    let gone: Vec<&Root> = all
+        .iter()
+        .filter(|root| removed.contains(&root.id))
+        .collect();
+    all.iter()
+        .filter(|root| {
+            gone.iter().any(|gone| {
+                gone.id == root.id
+                    || crate::reach::nested_in(&root.path, &gone.path).is_some()
+                    || crate::reach::nested_in(&gone.path, &root.path).is_some()
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 /// Count what root `id` alone accounts for, then delete it: its works, the
@@ -953,20 +1286,25 @@ fn emptied_by_removing(conn: &Connection, id: i64) -> Result<Option<i64>, String
 ///
 /// # Errors
 ///
-/// Returns an error if a read, [`take_root`] or `derive_with` is refused.
+/// Returns an error if a read, [`hand_back`], [`take_root`] or a derive fails.
 fn apply_removal(
     conn: &Connection,
     id: i64,
-) -> Result<(Removal, crate::derive::DeriveReport), String> {
+) -> Result<(Removal, crate::derive::DeriveReport, Carried), String> {
     let left_with_no_library = match emptied_by_removing(conn, id)? {
         Some(library_id) => only_grant_holders(conn, library_id)?,
         None => Vec::new(),
     };
+    // Spec §4: the directories around and inside `id` keep the files they
+    // would walk, so `take_root` counts only what none of them holds, and the
+    // rehearsal, which runs this function too, counts what the removal does.
+    let mut carried = Carried::new();
+    hand_back(conn, id, &mut carried)?;
     let mut removal = take_root(conn, id)?;
     removal.left_with_no_library = left_with_no_library;
     let derived = crate::derive::derive_with(conn, crate::derive::Documents::Skip)?;
 
-    Ok((removal, derived))
+    Ok((removal, derived, carried))
 }
 
 /// What removing root `id` would cost, found by actually doing it — inside a
@@ -1013,11 +1351,11 @@ pub fn removal_cost(
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
     let tx = crate::Nested::open(conn, "removal_cost")
         .map_err(|e| format!("starting the removal-cost transaction: {e}"))?;
-    let removal = apply_removal(&tx, id)?;
+    let (removal, derived, _carried) = apply_removal(&tx, id)?;
     // Deliberately not `tx.commit()` — see this function's own doc for why
     // dropping `tx` here, uncommitted, is the rollback.
     drop(tx);
-    Ok(removal)
+    Ok((removal, derived))
 }
 
 /// Remove root `id` for real: delete it, delete every work that lived
@@ -1061,16 +1399,21 @@ pub fn removal_cost(
 /// Returns an error if SQLite refuses the transaction, if [`apply_removal`]
 /// fails, if the commit itself is refused, or if the post-commit derive
 /// fails — in which case the removal itself has already committed and only
-/// the reconciliation pass over its aftermath did not complete.
+/// the reconciliation pass over its aftermath did not complete. Likewise if
+/// SQLite fails, after the commit, while carrying the hand documents of the
+/// works a hand-back moved: the removal has committed, the documents not yet
+/// carried stay where they were, and the reconciling derive is not run.
 pub fn remove_root(
     conn: &Connection,
     id: i64,
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
     let tx = crate::Nested::open(conn, "remove_root")
         .map_err(|e| format!("starting the root-removal transaction: {e}"))?;
-    let (removal, _predicted) = apply_removal(&tx, id)?;
+    let (removal, _predicted, carried) = apply_removal(&tx, id)?;
     tx.commit()
         .map_err(|e| format!("committing the removal of root {id}: {e}"))?;
+    carry_documents(conn, &carried)
+        .map_err(|e| format!("moving hand documents after removing root {id}: {e}"))?;
     let derived = crate::derive::derive(conn)
         .map_err(|e| format!("reconciling documents after removing root {id}: {e}"))?;
     Ok((removal, derived))
@@ -1091,7 +1434,7 @@ pub fn remove_root(
 fn apply_library_removal(
     conn: &Connection,
     library_id: i64,
-) -> Result<(Removal, crate::derive::DeriveReport), String> {
+) -> Result<(Removal, crate::derive::DeriveReport, Carried), String> {
     let dirs: Vec<i64> = conn
         .prepare("SELECT id FROM root WHERE library_id = ?1 ORDER BY id")
         .map_err(|e| format!("listing the directories of library {library_id}: {e}"))?
@@ -1107,14 +1450,18 @@ fn apply_library_removal(
         },
         ..Removal::default()
     };
+    let mut carried = Carried::new();
     for dir in dirs {
+        // As in `apply_removal`. Directories of one library never nest, so a
+        // directory given rows is another library's, not removed later here.
+        hand_back(conn, dir, &mut carried)?;
         let taken = take_root(conn, dir)?;
         total.works += taken.works;
         total.positions += taken.positions;
         total.notes += taken.notes;
     }
     let derived = crate::derive::derive_with(conn, crate::derive::Documents::Skip)?;
-    Ok((total, derived))
+    Ok((total, derived, carried))
 }
 
 /// What removing library `library_id` would cost, found by doing it inside a
@@ -1129,10 +1476,10 @@ pub fn library_removal_cost(
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
     let tx = crate::Nested::open(conn, "library_removal_cost")
         .map_err(|e| format!("starting the library-removal-cost transaction: {e}"))?;
-    let removal = apply_library_removal(&tx, library_id)?;
+    let (removal, derived, _carried) = apply_library_removal(&tx, library_id)?;
     // Not committed: dropping `tx` is the rollback, as in `removal_cost`.
     drop(tx);
-    Ok(removal)
+    Ok((removal, derived))
 }
 
 /// Remove library `library_id`: each of its directories, the works they alone
@@ -1142,22 +1489,34 @@ pub fn library_removal_cost(
 ///
 /// # Errors
 ///
-/// As [`remove_root`].
+/// As [`remove_root`], the carry after the commit included: the library is
+/// already removed when it fails, and the reconciling derive is not run.
 pub fn remove_library(
     conn: &Connection,
     library_id: i64,
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
     let tx = crate::Nested::open(conn, "remove_library")
         .map_err(|e| format!("starting the library-removal transaction: {e}"))?;
-    let (removal, _predicted) = apply_library_removal(&tx, library_id)?;
+    let (removal, _predicted, carried) = apply_library_removal(&tx, library_id)?;
     tx.commit()
         .map_err(|e| format!("committing the removal of library {library_id}: {e}"))?;
+    carry_documents(conn, &carried)
+        .map_err(|e| format!("moving hand documents after removing library {library_id}: {e}"))?;
     let derived = crate::derive::derive(conn)
         .map_err(|e| format!("reconciling documents after removing library {library_id}: {e}"))?;
     Ok((removal, derived))
 }
 
 // --- exclusion -------------------------------------------------------------
+
+/// Why a root's walk does not reach a path ([`Excluder::visits`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeptOut {
+    /// A name on the way starts with `.`, which the walk always skips.
+    DotName,
+    /// One of the root's exclude patterns names it or a directory above it.
+    Exclusion,
+}
 
 /// The patterns one root excludes from its own walk, compiled once per scan.
 ///
@@ -1177,7 +1536,7 @@ pub fn remove_library(
 /// column predates any validation — migration 1 — so a row can already hold
 /// anything, and treating a build failure as impossible would make it a
 /// crash rather than a complaint.
-struct Excluder {
+pub(crate) struct Excluder {
     gitignore: ignore::gitignore::Gitignore,
     /// One message per line that would not compile, naming the line.
     complaints: Vec<String>,
@@ -1186,7 +1545,7 @@ struct Excluder {
 impl Excluder {
     /// Compile `patterns`, one per line. `None` and `""` both mean
     /// "exclude nothing".
-    fn build(patterns: Option<&str>) -> Self {
+    pub(crate) fn build(patterns: Option<&str>) -> Self {
         let mut builder = ignore::gitignore::GitignoreBuilder::new("");
         let mut complaints = Vec::new();
         for line in patterns.unwrap_or_default().lines() {
@@ -1216,6 +1575,36 @@ impl Excluder {
             self.gitignore.matched(rel_path, is_dir),
             ignore::Match::Ignore(_)
         )
+    }
+
+    /// Whether this root's walk would reach `rel` (relative to the root,
+    /// `/`-separated): no name starts with `.` (`measure_dir`'s rule), and
+    /// [`Self::excludes`] answers false for each ancestor prefix, outermost
+    /// first, and for `rel` itself with `is_dir`.
+    ///
+    /// **The walk's own question, top-down**, so [`crate::reach`] and the walk
+    /// agree: [`Self::excludes_with_parents`] would let through a whitelisted
+    /// child of an excluded parent, which the walk never descends to.
+    pub(crate) fn visits(&self, rel: &str, is_dir: bool) -> bool {
+        self.keeps_out(rel, is_dir).is_none()
+    }
+
+    /// Why [`Self::visits`] answers false for `rel`: the first of its two
+    /// rules to stop the walk, asked in the walk's own order.
+    pub(crate) fn keeps_out(&self, rel: &str, is_dir: bool) -> Option<KeptOut> {
+        let mut prefix = String::new();
+        let mut names = rel.split('/').peekable();
+        while let Some(name) = names.next() {
+            if name.starts_with('.') {
+                return Some(KeptOut::DotName);
+            }
+            prefix = join_rel(&prefix, name);
+            let last = names.peek().is_none();
+            if self.excludes(&prefix, !last || is_dir) {
+                return Some(KeptOut::Exclusion);
+            }
+        }
+        None
     }
 
     /// Whether `rel_path` or any directory above it is excluded —
@@ -1334,6 +1723,15 @@ pub struct ScanReport {
     /// fold, which needs the material to have a home elsewhere. The works an
     /// exclusion covers are left standing and stale. See O92's entry.
     pub forgotten_by_exclusion: usize,
+    /// Rows taken from the directories around this one: their `scan_entry`
+    /// rows at or under it that this scan recorded too (spec §4: each file is
+    /// scanned once, under the deepest directory that holds it).
+    ///
+    /// **Never part of [`Self::gone`]**: the files are still on disk, and the
+    /// members under them move with the rows. A row around this one that this
+    /// scan did not record is counted as one of its own: `gone`, or
+    /// [`Self::forgotten_by_exclusion`] when this directory's patterns cover it.
+    pub taken_over: usize,
 }
 
 impl ScanReport {
@@ -1351,6 +1749,7 @@ impl ScanReport {
             excluded_files: 0,
             bad_exclude_patterns: Vec::new(),
             forgotten_by_exclusion: 0,
+            taken_over: 0,
         }
     }
 }
@@ -1401,6 +1800,10 @@ impl ScanReport {
 /// recorded as `last_scan_status = 'failed'` before it propagates — the one
 /// case this function tries hardest not to leave silent, since it is the
 /// one nobody chose.
+///
+/// It also returns an error if SQLite fails while the hand documents of the
+/// works taken over are carried after the commit. The walk's rows have then
+/// committed, and the documents not yet carried stay where they were.
 ///
 /// **Nothing is recorded for a root that is no longer the one walked.** A
 /// root can be removed while its walk runs, and its id given to a root added
@@ -1473,8 +1876,23 @@ pub fn mark_derive_failed(conn: &Connection, root: &Root) -> Result<(), String> 
 /// the three ways out below this function takes.
 fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
     let excluder = Excluder::build(root.exclude_globs.as_deref());
-    let (measured, walk) = measure(&root.path, 0, &excluder)?;
+    // Spec §4: a file under a directory nested in this one is that
+    // directory's to scan, by its rules, so this walk does not descend into
+    // it.
+    let all = roots(conn)?;
+    let nested: HashSet<PathBuf> = all
+        .iter()
+        .filter(|other| crate::reach::nested_in(&other.path, &root.path).is_some())
+        .map(|other| other.path.clone())
+        .collect();
+    let (measured, walk) = measure(&root.path, 0, &excluder, &nested)?;
     let seen = flatten(&measured);
+    // Every filesystem operation an entry might need — `sniff`, `member_pages`
+    // — happens below, before `BEGIN`. `held_for` is one query rather than one
+    // per entry, and both it and the resolving below run outside any
+    // transaction, so the write lock `tx` takes further down is held only
+    // across the pure-SQL loop that follows. See `Resolved`.
+    let held = held_for(conn, root.id)?;
 
     // §8.1, before a single row is written.
     //
@@ -1484,13 +1902,18 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
     // share actually looks like is an empty directory: the root itself and
     // nothing beneath it.
     if seen.len() <= 1 {
-        let held: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM scan_entry WHERE root_id = ?1",
-                [root.id],
-                |r| r.get(0),
-            )
-            .map_err(|e| format!("counting what this directory already held: {e}"))?;
+        // Rows under a directory skipped as nested wait for its scan to take
+        // them over, and rows under a link to one, which the walk met, are
+        // forgotten below: neither makes this directory look unmounted. The
+        // rows this scan would take over count, so an empty read at a nested
+        // directory's first scan cannot drop what the outer holds.
+        let held = held
+            .keys()
+            .filter(|rel_path| {
+                !under_any(rel_path, &walk.skipped) && !under_any(rel_path, &walk.aliases)
+            })
+            .count()
+            + takeable(conn, root, &all)?;
         if held > 1 {
             // A fourth cause, alongside the three below: this root's own
             // `exclude_globs` can cover everything beneath it just as
@@ -1523,8 +1946,29 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
                     walk.excluded_files,
                     if walk.excluded_files == 1 { "" } else { "s" },
                 )
-            } else {
+            } else if walk.skipped.is_empty() {
                 "If the directory has genuinely become empty, remove it.".to_string()
+            } else {
+                // It still shows a nested directory, so "remove it" is wrong.
+                // It does not claim the directory is not empty: a nested share
+                // mounted while this one's is not reads exactly like this.
+                let mut skipped = walk.skipped.clone();
+                skipped.sort();
+                let names = skipped
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let (what, whose) = if skipped.len() == 1 {
+                    ("a nested directory", "its")
+                } else {
+                    ("nested directories", "their")
+                };
+                format!(
+                    "It still shows {names}, {what} scanned on {whose} own, so do not remove \
+                     it; check that its share is mounted and what became of everything else \
+                     it held."
+                )
             };
             return Ok(ScanReport {
                 root: root.path.clone(),
@@ -1538,6 +1982,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
                 excluded_files: walk.excluded_files,
                 bad_exclude_patterns: excluder.complaints,
                 forgotten_by_exclusion: 0,
+                taken_over: 0,
                 refused: Some(format!(
                     "{} scanned empty while the library holds {held} entries for it — \
                      refusing to apply. An unmounted share, a bind mount that was not \
@@ -1551,12 +1996,6 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
         }
     }
 
-    // Every filesystem operation an entry might need — `sniff`, `member_pages`
-    // — happens here, before `BEGIN`. `held_for` is one query rather than one
-    // per entry, and both it and the resolving below run outside any
-    // transaction, so the write lock `tx` takes further down is held only
-    // across the pure-SQL loop that follows. See `Resolved`.
-    let held = held_for(conn, root.id)?;
     let resolved: HashMap<String, Resolved> = seen
         .iter()
         .filter(|entry| !unchanged(held.get(&entry.rel_path).copied(), entry))
@@ -1606,9 +2045,15 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
             &mut report,
         )?;
     }
-    let (gone, forgotten_by_exclusion) = forget_unseen(&tx, root.id, &seen, &held, &excluder)?;
+    let (gone, forgotten_by_exclusion) =
+        forget_unseen(&tx, root.id, &seen, &held, &excluder, &walk.skipped)?;
     report.gone = gone;
     report.forgotten_by_exclusion = forgotten_by_exclusion;
+    let recorded: HashSet<&str> = seen.iter().map(|entry| entry.rel_path.as_str()).collect();
+    let taken = take_over(&tx, root, &recorded, &excluder)?;
+    report.taken_over = taken.recorded;
+    report.gone += taken.gone;
+    report.forgotten_by_exclusion += taken.excluded;
     // Last use of `excluder` — moved out here rather than beside the other
     // `walk`-derived fields above, because `forget_unseen` still needs a
     // whole-struct `&excluder` to ask `excludes_with_parents`, and moving
@@ -1617,6 +2062,12 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
     report.bad_exclude_patterns = excluder.complaints;
     tx.commit()
         .map_err(|e| format!("committing the scan of {}: {e}", root.path.display()))?;
+    carry_documents(conn, &taken.carried).map_err(|e| {
+        format!(
+            "moving hand documents after the scan of {}: {e}",
+            root.path.display()
+        )
+    })?;
     Ok(report)
 }
 
@@ -1909,6 +2360,7 @@ fn forget_unseen(
     seen: &[Seen],
     held: &HashMap<String, Held>,
     excluder: &Excluder,
+    skipped: &[String],
 ) -> Result<(usize, usize), String> {
     let kept: HashSet<&str> = seen.iter().map(|entry| entry.rel_path.as_str()).collect();
     let mut gone = 0;
@@ -1916,6 +2368,11 @@ fn forget_unseen(
     let stale: Vec<(&str, Held)> = held
         .iter()
         .filter(|(rel_path, _)| !kept.contains(rel_path.as_str()))
+        // The walk did not look under a nested directory in `skipped`, so it
+        // cannot say a file there is gone: that directory's scan takes the row
+        // over ([`take_over`]). A row recorded through a symlink to one is
+        // forgotten, since no hand-over takes it.
+        .filter(|(rel_path, _)| !under_any(rel_path, skipped))
         .map(|(rel_path, held)| (rel_path.as_str(), *held))
         .collect();
     for (rel_path, held) in stale {
@@ -1939,6 +2396,215 @@ fn forget_unseen(
         }
     }
     Ok((gone, forgotten_by_exclusion))
+}
+
+/// Whether `rel_path` is one of `dirs` or beneath one, by whole names: `kidsx`
+/// is not beneath `kids`.
+fn under_any(rel_path: &str, dirs: &[String]) -> bool {
+    dirs.iter().any(|dir| {
+        rel_path == dir
+            || rel_path
+                .strip_prefix(dir.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+/// SQL for `column` at or beneath the path bound to `?first`, and at or
+/// beneath none of the `outside` paths bound after it.
+///
+/// `substr`, never `LIKE`: `_` and `%` occur in names. The `'/'` makes the
+/// match whole names, so `kidsx` is not beneath `kids`.
+fn under_but_not(column: &str, first: usize, outside: usize) -> String {
+    let at_or_under = |n: usize| {
+        format!("({column} = ?{n} OR substr({column}, 1, length(?{n}) + 1) = ?{n} || '/')")
+    };
+    let mut clause = at_or_under(first);
+    for n in first + 1..=first + outside {
+        clause.push_str(" AND NOT ");
+        clause.push_str(&at_or_under(n));
+    }
+    clause
+}
+
+/// Each directory around `root`, with `root`'s path relative to it and the
+/// paths, relative to it, of the directories nested in `root`.
+fn around<'a>(all: &'a [Root], root: &Root) -> Vec<(&'a Root, String, Vec<String>)> {
+    let inside: Vec<&Path> = all
+        .iter()
+        .filter(|other| crate::reach::nested_in(&other.path, &root.path).is_some())
+        .map(|other| other.path.as_path())
+        .collect();
+    all.iter()
+        .filter_map(|outer| {
+            let rel = crate::reach::nested_in(&root.path, &outer.path)?;
+            let inside_rel = inside
+                .iter()
+                .filter_map(|path| crate::reach::nested_in(path, &outer.path))
+                .collect();
+            Some((outer, rel, inside_rel))
+        })
+        .collect()
+}
+
+/// How many `scan_entry` rows [`take_over`] would take from the directories
+/// around `root`, for §8.1's count.
+fn takeable(conn: &Connection, root: &Root, all: &[Root]) -> Result<usize, String> {
+    let mut rows = 0;
+    for (outer, rel, inside_rel) in around(all, root) {
+        let mut bound: Vec<&dyn rusqlite::ToSql> = vec![&outer.id, &rel];
+        bound.extend(inside_rel.iter().map(|rel| rel as &dyn rusqlite::ToSql));
+        let count: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT count(*) FROM scan_entry WHERE root_id = ?1 AND {}",
+                    under_but_not("rel_path", 2, inside_rel.len())
+                ),
+                bound.as_slice(),
+                |r| r.get(0),
+            )
+            .map_err(|e| {
+                format!(
+                    "counting what {} holds under {}: {e}",
+                    outer.path.display(),
+                    root.path.display()
+                )
+            })?;
+        rows += usize::try_from(count).unwrap_or(usize::MAX);
+    }
+    Ok(rows)
+}
+
+/// The rows [`take_over`] took, each counted as this scan counts its own.
+#[derive(Default)]
+struct Taken {
+    /// Rows this walk recorded too: [`ScanReport::taken_over`].
+    recorded: usize,
+    /// Rows this walk did not meet and its patterns do not cover.
+    gone: usize,
+    /// Rows this directory's patterns cover.
+    excluded: usize,
+    /// Each work whose members moved, for the scan to carry its hand document
+    /// once it commits.
+    carried: Carried,
+}
+
+/// Take over what each directory around `root` holds under it: delete its
+/// `scan_entry` and `dir_state` rows at or beneath `root`, and move to `root`
+/// its members of the files this walk recorded.
+///
+/// Spec §4: each file is scanned once, under the deepest directory that holds
+/// it. Run in the scan's transaction, after its own rows are recorded, so a
+/// file this walk also met is held by one directory or the other at every
+/// commit. A row this walk did not record is dropped by `root`'s rules, and
+/// counted as [`forget_unseen`] counts one of `root`'s own.
+fn take_over(
+    conn: &Connection,
+    root: &Root,
+    recorded: &HashSet<&str>,
+    excluder: &Excluder,
+) -> Result<Taken, String> {
+    // Read inside the transaction: the directories as they stand at commit.
+    let all = roots(conn)?;
+    // Rows beneath a directory nested in `root` are that directory's, taken at
+    // its own scan; taken here, they would go to a walk that never reads them.
+    let inside_paths: Vec<String> = all
+        .iter()
+        .filter(|other| crate::reach::nested_in(&other.path, &root.path).is_some())
+        .map(|other| other.path.to_string_lossy().into_owned())
+        .collect();
+    let here = root.path.to_string_lossy().into_owned();
+    // Each recorded file's member path, joined as `derive::classify` joins it.
+    let recorded_paths: HashSet<String> = recorded
+        .iter()
+        .map(|rel| root.path.join(rel).to_string_lossy().into_owned())
+        .collect();
+    let mut taken = Taken::default();
+    for (outer, rel, inside_rel) in around(&all, root) {
+        let failed = |what: &str, e: rusqlite::Error| {
+            format!(
+                "taking over {what} from {} for {}: {e}",
+                outer.path.display(),
+                root.path.display()
+            )
+        };
+        let rows = under_but_not("rel_path", 2, inside_rel.len());
+        let mut bound: Vec<&dyn rusqlite::ToSql> = vec![&outer.id, &rel];
+        bound.extend(inside_rel.iter().map(|rel| rel as &dyn rusqlite::ToSql));
+        let held: Vec<(String, String)> = conn
+            .prepare(&format!(
+                "SELECT rel_path, kind FROM scan_entry WHERE root_id = ?1 AND {rows}"
+            ))
+            .and_then(|mut stmt| {
+                stmt.query_map(bound.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect()
+            })
+            .map_err(|e| failed("its entries", e))?;
+        for (rel_path, kind) in &held {
+            // `rel_path` is `rel` or beneath it, as the query asked.
+            let own = rel_path
+                .strip_prefix(rel.as_str())
+                .map_or(rel_path.as_str(), |rest| {
+                    rest.strip_prefix('/').unwrap_or(rest)
+                });
+            if recorded.contains(own) {
+                taken.recorded += 1;
+            } else if excluder.excludes_with_parents(own, kind == Kind::Dir.as_str()) {
+                taken.excluded += 1;
+            } else {
+                taken.gone += 1;
+            }
+        }
+        conn.execute(
+            &format!("DELETE FROM scan_entry WHERE root_id = ?1 AND {rows}"),
+            bound.as_slice(),
+        )
+        .map_err(|e| failed("its entries", e))?;
+        conn.execute(
+            &format!("DELETE FROM dir_state WHERE root_id = ?1 AND {rows}"),
+            bound.as_slice(),
+        )
+        .map_err(|e| failed("its directory states", e))?;
+        let under = under_but_not("m.path", 2, inside_paths.len());
+        let mut bound: Vec<&dyn rusqlite::ToSql> = vec![&outer.id, &here];
+        bound.extend(inside_paths.iter().map(|path| path as &dyn rusqlite::ToSql));
+        let members: Vec<(i64, String, i64)> = conn
+            .prepare(&format!(
+                "SELECT m.id, m.path, e.work_id FROM member m JOIN edition e ON e.id = m.edition_id
+                  WHERE m.root_id = ?1 AND {under}"
+            ))
+            .and_then(|mut stmt| {
+                stmt.query_map(bound.as_slice(), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect()
+            })
+            .map_err(|e| failed("its members", e))?;
+        // Only the members of files this walk recorded move, a stale edition's
+        // included, since it shares a recorded file's path: a grant of `root`'s
+        // library then reaches the edition the derive keeps beside a renamed
+        // one. A member of a file `root`'s patterns exclude stays with `outer`,
+        // whose accounts saw it, so `root`'s accounts never do and removing
+        // `root` loses nothing of it (spec decision 21).
+        let moving: Vec<&(i64, String, i64)> = members
+            .iter()
+            .filter(|(_, path, _)| recorded_paths.contains(path.as_str()))
+            .collect();
+        // Read before this outer's members are re-pointed: a work met again
+        // under a later outer keeps the address read here.
+        note_addresses(
+            conn,
+            moving.iter().map(|(_, _, work)| *work),
+            &mut taken.carried,
+        )?;
+        // Migration 018's trigger moves only each member's own `member_root`
+        // row; the next derive rewrites its copies' (`write_roots`).
+        for (member, path, _) in moving {
+            conn.execute(
+                "UPDATE member SET root_id = ?1 WHERE id = ?2",
+                rusqlite::params![root.id, member],
+            )
+            .map_err(|e| failed(path, e))?;
+        }
+    }
+    Ok(taken)
 }
 
 // --- measure: the tree, gathered with no side effects -----------------------
@@ -2017,6 +2683,14 @@ struct Walk {
     unreadable: Vec<String>,
     excluded_dirs: Vec<String>,
     excluded_files: usize,
+    /// Nested directories met at their own path and not descended into, by
+    /// relative path. The rows under them are left for that directory's scan
+    /// (`forget_unseen`, §8.1).
+    skipped: Vec<String>,
+    /// Symlinks to a nested directory, met and not descended into. No
+    /// hand-over takes the rows recorded through one, so `forget_unseen`
+    /// forgets them; §8.1 does not count them, since the walk met the link.
+    aliases: Vec<String>,
 }
 
 /// Measure `path` and everything beneath it, recursively, and every directory
@@ -2035,9 +2709,17 @@ struct Walk {
 /// nests past [`MAX_DEPTH`] directories anywhere beneath it — see
 /// [`MeasureError`] for why the second one is not caught and skipped the way
 /// the first is when it happens below the top.
-fn measure(path: &Path, depth: u32, excluder: &Excluder) -> Result<(Measured, Walk), String> {
+///
+/// A directory in `nested`, which holds canonical paths, is not descended
+/// into: see [`measure_dir`].
+fn measure(
+    path: &Path,
+    depth: u32,
+    excluder: &Excluder,
+    nested: &HashSet<PathBuf>,
+) -> Result<(Measured, Walk), String> {
     let mut walk = Walk::default();
-    let measured = measure_dir(path, String::new(), depth, excluder, &mut walk)
+    let measured = measure_dir(path, String::new(), depth, excluder, nested, &mut walk)
         .map_err(MeasureError::into_message)?;
     // `walk.excluded_dirs` is appended in `read_dir` order, which is not stable
     // across identical scans of an unchanged tree. Sorted here, once, over the
@@ -2052,12 +2734,14 @@ fn measure(path: &Path, depth: u32, excluder: &Excluder) -> Result<(Measured, Wa
 /// message for every descendant directory this call meets and cannot list;
 /// `path` itself refusing to list is returned as an `Err` instead, which is
 /// what lets the caller tell "this one directory is unreadable" from "the
-/// directory I was just asked to measure is" — see [`MeasureError`].
+/// directory I was just asked to measure is" — see [`MeasureError`]. A child
+/// directory in `nested` is skipped and named in `walk.skipped`.
 fn measure_dir(
     path: &Path,
     rel_path: String,
     depth: u32,
     excluder: &Excluder,
+    nested: &HashSet<PathBuf>,
     walk: &mut Walk,
 ) -> Result<Measured, MeasureError> {
     if depth > MAX_DEPTH {
@@ -2114,6 +2798,26 @@ fn measure_dir(
             }
             continue;
         }
+        // Spec §4: a nested directory scans its files by its own rules, once.
+        // A symlink is compared by its target, so a link to a nested directory
+        // does not read its files back under this one's rules. After the
+        // exclusion, so a directory this one's patterns exclude is reported
+        // as excluded, as reach treats it.
+        if is_dir && !nested.is_empty() {
+            let is_link = entry.file_type().is_ok_and(|kind| kind.is_symlink());
+            if is_link {
+                if child_path
+                    .canonicalize()
+                    .is_ok_and(|target| nested.contains(&target))
+                {
+                    walk.aliases.push(child_rel);
+                    continue;
+                }
+            } else if nested.contains(&child_path) {
+                walk.skipped.push(child_rel);
+                continue;
+            }
+        }
         entry_count += 1;
         if is_dir {
             dir_entries.push((child_rel, child_path));
@@ -2129,7 +2833,7 @@ fn measure_dir(
     let mut pages = here;
     let mut children = Vec::new();
     for (child_rel, child_path) in dir_entries {
-        match measure_dir(&child_path, child_rel, depth + 1, excluder, walk) {
+        match measure_dir(&child_path, child_rel, depth + 1, excluder, nested, walk) {
             Ok(child) => {
                 if let Some(child_pages) = child.pages {
                     pages += child_pages;

@@ -16,6 +16,7 @@ const walk = (over: Partial<Walk> = {}): Walk => ({
   excluded_files: 0,
   bad_exclude_patterns: [],
   forgotten_by_exclusion: 0,
+  taken_over: 0,
   ...over,
 })
 
@@ -87,11 +88,29 @@ describe('ScanReport', () => {
 
   it('draws every field of both reports', () => {
     // Forty-seven: twelve from the walk, thirty-one from the derive, and the
-    // four causes O90 draws inside `unreadable`. Counted rather than
-    // spot-checked, because the failure this guards is a field quietly
-    // dropped on the way out.
+    // four causes O90 draws inside `unreadable`. The walk's thirteenth,
+    // `taken_over`, is drawn only when it is not zero, which it is not here.
+    // Counted rather than spot-checked, because the failure this guards is a
+    // field quietly dropped on the way out.
     const host = mount(<ScanReport outcome={finished()} />)
     expect(host.querySelectorAll('[data-field]')).toHaveLength(47)
+  })
+
+  it('draws Taken over beside Gone when the walk took rows over, and not at all when it took none', () => {
+    const took = mount(
+      <ScanReport outcome={finished({ scan: walk({ taken_over: 4 }) })} />,
+    )
+    const fields = [...took.querySelectorAll('.walk [data-field]')].map((el) =>
+      el.getAttribute('data-field'),
+    )
+    expect(fields[fields.indexOf('gone') + 1]).toBe('taken_over')
+    const row = took.querySelector('[data-field="taken_over"]')
+    expect(row?.querySelector('dt')?.textContent).toBe('Taken over')
+    expect(row?.querySelector('dd')?.textContent).toBe('4')
+    expect(took.querySelectorAll('[data-field]')).toHaveLength(48)
+
+    const none = mount(<ScanReport outcome={finished()} />)
+    expect(none.querySelector('[data-field="taken_over"]')).toBeNull()
   })
 
   it('says why each unreadable entry was skipped, cause by cause', () => {

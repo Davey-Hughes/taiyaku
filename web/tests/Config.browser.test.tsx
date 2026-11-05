@@ -42,7 +42,7 @@ import { expectDisclosure } from './support/disclosure'
 import { press, submit, typeInto } from './support/input'
 import { boxOf, expectKept } from './support/kept'
 import { buttonSaying, byRole } from './support/located'
-import { mount } from './support/mount'
+import { mount, rerender } from './support/mount'
 import {
   areaOf,
   coarseRulesOn,
@@ -113,7 +113,9 @@ vi.mock('../src/backup', async (importOriginal) => ({
 
 // --- fixtures, copied from each screen's own jsdom test ---------------------
 
-const root = (over: Partial<config.Root> = {}): config.Root => ({
+const root = (
+  over: Partial<librariesApi.LibraryDir> = {},
+): librariesApi.LibraryDir => ({
   id: 3,
   path: '/srv/manga',
   edition_key: 'en',
@@ -124,6 +126,8 @@ const root = (over: Partial<config.Root> = {}): config.Root => ({
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  nested: [],
+  inside: [],
   ...over,
 })
 
@@ -138,7 +142,7 @@ const root = (over: Partial<config.Root> = {}): config.Root => ({
 const longPathRoot = root({ path: '/home/davey/temp/manga-test/Volumes' })
 
 /** A library of one directory, as the grant editor lists it. */
-const libraryOf = (dir: config.Root): librariesApi.Library => ({
+const libraryOf = (dir: librariesApi.LibraryDir): librariesApi.Library => ({
   id: 70,
   name: 'Manga',
   works: 0,
@@ -147,7 +151,7 @@ const libraryOf = (dir: config.Root): librariesApi.Library => ({
 })
 
 /** One library holding `dirs`, as the list route sends it. */
-const holding = (...dirs: config.Root[]) => ({
+const holding = (...dirs: librariesApi.LibraryDir[]) => ({
   libraries: [{ id: 1, name: 'Manga', works: 0, books: 0, dirs }],
 })
 
@@ -198,6 +202,7 @@ const walk = (over: Partial<Walk> = {}): Walk => ({
   excluded_files: 0,
   bad_exclude_patterns: [],
   forgotten_by_exclusion: 0,
+  taken_over: 0,
   ...over,
 })
 
@@ -316,6 +321,9 @@ beforeEach(() => {
   })
   vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
     library_id: 1,
+    held_removals: [],
+    moves_held: false,
+    scans: [],
     running: false,
     elapsed_secs: null,
     dirs: [],
@@ -1765,7 +1773,7 @@ describe('the Configuration screens at 390px', () => {
   })
 
   /** The page of a library of one directory, named `name`, in the shell. */
-  async function libraryNamed(name: string, dir: config.Root) {
+  async function libraryNamed(name: string, dir: librariesApi.LibraryDir) {
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
       libraries: [{ ...holding(dir).libraries[0], name }],
     })
@@ -2617,6 +2625,149 @@ describe('the Configuration screens at desktop width', () => {
       const label = fact.querySelector('dt')?.textContent ?? ''
       expect(dd.top, label).toBeCloseTo(dt.top, 0)
       expect(dd.left, label).toBeGreaterThan(dt.right - 1)
+    }
+  })
+
+  it('puts the line of the directory it sits in and the fold of those inside it under the facts, a step apart and from their start; the fold opens to aligned rows, by a real click and by Enter, and keeps the page from scrolling sideways at a phone’s width', async () => {
+    const between: librariesApi.LibraryDir = {
+      ...longPathRoot,
+      inside: [
+        {
+          path: '/home/davey/temp/manga-test',
+          library: 'Everything',
+          shows: true,
+          kept_out_by: null,
+        },
+      ],
+      nested: [
+        {
+          id: 9,
+          path: '/home/davey/temp/manga-test/Volumes/Kids in a long directory name',
+          library: 'Kids',
+          shown: false,
+          kept_out_by: 'exclusion',
+        },
+        {
+          id: 10,
+          path: '/home/davey/temp/manga-test/Volumes/old',
+          library: 'Archive',
+          shown: true,
+          kept_out_by: null,
+        },
+      ],
+    }
+    for (const [width, height] of [
+      [1280, 900],
+      [390, 844],
+    ]) {
+      await page.viewport(width, height)
+      vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(between))
+      const host = await opened(DIR)
+      const facts = (
+        host.querySelector('.dir-page .page-description > .regime') as Element
+      ).getBoundingClientRect()
+      const nesting = host.querySelector(
+        '.dir-page .page-description > .nesting',
+      ) as HTMLElement
+      const parts = [...nesting.children].map((part) =>
+        part.getBoundingClientRect(),
+      )
+      expect(
+        [...nesting.children].map((part) => part.tagName),
+        `${width}`,
+      ).toEqual(['P', 'DETAILS'])
+      // A step under what is above it, each starting where the facts do.
+      let above = facts.bottom
+      for (const part of parts) {
+        expect(part.top - above, `${width}`).toBeCloseTo(4, 0)
+        expect(part.left, `${width}`).toBeCloseTo(facts.left, 0)
+        above = part.bottom
+      }
+
+      const summary = nesting.querySelector('details > summary') as HTMLElement
+      await expectDisclosure(summary, `the folders inside, at ${width}`)
+      // Each column starts where the row above's does.
+      const rows = [...nesting.querySelectorAll('details li')].map((row) =>
+        [...row.children].map((cell) => cell.getBoundingClientRect().left),
+      )
+      expect(rows, `${width}`).toHaveLength(2)
+      for (const [column, left] of rows[0].entries()) {
+        expect(rows[1][column], `${width}, column ${column}`).toBeCloseTo(
+          left,
+          0,
+        )
+      }
+      assertNoSidewaysScroll(host)
+
+      // The click left focus on the summary, and Enter folds it again.
+      expect(document.activeElement, `${width}`).toBe(summary)
+      await act(async () => {
+        await userEvent.keyboard('{Enter}')
+      })
+      expect((summary.parentElement as HTMLDetailsElement).open).toBe(false)
+      act(() => rerender(<div />))
+    }
+  })
+  it('draws the library page’s scan lines alike, muted at the UI size, its own scan’s and another library’s, and keeps both within the page at a phone’s width', async () => {
+    const outer: librariesApi.LibraryDir = {
+      ...longPathRoot,
+      nested: [
+        {
+          id: 9,
+          path: '/home/davey/temp/manga-test/Volumes/Kids in a long directory name/weekly',
+          library: 'Kids',
+          shown: true,
+          kept_out_by: null,
+        },
+      ],
+    }
+    const status = (own: boolean): librariesApi.LibraryScanStatus => ({
+      library_id: 1,
+      running: true,
+      elapsed_secs: 3,
+      dirs: [
+        { root_id: 3, running: own },
+        { root_id: 9, running: true },
+      ],
+      held_removals: own ? [] : [3],
+      moves_held: false,
+      scans: own
+        ? [{ library: 'Manga', root_ids: [3, 9] }]
+        : [{ library: 'Kids', root_ids: [9] }],
+    })
+    for (const own of [false, true]) {
+      for (const [width, height] of [
+        [1280, 900],
+        [390, 844],
+      ]) {
+        const at = `${own ? 'own' : 'Kids'}, ${width}`
+        await page.viewport(width, height)
+        vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(outer))
+        vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue(status(own))
+        const host = await opened(LIBRARY)
+        const line = host.querySelector(
+          '.library-page > .scanning',
+        ) as HTMLElement
+        expect(line?.textContent, at).toMatch(
+          own
+            ? /^A scan is running in this library…/
+            : /^Kids is scanning Kids in a long directory name\/weekly\/, which Manga shows\.$/,
+        )
+        const muted = getComputedStyle(
+          host.querySelector('.library-page .page-description') as Element,
+        )
+        const drawn = getComputedStyle(line)
+        expect(drawn.color, at).toBe(muted.color)
+        expect(drawn.fontSize, at).toBe(muted.fontSize)
+        const main = (
+          host.querySelector('main') as HTMLElement
+        ).getBoundingClientRect()
+        expect(line.getBoundingClientRect().right, at).toBeLessThanOrEqual(
+          main.right,
+        )
+        assertNoSidewaysScroll(host)
+        act(() => rerender(<div />))
+      }
     }
   })
 })

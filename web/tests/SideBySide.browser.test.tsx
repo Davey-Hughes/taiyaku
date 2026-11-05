@@ -482,6 +482,7 @@ const scanned = (path: string): config.FinishedScan => ({
     excluded_files: 0,
     bad_exclude_patterns: [],
     forgotten_by_exclusion: 0,
+    taken_over: 0,
   },
   derive: emptyDerive,
 })
@@ -608,6 +609,9 @@ const AT_A_PHONE: Array<{
       vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
         Promise.resolve({
           library_id: id,
+          held_removals: [],
+          moves_held: false,
+          scans: [],
           running: scanning,
           elapsed_secs: scanning ? 1 : null,
           dirs: [1, 2].map((root_id) => ({ root_id, running: scanning })),

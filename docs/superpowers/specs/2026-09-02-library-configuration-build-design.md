@@ -400,6 +400,10 @@ the one with no equivalent anywhere in the tree today: the path exists and is
 readable *by the server process*; it is not nested inside an existing root and
 no existing root is nested inside it, in both directions; and `watch::probe`
 runs immediately so the regime is known before the first scan.
+*The overlapping-libraries design of 2026-11-02 has since narrowed the nesting
+check to the roots of one library: a root inside or around another library's
+is accepted, save one at or inside a folder another root reads as one volume.
+See `2026-11-02-overlapping-libraries-design.md` §4.*
 
 **Provenance needs one constant made public.** `rules::ROOT_FALLBACK` is a
 private `const` today, and an API that returns per-field provenance has to say
@@ -449,6 +453,9 @@ Every C4 §7 test that falls inside these two PRs, plus four this design adds:
   C3 §3's `proposal.created_rule_id`.
 - **A nested root is refused in both directions**, and a path the server cannot
   read is refused with which of the two it was.
+  *Since the overlapping-libraries design of 2026-11-02, a nested root is
+  refused only within one library (§4 of
+  `2026-11-02-overlapping-libraries-design.md`).*
 - **Removing a root reports work, progress and note counts before acting**, and
   a removal followed by a re-read shows the works gone rather than orphaned.
 - **A second scan of a root in flight is refused**, naming the one running.

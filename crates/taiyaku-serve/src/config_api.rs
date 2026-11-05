@@ -1329,6 +1329,7 @@ fn scan_report_json(report: &scan::ScanReport) -> serde_json::Value {
         excluded_files,
         bad_exclude_patterns,
         forgotten_by_exclusion,
+        taken_over,
     } = report;
     serde_json::json!({
         "root": root.to_string_lossy(),
@@ -1338,6 +1339,7 @@ fn scan_report_json(report: &scan::ScanReport) -> serde_json::Value {
         "updated": updated,
         "gone": gone,
         "forgotten_by_exclusion": forgotten_by_exclusion,
+        "taken_over": taken_over,
         "refused": refused,
         "unreadable_dirs": unreadable_dirs,
         "excluded_dirs": excluded_dirs,
@@ -1573,7 +1575,12 @@ pub(crate) async fn start_scan(
     };
 
     let started = Instant::now();
-    if let Err(refused) = crate::scan_jobs::reserve(&state, std::slice::from_ref(&root), started) {
+    if let Err(refused) = crate::scan_jobs::reserve(
+        &state,
+        std::slice::from_ref(&root),
+        started,
+        root.library_id,
+    ) {
         return AdminAnswer::Refused(refused).into_response();
     }
     crate::scan_jobs::spawn(state, vec![root], started, crate::scan_jobs::Reread::Dir);
@@ -1836,14 +1843,14 @@ pub(crate) struct DryRunQuery {
 /// body names those accounts (`left_with_no_library`), for the dry run as for
 /// the removal.
 ///
-/// **A removal is refused, 409, while a scan of the directory is reserved**,
-/// for the dry run and the removal alike, in
-/// [`crate::scan_jobs::removal_waits_for`]'s words. The registry is asked when
+/// **A removal is refused, 409, while a scan of a directory it touches is
+/// reserved** ([`scan::removal_touches`]), for the dry run and the removal alike,
+/// in [`crate::scan_jobs::removal_waits_for`]'s words. The registry is asked when
 /// the request arrives, and a scan can be reserved after that and before the
 /// removal commits; holding the registry's lock across a removal's derive
-/// would stall every status read. What covers that window is
-/// [`crate::scan_jobs::run`]'s reading of its directory again under the job lock:
-/// a scan reserved in it walks nothing where the directory is gone.
+/// would stall every status read. For this directory, [`crate::scan_jobs::run`]
+/// covers that window by reading it again under the job lock; the comment at
+/// the check says what covers a directory around or inside it.
 ///
 /// **That does not reach a walk already past its re-read when the removal
 /// commits**, since the removal takes no job lock and commits on a connection
@@ -1879,16 +1886,20 @@ pub(crate) async fn delete_root(
     let scans_state = Arc::clone(&state);
     let removed = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(AdminAnswer::Failed)?;
-        let Some(root) = scan::roots(&working)
-            .map_err(AdminAnswer::Failed)?
-            .into_iter()
-            .find(|root| root.id == id)
-        else {
+        let all = scan::roots(&working).map_err(AdminAnswer::Failed)?;
+        if !all.iter().any(|root| root.id == id) {
             return Err(AdminAnswer::MissingDir(id));
-        };
-        if crate::scan_jobs::a_scan_reserved_on(&state, std::slice::from_ref(&root)).is_some() {
+        }
+        // A scan reserved after this check: of a directory around this one,
+        // its walk skipped this one, and `forget_unseen` leaves the rows handed
+        // back under it alone; of one nested in it, rows handed in after its
+        // walk read what it held make its `record` hit `UNIQUE (root_id,
+        // rel_path)`, so that scan fails, records nothing, and a retry works.
+        if let Some(scanning) =
+            crate::scan_jobs::a_scan_reserved_on(&state, &scan::removal_touches(&all, &[id]))
+        {
             return Err(AdminAnswer::Refused(crate::scan_jobs::removal_waits_for(
-                &root,
+                scanning,
                 "the directory",
             )));
         }

@@ -310,6 +310,10 @@ library's size makes that false, narrowing is a later change.
 - **`GET /api/library/status` lists libraries, not roots.** Each entry gives the
   library's id, name and folder count. `RootCard` gives way to a `LibraryCard`.
   A restricted account sees only granted libraries.
+  *This holds under the overlapping-libraries design of 2026-11-02: an
+  account still sees only the libraries it is granted, though the books a
+  granted library shows can include those of another library's directory
+  nested in its own. See `2026-11-02-overlapping-libraries-design.md` §4.*
 - **`?library=N` replaces `?root=N`**, and reaches the grid (`browse::series`,
   `browse::unfiled`), search (`browse::search`) and home (`browse::home`).
   Today only the grid narrows. Narrowing by library is narrowing to that
@@ -477,7 +481,11 @@ admin-only. It answers only beneath configured **mount prefixes**:
 
 Adding a folder still goes through `add_root_checked`. The browser is a way to
 find a path, not a second way to add one, so the nesting refusal and the probe
-are unchanged.
+are unchanged. *The overlapping-libraries design of 2026-11-02 has since
+narrowed the nesting refusal to one library: a folder inside or around
+another of the same library is refused, and one inside or around another
+library's is accepted, save one at or inside a folder another directory reads
+as one volume. See `2026-11-02-overlapping-libraries-design.md` §4.*
 
 ### 6.2 Moving a folder (F2b)
 
@@ -641,6 +649,11 @@ The user creates the libraries in the UI before the first scan:
 - **No change to how a folder is walked**, or to the nesting rule. Two
   libraries cannot share a folder, and one library's folder cannot sit inside
   another's.
+  *The overlapping-libraries design of 2026-11-02 has since changed both: one
+  library's folder can sit inside another's, and the walk of the outer folder
+  skips it, so a file is scanned under the deepest folder that holds it. Two
+  libraries still cannot share a folder. See
+  `2026-11-02-overlapping-libraries-design.md` §4.*
 - **No EPUB or PDF reading** (§7).
 - **No narrowing of the derive pass to one library** (§2.2).
 

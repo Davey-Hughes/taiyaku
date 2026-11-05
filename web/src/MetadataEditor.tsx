@@ -609,8 +609,8 @@ export function MetadataEditor({
           {/*
            * **A forecast weakened to what the outcome copy can report.** It
            * does not promise that `<content_key>.library.json` moves with the
-           * key, the one thing `key-moved-alone` below has to take back:
-           * `hand::rename_for_rekey` answers `false` for five causes, and two
+           * key, the one thing `key-moved-alone` below has to take back: for
+           * a stamp `hand::rename_from` answers `false` for five causes, and two
            * of them — a file already at the new address, and a root that
            * refuses the rename — leave the document stranded at the old key.
            * Both paragraphs are on screen together after a stamp, so such a
@@ -837,8 +837,8 @@ export function MetadataEditor({
                 ) : (
                   /*
                    * O81, stated as the uncertainty it is.
-                   * `hand::rename_for_rekey` answers `false` for five
-                   * causes: no on-disk address, no parent, nothing at the
+                   * For a stamp, `hand::rename_from` answers `false` for
+                   * five causes: no on-disk address, no parent, nothing at the
                    * old key, something already at the new one, and a rename
                    * the root refused. The last two leave the document
                    * stranded at the old key; the first three are benign.

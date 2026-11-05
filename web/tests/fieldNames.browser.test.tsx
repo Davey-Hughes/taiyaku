@@ -114,7 +114,7 @@ vi.mock('../src/splitEditions', async (importOriginal) => ({
   listSplitEditions: vi.fn(),
 }))
 
-const root: config.Root = {
+const root: librariesApi.LibraryDir = {
   id: 3,
   path: '/srv/manga',
   edition_key: 'en',
@@ -125,6 +125,8 @@ const root: config.Root = {
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  nested: [],
+  inside: [],
 }
 
 /** The one library the Libraries screen's cases list, holding `root`. */
@@ -613,6 +615,9 @@ function answerPages() {
   })
   vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
     library_id: 1,
+    held_removals: [],
+    moves_held: false,
+    scans: [],
     running: false,
     elapsed_secs: null,
     dirs: [],
@@ -834,6 +839,7 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
         excluded_files: 0,
         bad_exclude_patterns: [],
         forgotten_by_exclusion: 0,
+        taken_over: 0,
       },
       derive: emptyDerive,
     }
@@ -857,6 +863,9 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
       })
     vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
       library_id: 1,
+      held_removals: [],
+      moves_held: false,
+      scans: [],
       running: false,
       elapsed_secs: null,
       dirs: [],
@@ -888,6 +897,9 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
   it('reads a removal’s report one level beneath the table’s heading', async () => {
     vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
       library_id: 1,
+      held_removals: [],
+      moves_held: false,
+      scans: [],
       running: false,
       elapsed_secs: null,
       dirs: [],

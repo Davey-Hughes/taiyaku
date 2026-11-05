@@ -63,13 +63,15 @@ export interface Stamped {
    */
   content_key: string | null
   /**
-   * What `hand::rename_for_rekey` answered — **not** "there was no document".
+   * What `hand::rename_from` answered for this stamp — **not** "there was no
+   * document".
    *
    * It is hard-coded `false` when `content_key` is `null`, without anything
-   * asking whether a document exists; and when the key *did* move it is
-   * `false` for five separate causes, two of which mean the document is now
-   * stranded at the old key. That is open item O81. A screen that reads this
-   * as "no document on disk" states the benign cause as certain.
+   * asking whether a document exists; and when the key *did* move it is,
+   * for a stamp, `false` for five separate causes, two of which mean the
+   * document is now stranded at the old key. That is open item O81. A screen
+   * that reads this as "no document on disk" states the benign cause as
+   * certain.
    */
   document_moved: boolean
   /**

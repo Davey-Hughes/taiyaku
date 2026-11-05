@@ -156,7 +156,7 @@ fn access_is_read_per_user() {
         .expect("only these");
     assert_eq!(
         access_for(&conn, 1).expect("reads"),
-        Access::Only(Vec::new()),
+        Access::roots(Vec::new()),
         "only these, with none named, sees nothing"
     );
 
@@ -165,7 +165,13 @@ fn access_is_read_per_user() {
         [],
     )
     .expect("grant");
-    assert_eq!(access_for(&conn, 1).expect("reads"), Access::Only(vec![7]));
+    assert_eq!(
+        access_for(&conn, 1).expect("reads"),
+        Access::Only {
+            roots: vec![7],
+            libraries: vec![library_of(&conn, 7)],
+        }
+    );
 
     conn.execute_batch(
         "DELETE FROM user_library WHERE user_id = 1;
@@ -175,8 +181,11 @@ fn access_is_read_per_user() {
     .expect("a grant of a library with no directory, written by hand");
     assert_eq!(
         access_for(&conn, 1).expect("reads"),
-        Access::Only(Vec::new()),
-        "a grant that resolves to no directory sees nothing"
+        Access::Only {
+            roots: Vec::new(),
+            libraries: vec![90],
+        },
+        "a grant that resolves to no directory sees nothing, and is still a grant"
     );
 
     conn.execute("UPDATE user SET every_library = 1 WHERE id = 1", [])
@@ -188,9 +197,45 @@ fn access_is_read_per_user() {
     );
     assert_eq!(
         access_for(&conn, 999).expect("reads"),
-        Access::Only(Vec::new()),
+        Access::roots(Vec::new()),
         "an id naming no account sees nothing"
     );
+}
+
+/// Reach (overlapping-libraries spec §4): an account granted Manga reaches the
+/// directory Kids holds inside Manga's, and so Kids' book; one granted Kids
+/// does not reach Manga's directory around it. Each keeps its own grant alone.
+#[test]
+fn a_grant_reaches_the_directories_nested_in_its_library_and_not_those_around_them() {
+    let n = crate::reach::tests::nested_libraries(false);
+    let conn = n.library.conn();
+    let titles = |access: &Access, reader: i64| -> Vec<String> {
+        crate::browse::series(&conn, access, reader, None)
+            .expect("lists series")
+            .into_iter()
+            .map(|card| card.title)
+            .collect()
+    };
+
+    let manga = access_for(&conn, n.manga_reader).expect("reads");
+    assert_eq!(
+        manga,
+        Access::Only {
+            roots: vec![n.m, n.m_kids],
+            libraries: vec![n.manga],
+        }
+    );
+    assert_eq!(titles(&manga, n.manga_reader), ["Kids Book", "Manga Book"]);
+
+    let kids = access_for(&conn, n.kids_reader).expect("reads");
+    assert_eq!(
+        kids,
+        Access::Only {
+            roots: vec![n.m_kids],
+            libraries: vec![n.kids],
+        }
+    );
+    assert_eq!(titles(&kids, n.kids_reader), ["Kids Book"]);
 }
 
 /// §5's bootstrap turns on this answer: the claim route is open only while it
@@ -1230,7 +1275,13 @@ fn granting_a_library_is_idempotent_and_says_which_it_was() {
         !grant_library(&conn, 1, library_of(&conn, 7)).expect("grants again"),
         "granting twice is not an error and is not a second grant"
     );
-    assert_eq!(access_for(&conn, 1).expect("reads"), Access::Only(vec![7]));
+    assert_eq!(
+        access_for(&conn, 1).expect("reads"),
+        Access::Only {
+            roots: vec![7],
+            libraries: vec![library_of(&conn, 7)],
+        }
+    );
 }
 
 #[test]
@@ -1250,7 +1301,7 @@ fn revoking_a_library_says_whether_there_was_one() {
     );
     assert_eq!(
         access_for(&conn, 1).expect("reads"),
-        Access::Only(Vec::new()),
+        Access::roots(Vec::new()),
         "revoking the last grant leaves the account seeing no library, not every library"
     );
 }
@@ -1291,7 +1342,10 @@ fn a_granted_library_resolves_to_every_one_of_its_dirs() {
 
     assert_eq!(
         access_for(&conn, id).expect("reads"),
-        Access::Only(vec![7, 8]),
+        Access::Only {
+            roots: vec![7, 8],
+            libraries: vec![70],
+        },
         "both directories, not Other's"
     );
     assert_eq!(libraries_for(&conn, id).expect("reads"), vec![70]);
@@ -1316,7 +1370,10 @@ fn granting_a_library_to_an_account_seeing_every_library_narrows_it_to_that_one(
 
     assert_eq!(
         access_for(&conn, id).expect("reads"),
-        Access::Only(vec![9]),
+        Access::Only {
+            roots: vec![9],
+            libraries: vec![80],
+        },
         "Other's one directory, and nothing of Shelf"
     );
 }
@@ -1334,7 +1391,10 @@ fn granting_another_library_to_a_limited_account_is_new_and_repeating_it_is_not(
     assert!(grant_library(&conn, id, 70).expect("grants Shelf"));
     assert_eq!(
         access_for(&conn, id).expect("reads"),
-        Access::Only(vec![7, 8])
+        Access::Only {
+            roots: vec![7, 8],
+            libraries: vec![70],
+        }
     );
 
     assert!(
@@ -1347,7 +1407,10 @@ fn granting_another_library_to_a_limited_account_is_new_and_repeating_it_is_not(
     );
     assert_eq!(
         access_for(&conn, id).expect("reads"),
-        Access::Only(vec![7, 8, 9]),
+        Access::Only {
+            roots: vec![7, 8, 9],
+            libraries: vec![70, 80],
+        },
         "both libraries' directories"
     );
 }
@@ -1367,7 +1430,7 @@ fn setting_every_library_lifts_the_limit_and_says_whether_it_changed_anything() 
     revoke_library(&conn, blind, 80).expect("and takes it back");
     assert_eq!(
         access_for(&conn, blind).expect("reads"),
-        Access::Only(Vec::new())
+        Access::roots(Vec::new())
     );
 
     for id in [granted, blind] {
@@ -1421,7 +1484,10 @@ fn granted_dirs_are_read_per_account_and_in_order() {
 
     assert_eq!(
         access_for(&conn, reader).expect("reads"),
-        Access::Only(vec![6, 9]),
+        Access::Only {
+            roots: vec![6, 9],
+            libraries: vec![60, 80],
+        },
         "ascending by id, and not the other account's"
     );
 }
@@ -1495,7 +1561,10 @@ fn a_libraries_list_names_libraries_and_never_a_dir() {
     assert_eq!(libraries_for(&conn, id).expect("reads"), vec![70]);
     assert_eq!(
         access_for(&conn, id).expect("reads"),
-        Access::Only(vec![7, 8]),
+        Access::Only {
+            roots: vec![7, 8],
+            libraries: vec![70],
+        },
         "the library, with both its directories"
     );
 
@@ -1770,7 +1839,10 @@ fn a_libraries_list_replaces_the_grants_rather_than_adding_to_them() {
 
     assert_eq!(
         access_for(&conn, id).expect("reads"),
-        Access::Only(vec![second]),
+        Access::Only {
+            roots: vec![second],
+            libraries: vec![library_of(&conn, second)],
+        },
         "the list replaced the grants; it did not append to them"
     );
 }
@@ -1860,7 +1932,10 @@ fn a_patch_without_a_libraries_key_leaves_the_grants_alone() {
 
     assert_eq!(
         access_for(&conn, id).expect("reads"),
-        Access::Only(vec![first])
+        Access::Only {
+            roots: vec![first],
+            libraries: vec![library_of(&conn, first)],
+        }
     );
 }
 
@@ -1890,7 +1965,7 @@ fn an_empty_libraries_list_leaves_an_account_seeing_no_library() {
 
         assert_eq!(
             access_for(&conn, id).expect("reads"),
-            Access::Only(Vec::new()),
+            Access::roots(Vec::new()),
             "account {id} sees no library"
         );
     }
@@ -1951,7 +2026,10 @@ fn a_refused_role_change_writes_no_grants_either() {
 
     assert_eq!(
         access_for(&conn, 1).expect("reads"),
-        Access::Only(vec![first]),
+        Access::Only {
+            roots: vec![first],
+            libraries: vec![library_of(&conn, first)],
+        },
         "the refusal happened before anything was written"
     );
 }

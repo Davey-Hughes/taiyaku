@@ -34,6 +34,8 @@ const dir = (id: number, path: string): Library['dirs'][number] => ({
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  nested: [],
+  inside: [],
 })
 
 const MANGA: Library = {

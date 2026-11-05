@@ -259,7 +259,7 @@ fn moving_the_last_dir_of_an_accounts_only_library_names_who_is_left_with_none()
     let access = crate::account::access_for(&conn, sam).expect("reads");
     assert_eq!(
         access,
-        crate::account::Access::Only(Vec::new()),
+        crate::account::Access::roots(Vec::new()),
         "sam sees no library, not every library"
     );
     assert_eq!(
@@ -781,6 +781,32 @@ fn an_account_granted_only_the_target_gains_sight_and_one_seeing_every_library_i
     assert_eq!(report.loses_sight, vec!["ann"], "{report:?}");
 }
 
+/// Spec §4's N, Manga holding `m` and Kids `m/kids`: moving `m/kids` from Kids
+/// to Other, `both`, granted Manga and Kids, still sees it through Manga, and
+/// so does `manga`; neither is named. `kids` loses it and `other` gains it.
+/// The rehearsal answers what the move does.
+#[test]
+fn an_account_whose_grant_reaches_a_moved_dir_on_both_sides_is_named_in_neither() {
+    let n = crate::reach::tests::nested_libraries(false);
+    let conn = n.library.conn();
+    let elsewhere = tempdir("relocate-sight-reach");
+    let o = elsewhere.path().join("o");
+    write_pages(&o.join("Other Book").join("Other Book - v01"), 2);
+    let other = scan::add_root_checked_in(&conn, &o, InLibrary::Named("Other"))
+        .expect("adds Other's directory")
+        .root
+        .library_id;
+    an_account(&conn, "both", &[n.manga, n.kids]);
+    an_account(&conn, "other", &[other]);
+
+    let rehearsed = move_cost(&conn, n.m_kids, Target::Library(other)).expect("rehearses");
+    let report = move_root(&conn, n.m_kids, Target::Library(other)).expect("moves");
+
+    assert_eq!(report, rehearsed);
+    assert_eq!(report.gains_sight, vec!["other"], "{report:?}");
+    assert_eq!(report.loses_sight, vec!["kids"], "{report:?}");
+}
+
 /// After `/c` moves out of Manga, the work has an edition under each
 /// library's directories, so each library counts it and names it, though no
 /// derive has run since.
@@ -808,4 +834,104 @@ fn after_a_move_each_library_a_dir_of_which_holds_an_edition_counts_and_names_th
             "library {library}"
         );
     }
+}
+
+/// Overlapping-libraries spec §4: a directory is not moved inside or around a
+/// directory of the library it would join, in the add's words, by the rehearsal
+/// and the move alike, and a refused move changes nothing. Into a library whose
+/// directories sit elsewhere it moves, though another library's holds it.
+#[test]
+fn a_dir_is_not_moved_inside_or_around_a_dir_of_the_library_it_joins() {
+    let top = tempdir("relocate-nested");
+    let (m, x) = (top.path().join("m"), top.path().join("x"));
+    let kids_dir = m.join("kids");
+    std::fs::create_dir_all(&kids_dir).expect("mkdir");
+    std::fs::create_dir_all(&x).expect("mkdir");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let checked = |path: &Path, name: &str| {
+        scan::add_root_checked_in(&conn, path, InLibrary::Named(name))
+            .expect("adds")
+            .root
+    };
+    let manga = checked(&m, "Manga");
+    let kids = checked(&kids_dir, "Kids");
+    let other = checked(&x, "Other");
+    let before = dump(&conn);
+
+    for (moving, into, said) in [
+        (
+            &kids,
+            &manga,
+            format!(
+                "{} is inside {}, which is already a directory of the same library, `Manga`",
+                kids.path.display(),
+                manga.path.display()
+            ),
+        ),
+        (
+            &manga,
+            &kids,
+            format!(
+                "{} holds `kids`, which is already a directory of the same library, `Kids`",
+                manga.path.display()
+            ),
+        ),
+    ] {
+        let into = Target::Library(into.library_id);
+        assert_eq!(
+            move_cost(&conn, moving.id, into),
+            Err(MoveError::Unusable(said.clone()))
+        );
+        assert_eq!(
+            move_root(&conn, moving.id, into),
+            Err(MoveError::Unusable(said))
+        );
+        assert_eq!(dump(&conn), before, "a refused move changed nothing");
+    }
+
+    let moved = move_root(&conn, kids.id, Target::Library(other.library_id))
+        .expect("a directory moves to a library whose directories sit elsewhere");
+    assert_eq!(moved.library_id, other.library_id);
+}
+
+/// A move does not ask the add's directory-member refusal, which does not
+/// depend on the library: Kids' directory, a chapter of a volume Manga reads as
+/// one directory member, added before Manga's scan made the volume a member,
+/// moves into another library as it would into a new one.
+#[test]
+fn a_dir_inside_another_librarys_directory_member_moves_into_a_library() {
+    let top = tempdir("relocate-in-a-member");
+    let (m, x) = (top.path().join("m"), top.path().join("x"));
+    let volume = m.join("S").join("S - v01");
+    write_pages(&volume, 2);
+    let chapter = volume.join("S - v01 - c001");
+    write_pages(&chapter, 2);
+    std::fs::create_dir_all(&x).expect("mkdir");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let checked = |path: &Path, name: &str| {
+        scan::add_root_checked_in(&conn, path, InLibrary::Named(name))
+            .expect("adds")
+            .root
+    };
+    let kids = checked(&chapter, "Kids");
+    let manga = checked(&m, "Manga");
+    let other = checked(&x, "Other");
+    scanned(&conn);
+    let members_around: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM member WHERE root_id = ?1 AND path = ?2",
+            rusqlite::params![manga.id, manga.path.join("S/S - v01").to_string_lossy()],
+            |r| r.get(0),
+        )
+        .expect("counts");
+    assert_eq!(
+        members_around, 1,
+        "Manga reads the volume around Kids' directory as one member"
+    );
+
+    let moved = move_root(&conn, kids.id, Target::Library(other.library_id))
+        .expect("a directory inside a directory member moves into a library");
+    assert_eq!(moved.library_id, other.library_id);
 }

@@ -60,8 +60,8 @@ export interface MoveRootProps {
   /** Every other library. */
   targets: NamedLibrary[]
   /**
-   * Something else in the directory's library has begun, so what is quoted
-   * here is from before it. The dialog cancels itself when this becomes
+   * The server would refuse the move now, and what is quoted here may be
+   * from before what holds it. The dialog cancels itself when this becomes
    * true, as its Cancel does, and so not while its move is out.
    */
   held?: boolean

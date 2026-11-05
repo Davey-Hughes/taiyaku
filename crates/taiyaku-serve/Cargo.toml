@@ -49,6 +49,8 @@ ureq = "3.3.0"
 # `test-support` for `TempDir`, O117: a directory unique to the process and the
 # call, the one helper every crate's tests share.
 taiyaku-read = { path = "../taiyaku-read", features = ["test-support"] }
+# `test-support` for `Access::roots`: a test's access by directories alone.
+taiyaku-library = { path = "../taiyaku-library", features = ["test-support"] }
 zip = "9.1.3"
 # `hooks` for the verify-permit tests (O57): they see a commit from inside it, on
 # the thread that is writing it, to ask whether a permit was free at that moment.

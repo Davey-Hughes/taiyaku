@@ -22,9 +22,9 @@
 //! A member under no directory — every member of every imported work — has no
 //! row, and `EXISTS` over none is false, so that case needs no branch.
 //!
-//! A listing narrowed to one library reads the directories that library and the
-//! grant share in place of the grant, so a library's page lists what an
-//! account granted only that library would see.
+//! A listing narrowed to one library reads the directories that library reaches
+//! and the grant allows in place of the grant, so a library's page lists what
+//! an account granted only that library would see.
 //!
 //! An **alignment** names two editions, so it survives only if *both* of them
 //! do — both inside the directories the listing reads, and both seen whole by
@@ -366,57 +366,68 @@ pub fn member_under(alias: &str, holes: &str) -> String {
     )
 }
 
-/// One library a listing is narrowed to: its name, and the directories of it the
-/// caller's grant allows.
+/// One library a listing is narrowed to: its name, and the directories it
+/// reaches that the caller's access allows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LibraryScope {
+    pub id: i64,
     pub name: String,
     /// Never empty: see [`library_scope`].
     pub dirs: Vec<i64>,
 }
 
-/// The directories of `library` this caller may read, with the library's name.
+impl LibraryScope {
+    /// The access a listing narrowed to this library reads: these directories
+    /// and this library alone.
+    ///
+    /// **The directories as they are, never reached from again.** Reach does
+    /// not chain: `/m/kids/tiny` is asked of `/m` directly, so reaching from
+    /// `/m/kids` once more could add a directory `/m`'s own patterns leave out.
+    pub fn access(&self) -> Access {
+        Access::Only {
+            roots: self.dirs.clone(),
+            libraries: vec![self.id],
+        }
+    }
+}
+
+/// The directories `library` reaches ([`crate::reach::of_libraries`]) that this
+/// caller may read, with the library's name.
 ///
-/// **`None` when there are none**, whether the library is outside the grant,
-/// holds no directory, or does not exist, and never a scope with no directories, so
-/// "nothing to list" has one answer: the listings here return early on it,
-/// and the OPDS library feed answers it with a 404.
+/// **`None` unless the caller was granted `library`**, so its page and name
+/// reach only the accounts granted it, and **`None` when no directory is
+/// left** or the library does not exist: never a scope with no directories,
+/// so "nothing to list" has one answer, which the listings return early on
+/// and the OPDS library feed answers with a 404.
 ///
 /// # Errors
 ///
-/// Returns an error if the query fails.
+/// Returns an error if a query fails.
 pub fn library_scope(
     conn: &Connection,
     access: &Access,
     library: i64,
 ) -> Result<Option<LibraryScope>, String> {
-    let mut stmt = prepare(
-        conn,
-        "SELECT r.id, l.name FROM root r JOIN library l ON l.id = r.library_id
-          WHERE r.library_id = ? ORDER BY r.id",
-    )
-    .map_err(|e| format!("preparing the directories of library {library}: {e}"))?;
-    let rows = stmt
-        .query_map([library], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|e| format!("reading the directories of library {library}: {e}"))?
-        .collect::<rusqlite::Result<Vec<(i64, String)>>>()
-        .map_err(|e| format!("reading the directories of library {library}: {e}"))?;
-    let name = rows.first().map(|(_, name)| name.clone());
-    let dirs: Vec<i64> = rows
+    if !access.grants(library) {
+        return Ok(None);
+    }
+    let Some(name) = crate::libraries::name_of(conn, library)? else {
+        return Ok(None);
+    };
+    let roots = crate::scan::roots(conn)?;
+    let dirs: Vec<i64> = crate::reach::of_libraries(&roots, &[library])
         .into_iter()
-        .map(|(id, _)| id)
         .filter(|id| access.allows(*id))
         .collect();
-    Ok(match name {
-        Some(name) if !dirs.is_empty() => Some(LibraryScope { name, dirs }),
-        _ => None,
-    })
+    Ok((!dirs.is_empty()).then_some(LibraryScope {
+        id: library,
+        name,
+        dirs,
+    }))
 }
 
-/// The access a listing reads: the caller's, or only the caller's share of
-/// `library`'s directories. `None` means there is nothing to list.
+/// The access a listing reads: the caller's, or [`LibraryScope::access`] for
+/// `library`. `None` means there is nothing to list.
 fn narrowed(
     conn: &Connection,
     access: &Access,
@@ -424,7 +435,7 @@ fn narrowed(
 ) -> Result<Option<Access>, String> {
     match library {
         None => Ok(Some(access.clone())),
-        Some(id) => Ok(library_scope(conn, access, id)?.map(|scope| Access::Only(scope.dirs))),
+        Some(id) => Ok(library_scope(conn, access, id)?.map(|scope| scope.access())),
     }
 }
 
@@ -439,9 +450,9 @@ fn narrowed(
 /// screen would contradict itself, so [`aligned_clause`] and `alignments_of`
 /// read one clause.
 ///
-/// A listing narrowed to one library reaches both sides through `access`
-/// itself, which is only that library's directories (see [`library_scope`]), so a
-/// pair half of which is under another library's directory is counted by nobody.
+/// A listing narrowed to one library reaches both sides through `access`, only
+/// the directories it reaches ([`library_scope`]), so a pair half of which is
+/// under a directory it does not reach is counted by nobody.
 /// `account` is the caller's grant, as for [`page_zero_hash`]: what it opens.
 ///
 /// `fe` and `te`: see [`root_clause_for`]. It binds [`pair_bound`]'s values.
@@ -550,8 +561,8 @@ fn page_zero_hash(alias: &str, account: &Access) -> String {
 /// a correction leaves it alone, so a list sent with no primary would show text
 /// the correction may have removed.
 ///
-/// `library` narrows the listing to the directories of that library the grant
-/// allows ([`library_scope`]); a library the grant does not reach, one with no
+/// `library` narrows the listing to the directories that library reaches and
+/// the grant allows ([`library_scope`]); a library not granted, one with no
 /// directory, or one that does not exist lists nothing.
 ///
 /// # Errors
@@ -1669,34 +1680,41 @@ pub fn visible_editions(
     Ok(out)
 }
 
-/// The slugs of the works with a member under one of `library`'s
-/// directories. A work is in each library a directory of which holds one of its
-/// editions, so this names it in several where its editions are spread. A
-/// listing narrowed to a library keeps only the editions under its directories
-/// (see [`library_scope`]); this is for the one view that lists each such work
-/// whole.
+/// The slugs of the works with a member under a directory `library` reaches
+/// ([`crate::reach::of_libraries`]), so a work whose editions are spread is
+/// named for each library. A listing narrowed to a library keeps only the
+/// editions there ([`library_scope`]); this is for the one view that lists
+/// each such work whole.
 ///
 /// **It reads no grant**, so its caller intersects the answer with what
 /// [`visible_editions`] allows, as `opds::library_works_by_work` does.
 ///
 /// # Errors
 ///
-/// Returns an error if the query fails.
+/// Returns an error if a query fails.
 pub fn held_in(conn: &Connection, library: i64) -> Result<HashSet<String>, String> {
+    let dirs = crate::reach::of_libraries(&crate::scan::roots(conn)?, &[library]);
+    if dirs.is_empty() {
+        return Ok(HashSet::new());
+    }
     let mut stmt = prepare(
         conn,
-        "SELECT DISTINCT w.slug FROM work w
-           JOIN edition e ON e.work_id = w.id
-           JOIN member m ON m.edition_id = e.id
-           JOIN member_root mr ON mr.member_id = m.id
-           JOIN root r ON r.id = mr.root_id
-          WHERE r.library_id = ?",
+        &format!(
+            "SELECT DISTINCT w.slug FROM work w
+               JOIN edition e ON e.work_id = w.id
+               JOIN member m ON m.edition_id = e.id
+               JOIN member_root mr ON mr.member_id = m.id
+              WHERE mr.root_id IN ({})",
+            holes(dirs.len())
+        ),
     )
     .map_err(|e| format!("preparing the works held in library {library}: {e}"))?;
-    stmt.query_map([library], |row| row.get::<_, String>(0))
-        .map_err(|e| format!("listing the works held in library {library}: {e}"))?
-        .collect::<rusqlite::Result<HashSet<String>>>()
-        .map_err(|e| format!("reading the works held in library {library}: {e}"))
+    stmt.query_map(rusqlite::params_from_iter(&dirs), |row| {
+        row.get::<_, String>(0)
+    })
+    .map_err(|e| format!("listing the works held in library {library}: {e}"))?
+    .collect::<rusqlite::Result<HashSet<String>>>()
+    .map_err(|e| format!("reading the works held in library {library}: {e}"))
 }
 
 /// One library as the sidebar lists it.
@@ -1731,26 +1749,28 @@ pub struct Status {
 /// The libraries this caller may see, each with whether it has been scanned,
 /// ordered by name (`COLLATE NOCASE`) and then by id.
 ///
-/// A library is listed when one of its directories is inside `access`, which for
-/// [`Access::Every`] is when it has a directory at all.
+/// A library is listed when it has a directory and the caller was granted it
+/// ([`Access::grants`]), which for [`Access::Every`] is every library with a
+/// directory. **Not every library whose directories the caller reaches**: an
+/// account granted Manga reaches the directory Kids holds inside Manga's, and
+/// is not listed Kids for that.
 ///
 /// # Errors
 ///
 /// Returns an error if the query fails.
 pub fn status(conn: &Connection, access: &Access) -> Result<Status, String> {
-    let granted = access.grant_clause(|holes| format!("r.id IN ({holes})"));
-    let sql = format!(
+    let mut stmt = prepare(
+        conn,
         "SELECT l.id, l.name,
                 EXISTS (SELECT 1 FROM dir_state d JOIN root dr ON dr.id = d.root_id
                          WHERE dr.library_id = l.id)
            FROM library l
-          WHERE EXISTS (SELECT 1 FROM root r WHERE r.library_id = l.id{granted})
-          ORDER BY l.name COLLATE NOCASE, l.id"
-    );
-    let mut stmt =
-        prepare(conn, &sql).map_err(|e| format!("preparing the library listing: {e}"))?;
+          WHERE EXISTS (SELECT 1 FROM root r WHERE r.library_id = l.id)
+          ORDER BY l.name COLLATE NOCASE, l.id",
+    )
+    .map_err(|e| format!("preparing the library listing: {e}"))?;
     let libraries = stmt
-        .query_map(params_from_iter(access.bound()), |row| {
+        .query_map([], |row| {
             Ok(LibraryEntry {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -1759,10 +1779,13 @@ pub fn status(conn: &Connection, access: &Access) -> Result<Status, String> {
         })
         .map_err(|e| format!("listing libraries: {e}"))?
         .collect::<rusqlite::Result<Vec<LibraryEntry>>>()
-        .map_err(|e| format!("reading libraries: {e}"))?;
+        .map_err(|e| format!("reading libraries: {e}"))?
+        .into_iter()
+        .filter(|entry| access.grants(entry.id))
+        .collect();
     Ok(Status {
         libraries,
-        restricted: matches!(access, Access::Only(_)),
+        restricted: matches!(access, Access::Only { .. }),
     })
 }
 

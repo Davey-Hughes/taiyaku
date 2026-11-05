@@ -269,6 +269,32 @@
   overflow-wrap: anywhere;
 }
 
+/* What a directory's page says of the directories around and inside it,
+   under the facts and a step from them, as the facts are a step from the
+   title. */
+.nesting > p,
+.nesting > details {
+  margin: var(--space-1) 0 0;
+}
+
+/* A row for each directory inside: its folder, its library, and whether
+   this directory's library shows it, in columns, so that many rows still
+   read down. Indented under the summary's words, past its marker. */
+.nesting ul {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 0 var(--space-3);
+  margin: var(--space-1) 0 0;
+  padding: 0 0 0 var(--space-4);
+  list-style: none;
+}
+
+.nesting li {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
 /* Sections. */
 .settings-section {
   max-width: var(--config-measure);
@@ -762,6 +788,14 @@ section:has(.callout[data-over-focus]) :focus-visible {
 
 .account-page .gone {
   color: var(--muted);
+}
+
+/* What scan is running, a line each, muted as the directory page's lines of
+   the directories around and inside it are. */
+.library-page .scanning {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
 }
 
 .dir-page .scanning {

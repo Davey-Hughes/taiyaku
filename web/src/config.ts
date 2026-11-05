@@ -163,6 +163,8 @@ export interface Walk {
   bad_exclude_patterns: string[]
   /** Rows dropped because a pattern now covers them — not because a file vanished. */
   forgotten_by_exclusion: number
+  /** Rows taken over from the directories around this one, whose files it now governs. */
+  taken_over: number
 }
 
 /**

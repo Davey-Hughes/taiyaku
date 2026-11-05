@@ -884,6 +884,42 @@ async fn the_status_lists_libraries_and_nothing_else() {
     );
 }
 
+/// Spec §4's N through the routes: the account granted Manga is listed Manga
+/// alone, though it reaches Kids' directory inside Manga's and so sees Kids'
+/// book on Manga's page; the account granted Kids is listed Kids alone.
+#[tokio::test]
+async fn the_sidebar_lists_the_libraries_granted_and_not_one_reached() {
+    let n = test_support::router_over_a_library_nested_in_another();
+    let listed = |body: &serde_json::Value| -> Vec<i64> {
+        body["libraries"]
+            .as_array()
+            .expect("a list of libraries")
+            .iter()
+            .map(|entry| entry["id"].as_i64().expect("an id"))
+            .collect()
+    };
+    let titles = |body: &serde_json::Value| -> Vec<String> {
+        body["series"]
+            .as_array()
+            .expect("a list of series")
+            .iter()
+            .map(|card| card["title"].as_str().expect("a title").to_owned())
+            .collect()
+    };
+
+    let manga = get_json(&n.manga_reader, "/api/library/status").await;
+    assert_eq!(listed(&manga), vec![n.manga], "{manga}");
+    let kids = get_json(&n.kids_reader, "/api/library/status").await;
+    assert_eq!(listed(&kids), vec![n.kids], "{kids}");
+
+    let page = get_json(
+        &n.manga_reader,
+        &format!("/api/library/series?library={}", n.manga),
+    )
+    .await;
+    assert_eq!(titles(&page), ["Kids Book", "Manga Book"], "{page}");
+}
+
 /// `restricted` says whether the caller sees only the libraries granted to
 /// it, read through the guard as each request rebuilds the principal. False
 /// for an administrator, even one holding a grant (O86), and for a reader
@@ -1255,7 +1291,7 @@ async fn a_rescan_after_a_series_titles_correction_keeps_the_series_its_work_and
 /// The principal `auth::guard` leaves for the fixture account demoted to a
 /// reader with `access`, for a handler called directly. An administrator's
 /// access is always `Every` (O86), so a reader is what makes
-/// `Access::Only(vec![1])` a restriction.
+/// `Access::roots(vec![1])` a restriction.
 fn a_reader_with(access: Access) -> crate::auth::Principal {
     crate::auth::Principal {
         user_id: 1,
@@ -1310,13 +1346,13 @@ async fn no_browse_route_stalls_the_runtime() {
     let mut stalled_on = Vec::new();
 
     for (grant, access) in [
-        ("granted root 1", Access::Only(vec![1])),
+        ("granted root 1", Access::roots(vec![1])),
         ("every library", Access::Every),
-        ("granted nothing", Access::Only(Vec::new())),
+        ("granted nothing", Access::roots(Vec::new())),
     ] {
         let who = || Extension(a_reader_with(access.clone()));
         let found = |status| {
-            if access == Access::Only(Vec::new()) {
+            if access == Access::roots(Vec::new()) {
                 StatusCode::NOT_FOUND
             } else {
                 status

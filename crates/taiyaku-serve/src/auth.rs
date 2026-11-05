@@ -313,8 +313,8 @@ pub struct Principal {
     pub can_download: bool,
     pub can_stream: bool,
     /// What this account may see, and **the restriction**: every library, or
-    /// only the directories of the libraries it was granted, where `Only` with no
-    /// directory sees nothing.
+    /// the libraries it was granted and every directory they reach
+    /// (`account::access_for`), where `Only` with no directory sees nothing.
     ///
     /// **Always [`Access::Every`] for an administrator, whatever
     /// `user_library` holds — O86.** [`Principal::from_account`] decides that
@@ -419,7 +419,10 @@ impl Principal {
 /// rather than everything.
 pub(crate) fn access_of(extensions: &axum::http::Extensions) -> Access {
     extensions.get::<Principal>().map_or_else(
-        || Access::Only(Vec::new()),
+        || Access::Only {
+            roots: Vec::new(),
+            libraries: Vec::new(),
+        },
         |principal| principal.access.clone(),
     )
 }

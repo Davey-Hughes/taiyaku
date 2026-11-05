@@ -134,7 +134,7 @@ const SERIES_PAGE = {
   ),
 }
 
-const dir = (id: number, path: string): config.Root => ({
+const dir = (id: number, path: string): librariesApi.LibraryDir => ({
   id,
   path,
   edition_key: 'en',
@@ -145,6 +145,8 @@ const dir = (id: number, path: string): config.Root => ({
   keeps_documents: false,
   last_scan_at: '2026-10-05T21:14:09Z',
   last_scan_status: 'ok',
+  nested: [],
+  inside: [],
 })
 
 beforeEach(() => {
@@ -186,6 +188,9 @@ beforeEach(() => {
   vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
     Promise.resolve({
       library_id: id,
+      held_removals: [],
+      moves_held: false,
+      scans: [],
       running: false,
       elapsed_secs: null,
       dirs: [],

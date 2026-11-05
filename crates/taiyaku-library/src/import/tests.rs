@@ -1523,7 +1523,7 @@ fn a_hash_held_under_two_distinct_roots_gives_each_row_its_own_directory_alone()
             r.get(0)
         })
         .expect("the work's slug");
-    let only_a = crate::account::Access::Only(vec![root_a]);
+    let only_a = crate::account::Access::roots(vec![root_a]);
     assert!(
         crate::browse::tests::sees_edition(&conn, &only_a, &slug, "raw"),
         "the fixture: a's grant reaches the edition under a"
@@ -1666,7 +1666,7 @@ fn a_held_row_under_no_directory_comes_back_under_none_though_another_edition_ha
             r.get(0)
         })
         .expect("the work's slug");
-    let scanned = crate::account::Access::Only(vec![root_id]);
+    let scanned = crate::account::Access::roots(vec![root_id]);
     assert!(
         crate::browse::tests::sees_edition(&conn, &scanned, &slug, "zzz"),
         "the fixture: the grant reaches the edition scanned under it"

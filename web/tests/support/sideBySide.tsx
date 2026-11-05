@@ -42,7 +42,7 @@ export const accounts = (count: number): usersApi.User[] =>
   }))
 
 /** A directory of Manga's, by its id. */
-export const dir = (id: number): config.Root => ({
+export const dir = (id: number): librariesApi.LibraryDir => ({
   id,
   path: `/mnt/user/media 1/Manga/Shelf ${id}`,
   edition_key: 'en',
@@ -53,6 +53,8 @@ export const dir = (id: number): config.Root => ({
   keeps_documents: false,
   last_scan_at: '2026-10-05 21:14:09',
   last_scan_status: 'ok',
+  nested: [],
+  inside: [],
 })
 
 /** Manga, library 1, holding `count` directories, ids 1 onwards. */
@@ -103,6 +105,9 @@ export function answerPairs(
   vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
     Promise.resolve({
       library_id: id,
+      held_removals: [],
+      moves_held: false,
+      scans: [],
       running: false,
       elapsed_secs: null,
       dirs: [],

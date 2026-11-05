@@ -101,6 +101,12 @@ export interface RootRowProps {
   back?: BackTo
   /** What the page says under its header, before this directory's own alerts. */
   notices?: ReactNode
+  /**
+   * What the page says of the directories around and inside this one, under
+   * its facts in the header, since it is as much what the directory is as
+   * they are.
+   */
+  nesting?: ReactNode
   /** The page was opened from a link that is now hidden or gone: the path takes focus. */
   arrived?: boolean
   /** Only a root added in this session has one. See `config.ts`'s `Probe`. */
@@ -108,11 +114,24 @@ export interface RootRowProps {
   /** The library's name, where this is its only directory. */
   lastOf?: string
   /**
-   * Something else in the library is going on: another directory's scan.
-   * Scan directory, Move… and Remove… do nothing then and are drawn held,
-   * and an open removal or move dialog is closed.
+   * A scan of this directory is reserved, as its library's status says before
+   * the directory's own does: the server refuses all three, so Scan
+   * directory, Move… and Remove… do nothing then and are drawn held, and an
+   * open removal or move dialog is closed.
    */
   held?: boolean
+  /**
+   * A scan of a directory around or inside this one is reserved, for which
+   * the server refuses this one's removal: Remove… is drawn held and an open
+   * removal dialog is closed. What the scan does to a move is `moveHeld`'s.
+   */
+  removalHeld?: boolean
+  /**
+   * The server refuses every move of this directory: its job lock is held, or
+   * a scan of another of the library's directories is reserved. Move… is
+   * drawn held and an open move dialog is closed.
+   */
+  moveHeld?: boolean
   /**
    * Where this directory could be moved. The directory's page always gives it;
    * a row drawn without it has no Move….
@@ -307,10 +326,13 @@ export function RootRow({
   root,
   back,
   notices,
+  nesting,
   arrived = false,
   probe,
   lastOf,
   held = false,
+  removalHeld = false,
+  moveHeld = false,
   moveTo,
   onRemoved,
   onMoved,
@@ -676,11 +698,11 @@ export function RootRow({
 
   /*
    * Scan directory, Move… and Remove… are held alike, for one set of reasons:
-   * by a scan, of this directory or another, and by a press of their own,
-   * either of which can come while the button has focus, so it is held by
-   * `HeldButton` and keeps it. A press of one of the other two holds it by
-   * `disabled`: focus is on the button pressed then, and a button that cannot
-   * take focus as its hold comes on stays out of the tab order.
+   * by a scan of this directory, and by a press of their own, either of which
+   * can come while the button has focus, so it is held by `HeldButton` and
+   * keeps it. A press of one of the other two holds it by `disabled`: focus
+   * is on the button pressed then, and a button that cannot take focus as its
+   * hold comes on stays out of the tab order.
    */
   const scanning = running || held
 
@@ -731,14 +753,17 @@ export function RootRow({
         }
         titleRef={heading}
         description={
-          <dl ref={factEnds} className="regime">
-            {regimeFacts(root, probe).map(({ label, value }) => (
-              <div key={label}>
-                <dt>{label}</dt>
-                <dd>{value}</dd>
-              </div>
-            ))}
-          </dl>
+          <>
+            <dl ref={factEnds} className="regime">
+              {regimeFacts(root, probe).map(({ label, value }) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+            {nesting}
+          </>
         }
         actions={
           <>
@@ -763,7 +788,7 @@ export function RootRow({
                 ref={moveButton}
                 type="button"
                 onClick={() => setMoving(true)}
-                held={scanning || moving}
+                held={scanning || moveHeld || moving}
                 disabled={starting || confirming}
               >
                 Move…
@@ -793,7 +818,7 @@ export function RootRow({
           root={root}
           from={moveTo.from}
           targets={moveTo.targets}
-          held={held}
+          held={held || moveHeld}
           onCancel={() => {
             backToMove.current = true
             setMoving(false)
@@ -893,7 +918,7 @@ export function RootRow({
             ref={removeButton}
             type="button"
             onClick={() => setConfirming(true)}
-            held={scanning || confirming}
+            held={scanning || removalHeld || confirming}
             disabled={starting || moving}
           >
             Remove…
@@ -903,7 +928,7 @@ export function RootRow({
           <RemoveRoot
             root={root}
             lastOf={lastOf}
-            held={held}
+            held={held || removalHeld}
             onCancel={() => {
               backToRemove.current = true
               setConfirming(false)

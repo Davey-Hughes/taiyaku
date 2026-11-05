@@ -7,8 +7,15 @@
 //! the `root_gets_a_library` trigger (migration 16) files a root inserted
 //! without a library under one of its own, and migration 15's
 //! `library_emptied_by_delete` deletes a library whose last root goes. A grant
-//! names a library and `account::access_for` resolves it to that library's
-//! directories, so a grant of an empty library would grant nothing.
+//! names a library and `account::access_for` resolves it to the directories
+//! that library reaches, so a grant of an empty library would grant nothing.
+//!
+//! **What a library holds is read through the directories it reaches**
+//! ([`crate::reach::of_libraries`]): its own, and each directory of another
+//! library nested in one of them that its walk would reach. Its works count,
+//! its readable-file count and its share of a split edition all count a file
+//! under `/m/kids` for Manga as well as for Kids. Its directory list is its
+//! own directories alone.
 
 use std::path::PathBuf;
 
@@ -21,9 +28,10 @@ pub struct Listed {
     pub name: String,
     /// Its directories' paths, oldest first.
     pub dirs: Vec<PathBuf>,
-    /// The works with a member under one of its directories. A work with an
-    /// edition under each of two libraries' directories is counted in both, and
-    /// so is a work whose one member has a copy under each.
+    /// The works with a member under one of the directories it reaches. A
+    /// work with an edition under each of two libraries' directories is counted
+    /// in both, and so is a work whose one member has a copy under each, or is
+    /// under a directory nested in the other's.
     pub works: usize,
 }
 
@@ -34,33 +42,21 @@ pub struct Listed {
 /// Returns an error if a read fails.
 pub fn list(conn: &Connection) -> Result<Vec<Listed>, String> {
     let mut libraries = conn
-        .prepare(
-            "SELECT l.id, l.name,
-                    (SELECT count(DISTINCT e.work_id)
-                       FROM edition e
-                       JOIN member m ON m.edition_id = e.id
-                       JOIN member_root mr ON mr.member_id = m.id
-                       JOIN root r ON r.id = mr.root_id
-                      WHERE r.library_id = l.id)
-               FROM library l ORDER BY l.name, l.id",
-        )
+        .prepare("SELECT id, name FROM library ORDER BY name, id")
         .map_err(|e| format!("listing libraries: {e}"))?;
     let rows = libraries
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-            ))
-        })
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
         .map_err(|e| format!("listing libraries: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("listing libraries: {e}"))?;
+    let roots = crate::scan::roots(conn)?;
     let mut dirs = conn
         .prepare("SELECT path FROM root WHERE library_id = ?1 ORDER BY id")
         .map_err(|e| format!("listing a library's directories: {e}"))?;
     let mut listed = Vec::with_capacity(rows.len());
-    for (id, name, works) in rows {
+    for (id, name) in rows {
+        let works = works_under(conn, &crate::reach::of_libraries(&roots, &[id]))
+            .map_err(|e| format!("counting the works of `{name}`: {e}"))?;
         let paths = dirs
             .query_map([id], |r| r.get::<_, String>(0))
             .map_err(|e| format!("listing the directories of `{name}`: {e}"))?
@@ -71,10 +67,30 @@ pub fn list(conn: &Connection) -> Result<Vec<Listed>, String> {
             id,
             name,
             dirs: paths,
-            works: usize::try_from(works).unwrap_or(usize::MAX),
+            works,
         });
     }
     Ok(listed)
+}
+
+/// How many works have a member under one of `dirs`.
+fn works_under(conn: &Connection, dirs: &[i64]) -> rusqlite::Result<usize> {
+    if dirs.is_empty() {
+        return Ok(0);
+    }
+    conn.query_row(
+        &format!(
+            "SELECT count(DISTINCT e.work_id)
+               FROM edition e
+               JOIN member m ON m.edition_id = e.id
+               JOIN member_root mr ON mr.member_id = m.id
+              WHERE mr.root_id IN ({})",
+            crate::browse::holes(dirs.len())
+        ),
+        rusqlite::params_from_iter(dirs),
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
 }
 
 /// `name` with white space stripped from both ends: the characters Unicode
@@ -203,28 +219,38 @@ pub fn rename(conn: &Connection, id: i64, name: &str) -> Result<String, RenameEr
     }
 }
 
-/// How many entries the scans of library `id`'s directories recorded as an EPUB
-/// (fixed-layout or reflowable) or a PDF, which derivation does not admit.
-/// Entries in other formats it does not admit, such as rar, 7z and tar, are not
-/// counted.
+/// How many entries the scans of the directories library `id` reaches
+/// recorded as an EPUB (fixed-layout or reflowable) or a PDF, which derivation
+/// does not admit. Entries in other formats it does not admit, such as rar, 7z
+/// and tar, are not counted.
 ///
 /// The Libraries screen says "no readable files yet" on this, for a library
 /// that holds such files and no work.
 ///
 /// # Errors
 ///
-/// Returns an error if the read fails.
+/// Returns an error if a read fails.
 pub fn books(conn: &Connection, id: i64) -> Result<usize, String> {
     use taiyaku_read::Format;
+    let dirs = crate::reach::of_libraries(&crate::scan::roots(conn)?, &[id]);
+    if dirs.is_empty() {
+        return Ok(0);
+    }
+    let formats = [
+        Format::EpubFixed.token(),
+        Format::EpubReflow.token(),
+        Format::Pdf.token(),
+    ];
+    let mut bound: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(formats.len() + dirs.len());
+    bound.extend(formats.iter().map(|token| token as &dyn rusqlite::ToSql));
+    bound.extend(dirs.iter().map(|dir| dir as &dyn rusqlite::ToSql));
     conn.query_row(
-        "SELECT count(*) FROM scan_entry e JOIN root r ON r.id = e.root_id
-          WHERE r.library_id = ?1 AND e.format IN (?2, ?3, ?4)",
-        rusqlite::params![
-            id,
-            Format::EpubFixed.token(),
-            Format::EpubReflow.token(),
-            Format::Pdf.token(),
-        ],
+        &format!(
+            "SELECT count(*) FROM scan_entry e
+              WHERE e.format IN (?, ?, ?) AND e.root_id IN ({})",
+            crate::browse::holes(dirs.len())
+        ),
+        bound.as_slice(),
         |r| r.get::<_, i64>(0),
     )
     .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
@@ -263,7 +289,8 @@ pub struct SplitEdition {
     pub pages: i64,
     /// In ordinal order.
     pub members: Vec<SplitMember>,
-    /// By name: each library whose directories hold one of the members.
+    /// By name: each library reaching a directory that holds one of the
+    /// members.
     pub libraries: Vec<SplitLibrary>,
 }
 
@@ -277,7 +304,8 @@ pub struct SplitMember {
     pub directories: Vec<MemberDirectory>,
 }
 
-/// A directory holding a copy of a member, and its library.
+/// A directory holding a copy of a member, and the library that directory is
+/// filed under.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct MemberDirectory {
     pub root: i64,
@@ -285,8 +313,9 @@ pub struct MemberDirectory {
     pub library: i64,
 }
 
-/// A library holding some of a [`SplitEdition`]'s members: how many, and
-/// their pages, which is what an account granted it alone is sent.
+/// A library holding some of a [`SplitEdition`]'s members, under the
+/// directories it reaches: how many, and their pages, which is what an account
+/// granted it alone is sent.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SplitLibrary {
     pub id: i64,
@@ -302,28 +331,59 @@ pub struct SplitLibrary {
 /// directory of each library, so it splits nothing. A member under no
 /// directory, as an imported work's are, is held by no library.
 ///
+/// **Each library by the directories it reaches** ([`crate::reach::of_libraries`]),
+/// as an account granted it alone is sent them: an edition with `c001` under
+/// `/m` and `c002` under Kids' `/m/kids` is whole for Manga and split for Kids.
+///
 /// # Errors
 ///
 /// Returns an error if a read fails.
 pub fn split_editions(conn: &Connection) -> Result<Vec<SplitEdition>, String> {
     let failed = |e: rusqlite::Error| format!("listing the split editions: {e}");
+    let roots = crate::scan::roots(conn)?;
+    let names: Vec<(i64, String)> = conn
+        .prepare("SELECT id, name FROM library ORDER BY id")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(failed)?;
+    // `(library, directory, the library's name)` for each directory each
+    // library reaches.
+    let reached: Vec<(i64, i64, &str)> = names
+        .iter()
+        .flat_map(|(library, name)| {
+            crate::reach::of_libraries(&roots, &[*library])
+                .into_iter()
+                .map(|dir| (*library, dir, name.as_str()))
+        })
+        .collect();
+    // No library reaches a directory, so none holds a member.
+    if reached.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pairs = std::iter::repeat_n("(?, ?)", reached.len())
+        .collect::<Vec<_>>()
+        .join(", ");
     let found = conn
-        .prepare(
-            "SELECT e.id, w.slug, w.title, e.key FROM edition e JOIN work w ON w.id = e.work_id
+        .prepare(&format!(
+            "WITH reach (library_id, root_id) AS (VALUES {pairs})
+             SELECT e.id, w.slug, w.title, e.key FROM edition e JOIN work w ON w.id = e.work_id
               WHERE EXISTS (SELECT 1 FROM library l
                 WHERE EXISTS (SELECT 1 FROM member m
                                 JOIN member_root mr ON mr.member_id = m.id
-                                JOIN root r ON r.id = mr.root_id
+                                JOIN reach r ON r.root_id = mr.root_id
                                WHERE m.edition_id = e.id AND r.library_id = l.id)
                   AND EXISTS (SELECT 1 FROM member m WHERE m.edition_id = e.id
                                 AND NOT EXISTS (SELECT 1 FROM member_root mr
-                                                  JOIN root r ON r.id = mr.root_id
+                                                  JOIN reach r ON r.root_id = mr.root_id
                                                  WHERE mr.member_id = m.id
                                                    AND r.library_id = l.id)))
-              ORDER BY w.title COLLATE NOCASE, e.key, w.slug",
-        )
+              ORDER BY w.title COLLATE NOCASE, e.key, w.slug"
+        ))
         .and_then(|mut stmt| {
-            stmt.query_map([], |r| {
+            let bound = reached.iter().flat_map(|&(library, dir, _)| [library, dir]);
+            stmt.query_map(rusqlite::params_from_iter(bound), |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
@@ -339,8 +399,8 @@ pub fn split_editions(conn: &Connection) -> Result<Vec<SplitEdition>, String> {
         .map_err(failed)?;
     let mut directories = conn
         .prepare(
-            "SELECT r.id, r.path, r.library_id, l.name FROM member_root mr
-               JOIN root r ON r.id = mr.root_id JOIN library l ON l.id = r.library_id
+            "SELECT r.id, r.path, r.library_id FROM member_root mr
+               JOIN root r ON r.id = mr.root_id
               WHERE mr.member_id = ?1 ORDER BY r.path, r.id",
         )
         .map_err(failed)?;
@@ -361,33 +421,33 @@ pub fn split_editions(conn: &Connection) -> Result<Vec<SplitEdition>, String> {
         for (member_id, path, pages) in held {
             let under = directories
                 .query_map([member_id], |r| {
-                    Ok((
-                        MemberDirectory {
-                            root: r.get(0)?,
-                            path: r.get(1)?,
-                            library: r.get(2)?,
-                        },
-                        r.get::<_, String>(3)?,
-                    ))
+                    Ok(MemberDirectory {
+                        root: r.get(0)?,
+                        path: r.get(1)?,
+                        library: r.get(2)?,
+                    })
                 })
                 .and_then(Iterator::collect::<Result<Vec<_>, _>>)
                 .map_err(failed)?;
-            // A member under two directories of one library is one of its
+            // A member under two directories one library reaches is one of its
             // members, not two.
             let mut counted: Vec<i64> = Vec::new();
-            for (directory, name) in &under {
-                if counted.contains(&directory.library) {
+            for &(holder, _, name) in reached
+                .iter()
+                .filter(|(_, dir, _)| under.iter().any(|directory| directory.root == *dir))
+            {
+                if counted.contains(&holder) {
                     continue;
                 }
-                counted.push(directory.library);
-                match libraries.iter_mut().find(|l| l.id == directory.library) {
+                counted.push(holder);
+                match libraries.iter_mut().find(|l| l.id == holder) {
                     Some(library) => {
                         library.members += 1;
                         library.pages += pages;
                     }
                     None => libraries.push(SplitLibrary {
-                        id: directory.library,
-                        name: name.clone(),
+                        id: holder,
+                        name: name.to_string(),
                         members: 1,
                         pages,
                     }),
@@ -396,7 +456,7 @@ pub fn split_editions(conn: &Connection) -> Result<Vec<SplitEdition>, String> {
             listed.push(SplitMember {
                 path,
                 pages,
-                directories: under.into_iter().map(|(directory, _)| directory).collect(),
+                directories: under,
             });
         }
         libraries.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));

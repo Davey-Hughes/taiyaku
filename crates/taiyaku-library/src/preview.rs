@@ -600,7 +600,7 @@ pub struct Applied {
 /// `Documents::Reconcile` is exactly what this function runs instead, so any
 /// `?` between the derive landing and the commit would be a way for the
 /// database to roll back while the real files `hand::reconcile`'s gap repair
-/// and `hand::rename_for_rekey` had already written or renamed stayed exactly
+/// and `hand::rename_from` had already written or renamed stayed exactly
 /// where the derive put them — a hand document renamed to a `content_key` the
 /// database never adopted, reported as an orphan on the next pass, someone's
 /// corrections detached from their work.

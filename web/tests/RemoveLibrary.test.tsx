@@ -22,7 +22,7 @@ vi.mock('../src/libraries', async (importOriginal) => ({
   removeLibrary: vi.fn(),
 }))
 
-const dir = (id: number, path: string): config.Root => ({
+const dir = (id: number, path: string): api.LibraryDir => ({
   id,
   path,
   edition_key: null,
@@ -33,6 +33,8 @@ const dir = (id: number, path: string): config.Root => ({
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  nested: [],
+  inside: [],
 })
 
 const library: api.Library = {

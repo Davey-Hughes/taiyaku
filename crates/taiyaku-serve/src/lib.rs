@@ -31,6 +31,7 @@ mod dirs_api;
 pub(crate) mod download;
 mod libraries_api;
 pub mod library_api;
+mod library_job;
 mod limit;
 mod metadata;
 /// A work's notes, beside its sidecar.
@@ -60,6 +61,7 @@ use std::io::Write as _;
 use std::sync::Arc;
 
 pub use composite::{CompositeSource, StumpSide};
+pub use library_job::{JobGuard, LibraryJob};
 pub use registry::{Refresh, Snapshot, Works};
 pub use reqlog::{Entry, Log};
 pub use routes::build_router;
@@ -117,7 +119,7 @@ pub struct ServeState {
     pub auth: crate::session::AuthConfig,
     /// Every root scan currently running or just finished, by root id: the
     /// registry for `POST`/`GET /api/library/roots/{id}/scan`, and for a
-    /// library's scan, which holds an entry for each of its directories at once.
+    /// library's scan, which holds an entry for each directory it walks at once.
     ///
     /// **In-process only, and deliberately.** Nothing here survives a
     /// restart: a process that died mid-scan left no lock behind, and the
@@ -175,7 +177,7 @@ pub struct ServeState {
     /// running. A scan blocks instead: it already runs unwatched in the
     /// background, and `scan_status` is where a caller learns how long that
     /// took either way.
-    pub library_job: Arc<std::sync::Mutex<()>>,
+    pub library_job: Arc<LibraryJob>,
     /// The directories `GET /api/library/dirs` may list beneath:
     /// `--dirs`, or `TAIYAKU_DIRS`. Empty lists nothing.
     pub dirs: Vec<std::path::PathBuf>,
@@ -211,6 +213,11 @@ pub struct ScanProgress {
     /// discipline that a scan names what it did not do rather than only what
     /// it did; see [`crate::config_api::scan_status`]'s own doc comment.
     pub report: Option<serde_json::Value>,
+    /// The library whose request reserved this slot: the library a Scan
+    /// library named, or the directory's own for a Scan directory. A
+    /// library's status names a scan by it, since a scan of one library walks
+    /// directories of others. `None` for a slot no request reserved.
+    pub library: Option<i64>,
 }
 
 impl ServeState {
@@ -515,7 +522,7 @@ pub async fn serve(
         log,
         auth,
         scans: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-        library_job: Arc::new(std::sync::Mutex::new(())),
+        library_job: Arc::default(),
         dirs,
     });
 

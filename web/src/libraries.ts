@@ -17,12 +17,65 @@ import type { Added, RemovalAnswer, Root } from './config'
 export interface Library {
   id: number
   name: string
-  /** The works with a file under its directories. */
+  /** The works with a file under a directory it shows. */
   works: number
   /** EPUB and PDF entries its scans recorded, which nothing reads yet. */
   books: number
   /** Its directories, oldest first. */
-  dirs: Root[]
+  dirs: LibraryDir[]
+}
+
+/**
+ * One of a library's directories, with what the server says of the
+ * directories inside and around it, each by path, outermost first. Whether a
+ * library shows a directory's books is the server's to say: it turns on
+ * patterns this client does not compile (C4 screens spec §3.2, §8).
+ */
+export interface LibraryDir extends Root {
+  /** Directories inside this one, whose settings govern their own files. */
+  nested: NestedDir[]
+  /** Directories this one sits in. */
+  inside: AroundDir[]
+}
+
+/** A directory inside one of a library's. */
+export interface NestedDir {
+  /** How the library's scan status names it, since a scan of the library walks it. */
+  id: number
+  path: string
+  /** The library it is filed under. */
+  library: string
+  /** Whether the outer directory's library shows its books. */
+  shown: boolean
+  /** Why it does not, `null` where it does. */
+  kept_out_by: KeptOutBy | null
+}
+
+/**
+ * Why a library does not show a directory nested in one of its own: one of
+ * that directory's exclude patterns, or a name on the way starting with `.`,
+ * which every walk skips.
+ */
+export type KeptOutBy = 'exclusion' | 'dot_name'
+
+/**
+ * `inner`'s path from `outer`, which the server says holds it, as a folder:
+ * `kids/`. Its whole path where it does not start with `outer`'s.
+ */
+export function folderIn(inner: string, outer: string): string {
+  const from = outer.endsWith('/') ? outer : `${outer}/`
+  return `${inner.startsWith(from) ? inner.slice(from.length) : inner}/`
+}
+
+/** A directory one of a library's sits in. */
+export interface AroundDir {
+  path: string
+  /** The library it is filed under. */
+  library: string
+  /** Whether that library shows the inner directory's books. */
+  shows: boolean
+  /** Why it does not, `null` where it does. */
+  kept_out_by: KeptOutBy | null
 }
 
 /** `POST /api/library/libraries`'s answer: the library, and each directory's probe. */
@@ -34,11 +87,27 @@ export interface Created {
 /** `GET /api/library/libraries/{id}/scan`. */
 export interface LibraryScanStatus {
   library_id: number
-  /** Whether a scan of any of its directories is running. */
+  /** Whether a scan of any directory a scan of it walks is running. */
   running: boolean
   /** `null` when nothing is running. */
   elapsed_secs: number | null
   dirs: { root_id: number; running: boolean }[]
+  /**
+   * Its own directories whose removal waits for a scan of a directory around
+   * or inside them, of any library, by id. Each one's own scan is not here.
+   */
+  held_removals: number[]
+  /**
+   * The running directories by the library whose request reserved them,
+   * named, or `null` where none did: a scan another library asked for walks
+   * directories this one shows.
+   */
+  scans: { library: string | null; root_ids: number[] }[]
+  /**
+   * Whether a library job (a scan of any library, a rule save, a stamp or a
+   * move) holds the server's job lock, for which it refuses every move.
+   */
+  moves_held: boolean
 }
 
 /** `GET /api/library/dirs`: one directory's subdirectories, or the prefixes. */
@@ -94,18 +163,21 @@ export const libraryRemovalCost = (id: number): Promise<RemovalAnswer> =>
 export const removeLibrary = (id: number): Promise<RemovalAnswer> =>
   expectBody(sendJson<RemovalAnswer>(`/api/library/libraries/${id}`, 'DELETE'))
 
+/** `POST /api/library/libraries/{id}/scan`'s answer. */
+export interface LibraryScanStarted {
+  library_id: number
+  status_url: string
+  /** The directories the scan reserved, in the order it walks them. */
+  root_ids: number[]
+}
+
 /**
- * Start a scan of every directory of library `id`. Answers 409 while a scan of
- * any one of them is running.
+ * Start a scan of every directory library `id` shows. Answers 409 while a scan
+ * of any one of them is running.
  */
-export const startLibraryScan = (
-  id: number,
-): Promise<{ library_id: number; status_url: string }> =>
+export const startLibraryScan = (id: number): Promise<LibraryScanStarted> =>
   expectBody(
-    sendJson<{ library_id: number; status_url: string }>(
-      `/api/library/libraries/${id}/scan`,
-      'POST',
-    ),
+    sendJson<LibraryScanStarted>(`/api/library/libraries/${id}/scan`, 'POST'),
   )
 
 export const libraryScanStatus = (id: number) =>

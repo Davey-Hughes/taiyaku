@@ -506,7 +506,7 @@ async fn every_library_other_than_true_or_beside_libraries_is_refused() {
         assert!(
             matches!(
                 taiyaku_library::account::access_for(&conn, id).expect("reads"),
-                taiyaku_library::account::Access::Only(_)
+                taiyaku_library::account::Access::Only { .. }
             ),
             "{body}: and the limit stands"
         );

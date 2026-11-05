@@ -78,6 +78,11 @@ silent otherwise:
 2. It is not nested inside an existing root, and no existing root is nested
    inside it. Overlapping roots double-count every file underneath, and the
    symptom — duplicate works — looks nothing like the cause.
+   *The overlapping-libraries design of 2026-11-02 has since narrowed this to
+   the roots of one library: a root inside or around another library's root
+   is accepted, save one at or inside a folder another root reads as one
+   volume, and the outer root's walk skips it. See
+   `2026-11-02-overlapping-libraries-design.md` §4.*
 3. The watcher probe (§3) runs immediately, so the regime is known before the
    first scan rather than discovered later.
 
@@ -197,6 +202,8 @@ It writes nothing and is safe to call on every keystroke, debounced.
   layering asserted rather than assumed.
 - Deleting a proposal-written rule reopens its proposal.
 - **Adding a nested root is refused**, both directions.
+  *Since the overlapping-libraries design of 2026-11-02, only within one
+  library (§4 of `2026-11-02-overlapping-libraries-design.md`).*
 - **Removing a root reports work, progress and note counts before acting.**
 - **The last admin cannot be deleted, and an admin cannot demote themselves.**
 - A scan report lists unreadable formats rather than omitting them.

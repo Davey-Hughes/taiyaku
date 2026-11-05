@@ -1977,6 +1977,134 @@ pub(crate) fn router_over_a_series_in_two_libraries() -> (
     (router, state, fixture, ids)
 }
 
+/// What [`router_over_a_library_nested_in_another`] answers.
+pub(crate) struct NestedLibraries {
+    /// Library `Manga`, numbered 70, and `Kids`, numbered 80.
+    pub(crate) manga: i64,
+    pub(crate) kids: i64,
+    /// The directories `m` (Manga's) and `m/kids` (Kids').
+    pub(crate) m: i64,
+    pub(crate) m_kids: i64,
+    /// A router presenting the session of an account granted Manga alone, and
+    /// one granted Kids alone.
+    pub(crate) manga_reader: axum::Router,
+    pub(crate) kids_reader: axum::Router,
+    /// A router presenting the fixture administrator's session, and the state
+    /// all three routers serve.
+    pub(crate) admin: axum::Router,
+    pub(crate) state: std::sync::Arc<ServeState>,
+    /// The tree on disk, removed when this is dropped.
+    _fixture: Fixture,
+}
+
+/// Spec §4's N: Manga holds `m` and Kids holds `m/kids`, added through the
+/// checked add in that order, with one volume in each, `Manga Book` and
+/// `Kids Book`.
+///
+/// Kids' directory alone holds Kids' volume, which the fixture checks. Added
+/// first, `m` records it, and Kids' scan takes it over; added second, `m`'s
+/// walk skips Kids' directory. Manga's account then sees Kids' book only by
+/// reach.
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written, a directory cannot be added or
+/// scanned, the derive fails, or a volume is held by any directory but its own.
+pub(crate) fn router_over_a_library_nested_in_another() -> NestedLibraries {
+    nested_libraries(false)
+}
+
+/// [`router_over_a_library_nested_in_another`], with Kids' `m/kids` added
+/// first, so the nested directory has the lower id.
+///
+/// # Panics
+///
+/// As [`router_over_a_library_nested_in_another`].
+pub(crate) fn router_over_a_library_nested_in_another_added_first() -> NestedLibraries {
+    nested_libraries(true)
+}
+
+fn nested_libraries(inner_first: bool) -> NestedLibraries {
+    let fixture = Fixture::new("nested-libraries");
+    let m = fixture.path().join("m");
+    write_pages(&m.join("Manga Book").join("Manga Book - v01"), 2);
+    write_pages(&m.join("kids").join("Kids Book").join("Kids Book - v01"), 2);
+    let library = library();
+    let (manga_reader, kids_reader, outer, inner) = {
+        let conn = library.conn();
+        conn.execute(
+            "INSERT INTO library (id, name) VALUES (70, 'Manga'), (80, 'Kids')",
+            [],
+        )
+        .expect("two libraries, numbered apart from their directories");
+        let add = |dir: &std::path::Path, name: &str| -> i64 {
+            let added = taiyaku_library::scan::add_root_checked_in(
+                &conn,
+                dir,
+                taiyaku_library::scan::InLibrary::Named(name),
+            )
+            .unwrap_or_else(|e| panic!("adds {name}'s directory: {e:?}"));
+            taiyaku_library::scan::scan_root(&conn, &added.root)
+                .unwrap_or_else(|e| panic!("scans {name}'s directory: {e}"));
+            added.root.id
+        };
+        let (outer, inner) = if inner_first {
+            let inner = add(&m.join("kids"), "Kids");
+            (add(&m, "Manga"), inner)
+        } else {
+            let outer = add(&m, "Manga");
+            (outer, add(&m.join("kids"), "Kids"))
+        };
+        taiyaku_library::derive::derive(&conn).expect("derives the library");
+        let held: Vec<(i64, i64)> = conn
+            .prepare("SELECT root_id, COUNT(*) FROM member_root GROUP BY root_id ORDER BY root_id")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect()
+            })
+            .expect("reads who holds what");
+        let mut alone = vec![(outer, 1), (inner, 1)];
+        alone.sort_unstable();
+        assert_eq!(held, alone, "each directory holds its own volume alone");
+        let reader = |name: &str, library_id: i64| -> i64 {
+            conn.execute(
+                "INSERT INTO user (name, password_hash, role) VALUES (?1, ?2, 'user')",
+                [name, FIXTURE_PHC],
+            )
+            .expect("adds a reader");
+            let id = conn.last_insert_rowid();
+            taiyaku_library::account::grant_library(&conn, id, library_id)
+                .expect("grants a library");
+            id
+        };
+        (reader("manga", 70), reader("kids", 80), outer, inner)
+    };
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works: crate::Works::fixed(works),
+        source: std::sync::Arc::new(crate::LocalLibrary),
+        cache_dir: fixture.join("covers"),
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
+        library_job: Default::default(),
+        dirs: Vec::new(),
+    });
+    let router = crate::build_router(state.clone());
+    NestedLibraries {
+        manga: 70,
+        kids: 80,
+        m: outer,
+        m_kids: inner,
+        manga_reader: authenticating_as(router.clone(), &state.library, manga_reader),
+        kids_reader: authenticating_as(router.clone(), &state.library, kids_reader),
+        admin: authenticating(router, &state.library),
+        state,
+        _fixture: fixture,
+    }
+}
+
 /// A `GET` against `router`, driven with `oneshot` and no socket.
 ///
 /// **It sets no `Authorization` header of its own, deliberately.** Who the

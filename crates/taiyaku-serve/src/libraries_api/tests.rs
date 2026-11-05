@@ -377,14 +377,20 @@ async fn the_list_gives_each_library_its_own_dirs_works_and_books() {
                 "edition_key",
                 "exclude_globs",
                 "id",
+                "inside",
                 "keeps_documents",
                 "last_scan_at",
                 "last_scan_status",
+                "nested",
                 "path",
                 "scan_interval_secs",
             ],
-            "a directory is root_json's shape: {dir}"
+            "a directory is root_json's shape and nesting_json's two keys: {dir}"
         );
+        // No directory here sits in another: `aaa-extra` and `root-b` lie
+        // beside `root-a`, not inside it.
+        assert_eq!(dir["nested"], serde_json::json!([]), "{dir}");
+        assert_eq!(dir["inside"], serde_json::json!([]), "{dir}");
     }
     assert_eq!(dirs[0]["last_scan_status"], "ok", "{listed}");
     assert!(dirs[0]["last_scan_at"].is_string(), "{listed}");
@@ -719,15 +725,23 @@ async fn a_dir_is_added_to_a_library_by_the_librarys_id() {
         .to_owned();
     let inside = test_support::a_path_inside_the_first_root(&state);
     let canonical = |p: &str| std::path::Path::new(p).canonicalize().expect("exists");
-    for (body, says) in [
+    let into_a = format!(
+        "/api/library/libraries/{}/dirs",
+        the_library(&listed, "root-a")["id"]
+            .as_i64()
+            .expect("an id")
+    );
+    for (into, body, says) in [
         (
+            &into_a,
             serde_json::json!({ "path": inside }),
             format!(
-                "{} is inside {held}, which is already a directory of the library `root-a`",
+                "{} is inside {held}, which is already a directory of the same library, `root-a`",
                 canonical(&inside).display()
             ),
         ),
         (
+            &path,
             serde_json::json!({ "path": held }),
             format!(
                 "{} is already a directory of the library `root-a`",
@@ -735,9 +749,9 @@ async fn a_dir_is_added_to_a_library_by_the_librarys_id() {
             ),
         ),
     ] {
-        let (got, refused) = answered(&router, Method::POST, &path, &body).await;
-        assert_eq!(got, StatusCode::BAD_REQUEST, "{body}: {refused}");
-        assert_eq!(the_sentence(&refused), says, "{body}");
+        let (got, refused) = answered(&router, Method::POST, into, &body).await;
+        assert_eq!(got, StatusCode::BAD_REQUEST, "{into} {body}: {refused}");
+        assert_eq!(the_sentence(&refused), says, "{into} {body}");
     }
     let (got, refused) = answered(
         &router,
@@ -752,6 +766,21 @@ async fn a_dir_is_added_to_a_library_by_the_librarys_id() {
         "{refused}"
     );
     assert_eq!(the_store(&state), stored);
+
+    // Overlapping-libraries spec §4: root-a's folder joins root-b's library.
+    let (got, nested) = answered(
+        &router,
+        Method::POST,
+        &path,
+        &serde_json::json!({ "path": inside }),
+    )
+    .await;
+    assert_eq!(got, StatusCode::OK, "{nested}");
+    assert_eq!(
+        nested["root"]["path"],
+        canonical(&inside).display().to_string(),
+        "{nested}"
+    );
 }
 
 #[tokio::test]
@@ -789,6 +818,7 @@ async fn a_librarys_dry_run_counts_and_removes_nothing_and_the_removal_removes()
                 started: std::time::Instant::now(),
                 done: true,
                 report: Some(serde_json::json!({})),
+                library: None,
             },
         );
     }
@@ -1058,6 +1088,11 @@ async fn starting_a_librarys_scan_refuses_nobody() {
 /// The fixture's one library, given a second directory holding another series
 /// that no scan has walked. Answers the library's id and its two directory ids,
 /// oldest first.
+///
+/// **The second is `z-Second`**, after the first's `tree` by path, which is
+/// the order a library's scan walks and lists its directories in, so "first"
+/// and "second" mean the same in both orders. Neither path is a prefix of the
+/// other's, so a sentence naming one does not contain the other.
 async fn a_library_with_an_unscanned_second_dir(
     router: &axum::Router,
     fixture: &test_support::Fixture,
@@ -1068,7 +1103,7 @@ async fn a_library_with_an_unscanned_second_dir(
         router,
         Method::POST,
         &format!("/api/library/libraries/{id}/dirs"),
-        &serde_json::json!({ "path": a_dir_of(fixture, "Second", "Second Series") }),
+        &serde_json::json!({ "path": a_dir_of(fixture, "z-Second", "Second Series") }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{added}");
@@ -1104,6 +1139,7 @@ fn a_scan_running_on(state: &crate::ServeState, dir: i64) {
             started: std::time::Instant::now(),
             done: false,
             report: None,
+            library: None,
         },
     );
 }
@@ -1142,7 +1178,7 @@ async fn scan_now_walks_each_dir_and_derives_once() {
     test_support::write_pages(
         &fixture
             .path()
-            .join("Second")
+            .join("z-Second")
             .join("Second Series")
             .join("Second Series - v02"),
         2,
@@ -1172,7 +1208,7 @@ async fn scan_now_walks_each_dir_and_derives_once() {
     assert_eq!(status, StatusCode::ACCEPTED, "{started}");
     assert_eq!(
         started,
-        serde_json::json!({ "library_id": id, "status_url": the_scan_of(id) })
+        serde_json::json!({ "library_id": id, "status_url": the_scan_of(id), "root_ids": dirs })
     );
     let ended = until_the_library_scan_ends(&router, id).await;
     assert_eq!(
@@ -1185,6 +1221,9 @@ async fn scan_now_walks_each_dir_and_derives_once() {
                 { "root_id": dirs[0], "running": false },
                 { "root_id": dirs[1], "running": false },
             ],
+            "held_removals": [],
+            "moves_held": false,
+            "scans": [],
         })
     );
 
@@ -1241,7 +1280,24 @@ async fn while_a_librarys_scan_runs_its_dirs_answer_as_scanning() {
     let running = get_json(&router, &the_scan_of(id)).await;
     assert_eq!(
         keys_of(&running),
-        vec!["dirs", "elapsed_secs", "library_id", "running"]
+        vec![
+            "dirs",
+            "elapsed_secs",
+            "held_removals",
+            "library_id",
+            "moves_held",
+            "running",
+            "scans"
+        ]
+    );
+    // Its own directories' scans are each one's own status's to say.
+    assert_eq!(running["held_removals"], serde_json::json!([]), "{running}");
+    // One scan, which this library asked for, of both its directories.
+    let name = get_json(&router, "/api/library/libraries").await["libraries"][0]["name"].clone();
+    assert_eq!(
+        running["scans"],
+        serde_json::json!([{ "library": name, "root_ids": dirs }]),
+        "{running}"
     );
     assert_eq!(running["running"], true, "{running}");
     assert!(running["elapsed_secs"].is_number(), "{running}");
@@ -1579,7 +1635,7 @@ async fn a_failed_derive_marks_every_dir_and_reports_the_error() {
         let error = own["report"]["error"].as_str().expect("a sentence");
         assert!(
             error.starts_with(
-                "the library's directories were scanned, but deriving its structure afterward failed:"
+                "the directories the library shows were scanned, but deriving its structure afterward failed:"
             ),
             "{error}"
         );
@@ -1595,11 +1651,11 @@ async fn a_panicking_scan_leaves_no_dir_running() {
     let (id, dirs) = a_library_with_an_unscanned_second_dir(&router, &fixture).await;
     let roots = {
         let conn = state.library.conn();
-        super::dirs_of(&conn, id).expect("the directories")
+        super::walked_dirs_of(&conn, id).expect("the directories")
     };
 
     let started = std::time::Instant::now();
-    crate::scan_jobs::reserve(&state, &roots, started).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started, id).expect("reserves");
     assert_eq!(get_json(&router, &the_scan_of(id)).await["running"], true);
     // The job dies holding the job lock, which poisons it: the scans after it
     // must go on regardless.
@@ -1661,6 +1717,9 @@ async fn a_library_never_scanned_is_not_running() {
             "running": false,
             "elapsed_secs": null,
             "dirs": [{ "root_id": dir, "running": false }],
+            "held_removals": [],
+            "moves_held": false,
+            "scans": [],
         })
     );
 }
@@ -2001,10 +2060,10 @@ async fn a_job_answering_too_few_reports_releases_every_dir() {
     let (id, dirs) = a_library_with_an_unscanned_second_dir(&router, &fixture).await;
     let roots = {
         let conn = state.library.conn();
-        super::dirs_of(&conn, id).expect("the directories")
+        super::walked_dirs_of(&conn, id).expect("the directories")
     };
     let started = std::time::Instant::now();
-    crate::scan_jobs::reserve(&state, &roots, started).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started, id).expect("reserves");
 
     let job = crate::scan_jobs::spawn_job(std::sync::Arc::clone(&state), roots, started, |_, _| {
         Ok(vec![serde_json::json!({ "scan": "the first's" })])
@@ -2031,11 +2090,11 @@ async fn a_library_removed_while_its_scan_waits_leaves_nothing_behind() {
     let (id, dir) = a_library_of_its_own(&router, &fixture, "Doomed").await;
     let roots = {
         let conn = state.library.conn();
-        super::dirs_of(&conn, id).expect("the directories")
+        super::walked_dirs_of(&conn, id).expect("the directories")
     };
     let started = std::time::Instant::now();
     let held = holding_the_job(&state);
-    crate::scan_jobs::reserve(&state, &roots, started).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started, id).expect("reserves");
     let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(&state),
         roots,
@@ -2061,11 +2120,11 @@ async fn a_scan_that_waited_through_a_removal_does_not_touch_the_dir_that_took_i
     let (id, dir) = a_library_of_its_own(&router, &fixture, "Doomed").await;
     let roots = {
         let conn = state.library.conn();
-        super::dirs_of(&conn, id).expect("the directories")
+        super::walked_dirs_of(&conn, id).expect("the directories")
     };
     let started = std::time::Instant::now();
     let held = holding_the_job(&state);
-    crate::scan_jobs::reserve(&state, &roots, started).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started, id).expect("reserves");
     let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(&state),
         roots,
@@ -2098,12 +2157,12 @@ async fn a_scan_that_waited_through_a_new_dir_walks_nothing() {
     let id = listed["libraries"][0]["id"].as_i64().expect("an id");
     let roots = {
         let conn = state.library.conn();
-        super::dirs_of(&conn, id).expect("the directories")
+        super::walked_dirs_of(&conn, id).expect("the directories")
     };
     let captured = roots[0].id;
     let started = std::time::Instant::now();
     let held = holding_the_job(&state);
-    crate::scan_jobs::reserve(&state, &roots, started).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started, id).expect("reserves");
     let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(&state),
         roots,
@@ -2169,11 +2228,11 @@ async fn a_scan_that_waited_through_a_removal_leaves_a_later_scans_reservation_a
     let (id, dir) = a_library_of_its_own(&router, &fixture, "Doomed").await;
     let roots = {
         let conn = state.library.conn();
-        super::dirs_of(&conn, id).expect("the directories")
+        super::walked_dirs_of(&conn, id).expect("the directories")
     };
     let started = std::time::Instant::now();
     let held = holding_the_job(&state);
-    crate::scan_jobs::reserve(&state, &roots, started).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started, id).expect("reserves");
     let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(&state),
         roots,
@@ -2185,10 +2244,10 @@ async fn a_scan_that_waited_through_a_removal_leaves_a_later_scans_reservation_a
     assert_eq!(fresh_dir, dir, "the freed id is the next directory's");
     let fresh_roots = {
         let conn = state.library.conn();
-        super::dirs_of(&conn, fresh).expect("the directories")
+        super::walked_dirs_of(&conn, fresh).expect("the directories")
     };
     let later = std::time::Instant::now();
-    crate::scan_jobs::reserve(&state, &fresh_roots, later).expect("reserves");
+    crate::scan_jobs::reserve(&state, &fresh_roots, later, fresh).expect("reserves");
 
     drop(held);
     the_job_ends(job).await;
@@ -2211,11 +2270,11 @@ fn a_waiting_scan(
 ) -> (HeldJob, tokio::task::JoinHandle<()>) {
     let roots = {
         let conn = state.library.conn();
-        super::dirs_of(&conn, id).expect("the directories")
+        super::walked_dirs_of(&conn, id).expect("the directories")
     };
     let held = holding_the_job(state);
     let started = std::time::Instant::now();
-    crate::scan_jobs::reserve(state, &roots, started).expect("reserves");
+    crate::scan_jobs::reserve(state, &roots, started, id).expect("reserves");
     let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(state),
         roots,
@@ -3520,4 +3579,498 @@ async fn a_store_with_no_split_edition_lists_none() {
         get_json(&router, "/api/library/split-editions").await,
         serde_json::json!({ "editions": [] })
     );
+}
+
+/// Scans library `library` through its route, and answers the directories its
+/// status names, in order, and those of `m` and `m/kids` whose own route holds a
+/// finished walk's report, after checking that the route's `202` named the
+/// directories its status then names.
+async fn the_walk_of(n: &test_support::NestedLibraries, library: i64) -> (Vec<i64>, Vec<i64>) {
+    let (status, started) = answered(
+        &n.admin,
+        Method::POST,
+        &the_scan_of(library),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let reserved: Vec<i64> = started["root_ids"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the 202 names the directories it reserved: {started}"))
+        .iter()
+        .map(|dir| dir.as_i64().expect("an id"))
+        .collect();
+    let ended = until_the_library_scan_ends(&n.admin, library).await;
+    let named = ended["dirs"]
+        .as_array()
+        .expect("a list of directories")
+        .iter()
+        .map(|dir| dir["root_id"].as_i64().expect("an id"))
+        .collect::<Vec<i64>>();
+    assert_eq!(reserved, named, "the 202 named what the scan walks");
+    let mut walked = Vec::new();
+    for dir in [n.m, n.m_kids] {
+        let own = get_json(&n.admin, &a_dirs_scan(dir)).await;
+        if !own["report"].is_null() && keys_of(&own["report"]) == vec!["derive", "scan"] {
+            walked.push(dir);
+        }
+    }
+    (named, walked)
+}
+
+/// Spec §4's N and its decision 16: a scan of Manga walks `m` and
+/// Kids' `m/kids` nested in it, each as its own directory, `m` first by path,
+/// even where `m/kids` was added first and has the lower id; a scan of Kids
+/// walks `m/kids` alone; with `m` excluding `kids/`, a scan of Manga walks `m`
+/// alone. Each case is a fresh store, so a report found is this scan's.
+#[tokio::test]
+async fn a_librarys_scan_walks_every_directory_it_reaches() {
+    let n = test_support::router_over_a_library_nested_in_another();
+    assert_eq!(
+        the_walk_of(&n, n.manga).await,
+        (vec![n.m, n.m_kids], vec![n.m, n.m_kids]),
+        "Manga"
+    );
+
+    let n = test_support::router_over_a_library_nested_in_another_added_first();
+    assert!(
+        n.m_kids < n.m,
+        "the fixture: the nested directory has the lower id"
+    );
+    assert_eq!(
+        the_walk_of(&n, n.manga).await,
+        (vec![n.m, n.m_kids], vec![n.m, n.m_kids]),
+        "Manga, its nested directory added first"
+    );
+
+    let n = test_support::router_over_a_library_nested_in_another();
+    assert_eq!(
+        the_walk_of(&n, n.kids).await,
+        (vec![n.m_kids], vec![n.m_kids]),
+        "Kids"
+    );
+
+    let n = test_support::router_over_a_library_nested_in_another();
+    n.state
+        .library
+        .conn()
+        .execute(
+            "UPDATE root SET exclude_globs = 'kids/' WHERE id = ?1",
+            [n.m],
+        )
+        .expect("excludes kids/ from Manga's directory");
+    assert_eq!(
+        the_walk_of(&n, n.manga).await,
+        (vec![n.m], vec![n.m]),
+        "Manga, excluding kids/"
+    );
+}
+
+/// Spec §4, as `config_api`'s directory removal: a scan of a directory around
+/// or inside one of a library's directories holds up the library's removal,
+/// which hands its files to them. While Manga's scan of `m` is reserved, Kids
+/// is neither rehearsed nor removed, nor is Manga while Kids' scan is: 409
+/// naming the directory being scanned, and the store as it was.
+#[tokio::test]
+async fn a_library_is_not_removed_while_a_scan_around_or_inside_its_dirs_is_reserved() {
+    for inner_removed in [true, false] {
+        let n = test_support::router_over_a_library_nested_in_another();
+        let (removed, scanning) = if inner_removed {
+            (n.kids, n.m)
+        } else {
+            (n.manga, n.m_kids)
+        };
+        let path = taiyaku_library::scan::roots(&n.state.library.conn())
+            .expect("roots")
+            .into_iter()
+            .find(|root| root.id == scanning)
+            .expect("the directory being scanned")
+            .path
+            .display()
+            .to_string();
+        a_scan_running_on(&n.state, scanning);
+        let stored = the_store(&n.state);
+
+        for query in ["?dry_run=true", ""] {
+            let (status, refused) = answered(
+                &n.admin,
+                Method::DELETE,
+                &format!("/api/library/libraries/{removed}{query}"),
+                &serde_json::json!({}),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::CONFLICT,
+                "inner_removed={inner_removed} {query}: {refused}"
+            );
+            assert_eq!(
+                the_sentence(&refused),
+                format!("a scan of {path} is running; remove the library once it has finished")
+            );
+            assert_eq!(
+                the_store(&n.state),
+                stored,
+                "inner_removed={inner_removed} {query} removed something"
+            );
+        }
+    }
+}
+
+/// The directory `id` of library `library` in the list.
+fn the_dir<'a>(listed: &'a serde_json::Value, library: &str, id: i64) -> &'a serde_json::Value {
+    the_library(listed, library)["dirs"]
+        .as_array()
+        .expect("dirs")
+        .iter()
+        .find(|dir| dir["id"] == id)
+        .unwrap_or_else(|| panic!("{library} lists no directory {id}: {listed}"))
+}
+
+/// The path of directory `id`, as stored.
+fn path_of(state: &crate::ServeState, id: i64) -> String {
+    taiyaku_library::scan::roots(&state.library.conn())
+        .expect("roots")
+        .into_iter()
+        .find(|root| root.id == id)
+        .unwrap_or_else(|| panic!("no directory {id}"))
+        .path
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Spec §4's N, on each directory's page: Manga's `m` lists Kids' `m/kids`
+/// as nested, which Manga shows, and Kids' `m/kids` lists `m` as the
+/// directory it sits in, whose library shows its books. Other's `mx`, whose
+/// path `m`'s spells the start of, is in neither list and sits in nothing.
+#[tokio::test]
+async fn the_list_says_which_directories_around_and_inside_each_govern_their_own() {
+    let n = test_support::router_over_a_library_nested_in_another();
+    let (m, m_kids) = (path_of(&n.state, n.m), path_of(&n.state, n.m_kids));
+    let mx = {
+        let dir = std::path::PathBuf::from(format!("{m}x"));
+        std::fs::create_dir_all(&dir).expect("makes mx beside m");
+        taiyaku_library::scan::add_root_checked_in(
+            &n.state.library.conn(),
+            &dir,
+            taiyaku_library::scan::InLibrary::Named("Other"),
+        )
+        .expect("adds Other's directory beside m")
+        .root
+        .id
+    };
+    let listed = get_json(&n.admin, "/api/library/libraries").await;
+    assert_eq!(
+        the_dir(&listed, "Other", mx)["inside"],
+        serde_json::json!([]),
+        "{listed}"
+    );
+
+    let outer = the_dir(&listed, "Manga", n.m);
+    assert_eq!(
+        outer["nested"],
+        serde_json::json!([{
+            "id": n.m_kids, "path": m_kids, "library": "Kids", "shown": true, "kept_out_by": null,
+        }]),
+        "{listed}"
+    );
+    assert_eq!(outer["inside"], serde_json::json!([]), "{listed}");
+
+    let inner = the_dir(&listed, "Kids", n.m_kids);
+    assert_eq!(inner["nested"], serde_json::json!([]), "{listed}");
+    assert_eq!(
+        inner["inside"],
+        serde_json::json!([{ "path": m, "library": "Manga", "shows": true, "kept_out_by": null }]),
+        "{listed}"
+    );
+}
+
+/// Reach is asked of the outer directory's own patterns: with `m` excluding
+/// `kids/`, Manga does not show `m/kids`, and each side says so.
+#[tokio::test]
+async fn an_outer_directory_that_excludes_the_nested_one_neither_shows_it_nor_is_said_to() {
+    let n = test_support::router_over_a_library_nested_in_another();
+    n.state
+        .library
+        .conn()
+        .execute(
+            "UPDATE root SET exclude_globs = 'kids/' WHERE id = ?1",
+            [n.m],
+        )
+        .expect("excludes kids/ from Manga's directory");
+    let listed = get_json(&n.admin, "/api/library/libraries").await;
+
+    assert_eq!(
+        the_dir(&listed, "Manga", n.m)["nested"][0]["shown"],
+        false,
+        "{listed}"
+    );
+    assert_eq!(
+        the_dir(&listed, "Kids", n.m_kids)["inside"][0]["shows"],
+        false,
+        "{listed}"
+    );
+    assert_eq!(
+        the_dir(&listed, "Manga", n.m)["nested"][0]["kept_out_by"],
+        "exclusion",
+        "{listed}"
+    );
+    assert_eq!(
+        the_dir(&listed, "Kids", n.m_kids)["inside"][0]["kept_out_by"],
+        "exclusion",
+        "{listed}"
+    );
+}
+
+/// Two deep: Tiny's `m/kids/tiny` sits in both `m` and `m/kids`, outermost
+/// first even where `m/kids` was added first and has the lower id, and each
+/// of them lists it as nested. Reach does not chain, so whether Manga shows it
+/// is `m`'s patterns alone: with `m/kids` excluding `tiny/`, Manga still shows
+/// it and Kids does not.
+#[tokio::test]
+async fn a_directory_two_deep_is_inside_both_directories_around_it() {
+    let n = test_support::router_over_a_library_nested_in_another_added_first();
+    assert!(
+        n.m_kids < n.m,
+        "the fixture: the nested directory has the lower id"
+    );
+    let (m, m_kids) = (path_of(&n.state, n.m), path_of(&n.state, n.m_kids));
+    let tiny = {
+        let conn = n.state.library.conn();
+        let dir = std::path::Path::new(&m_kids).join("tiny");
+        std::fs::create_dir_all(&dir).expect("makes m/kids/tiny");
+        let added = taiyaku_library::scan::add_root_checked_in(
+            &conn,
+            &dir,
+            taiyaku_library::scan::InLibrary::Named("Tiny"),
+        )
+        .expect("adds Tiny's directory inside both");
+        conn.execute(
+            "UPDATE root SET exclude_globs = 'tiny/' WHERE id = ?1",
+            [n.m_kids],
+        )
+        .expect("excludes tiny/ from Kids' directory");
+        added.root.id
+    };
+    let tiny_path = path_of(&n.state, tiny);
+    let listed = get_json(&n.admin, "/api/library/libraries").await;
+
+    assert_eq!(
+        the_dir(&listed, "Tiny", tiny)["inside"],
+        serde_json::json!([
+            { "path": m, "library": "Manga", "shows": true, "kept_out_by": null },
+            { "path": m_kids, "library": "Kids", "shows": false, "kept_out_by": "exclusion" },
+        ]),
+        "{listed}"
+    );
+    assert_eq!(
+        the_dir(&listed, "Manga", n.m)["nested"],
+        serde_json::json!([
+            { "id": n.m_kids, "path": m_kids, "library": "Kids", "shown": true, "kept_out_by": null },
+            { "id": tiny, "path": tiny_path, "library": "Tiny", "shown": true, "kept_out_by": null },
+        ]),
+        "{listed}"
+    );
+    assert_eq!(
+        the_dir(&listed, "Kids", n.m_kids)["nested"],
+        serde_json::json!([
+            { "id": tiny, "path": tiny_path, "library": "Tiny", "shown": false, "kept_out_by": "exclusion" },
+        ]),
+        "{listed}"
+    );
+}
+
+/// The walk skips a name starting with `.`, whatever the patterns say, so
+/// Manga does not show Hidden's `m/.stash/hidden`, and each side says that
+/// rule is why, not an exclusion `m` does not have.
+#[tokio::test]
+async fn a_directory_under_a_dot_name_is_kept_out_by_the_dot_rule_not_a_pattern() {
+    let n = test_support::router_over_a_library_nested_in_another();
+    let hidden = {
+        let dir = std::path::Path::new(&path_of(&n.state, n.m))
+            .join(".stash")
+            .join("hidden");
+        std::fs::create_dir_all(&dir).expect("makes m/.stash/hidden");
+        taiyaku_library::scan::add_root_checked_in(
+            &n.state.library.conn(),
+            &dir,
+            taiyaku_library::scan::InLibrary::Named("Hidden"),
+        )
+        .expect("adds Hidden's directory under a dot name in m")
+        .root
+        .id
+    };
+    let listed = get_json(&n.admin, "/api/library/libraries").await;
+
+    let nested = the_dir(&listed, "Manga", n.m)["nested"]
+        .as_array()
+        .expect("nested")
+        .iter()
+        .find(|one| one["id"] == hidden)
+        .unwrap_or_else(|| panic!("m lists Hidden's directory: {listed}"))
+        .clone();
+    assert_eq!(nested["shown"], false, "{listed}");
+    assert_eq!(nested["kept_out_by"], "dot_name", "{listed}");
+    let inside = &the_dir(&listed, "Hidden", hidden)["inside"][0];
+    assert_eq!(inside["shows"], false, "{listed}");
+    assert_eq!(inside["kept_out_by"], "dot_name", "{listed}");
+}
+
+/// The server's rule for a removal: a scan of a directory around or inside
+/// one holds its removal up. While Kids' `m/kids` is scanned, Manga's status
+/// names `m`'s removal as held, and Kids' names none, its own scan being its
+/// own status's to say; while Manga's `m` is scanned, the other way round.
+#[tokio::test]
+async fn a_librarys_status_names_the_removals_a_scan_around_or_inside_holds() {
+    for (scanning, held_in, free_in) in [(true, "Manga", "Kids"), (false, "Kids", "Manga")] {
+        let n = test_support::router_over_a_library_nested_in_another();
+        let (dir, held, manga_held, kids_held) = if scanning {
+            (n.m_kids, n.m, vec![n.m], Vec::<i64>::new())
+        } else {
+            (n.m, n.m_kids, Vec::<i64>::new(), vec![n.m_kids])
+        };
+        a_scan_running_on(&n.state, dir);
+        let manga = get_json(&n.admin, &the_scan_of(n.manga)).await;
+        let kids = get_json(&n.admin, &the_scan_of(n.kids)).await;
+        assert_eq!(
+            manga["held_removals"],
+            serde_json::json!(manga_held),
+            "{held_in} holds {held}, {free_in} nothing: {manga}"
+        );
+        assert_eq!(
+            kids["held_removals"],
+            serde_json::json!(kids_held),
+            "{held_in} holds {held}, {free_in} nothing: {kids}"
+        );
+    }
+}
+
+/// Which rule the walk meets first is the reason given. With `.stash/`
+/// excluded at `m`, `m/.stash/kids` is kept out by its dot name, met first;
+/// with `old/` excluded, `m/old/.kids` is kept out by the exclusion.
+#[tokio::test]
+async fn the_reason_a_directory_is_kept_out_is_the_rule_the_walk_meets_first() {
+    for (pattern, rel, expected) in [
+        (".stash/", ".stash/kids", "dot_name"),
+        ("old/", "old/.kids", "exclusion"),
+    ] {
+        let n = test_support::router_over_a_library_nested_in_another();
+        let dir = std::path::Path::new(&path_of(&n.state, n.m)).join(rel);
+        let inner = {
+            let conn = n.state.library.conn();
+            conn.execute(
+                "UPDATE root SET exclude_globs = ?1 WHERE id = ?2",
+                rusqlite::params![pattern, n.m],
+            )
+            .expect("excludes the pattern from Manga's directory");
+            std::fs::create_dir_all(&dir).expect("makes the inner directory");
+            taiyaku_library::scan::add_root_checked_in(
+                &conn,
+                &dir,
+                taiyaku_library::scan::InLibrary::Named("Inner"),
+            )
+            .expect("adds Inner's directory in m")
+            .root
+            .id
+        };
+        let listed = get_json(&n.admin, "/api/library/libraries").await;
+        let nested = the_dir(&listed, "Manga", n.m)["nested"]
+            .as_array()
+            .expect("nested")
+            .iter()
+            .find(|one| one["id"] == inner)
+            .unwrap_or_else(|| panic!("m lists Inner's directory: {listed}"))
+            .clone();
+        assert_eq!(nested["kept_out_by"], expected, "{pattern} {rel}: {listed}");
+        assert_eq!(
+            the_dir(&listed, "Inner", inner)["inside"][0]["kept_out_by"],
+            expected,
+            "{pattern} {rel}: {listed}"
+        );
+    }
+}
+
+/// A library's status names a scan another library asked for by that
+/// library: Kids' Scan library walks `m/kids` and Tiny's `m/kids/tiny`, and
+/// Manga, which shows both, is told Kids is scanning them. A Scan directory
+/// of `m/kids` is named by Kids too, the directory's own library.
+#[tokio::test]
+async fn a_librarys_status_names_each_scan_by_the_library_that_asked_for_it() {
+    let n = test_support::router_over_a_library_nested_in_another();
+    let dir = std::path::Path::new(&path_of(&n.state, n.m_kids)).join("tiny");
+    let tiny = {
+        let conn = n.state.library.conn();
+        std::fs::create_dir_all(&dir).expect("makes m/kids/tiny");
+        taiyaku_library::scan::add_root_checked_in(
+            &conn,
+            &dir,
+            taiyaku_library::scan::InLibrary::Named("Tiny"),
+        )
+        .expect("adds Tiny's directory inside both")
+        .root
+        .id
+    };
+    let (held, job) = a_waiting_scan(&n.state, n.kids);
+    let manga = get_json(&n.admin, &the_scan_of(n.manga)).await;
+    assert_eq!(
+        manga["scans"],
+        serde_json::json!([{ "library": "Kids", "root_ids": [n.m_kids, tiny] }]),
+        "{manga}"
+    );
+    drop(held);
+    job.await.expect("the scan ends");
+
+    let held = holding_the_job(&n.state);
+    let (status, started) = answered(
+        &n.admin,
+        Method::POST,
+        &a_dirs_scan(n.m_kids),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let manga = get_json(&n.admin, &the_scan_of(n.manga)).await;
+    assert_eq!(
+        manga["scans"],
+        serde_json::json!([{ "library": "Kids", "root_ids": [n.m_kids] }]),
+        "{manga}"
+    );
+    drop(held);
+    until_the_library_scan_ends(&n.admin, n.manga).await;
+}
+
+/// A move waits for nothing: it is refused while anything holds the job lock,
+/// a running scan of any library among them, so a library's status says so
+/// for its pages to hold Move…. A scan queued for the lock is queued behind
+/// whatever holds it, so the status says so then too; once the lock is free,
+/// and the scan behind it has run, it does not.
+#[tokio::test]
+async fn a_librarys_status_says_moves_are_held_while_the_job_lock_is() {
+    let n = test_support::router_over_a_library_nested_in_another();
+    let moves_held = |status: &serde_json::Value| status["moves_held"].clone();
+    assert_eq!(
+        moves_held(&get_json(&n.admin, &the_scan_of(n.manga)).await),
+        false
+    );
+
+    let (held, job) = a_waiting_scan(&n.state, n.kids);
+    let manga = get_json(&n.admin, &the_scan_of(n.manga)).await;
+    assert_eq!(moves_held(&manga), true, "{manga}");
+    let (status, refused) = answered(
+        &n.admin,
+        Method::POST,
+        &format!("/api/library/roots/{}/move", n.m),
+        &serde_json::json!({ "new_library": "Elsewhere" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "the move is refused: {refused}"
+    );
+
+    drop(held);
+    job.await.expect("the scan ends");
+    let manga = get_json(&n.admin, &the_scan_of(n.manga)).await;
+    assert_eq!(moves_held(&manga), false, "{manga}");
 }

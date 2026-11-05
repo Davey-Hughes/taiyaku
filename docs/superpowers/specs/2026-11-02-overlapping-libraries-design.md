@@ -114,6 +114,62 @@ the other's file leaves two works of one file, each held under both, where a
 store derived from the same files at once makes one work of two. It follows
 from decisions 13 and 14 as worded, and no ruling covers it.
 
+PR 2 added eight: the first while its plan was written, the next four on its
+directory and library pages, and the last three in its whole-branch review.
+
+16. **"Scan library" walks every directory the library shows**: its own
+    directories and each nested directory it reaches, each scanned as its own
+    directory by its own rules. The CLI's `scan --library` does the same.
+    Chosen over its own directories only.
+17. **A directory's page says what nests in it as a count and a fold.** An
+    outer directory draws one muted disclosure, "N folders inside use their
+    own library's rules", which opens to a row per nested directory: its path
+    relative to this one, its library, and "also shown in <this library>" or
+    "kept out by this directory's exclusions". An inner directory draws one
+    muted line per directory around it, "Also shown in <library> (inside
+    <path>)". Chosen over a line beside the rules, and over the Libraries
+    list alone.
+18. **A directory's page greys out only what the server refuses while a scan
+    runs around or inside it.** The user chose this on the premise that the
+    server then refuses only Remove…, and that premise was wrong: a move is
+    refused whenever the server's job lock is held, and a running scan of any
+    library holds it, as a rule save, a stamp or another move does. So the
+    page holds Remove… while a scan around or inside the directory holds its
+    removal (`held_removals` in the library's scan status), and Move… while
+    the job lock is held (`moves_held`). It therefore holds Move… during such
+    a scan, which the ruling, made on the wrong premise, expected to stay free.
+19. **The kept-out text says which rule keeps a nested directory out.** An
+    exclusion pattern keeps decision 17's wording. The rule that skips names
+    starting with a dot reads "kept out: names starting with a dot are
+    skipped" on the outer directory's page and "Kept out of <library>: its
+    scans skip names starting with a dot (inside <path>)" on the inner's; the
+    server says which rule it was.
+20. **A library's card says when a nested library scans what it shows**:
+    "Kids is scanning kids/, which Manga shows."
+21. **The hand-over moves only the members of files the nested directory's
+    scan recorded.** A file its own patterns exclude stays with the outer
+    directory: the outer library's accounts keep seeing it, the nested
+    library's never do, and removing the nested directory loses nothing of
+    it. A file the nested directory comes to exclude after its scan took the
+    file over goes back to the outer directory when the nested one is
+    removed, where the outer's patterns admit it. While the nested directory
+    exists the file is not refreshed, as a file an in-root pattern excludes
+    is not (O92). Chosen over the plan's
+    every member moving, which showed the nested library's accounts what its
+    patterns kept out, and deleted that work with its positions when the
+    nested directory was removed.
+22. **A directory's page greys out only what the server refuses, a sibling's
+    scan included.** Decision 18's rule is general. While another directory
+    of the same library has a scan reserved or running, the page holds
+    Move… alone: Scan directory queues behind the other scan, and the server
+    takes Remove…. A scan of the whole library reserves this directory too,
+    so the page holds all three then. A removal that lands while a scan
+    derives can leave members with no directory until a later scan (O249).
+    Chosen over holding Remove… during every scan.
+23. **New library's Directory path help** reads "The server checks that it
+    can read the directory. It may sit inside or around another library's
+    directory." Chosen over naming the overlaps a new library is refused.
+
 ## 1. The model
 
 - **A library is a name and a set of directories.** It decides who sees what
@@ -401,6 +457,62 @@ edition too, which closes O191.
   directory's page says what its settings govern: an outer one names the
   nested directories it does not govern, an inner one names the library whose
   directory it sits in.
+
+**What PR 2's plan settled that this section left open**, told to the user
+rather than ruled (`docs/superpowers/plans/2026-11-04-overlapping-libraries-pr2.md`):
+
+- **Grants decide which libraries an account lists and opens; reach decides
+  which books it sees.** The libraries design of 2026-10-05 §3, "a restricted
+  account sees only granted libraries", holds. An account granted Manga sees
+  Kids' books on Manga's page, but its sidebar does not list Kids and
+  `?library=` naming Kids does not open; an account granted Kids cannot open
+  Manga's page or OPDS feed by id.
+- **An equal directory stays refused across libraries until PR 3**, and W
+  stays refused.
+- **Reach is decided by the library's own directory alone**, asked as its walk
+  asks: that directory's `exclude_globs` for each ancestor of the nested
+  directory's path relative to it, outermost first, and the walk's rule that
+  skips names starting with a dot. It does not chain through intermediate
+  directories, and it is computed on every call, so a pattern edit changes it
+  at once.
+- **O204:** only the comparison with the stored roots (`scan::clash`, which
+  replaces `vetted`) moves inside the transaction. Reading the disk stays
+  before it.
+- **A directory at or inside another directory's directory member is refused
+  at add**: a folder of page images read as one volume would otherwise be
+  counted without the nested directory's pages while the reader serves them.
+  The refusal knows only what the last derive recorded (O246).
+- **The walk compares a symlinked child directory by its canonical path**, so
+  a link to a nested directory is skipped too, and rows recorded through one
+  before the nested directory existed are forgotten.
+- **Move's "who gains and loses sight" is computed by reach**, before and
+  after the move.
+- **A hand-over does what an in-root rule edit does, no better and no
+  worse.** Positions stay where they were, and the series follows the inner
+  directory's rules. An edition the inner's rules name differently is kept
+  beside the new one, as the derive keeps an edition a rule edit renames, and
+  is counted in `kept_editions`. A volume straddling the boundary leaves later
+  positions in the old numbering (O244). None of this is fixed here.
+- **The hand-over moves only the members of files the inner directory's scan
+  recorded** (decision 21, replacing the plan's every member moving). A stale
+  edition's members share a recorded file's path, so they move too. A file
+  the inner directory's patterns exclude keeps its member with the outer
+  directory, which drops the file's row.
+- **The hand-back copies the inner directory's rows rather than walking the
+  disk again**, since a walk cannot run inside the removal's transaction and
+  the rehearsal counts without reading the disk. Each row goes to the
+  directory whose walk would reach it: one nested in the removed directory,
+  by that one's patterns, or else the deepest directory around it, by its
+  own. A file the inner directory's patterns keep out has no row to copy.
+  Kept out by the scan that took the files over, its member never left the
+  outer directory; kept out later, its member goes where a row at its path
+  would.
+  Either way, where the outer's patterns admit the file, the outer's next
+  scan records it again under the work it had. The member of a file gone
+  from the disk while the inner directory's patterns still admit it is
+  counted removed, as before.
+- **An outer directory's file-level pattern governs nothing under a nested
+  directory**, and governs the file again once it is handed back.
 
 ## 5. PR 3: the same directory in several libraries
 

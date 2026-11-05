@@ -3,8 +3,9 @@
 //! blocking pool, and one report landed on each directory's own reservation.
 //!
 //! **A scan of one directory is the scan of a library of one.** The directory route
-//! reserves `std::slice::from_ref(&root)` and a library route reserves all of
-//! its directories; [`Reread`] is the only thing that tells them apart, in what the
+//! reserves `std::slice::from_ref(&root)` and a library route reserves every
+//! directory the library reaches ([`taiyaku_library::reach::walked_by`]);
+//! [`Reread`] is the only thing that tells them apart, in what the
 //! job reads again under [`crate::ServeState::library_job`] and in the words of
 //! what it answers where that fails.
 
@@ -21,9 +22,11 @@ use crate::config_api::finished_scan_json;
 pub(crate) const DIR_CHANGED: &str =
     "the directory was removed or changed while the scan waited to start, so nothing was scanned";
 
-/// What each directory's report says of a scan that found its library changed.
-pub(crate) const CHANGED: &str = "the library's directories changed while the scan waited to \
-                                  start, so nothing was scanned";
+/// What each directory's report says of a scan that found the directories its
+/// library shows changed: one added, removed or moved, or a pattern edit that
+/// changed what the library reaches.
+pub(crate) const CHANGED: &str = "the directories the library shows changed while the scan \
+                                  waited to start, so nothing was scanned";
 
 /// What a scan reads again once it holds the job lock, to know that the directories
 /// it was asked to walk are still the ones it reserved.
@@ -31,8 +34,9 @@ pub(crate) const CHANGED: &str = "the library's directories changed while the sc
 pub(crate) enum Reread {
     /// Each directory asked for, which must still hold its id and its path.
     Dir,
-    /// Library `id`, which must still hold the same directories, in the same
-    /// number, with the same ids and paths.
+    /// Library `id`, which must still reach the same directories
+    /// ([`taiyaku_library::reach::walked_by`]), in the same number and order,
+    /// with the same ids and paths.
     Library(i64),
 }
 
@@ -64,10 +68,7 @@ impl Reread {
                 if libraries::name_of(conn, id)?.is_none() {
                     return Err(CHANGED.to_string());
                 }
-                let now: Vec<scan::Root> = scan::roots(conn)?
-                    .into_iter()
-                    .filter(|root| root.library_id == id)
-                    .collect();
+                let now = taiyaku_library::reach::walked_by(&scan::roots(conn)?, id);
                 let same = now.len() == asked.len()
                     && now
                         .iter()
@@ -101,8 +102,8 @@ impl Reread {
                     .map_or_else(String::new, |root| root.path.display().to_string())
             ),
             Self::Library(_) => format!(
-                "the library's directories were scanned, but deriving its structure afterward \
-                 failed: {why}"
+                "the directories the library shows were scanned, but deriving its structure \
+                 afterward failed: {why}"
             ),
         }
     }
@@ -144,7 +145,7 @@ pub(crate) fn run(
     library: &taiyaku_library::Library,
     asked: &[scan::Root],
     reread: Reread,
-    job: &std::sync::Mutex<()>,
+    job: &crate::LibraryJob,
 ) -> Result<Vec<serde_json::Value>, String> {
     let _job = job
         .lock()
@@ -234,8 +235,8 @@ pub(crate) fn waits_for(root: &scan::Root, to_do: &str) -> String {
 }
 
 /// Reserve the registry slot of each of `roots` for one scan that started at
-/// `started`, or answer the sentence that refuses it, naming a directory already
-/// being scanned.
+/// `started` at the request of `library`, or answer the sentence that refuses
+/// it, naming a directory already being scanned.
 ///
 /// The check and the reservations are one lock: a refusal reserves nothing,
 /// and two requests racing for the same directories cannot both find them free.
@@ -243,6 +244,7 @@ pub(crate) fn reserve(
     state: &ServeState,
     roots: &[scan::Root],
     started: Instant,
+    library: i64,
 ) -> Result<(), String> {
     let mut scans = state
         .scans
@@ -264,6 +266,7 @@ pub(crate) fn reserve(
                 started,
                 done: false,
                 report: None,
+                library: Some(library),
             },
         );
     }
@@ -289,6 +292,7 @@ pub(crate) fn finish_reservation(
             started,
             done: true,
             report: Some(report),
+            library: entry.library,
         };
     }
 }

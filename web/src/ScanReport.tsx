@@ -15,6 +15,10 @@
  * not exist in this version of the API" look identical — exactly the
  * omission C4 §3 writes rules against.
  *
+ * **Except `taken_over`, drawn only when it is not zero.** Only a directory
+ * inside another directory ever takes rows over (spec §4), so on every other
+ * directory the row would be a zero that can never be anything else.
+ *
  * **The confession comes first.** A scan that quietly ignored 40 EPUBs and
  * said "done" is the failure this project keeps writing rules against, and
  * burying it under the achievement is the readable version of the same
@@ -289,6 +293,9 @@ function WalkSection({ walk, level }: { walk: Walk; level: ReportLevel }) {
         <Count field="added" label="Added" n={walk.added} />
         <Count field="updated" label="Updated" n={walk.updated} />
         <Count field="gone" label="Gone" n={walk.gone} />
+        {walk.taken_over !== 0 && (
+          <Count field="taken_over" label="Taken over" n={walk.taken_over} />
+        )}
         <div className="count" data-field="root">
           <dt>Directory</dt>
           <dd>

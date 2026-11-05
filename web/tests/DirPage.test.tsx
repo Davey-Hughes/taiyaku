@@ -325,22 +325,259 @@ describe('DirPage', () => {
   })
 })
 
+/** What the page says of the directories around and inside it, in its header. */
+const nesting = (host: HTMLElement) =>
+  host.querySelector('.dir-page .page-header .page-description > .nesting')
+
+/** Each line saying a directory this one sits in. */
+const insideLines = (host: HTMLElement) =>
+  [...(nesting(host)?.querySelectorAll(':scope > p') ?? [])].map(
+    (p) => p.textContent,
+  )
+
+/** The fold of the directories inside this one. */
+const fold = (host: HTMLElement) =>
+  nesting(host)?.querySelector(':scope > details') as HTMLDetailsElement | null
+
+/** Each row of the fold, cell by cell. */
+const foldRows = (host: HTMLElement) =>
+  [...(fold(host)?.querySelectorAll('ul > li') ?? [])].map((li) =>
+    [...li.children].map((cell) => cell.textContent),
+  )
+
+describe('DirPage, the directories around and inside it', () => {
+  it('folds one directory inside it under a closed line in the singular', async () => {
+    const library = manga()
+    library.dirs[1].nested = [
+      {
+        id: 5,
+        path: '/media/Manga/Chapters/kids',
+        library: 'Kids',
+        shown: true,
+        kept_out_by: null,
+      },
+    ]
+    const { host } = await shown({ library })
+    expect(fold(host)?.open).toBe(false)
+    expect(fold(host)?.querySelector('summary')?.textContent).toBe(
+      "1 folder inside uses its own library's rules",
+    )
+    expect(insideLines(host)).toEqual([])
+  })
+
+  it('folds two directories inside it under their count, a row each: its folder, its library, and whether this library shows it', async () => {
+    const library = manga()
+    library.dirs[1].nested = [
+      {
+        id: 5,
+        path: '/media/Manga/Chapters/kids',
+        library: 'Kids',
+        shown: true,
+        kept_out_by: null,
+      },
+      {
+        id: 6,
+        path: '/media/Manga/Chapters/old',
+        library: 'Archive',
+        shown: false,
+        kept_out_by: 'exclusion',
+      },
+    ]
+    const { host } = await shown({ library })
+    expect(fold(host)?.open).toBe(false)
+    expect(fold(host)?.querySelector('summary')?.textContent).toBe(
+      "2 folders inside use their own library's rules",
+    )
+    expect(foldRows(host)).toEqual([
+      ['kids/', 'Kids', 'also shown in Manga'],
+      ['old/', 'Archive', "kept out by this directory's exclusions"],
+    ])
+  })
+
+  it('says of the directory it sits in that its library shows this one too', async () => {
+    const library = manga({ name: 'Kids' })
+    library.dirs[1].inside = [
+      {
+        path: '/media/Manga',
+        library: 'Manga',
+        shows: true,
+        kept_out_by: null,
+      },
+    ]
+    const { host } = await shown({ library })
+    expect(insideLines(host)).toEqual([
+      'Also shown in Manga (inside /media/Manga)',
+    ])
+    expect(fold(host)).toBeNull()
+  })
+
+  it('says a line for each of two directories it sits in, outermost first, the second keeping its books out', async () => {
+    const library = manga({ name: 'Tiny' })
+    library.dirs[1].inside = [
+      {
+        path: '/media/Manga',
+        library: 'Manga',
+        shows: true,
+        kept_out_by: null,
+      },
+      {
+        path: '/media/Manga/Chapters',
+        library: 'Kids',
+        shows: false,
+        kept_out_by: 'exclusion',
+      },
+    ]
+    const { host } = await shown({ library })
+    expect(insideLines(host)).toEqual([
+      'Also shown in Manga (inside /media/Manga)',
+      'Kept out of Kids by its exclusions (inside /media/Manga/Chapters)',
+    ])
+  })
+
+  it('says when a name starting with a dot, not an exclusion, keeps a directory out, on both sides', async () => {
+    const outer = manga()
+    outer.dirs[1].nested = [
+      {
+        id: 5,
+        path: '/media/Manga/Chapters/.stash/kids',
+        library: 'Kids',
+        shown: false,
+        kept_out_by: 'dot_name',
+      },
+    ]
+    const { host } = await shown({ library: outer })
+    expect(foldRows(host)).toEqual([
+      [
+        '.stash/kids/',
+        'Kids',
+        'kept out: names starting with a dot are skipped',
+      ],
+    ])
+
+    const inner = manga({ name: 'Kids' })
+    inner.dirs[1].inside = [
+      {
+        path: '/media/Manga',
+        library: 'Manga',
+        shows: false,
+        kept_out_by: 'dot_name',
+      },
+    ]
+    const again = await shown({ library: inner })
+    expect(insideLines(again.host)).toEqual([
+      'Kept out of Manga: its scans skip names starting with a dot (inside /media/Manga)',
+    ])
+  })
+
+  it('draws no line, and nothing to hold one, for a directory with nothing around or inside it', async () => {
+    const { host } = await shown()
+    expect(host.querySelector('.dir-page .nesting')).toBeNull()
+    // Its facts are still the whole of its line.
+    expect(
+      host.querySelector('.dir-page .page-description')?.children,
+    ).toHaveLength(1)
+  })
+})
+
 describe('DirPage, scans and removals across its library exclude each other', () => {
-  it('holds the directory’s Scan directory, Move… and Remove… while a sibling is scanning, and sends nothing from them', async () => {
+  it('holds Move… alone while a sibling is scanning, and leaves Remove… and Scan directory to send theirs, which the server takes', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
+    vi.mocked(config.removalCost).mockResolvedValue(counted(5))
+    vi.mocked(config.startScan).mockResolvedValue({
+      root_id: 2,
+      status_url: '/api/library/roots/2/scan',
+    })
     const { host } = await shown()
 
-    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
-    for (const text of ['Scan directory', 'Move…', 'Remove…']) {
-      await press(control(host, text))
-    }
-    expect(config.startScan).not.toHaveBeenCalled()
-    expect(config.removalCost).not.toHaveBeenCalled()
+    expect(actionsHeld(host)).toEqual(['free', 'held', 'free'])
+    await press(control(host, 'Move…'))
+    expect(host.querySelector('.move-root')).toBeNull()
+
+    await press(control(host, 'Remove…'))
+    expect(config.removalCost).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('.remove-root .counts')?.textContent).toContain(
+      '5 works',
+    )
+    const cancel = [...host.querySelectorAll('.remove-root button')].find(
+      (b) => b.textContent === 'Cancel',
+    ) as HTMLButtonElement
+    await press(cancel)
     expect(host.querySelector('.remove-root')).toBeNull()
+
+    await press(control(host, 'Scan directory'))
+    expect(config.startScan).toHaveBeenCalledWith(2)
+  })
+
+  it('holds Remove… alone while a directory inside it that its library shows is scanning, and frees it when that ends', async () => {
+    // Kids' directory 5 inside Chapters: the status names it, as a scan of
+    // Manga walks it, and names Chapters' removal as held.
+    const library = manga()
+    library.dirs[1].nested = [
+      {
+        id: 5,
+        path: '/media/Manga/Chapters/kids',
+        library: 'Kids',
+        shown: true,
+        kept_out_by: null,
+      },
+    ]
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      running: true,
+      elapsed_secs: 3,
+      dirs: [
+        { root_id: 1, running: false },
+        { root_id: 2, running: false },
+        { root_id: 5, running: true },
+      ],
+      held_removals: [2],
+      moves_held: false,
+      scans: [],
+    })
+    const { host } = await shown({ library })
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'held'])
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+    await tick()
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
+  })
+
+  it('holds Remove… alone while a directory it sits in is scanning, which its library’s status names only as a held removal', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      held_removals: [2],
+      moves_held: false,
+      scans: [],
+    })
+    const { host } = await shown()
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'held'])
+    await press(control(host, 'Remove…'))
+    expect(config.removalCost).not.toHaveBeenCalled()
+  })
+
+  it('holds Move… alone while the server’s job lock is held, and frees it once a read says it is not', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+    })
+    const { host } = await shown()
+    expect(actionsHeld(host)).toEqual(['free', 'held', 'free'])
+    await press(control(host, 'Move…'))
     expect(host.querySelector('.move-root')).toBeNull()
 
     vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
     await tick()
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
+  })
+
+  it('holds nothing for a removal held on another of its library’s directories', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      held_removals: [1],
+      moves_held: false,
+      scans: [],
+    })
+    const { host } = await shown()
     expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
   })
 
@@ -446,7 +683,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     )
   })
 
-  it('closes a directory’s open removal dialog when a sibling is found scanning under it, and asks its cost afresh when it is opened again', async () => {
+  it('keeps a directory’s open removal dialog when a sibling is found scanning under it, and its confirm sends the removal', async () => {
     const late = deferred<api.LibraryScanStatus>()
     vi.mocked(api.libraryScanStatus).mockReturnValueOnce(late.promise)
     vi.mocked(config.removalCost).mockResolvedValue(counted(5))
@@ -457,6 +694,29 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     )
 
     await flush(() => late.resolve(scanningIn(manga(), 1)))
+    expect(host.querySelector('.remove-root .counts')?.textContent).toContain(
+      '5 works',
+    )
+    const del = deferred<config.RemovalAnswer>()
+    vi.mocked(config.removeRoot).mockReturnValueOnce(del.promise)
+    await press(host.querySelector('.remove-root .confirm') as Element)
+    expect(config.removeRoot).toHaveBeenCalledWith(2)
+    expect(config.removalCost).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes a directory’s open removal dialog when its status names this directory’s removal held, and asks its cost afresh when it is opened again', async () => {
+    const late = deferred<api.LibraryScanStatus>()
+    vi.mocked(api.libraryScanStatus).mockReturnValueOnce(late.promise)
+    vi.mocked(config.removalCost).mockResolvedValue(counted(5))
+    const { host } = await shown()
+    await press(control(host, 'Remove…'))
+    expect(host.querySelector('.remove-root .counts')?.textContent).toContain(
+      '5 works',
+    )
+
+    // A scan around this directory: no directory of the library is named
+    // running, and this one's removal is held.
+    await flush(() => late.resolve({ ...idle(7), held_removals: [2] }))
     expect(host.querySelector('.remove-root')).toBeNull()
     expect(config.removeRoot).not.toHaveBeenCalled()
     expect(config.removalCost).toHaveBeenCalledTimes(1)
@@ -470,7 +730,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     )
   })
 
-  it('keeps a directory’s removal dialog while its own DELETE is out when a sibling is found scanning, and draws the DELETE’s refusal', async () => {
+  it('keeps a directory’s removal dialog while its own DELETE is out when its removal is found held, and draws the DELETE’s refusal', async () => {
     const late = deferred<api.LibraryScanStatus>()
     vi.mocked(api.libraryScanStatus).mockReturnValueOnce(late.promise)
     vi.mocked(config.removalCost).mockResolvedValue(counted(5))
@@ -484,7 +744,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
       'Removing…',
     )
 
-    await flush(() => late.resolve(scanningIn(manga(), 1)))
+    await flush(() => late.resolve({ ...idle(7), held_removals: [2] }))
     expect(host.querySelector('.remove-root .confirm')?.textContent).toBe(
       'Removing…',
     )
@@ -518,10 +778,22 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     expect(ownScanning(host)).not.toBeNull()
   })
 
+  it('closes the directory’s open Move… dialog when its first read says the job lock is held', async () => {
+    const late = deferred<api.LibraryScanStatus>()
+    vi.mocked(api.libraryScanStatus).mockReturnValueOnce(late.promise)
+    const { host } = await shown()
+    await press(control(host, 'Move…'))
+    expect(host.querySelector('.move-root')).not.toBeNull()
+
+    await flush(() => late.resolve({ ...idle(7), moves_held: true }))
+    expect(host.querySelector('.move-root')).toBeNull()
+    expect(api.moveDir).not.toHaveBeenCalled()
+  })
+
   it('does not hold the directory’s settings for a sibling’s scan', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
     const { host } = await shown()
-    expect(holdOf(control(host, 'Scan directory'))).toBe('held')
+    expect(holdOf(control(host, 'Move…'))).toBe('held')
 
     const keepsDocuments = host.querySelector(
       'input[name="keeps_documents"]',
@@ -574,7 +846,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
   it('keeps the hold through two failed polls, lets go on the third and says why, and asks no more', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
     const { host } = await shown()
-    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
+    expect(actionsHeld(host)).toEqual(['free', 'held', 'free'])
 
     vi.mocked(api.libraryScanStatus)
       .mockRejectedValueOnce(new Error('502'))
@@ -586,7 +858,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
       )
     await tick()
     await tick()
-    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
+    expect(actionsHeld(host)).toEqual(['free', 'held', 'free'])
     expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
 
@@ -673,8 +945,47 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     }
     for (let i = 0; i < 5; i++) await tick()
     // Four misses in five polls and never three together: still held.
-    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
+    expect(actionsHeld(host)).toEqual(['free', 'held', 'free'])
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(6)
+  })
+
+  it('lets go of a held removal and a held move together on the third failed poll', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      held_removals: [2],
+      moves_held: true,
+    })
+    const { host } = await shown()
+    expect(actionsHeld(host)).toEqual(['free', 'held', 'held'])
+
+    vi.mocked(api.libraryScanStatus).mockRejectedValue(
+      new Error('/api/library/libraries/7/scan: 502 bad gateway'),
+    )
+    await tick()
+    await tick()
+    expect(actionsHeld(host)).toEqual(['free', 'held', 'held'])
+    await tick()
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
+    expect(
+      host.querySelector('.dir-page > [role="alert"]')?.textContent,
+    ).not.toBeUndefined()
+  })
+
+  it('lets go of a hold for a scan of its library on the third failed poll', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(
+      scanningIn(manga(), 1, 2),
+    )
+    const { host } = await shown()
+    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
+
+    vi.mocked(api.libraryScanStatus).mockRejectedValue(
+      new Error('/api/library/libraries/7/scan: 502 bad gateway'),
+    )
+    await tick()
+    await tick()
+    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
+    await tick()
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
   })
 
   it('holds nothing and asks no more when its first read fails', async () => {
@@ -702,7 +1013,7 @@ describe('DirPage, another directory’s scan and the Library views', () => {
     const grid = await keptGrid()
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
     const { host } = await shown()
-    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
+    expect(actionsHeld(host)).toEqual(['free', 'held', 'free'])
     await tick()
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
     expect(grid.stale()).toBe(false)

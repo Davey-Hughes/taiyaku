@@ -67,6 +67,8 @@ const lib = (id: number, name: string, paths: string[]): Library => ({
     keeps_documents: false,
     last_scan_at: null,
     last_scan_status: null,
+    nested: [],
+    inside: [],
   })),
 })
 

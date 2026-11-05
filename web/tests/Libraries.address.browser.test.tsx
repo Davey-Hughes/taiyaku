@@ -59,6 +59,8 @@ const LIBRARIES: librariesApi.Library[] = NAMES.map(([name], i) => ({
       keeps_documents: false,
       last_scan_at: null,
       last_scan_status: null,
+      nested: [],
+      inside: [],
     },
   ],
 }))
@@ -79,6 +81,9 @@ beforeEach(() => {
   vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
     Promise.resolve({
       library_id: id,
+      held_removals: [],
+      moves_held: false,
+      scans: [],
       running: false,
       elapsed_secs: null,
       dirs: [],

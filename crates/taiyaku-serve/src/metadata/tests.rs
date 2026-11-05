@@ -1523,14 +1523,14 @@ fn the_grant_clause_still_filters_even_though_no_route_can_supply_a_grant() {
     );
     assert!(
         matches!(
-            super::work_by_slug(&conn, &Access::Only(vec![1]), "held-v01"),
+            super::work_by_slug(&conn, &Access::roots(vec![1]), "held-v01"),
             Err(super::NoAnswer::Missing)
         ),
         "a grant naming only the root this work is NOT under must answer \
          Missing, exactly as `browse::work` answers None (I8)"
     );
     assert_eq!(
-        super::work_by_slug(&conn, &Access::Only(vec![2]), "held-v01")
+        super::work_by_slug(&conn, &Access::roots(vec![2]), "held-v01")
             .expect("the granting root resolves it"),
         1,
         "and a grant that does cover it still resolves"
@@ -1542,13 +1542,13 @@ fn the_grant_clause_still_filters_even_though_no_route_can_supply_a_grant() {
         "the same three answers for the series listing"
     );
     assert!(
-        super::works_in_series(&conn, &Access::Only(vec![1]), 1)
+        super::works_in_series(&conn, &Access::roots(vec![1]), 1)
             .expect("a grant is not an error")
             .is_empty(),
         "a grant covering none of a series' works lists none of them"
     );
     assert_eq!(
-        super::works_in_series(&conn, &Access::Only(vec![2]), 1).expect("the granting root"),
+        super::works_in_series(&conn, &Access::roots(vec![2]), 1).expect("the granting root"),
         vec![1]
     );
 
@@ -1565,7 +1565,7 @@ fn the_grant_clause_still_filters_even_though_no_route_can_supply_a_grant() {
 
     // Each resolver must read `Only` with no directory as seeing nothing: a
     // clause left out for it would resolve everything, as `Every` does above.
-    let nothing = Access::Only(Vec::new());
+    let nothing = Access::roots(Vec::new());
     assert!(
         matches!(
             super::work_by_slug(&conn, &nothing, "held-v01"),
@@ -1614,7 +1614,7 @@ fn each_resolver_finds_a_copy_through_the_directory_its_root_id_does_not_name() 
     )
     .expect("one work of one member, its primary copy under 1 and a copy under 2");
 
-    let copy = Access::Only(vec![2]);
+    let copy = Access::roots(vec![2]);
     assert_eq!(
         super::work_by_slug(&conn, &copy, "copied-v01").expect("the copy's grant"),
         1
@@ -1632,7 +1632,7 @@ fn each_resolver_finds_a_copy_through_the_directory_its_root_id_does_not_name() 
         (1, "a".to_string())
     );
 
-    let neither = Access::Only(vec![3]);
+    let neither = Access::roots(vec![3]);
     assert!(matches!(
         super::work_by_slug(&conn, &neither, "copied-v01"),
         Err(super::NoAnswer::Missing)

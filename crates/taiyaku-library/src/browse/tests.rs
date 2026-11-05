@@ -291,7 +291,11 @@ fn only_with_no_dir_sees_nothing() {
         .expect("the directories' library");
     let slug = "series---v01";
 
-    for access in [Access::Every, Access::Only(Vec::new())] {
+    let granted_nothing = Access::Only {
+        roots: Vec::new(),
+        libraries: Vec::new(),
+    };
+    for access in [Access::Every, granted_nothing] {
         let sees = access == Access::Every;
         let series = series(&conn, &access, 1, None).expect("lists series");
         assert_eq!(!series.is_empty(), sees, "series, {access:?}");
@@ -335,7 +339,7 @@ fn only_with_no_dir_sees_nothing() {
 fn a_grant_hides_the_editions_it_does_not_name_and_keeps_the_work() {
     let (library, en_id, _raw_id, _en, _raw) = two_root_library();
     let conn = library.conn();
-    let cards = series(&conn, &Access::Only(vec![en_id]), 1, None).expect("lists");
+    let cards = series(&conn, &Access::roots(vec![en_id]), 1, None).expect("lists");
     assert_eq!(cards.len(), 1, "the work is still listed");
     assert_eq!(cards[0].editions, 1, "only the granted root's edition");
     assert_eq!(cards[0].works, 1, "the count is computed after the filter");
@@ -367,7 +371,7 @@ fn an_imported_work_is_unfiled_rather_than_a_series_of_its_own() {
         "unrestricted sees the imported work in the unfiled bucket"
     );
     assert!(
-        unfiled(&conn, &Access::Only(vec![en_id]), 1, None)
+        unfiled(&conn, &Access::roots(vec![en_id]), 1, None)
             .expect("lists")
             .is_empty(),
         "a restricted account sees no work that sits under no root"
@@ -396,13 +400,13 @@ fn a_reimport_over_a_scanned_work_keeps_its_roots_grant() {
     // The baseline this test's failure would otherwise be mistaken for: both
     // roots see the work before any reimport touches it.
     assert!(
-        work(&conn, &Access::Only(vec![en_id]), 1, &slug)
+        work(&conn, &Access::roots(vec![en_id]), 1, &slug)
             .expect("reads")
             .is_some(),
         "the en root sees the work before the reimport"
     );
     assert!(
-        work(&conn, &Access::Only(vec![raw_id]), 1, &slug)
+        work(&conn, &Access::roots(vec![raw_id]), 1, &slug)
             .expect("reads")
             .is_some(),
         "the raw root sees the work before the reimport"
@@ -417,13 +421,13 @@ fn a_reimport_over_a_scanned_work_keeps_its_roots_grant() {
         .expect("reimports");
 
     assert!(
-        work(&conn, &Access::Only(vec![en_id]), 1, &slug)
+        work(&conn, &Access::roots(vec![en_id]), 1, &slug)
             .expect("reads")
             .is_some(),
         "the en root's grant must still see a work its own scan stamped"
     );
     assert!(
-        work(&conn, &Access::Only(vec![raw_id]), 1, &slug)
+        work(&conn, &Access::roots(vec![raw_id]), 1, &slug)
             .expect("reads")
             .is_some(),
         "the raw root's grant must still see a work its own scan stamped"
@@ -443,12 +447,12 @@ fn a_work_is_found_by_slug_within_the_grant() {
             .is_some()
     );
     assert!(
-        work(&conn, &Access::Only(vec![en_id]), 1, &slug)
+        work(&conn, &Access::roots(vec![en_id]), 1, &slug)
             .expect("reads")
             .is_some()
     );
     assert!(
-        work(&conn, &Access::Only(vec![raw_id]), 1, &slug)
+        work(&conn, &Access::roots(vec![raw_id]), 1, &slug)
             .expect("reads")
             .is_some()
     );
@@ -472,7 +476,7 @@ fn a_work_entirely_outside_the_grant_is_none() {
             .is_some()
     );
     assert!(
-        work(&conn, &Access::Only(vec![en_id]), 1, &slug)
+        work(&conn, &Access::roots(vec![en_id]), 1, &slug)
             .expect("reads")
             .is_none(),
         "a restricted account cannot reach a work under no root"
@@ -806,7 +810,7 @@ fn a_merged_edition_counts_only_the_members_the_grant_allows() {
     assert_eq!(total, 2, "both roots' members");
 
     for (root, label) in [(a_id, "a"), (b_id, "b")] {
-        let seen = work(&conn, &Access::Only(vec![root]), 1, &slug)
+        let seen = work(&conn, &Access::roots(vec![root]), 1, &slug)
             .expect("reads")
             .expect("visible");
         let members: i64 = seen.card.editions.iter().map(|e| e.members).sum();
@@ -842,13 +846,13 @@ fn a_merged_edition_is_visible_to_either_grant_and_an_unheld_root_sees_nothing()
         .expect("reads the edition key");
 
     assert!(sees_edition(&conn, &Access::Every, &slug, &key));
-    assert!(sees_edition(&conn, &Access::Only(vec![a_id]), &slug, &key));
+    assert!(sees_edition(&conn, &Access::roots(vec![a_id]), &slug, &key));
     assert!(
-        !sees_edition(&conn, &Access::Only(vec![a_id]), &slug, "no-such-edition"),
+        !sees_edition(&conn, &Access::roots(vec![a_id]), &slug, "no-such-edition"),
         "an edition that does not exist is not visible"
     );
     assert!(
-        !sees_edition(&conn, &Access::Only(vec![a_id]), "no-such-work", &key),
+        !sees_edition(&conn, &Access::roots(vec![a_id]), "no-such-work", &key),
         "a work that does not exist is not visible"
     );
 }
@@ -897,7 +901,7 @@ fn visible_members_flags_each_member_of_a_merged_edition_in_ordinal_order() {
     };
 
     let flags = |roots: Vec<i64>, edition: Option<&str>| {
-        visible_members(&conn, &Access::Only(roots), &slug, edition).expect("reads")
+        visible_members(&conn, &Access::roots(roots), &slug, edition).expect("reads")
     };
     for (roots, seen) in [
         (vec![a_id], [true, false]),
@@ -921,7 +925,7 @@ fn visible_members_flags_each_member_of_a_merged_edition_in_ordinal_order() {
         "an edition the work does not have has no flags"
     );
     assert!(
-        visible_members(&conn, &Access::Only(vec![a_id]), "no-such-work", None)
+        visible_members(&conn, &Access::roots(vec![a_id]), "no-such-work", None)
             .expect("reads")
             .is_empty(),
         "a work that does not exist has no flags"
@@ -939,14 +943,19 @@ fn a_work_outside_the_grant_is_invisible_to_the_page_check() {
         .query_row("SELECT slug FROM work LIMIT 1", [], |row| row.get(0))
         .expect("reads a slug");
 
-    assert!(sees_edition(&conn, &Access::Only(vec![en_id]), &slug, "en"));
+    assert!(sees_edition(
+        &conn,
+        &Access::roots(vec![en_id]),
+        &slug,
+        "en"
+    ));
     assert!(
-        !sees_edition(&conn, &Access::Only(vec![en_id]), &slug, "raw"),
+        !sees_edition(&conn, &Access::roots(vec![en_id]), &slug, "raw"),
         "the raw edition lives under a root this grant does not hold"
     );
     assert!(sees_edition(
         &conn,
-        &Access::Only(vec![raw_id]),
+        &Access::roots(vec![raw_id]),
         &slug,
         "raw"
     ));
@@ -976,7 +985,7 @@ fn the_cover_names_a_visible_edition_rather_than_the_hub() {
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
         .expect("reads the series");
 
-    let target = cover_work(&conn, &Access::Only(vec![en_id]), series_id)
+    let target = cover_work(&conn, &Access::roots(vec![en_id]), series_id)
         .expect("reads")
         .expect("a cover");
     assert_eq!(
@@ -1225,7 +1234,7 @@ fn a_restricted_grant_still_binds_user_id_after_its_own_roots() {
     )
     .expect("a position belonging to the root-id user, not reader 99");
 
-    let cards = series(&conn, &Access::Only(vec![en_id]), 99, None).expect("lists series");
+    let cards = series(&conn, &Access::roots(vec![en_id]), 99, None).expect("lists series");
     let card = cards
         .first()
         .expect("the series, restricted to the en root");
@@ -1274,7 +1283,10 @@ fn a_library_outside_the_grant_answers_nothing() {
     let s = two_library_store();
     import_a_work(&s.library, "Imported", "/x/taiyaku.json");
     let conn = s.library.conn();
-    let grant = Access::Only(vec![s.en_root, s.raw_root]);
+    let grant = Access::Only {
+        roots: vec![s.en_root, s.raw_root],
+        libraries: vec![s.manga],
+    };
     let narrowed = Some(s.comics);
     assert!(
         series(&conn, &grant, 1, narrowed)
@@ -1341,22 +1353,16 @@ fn a_library_that_does_not_exist_answers_nothing_rather_than_everything() {
 fn the_narrowing_reads_the_dirs_the_library_and_the_grant_share() {
     let s = two_library_store();
     let conn = s.library.conn();
-    let cards = series(
-        &conn,
-        &Access::Only(vec![s.en_root, s.comics_root]),
-        1,
-        Some(s.manga),
-    )
-    .expect("lists");
+    let grant = Access::Only {
+        roots: vec![s.en_root, s.comics_root],
+        libraries: vec![s.manga, s.comics],
+    };
+    let cards = series(&conn, &grant, 1, Some(s.manga)).expect("lists");
     assert_eq!(cards.len(), 1);
     assert_eq!(cards[0].editions, 1, "the English edition only");
-    let scope = library_scope(
-        &conn,
-        &Access::Only(vec![s.en_root, s.comics_root]),
-        s.manga,
-    )
-    .expect("reads")
-    .expect("Manga, through its English directory");
+    let scope = library_scope(&conn, &grant, s.manga)
+        .expect("reads")
+        .expect("Manga, through its English directory");
     assert_eq!(scope.name, "Manga");
     assert_eq!(scope.dirs, vec![s.en_root]);
 }
@@ -1517,7 +1523,7 @@ fn an_alignment_naming_a_hidden_edition_is_not_listed() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &Access::Only(vec![en_id]), 1, "series---v01")
+    let detail = work(&conn, &Access::roots(vec![en_id]), 1, "series---v01")
         .expect("reads the work")
         .expect("the work survives on its English edition");
     assert_eq!(detail.card.editions.len(), 1, "only the English edition");
@@ -1540,9 +1546,14 @@ fn a_grant_naming_both_sides_of_a_pair_returns_the_alignment() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &Access::Only(vec![en_id, raw_id]), 1, "series---v01")
-        .expect("reads the work")
-        .expect("the work survives on both editions");
+    let detail = work(
+        &conn,
+        &Access::roots(vec![en_id, raw_id]),
+        1,
+        "series---v01",
+    )
+    .expect("reads the work")
+    .expect("the work survives on both editions");
     assert_eq!(
         detail.alignments.len(),
         1,
@@ -1566,7 +1577,7 @@ fn an_alignment_naming_a_hidden_edition_is_counted_by_neither_the_work_nor_the_g
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &Access::Only(vec![en_id]), 1, "series---v01")
+    let detail = work(&conn, &Access::roots(vec![en_id]), 1, "series---v01")
         .expect("reads the work")
         .expect("the work survives on its English edition");
     assert!(
@@ -1578,7 +1589,7 @@ fn an_alignment_naming_a_hidden_edition_is_counted_by_neither_the_work_nor_the_g
         "and the flag agrees with the list beside it"
     );
 
-    let cards = series(&conn, &Access::Only(vec![en_id]), 1, None).expect("lists series");
+    let cards = series(&conn, &Access::roots(vec![en_id]), 1, None).expect("lists series");
     assert_eq!(
         cards.first().expect("one series").aligned,
         0,
@@ -1595,13 +1606,18 @@ fn an_alignment_wholly_inside_the_grant_is_counted_by_both() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &Access::Only(vec![en_id, raw_id]), 1, "series---v01")
-        .expect("reads the work")
-        .expect("the work survives on both editions");
+    let detail = work(
+        &conn,
+        &Access::roots(vec![en_id, raw_id]),
+        1,
+        "series---v01",
+    )
+    .expect("reads the work")
+    .expect("the work survives on both editions");
     assert!(detail.card.aligned, "both sides are held");
     assert_eq!(detail.alignments.len(), 1, "and the list says the same");
 
-    let cards = series(&conn, &Access::Only(vec![en_id, raw_id]), 1, None).expect("lists series");
+    let cards = series(&conn, &Access::roots(vec![en_id, raw_id]), 1, None).expect("lists series");
     assert_eq!(cards.first().expect("one series").aligned, 1);
 }
 
@@ -1701,8 +1717,11 @@ fn a_library_keeps_a_pair_whose_two_editions_are_both_in_it() {
             r.get(0)
         })
         .expect("the library both directories are in");
-    let cards =
-        series(&conn, &Access::Only(vec![en_id, raw_id]), 1, Some(manga)).expect("lists series");
+    let grant = Access::Only {
+        roots: vec![en_id, raw_id],
+        libraries: vec![manga],
+    };
+    let cards = series(&conn, &grant, 1, Some(manga)).expect("lists series");
     let card = cards.first().expect("one series");
     assert_eq!(
         card.editions, 2,
@@ -1785,9 +1804,177 @@ fn held_in_answers_the_slugs_of_the_works_under_a_librarys_directories() {
 fn status_lists_only_the_libraries_the_grant_names() {
     let s = two_library_store();
     let conn = s.library.conn();
-    let restricted = status(&conn, &Access::Only(vec![s.en_root, s.raw_root])).expect("reads");
+    let grant = Access::Only {
+        roots: vec![s.en_root, s.raw_root],
+        libraries: vec![s.manga],
+    };
+    let restricted = status(&conn, &grant).expect("reads");
     let ids: Vec<i64> = restricted.libraries.iter().map(|l| l.id).collect();
     assert_eq!(ids, vec![s.manga]);
+}
+
+/// The titles of `cards`, in the order listed.
+fn titles(cards: Vec<SeriesCard>) -> Vec<String> {
+    cards.into_iter().map(|card| card.title).collect()
+}
+
+/// Grants list, reach does not: Manga's account reaches Kids' directory and
+/// is not listed Kids, and Kids' account is not listed Manga.
+#[test]
+fn status_lists_the_libraries_granted_and_not_those_reached() {
+    let n = crate::reach::tests::nested_libraries(false);
+    let conn = n.library.conn();
+    let listed = |reader: i64| -> Vec<i64> {
+        let access = crate::account::access_for(&conn, reader).expect("reads");
+        status(&conn, &access)
+            .expect("lists libraries")
+            .libraries
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect()
+    };
+    assert_eq!(listed(n.manga_reader), vec![n.manga]);
+    assert_eq!(listed(n.kids_reader), vec![n.kids]);
+    assert_eq!(
+        status(&conn, &Access::Every)
+            .expect("lists libraries")
+            .libraries
+            .len(),
+        2,
+        "every library for an administrator"
+    );
+}
+
+/// A library opens for an account granted it, and shows the books its
+/// directories reach; it does not open for an account that only reaches it,
+/// or for one whose grant sits inside it.
+#[test]
+fn a_library_opens_only_where_granted_and_shows_what_it_reaches() {
+    let n = crate::reach::tests::nested_libraries(false);
+    let conn = n.library.conn();
+    let manga = crate::account::access_for(&conn, n.manga_reader).expect("reads");
+    let kids = crate::account::access_for(&conn, n.kids_reader).expect("reads");
+
+    assert_eq!(
+        library_scope(&conn, &manga, n.kids).expect("reads"),
+        None,
+        "Manga's account reaches Kids' directory and is not granted Kids"
+    );
+    let scope = library_scope(&conn, &manga, n.manga)
+        .expect("reads")
+        .expect("Manga opens for its account");
+    assert_eq!(scope.dirs, vec![n.m, n.m_kids]);
+    assert_eq!(
+        titles(series(&conn, &manga, n.manga_reader, Some(n.manga)).expect("lists")),
+        ["Kids Book", "Manga Book"]
+    );
+
+    assert_eq!(
+        library_scope(&conn, &kids, n.manga).expect("reads"),
+        None,
+        "Kids' account is not granted Manga"
+    );
+    assert!(
+        series(&conn, &kids, n.kids_reader, Some(n.manga))
+            .expect("lists")
+            .is_empty()
+    );
+}
+
+/// An outer directory's pattern takes the nested directory out of the outer
+/// library's page, at once, and leaves the nested library's own page alone.
+#[test]
+fn a_directory_the_outer_excludes_leaves_its_page_and_stays_on_its_own() {
+    let n = crate::reach::tests::nested_libraries(false);
+    let conn = n.library.conn();
+    conn.execute(
+        "UPDATE root SET exclude_globs = 'kids/' WHERE id = ?1",
+        [n.m],
+    )
+    .expect("excludes kids/ from Manga's directory");
+    let manga = crate::account::access_for(&conn, n.manga_reader).expect("reads");
+    let kids = crate::account::access_for(&conn, n.kids_reader).expect("reads");
+
+    assert_eq!(
+        titles(series(&conn, &Access::Every, 1, Some(n.manga)).expect("lists")),
+        ["Manga Book"]
+    );
+    assert_eq!(
+        titles(series(&conn, &manga, n.manga_reader, Some(n.manga)).expect("lists")),
+        ["Manga Book"]
+    );
+    assert_eq!(
+        titles(series(&conn, &kids, n.kids_reader, Some(n.kids)).expect("lists")),
+        ["Kids Book"]
+    );
+    assert_eq!(
+        titles(series(&conn, &kids, n.kids_reader, None).expect("lists")),
+        ["Kids Book"]
+    );
+}
+
+/// Two deep, `m` excluding `kids/tiny`: Manga's page shows Kids' book and not
+/// Tiny's, though Kids reaches Tiny. The page reads the scope's directories
+/// as they are; reaching again from them would add Tiny through Kids.
+#[test]
+fn a_library_page_reads_its_reach_and_does_not_reach_again_from_it() {
+    let n = crate::reach::tests::nested_libraries(true);
+    let tiny = n.m_kids_tiny.expect("the third directory");
+    let conn = n.library.conn();
+    conn.execute(
+        "UPDATE root SET exclude_globs = 'kids/tiny' WHERE id = ?1",
+        [n.m],
+    )
+    .expect("excludes kids/tiny from Manga's directory");
+
+    let scope = library_scope(&conn, &Access::Every, n.manga)
+        .expect("reads")
+        .expect("Manga opens");
+    assert_eq!(scope.dirs, vec![n.m, n.m_kids]);
+    assert_eq!(
+        titles(series(&conn, &Access::Every, 1, Some(n.manga)).expect("lists")),
+        ["Kids Book", "Manga Book"]
+    );
+    let manga = crate::account::access_for(&conn, n.manga_reader).expect("reads");
+    assert_eq!(
+        titles(series(&conn, &manga, n.manga_reader, Some(n.manga)).expect("lists")),
+        ["Kids Book", "Manga Book"]
+    );
+    assert_eq!(
+        library_scope(&conn, &Access::Every, n.kids)
+            .expect("reads")
+            .expect("Kids opens")
+            .dirs,
+        vec![n.m_kids, tiny],
+        "Kids reaches Tiny by its own patterns"
+    );
+}
+
+/// Spec §4's N: the works held in Manga are those under the directories it
+/// reaches, Kids' among them; Kids holds its own alone.
+#[test]
+fn held_in_names_the_works_under_the_directories_a_library_reaches() {
+    let n = crate::reach::tests::nested_libraries(false);
+    let conn = n.library.conn();
+    // Each directory holds one work, its own book's.
+    let slug_under = |dir: i64| -> String {
+        conn.query_row(
+            "SELECT w.slug FROM work w JOIN edition e ON e.work_id = w.id
+               JOIN member m ON m.edition_id = e.id WHERE m.root_id = ?1",
+            [dir],
+            |r| r.get(0),
+        )
+        .expect("the work under the directory")
+    };
+
+    assert_eq!(
+        held_in(&conn, n.manga).expect("reads Manga's"),
+        HashSet::from([slug_under(n.m), slug_under(n.m_kids)])
+    );
+    assert_eq!(
+        held_in(&conn, n.kids).expect("reads Kids'"),
+        HashSet::from([slug_under(n.m_kids)])
+    );
 }
 
 /// Per library: a scan of one library's directory says nothing of another's.
@@ -2032,14 +2219,14 @@ fn a_short_query_is_filtered_by_the_grant_like_a_long_one() {
     let unrestricted = search(&conn, &Access::Every, 1, "花嫁", None).expect("searches");
     assert_eq!(unrestricted.series.len(), 1, "`Every` sees it");
 
-    let granted = search(&conn, &Access::Only(vec![raw_root]), 1, "花嫁", None).expect("searches");
+    let granted = search(&conn, &Access::roots(vec![raw_root]), 1, "花嫁", None).expect("searches");
     assert_eq!(
         granted.series.len(),
         1,
         "a grant covering an edition of it still sees it"
     );
 
-    let elsewhere = search(&conn, &Access::Only(vec![9999]), 1, "花嫁", None).expect("searches");
+    let elsewhere = search(&conn, &Access::roots(vec![9999]), 1, "花嫁", None).expect("searches");
     assert!(
         elsewhere.series.is_empty(),
         "a grant covering nothing sees nothing, however the query was answered"
@@ -2056,7 +2243,7 @@ fn search_with_no_library_spans_the_whole_grant() {
 
     let both = search(
         &conn,
-        &Access::Only(vec![en_root, raw_root]),
+        &Access::roots(vec![en_root, raw_root]),
         1,
         "Series",
         None,
@@ -2147,7 +2334,7 @@ fn a_restricted_grant_counts_only_the_missing_members_it_may_see() {
         "`Every` still sees both roots' missing members"
     );
 
-    let restricted = missing_for(&conn, &Access::Only(vec![a_id]), edition_id);
+    let restricted = missing_for(&conn, &Access::roots(vec![a_id]), edition_id);
     assert_eq!(
         restricted, 1,
         "a grant naming only root a is told about its one missing member, \
@@ -2297,7 +2484,7 @@ fn a_restricted_grant_hides_its_edition_in_every_work_of_a_series() {
         );
     }
 
-    let (_card, restricted) = one_series(&conn, &Access::Only(vec![raw_id]), 1, series_id, None)
+    let (_card, restricted) = one_series(&conn, &Access::roots(vec![raw_id]), 1, series_id, None)
         .expect("reads")
         .expect("visible");
     assert_eq!(restricted.len(), 3, "the works themselves all survive");
@@ -2381,7 +2568,7 @@ fn opens_names_the_stored_position_and_falls_back_to_the_hub() {
         )
         .expect("the hub's root");
     assert_eq!(
-        read(&Access::Only(vec![hub_root])),
+        read(&Access::roots(vec![hub_root])),
         hub,
         "a position naming an edition this grant hides falls back to the hub, \
          exactly as `restore` does when the resolver does not know it"
@@ -2418,7 +2605,7 @@ fn opens_substitutes_the_first_visible_edition_when_the_grant_hides_the_hub() {
         .query_row("SELECT id FROM series LIMIT 1", [], |row| row.get(0))
         .expect("the series");
 
-    let card = one_series(&conn, &Access::Only(vec![other_root]), 1, series_id, None)
+    let card = one_series(&conn, &Access::roots(vec![other_root]), 1, series_id, None)
         .expect("reads")
         .expect("visible")
         .1
@@ -2600,11 +2787,11 @@ fn a_hand_set_cover_is_the_grids_cover_as_it_is_the_307s() {
     let series_id = the_series(&conn);
     let (v1, v2) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
 
-    for access in [Access::Every, Access::Only(vec![root_id])] {
+    for access in [Access::Every, Access::roots(vec![root_id])] {
         assert_grid_covers(&conn, &access, &[(series_id, Some((v1, "raw")))]);
     }
     hand_set_cover(&conn, series_id, v2);
-    for access in [Access::Every, Access::Only(vec![root_id])] {
+    for access in [Access::Every, Access::roots(vec![root_id])] {
         assert_grid_covers(&conn, &access, &[(series_id, Some((v2, "raw")))]);
     }
 }
@@ -2621,19 +2808,19 @@ fn a_hand_set_cover_the_grant_hides_gives_way_in_the_grid_as_in_the_307() {
     assert_grid_covers(&conn, &Access::Every, &[(series_id, Some((v1, "raw")))]);
     assert_grid_covers(
         &conn,
-        &Access::Only(vec![second]),
+        &Access::roots(vec![second]),
         &[(series_id, Some((v2, "raw")))],
     );
     hand_set_cover(&conn, series_id, v2);
     assert_grid_covers(&conn, &Access::Every, &[(series_id, Some((v2, "raw")))]);
     assert_grid_covers(
         &conn,
-        &Access::Only(vec![first]),
+        &Access::roots(vec![first]),
         &[(series_id, Some((v1, "raw")))],
     );
     assert_grid_covers(
         &conn,
-        &Access::Only(vec![second]),
+        &Access::roots(vec![second]),
         &[(series_id, Some((v2, "raw")))],
     );
 }
@@ -2672,16 +2859,16 @@ fn the_grid_takes_the_edition_the_307_takes_of_a_work_with_several() {
 
     for (access, key) in [
         (Access::Every, "en"),
-        (Access::Only(vec![en]), "en"),
-        (Access::Only(vec![raw]), "raw"),
+        (Access::roots(vec![en]), "en"),
+        (Access::roots(vec![raw]), "raw"),
     ] {
         assert_grid_covers(&conn, &access, &[(series_id, Some((v1, key)))]);
     }
     hand_set_cover(&conn, series_id, v2);
     for (access, key) in [
         (Access::Every, "en"),
-        (Access::Only(vec![en]), "en"),
-        (Access::Only(vec![raw]), "raw"),
+        (Access::roots(vec![en]), "en"),
+        (Access::roots(vec![raw]), "raw"),
     ] {
         assert_grid_covers(&conn, &access, &[(series_id, Some((v2, key)))]);
     }
@@ -2697,7 +2884,7 @@ fn a_series_with_no_visible_cover_has_none_in_the_grid_as_in_the_307() {
     let comics = series_of(&store.library, store.comics);
     let conn = store.library.conn();
     assert_eq!(manga.len(), 1, "Manga holds one series");
-    let shown = Access::Only(vec![store.en_root]);
+    let shown = Access::roots(vec![store.en_root]);
     let grid = series(&conn, &shown, 1, None).expect("lists series");
     assert_eq!(
         grid.iter().map(|card| card.id).collect::<Vec<_>>(),
@@ -2827,8 +3014,8 @@ fn page_zero_is_read_from_the_members_the_grant_shows() {
 
     for (access, member) in [
         (Access::Every, 0),
-        (Access::Only(vec![members[0].1]), 0),
-        (Access::Only(vec![members[1].1]), 1),
+        (Access::roots(vec![members[0].1]), 0),
+        (Access::roots(vec![members[1].1]), 1),
     ] {
         let seen = Some(members[member].2.clone());
         assert_eq!(
@@ -2856,7 +3043,16 @@ fn a_listing_narrowed_to_a_library_reads_page_zero_through_the_accounts_grant() 
     );
     let series_id = the_series(&conn);
     let first = Some(members[0].2.clone());
-    for access in [Access::Every, Access::Only(vec![a_id, b_id])] {
+    let manga: i64 = conn
+        .query_row("SELECT library_id FROM root WHERE id = ?1", [a_id], |r| {
+            r.get(0)
+        })
+        .expect("the first directory's library");
+    let both = Access::Only {
+        roots: vec![a_id, b_id],
+        libraries: vec![manga, second],
+    };
+    for access in [Access::Every, both] {
         let grid = series(&conn, &access, 1, Some(second)).expect("lists series");
         let (row, works) = one_series(&conn, &access, 1, series_id, Some(second))
             .expect("reads the series")
@@ -2962,7 +3158,7 @@ fn a_grid_narrowed_to_a_library_takes_the_cover_its_directories_show() {
     assert_eq!(narrowed.len(), 1, "the series is in Raws too");
     assert_eq!(
         narrowed[0].cover,
-        cover_work(&conn, &Access::Only(vec![raw_id]), series_id).expect("reads the cover"),
+        cover_work(&conn, &Access::roots(vec![raw_id]), series_id).expect("reads the cover"),
         "the cover an account granted only Raws' directory is given"
     );
     assert_eq!(
@@ -3075,7 +3271,7 @@ fn an_account_granted_one_library_sees_the_work_with_that_librarys_edition_alone
     let s = kids_and_manga();
     let conn = s.library.conn();
     for (root, granted, withheld) in [(s.kids, "en", "raw"), (s.manga, "raw", "en")] {
-        let access = Access::Only(vec![root]);
+        let access = Access::roots(vec![root]);
         let titles: Vec<String> = series(&conn, &access, 1, None)
             .expect("lists")
             .into_iter()
@@ -3115,7 +3311,7 @@ fn an_account_granted_one_library_sees_the_work_with_that_librarys_edition_alone
 fn an_account_granted_neither_library_sees_nothing_of_the_work() {
     let s = kids_and_manga();
     let conn = s.library.conn();
-    let access = Access::Only(vec![s.other]);
+    let access = Access::roots(vec![s.other]);
     let titles: Vec<String> = series(&conn, &access, 1, None)
         .expect("lists")
         .into_iter()
@@ -3144,7 +3340,7 @@ fn a_copy_held_in_two_libraries_is_visible_through_either_grant_alone() {
         .query_row("SELECT slug FROM work", [], |r| r.get(0))
         .expect("the one work");
     for (root, label) in [(copy.a.id, "a"), (copy.b.id, "b")] {
-        let access = Access::Only(vec![root]);
+        let access = Access::roots(vec![root]);
         let cards = series(&conn, &access, 1, None).expect("lists");
         assert_eq!(
             cards
@@ -3261,7 +3457,10 @@ fn volumes(works: &[WorkCard]) -> Vec<Option<f64>> {
 fn a_series_opened_from_a_library_holds_what_that_librarys_directories_hold() {
     let s = foo_across_two_libraries();
     let conn = s.library.conn();
-    let both = Access::Only(vec![s.manga_root, s.kids_root]);
+    let both = Access::Only {
+        roots: vec![s.manga_root, s.kids_root],
+        libraries: vec![s.manga, s.kids],
+    };
 
     let tile = series(&conn, &both, 1, Some(s.kids))
         .expect("lists Kids' grid")
@@ -3303,8 +3502,14 @@ fn a_series_opened_from_a_library_holds_what_that_librarys_directories_hold() {
 fn a_series_asked_for_in_a_library_that_holds_none_of_it_is_not_found() {
     let s = foo_across_two_libraries();
     let conn = s.library.conn();
-    let manga_only = Access::Only(vec![s.manga_root]);
-    let both = Access::Only(vec![s.manga_root, s.kids_root]);
+    let manga_only = Access::Only {
+        roots: vec![s.manga_root],
+        libraries: vec![s.manga],
+    };
+    let both = Access::Only {
+        roots: vec![s.manga_root, s.kids_root],
+        libraries: vec![s.manga, s.kids],
+    };
     let found = |access: &Access, id: i64, library: Option<i64>| {
         one_series(&conn, access, 1, id, library)
             .expect("reads the series")

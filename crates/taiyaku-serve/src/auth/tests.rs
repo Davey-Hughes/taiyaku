@@ -3760,7 +3760,7 @@ fn an_administrator_is_unrestricted_whatever_the_row_says() {
         can_stream: false,
         can_stamp: false,
     };
-    let principal = Principal::from_account(&granted, Access::Only(vec![1, 2]));
+    let principal = Principal::from_account(&granted, Access::roots(vec![1, 2]));
 
     assert_eq!(principal.role, Role::Admin);
     assert_eq!(
@@ -3791,12 +3791,12 @@ fn a_users_grant_and_capabilities_are_left_exactly_as_the_row_holds_them() {
         can_stream: true,
         can_stamp: false,
     };
-    let principal = Principal::from_account(&granted, Access::Only(vec![1, 2]));
+    let principal = Principal::from_account(&granted, Access::roots(vec![1, 2]));
 
     assert_eq!(principal.role, Role::User);
     assert_eq!(
         principal.access,
-        Access::Only(vec![1, 2]),
+        Access::roots(vec![1, 2]),
         "a user's grant still restricts"
     );
     assert!(
@@ -3808,12 +3808,16 @@ fn a_users_grant_and_capabilities_are_left_exactly_as_the_row_holds_them() {
 
 /// A grant names a library, and the principal carries every directory of it:
 /// both of `Shelf`'s and not `Other`'s, whether a key, a password or a session
-/// cookie resolved it.
+/// cookie resolved it, and `Shelf` (70) as the library granted.
 #[test]
 fn a_principal_holds_every_dir_of_a_granted_library() {
     let tmp = crate::test_support::Fixture::new("auth-granted-library");
     let (_router, state) = crate::test_support::router_over_a_granted_two_dir_library(&tmp);
     let client = std::net::IpAddr::from([127, 0, 0, 1]);
+    let shelf = Access::Only {
+        roots: vec![1, 2],
+        libraries: vec![70],
+    };
 
     let super::Resolved::Yes(by_key, super::By::Key) = super::from_basic(
         &state,
@@ -3822,7 +3826,7 @@ fn a_principal_holds_every_dir_of_a_granted_library() {
     ) else {
         panic!("the fixture's key resolves to its account");
     };
-    assert_eq!(by_key.access, Access::Only(vec![1, 2]), "by key");
+    assert_eq!(by_key.access, shelf, "by key");
 
     let password = basic(
         crate::test_support::FIXTURE_NAME,
@@ -3833,7 +3837,7 @@ fn a_principal_holds_every_dir_of_a_granted_library() {
     else {
         panic!("the fixture's password resolves to its account");
     };
-    assert_eq!(by_password.access, Access::Only(vec![1, 2]), "by password");
+    assert_eq!(by_password.access, shelf, "by password");
 
     let cookie = crate::test_support::fixture_session_cookie(&state.library);
     let token = cookie
@@ -3846,11 +3850,7 @@ fn a_principal_holds_every_dir_of_a_granted_library() {
     else {
         panic!("the fixture's session resolves to its account");
     };
-    assert_eq!(
-        by_cookie.access,
-        Access::Only(vec![1, 2]),
-        "by session cookie"
-    );
+    assert_eq!(by_cookie.access, shelf, "by session cookie");
 }
 
 /// **No module answers the role question alone — O93.**

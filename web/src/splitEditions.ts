@@ -1,7 +1,7 @@
 /**
- * The `GET /api/library/split-editions` client: the editions a library's
- * directories hold some of and not all of, which an account granted only
- * some of the libraries holding them sees narrowed (spec §3.8). Administrators only.
+ * The `GET /api/library/split-editions` client: the editions a library shows
+ * some of and not all of, which an account granted only some of the libraries
+ * showing them sees narrowed (spec §3.8). Administrators only.
  */
 import { getJson } from './api'
 

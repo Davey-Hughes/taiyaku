@@ -779,7 +779,7 @@ fn as_a_reader_granted(roots: Vec<i64>) -> axum::http::Extensions {
         can_download: true,
         can_stream: true,
         can_stamp: false,
-        access: Access::Only(roots),
+        access: Access::roots(roots),
     });
     extensions
 }

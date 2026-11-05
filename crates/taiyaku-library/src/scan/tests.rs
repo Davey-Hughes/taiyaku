@@ -57,10 +57,15 @@ pub(crate) fn write_archive(path: &Path, pages: usize) {
 /// read as a page (`jxl`, say) opens cleanly and still has no page count,
 /// which is a different fact from an archive that will not open.
 pub(crate) fn write_archive_of(path: &Path, pages: usize, extension: &str) {
+    write_archive_labelled(path, pages, extension, &path.to_string_lossy());
+}
+
+/// [`write_archive_of`], with each page's bytes naming `label` rather than the
+/// archive's path, so one tree written under two directories hashes alike.
+pub(crate) fn write_archive_labelled(path: &Path, pages: usize, extension: &str, label: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("mkdir");
     }
-    let label = path.to_string_lossy().into_owned();
     let mut bytes: Vec<u8> = Vec::new();
     let mut directory: Vec<u8> = Vec::new();
     for page in 0..pages {
@@ -693,7 +698,7 @@ fn a_files_modification_time_reaches_its_scan_entry() {
         .expect("stamps it");
 
     let (measured, walk) =
-        measure(dir.path(), 0, &Excluder::build(None)).expect("measures the tree");
+        measure(dir.path(), 0, &Excluder::build(None), &HashSet::new()).expect("measures the tree");
     assert!(
         walk.unreadable.is_empty(),
         "unexpected unreadable dirs: {:?}",
@@ -766,38 +771,33 @@ fn a_root_can_be_told_to_keep_documents() {
 
 // --- add_root_checked ----------------------------------------------------
 
-/// C4 §2: overlapping roots double-count every file underneath, and the
-/// symptom — duplicate works — looks nothing like the cause. Both
-/// directions, because a parent added second is the same mistake arriving
+/// Overlapping-libraries spec §4's W: a directory inside one of the library it
+/// joins is refused, as both directories' settings would govern its files.
+/// Both directions, because a parent added second is the same mistake arriving
 /// the other way round — see
-/// `a_root_containing_an_existing_root_is_refused`, below.
+/// `a_root_containing_a_root_of_its_own_library_is_refused`, below.
 #[test]
-fn a_root_inside_an_existing_root_is_refused() {
+fn a_root_inside_a_root_of_its_own_library_is_refused() {
     let dir = crate::tests::tempdir("scan-add-root-checked-nested-inner");
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let outer = super::add_root_checked(&conn, dir.path()).expect("adding the outer root");
+    let outer = super::add_root_checked_in(&conn, dir.path(), InLibrary::Named("Manga"))
+        .expect("adding the outer root");
 
     let nested = dir.path().join("inner");
     std::fs::create_dir(&nested).expect("mkdir");
-    let refused = super::add_root_checked(&conn, &nested).expect_err("nested root");
+    let refused = super::add_root_checked_in(&conn, &nested, InLibrary::Id(outer.root.library_id))
+        .expect_err("nested root");
     assert!(
         matches!(refused, AddRootError::Unusable(_)),
         "an overlap is this caller's own mistake, not a store fault: {refused:?}"
     );
     let refused = refused.to_string();
 
-    assert!(
-        refused.contains("inside"),
-        "the refusal must name the overlap: {refused}"
-    );
-    let library = crate::libraries::name_of(&conn, outer.root.library_id)
-        .expect("reads the name")
-        .expect("the outer directory's library has a name");
     assert_eq!(
         refused,
         format!(
-            "{} is inside {}, which is already a directory of the library `{library}`",
+            "{} is inside {}, which is already a directory of the same library, `Manga`",
             nested.canonicalize().unwrap().display(),
             outer.root.path.display()
         ),
@@ -806,34 +806,30 @@ fn a_root_inside_an_existing_root_is_refused() {
 }
 
 /// The other direction of the same mistake: a root that would *contain* one
-/// already held, added second.
+/// of its library's, added second. By name, which finds the library inside
+/// the add's transaction.
 #[test]
-fn a_root_containing_an_existing_root_is_refused() {
+fn a_root_containing_a_root_of_its_own_library_is_refused() {
     let dir = crate::tests::tempdir("scan-add-root-checked-nested-outer");
     let inner = dir.path().join("inner");
     std::fs::create_dir(&inner).expect("mkdir");
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let inner_root = super::add_root_checked(&conn, &inner).expect("adding the inner root");
+    super::add_root_checked_in(&conn, &inner, InLibrary::Named("Manga"))
+        .expect("adding the inner root");
 
-    let refused = super::add_root_checked(&conn, dir.path()).expect_err("containing root");
+    let refused = super::add_root_checked_in(&conn, dir.path(), InLibrary::Named("Manga"))
+        .expect_err("containing root");
     assert!(
         matches!(refused, AddRootError::Unusable(_)),
         "an overlap is this caller's own mistake, not a store fault: {refused:?}"
     );
     let refused = refused.to_string();
 
-    assert!(
-        refused.contains("holds"),
-        "the refusal must name the overlap: {refused}"
-    );
-    let library = crate::libraries::name_of(&conn, inner_root.root.library_id)
-        .expect("reads the name")
-        .expect("the inner directory's library has a name");
     assert_eq!(
         refused,
         format!(
-            "{} holds `inner`, which is already a directory of the library `{library}`",
+            "{} holds `inner`, which is already a directory of the same library, `Manga`",
             dir.path().canonicalize().unwrap().display(),
         ),
         "the refusal names the held directory from inside the chosen one, and its library, not an id"
@@ -850,24 +846,25 @@ fn a_containing_roots_refusal_names_a_deeper_held_dir_by_its_whole_relative_path
     std::fs::create_dir_all(&inner).expect("mkdir");
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
-    let inner_root = super::add_root_checked(&conn, &inner).expect("adding the inner root");
-    let library = crate::libraries::name_of(&conn, inner_root.root.library_id)
-        .expect("reads the name")
-        .expect("the inner directory's library has a name");
+    super::add_root_checked_in(&conn, &inner, InLibrary::Named("Manga"))
+        .expect("adding the inner root");
 
-    let refused = super::add_root_checked(&conn, dir.path()).expect_err("containing root");
+    let refused = super::add_root_checked_in(&conn, dir.path(), InLibrary::Named("Manga"))
+        .expect_err("containing root");
 
     assert_eq!(
         refused.to_string(),
         format!(
-            "{} holds `a/b`, which is already a directory of the library `{library}`",
+            "{} holds `a/b`, which is already a directory of the same library, `Manga`",
             dir.path().canonicalize().unwrap().display(),
         ),
     );
 }
 
 /// A directory picked again is refused as already held, not as inside itself,
-/// which is what the nesting check alone would say of an equal path.
+/// which is what the nesting check alone would say of an equal path. Asked of
+/// a library of its own and of the library that holds it, where the nesting
+/// check applies.
 #[test]
 fn a_root_already_held_is_refused_as_already_a_dir_of_its_library() {
     let dir = crate::tests::tempdir("scan-add-root-checked-again");
@@ -884,12 +881,17 @@ fn a_root_already_held_is_refused_as_already_a_dir_of_its_library() {
         "a directory picked twice is this caller's own mistake, not a store fault: {refused:?}"
     );
 
+    let said = format!(
+        "{} is already a directory of the library `{library}`",
+        dir.path().canonicalize().unwrap().display(),
+    );
+    assert_eq!(refused.to_string(), said);
+
     assert_eq!(
-        refused.to_string(),
-        format!(
-            "{} is already a directory of the library `{library}`",
-            dir.path().canonicalize().unwrap().display(),
-        ),
+        super::add_root_checked_in(&conn, dir.path(), InLibrary::Id(held.root.library_id))
+            .map(|added| added.root),
+        Err(AddRootError::Unusable(said)),
+        "into the library that holds it"
     );
 }
 
@@ -897,7 +899,8 @@ fn a_root_already_held_is_refused_as_already_a_dir_of_its_library() {
 /// classic source of false positives: `manga2` is not inside `manga` even
 /// though its name starts with it. A raw-byte or raw-string comparison would
 /// refuse this pair; [`Path::starts_with`] compares whole components and
-/// does not.
+/// does not. Both in one library, where the nesting comparison applies, and
+/// each added first, so neither "inside" nor "holds" may compare raw strings.
 #[test]
 fn a_sibling_whose_name_merely_starts_with_an_existing_roots_name_is_not_refused() {
     let dir = crate::tests::tempdir("scan-add-root-checked-sibling-prefix");
@@ -905,17 +908,19 @@ fn a_sibling_whose_name_merely_starts_with_an_existing_roots_name_is_not_refused
     let manga2 = dir.path().join("manga2");
     std::fs::create_dir(&manga).expect("mkdir manga");
     std::fs::create_dir(&manga2).expect("mkdir manga2");
-    let library = crate::Library::open_in_memory().expect("open");
-    let conn = library.conn();
-    super::add_root_checked(&conn, &manga).expect("adding manga");
+    for (first, second) in [(&manga, &manga2), (&manga2, &manga)] {
+        let library = crate::Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        let held = super::add_root_checked(&conn, first).expect("adding the first");
 
-    super::add_root_checked(&conn, &manga2)
-        .expect("manga2 is a sibling of manga, not something inside it");
+        super::add_root_checked_in(&conn, second, InLibrary::Id(held.root.library_id))
+            .unwrap_or_else(|why| panic!("{second:?} is a sibling of {first:?}: {why}"));
+    }
 }
 
 /// The nesting check must compare *canonical* paths, not the paths as
 /// given, or a symlink resolves into an overlap the raw spelling never
-/// mentions. `real_root` is stored as a root under its own name; a second
+/// mentions. `real_root` is stored as a root of Manga; a second
 /// path that reaches `real_root/inner` only by way of a symlink shares not
 /// one path component with `real_root` in its raw form, yet is exactly as
 /// nested once resolved.
@@ -930,10 +935,12 @@ fn a_root_reached_only_through_a_symlink_is_still_recognised_as_nested() {
 
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
-    super::add_root_checked(&conn, &real_root).expect("adding the real root");
+    super::add_root_checked_in(&conn, &real_root, InLibrary::Named("Manga"))
+        .expect("adding the real root");
 
-    let refused = super::add_root_checked(&conn, &alias.join("inner"))
-        .expect_err("nested, reached only through the symlink");
+    let refused =
+        super::add_root_checked_in(&conn, &alias.join("inner"), InLibrary::Named("Manga"))
+            .expect_err("nested, reached only through the symlink");
     assert!(
         matches!(refused, AddRootError::Unusable(_)),
         "an overlap is this caller's own mistake, not a store fault: {refused:?}"
@@ -944,6 +951,199 @@ fn a_root_reached_only_through_a_symlink_is_still_recognised_as_nested() {
         refused.contains("inside"),
         "the refusal must name the overlap even though the raw path never \
          mentions real_root: {refused}"
+    );
+}
+
+/// Overlapping-libraries spec §4's N: a directory inside or around another
+/// library's is added by every way in, whichever of the two came first.
+#[test]
+fn a_dir_inside_or_around_another_librarys_dir_is_added_every_way() {
+    for inner_first in [false, true] {
+        for way in ["by id", "by name", "of its own", "made with it"] {
+            let top = crate::tests::tempdir("scan-add-nested-across");
+            let outer = top.path().join("m");
+            let inner = outer.join("inner");
+            let elsewhere = top.path().join("x");
+            std::fs::create_dir_all(&inner).expect("mkdir");
+            std::fs::create_dir_all(&elsewhere).expect("mkdir");
+            let library = Library::open_in_memory().expect("open");
+            let conn = library.conn();
+            let kids = add_root_checked_in(&conn, &elsewhere, InLibrary::Named("Kids"))
+                .expect("Kids exists")
+                .root
+                .library_id;
+            let (first, second) = if inner_first {
+                (&inner, &outer)
+            } else {
+                (&outer, &inner)
+            };
+            let held = add_root_checked_in(&conn, first, InLibrary::Named("Manga"))
+                .expect("the first directory");
+
+            let added = match way {
+                "by id" => add_root_checked_in(&conn, second, InLibrary::Id(kids)).map(|a| a.root),
+                "by name" => {
+                    add_root_checked_in(&conn, second, InLibrary::Named("Kids")).map(|a| a.root)
+                }
+                "of its own" => add_root_checked_in(&conn, second, InLibrary::Own).map(|a| a.root),
+                _ => create_library(&conn, "Comics", std::slice::from_ref(second))
+                    .map(|made| made.dirs[0].root.clone()),
+            }
+            .unwrap_or_else(|why| panic!("{way}, inner first {inner_first}: {why}"));
+
+            assert_eq!(added.path, second.canonicalize().unwrap(), "{way}");
+            assert_ne!(added.library_id, held.root.library_id, "{way}");
+        }
+    }
+}
+
+/// A directory another library holds is refused by that library's name,
+/// whichever library it was sent to: `root.path`'s UNIQUE would otherwise
+/// answer it as a store fault.
+#[test]
+fn a_dir_another_library_holds_is_refused_by_that_librarys_name() {
+    let parent = crate::tests::tempdir("scan-add-held-elsewhere");
+    let (a, b) = two_dirs(parent.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    add_root_checked_in(&conn, &a, InLibrary::Named("Manga")).expect("Manga holds a");
+    let kids = add_root_checked_in(&conn, &b, InLibrary::Named("Kids"))
+        .expect("Kids holds b")
+        .root
+        .library_id;
+    let said = format!(
+        "{} is already a directory of the library `Manga`",
+        a.canonicalize().unwrap().display()
+    );
+
+    for into in [
+        InLibrary::Id(kids),
+        InLibrary::Named("Kids"),
+        InLibrary::Named("New"),
+    ] {
+        assert_eq!(
+            add_root_checked_in(&conn, &a, into).map(|added| added.root),
+            Err(AddRootError::Unusable(said.clone())),
+            "{into:?}"
+        );
+    }
+    assert_eq!(
+        create_library(&conn, "New", std::slice::from_ref(&a)).map(|made| made.library_id),
+        Err(AddRootError::Unusable(said))
+    );
+    assert_eq!(libraries_and_roots(&conn), (2, 2));
+}
+
+/// A directory inside or at a directory member of any root is refused, at the
+/// member's own path and at a byte-identical copy's, which the derive files
+/// under the member and `member.path` does not name. A series folder holding
+/// the member is no member, so a directory there is N and is added.
+#[test]
+fn a_dir_inside_a_directory_member_of_any_root_is_refused() {
+    let top = crate::tests::tempdir("scan-add-inside-a-member");
+    let (m, c) = (top.path().join("m"), top.path().join("c"));
+    for root in [&m, &c] {
+        let volume = root.join("S").join("S - v01");
+        for (page, bytes) in [
+            ("000.jpg", "one"),
+            ("001.jpg", "two"),
+            ("002.jpg", "three"),
+            ("extra/000.jpg", "four"),
+            ("extra/001.jpg", "five"),
+        ] {
+            let at = volume.join(page);
+            std::fs::create_dir_all(at.parent().unwrap()).expect("mkdir");
+            std::fs::write(&at, bytes).expect("write");
+        }
+    }
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    for (root, name) in [(&m, "Manga"), (&c, "Copies")] {
+        let root = add_root_checked_in(&conn, root, InLibrary::Named(name))
+            .expect("adds")
+            .root;
+        scan_root(&conn, &root).expect("scans");
+        crate::derive::derive(&conn).expect("derives");
+    }
+    let member_paths: Vec<String> = conn
+        .prepare("SELECT path FROM member")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let member = |root: &Path| root.canonicalize().unwrap().join("S").join("S - v01");
+    assert_eq!(
+        member_paths,
+        vec![member(&m).display().to_string()],
+        "the copy is filed under Manga's member"
+    );
+
+    for (root, name) in [(&m, "Manga"), (&c, "Copies")] {
+        let extra = member(root).join("extra");
+        assert_eq!(
+            add_root_checked_in(&conn, &extra, InLibrary::Named("Kids")).map(|a| a.root),
+            Err(AddRootError::Unusable(format!(
+                "{} is inside {}, which the library `{name}` reads as the pages of one volume",
+                extra.display(),
+                member(root).display()
+            )))
+        );
+        assert_eq!(
+            add_root_checked_in(&conn, &member(root), InLibrary::Named("Kids")).map(|a| a.root),
+            Err(AddRootError::Unusable(format!(
+                "{} is a folder the library `{name}` reads as the pages of one volume",
+                member(root).display()
+            )))
+        );
+    }
+    add_root_checked_in(&conn, &m.join("S"), InLibrary::Named("Kids"))
+        .expect("a series folder holding a member is not one");
+}
+
+/// O204: the add compares the stored roots inside its own transaction. A
+/// holds the write lock with X's directory `x` inserted and uncommitted while
+/// B adds `x/inner` to X, so B must wait for A's commit and then meet `x`. A
+/// defect that compares before B's transaction reads the roots without `x`
+/// and accepts. Load can make this miss that defect, should B start only after
+/// A commits. It cannot fail correct code, which waits on A's lock within the
+/// busy timeout.
+#[test]
+fn the_add_compares_the_stored_roots_inside_its_transaction() {
+    let top = crate::tests::tempdir("scan-add-race");
+    let x = top.path().join("x");
+    let inner = x.join("inner");
+    let other = top.path().join("other");
+    std::fs::create_dir_all(&inner).expect("mkdir");
+    std::fs::create_dir_all(&other).expect("mkdir");
+    let db = top.path().join("library.db");
+    let a = Library::open(&db).expect("the first connection");
+    let b = Library::open(&db).expect("a second connection on the same file");
+    let x_id = add_root_checked_in(&a.conn(), &other, InLibrary::Named("X"))
+        .expect("X exists")
+        .root
+        .library_id;
+
+    let conn = a.conn();
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .expect("A takes the write lock");
+    let held = add_root_in(&conn, &x, InLibrary::Id(x_id)).expect("A inserts x");
+    let answer = std::thread::scope(|scope| {
+        let racing = scope.spawn(|| {
+            add_root_checked_in(&b.conn(), &inner, InLibrary::Id(x_id)).map(|added| added.root)
+        });
+        std::thread::sleep(Duration::from_secs(1));
+        conn.execute_batch("COMMIT").expect("A commits");
+        racing.join().expect("B's add returns")
+    });
+
+    assert_eq!(
+        answer,
+        Err(AddRootError::Unusable(format!(
+            "{} is inside {}, which is already a directory of the same library, `X`",
+            inner.canonicalize().unwrap().display(),
+            held.path.display()
+        )))
     );
 }
 
@@ -1382,14 +1582,12 @@ fn a_dir_called_a_space_and_two_dots_is_not_a_library_of_its_own() {
 #[test]
 fn a_refused_dir_names_no_library_into_being() {
     let dir = crate::tests::tempdir("scan-refused-library");
-    let nested = dir.path().join("inner");
-    std::fs::create_dir(&nested).expect("mkdir");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    add_root(&conn, dir.path()).expect("the outer root");
+    add_root(&conn, dir.path()).expect("the root");
 
-    add_root_checked_in(&conn, &nested, InLibrary::Named("Never"))
-        .expect_err("a root inside another is refused");
+    add_root_checked_in(&conn, dir.path(), InLibrary::Named("Never"))
+        .expect_err("a directory already held is refused");
 
     assert_eq!(
         crate::libraries::id_of(&conn, "Never").expect("reads"),
@@ -2446,7 +2644,10 @@ fn removing_the_last_dir_of_an_accounts_only_library_names_who_is_left_with_none
     }
     assert_eq!(
         crate::account::access_for(&conn, both).expect("reads"),
-        crate::account::Access::Only(vec![shelf_a.id, shelf_b.id]),
+        crate::account::Access::Only {
+            roots: vec![shelf_a.id, shelf_b.id],
+            libraries: vec![shelf_a.library_id],
+        },
         "the account that held another library keeps it"
     );
 }
@@ -2457,7 +2658,7 @@ fn sees_no_library(conn: &Connection, account: i64) {
     let access = crate::account::access_for(conn, account).expect("reads");
     assert_eq!(
         access,
-        crate::account::Access::Only(Vec::new()),
+        crate::account::Access::roots(Vec::new()),
         "account {account} sees no library, not every library"
     );
     assert_eq!(
@@ -2490,7 +2691,10 @@ fn removing_the_last_dir_of_a_library_is_allowed_when_its_accounts_hold_another(
     assert_eq!(crate::libraries::id_of(&conn, "Solo").expect("reads"), None);
     assert_eq!(
         crate::account::access_for(&conn, alex).expect("reads"),
-        crate::account::Access::Only(vec![shelf_a.id, shelf_b.id]),
+        crate::account::Access::Only {
+            roots: vec![shelf_a.id, shelf_b.id],
+            libraries: vec![shelf_a.library_id],
+        },
         "still restricted, to the library that is left"
     );
 }
@@ -2515,7 +2719,10 @@ fn removing_the_last_dir_of_a_library_is_allowed_when_its_accounts_hold_a_later_
     assert_eq!(crate::libraries::id_of(&conn, "Solo").expect("reads"), None);
     assert_eq!(
         crate::account::access_for(&conn, alex).expect("reads"),
-        crate::account::Access::Only(vec![lone.id]),
+        crate::account::Access::Only {
+            roots: vec![lone.id],
+            libraries: vec![lone.library_id],
+        },
         "still restricted, to the library that is left"
     );
 }
@@ -2536,7 +2743,10 @@ fn removing_the_last_dir_of_a_library_nobody_is_restricted_to_is_allowed() {
     assert_eq!(removal.left_with_no_library, Vec::<String>::new());
     assert_eq!(
         crate::account::access_for(&conn, pat).expect("reads"),
-        crate::account::Access::Only(vec![lone.id]),
+        crate::account::Access::Only {
+            roots: vec![lone.id],
+            libraries: vec![lone.library_id],
+        },
         "and the account restricted elsewhere is where it was"
     );
 }
@@ -2565,7 +2775,10 @@ fn removing_one_dir_of_two_names_no_one_though_the_library_is_an_only_grant() {
     }
     assert_eq!(
         crate::account::access_for(&conn, pat).expect("reads"),
-        crate::account::Access::Only(vec![shelf_b.id]),
+        crate::account::Access::Only {
+            roots: vec![shelf_b.id],
+            libraries: vec![shelf_b.library_id],
+        },
         "the grant resolves to the directory that is left"
     );
 }
@@ -2998,7 +3211,10 @@ fn removing_a_library_that_is_an_accounts_only_grant_names_who_is_left_with_none
     }
     assert_eq!(
         crate::account::access_for(&conn, both).expect("reads"),
-        crate::account::Access::Only(vec![solo.id]),
+        crate::account::Access::Only {
+            roots: vec![solo.id],
+            libraries: vec![solo.library_id],
+        },
         "the account that held another library keeps it"
     );
 }
@@ -3064,7 +3280,7 @@ fn a_library_that_is_not_an_accounts_only_grant_names_no_one_whichever_was_made_
     assert!(
         matches!(
             crate::account::access_for(&conn, dual).expect("reads"),
-            crate::account::Access::Only(dirs) if dirs.len() == 2
+            crate::account::Access::Only { roots: dirs, .. } if dirs.len() == 2
         ),
         "the account keeps Shelf's two directories"
     );
@@ -4193,14 +4409,11 @@ fn a_library_is_not_made_under_a_name_already_taken() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     add_root_in(&conn, &a, InLibrary::Named("Manga")).expect("Manga exists");
-    let inside = a.join("inside");
-    std::fs::create_dir_all(&inside).expect("mkdir");
 
-    let why = create_library(&conn, "Other", std::slice::from_ref(&inside)).expect_err("refuses");
+    let why = create_library(&conn, "Other", std::slice::from_ref(&a)).expect_err("refuses");
     assert!(
         matches!(&why, AddRootError::Unusable(text)
-            if text.contains(" is inside ")
-                && text.contains(", which is already a directory of the library `Manga`")),
+            if text.ends_with(" is already a directory of the library `Manga`")),
         "{why:?}"
     );
     assert_eq!(libraries_and_roots(&conn), (1, 1));
@@ -4477,4 +4690,2056 @@ fn removing_a_directory_keeps_a_work_that_also_holds_an_imported_member() {
         .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
         .expect("lists the works");
     assert_eq!(works, [1], "the work stays");
+}
+
+// --- spec §4: each file is scanned once, under the deepest directory --------
+
+/// Bleach's two volumes under `m/kids`, and Naruto beside them under `m`.
+pub(crate) const NEST_FILES: &[(&str, usize)] = &[
+    ("kids/Bleach/v01.cbz", 3),
+    ("kids/Bleach/v02.cbz", 4),
+    ("Naruto/Naruto v01.cbz", 5),
+];
+
+/// Overlapping-libraries spec §4's N before anything is nested: `files` as
+/// archives under `m`, which Manga holds, scanned and derived. Each test adds
+/// the nested directory where its case needs it, through the checked add, as a
+/// person would. Each archive's bytes name its path under `m`, so two stores
+/// built from the same `files` hold the same digests.
+pub(crate) fn manga_holding(
+    label: &str,
+    files: &[(&str, usize)],
+) -> (crate::tests::TempDir, Library, Root) {
+    let top = crate::tests::tempdir(label);
+    for (rel, pages) in files {
+        write_archive_labelled(&top.path().join("m").join(rel), *pages, "jpg", rel);
+    }
+    let library = Library::open_in_memory().expect("open");
+    let manga = {
+        let conn = library.conn();
+        let manga = add_root_checked_in(&conn, &top.path().join("m"), InLibrary::Named("Manga"))
+            .expect("Manga holds m")
+            .root;
+        scan_root(&conn, &manga).expect("scans m");
+        crate::derive::derive(&conn).expect("derives");
+        manga
+    };
+    (top, library, manga)
+}
+
+/// A reader on Bleach v01: user 1's position and a note on `raw` slot 2, and a
+/// title set by hand on its work. Returns the work's id.
+pub(crate) fn read_bleach_v01(conn: &Connection, manga: &Root) -> i64 {
+    let work = work_of(conn, &manga.path.join("kids/Bleach/v01.cbz"));
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
+        [work],
+    )
+    .expect("a position");
+    conn.execute(
+        "INSERT INTO note (user_id, id, work_id, edition, slot, body, created, updated)
+         VALUES (1, 'n', ?1, 'raw', 2, 'a note', 'now', 'now')",
+        [work],
+    )
+    .expect("a note");
+    let mut doc = crate::librarydoc::of(conn, work).expect("projects the work");
+    doc.title = Some("Bleach, by hand".to_string());
+    crate::librarydoc::apply(conn, work, &doc).expect("sets the title by hand");
+    work
+}
+
+/// The work holding the members at `path`.
+fn work_of(conn: &Connection, path: &Path) -> i64 {
+    conn.query_row(
+        "SELECT DISTINCT e.work_id FROM member m JOIN edition e ON e.id = m.edition_id
+          WHERE m.path = ?1",
+        [path.to_string_lossy()],
+        |r| r.get(0),
+    )
+    .expect("one work holds it")
+}
+
+/// The directories holding a `scan_entry` for whatever is at `path`, by id.
+fn entries_for(conn: &Connection, path: &Path) -> Vec<i64> {
+    conn.prepare(
+        "SELECT e.root_id FROM scan_entry e JOIN root r ON r.id = e.root_id
+          WHERE CASE e.rel_path WHEN '' THEN r.path ELSE r.path || '/' || e.rel_path END = ?1
+          ORDER BY e.root_id",
+    )
+    .and_then(|mut stmt| {
+        stmt.query_map([path.to_string_lossy()], |r| r.get(0))?
+            .collect()
+    })
+    .expect("reads the entries")
+}
+
+/// How many `scan_entry` rows `root` holds at or beneath `rel`.
+fn rows_under(conn: &Connection, root: &Root, rel: &str) -> i64 {
+    conn.query_row(
+        "SELECT count(*) FROM scan_entry WHERE root_id = ?1
+            AND (rel_path = ?2 OR substr(rel_path, 1, length(?2) + 1) = ?2 || '/')",
+        rusqlite::params![root.id, rel],
+        |r| r.get(0),
+    )
+    .expect("counts the rows")
+}
+
+/// Every member at `path`: its `member.root_id`, and the directories its
+/// `member_root` rows name.
+fn members_at(conn: &Connection, path: &Path) -> (Vec<Option<i64>>, Vec<i64>) {
+    let path = path.to_string_lossy();
+    let roots = conn
+        .prepare("SELECT root_id FROM member WHERE path = ?1 ORDER BY id")
+        .and_then(|mut stmt| stmt.query_map([&path], |r| r.get(0))?.collect())
+        .expect("reads the members");
+    let held = conn
+        .prepare(
+            "SELECT DISTINCT mr.root_id FROM member_root mr JOIN member m ON m.id = mr.member_id
+              WHERE m.path = ?1 ORDER BY mr.root_id",
+        )
+        .and_then(|mut stmt| stmt.query_map([&path], |r| r.get(0))?.collect())
+        .expect("reads the member roots");
+    (roots, held)
+}
+
+/// The series names of every work, by name.
+pub(crate) fn series_names(conn: &Connection) -> Vec<String> {
+    conn.prepare(
+        "SELECT DISTINCT s.sort_title FROM work w JOIN series s ON s.id = w.series_id
+          ORDER BY s.sort_title",
+    )
+    .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+    .expect("reads the series")
+}
+
+/// Spec §4: Kids, added at `m/kids` inside Manga's `m`, takes Bleach over at
+/// its scan. Each file keeps one `scan_entry`, Kids', and its members move to
+/// Kids with their `member_root` rows. The works, the reader's position and
+/// note and the hand-set title are kept, the series is named by Kids' rules,
+/// and Manga's next scan counts nothing gone.
+#[test]
+fn a_nested_directorys_scan_takes_over_the_rows_and_members_under_it() {
+    let (_top, library, manga) = manga_holding("nest-takes-over", NEST_FILES);
+    let conn = library.conn();
+    let v01 = read_bleach_v01(&conn, &manga);
+    let bleach = [
+        manga.path.join("kids/Bleach/v01.cbz"),
+        manga.path.join("kids/Bleach/v02.cbz"),
+    ];
+    let v02 = work_of(&conn, &bleach[1]);
+    for file in &bleach {
+        assert_eq!(
+            entries_for(&conn, file),
+            [manga.id],
+            "the fixture: {file:?}"
+        );
+    }
+
+    let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+        .expect("Kids is added inside Manga's directory")
+        .root;
+    let report = scan_root(&conn, &kids).expect("scans Kids");
+    assert_eq!(
+        (report.taken_over, report.gone),
+        (4, 0),
+        "two files and two directories taken, none gone: {report:?}"
+    );
+    for file in &bleach {
+        assert_eq!(
+            members_at(&conn, file),
+            (vec![Some(kids.id)], vec![kids.id]),
+            "{file:?}'s member moves with its row, before any derive"
+        );
+    }
+    crate::derive::derive(&conn).expect("derives");
+
+    for file in &bleach {
+        assert_eq!(
+            entries_for(&conn, file),
+            [kids.id],
+            "{file:?} is Kids' alone"
+        );
+        let (roots, held) = members_at(&conn, file);
+        assert!(
+            !roots.is_empty() && roots.iter().all(|root| *root == Some(kids.id)),
+            "every member of {file:?} is Kids': {roots:?}"
+        );
+        assert_eq!(held, [kids.id], "{file:?}'s member_root");
+    }
+    assert_eq!(
+        (work_of(&conn, &bleach[0]), work_of(&conn, &bleach[1])),
+        (v01, v02),
+        "the works are kept"
+    );
+    let reader: (String, i64, String, i64, Option<String>) = conn
+        .query_row(
+            "SELECT p.edition, p.slot, n.edition, n.slot, w.title_hand
+               FROM progress p JOIN note n ON n.work_id = p.work_id JOIN work w ON w.id = p.work_id
+              WHERE p.user_id = 1 AND p.work_id = ?1",
+            [v01],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .expect("the position and the note are kept");
+    assert_eq!(
+        reader,
+        (
+            "raw".to_string(),
+            2,
+            "raw".to_string(),
+            2,
+            Some("Bleach, by hand".to_string())
+        )
+    );
+    assert_eq!(series_names(&conn), ["Bleach", "Naruto"]);
+
+    let again = scan_root(&conn, &manga).expect("scans Manga");
+    assert_eq!(
+        (again.refused.as_deref(), again.gone, again.taken_over),
+        (None, 0, 0),
+        "{again:?}"
+    );
+}
+
+/// Order independence (the unfiltered CLI scan walks in id order): Manga
+/// scanned after Kids is added and before Kids' first scan refuses nothing,
+/// counts nothing gone and leaves Bleach's rows for Kids, whose scan then takes
+/// them over.
+#[test]
+fn an_outer_scanned_before_the_nested_directorys_first_scan_leaves_its_rows_for_it() {
+    let (_top, library, manga) = manga_holding("nest-order", NEST_FILES);
+    let conn = library.conn();
+    let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+
+    let first = scan_root(&conn, &manga).expect("scans Manga");
+    assert_eq!(
+        (
+            first.refused.as_deref(),
+            first.gone,
+            first.forgotten_by_exclusion
+        ),
+        (None, 0, 0),
+        "{first:?}"
+    );
+    assert_eq!(
+        rows_under(&conn, &manga, "kids"),
+        4,
+        "the rows wait for Kids"
+    );
+
+    let report = scan_root(&conn, &kids).expect("scans Kids");
+    assert_eq!((report.taken_over, report.gone), (4, 0), "{report:?}");
+    assert_eq!(rows_under(&conn, &manga, "kids"), 0);
+    for file in ["kids/Bleach/v01.cbz", "kids/Bleach/v02.cbz"] {
+        assert_eq!(
+            entries_for(&conn, &manga.path.join(file)),
+            [kids.id],
+            "{file}"
+        );
+    }
+}
+
+/// The order case for §8.1: a Manga whose only content is Kids' directory,
+/// scanned after Kids is added and before Kids' first scan, walks to nothing
+/// but its own directory. The rows under `kids` are Kids' to take, so they are
+/// not what Manga "held" and the scan is not refused as an empty one.
+#[test]
+fn an_outer_holding_only_a_nested_directory_scans_without_the_empty_refusal() {
+    let (_top, library, manga) = manga_holding("nest-outer-only", &NEST_FILES[..2]);
+    let conn = library.conn();
+    let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+
+    let first = scan_root(&conn, &manga).expect("scans Manga");
+    assert_eq!(
+        (first.refused.as_deref(), first.gone),
+        (None, 0),
+        "{first:?}"
+    );
+    assert_eq!(
+        rows_under(&conn, &manga, "kids"),
+        4,
+        "the rows wait for Kids"
+    );
+    assert_eq!(scan_root(&conn, &kids).expect("scans Kids").taken_over, 4);
+    let again = scan_root(&conn, &manga).expect("scans Manga again");
+    assert_eq!(
+        (again.refused.as_deref(), again.gone),
+        (None, 0),
+        "{again:?}"
+    );
+}
+
+/// Three levels, `m` ⊃ `m/kids` ⊃ `m/kids/little`, Kids scanned first. Kids
+/// takes Bleach from Manga and leaves Tiny, which is Little's: Tiny's file stays
+/// Manga's row and member until Little's scan takes it from Manga, and Kids
+/// never holds it.
+#[test]
+fn a_directory_nested_two_deep_takes_its_rows_from_the_outermost_directory() {
+    let (_top, library, manga) = manga_holding(
+        "nest-three-levels",
+        &[
+            ("kids/Bleach/v01.cbz", 3),
+            ("kids/little/Tiny/Tiny v01.cbz", 2),
+            ("Naruto/Naruto v01.cbz", 5),
+        ],
+    );
+    let conn = library.conn();
+    let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+    let little = add_root_checked_in(
+        &conn,
+        &manga.path.join("kids/little"),
+        InLibrary::Named("Little"),
+    )
+    .expect("adds Little")
+    .root;
+    let tiny = manga.path.join("kids/little/Tiny/Tiny v01.cbz");
+
+    let report = scan_root(&conn, &kids).expect("scans Kids");
+    assert_eq!(report.taken_over, 3, "kids, kids/Bleach, v01: {report:?}");
+    assert_eq!(
+        members_at(&conn, &tiny),
+        (vec![Some(manga.id)], vec![manga.id]),
+        "Kids' scan leaves Tiny's member to Little, before any derive"
+    );
+    crate::derive::derive(&conn).expect("derives");
+    assert_eq!(
+        entries_for(&conn, &tiny),
+        [manga.id],
+        "Tiny waits for Little"
+    );
+    assert_eq!(
+        members_at(&conn, &tiny),
+        (vec![Some(manga.id)], vec![manga.id])
+    );
+    assert_eq!(
+        rows_under(&conn, &kids, "little"),
+        0,
+        "Kids never walks Little"
+    );
+
+    let report = scan_root(&conn, &little).expect("scans Little");
+    assert_eq!(
+        report.taken_over, 3,
+        "kids/little, its Tiny, its file: {report:?}"
+    );
+    crate::derive::derive(&conn).expect("derives");
+    assert_eq!(entries_for(&conn, &tiny), [little.id]);
+    assert_eq!(
+        members_at(&conn, &tiny),
+        (vec![Some(little.id)], vec![little.id])
+    );
+    assert_eq!(
+        rows_under(&conn, &kids, "little"),
+        0,
+        "Kids never held Tiny"
+    );
+}
+
+/// `m/alias` is a symlink to Kids' `m/kids`. Manga's walk compares it by its
+/// target and skips it, so Bleach is read once, by Kids' rules: series
+/// `Bleach`, not `alias`.
+#[test]
+fn a_symlink_to_a_nested_directory_is_skipped_by_the_walk_around_it() {
+    let top = crate::tests::tempdir("nest-symlink");
+    let m = top.path().join("m");
+    for (rel, pages) in NEST_FILES {
+        write_archive(&m.join(rel), *pages);
+    }
+    std::os::unix::fs::symlink(m.join("kids"), m.join("alias")).expect("links alias to kids");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let manga = add_root_checked_in(&conn, &m, InLibrary::Named("Manga"))
+        .expect("adds Manga")
+        .root;
+    let kids = add_root_checked_in(&conn, &m.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+
+    scan_root(&conn, &manga).expect("scans Manga");
+    scan_root(&conn, &kids).expect("scans Kids");
+    crate::derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        rows_under(&conn, &manga, "alias"),
+        0,
+        "Manga skips the link"
+    );
+    for file in ["kids/Bleach/v01.cbz", "kids/Bleach/v02.cbz"] {
+        assert_eq!(
+            entries_for(&conn, &manga.path.join(file)),
+            [kids.id],
+            "{file}"
+        );
+    }
+    assert_eq!(series_names(&conn), ["Bleach", "Naruto"]);
+}
+
+/// `m/kidsx` beside Kids' `m/kids` is not nested in it: Kids' scan takes none
+/// of its rows or members, and Manga still walks it, counting a file gone from
+/// it as gone.
+#[test]
+fn a_sibling_whose_name_starts_with_a_nested_directorys_is_not_nested() {
+    let (_top, library, manga) = manga_holding(
+        "nest-sibling",
+        &[
+            ("kids/Bleach/v01.cbz", 3),
+            ("kidsx/Other/v01.cbz", 2),
+            ("kidsx/Other/v02.cbz", 2),
+        ],
+    );
+    let conn = library.conn();
+    let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+    let other = manga.path.join("kidsx/Other/v01.cbz");
+
+    let report = scan_root(&conn, &kids).expect("scans Kids");
+    assert_eq!(report.taken_over, 3, "kids, kids/Bleach, v01: {report:?}");
+    assert_eq!(rows_under(&conn, &manga, "kidsx"), 4);
+    assert_eq!(
+        members_at(&conn, &other),
+        (vec![Some(manga.id)], vec![manga.id])
+    );
+
+    std::fs::remove_file(manga.path.join("kidsx/Other/v02.cbz")).expect("removes v02");
+    let again = scan_root(&conn, &manga).expect("scans Manga");
+    assert_eq!(again.gone, 1, "kidsx is walked, so v02 is gone: {again:?}");
+    assert_eq!(entries_for(&conn, &other), [manga.id]);
+}
+
+/// The Libraries page's "its scans found …": a PDF under Kids' `m/kids` that
+/// Manga scanned before Kids was added is counted once for Manga after both
+/// walks, not once per directory that walked it.
+#[test]
+fn a_book_under_a_nested_directory_is_counted_once_for_the_library_around_it() {
+    let top = crate::tests::tempdir("nest-books");
+    let m = top.path().join("m");
+    write_archive(&m.join("Naruto/Naruto v01.cbz"), 5);
+    std::fs::create_dir_all(m.join("kids")).expect("mkdir");
+    std::fs::write(m.join("kids/guide.pdf"), b"%PDF-1.7\n").expect("writes the PDF");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let manga = add_root_checked_in(&conn, &m, InLibrary::Named("Manga"))
+        .expect("adds Manga")
+        .root;
+    scan_root(&conn, &manga).expect("scans Manga");
+    let kids = add_root_checked_in(&conn, &m.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+
+    scan_root(&conn, &kids).expect("scans Kids");
+    scan_root(&conn, &manga).expect("scans Manga again");
+    assert_eq!(
+        crate::libraries::books(&conn, manga.library_id).expect("counts"),
+        1
+    );
+    assert_eq!(
+        crate::libraries::books(&conn, kids.library_id).expect("counts"),
+        1
+    );
+}
+
+/// §8.1 at a nested directory's first scan: Manga holds Bleach under `m/kids`,
+/// and `m/kids` reads empty when Kids is added, as a mount that is not ready
+/// does. Kids holds nothing yet, but the rows it would take over count, so its
+/// scan is refused and Manga keeps its rows and members. Once the directory
+/// reads again, Kids takes them over.
+#[test]
+fn a_nested_directory_that_reads_empty_at_its_first_scan_is_refused() {
+    let (top, library, manga) = manga_holding("nest-empty-read", NEST_FILES);
+    let conn = library.conn();
+    let (kids_dir, away) = (manga.path.join("kids"), top.path().join("away"));
+    std::fs::rename(&kids_dir, &away).expect("moves Bleach away");
+    std::fs::create_dir(&kids_dir).expect("leaves an empty mount point");
+    let kids = add_root_checked_in(&conn, &kids_dir, InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+    let v01 = manga.path.join("kids/Bleach/v01.cbz");
+
+    let report = scan_root(&conn, &kids).expect("scans Kids");
+    assert!(
+        report
+            .refused
+            .as_deref()
+            .is_some_and(|why| why.contains("scanned empty")),
+        "{report:?}"
+    );
+    assert_eq!(report.taken_over, 0);
+    assert_eq!(rows_under(&conn, &manga, "kids"), 4, "Manga keeps its rows");
+    assert_eq!(
+        members_at(&conn, &v01),
+        (vec![Some(manga.id)], vec![manga.id])
+    );
+
+    std::fs::remove_dir(&kids_dir).expect("unmounts");
+    std::fs::rename(&away, &kids_dir).expect("mounts Bleach again");
+    let report = scan_root(&conn, &kids).expect("scans Kids again");
+    assert_eq!(
+        (report.refused.as_deref(), report.taken_over),
+        (None, 4),
+        "{report:?}"
+    );
+}
+
+/// `m/alias` links to `m/kids` and Manga recorded Bleach through it before
+/// Kids existed. No hand-over takes `alias/…`, so Manga's next scan forgets
+/// those rows as gone rather than keeping them for good, and Bleach is Kids'
+/// alone.
+#[test]
+fn rows_recorded_through_a_symlink_before_the_nested_directory_existed_are_forgotten() {
+    let top = crate::tests::tempdir("nest-symlink-late");
+    let m = top.path().join("m");
+    for (rel, pages) in NEST_FILES {
+        write_archive(&m.join(rel), *pages);
+    }
+    std::os::unix::fs::symlink(m.join("kids"), m.join("alias")).expect("links alias to kids");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let manga = add_root_checked_in(&conn, &m, InLibrary::Named("Manga"))
+        .expect("adds Manga")
+        .root;
+    scan_root(&conn, &manga).expect("scans Manga");
+    assert_eq!(rows_under(&conn, &manga, "alias"), 4, "the fixture");
+    let kids = add_root_checked_in(&conn, &m.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+
+    assert_eq!(scan_root(&conn, &kids).expect("scans Kids").taken_over, 4);
+    let again = scan_root(&conn, &manga).expect("scans Manga");
+    assert_eq!(
+        (again.gone, again.refused.as_deref()),
+        (4, None),
+        "alias, alias/Bleach and its two files: {again:?}"
+    );
+    crate::derive::derive(&conn).expect("derives");
+    assert_eq!(rows_under(&conn, &manga, "alias"), 0);
+    for file in ["kids/Bleach/v01.cbz", "kids/Bleach/v02.cbz"] {
+        assert_eq!(
+            entries_for(&conn, &manga.path.join(file)),
+            [kids.id],
+            "{file}"
+        );
+    }
+    assert_eq!(series_names(&conn), ["Bleach", "Naruto"]);
+}
+
+/// The counts of a hand-over. Of Manga's rows under `m/kids`, those Kids' walk
+/// recorded too are taken over; one whose file went before Kids' scan is gone;
+/// and those Kids' own patterns exclude are forgotten by exclusion. Kids' rules
+/// dropped the last two, so neither is counted as taken over.
+#[test]
+fn a_hand_over_counts_as_taken_only_the_rows_the_nested_walk_recorded() {
+    let (_top, library, manga) = manga_holding(
+        "nest-counts",
+        &[
+            ("kids/Bleach/v01.cbz", 3),
+            ("kids/Bleach/v02.cbz", 4),
+            ("kids/extras/x.cbz", 2),
+        ],
+    );
+    std::fs::remove_file(manga.path.join("kids/Bleach/v02.cbz")).expect("removes v02");
+    let conn = library.conn();
+    let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+    conn.execute(
+        "UPDATE root SET exclude_globs = 'extras/' WHERE id = ?1",
+        [kids.id],
+    )
+    .expect("Kids excludes extras/");
+    let kids = Root {
+        exclude_globs: Some("extras/".to_string()),
+        ..kids
+    };
+
+    let report = scan_root(&conn, &kids).expect("scans Kids");
+    assert_eq!(
+        (
+            report.taken_over,
+            report.gone,
+            report.forgotten_by_exclusion
+        ),
+        (3, 1, 2),
+        "kids, kids/Bleach and v01 taken; v02 gone; extras and its file excluded: {report:?}"
+    );
+    assert_eq!(rows_under(&conn, &manga, "kids"), 0);
+}
+
+/// Manga's `m` holding Bleach v01 and `kids/extras/Adult/Adult v01.cbz`, both
+/// derived, and Kids added at `m/kids` excluding `extras/`, not yet scanned.
+/// Returns the store, Manga, Kids and the excluded file's path.
+fn kids_excluding_extras(label: &str) -> (crate::tests::TempDir, Library, Root, Root, PathBuf) {
+    let (top, library, manga) = manga_holding(
+        label,
+        &[
+            ("kids/Bleach/v01.cbz", 3),
+            ("kids/extras/Adult/Adult v01.cbz", 2),
+        ],
+    );
+    let kids = {
+        let conn = library.conn();
+        let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+            .expect("adds Kids")
+            .root;
+        conn.execute(
+            "UPDATE root SET exclude_globs = 'extras/' WHERE id = ?1",
+            [kids.id],
+        )
+        .expect("Kids excludes extras/");
+        Root {
+            exclude_globs: Some("extras/".to_string()),
+            ..kids
+        }
+    };
+    let adult = manga.path.join("kids/extras/Adult/Adult v01.cbz");
+    (top, library, manga, kids, adult)
+}
+
+/// Decision 21: the hand-over moves only the members of files the nested
+/// directory's scan recorded. A file Kids' patterns exclude stays with Manga:
+/// an account granted Kids alone never sees its work, before Kids' scan or
+/// after it, and one granted Manga alone keeps seeing it. Bleach v01, which
+/// Kids' walk recorded, moves to Kids.
+#[test]
+fn a_file_the_nested_directory_excludes_stays_with_the_outer_and_its_accounts() {
+    let (_top, library, manga, kids, adult) = kids_excluding_extras("nest-excluded-stays");
+    let conn = library.conn();
+    let slug: String = conn
+        .query_row(
+            "SELECT slug FROM work WHERE id = ?1",
+            [work_of(&conn, &adult)],
+            |r| r.get(0),
+        )
+        .expect("the work's slug");
+    let account = |name: &str, library_id: i64| {
+        conn.execute(
+            "INSERT INTO user (name, password_hash, role) VALUES (?1, '!', 'user')",
+            [name],
+        )
+        .expect("an account");
+        let user = conn.last_insert_rowid();
+        crate::account::grant_library(&conn, user, library_id).expect("grants");
+        user
+    };
+    let kids_only = account("k", kids.library_id);
+    let manga_only = account("m", manga.library_id);
+    let sees = |user: i64| {
+        let access = crate::account::access_for(&conn, user).expect("access");
+        crate::browse::visible_editions(&conn, &access)
+            .expect("visible editions")
+            .contains_key(&slug)
+    };
+    assert_eq!(
+        (sees(kids_only), sees(manga_only)),
+        (false, true),
+        "before Kids' scan"
+    );
+
+    scan_root(&conn, &kids).expect("scans Kids");
+    crate::derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        (sees(kids_only), sees(manga_only)),
+        (false, true),
+        "after Kids' scan"
+    );
+    assert_eq!(
+        members_at(&conn, &adult),
+        (vec![Some(manga.id)], vec![manga.id]),
+        "the excluded file's member stays with Manga"
+    );
+    assert_eq!(
+        members_at(&conn, &manga.path.join("kids/Bleach/v01.cbz")),
+        (vec![Some(kids.id)], vec![kids.id]),
+        "the recorded file's member moves to Kids"
+    );
+}
+
+/// Decision 21, the way back: with a reading position on the work of a file
+/// Kids' patterns exclude, removing Kids after its scan counts nothing, in the
+/// rehearsal and the removal alike. The work keeps its id and the position,
+/// and Manga's next scan meets the file again under the same work.
+#[test]
+fn removing_a_nested_directory_loses_nothing_its_patterns_excluded() {
+    let (_top, library, manga, kids, adult) = kids_excluding_extras("nest-excluded-round-trip");
+    let conn = library.conn();
+    let work = work_of(&conn, &adult);
+    let positions = |work: i64| -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM progress WHERE work_id = ?1",
+            [work],
+            |r| r.get(0),
+        )
+        .expect("counts the positions")
+    };
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 1)",
+        [work],
+    )
+    .expect("a position");
+    scan_root(&conn, &kids).expect("scans Kids");
+    crate::derive::derive(&conn).expect("derives");
+
+    let cost = removal_cost(&conn, kids.id).expect("rehearses");
+    let removed = remove_root(&conn, kids.id).expect("removes Kids");
+    assert_eq!((counted(&cost), counted(&removed)), ((0, 0, 0), (0, 0, 0)));
+    assert_eq!(work_of(&conn, &adult), work, "the work keeps its id");
+    assert_eq!(positions(work), 1, "and its position");
+
+    scan_root(&conn, &manga).expect("scans Manga");
+    crate::derive::derive(&conn).expect("derives");
+    assert_eq!(
+        work_of(&conn, &adult),
+        work,
+        "Manga's scan meets the same work"
+    );
+    assert_eq!(positions(work), 1);
+}
+
+/// What became of a file Kids took over at its first scan, before Kids is
+/// removed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LaterOnKids {
+    /// Kept out by a pattern Kids added; Manga's walk reaches it again.
+    Excluded,
+    /// Kept out by Kids' pattern and by Manga's; no walk reaches it.
+    ExcludedByBoth,
+    /// Gone from the disk.
+    Vanished,
+}
+
+/// Decision 21 for a file Kids recorded and later stopped recording, with a
+/// reading position on its work, removing Kids' directory and Kids whole.
+/// Where Manga's walk reaches the file, the rehearsal and the removal count
+/// nothing, and Manga's next scan meets the same work, position kept; where
+/// no walk does, its work and position are counted removed, as before.
+#[test]
+fn removing_a_nested_directory_hands_back_a_file_it_stopped_recording_where_the_outer_reaches_it() {
+    for (case, whole_library) in [
+        LaterOnKids::Excluded,
+        LaterOnKids::ExcludedByBoth,
+        LaterOnKids::Vanished,
+    ]
+    .into_iter()
+    .flat_map(|case| [(case, false), (case, true)])
+    {
+        let (_top, library, manga) = manga_holding(
+            &format!("nest-later-{case:?}-{whole_library}"),
+            &[
+                ("kids/Bleach/v01.cbz", 3),
+                ("kids/extras/Adult/Adult v01.cbz", 2),
+            ],
+        );
+        let conn = library.conn();
+        let adult = manga.path.join("kids/extras/Adult/Adult v01.cbz");
+        let work = work_of(&conn, &adult);
+        conn.execute(
+            "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 1)",
+            [work],
+        )
+        .expect("a position");
+        let positions = || -> i64 {
+            conn.query_row(
+                "SELECT count(*) FROM progress WHERE work_id = ?1",
+                [work],
+                |r| r.get(0),
+            )
+            .expect("counts the positions")
+        };
+        let mut kids =
+            add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+                .expect("adds Kids")
+                .root;
+        scan_root(&conn, &kids).expect("scans Kids");
+        crate::derive::derive(&conn).expect("derives");
+        assert_eq!(
+            members_at(&conn, &adult),
+            (vec![Some(kids.id)], vec![kids.id]),
+            "{case:?}: the fixture, Kids took the file over"
+        );
+
+        if case == LaterOnKids::Vanished {
+            std::fs::remove_file(&adult).expect("deletes the file");
+        } else {
+            conn.execute(
+                "UPDATE root SET exclude_globs = 'extras/' WHERE id = ?1",
+                [kids.id],
+            )
+            .expect("Kids excludes extras/");
+            kids.exclude_globs = Some("extras/".to_string());
+        }
+        if case == LaterOnKids::ExcludedByBoth {
+            conn.execute(
+                "UPDATE root SET exclude_globs = 'kids/extras/' WHERE id = ?1",
+                [manga.id],
+            )
+            .expect("Manga excludes kids/extras/");
+        }
+        scan_root(&conn, &kids).expect("scans Kids again");
+        crate::derive::derive(&conn).expect("derives");
+        assert!(
+            entries_for(&conn, &adult).is_empty(),
+            "{case:?}: the fixture, no row holds the file"
+        );
+        assert_eq!(
+            members_at(&conn, &adult).0,
+            vec![Some(kids.id)],
+            "{case:?}: the fixture, its member is still Kids'"
+        );
+
+        let (cost, removed) = if whole_library {
+            (
+                library_removal_cost(&conn, kids.library_id).expect("rehearses"),
+                remove_library(&conn, kids.library_id).expect("removes Kids"),
+            )
+        } else {
+            (
+                removal_cost(&conn, kids.id).expect("rehearses"),
+                remove_root(&conn, kids.id).expect("removes Kids"),
+            )
+        };
+        if case == LaterOnKids::Excluded {
+            assert_eq!(
+                (counted(&cost), counted(&removed)),
+                ((0, 0, 0), (0, 0, 0)),
+                "whole_library={whole_library}"
+            );
+            assert_eq!(members_at(&conn, &adult).0, vec![Some(manga.id)]);
+            scan_root(&conn, &manga).expect("scans Manga");
+            crate::derive::derive(&conn).expect("derives");
+            assert_eq!(
+                work_of(&conn, &adult),
+                work,
+                "Manga's scan meets the same work"
+            );
+            assert_eq!(positions(), 1, "and its position");
+        } else {
+            assert_eq!(
+                (counted(&cost), counted(&removed)),
+                ((1, 1, 0), (1, 1, 0)),
+                "{case:?} whole_library={whole_library}"
+            );
+            assert_eq!(positions(), 0, "{case:?}");
+        }
+    }
+}
+
+/// P3's tree with nothing of Manga's own: `m` holds only Kids' `m/kids` and
+/// `alias -> kids`, and Manga recorded `alias/…` before Kids existed. Manga's
+/// walk meets the alias, so its rows are not what an unmounted share looks
+/// like: the scan is not refused, and forgets them as gone.
+#[test]
+fn an_outer_holding_only_a_nested_directory_and_a_link_to_it_forgets_the_links_rows() {
+    let top = crate::tests::tempdir("nest-alias-only");
+    let m = top.path().join("m");
+    for (rel, pages) in &NEST_FILES[..2] {
+        write_archive(&m.join(rel), *pages);
+    }
+    std::os::unix::fs::symlink(m.join("kids"), m.join("alias")).expect("links alias to kids");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let manga = add_root_checked_in(&conn, &m, InLibrary::Named("Manga"))
+        .expect("adds Manga")
+        .root;
+    scan_root(&conn, &manga).expect("scans Manga");
+    assert_eq!(rows_under(&conn, &manga, "alias"), 4, "the fixture");
+    let kids = add_root_checked_in(&conn, &m.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+
+    assert_eq!(scan_root(&conn, &kids).expect("scans Kids").taken_over, 4);
+    let again = scan_root(&conn, &manga).expect("scans Manga");
+    assert_eq!(
+        (again.refused.as_deref(), again.gone),
+        (None, 4),
+        "{again:?}"
+    );
+    assert_eq!(rows_under(&conn, &manga, "alias"), 0);
+}
+
+/// The other side of §8.1's count of what a nested directory's scan would
+/// take: an empty `m/kids`, added as Kids, is not refused when Manga holds
+/// rows only beside it, nor when Manga holds `kids`'s own row alone.
+#[test]
+fn an_empty_nested_directory_is_not_refused_for_what_the_outer_holds_beside_it() {
+    for holds_kids in [false, true] {
+        let (_top, library, manga) = manga_holding(
+            if holds_kids {
+                "nest-empty-own-row"
+            } else {
+                "nest-empty-beside"
+            },
+            &NEST_FILES[2..],
+        );
+        let conn = library.conn();
+        let kids_dir = manga.path.join("kids");
+        std::fs::create_dir(&kids_dir).expect("an empty directory");
+        if holds_kids {
+            scan_root(&conn, &manga).expect("scans Manga");
+        }
+        assert_eq!(
+            rows_under(&conn, &manga, "kids"),
+            i64::from(holds_kids),
+            "the fixture"
+        );
+        let kids = add_root_checked_in(&conn, &kids_dir, InLibrary::Named("Kids"))
+            .expect("adds Kids")
+            .root;
+
+        let report = scan_root(&conn, &kids).expect("scans Kids");
+        assert_eq!(
+            (report.refused.as_deref(), report.taken_over),
+            (None, usize::from(holds_kids)),
+            "holds_kids={holds_kids}: {report:?}"
+        );
+    }
+}
+
+/// §8.1's advice when the walk skipped a nested directory: Manga's own files
+/// beside Kids' `m/kids` are gone, so its walk meets nothing, and it is
+/// refused. It still shows Kids, so the advice names `kids`, says not to
+/// remove it, and does not claim it is not empty: a nested share mounted while
+/// its parent's is not looks the same.
+#[test]
+fn an_outer_refused_as_empty_beside_a_nested_directory_is_not_told_to_remove_itself() {
+    let (_top, library, manga) = manga_holding("nest-refused-advice", NEST_FILES);
+    let conn = library.conn();
+    let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+    scan_root(&conn, &kids).expect("scans Kids");
+    std::fs::remove_dir_all(manga.path.join("Naruto")).expect("removes Naruto");
+
+    let report = scan_root(&conn, &manga).expect("scans Manga");
+    let refused = report.refused.expect("refused as empty");
+    assert!(
+        refused.ends_with(
+            "It still shows `kids`, a nested directory scanned on its own, so do not remove \
+             it; check that its share is mounted and what became of everything else it held."
+        ),
+        "{refused}"
+    );
+    assert!(!refused.contains("remove it."), "{refused}");
+}
+
+/// Kids' `m/kids` holding what it took over from Manga's `m`: [`NEST_FILES`]
+/// under `m`, a reader on Bleach v01, and Kids added, scanned and derived.
+struct HandedOver {
+    _top: crate::tests::TempDir,
+    library: Library,
+    manga: Root,
+    kids: Root,
+    /// Bleach v01's work and v02's.
+    v01: i64,
+    v02: i64,
+    /// The series names before Kids was added.
+    series_before: Vec<String>,
+}
+
+fn handed_over(label: &str) -> HandedOver {
+    let (top, library, manga) = manga_holding(label, NEST_FILES);
+    let (kids, v01, v02, series_before) = {
+        let conn = library.conn();
+        let series_before = series_names(&conn);
+        let v01 = read_bleach_v01(&conn, &manga);
+        let v02 = work_of(&conn, &manga.path.join("kids/Bleach/v02.cbz"));
+        let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+            .expect("adds Kids")
+            .root;
+        assert_eq!(scan_root(&conn, &kids).expect("scans Kids").taken_over, 4);
+        crate::derive::derive(&conn).expect("derives");
+        (kids, v01, v02, series_before)
+    };
+    HandedOver {
+        _top: top,
+        library,
+        manga,
+        kids,
+        v01,
+        v02,
+        series_before,
+    }
+}
+
+/// What a removal counts: works, positions, notes.
+fn counted(removal: &(Removal, crate::derive::DeriveReport)) -> (usize, usize, usize) {
+    (removal.0.works, removal.0.positions, removal.0.notes)
+}
+
+/// The digest `root`'s row at `rel` holds.
+fn digest_at(conn: &Connection, root: &Root, rel: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT sha256 FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+        rusqlite::params![root.id, rel],
+        |r| r.get(0),
+    )
+    .unwrap_or_else(|e| panic!("{rel} has a row: {e}"))
+}
+
+/// User 1's position and note on `work`, and the work's hand-set title.
+fn the_reader(conn: &Connection, work: i64) -> (String, i64, String, i64, Option<String>) {
+    conn.query_row(
+        "SELECT p.edition, p.slot, n.edition, n.slot, w.title_hand
+           FROM progress p JOIN note n ON n.work_id = p.work_id JOIN work w ON w.id = p.work_id
+          WHERE p.user_id = 1 AND p.work_id = ?1",
+        [work],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )
+    .expect("the position and the note are kept")
+}
+
+fn read_on_raw_slot_2() -> (String, i64, String, i64, Option<String>) {
+    (
+        "raw".to_string(),
+        2,
+        "raw".to_string(),
+        2,
+        Some("Bleach, by hand".to_string()),
+    )
+}
+
+/// Spec §4 in reverse: removing Kids hands its files back to Manga's `m`
+/// around it before anything is counted. The rehearsal and the removal count
+/// nothing removed; the works, the reader's position and note and the
+/// hand-set title are kept; each file's row is Manga's again, at `kids/…`, and
+/// is copied with the digest Kids held; its members are Manga's; and the series
+/// is Manga's `kids` again. Removing Kids' whole library does the same.
+#[test]
+fn removing_a_nested_directory_hands_its_files_to_the_directory_around_it() {
+    for whole_library in [false, true] {
+        let h = handed_over(if whole_library {
+            "hand-back-library"
+        } else {
+            "hand-back"
+        });
+        let conn = h.library.conn();
+        let bleach = ["Bleach/v01.cbz", "Bleach/v02.cbz"];
+        let digests: Vec<Option<String>> = bleach
+            .iter()
+            .map(|rel| digest_at(&conn, &h.kids, rel))
+            .collect();
+        assert!(digests.iter().all(Option::is_some), "the fixture");
+        {
+            // The digests as copied, before a derive could hash the files again.
+            let tx = crate::Nested::open(&conn, "hand_back").expect("opens a transaction");
+            assert_eq!(
+                hand_back(&tx, h.kids.id, &mut Carried::new()).expect("hands back"),
+                4,
+                "kids, kids/Bleach and its two files"
+            );
+            for (rel, digest) in bleach.iter().zip(&digests) {
+                assert_eq!(
+                    digest_at(&tx, &h.manga, &format!("kids/{rel}")),
+                    *digest,
+                    "{rel}"
+                );
+            }
+        }
+
+        let (cost, removed) = if whole_library {
+            (
+                library_removal_cost(&conn, h.kids.library_id),
+                remove_library(&conn, h.kids.library_id),
+            )
+        } else {
+            (
+                removal_cost(&conn, h.kids.id),
+                remove_root(&conn, h.kids.id),
+            )
+        };
+        assert_eq!(
+            (
+                counted(&cost.expect("rehearses")),
+                counted(&removed.expect("removes"))
+            ),
+            ((0, 0, 0), (0, 0, 0)),
+            "whole_library={whole_library}"
+        );
+
+        for rel in bleach {
+            let file = h.manga.path.join("kids").join(rel);
+            assert_eq!(entries_for(&conn, &file), [h.manga.id], "{rel}");
+            let (roots, held) = members_at(&conn, &file);
+            assert!(
+                !roots.is_empty() && roots.iter().all(|root| *root == Some(h.manga.id)),
+                "every member of {rel} is Manga's: {roots:?}"
+            );
+            assert_eq!(held, [h.manga.id], "{rel}'s member_root");
+        }
+        assert_eq!(
+            (
+                work_of(&conn, &h.manga.path.join("kids/Bleach/v01.cbz")),
+                work_of(&conn, &h.manga.path.join("kids/Bleach/v02.cbz"))
+            ),
+            (h.v01, h.v02),
+            "the works are kept"
+        );
+        assert_eq!(the_reader(&conn, h.v01), read_on_raw_slot_2());
+        assert!(h.series_before.contains(&"kids".to_string()), "the fixture");
+        assert_eq!(series_names(&conn), h.series_before);
+    }
+}
+
+/// With Manga's `m` excluding `kids/`, Manga's walk would not reach Kids'
+/// files, so the hand-back gives it none: removing Kids removes both Bleach
+/// works, the position and the note, and the rehearsal counts what the
+/// removal does.
+#[test]
+fn removing_a_nested_directory_the_outer_excludes_removes_its_works() {
+    let h = handed_over("hand-back-excluded");
+    let conn = h.library.conn();
+    conn.execute(
+        "UPDATE root SET exclude_globs = 'kids/' WHERE id = ?1",
+        [h.manga.id],
+    )
+    .expect("excludes kids/ from Manga's directory");
+
+    let cost = removal_cost(&conn, h.kids.id).expect("rehearses");
+    let removed = remove_root(&conn, h.kids.id).expect("removes");
+    assert_eq!((counted(&cost), counted(&removed)), ((2, 1, 1), (2, 1, 1)));
+    assert_eq!(rows_under(&conn, &h.manga, "kids"), 0);
+}
+
+/// Spec §4: reach is per directory, so a file-level pattern at Manga's `m`
+/// naming `kids/Bleach/v02.cbz` governs nothing while Kids holds the file, and
+/// Manga's page shows both Bleach volumes. Handed back, the file meets the
+/// pattern: removing Kids removes v02's work and keeps v01's, and the
+/// rehearsal counts what the removal does.
+#[test]
+fn a_file_the_outer_excludes_shows_until_the_hand_back_removes_it() {
+    let h = handed_over("hand-back-file-glob");
+    let conn = h.library.conn();
+    conn.execute(
+        "UPDATE root SET exclude_globs = 'kids/Bleach/v02.cbz' WHERE id = ?1",
+        [h.manga.id],
+    )
+    .expect("excludes v02 from Manga's directory");
+    let page = crate::browse::series(
+        &conn,
+        &crate::account::Access::Every,
+        1,
+        Some(h.manga.library_id),
+    )
+    .expect("lists Manga's page");
+    let bleach = page
+        .iter()
+        .find(|card| card.title == "Bleach")
+        .expect("Manga's page shows Bleach");
+    assert_eq!(bleach.works, 2, "v02 shows while Kids holds it");
+
+    let cost = removal_cost(&conn, h.kids.id).expect("rehearses");
+    let removed = remove_root(&conn, h.kids.id).expect("removes");
+    assert_eq!((counted(&cost), counted(&removed)), ((1, 0, 0), (1, 0, 0)));
+    assert_eq!(
+        entries_for(&conn, &h.manga.path.join("kids/Bleach/v01.cbz")),
+        [h.manga.id]
+    );
+    assert!(
+        entries_for(&conn, &h.manga.path.join("kids/Bleach/v02.cbz")).is_empty(),
+        "v02 is not handed back"
+    );
+    assert_eq!(
+        work_of(&conn, &h.manga.path.join("kids/Bleach/v01.cbz")),
+        h.v01
+    );
+}
+
+/// Three deep, `m` ⊃ `m/kids` ⊃ `m/kids/little`, Little added after Kids'
+/// scan: removing Kids hands Kids' own files to Manga and Little's to Little,
+/// whether Little has scanned and holds them or Kids still does. Nothing is
+/// counted removed, and Manga is given nothing under `kids/little`.
+#[test]
+fn removing_the_middle_of_three_hands_its_files_out_and_the_innermost_keeps_its_own() {
+    for little_scanned in [true, false] {
+        let (_top, library, manga) = manga_holding(
+            if little_scanned {
+                "hand-back-three-scanned"
+            } else {
+                "hand-back-three"
+            },
+            &[
+                ("kids/Bleach/v01.cbz", 3),
+                ("kids/little/Tiny/Tiny v01.cbz", 2),
+                ("Naruto/Naruto v01.cbz", 5),
+            ],
+        );
+        let conn = library.conn();
+        let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+            .expect("adds Kids")
+            .root;
+        scan_root(&conn, &kids).expect("scans Kids");
+        let little = add_root_checked_in(
+            &conn,
+            &manga.path.join("kids/little"),
+            InLibrary::Named("Little"),
+        )
+        .expect("adds Little")
+        .root;
+        if little_scanned {
+            scan_root(&conn, &little).expect("scans Little");
+        }
+        crate::derive::derive(&conn).expect("derives");
+        let bleach = manga.path.join("kids/Bleach/v01.cbz");
+        let tiny = manga.path.join("kids/little/Tiny/Tiny v01.cbz");
+        assert_eq!(
+            entries_for(&conn, &tiny),
+            [if little_scanned { little.id } else { kids.id }],
+            "the fixture"
+        );
+        let works = (work_of(&conn, &bleach), work_of(&conn, &tiny));
+
+        let cost = removal_cost(&conn, kids.id).expect("rehearses");
+        let removed = remove_root(&conn, kids.id).expect("removes");
+        assert_eq!(
+            (counted(&cost), counted(&removed)),
+            ((0, 0, 0), (0, 0, 0)),
+            "little_scanned={little_scanned}"
+        );
+        assert_eq!(entries_for(&conn, &bleach), [manga.id]);
+        assert_eq!(
+            members_at(&conn, &bleach),
+            (vec![Some(manga.id)], vec![manga.id])
+        );
+        assert_eq!(entries_for(&conn, &tiny), [little.id]);
+        assert_eq!(
+            members_at(&conn, &tiny),
+            (vec![Some(little.id)], vec![little.id])
+        );
+        assert_eq!(rows_under(&conn, &manga, "kids/little"), 0);
+        assert_eq!((work_of(&conn, &bleach), work_of(&conn, &tiny)), works);
+    }
+}
+
+/// Set the directory at `rel` under `outer` back to the mtime `outer`'s scan
+/// recorded for it. Adding a directory probes it by writing and removing a
+/// file in it (`watch::probe`), which moves its mtime past the recorded one
+/// whenever the probe lands in a later second, as mtimes are kept in whole
+/// seconds. A test whose next scan compares that row with the disk puts the
+/// mtime back, so its counts do not depend on the clock.
+fn put_back_recorded_mtime(conn: &Connection, outer: &Root, rel: &str) {
+    let recorded: i64 = conn
+        .query_row(
+            "SELECT mtime FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+            rusqlite::params![outer.id, rel],
+            |r| r.get(0),
+        )
+        .expect("the scan recorded the directory");
+    let recorded = u64::try_from(recorded).expect("a recorded mtime after the epoch");
+    std::fs::File::open(outer.path.join(rel))
+        .expect("opens the directory")
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(recorded)),
+        )
+        .expect("sets its mtime");
+}
+
+/// Removing Manga after Kids is added at `m/kids` and before Kids' first
+/// scan: Manga still holds Bleach, and the hand-back gives its rows and
+/// members to Kids, so only Naruto, Manga's own, is counted removed. Kids'
+/// first scan then finds its rows already there.
+#[test]
+fn removing_the_outer_before_the_nested_directorys_first_scan_hands_its_files_in() {
+    let (_top, library, manga) = manga_holding("hand-back-inward", NEST_FILES);
+    let conn = library.conn();
+    let v01 = read_bleach_v01(&conn, &manga);
+    let bleach = [
+        manga.path.join("kids/Bleach/v01.cbz"),
+        manga.path.join("kids/Bleach/v02.cbz"),
+    ];
+    let v02 = work_of(&conn, &bleach[1]);
+    let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+    put_back_recorded_mtime(&conn, &manga, "kids");
+
+    let cost = removal_cost(&conn, manga.id).expect("rehearses");
+    let removed = remove_root(&conn, manga.id).expect("removes");
+    assert_eq!((counted(&cost), counted(&removed)), ((1, 0, 0), (1, 0, 0)));
+    for file in &bleach {
+        assert_eq!(entries_for(&conn, file), [kids.id], "{file:?}");
+        let (roots, held) = members_at(&conn, file);
+        assert!(
+            !roots.is_empty() && roots.iter().all(|root| *root == Some(kids.id)),
+            "every member of {file:?} is Kids': {roots:?}"
+        );
+        assert_eq!(held, [kids.id], "{file:?}'s member_root");
+    }
+    assert_eq!(
+        (work_of(&conn, &bleach[0]), work_of(&conn, &bleach[1])),
+        (v01, v02)
+    );
+    assert_eq!(the_reader(&conn, v01), read_on_raw_slot_2());
+
+    let first = scan_root(&conn, &kids).expect("scans Kids");
+    assert_eq!(
+        (
+            first.refused.as_deref(),
+            first.added,
+            first.updated,
+            first.gone,
+            first.taken_over
+        ),
+        (None, 0, 0, 0, 0),
+        "{first:?}"
+    );
+}
+
+/// `forget_unseen`'s guard alone: the skip set is the walk's, whatever the
+/// `root` table says once the transaction opens. Given `kids` skipped where no
+/// directory holds `m/kids` any more, the rows under it stay, and the rows the
+/// walk did not meet elsewhere are gone.
+#[test]
+fn forget_unseen_leaves_the_rows_under_a_skipped_directory_that_is_no_longer_a_root() {
+    let (_top, library, manga) = manga_holding("forget-skipped", NEST_FILES);
+    let conn = library.conn();
+    let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+    remove_root(&conn, kids.id).expect("removes Kids");
+    assert!(
+        roots(&conn)
+            .expect("reads")
+            .iter()
+            .all(|root| root.id != kids.id),
+        "the fixture"
+    );
+    let held = held_for(&conn, manga.id).expect("reads what Manga holds");
+
+    let forgotten = forget_unseen(
+        &conn,
+        manga.id,
+        &[],
+        &held,
+        &Excluder::build(None),
+        &["kids".to_string()],
+    )
+    .expect("forgets");
+    assert_eq!(forgotten, (3, 0), "the root's row and Naruto's two");
+    assert_eq!(rows_under(&conn, &manga, "kids"), 4);
+}
+
+/// The alias tree with a file of Manga's own beside it: Manga recorded
+/// `alias/…` and `Naruto/…`, Kids took Bleach over, and then Naruto goes.
+/// Manga's walk meets only its own directory, the link and Kids' directory.
+/// Its rows outside the link still count toward §8.1, so the scan is refused.
+#[test]
+fn rows_beside_a_link_to_a_nested_directory_still_count_toward_the_empty_refusal() {
+    let top = crate::tests::tempdir("nest-alias-beside");
+    let m = top.path().join("m");
+    for (rel, pages) in NEST_FILES {
+        write_archive(&m.join(rel), *pages);
+    }
+    std::os::unix::fs::symlink(m.join("kids"), m.join("alias")).expect("links alias to kids");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let manga = add_root_checked_in(&conn, &m, InLibrary::Named("Manga"))
+        .expect("adds Manga")
+        .root;
+    scan_root(&conn, &manga).expect("scans Manga");
+    let kids = add_root_checked_in(&conn, &m.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+    assert_eq!(scan_root(&conn, &kids).expect("scans Kids").taken_over, 4);
+    std::fs::remove_dir_all(m.join("Naruto")).expect("removes Naruto");
+
+    let report = scan_root(&conn, &manga).expect("scans Manga");
+    assert!(report.refused.is_some(), "{report:?}");
+    assert_eq!(rows_under(&conn, &manga, "Naruto"), 2, "nothing applied");
+}
+
+/// `m` ⊃ `m/kids` ⊃ `m/kids/little`, as many directories as the hand-back
+/// chooses between: removing Little hands Tiny to Kids, the deepest directory
+/// around it, and removing Manga before either inner directory has scanned
+/// hands Bleach to Kids and Tiny to Little, the deepest directory nested in it
+/// that holds each.
+#[test]
+fn a_hand_back_gives_each_file_to_the_deepest_directory_that_holds_it() {
+    for removed_outermost in [false, true] {
+        let (_top, library, manga) = manga_holding(
+            if removed_outermost {
+                "hand-back-deepest-in"
+            } else {
+                "hand-back-deepest-out"
+            },
+            &[
+                ("kids/Bleach/v01.cbz", 3),
+                ("kids/little/Tiny/Tiny v01.cbz", 2),
+            ],
+        );
+        let conn = library.conn();
+        let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+            .expect("adds Kids")
+            .root;
+        let little = add_root_checked_in(
+            &conn,
+            &manga.path.join("kids/little"),
+            InLibrary::Named("Little"),
+        )
+        .expect("adds Little")
+        .root;
+        if !removed_outermost {
+            scan_root(&conn, &kids).expect("scans Kids");
+            scan_root(&conn, &little).expect("scans Little");
+            crate::derive::derive(&conn).expect("derives");
+        }
+        let bleach = manga.path.join("kids/Bleach/v01.cbz");
+        let tiny = manga.path.join("kids/little/Tiny/Tiny v01.cbz");
+
+        let removed = if removed_outermost { &manga } else { &little };
+        let counts = counted(&remove_root(&conn, removed.id).expect("removes"));
+        assert_eq!(counts, (0, 0, 0), "removed_outermost={removed_outermost}");
+        assert_eq!(entries_for(&conn, &bleach), [kids.id]);
+        let tiny_held_by = if removed_outermost {
+            little.id
+        } else {
+            kids.id
+        };
+        assert_eq!(entries_for(&conn, &tiny), [tiny_held_by]);
+        assert_eq!(
+            members_at(&conn, &tiny),
+            (vec![Some(tiny_held_by)], vec![tiny_held_by]),
+            "removed_outermost={removed_outermost}"
+        );
+    }
+}
+
+/// Removing Manga before Kids' first scan, with Kids' patterns excluding
+/// `Bleach/v02.cbz`: Kids' walk would never reach v02, so the hand-back leaves
+/// it on Manga and the rehearsal counts v02's work as removed with Naruto,
+/// rather than Kids' first scan dropping it uncounted. v01 goes to Kids.
+#[test]
+fn removing_the_outer_leaves_it_what_the_nested_directorys_patterns_exclude() {
+    let (_top, library, manga) = manga_holding("hand-back-inward-excluded", NEST_FILES);
+    let conn = library.conn();
+    let v01 = work_of(&conn, &manga.path.join("kids/Bleach/v01.cbz"));
+    let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+    conn.execute(
+        "UPDATE root SET exclude_globs = 'Bleach/v02.cbz' WHERE id = ?1",
+        [kids.id],
+    )
+    .expect("excludes v02 from Kids' directory");
+
+    let cost = removal_cost(&conn, manga.id).expect("rehearses");
+    let removed = remove_root(&conn, manga.id).expect("removes");
+    assert_eq!((counted(&cost), counted(&removed)), ((2, 0, 0), (2, 0, 0)));
+    assert_eq!(
+        entries_for(&conn, &manga.path.join("kids/Bleach/v01.cbz")),
+        [kids.id]
+    );
+    assert!(
+        entries_for(&conn, &manga.path.join("kids/Bleach/v02.cbz")).is_empty(),
+        "v02 is not handed in"
+    );
+    assert_eq!(work_of(&conn, &manga.path.join("kids/Bleach/v01.cbz")), v01);
+}
+
+/// Manga's walk asks a directory-only pattern of directories alone, and so
+/// does the hand-back. With `m` excluding `v02.cbz/` and `v03/`, removing Kids
+/// hands back the file `v02.cbz` and not the volume directory `v03`, whose
+/// work alone is removed.
+#[test]
+fn a_directory_only_pattern_around_a_removed_directory_holds_back_directories_alone() {
+    let h = handed_over("hand-back-dir-only");
+    let conn = h.library.conn();
+    let v03 = h.manga.path.join("kids/Bleach/v03");
+    write_pages(&v03, 2);
+    scan_root(&conn, &h.kids).expect("scans Kids again");
+    crate::derive::derive(&conn).expect("derives");
+    assert_eq!(entries_for(&conn, &v03), [h.kids.id], "the fixture");
+    let v03_work = work_of(&conn, &v03);
+    assert!(
+        ![h.v01, h.v02].contains(&v03_work),
+        "the fixture: v03 is a work of its own"
+    );
+    conn.execute(
+        "UPDATE root SET exclude_globs = 'v02.cbz/' || char(10) || 'v03/' WHERE id = ?1",
+        [h.manga.id],
+    )
+    .expect("excludes the directories v02.cbz and v03 from Manga's directory");
+
+    let cost = removal_cost(&conn, h.kids.id).expect("rehearses");
+    let removed = remove_root(&conn, h.kids.id).expect("removes");
+    assert_eq!((counted(&cost), counted(&removed)), ((1, 0, 0), (1, 0, 0)));
+    assert_eq!(
+        entries_for(&conn, &h.manga.path.join("kids/Bleach/v02.cbz")),
+        [h.manga.id],
+        "a file is not a directory"
+    );
+    assert!(entries_for(&conn, &v03).is_empty(), "v03 is held back");
+}
+
+// --- spec §4: a work's hand document moves with its files ------------------
+
+/// Manga's `m` holding [`NEST_FILES`] and keeping documents, with the reader on
+/// Bleach v01 and its hand-set title saved at `m/.taiyaku`, and Kids added at
+/// `m/kids` before its first scan, keeping documents where `kids_keeps` says.
+struct Documented {
+    _top: crate::tests::TempDir,
+    library: Library,
+    kids: Root,
+    v01: i64,
+    /// Bleach v01's document under Manga, and the same name under Kids.
+    at_manga: PathBuf,
+    at_kids: PathBuf,
+}
+
+fn documented(label: &str, kids_keeps: bool) -> Documented {
+    let (top, library, manga) = manga_holding(label, NEST_FILES);
+    let (kids, v01, at_manga) = {
+        let conn = library.conn();
+        keep_documents(&conn, &manga);
+        let v01 = read_bleach_v01(&conn, &manga);
+        let saved = crate::hand::save(&conn, v01).expect("saves the title");
+        let at_manga = saved.path.expect("the fixture: an address");
+        assert!(
+            saved.persisted && at_manga.is_file() && at_manga.starts_with(&manga.path),
+            "the fixture: the document is Manga's: {at_manga:?}"
+        );
+        let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+            .expect("adds Kids")
+            .root;
+        if kids_keeps {
+            keep_documents(&conn, &kids);
+        }
+        (kids, v01, at_manga)
+    };
+    let at_kids = kids
+        .path
+        .join(".taiyaku")
+        .join(at_manga.file_name().expect("a file name"));
+    Documented {
+        _top: top,
+        library,
+        kids,
+        v01,
+        at_manga,
+        at_kids,
+    }
+}
+
+fn keep_documents(conn: &Connection, root: &Root) {
+    conn.execute(
+        "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
+        [root.id],
+    )
+    .expect("keeps documents");
+}
+
+/// The names of the files in `dir`, none where there is no `dir`.
+fn files_in(dir: &Path) -> Vec<String> {
+    std::fs::read_dir(dir).map_or_else(
+        |_| Vec::new(),
+        |entries| {
+            entries
+                .map(|entry| {
+                    entry
+                        .expect("lists an entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect()
+        },
+    )
+}
+
+/// Spec §4: a work's hand document moves with its files. Kids, keeping
+/// documents, takes Bleach v01 over, and the document moves from `m/.taiyaku`
+/// to `m/kids/.taiyaku`; removing Kids, or Kids' library, hands it back. Neither
+/// derive finds an orphan or writes a document afresh.
+#[test]
+fn a_hand_document_moves_into_a_nested_directory_and_back_with_its_work() {
+    for whole_library in [false, true] {
+        let d = documented(
+            if whole_library {
+                "documents-library"
+            } else {
+                "documents"
+            },
+            true,
+        );
+        let conn = d.library.conn();
+
+        scan_root(&conn, &d.kids).expect("scans Kids");
+        let derived = crate::derive::derive(&conn).expect("derives");
+        assert_eq!(
+            crate::hand::path_for(&conn, d.v01).expect("addresses"),
+            Some(d.at_kids.clone()),
+            "the fixture: Kids' address, under the same key"
+        );
+        assert_eq!(
+            (d.at_kids.is_file(), d.at_manga.exists()),
+            (true, false),
+            "whole_library={whole_library}: the document is Kids'"
+        );
+        assert!(
+            std::fs::read_to_string(&d.at_kids)
+                .expect("reads it")
+                .contains("Bleach, by hand"),
+            "and it is the one Manga kept"
+        );
+        assert_eq!(
+            (derived.orphan_documents, derived.repaired_documents),
+            (Vec::new(), 0),
+            "no orphan, and nothing written afresh"
+        );
+
+        let (_, derived) = if whole_library {
+            remove_library(&conn, d.kids.library_id)
+        } else {
+            remove_root(&conn, d.kids.id)
+        }
+        .expect("removes Kids");
+        assert_eq!(
+            crate::hand::path_for(&conn, d.v01).expect("addresses"),
+            Some(d.at_manga.clone()),
+            "the fixture: Manga's address again"
+        );
+        assert!(d.at_manga.is_file(), "handed back");
+        assert_eq!(
+            files_in(&d.kids.path.join(".taiyaku")),
+            Vec::<String>::new(),
+            "nothing is left under m/kids/.taiyaku"
+        );
+        assert_eq!(
+            (derived.orphan_documents, derived.repaired_documents),
+            (Vec::new(), 0),
+            "no orphan, and nothing written afresh"
+        );
+    }
+}
+
+/// A nested directory that keeps no documents is given none: Kids takes
+/// Bleach v01 over and its document stays at `m/.taiyaku`, an orphan reported
+/// with its title, while the title is kept in the store.
+#[test]
+fn a_nested_directory_that_keeps_no_documents_leaves_the_document_where_it_was() {
+    let d = documented("documents-declined", false);
+    let conn = d.library.conn();
+
+    scan_root(&conn, &d.kids).expect("scans Kids");
+    let derived = crate::derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        crate::hand::path_for(&conn, d.v01).expect("addresses"),
+        Some(d.at_kids.clone()),
+        "the fixture: Kids' address"
+    );
+    assert!(d.at_manga.is_file(), "the document stays");
+    assert!(
+        !d.kids.path.join(".taiyaku").exists(),
+        "and Kids is given no .taiyaku"
+    );
+    assert_eq!(
+        derived.orphan_documents,
+        [crate::hand::Orphan {
+            path: d.at_manga.clone(),
+            title: Some("Bleach, by hand".to_string()),
+            absorbed_into: None,
+        }],
+        "reported as an orphan with its title"
+    );
+    let title: Option<String> = conn
+        .query_row("SELECT title_hand FROM work WHERE id = ?1", [d.v01], |r| {
+            r.get(0)
+        })
+        .expect("reads the title");
+    assert_eq!(
+        title.as_deref(),
+        Some("Bleach, by hand"),
+        "kept in the store"
+    );
+}
+
+/// An occupied address is never overwritten: with a document already at
+/// Kids' address, Kids' scan leaves both where they are, and the derive
+/// reports the one at `m/.taiyaku` as an orphan and the one at Kids' as stale.
+#[test]
+fn a_hand_over_never_overwrites_a_document_at_the_nested_address() {
+    let d = documented("documents-occupied", true);
+    let conn = d.library.conn();
+    std::fs::create_dir_all(d.at_kids.parent().expect("a directory")).expect("makes .taiyaku");
+    std::fs::write(
+        &d.at_kids,
+        br#"{"taiyaku_library":1,"updated":"x","title":"Squatter"}"#,
+    )
+    .expect("a document at Kids' address");
+
+    scan_root(&conn, &d.kids).expect("scans Kids");
+    let derived = crate::derive::derive(&conn).expect("derives");
+
+    let read = |path: &Path| std::fs::read_to_string(path).expect("reads it");
+    assert!(read(&d.at_kids).contains("Squatter"), "not overwritten");
+    assert!(
+        read(&d.at_manga).contains("Bleach, by hand"),
+        "and not moved"
+    );
+    assert_eq!(
+        derived
+            .orphan_documents
+            .iter()
+            .map(|orphan| orphan.path.clone())
+            .collect::<Vec<_>>(),
+        std::slice::from_ref(&d.at_manga),
+        "Manga's is an orphan"
+    );
+    assert_eq!(
+        derived.stale_documents,
+        [d.at_kids.display().to_string()],
+        "Kids' disagrees with the store"
+    );
+}
+
+/// The straddle: Bleach v01's c001 under `m/kids` and c002 under `m`, one work.
+/// Kids names its editions `en`, so its scan takes c001 out of the hub edition
+/// and the derive rekeys the work under Manga; removing Kids, or its library,
+/// hands c001 back, and its derive rekeys it again. The document ends at each
+/// new key's address under Manga, none is left in `m/kids/.taiyaku`, and no
+/// derive finds an orphan or writes one afresh. Run with c002 at `m`'s top,
+/// where the hub edition starts, and in `m/other`, where it starts at c001.
+#[test]
+fn a_hand_back_that_rekeys_its_work_carries_the_document_to_the_new_key() {
+    straddle("documents-straddle", false);
+}
+
+/// The straddle with Kids keeping documents. Where the hub edition starts at
+/// c001, Kids' scan carries the document into `m/kids/.taiyaku`, and the
+/// derive's rekey, readdressing the work under Manga, carries it back out from
+/// there in one rename.
+#[test]
+fn a_straddle_into_a_nested_directory_that_keeps_documents_carries_the_document_out_again() {
+    straddle("documents-straddle-kept", true);
+}
+
+fn straddle(label: &str, kids_keeps: bool) {
+    // `other/` sorts after `kids/`, and a file at `m`'s top before it.
+    for (outer, nested_first) in [
+        ("Bleach v01 - c002.cbz", false),
+        ("other/Bleach v01 - c002.cbz", true),
+    ] {
+        for whole_library in [false, true] {
+            straddle_once(label, kids_keeps, outer, nested_first, whole_library);
+        }
+    }
+}
+
+fn straddle_once(
+    label: &str,
+    kids_keeps: bool,
+    outer: &str,
+    nested_first: bool,
+    whole_library: bool,
+) {
+    let (_top, library, manga) = manga_holding(
+        &format!(
+            "{label}-{}-{}",
+            u8::from(nested_first),
+            u8::from(whole_library)
+        ),
+        &[("kids/Bleach v01 - c001.cbz", 3), (outer, 4)],
+    );
+    let conn = library.conn();
+    keep_documents(&conn, &manga);
+    let work = work_of(&conn, &manga.path.join("kids/Bleach v01 - c001.cbz"));
+    assert_eq!(
+        work_of(&conn, &manga.path.join(outer)),
+        work,
+        "the fixture: one work"
+    );
+    let mut doc = crate::librarydoc::of(&conn, work).expect("projects the work");
+    doc.title = Some("Bleach v01, by hand".to_string());
+    crate::librarydoc::apply(&conn, work, &doc).expect("sets the title by hand");
+    let first = crate::hand::save(&conn, work)
+        .expect("saves the title")
+        .path
+        .expect("the fixture: an address");
+    let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+    conn.execute(
+        "UPDATE root SET edition_key = 'en' WHERE id = ?1",
+        [kids.id],
+    )
+    .expect("Kids names its editions en");
+    if kids_keeps {
+        keep_documents(&conn, &kids);
+    }
+    let kids = Root {
+        edition_key: Some("en".to_string()),
+        ..kids
+    };
+    let in_kids = kids.path.join(".taiyaku");
+    let ends = |derived: crate::derive::DeriveReport| {
+        let at = crate::hand::path_for(&conn, work)
+            .expect("addresses")
+            .expect("an address");
+        assert_eq!(
+            (at.starts_with(manga.path.join(".taiyaku")), at.is_file()),
+            (true, true),
+            "{outer}, whole_library={whole_library}: at the new key's address under Manga: \
+                 {at:?}"
+        );
+        assert!(
+            std::fs::read_to_string(&at)
+                .expect("reads it")
+                .contains("Bleach v01, by hand"),
+            "the document Manga kept"
+        );
+        assert_eq!(
+            files_in(&in_kids),
+            Vec::<String>::new(),
+            "nothing is left under m/kids/.taiyaku"
+        );
+        assert_eq!(
+            (derived.orphan_documents, derived.repaired_documents),
+            (Vec::new(), 0),
+            "no orphan, and nothing written afresh"
+        );
+        at
+    };
+
+    scan_root(&conn, &kids).expect("scans Kids");
+    assert_eq!(
+        in_kids
+            .join(first.file_name().expect("a file name"))
+            .is_file(),
+        kids_keeps && nested_first,
+        "the fixture: the scan carries the document into Kids where Kids keeps documents \
+             and the work is addressed there"
+    );
+    let derived = crate::derive::derive(&conn).expect("derives");
+    assert_eq!(derived.rekeyed, 1, "the fixture: the hand-over rekeys");
+    let taken = ends(derived);
+    assert!(!first.exists(), "the hand-over's key replaced the first");
+
+    let (_, derived) = if whole_library {
+        remove_library(&conn, kids.library_id)
+    } else {
+        remove_root(&conn, kids.id)
+    }
+    .expect("removes Kids");
+    let back = ends(derived);
+    assert_ne!(back, taken, "the fixture: the hand-back rekeys");
+    assert!(
+        !taken.exists(),
+        "the hand-back's key replaced the hand-over's"
+    );
+}
+
+/// Spec §4 end to end, for `note_addresses`' first-read rule: Kids holds
+/// Bleach v01 in two directories, c001 in `m/ka` and c002 in `m/kb`, both
+/// inside Manga's `m`, and keeps documents, so its scans carry the document
+/// into `m/ka/.taiyaku`. Removing Kids' library hands `ka` back, then `kb`.
+/// The document is carried from `m/ka`, where it is, not from the address the
+/// work has between the two hand-backs.
+#[test]
+fn a_library_removal_handing_one_work_back_from_two_directories_carries_its_document() {
+    let (_top, library, manga) = manga_holding(
+        "documents-two-dirs",
+        &[
+            ("ka/Bleach v01 - c001.cbz", 3),
+            ("kb/Bleach v01 - c002.cbz", 4),
+        ],
+    );
+    let conn = library.conn();
+    keep_documents(&conn, &manga);
+    let work = work_of(&conn, &manga.path.join("ka/Bleach v01 - c001.cbz"));
+    assert_eq!(
+        work_of(&conn, &manga.path.join("kb/Bleach v01 - c002.cbz")),
+        work,
+        "the fixture: one work"
+    );
+    let mut doc = crate::librarydoc::of(&conn, work).expect("projects the work");
+    doc.title = Some("Bleach v01, by hand".to_string());
+    crate::librarydoc::apply(&conn, work, &doc).expect("sets the title by hand");
+    let at_manga = crate::hand::save(&conn, work)
+        .expect("saves the title")
+        .path
+        .expect("the fixture: an address");
+    let name = at_manga.file_name().expect("a file name");
+    let [ka, kb] = ["ka", "kb"].map(|dir| {
+        let root = add_root_checked_in(&conn, &manga.path.join(dir), InLibrary::Named("Kids"))
+            .expect("adds a directory to Kids")
+            .root;
+        keep_documents(&conn, &root);
+        root
+    });
+    scan_root(&conn, &ka).expect("scans ka");
+    scan_root(&conn, &kb).expect("scans kb");
+    crate::derive::derive(&conn).expect("derives");
+    assert_eq!(
+        (
+            work_of(&conn, &manga.path.join("ka/Bleach v01 - c001.cbz")),
+            work_of(&conn, &manga.path.join("kb/Bleach v01 - c002.cbz")),
+        ),
+        (work, work),
+        "the fixture: still one work, under Kids"
+    );
+    assert_eq!(
+        crate::hand::path_for(&conn, work).expect("addresses"),
+        Some(ka.path.join(".taiyaku").join(name)),
+        "the fixture: addressed in ka, under the same key"
+    );
+    assert!(
+        ka.path.join(".taiyaku").join(name).is_file(),
+        "the fixture: the document is in ka"
+    );
+    assert!(ka.id < kb.id, "the fixture: ka is handed back first");
+
+    let (_, derived) = remove_library(&conn, ka.library_id).expect("removes Kids");
+
+    assert_eq!(
+        crate::hand::path_for(&conn, work).expect("addresses"),
+        Some(at_manga.clone()),
+        "the fixture: Manga's address again"
+    );
+    assert!(at_manga.is_file(), "handed back from ka");
+    for dir in [&ka, &kb] {
+        assert_eq!(
+            files_in(&dir.path.join(".taiyaku")),
+            Vec::<String>::new(),
+            "nothing is left in {}",
+            dir.path.display()
+        );
+    }
+    assert_eq!(
+        (derived.orphan_documents, derived.repaired_documents),
+        (Vec::new(), 0),
+        "no orphan, and nothing written afresh"
+    );
+}
+
+/// A library removal hands back one directory after another, so a work met
+/// again keeps the address first read for it: read again, it names where the
+/// document now belongs, not where it is.
+#[test]
+fn a_work_noted_again_keeps_the_address_first_read() {
+    let d = documented("documents-noted-again", true);
+    let conn = d.library.conn();
+    let mut carried = Carried::new();
+    note_addresses(&conn, [d.v01], &mut carried).expect("notes the work");
+    conn.execute(
+        "UPDATE work SET content_key = 'moved' WHERE id = ?1",
+        [d.v01],
+    )
+    .expect("moves the address");
+
+    note_addresses(&conn, [d.v01], &mut carried).expect("notes it again");
+
+    assert_eq!(carried, Carried::from([(d.v01, d.at_manga.clone())]));
+}
+
+/// One rename carries a hand document out of a nested directory and onto a
+/// new key: Bleach v01's c001 and c002 are both under `m/kids`, and Kids,
+/// keeping documents, has a rule naming c002's edition `en`. Its scan carries
+/// the document into `m/kids/.taiyaku`, and the derive rekeys the work there.
+/// Removing Kids, or its library, hands both back, and the removal's own
+/// derive rekeys the work again, so the document goes from `m/kids/.taiyaku`
+/// under one key to `m/.taiyaku` under another.
+#[test]
+fn a_hand_back_that_rekeys_a_work_wholly_inside_carries_its_directory_and_key_in_one_rename() {
+    for whole_library in [false, true] {
+        let (_top, library, manga) = manga_holding(
+            &format!("documents-inside-{}", u8::from(whole_library)),
+            &[
+                ("kids/Bleach v01 - c001.cbz", 3),
+                ("kids/Bleach v01 - c002.cbz", 4),
+            ],
+        );
+        let conn = library.conn();
+        keep_documents(&conn, &manga);
+        let work = work_of(&conn, &manga.path.join("kids/Bleach v01 - c001.cbz"));
+        assert_eq!(
+            work_of(&conn, &manga.path.join("kids/Bleach v01 - c002.cbz")),
+            work,
+            "the fixture: one work"
+        );
+        let mut doc = crate::librarydoc::of(&conn, work).expect("projects the work");
+        doc.title = Some("Bleach v01, by hand".to_string());
+        crate::librarydoc::apply(&conn, work, &doc).expect("sets the title by hand");
+        crate::hand::save(&conn, work).expect("saves the title");
+        let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+            .expect("adds Kids")
+            .root;
+        keep_documents(&conn, &kids);
+        crate::rules::create(
+            &conn,
+            &crate::rules::NewRule {
+                ordinal: None,
+                enabled: true,
+                root_id: Some(kids.id),
+                kind: crate::rules::RuleKind::Prefix,
+                pattern: "Bleach v01 - c002".to_string(),
+                match_on: crate::rules::MatchOn::Path,
+                set_edition_key: Some("en".to_string()),
+                set_kind: None,
+                set_language: None,
+                set_series: None,
+                note: None,
+            },
+        )
+        .expect("Kids names c002's edition en");
+        scan_root(&conn, &kids).expect("scans Kids");
+        let derived = crate::derive::derive(&conn).expect("derives");
+        assert_eq!(derived.rekeyed, 1, "the fixture: the hand-over rekeys");
+        let inside = crate::hand::path_for(&conn, work)
+            .expect("addresses")
+            .expect("an address");
+        assert_eq!(
+            (
+                inside.starts_with(kids.path.join(".taiyaku")),
+                inside.is_file()
+            ),
+            (true, true),
+            "the fixture: the document is in m/kids/.taiyaku: {inside:?}"
+        );
+
+        let (_, derived) = if whole_library {
+            remove_library(&conn, kids.library_id)
+        } else {
+            remove_root(&conn, kids.id)
+        }
+        .expect("removes Kids");
+
+        let back = crate::hand::path_for(&conn, work)
+            .expect("addresses")
+            .expect("an address");
+        assert_ne!(
+            back.file_name(),
+            inside.file_name(),
+            "the fixture: the hand-back rekeys"
+        );
+        assert_eq!(
+            (
+                back.starts_with(manga.path.join(".taiyaku")),
+                back.is_file()
+            ),
+            (true, true),
+            "whole_library={whole_library}: at the new key's address under Manga: {back:?}"
+        );
+        assert!(
+            std::fs::read_to_string(&back)
+                .expect("reads it")
+                .contains("Bleach v01, by hand"),
+            "the document Kids kept"
+        );
+        assert_eq!(
+            files_in(&kids.path.join(".taiyaku")),
+            Vec::<String>::new(),
+            "nothing is left under m/kids/.taiyaku"
+        );
+        assert_eq!(
+            (derived.orphan_documents, derived.repaired_documents),
+            (Vec::new(), 0),
+            "no orphan, and nothing written afresh"
+        );
+    }
 }

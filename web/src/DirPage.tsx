@@ -2,21 +2,28 @@
  * One directory's page, under its library's: a way back to the library, and
  * the directory's own settings, scan, move and removal, which are `RootRow`'s.
  *
- * **Another directory's scan holds this one's Scan directory, Move… and
- * Remove…**, because of the three the server refuses only the move for it. It
- * refuses a scan or a removal of a directory only while that directory itself
- * is being scanned; a scan asked of a second directory waits for the first to
- * finish, and a removal does not wait. The library's status names every
- * directory that is scanning, so it is read once on mount and, while another
- * directory is named, again each poll until none is. A failed poll keeps the
- * hold until `POLL_MISSES_ALLOWED` have failed in a row, as `RootRow`'s poll
- * keeps watching its scan. A scan of this directory, or of the whole library,
- * is `RootRow`'s own to see: the library's scan holds each directory's slot.
- * Once a poll finds over a scan of another directory that the page saw
- * running, the Library views are marked stale, as `RootRow`'s and
- * `LibraryPage`'s polls mark them: what the scan found changes what they
- * draw. A first read that finds none running, and a hold given up on failed
- * polls, saw no scan end and mark nothing.
+ * **The page holds only what the server refuses.** **A scan of another of
+ * its library's directories holds Move… alone**: the server refuses a move
+ * while a scan of either library is reserved, and takes the rest, since a
+ * scan asked of this directory waits for the other to finish and a removal
+ * does not wait. **A scan of a directory around or inside this one, of any
+ * library, holds Remove…**: the server refuses a removal while one is
+ * reserved, and takes the scan. **Anything holding the server's job lock
+ * holds Move…**, a running scan of any library, a rule save, a stamp or
+ * another move: a move does not wait for the lock and is refused while it is
+ * held. The library's status says the first in `dirs`, the second as
+ * `held_removals` and the third as `moves_held`, so it is read once on mount
+ * and, while any holds, again each poll until none does.
+ * A failed poll keeps the hold until `POLL_MISSES_ALLOWED` have failed in a
+ * row, as `RootRow`'s poll keeps watching its scan. A scan of this
+ * directory alone is `RootRow`'s own to see. One the library's status names
+ * beside a sibling's, as a scan of the whole library is, holds all three from
+ * that read: the library's scan holds each directory's slot, and the server
+ * refuses all three while this one's is reserved. Once a poll finds that nothing
+ * holds the page any more after something did, the Library views are marked
+ * stale, as `RootRow`'s and `LibraryPage`'s polls mark them: what a scan
+ * found changes what they draw. A first read that finds nothing holding, and
+ * a hold given up on failed polls, saw no scan end and mark nothing.
  *
  * **A scan of this directory marks its library's scan status stale in the
  * store**, as the row reports it was asked for, started, was found running,
@@ -25,25 +32,36 @@
  * status from before the scan. One drawn beside this page keeps what it
  * drew: told, it would read the status, take the scan up, and draw its
  * report a second time beside the row's own.
+ *
+ * **What the directories around and inside this one govern is the server's
+ * to say** (`LibraryDir`), drawn under the directory's facts. Whether a
+ * library shows a directory's books turns on patterns only the server
+ * compiles, so the page draws what it is sent and works none of it out.
  */
-import { type ReactNode, useCallback, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import {
   POLL_MISSES_ALLOWED,
   type Probe,
   type RemovalAnswer,
-  type Root,
   SCAN_POLL_MS,
 } from './config'
 import { dirPath, libraryPath } from './configAddress'
-import { type Library, libraryScanStatus, type MoveAnswer } from './libraries'
+import {
+  folderIn,
+  type Library,
+  type LibraryDir,
+  libraryScanStatus,
+  type MoveAnswer,
+} from './libraries'
 import { sentenceOf } from './message'
 import { invalidateLibraryViews, libraryScan } from './pageReads'
 import { markStale } from './reads'
+import { PathWithBreaks } from './PathWithBreaks'
 import { RootRow } from './RootRow'
 
 export interface DirPageProps {
   library: Library
-  root: Root
+  root: LibraryDir
   /** Only a directory added in this session has one. */
   probe?: Probe
   /** Every other library, for Move…. */
@@ -63,23 +81,38 @@ export interface DirPageProps {
 }
 
 /**
- * Whether a directory of `libraryId` other than `rootId` is scanning, and why
- * that could no longer be told once a hold was given up. The sentence holds
- * until the library or the directory changes, which asks afresh, or `forget`
- * is called.
+ * Whether the library's status names `rootId` scanning beside another of
+ * `library`'s directories, as a scan of the library does (`self`), whether a
+ * scan around or inside `rootId` holds its removal (`removal`), whether the
+ * server refuses its move (`move`): for the job lock, or for a scan of
+ * another of `library`'s directories, and why that could no longer be told
+ * once a hold was given up. The sentence holds until the library or the
+ * directory changes, which asks afresh, or `forget` is called.
  */
 function useOtherScan(
-  libraryId: number,
+  library: Library,
   rootId: number,
-): { other: boolean; failure?: string; forget: () => void } {
-  const [other, setOther] = useState(false)
+): {
+  self: boolean
+  removal: boolean
+  move: boolean
+  failure?: string
+  forget: () => void
+} {
+  const [mine, setMine] = useState(false)
+  const [removal, setRemoval] = useState(false)
+  const [move, setMove] = useState(false)
   const [failure, setFailure] = useState<string | undefined>()
+  // A ref, so a list read again does not restart the poll.
+  const own = useRef<ReadonlySet<number>>(new Set())
+  own.current = new Set(library.dirs.map((one) => one.id))
+  const libraryId = library.id
   useEffect(() => {
     // The sentence is about the hold it gave up, not about this one.
     setFailure(undefined)
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
-    /** Whether the last answer named another directory scanning. */
+    /** Whether the last answer held anything. */
     let holding = false
     /** Consecutive failed polls, counted as `RootRow` counts its own. */
     let misses = 0
@@ -89,10 +122,25 @@ function useOtherScan(
           if (cancelled) return
           misses = 0
           const wasHolding = holding
-          holding = status.dirs.some(
-            (one) => one.running && one.root_id !== rootId,
+          // A directory inside one of the library's that it shows is named
+          // too, and holds this one only through `held_removals`.
+          const sibling = status.dirs.some(
+            (one) =>
+              one.running &&
+              one.root_id !== rootId &&
+              own.current.has(one.root_id),
           )
-          setOther(holding)
+          // Named beside a sibling, this directory's own scan holds all three
+          // before its own status says so, and the sibling keeps the poll
+          // going until it ends. Named alone, it is `RootRow`'s own to see.
+          const self =
+            sibling &&
+            status.dirs.some((one) => one.running && one.root_id === rootId)
+          const around = status.held_removals.includes(rootId)
+          holding = sibling || around || status.moves_held
+          setMine(self)
+          setRemoval(around)
+          setMove(sibling || status.moves_held)
           if (holding) timer = setTimeout(ask, SCAN_POLL_MS)
           // The scan this page saw running is over, and what it found
           // changes what the Library views draw.
@@ -111,12 +159,12 @@ function useOtherScan(
           // A first read that fails held nothing and says nothing, as
           // `RootRow`'s mount read does. A hold given up is said, as
           // `RootRow`'s and `LibraryPage`'s polls say theirs: it frees the
-          // buttons while the other directory may still be scanning, and the
-          // server refuses neither this directory's scan nor its removal for
-          // that. Only Move… is still refused.
+          // buttons while the server may still refuse what they send.
           if (holding) setFailure(sentenceOf(err))
           holding = false
-          setOther(false)
+          setMine(false)
+          setRemoval(false)
+          setMove(false)
         })
     }
     ask()
@@ -127,7 +175,63 @@ function useOtherScan(
   }, [libraryId, rootId])
   // Stable, so `RootRow`'s Scan directory handler is not made afresh each draw.
   const forget = useCallback(() => setFailure(undefined), [])
-  return { other, failure, forget }
+  return { self: mine, removal, move, failure, forget }
+}
+
+/**
+ * What `root`'s page says of the directories around and inside it, as the
+ * server sends them (`LibraryDir`): a line for each directory it sits in,
+ * outermost first, then the directories inside it, folded under their count
+ * so that a directory holding many stays one line until it is opened.
+ * Nothing where there are none. `library` is the name of `root`'s library.
+ */
+function Nesting({ root, library }: { root: LibraryDir; library: string }) {
+  if (root.inside.length === 0 && root.nested.length === 0) return null
+  const n = root.nested.length
+  return (
+    <div className="nesting">
+      {root.inside.map((one) => (
+        <p key={one.path}>
+          {one.shows
+            ? `Also shown in ${one.library}`
+            : one.kept_out_by === 'dot_name'
+              ? `Kept out of ${one.library}: its scans skip names starting with a dot`
+              : `Kept out of ${one.library} by its exclusions`}{' '}
+          (inside{' '}
+          <code>
+            <PathWithBreaks path={one.path} />
+          </code>
+          )
+        </p>
+      ))}
+      {n > 0 && (
+        <details>
+          <summary>
+            {n === 1
+              ? "1 folder inside uses its own library's rules"
+              : `${n} folders inside use their own library's rules`}
+          </summary>
+          <ul>
+            {root.nested.map((one) => (
+              <li key={one.path}>
+                <code>
+                  <PathWithBreaks path={folderIn(one.path, root.path)} />
+                </code>
+                <span>{one.library}</span>
+                <span>
+                  {one.shown
+                    ? `also shown in ${library}`
+                    : one.kept_out_by === 'dot_name'
+                      ? 'kept out: names starting with a dot are skipped'
+                      : "kept out by this directory's exclusions"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  )
 }
 
 export function DirPage({
@@ -142,7 +246,13 @@ export function DirPage({
   onLateRefusal,
   arrived,
 }: DirPageProps) {
-  const { other: held, failure, forget } = useOtherScan(library.id, root.id)
+  const {
+    self: held,
+    removal: removalHeld,
+    move: moveHeld,
+    failure,
+    forget,
+  } = useOtherScan(library, root.id)
   return (
     <div className="dir-page">
       <RootRow
@@ -160,10 +270,13 @@ export function DirPage({
           </>
         }
         root={root}
+        nesting={<Nesting root={root} library={library.name} />}
         arrived={arrived}
         probe={probe}
         lastOf={library.dirs.length === 1 ? library.name : undefined}
         held={held}
+        removalHeld={removalHeld}
+        moveHeld={moveHeld}
         // A scan of this directory is a fresh start, and the sentence of a
         // hold given up says nothing of it.
         onScan={forget}

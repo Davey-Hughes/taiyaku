@@ -66,7 +66,8 @@ and reading logic runs in the browser and, later, inside a native shell.
 # not names
 # --library NAME files the directory under that library, creating it, so two
 # directories (Volumes and Chapters, say) share one library page and one
-# grant; without it, a directory is a library of its own.
+# grant; without it, a directory is a library of its own, and so can nest in
+# another library's directory.
 # `taiyaku library libraries` lists the libraries. The derive that follows
 # reads every directory whichever library holds it, so a chapter release
 # whose files name their volume joins that volume's work: as another edition
@@ -183,12 +184,12 @@ taiyaku library user grant-library alice Manga
 taiyaku library user revoke-library alice Manga
 taiyaku library user every-library alice
 #
-# a restricted account sees only the editions whose files sit under a directory
-# of a library it was granted, and cannot read their pages either. an edition
-# some of whose files sit only under another library's directories is narrowed:
-# the account is shown only the files under its own libraries' directories, its
-# pages numbered from 1, and Configuration → Split editions lists each edition a
-# library's directories hold some of and not all for an administrator. a work
+# a restricted account sees only the editions with a file its granted
+# libraries show, and cannot read their pages either. an edition some of
+# whose files its libraries do not show is
+# narrowed: the account is shown only the files its libraries show, its pages
+# numbered from 1, and Configuration → Split editions lists each edition a
+# library shows some of and not all for an administrator. a work
 # imported from a `taiyaku.json` sits under no root at all, so it is visible
 # only to an unrestricted account. members scanned before this feature existed
 # carry no root until the schema migration recovers it from their paths;
@@ -275,20 +276,23 @@ beneath it, which a wide screen draws beside the library's. A library is made on
 directory browser, which lists only beneath the directories the server was
 started with (`--dirs`, or `TAIYAKU_DIRS`); more directories are added on the
 library's page. A refusal — a name already taken, a name no address could hold
-(`.` or `..`), a directory inside another, a path that cannot be read — is drawn
-as the server's own sentence. Removing a library or a directory states what it
-will take — works, reading positions, notes — and offers no confirm button at
+(`.` or `..`), a directory inside another of the same library, a path that
+cannot be read — is drawn as the server's own sentence. Removing a library or a
+directory states what it will take — works, reading positions, notes — and
+offers no confirm button at
 all until those counts have arrived, and names any account the removal leaves
 seeing no library. A directory's page has **Move…**, to another library or a new
 one: a move changes only which library holds the directory, so before it offers
 the move it names the accounts that will gain and lose sight of the directory,
 and it refuses a move while a scan is queued in either library, or while a scan,
 a rule save, a stamp or another move is running. **Scan library** on a library
-walks each of its directories in turn and derives once. A scan started from the
-screen reports both halves of what it did in full: the walk and the derivation,
-every field, with what it *could not* do listed before what it did, and an empty
-list drawn as `0` rather than left out — so "nothing was unreadable this time"
-cannot be mistaken for "this version does not say".
+walks in turn each directory the library shows — its own, and each nested in
+one of them that its walk would reach, each by its own rules — and derives
+once. A scan started from the screen reports both halves of what it did in
+full: the walk and the derivation, every field (a walk's **Taken over** only
+when it is not zero), with what it *could not* do listed before what it did,
+and an empty list drawn as `0` rather than left out — so "nothing was
+unreadable this time" cannot be mistaken for "this version does not say".
 
 **The rule editor is built too**, at `/config/rules` — the screen the whole
 preview mechanism exists for. An ordered
@@ -334,13 +338,12 @@ and the schedule is the cron entry above rather than anything inside the
 server.
 
 **Split editions** is the last tab, at `/config/split-editions`. It lists each
-edition that a library's directories hold some of and not all of, which an
-account granted that library and not the others holding the rest is shown
-narrowed: for each library, what an account granted it alone sees of the
-edition, and for each file, its pages and the directories holding it, linked
-to their pages. Under the list it says how to split one: give one of its
-directories its own edition key (Edition key, on the directory's page), then
-scan that directory.
+edition that a library shows some of and not all of, which an account granted
+that library and not the others showing the rest is shown narrowed: for each
+library, what an account granted it alone sees of the edition, and for each
+file, its pages and the directories holding it, linked to their pages. Under
+the list it says how to split one: give one of its directories its own
+edition key (Edition key, on the directory's page), then scan that directory.
 
 To read in the browser, build the WebAssembly binding first, then run the
 reader against `serve --db`. The browser opens on a **library** now, not a
@@ -510,7 +513,7 @@ together whichever libraries hold them, so a chapter release whose files name
 their volume joins that volume's work: as another edition where the two
 directories' edition keys differ, and as more pages of the volume's edition
 where they share a key, as both do by default (`raw`). Scan library on a
-library's page walks its directories and derives once.
+library's page walks each directory the library shows and derives once.
 
 `TAIYAKU_DIRS` is a `:`-separated list, because a directory's path can hold a
 space or a comma. `taiyaku serve --dirs DIR`, repeatable, sets the same

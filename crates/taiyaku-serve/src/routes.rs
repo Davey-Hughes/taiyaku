@@ -2695,12 +2695,12 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         ("/opds/v1.2/libraries", Filters),
         // A library outside the grant answers 404, as one that does not exist
         // does, and a granted library's works are listed with only the
-        // editions under its directories, as `/opds/v1.2/works` lists them under
-        // the grant's.
+        // editions under the directories it shows, as `/opds/v1.2/works` lists
+        // them under the grant's.
         ("/opds/v1.2/libraries/{library}/works", RefusesAndFilters),
         ("/opds/v1.2/libraries/by-work", Filters),
-        // The same 404, and the works under the library's directories listed
-        // with every edition the grant allows.
+        // The same 404, and the works under the directories the library shows
+        // listed with every edition the grant allows.
         (
             "/opds/v1.2/libraries/{library}/works/by-work",
             RefusesAndFilters,

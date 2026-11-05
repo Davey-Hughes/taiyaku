@@ -1,7 +1,7 @@
 /**
- * The split editions screen: each edition a library's directories hold some
- * of and not all of, what an account granted one of those libraries alone
- * sees of it, and where each file is held (spec §3.8).
+ * The split editions screen: each edition a library shows some of the files
+ * of and not all, what an account granted one of those libraries alone sees
+ * of it, and where each file is held (spec §3.8).
  *
  * **What a library sees is the route's count, not one made here.** A file
  * held under directories of two libraries counts in both, so the counts are
@@ -71,12 +71,12 @@ export function SplitEditions() {
         title="Split editions"
         description={
           <>
-            An edition is split when a library's directories hold some of its
-            files and not all of them. An account granted only some of those
-            libraries sees only their files, with the pages renumbered. An
-            account granted every library listed sees every file a directory
-            holds, and an account that sees every library, as an administrator
-            does, sees the whole edition.
+            An edition is split when a library shows some of its files and not
+            all of them. An account granted only some of those libraries sees
+            only their files, with the pages renumbered. An account granted
+            every library listed sees every file a directory holds, and an
+            account that sees every library, as an administrator does, sees the
+            whole edition.
           </>
         }
       />

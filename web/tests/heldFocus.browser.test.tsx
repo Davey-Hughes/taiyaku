@@ -134,7 +134,7 @@ const words = (host: HTMLElement) => host.querySelector('.holds') as HTMLElement
 
 describe('a library’s page, held controls in a real browser', () => {
   it('keeps focus on Scan library, pressed with Enter, while the scan it starts holds it and once that scan ends; Enter on it sends nothing while it is held', async () => {
-    const started = deferred<{ library_id: number; status_url: string }>()
+    const started = deferred<librariesApi.LibraryScanStarted>()
     vi.mocked(librariesApi.startLibraryScan).mockReturnValue(started.promise)
     const host = await libraryPage()
     const scan = named(host, 'scan-library')
@@ -148,7 +148,11 @@ describe('a library’s page, held controls in a real browser', () => {
     expect(librariesApi.startLibraryScan).toHaveBeenCalledTimes(1)
 
     await act(async () => {
-      started.resolve({ library_id: 1, status_url: '/api/x' })
+      started.resolve({
+        library_id: 1,
+        status_url: '/api/x',
+        root_ids: MANGA.dirs.map((one) => one.id),
+      })
     })
     expect(host.querySelector('.scanning')).not.toBeNull()
     expect(document.activeElement).toBe(scan)
@@ -314,9 +318,40 @@ const regime = (host: HTMLElement) =>
   host.querySelector('.regime') as HTMLElement
 
 describe('a directory’s page, held controls in a real browser', () => {
-  it('keeps focus on Scan directory while another directory’s scan holds it and once that scan ends; Enter on it sends nothing while it is held', async () => {
+  it('keeps focus on Move… while another directory’s scan holds it and once that scan ends; Enter on it opens nothing while it is held', async () => {
+    // The page's first read of the library's status answers once Move… has
+    // focus: the other directory is scanning, for which the server refuses
+    // a move. The poll that follows finds it ended.
+    const status = deferred<librariesApi.LibraryScanStatus>()
+    vi.mocked(librariesApi.libraryScanStatus).mockReturnValueOnce(
+      status.promise,
+    )
+    const host = await dirPage()
+    const move = called(host, 'Move…')
+    await focusFirst(regime(host), move)
+    expect(holdOf(move)).toBe('free')
+
+    await act(async () => {
+      status.resolve(scanningIn(MANGA, 2))
+    })
+    await settle()
+    expect(document.activeElement).toBe(move)
+    expect(holdOf(move)).toBe('held')
+    await keys('{Enter}')
+    expect(host.querySelector('.move-root')).toBeNull()
+
+    await settleUntil(
+      'Move…, free',
+      () => holdOf(move) === 'free',
+      config.SCAN_POLL_MS * 3,
+    )
+    expect(document.activeElement).toBe(move)
+  })
+
+  it('keeps focus on Scan directory while a scan of its whole library holds it and once that scan ends; Enter on it sends nothing while it is held', async () => {
     // The page's first read of the library's status answers once Scan
-    // directory has focus: the other directory is scanning. The poll that
+    // directory has focus: the library's scan holds this directory and its
+    // sibling, and the server refuses a scan of either. The poll that
     // follows finds it ended.
     const status = deferred<librariesApi.LibraryScanStatus>()
     vi.mocked(librariesApi.libraryScanStatus).mockReturnValueOnce(
@@ -328,7 +363,7 @@ describe('a directory’s page, held controls in a real browser', () => {
     expect(holdOf(scan)).toBe('free')
 
     await act(async () => {
-      status.resolve(scanningIn(MANGA, 2))
+      status.resolve(scanningIn(MANGA, 1, 2))
     })
     await settle()
     expect(document.activeElement).toBe(scan)
@@ -344,7 +379,7 @@ describe('a directory’s page, held controls in a real browser', () => {
     expect(document.activeElement).toBe(scan)
   })
 
-  it('hands focus to Remove…, held, when another directory’s scan cancels the removal its confirm had focus in', async () => {
+  it('hands focus to Remove…, held, when a scan around the directory cancels the removal its confirm had focus in', async () => {
     const status = deferred<librariesApi.LibraryScanStatus>()
     vi.mocked(librariesApi.libraryScanStatus).mockReturnValueOnce(
       status.promise,
@@ -362,7 +397,7 @@ describe('a directory’s page, held controls in a real browser', () => {
     act(() => confirm.focus())
 
     await act(async () => {
-      status.resolve(scanningIn(MANGA, 2))
+      status.resolve({ ...idle(1), held_removals: [1] })
     })
     await settle()
     expect(host.querySelector('.remove-root')).toBeNull()

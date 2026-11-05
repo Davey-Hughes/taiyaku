@@ -291,10 +291,10 @@ fn resolve_export_user(conn: &rusqlite::Connection, named: Option<&str>) -> Resu
 /// uses this exact figure in its worked example.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// `taiyaku library scan`: walk every known root, or one library's under
-/// `--library NAME`, or one root under `--root PATH`; record what §8's report
-/// says about each, derive series, works, editions and members from the
-/// facts, and raise whatever proposals the new structure supports.
+/// `taiyaku library scan`: walk every known root, every directory one library
+/// reaches under `--library NAME`, or one root under `--root PATH`; record what
+/// §8's report says about each, derive series, works, editions and members from
+/// the facts, and raise whatever proposals the new structure supports.
 /// `--no-derive` stops after the walk, which is what makes "what would the
 /// facts be" answerable without changing structure.
 ///
@@ -302,8 +302,8 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// library where no library has the name, **and under a library of its own
 /// where `--library` is absent**, and prints which library that is, by the
 /// name the store holds, and whether the add created it. The directories to walk
-/// are chosen after the add, so `--add PATH --library NAME` walks `NAME`'s
-/// directories, the new one among them.
+/// are chosen after the add, so `--add PATH --library NAME` walks the
+/// directories `NAME` reaches, the new one among them.
 ///
 /// **A root that cannot be scanned does not take the others down with it,
 /// but it does take the exit status down with it.** Neither an outright
@@ -344,9 +344,8 @@ fn scan(args: &[String]) -> Result<(), String> {
     let library = Library::open(&db).map_err(|e| format!("opening the library: {e}"))?;
 
     if let Some(path) = add {
-        // The checked add, the one `POST /api/library/roots` makes: a root
-        // inside or around one already held has the overlap walked twice, and
-        // derive admits the same directory as two members of one work (O47).
+        // The checked add, the one `POST /api/library/libraries/{id}/dirs`
+        // makes, so `--add` refuses what the route refuses, in its words.
         let conn = library.conn();
         // Asked before the add, which makes the library where none answers.
         let (filed, joined) = match library_name {
@@ -441,10 +440,12 @@ fn scan_result(failed: &[String], total: usize) -> Result<(), String> {
     ))
 }
 
-/// Which roots `scan` processes this run: every known root, or the roots of
-/// the one library whose id is `library`, or — under `--root PATH` — the
-/// single one whose canonical path matches `root`. `scan` refuses `--root`
-/// with `--library`, so it passes at most one of the two.
+/// Which roots `scan` processes this run: every known root, or every root the
+/// one library whose id is `library` reaches, by path
+/// ([`taiyaku_library::reach::walked_by`], the walk "Scan library" makes), or
+/// — under `--root PATH` — the single one whose canonical path matches `root`.
+/// `scan` refuses `--root` with `--library`, so it passes at most one of the
+/// two.
 ///
 /// # Errors
 ///
@@ -459,7 +460,7 @@ fn select_roots(
     library: Option<i64>,
 ) -> Result<Vec<taiyaku_library::scan::Root>, String> {
     let roots = match library {
-        Some(id) => roots.into_iter().filter(|r| r.library_id == id).collect(),
+        Some(id) => taiyaku_library::reach::walked_by(&roots, id),
         None => roots,
     };
     if let Some(path) = root {
@@ -698,8 +699,8 @@ fn documents_state_line(path: &Path, on: bool) -> String {
 /// §8's report for one root.
 ///
 /// `unreadable_dirs`, `excluded_dirs`, `excluded_files`,
-/// `forgotten_by_exclusion` and `bad_exclude_patterns` print only when
-/// non-zero, the same rule [`derive_summary`] applies to its own
+/// `forgotten_by_exclusion`, `taken_over` and `bad_exclude_patterns` print
+/// only when non-zero, the same rule [`derive_summary`] applies to its own
 /// silent-outcome counters: a `Vec` nobody prints is a directory a person
 /// never learns was skipped.
 fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
@@ -733,6 +734,13 @@ fn scan_summary(report: &taiyaku_library::scan::ScanReport) -> String {
             line,
             "; {} entries forgotten because a pattern now covers them",
             report.forgotten_by_exclusion
+        );
+    }
+    if report.taken_over > 0 {
+        let _ = write!(
+            line,
+            "; {} taken over from the directory around it",
+            report.taken_over
         );
     }
     if !report.bad_exclude_patterns.is_empty() {
