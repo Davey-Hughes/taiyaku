@@ -227,6 +227,44 @@ fn a_stem_that_begins_with_a_dash_after_sanitising_is_stripped() {
 }
 
 #[test]
+fn a_stem_that_opens_with_a_bracket_keeps_it() {
+    for (series, stem) in [
+        ("[Oshi no Ko]", "[Oshi no Ko]"),
+        ("(C99) Title", "(C99) Title"),
+        ("【推しの子】", "【推しの子】"),
+        ("'Tis", "'Tis"),
+        ("- [Group] Title", "[Group] Title"),
+    ] {
+        assert_eq!(
+            download_name(Some(series), Some(1.0), "t", "raw", "cbz"),
+            format!("{stem} - v01 (raw).cbz"),
+        );
+    }
+    // The title takes the same road when there is no series.
+    assert_eq!(
+        download_name(None, None, "[Oshi no Ko]", "raw", "cbz"),
+        "[Oshi no Ko] (raw).cbz"
+    );
+}
+
+#[test]
+fn a_dash_comes_off_whatever_separator_it_is_mixed_with() {
+    // Each of these fails a different half of the strip: U+3000 is whitespace
+    // only to `is_whitespace`, and the dot sits behind a dash, where `safe`'s
+    // own leading-dot strip cannot see it.
+    for (series, stem) in [
+        ("-\u{3000}Title", "Title"),
+        ("-.hidden", "hidden"),
+        ("- . -[x]", "[x]"),
+    ] {
+        assert_eq!(
+            download_name(Some(series), Some(1.0), "t", "raw", "cbz"),
+            format!("{stem} - v01 (raw).cbz"),
+        );
+    }
+}
+
+#[test]
 fn a_very_large_volume_does_not_collapse_to_the_same_wrong_number() {
     // `1e300` and `f64::MAX` must come out different.
     assert_ne!(volume_text(1e300), volume_text(f64::MAX));

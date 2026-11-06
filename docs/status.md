@@ -167,7 +167,7 @@ and, for libraries whose directories overlap,
 
 ## What is built
 
-Six crates, 2939 tests, plus 4,390 in `web/`'s TypeScript — 1,670 in the `node`
+Six crates, 2941 tests, plus 4,390 in `web/`'s TypeScript — 1,670 in the `node`
 project and 2,720 in the `jsdom` one — and one thousand and fifteen more in a
 **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -244,7 +244,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twenty-four of the 2939 are standing checks gated on
+`rayon` exactly as `align` already did. Twenty-four of the 2941 are standing checks gated on
 `TAIYAKU_CORPUS` — seventeen in `crates/taiyaku-cli/src/corpus.rs`, five in
 `crates/taiyaku-serve/src/corpus.rs`, two in
 `crates/taiyaku-library/src/corpus.rs` (this read "nineteen … ten … five"
@@ -1435,7 +1435,7 @@ both are waiting on L2.
 
 ### Open items
 
-Two hundred and fifty, each found by a whole-branch review, carried as a deferral,
+Two hundred and fifty-one, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -1470,7 +1470,7 @@ faster than the router could commit it, or turned up
 by answering a question an earlier item's notes wrote down and left open, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **One hundred and fifty-seven are now closed — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20, O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43, O44, O47, O53, O54, O55, O57, O60, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96, O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O112, O113, O114, O115, O116, O117, O119, O120, O121, O133, O134, O135, O137, O138, O140, O145, O146, O148, O149, O150, O151, O153, O154, O155, O156, O157, O158, O159, O160, O161, O163, O164, O165, O166, O173, O174, O175, O176, O177, O178, O179, O180, O182, O183, O190, O191, O192, O193, O194, O195, O196, O197, O198, O199, O204, O205, O206, O207, O208, O210, O212, O213, O216, O218, O219, O220, O221, O223, O224, O228, O231, O232, O233, O234, O235, O236, O237 and O239 — leaving ninety-three.** *(This sentence carried **two** errors before ⑤c rebuilt it from the table on 2026-09-25: it omitted **O151**, closed on 2026-09-24, and "leaving fifty-seven" stood against sixty-two open rows. It is generated from the table now rather than edited, which is the only reason the list and the word cannot disagree again.* **A larger warning sits in how this note first read.** It claimed six errors — the word disagreeing with its own list, O34 and O39 listed twice each, and O31 named while its row read `[ ]`. None of those four existed. The check that found them anchored on the string `are now closed`, which first matches a sentence about mutation survivors a hundred and fifty lines earlier, and then read everything from there to the next `— leaving` — so it counted O-numbers out of hundreds of lines of unrelated prose and reported them as this list's. The rebuilt sentence was right and the story about why was invented, which is worse than the drift it was describing: a wrong count invites a recount, and a wrong history is believed. Caught by ⑤c's pre-merge claim check, which re-derived it from `git show` rather than from this paragraph.)* *(It read "leaving fifty" against
+visible act rather than a thing someone remembers. **One hundred and fifty-eight are now closed — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20, O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43, O44, O47, O53, O54, O55, O57, O60, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96, O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O112, O113, O114, O115, O116, O117, O119, O120, O121, O133, O134, O135, O137, O138, O140, O145, O146, O148, O149, O150, O151, O153, O154, O155, O156, O157, O158, O159, O160, O161, O163, O164, O165, O166, O173, O174, O175, O176, O177, O178, O179, O180, O182, O183, O190, O191, O192, O193, O194, O195, O196, O197, O198, O199, O204, O205, O206, O207, O208, O210, O212, O213, O216, O218, O219, O220, O221, O223, O224, O228, O231, O232, O233, O234, O235, O236, O237, O239 and O251 — leaving ninety-three.** *(This sentence carried **two** errors before ⑤c rebuilt it from the table on 2026-09-25: it omitted **O151**, closed on 2026-09-24, and "leaving fifty-seven" stood against sixty-two open rows. It is generated from the table now rather than edited, which is the only reason the list and the word cannot disagree again.* **A larger warning sits in how this note first read.** It claimed six errors — the word disagreeing with its own list, O34 and O39 listed twice each, and O31 named while its row read `[ ]`. None of those four existed. The check that found them anchored on the string `are now closed`, which first matches a sentence about mutation survivors a hundred and fifty lines earlier, and then read everything from there to the next `— leaving` — so it counted O-numbers out of hundreds of lines of unrelated prose and reported them as this list's. The rebuilt sentence was right and the story about why was invented, which is worse than the drift it was describing: a wrong count invites a recount, and a wrong history is believed. Caught by ⑤c's pre-merge claim check, which re-derived it from `git show` rather than from this paragraph.)* *(It read "leaving fifty" against
 forty-nine open rows from the moment O97 closed: the count of closed items
 moved and the count of open ones did not, which is the drift the sweep at the
 head of this section exists to catch and did not run. Corrected here. **It
@@ -1848,6 +1848,7 @@ each is in the detail below; the table is what a reader scans.
 | O248 | [ ] | **Move's lists of who gains and loses sight ask only about the moved directory, so an account that keeps it through another library can lose a directory nested in it without being named.** `relocate::sighted` asks whether each account's access allows the moved directory, before the move and after it, and nothing else. With Manga holding `/m` and excluding `kids/tiny`, Kids holding `/m/kids` and Tiny holding `/m/kids/tiny`, an account granted Manga and Kids keeps `/m/kids` through `/m` when `/m/kids` moves from Kids to another library, but loses `/m/kids/tiny`, which only Kids' `/m/kids` reached; `loses_sight` names nobody, and the mirror case leaves `gains_sight` short. Two levels deep the lists are exact, since an account that reaches `/m/kids` through `/m` reaches `/m`. It needs three nested levels across three libraries and an outer pattern. Read, not run. To decide: compare each account's reach over the moved directory and every directory nested in it, or keep the moved directory alone and say so where the lists are drawn. | `relocate::sighted`, `relocate::Moved` | the overlapping-libraries PR 2's whole-branch review, 2026-11-04 |
 | O249 | [ ] | **A directory removed while a scan derives can leave members with no directory until a later scan finds them.** Every scan derives the whole store, and a directory's removal is refused only while a scan of it, or of a directory around or inside it, is reserved (`scan::removal_touches`); a removal during any other scan's derive goes ahead. `derive::write_roots` then meets the removed directory's foreign key, clears the member's directory and counts it in `DeriveReport::root_removed_mid_derive`, and the member reads as an imported member with no directory on record (O54) until a scan finds its file under a surviving one. A directory's page holds Remove… only for what the server refuses, a sibling's scan included (spec decision 22), so nothing on the page prevents it. It is older than this branch: on `main` a removal is refused only while a scan of that directory itself is reserved. Read, not run. The user ruled on 2026-11-04 to record it. | `derive::write_roots`, `config_api::delete_root`, `scan::removal_touches` | the overlapping-libraries PR 2's whole-branch review, 2026-11-04 |
 | O250 | [ ] | **A page can hold Remove… or Move… with nothing on it saying why.** A library's page holds Remove… while the server refuses its removal for a scan around or inside one of its directories (`held_removals`), but draws a scan line only for the directories the library walks, so a scan of a directory around one of its own, or of one inside it that the library does not show, holds Remove… with no line. A directory's page holds Move… or Remove… with no line either. On `main`, holds for a sibling's scan say nothing too. The user ruled on 2026-11-05 to accept it in PR 2 and track it here. | `LibraryPage`, `DirPage` | the overlapping-libraries PR 2's whole-branch review, 2026-11-04 |
+| O251 | [x] | **Closed 2026-11-05, the day it was opened: a download's name lost a leading `[`, or any other leading character that was not a letter or digit.** `strip_leading_punctuation` took everything non-alphanumeric off the front of the stem to keep `-`, `.` and whitespace off it, so the series `[Oshi no Ko]` downloaded as `Oshi no Ko] - v01 (raw).cbz`. `strip_leading_separators` takes those three and nothing else; `a_stem_that_opens_with_a_bracket_keeps_it` and `a_dash_comes_off_whatever_separator_it_is_mixed_with` hold each side. | `download_name`, `strip_leading_separators` | the overlapping-libraries PR 2's drive, 2026-11-04 |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -4016,6 +4017,17 @@ to the rows of O47, O81, O238 and O244.
 - **O250 — a page can hold Remove… or Move… with nothing on it saying why.
   Open.** The whole-branch review found it; the user ruled to accept it in
   PR 2 and track it. On `main`, holds for a sibling's scan say nothing too.
+
+**O251 was opened and closed on 2026-11-05**, by the ruling that the PR 2
+drive's download name be fixed on its own, and its bullet follows.
+
+- **O251 — a download's name lost a leading `[`. Closed.** The strip that keeps
+  a leading `-` off a filename took every leading character that was not a
+  letter or digit, so a bracketed series lost its `[` and kept its `]`, and
+  `(C99) Title` lost its `(`. It now takes `-`, `.` and whitespace only, and
+  everything else stays, as the row says. A stem that opens with a zero-width
+  or other invisible format character now keeps that too, as such a
+  character elsewhere in the name already did.
 
 ## What comes next
 

@@ -17,11 +17,11 @@
 /// nothing to a person); when that happens the stem falls through to the
 /// title, and if the title is equally unusable, to a constant, `download`,
 /// rather than emit a name built from separators alone. Whatever stem wins
-/// has its own leading punctuation and whitespace stripped afterward, so a
-/// stem that starts with something other than a letter or digit — `"- Real
-/// Title"` is usable (it has an `R` in it) but still starts with a `-` —
-/// cannot leave the filename starting with `-`, `.`, or a space; a leading
-/// `-` reads as a flag to ordinary shell tools. No volume drops the segment
+/// has its leading dashes, dots and whitespace stripped afterward, so `"- Real
+/// Title"`, usable because it has an `R` in it, cannot leave the filename
+/// starting with `-`; a leading `-` reads as a flag to ordinary shell tools.
+/// An opening bracket stays, because it is part of the name: `[Group] Title`
+/// and `(C99) Title` sort and read by it. No volume drops the segment
 /// rather than claiming volume 0; a non-finite volume does too, since it has
 /// no meaningful two-digit rendering.
 ///
@@ -45,7 +45,7 @@ pub(crate) fn download_name(
         let t = safe(title);
         usable(&t).then_some(t)
     };
-    let stem = strip_leading_punctuation(
+    let stem = strip_leading_separators(
         &safe_series
             .or_else(safe_title)
             .unwrap_or_else(|| "download".to_string()),
@@ -174,21 +174,16 @@ fn safe(text: &str) -> String {
     stripped
 }
 
-/// Strips characters from the front of a stem until it starts with something
-/// alphanumeric.
+/// Strips `-`, `.` and whitespace from the front of a stem.
 ///
-/// `safe` already keeps a leading dot off (so a title cannot make the
-/// download a hidden file), but a stem can still pass `download_name`'s
-/// "has at least one alphanumeric character" check and begin with something
-/// else entirely — `"- Real Title"` has an `R` in it, so it is usable, but
-/// the `-` is still first. A leading `-` is parsed as a flag by ordinary
-/// shell tools (`rm`, `mv`, and friends), so no filename this module returns
-/// may begin with `-`, `.`, or whitespace. Unlike `safe`'s dot-stripping,
-/// this needs no repeated pass: one predicate already covers every
-/// character that isn't alphanumeric, so nothing a first pass removes can
-/// expose another character the same pass would also have removed.
-fn strip_leading_punctuation(stem: &str) -> String {
-    stem.trim_start_matches(|c: char| !c.is_alphanumeric())
+/// A leading `-` is parsed as a flag by ordinary shell tools, and `safe` writes
+/// one for a leading separator, so no name `download_name` builds may begin
+/// with one. The dot and the whitespace are here as well as in `safe` because
+/// taking a dash off can expose them; one predicate covers all three, so one
+/// pass is enough. Everything else is the name's own: taking `[` from
+/// `[Oshi no Ko]` would leave its `]` unmatched.
+fn strip_leading_separators(stem: &str) -> String {
+    stem.trim_start_matches(|c: char| c == '-' || c == '.' || c.is_whitespace())
         .to_string()
 }
 
