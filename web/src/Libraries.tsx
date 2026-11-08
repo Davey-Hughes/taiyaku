@@ -98,7 +98,20 @@ import {
 } from './configAddress'
 import { useLateAnswers, usePageKey } from './configPages'
 import { DirPage } from './DirPage'
-import type { Created, Library, MoveAnswer, Moved } from './libraries'
+import {
+  type Created,
+  type Library,
+  libraryRemovedSentence,
+  type MoveAnswer,
+  type Moved,
+  type UnlinkAnswer,
+  type Unlinked,
+  withLibraryMade,
+  withLibraryRenamed,
+  withMovedDir,
+  withoutDir,
+  withoutLibrary,
+} from './libraries'
 import { LibraryPage } from './LibraryPage'
 import { LibraryTable } from './LibraryTable'
 import { Missing } from './Missing'
@@ -122,7 +135,10 @@ import { PageHeader } from './settingsLayout'
 import { SideBySide } from './SideBySide'
 import { usePage } from './usePage'
 
-/** What a removal found or a move did, whose it was, and the page it is drawn on. */
+/**
+ * What a removal found, or what a move or an unlink did, whose it was, and
+ * the page it is drawn on.
+ */
 interface Report {
   at: string
   /** Taken when the answer itself moved the person to the report's page. */
@@ -132,7 +148,30 @@ interface Report {
   derive?: Derived
   /** A move's: what it did, and where from. Absent for a removal's. */
   move?: { moved: Moved; from?: string }
+  /**
+   * An unlink's: what it did, and the library the directory left, where the
+   * list still held it. An unlink derives nothing.
+   */
+  unlinked?: { unlinked: Unlinked; from?: string }
 }
+
+/**
+ * What an unlink's report says: the directory, the library it left, and that
+ * library, where it went with it, as the rehearsal said it would.
+ */
+function unlinkedLine(
+  path: string,
+  { unlinked, from }: NonNullable<Report['unlinked']>,
+): string {
+  const removed = libraryRemovedSentence(unlinked, true)
+  const line = `Removed ${path} from ${from ?? 'its library'}.`
+  return removed === undefined ? line : `${line} ${removed}`
+}
+
+/** How a directory left a library, with the answer that says what that did. */
+type DirLeft =
+  | { how: 'removed'; answer: RemovalAnswer }
+  | { how: 'unlinked'; answer: UnlinkAnswer }
 
 /**
  * Marks the current task as taking a write's answer (`answering`), until its
@@ -274,6 +313,9 @@ export function Libraries() {
     setProbes((held) => {
       const next = { ...held }
       for (const one of added) {
+        // A link ran no probe: what one found as another library added the
+        // directory is still what it found of the same directory.
+        if (one.watching === null) continue
         next[one.root.path] = {
           watching: one.watching,
           watch_reason: one.watch_reason,
@@ -288,6 +330,15 @@ export function Libraries() {
   drawn.current = libraries
 
   /**
+   * A directory New library linked as it made the library it goes to, for
+   * that library's page to say, once.
+   */
+  const [madeLink, setMadeLink] = useState<
+    { libraryId: number; path: string; also_in: string[] } | undefined
+  >()
+  const madeLinkTaken = useCallback(() => setMadeLink(undefined), [])
+
+  /**
    * A library was made. The person is taken to its page only while the form
    * that asked is still drawn; an answer that comes after they left it, even
    * for a fresh form at the same address, leaves them where they are. The
@@ -297,6 +348,7 @@ export function Libraries() {
   const made = useCallback(
     (created: Created, sent: boolean) => {
       remember(created.added)
+      const link = created.added.find((one) => one.also_in.length > 0)
       // Its directories are new roots, which Rules draws.
       void invalidate(ROOTS)
       startTransition(() => {
@@ -306,13 +358,19 @@ export function Libraries() {
         setLibraries((held) =>
           held === undefined
             ? [created.library]
-            : [
-                ...held.filter((one) => one.id !== created.library.id),
-                created.library,
-              ],
+            : withLibraryMade(held, created.library),
         )
         if (sent) {
           setReport(undefined)
+          setMadeLink(
+            link === undefined
+              ? undefined
+              : {
+                  libraryId: created.library.id,
+                  path: link.root.path,
+                  also_in: link.also_in,
+                },
+          )
           setArrival(libraryPath(created.library.name))
           navigate(libraryPath(created.library.name))
         }
@@ -330,53 +388,69 @@ export function Libraries() {
       void invalidate(ROOTS, RULES, ACCEPTED_PROPOSALS, USER_LIST)
       invalidateLibraryViews()
       answered(from, { at: LIBRARIES, name, derive: answer.derive }, (held) =>
-        held.filter((one) => one.id !== id),
+        withoutLibrary(held, id),
       )
     },
     [answered],
   )
 
   /**
-   * A directory was removed from a library. A directory that was the last of
-   * its library's took the library with it: the report is then named for the
-   * library, which is what went, and drawn on the table. So is the report of
-   * one whose library the list no longer holds, which has no page.
+   * A directory left library `id`: unlinked from it alone, or removed from
+   * every library holding it (`left.how`). Each library the answer names as
+   * emptied went with its last directory. Where `id` is one of them, the
+   * report is drawn on the table, and a removal's is named for the library,
+   * which is what went. So is the report of one whose library the list no
+   * longer holds, which has no page. An unlink's report says which library
+   * the directory left (`unlinkedLine`).
    */
   const dirRemoved = useCallback(
-    (from: string, id: number, path: string, answer: RemovalAnswer) => {
+    (from: string, id: number, path: string, left: DirLeft) => {
+      const { how } = left
+      const emptied =
+        left.how === 'removed'
+          ? left.answer.removed.libraries_removed
+          : left.answer.unlinked.library_removed === null
+            ? []
+            : [left.answer.unlinked.library_removed]
       const library = drawn.current?.find((one) => one.id === id)
-      const left = library?.dirs.filter((one) => one.path !== path)
-      if (library !== undefined && left?.length === 0) {
-        libraryRemoved(from, id, library.name, answer)
-        return
-      }
-      // The removal deleted the directory and, by the schema's cascades, the
+      const gone = library !== undefined && emptied.includes(library.name)
+      const at =
+        gone || library === undefined ? LIBRARIES : libraryPath(library.name)
+      // A removal deleted the directory and, by the schema's cascades, the
       // rules scoped to it and the rule each accepted proposal that wrote
-      // one names.
-      void invalidate(ROOTS, RULES, ACCEPTED_PROPOSALS)
+      // one names; an unlink deletes neither. An emptied library went with
+      // every account's grant of it.
+      void invalidate(
+        ROOTS,
+        ...(how === 'removed' ? [RULES, ACCEPTED_PROPOSALS] : []),
+        ...(emptied.length > 0 ? [USER_LIST] : []),
+      )
       invalidateLibraryViews()
       answered(
         from,
-        {
-          at: library === undefined ? LIBRARIES : libraryPath(library.name),
-          name: path,
-          derive: answer.derive,
-        },
-        (held) =>
-          held.map((one) =>
-            one.id === id
-              ? { ...one, dirs: one.dirs.filter((f) => f.path !== path) }
-              : one,
-          ),
+        left.how === 'unlinked'
+          ? {
+              at,
+              name: path,
+              unlinked: { unlinked: left.answer.unlinked, from: library?.name },
+            }
+          : {
+              at,
+              name: gone ? library.name : path,
+              derive: left.answer.derive,
+            },
+        (held) => withoutDir(held, id, path, how, emptied),
       )
     },
-    [libraryRemoved, answered],
+    [answered],
   )
 
   /**
    * A directory was moved to another library. The report goes to the library it
    * left, or to the table where the move emptied and removed that library. It
-   * is named for the directory and the library it went to.
+   * is named for the directory and the library it went to. Every other
+   * library holding it names that library in place of the one it left at
+   * once (`withMovedDir`); the read that follows draws it in that library.
    */
   const dirMoved = useCallback(
     (from: string, id: number, path: string, answer: MoveAnswer) => {
@@ -394,19 +468,7 @@ export function Libraries() {
           name: path,
           move: { moved: answer.moved, from: left?.name },
         },
-        // The directory is not drawn in its new library: the read that
-        // follows does that.
-        (held) =>
-          gone
-            ? held.filter((one) => one.id !== id)
-            : held.map((one) =>
-                one.id === id
-                  ? {
-                      ...one,
-                      dirs: one.dirs.filter((f) => f.path !== path),
-                    }
-                  : one,
-              ),
+        (held) => withMovedDir(held, id, path, answer.moved),
       )
     },
     [answered],
@@ -442,9 +504,7 @@ export function Libraries() {
       // keep the old name until they read them again.
       void invalidate(USER_LIST, SPLIT_EDITIONS)
       startTransition(() => {
-        setLibraries((list) =>
-          list?.map((one) => (one.id === id ? { ...one, name } : one)),
-        )
+        setLibraries((list) => list && withLibraryRenamed(list, id, name))
         if (moves) {
           // From the library's own page as the address spells it.
           follow(page.slice(0, page.length - at.rest.length), to)
@@ -480,11 +540,13 @@ export function Libraries() {
       aria-labelledby={reportLabel}
     >
       <p id={reportLabel}>
-        {shown.move === undefined
-          ? `What re-deriving after removing ${shown.name} found:`
-          : `Moved ${shown.name}${
+        {shown.move !== undefined
+          ? `Moved ${shown.name}${
               shown.move.from === undefined ? '' : ` from ${shown.move.from}`
-            } to ${shown.move.moved.library}.`}
+            } to ${shown.move.moved.library}.`
+          : shown.unlinked !== undefined
+            ? unlinkedLine(shown.name, shown.unlinked)
+            : `What re-deriving after removing ${shown.name} found:`}
       </p>
       {shown.move !== undefined && <MoveCounts moved={shown.move.moved} past />}
       {shown.derive !== undefined && <DeriveSection derive={shown.derive} />}
@@ -565,6 +627,13 @@ export function Libraries() {
                         dirOpen && library !== undefined ? undefined : notices
                       }
                       arrived={arrived && !dirOpen}
+                      linkedAtMaking={
+                        madeLink !== undefined &&
+                        madeLink.libraryId === library?.id
+                          ? madeLink
+                          : undefined
+                      }
+                      onLinkedAtMakingTaken={madeLinkTaken}
                       onOpen={setArrival}
                       onAdded={remember}
                       onChanged={changed}
@@ -584,15 +653,28 @@ export function Libraries() {
                             <DirAt library={library} notices={notices}>
                               {(root) => (
                                 <DirPage
-                                  key={root.path}
+                                  // One directory on two libraries' pages is
+                                  // two pages, so the key holds the library;
+                                  // it holds the path for the reason the
+                                  // library's table keys its rows by it.
+                                  key={`${library.id}:${root.path}`}
                                   library={library}
                                   root={root}
                                   probe={probes[root.path]}
+                                  // A library already holding the directory
+                                  // is no place to move it (decision 25).
                                   others={(libraries ?? [])
-                                    .filter((other) => other.id !== library.id)
+                                    .filter(
+                                      (other) =>
+                                        other.id !== library.id &&
+                                        !root.libraries.some(
+                                          (one) => one.id === other.id,
+                                        ),
+                                    )
                                     .map(({ id, name }) => ({ id, name }))}
                                   notices={notices}
                                   arrived={arrived}
+                                  onOpen={setArrival}
                                   onChanged={changed}
                                   onLateRefusal={say}
                                   onRemoved={(answer) =>
@@ -600,7 +682,15 @@ export function Libraries() {
                                       pathname,
                                       library.id,
                                       root.path,
-                                      answer,
+                                      { how: 'removed', answer },
+                                    )
+                                  }
+                                  onUnlinked={(answer) =>
+                                    dirRemoved(
+                                      pathname,
+                                      library.id,
+                                      root.path,
+                                      { how: 'unlinked', answer },
                                     )
                                   }
                                   onMoved={(answer) =>
@@ -699,7 +789,7 @@ function DirAt({
         {notices}
         <Missing key={did}>
           This library has no directory at this address: it may have been
-          removed, or moved to another library.
+          removed, moved to another library, or removed from this library.
         </Missing>
       </div>
     )

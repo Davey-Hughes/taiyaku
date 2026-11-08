@@ -5,13 +5,15 @@
  * **A library that exists is addressed by its id.** A name is sent only to
  * make one or to rename one.
  *
- * **A directory's own routes are `config.ts`'s.** A library's card holds a
- * `RootRow` per directory, and that row patches, scans and removes its
- * directory through `/api/library/roots/{id}`. What a library does whole is
- * here, and so is moving a directory from one library to another.
+ * **A directory's own routes are `config.ts`'s.** A directory's page draws
+ * its `RootRow`, which patches, scans and removes the directory through
+ * `/api/library/roots/{id}`. What a library does whole is here, and so is
+ * moving a directory from one library to another, and taking one out of a
+ * library alone (`unlinkCost`, `unlinkDir`), which another library keeps.
  */
 import { getJson, sendJson } from './api'
 import type { Added, RemovalAnswer, Root } from './config'
+import { count } from './count'
 
 /** One library, as `GET /api/library/libraries` sends it. */
 export interface Library {
@@ -32,6 +34,11 @@ export interface Library {
  * patterns this client does not compile (C4 screens spec §3.2, §8).
  */
 export interface LibraryDir extends Root {
+  /**
+   * Every library holding it, ascending by id, this one included: two
+   * libraries may hold one directory, which shares its settings and scans.
+   */
+  libraries: { id: number; name: string }[]
   /** Directories inside this one, whose settings govern their own files. */
   nested: NestedDir[]
   /** Directories this one sits in. */
@@ -43,8 +50,8 @@ export interface NestedDir {
   /** How the library's scan status names it, since a scan of the library walks it. */
   id: number
   path: string
-  /** The library it is filed under. */
-  library: string
+  /** Every library holding it, by name, ascending by id. */
+  libraries: string[]
   /** Whether the outer directory's library shows its books. */
   shown: boolean
   /** Why it does not, `null` where it does. */
@@ -67,12 +74,141 @@ export function folderIn(inner: string, outer: string): string {
   return `${inner.startsWith(from) ? inner.slice(from.length) : inner}/`
 }
 
+/**
+ * How a directory left a library: unlinked from it alone, which another
+ * library keeps, or removed from every library holding it.
+ */
+export type DirRemoval = 'unlinked' | 'removed'
+
+/**
+ * `held` once directory `path` has left library `id` as `how` says, without
+ * each library the answer names as `emptied`: the server deletes a library
+ * with its last directory. After an unlink, each library still holding the
+ * directory no longer names `id` among its holders. An unlink empties no
+ * library but `id`.
+ */
+export function withoutDir(
+  held: Library[],
+  id: number,
+  path: string,
+  how: DirRemoval,
+  emptied: string[],
+): Library[] {
+  return held
+    .filter((one) => !emptied.includes(one.name))
+    .map((one) =>
+      how === 'removed' || one.id === id
+        ? { ...one, dirs: one.dirs.filter((dir) => dir.path !== path) }
+        : {
+            ...one,
+            dirs: one.dirs.map((dir) =>
+              dir.path === path
+                ? {
+                    ...dir,
+                    // Its page draws "Also in", the Removal rows and
+                    // Move's list from these.
+                    libraries: dir.libraries.filter((one) => one.id !== id),
+                  }
+                : dir,
+            ),
+          },
+    )
+}
+
+/**
+ * `held` without library `id`, which a removal took with every directory it
+ * alone held: each directory it shared stays in the libraries that keep it,
+ * whose copies no longer name it among its holders, and the lines of the
+ * directories inside and around one no longer name it either, nor a
+ * directory that it alone held.
+ */
+export function withoutLibrary(held: Library[], id: number): Library[] {
+  const name = held.find((one) => one.id === id)?.name
+  const unnamed = <T extends { libraries: string[] }>(lines: T[]) =>
+    lines
+      .map((line) => ({
+        ...line,
+        libraries: line.libraries.filter((one) => one !== name),
+      }))
+      .filter((line) => line.libraries.length > 0)
+  return held
+    .filter((one) => one.id !== id)
+    .map((one) => ({
+      ...one,
+      dirs: one.dirs.map((dir) => ({
+        ...dir,
+        libraries: dir.libraries.filter((holder) => holder.id !== id),
+        nested: unnamed(dir.nested),
+        inside: unnamed(dir.inside),
+      })),
+    }))
+}
+
+/**
+ * `held` with library `id` called `name`, wherever it is named: as a
+ * library, among a directory's holders, and on the lines of the directories
+ * inside and around one.
+ */
+export function withLibraryRenamed(
+  held: Library[],
+  id: number,
+  name: string,
+): Library[] {
+  const from = held.find((one) => one.id === id)?.name
+  const renamed = <T extends { libraries: string[] }>(lines: T[]) =>
+    lines.map((line) => ({
+      ...line,
+      libraries: line.libraries.map((one) => (one === from ? name : one)),
+    }))
+  return held.map((one) => ({
+    ...one,
+    name: one.id === id ? name : one.name,
+    dirs: one.dirs.map((dir) => ({
+      ...dir,
+      libraries: dir.libraries.map((holder) =>
+        holder.id === id ? { ...holder, name } : holder,
+      ),
+      nested: renamed(dir.nested),
+      inside: renamed(dir.inside),
+    })),
+  }))
+}
+
+/**
+ * `held` with library `made` last, as the make answered it: each other
+ * library's copy of a directory it linked names it among its holders, in
+ * the server's order, by id.
+ */
+export function withLibraryMade(held: Library[], made: Library): Library[] {
+  const linked = new Set(made.dirs.map((dir) => dir.path))
+  const me = { id: made.id, name: made.name }
+  return [
+    ...held
+      .filter((one) => one.id !== made.id)
+      .map((one) => ({
+        ...one,
+        dirs: one.dirs.map((dir) =>
+          linked.has(dir.path)
+            ? {
+                ...dir,
+                libraries: [
+                  ...dir.libraries.filter((holder) => holder.id !== made.id),
+                  me,
+                ].sort((a, b) => a.id - b.id),
+              }
+            : dir,
+        ),
+      })),
+    made,
+  ]
+}
+
 /** A directory one of a library's sits in. */
 export interface AroundDir {
   path: string
-  /** The library it is filed under. */
-  library: string
-  /** Whether that library shows the inner directory's books. */
+  /** Every library holding it, by name, ascending by id. */
+  libraries: string[]
+  /** Whether those libraries show the inner directory's books. */
   shows: boolean
   /** Why it does not, `null` where it does. */
   kept_out_by: KeptOutBy | null
@@ -227,6 +363,58 @@ export interface Moved {
   left_with_no_library: string[]
 }
 
+/**
+ * `held` once directory `path` has moved out of library `id` as `moved`
+ * says: gone from `id`, which goes too where the move emptied it. Each copy
+ * that stays names the library it went to in place of `id` among its
+ * holders, in the server's order, by id. No row is drawn in the library it
+ * went to: the read that follows draws that, as it draws a row the client
+ * cannot know.
+ */
+export function withMovedDir(
+  held: Library[],
+  id: number,
+  path: string,
+  moved: Moved,
+): Library[] {
+  const to = { id: moved.library_id, name: moved.library }
+  const holders = (libraries: LibraryDir['libraries']) =>
+    [...libraries.filter((one) => one.id !== id && one.id !== to.id), to].sort(
+      (a, b) => a.id - b.id,
+    )
+  return held
+    .filter((one) => !(one.id === id && moved.library_removed !== null))
+    .map((one) =>
+      one.id === id
+        ? { ...one, dirs: one.dirs.filter((dir) => dir.path !== path) }
+        : {
+            ...one,
+            dirs: one.dirs.map((dir) =>
+              dir.path === path
+                ? { ...dir, libraries: holders(dir.libraries) }
+                : dir,
+            ),
+          },
+    )
+}
+
+/**
+ * What a move, an unlink or their rehearsal says of the library it empties,
+ * which the server removes with its grants: `undefined` where it empties
+ * none. `past` says it as done. One sentence for all of them, so that what a
+ * rehearsal says and what the report of the write says cannot drift apart.
+ */
+export function libraryRemovedSentence(
+  left: Pick<Moved, 'library_removed' | 'grants_removed'>,
+  past: boolean,
+): string | undefined {
+  const { library_removed: name, grants_removed: grants } = left
+  if (name === null) return undefined
+  const grantsToo =
+    grants > 0 ? `, with ${count(grants, 'grant', 'grants')}` : ''
+  return `${name} ${past ? 'had' : 'has'} no other directory, so it ${past ? 'was' : 'is'} removed${grantsToo}.`
+}
+
 /** `names` as a sentence lists them: `a`, `a and b`, `a, b and c`. */
 export function namesOf(names: string[]): string {
   return names.length < 2
@@ -255,20 +443,75 @@ export interface MoveAnswer {
 }
 
 /**
- * What moving directory `rootId` to `to` would do, without doing it. A move
- * that would be refused is refused here in the same words.
+ * What moving directory `rootId` out of library `from` to `to` would do,
+ * without doing it. A move that would be refused is refused here in the same
+ * words.
+ *
+ * **`from` is the library whose page asks**, and the server has no default
+ * for it: a directory several libraries hold leaves only the one named, and
+ * a page older than a link would otherwise move it out of another.
  */
-export const moveCost = (rootId: number, to: MoveTarget): Promise<MoveAnswer> =>
+export const moveCost = (
+  rootId: number,
+  from: number,
+  to: MoveTarget,
+): Promise<MoveAnswer> =>
   expectBody(
     sendJson<MoveAnswer>(
       `/api/library/roots/${rootId}/move?dry_run=true`,
       'POST',
-      to,
+      { from, ...to },
     ),
   )
 
-/** Moves directory `rootId` to `to`. */
-export const moveDir = (rootId: number, to: MoveTarget): Promise<MoveAnswer> =>
+/** Moves directory `rootId` out of library `from` to `to`. */
+export const moveDir = (
+  rootId: number,
+  from: number,
+  to: MoveTarget,
+): Promise<MoveAnswer> =>
   expectBody(
-    sendJson<MoveAnswer>(`/api/library/roots/${rootId}/move`, 'POST', to),
+    sendJson<MoveAnswer>(`/api/library/roots/${rootId}/move`, 'POST', {
+      from,
+      ...to,
+    }),
+  )
+
+/**
+ * What taking a directory out of one library did or, rehearsed, would do. The
+ * server sends a move's names for what the two share: an unlink is a move's
+ * leaving half, and no account gains sight of anything.
+ */
+export type Unlinked = Pick<
+  Moved,
+  'loses_sight' | 'library_removed' | 'grants_removed' | 'left_with_no_library'
+>
+
+/** `DELETE /api/library/libraries/{id}/dirs/{dir}`'s answer, a rehearsal's or an unlink's. */
+export interface UnlinkAnswer {
+  unlinked: Unlinked
+  dry_run: boolean
+}
+
+/**
+ * What taking directory `rootId` out of library `id` alone would do, without
+ * doing it. The server refuses it on the directory's last library, which
+ * only removing the directory takes it out of. `?dry_run=true`, spelt
+ * exactly.
+ */
+export const unlinkCost = (id: number, rootId: number): Promise<UnlinkAnswer> =>
+  expectBody(
+    sendJson<UnlinkAnswer>(
+      `/api/library/libraries/${id}/dirs/${rootId}?dry_run=true`,
+      'DELETE',
+    ),
+  )
+
+/** Takes directory `rootId` out of library `id`, which another library keeps. */
+export const unlinkDir = (id: number, rootId: number): Promise<UnlinkAnswer> =>
+  expectBody(
+    sendJson<UnlinkAnswer>(
+      `/api/library/libraries/${id}/dirs/${rootId}`,
+      'DELETE',
+    ),
   )

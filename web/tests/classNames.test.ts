@@ -126,7 +126,7 @@ const HOOKS: Record<string, string[]> = {
   './Labeller.test.tsx': ['region-overlay'],
   // `rename-library` is the form holding the name's box in the title's
   // place; the box is drawn by its own class, and the form by none.
-  './LibraryPage.test.tsx': ['dir-table', 'rename-library'],
+  './LibraryPage.test.tsx': ['rename-library'],
   './MetadataEditor.test.tsx': [
     'archive',
     'asking',

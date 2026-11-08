@@ -112,7 +112,7 @@ fn trim_name_strips_white_space_and_nothing_else() {
 }
 
 /// Every list migration 16 strips with is the set [`trim_name`] strips, so a
-/// name the trigger makes is found by a lookup made in Rust.
+/// name its `UPDATE`s stored is found by a lookup made in Rust.
 #[test]
 fn migration_16_strips_the_characters_trim_name_strips() {
     let rust: Vec<u32> = (0..=0x10_FFFF_u32)
@@ -387,8 +387,8 @@ fn books_counts_the_librarys_own_epub_and_pdf_entries() {
         .expect("a scanned entry");
     }
 
-    assert_eq!(books(&conn, roots[0].library_id).expect("counts"), 3);
-    assert_eq!(books(&conn, roots[1].library_id).expect("counts"), 1);
+    assert_eq!(books(&conn, roots[0].libraries[0]).expect("counts"), 3);
+    assert_eq!(books(&conn, roots[1].libraries[0]).expect("counts"), 1);
 }
 
 /// A copy held under a directory of each of two libraries is counted in both,
@@ -447,7 +447,7 @@ fn held_under(root: &crate::scan::Root, library: i64) -> MemberDirectory {
     MemberDirectory {
         root: root.id,
         path: root.path.display().to_string(),
-        library,
+        libraries: vec![library],
     }
 }
 
@@ -624,7 +624,7 @@ fn a_copy_held_in_two_libraries_is_not_split() {
         .expect("counts the members");
     let held: Vec<String> = conn
         .prepare(
-            "SELECT l.name FROM member_root mr JOIN root r ON r.id = mr.root_id
+            "SELECT l.name FROM member_root mr JOIN library_root r ON r.root_id = mr.root_id
                JOIN library l ON l.id = r.library_id ORDER BY l.name",
         )
         .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
@@ -750,5 +750,59 @@ fn a_library_holds_the_members_under_the_directories_it_reaches() {
                 },
             ],
         }]
+    );
+}
+
+/// A member's directory in two libraries names both, ascending: Kids' `m/kids`
+/// linked into Tiny as well, through the add.
+#[test]
+fn a_member_directory_names_every_library_it_is_in() {
+    let n = crate::reach::tests::nested_libraries(false);
+    let conn = n.library.conn();
+    seed_work(
+        &conn,
+        "nested",
+        &[("raw", Some(n.m)), ("raw", Some(n.m_kids))],
+    );
+    let roots = crate::scan::roots(&conn).expect("roots");
+    let m_kids = roots
+        .iter()
+        .find(|root| root.id == n.m_kids)
+        .expect("m/kids")
+        .clone();
+    let tiny = id_of(&conn, "Tiny").expect("reads").expect("Tiny");
+    let linked = crate::scan::add_root_checked_in(&conn, &m_kids.path, InLibrary::Id(tiny))
+        .expect("links m/kids into Tiny");
+    assert_eq!(linked.also_in, ["Kids"], "the fixture: a link");
+
+    let split = split_editions(&conn).expect("lists");
+
+    let directories: Vec<&[MemberDirectory]> = split
+        .iter()
+        .flat_map(|edition| &edition.members)
+        .map(|member| member.directories.as_slice())
+        .collect();
+    assert_eq!(
+        directories,
+        [
+            &[held_under(&roots[0], n.manga)][..],
+            &[MemberDirectory {
+                root: n.m_kids,
+                path: m_kids.path.display().to_string(),
+                libraries: vec![n.kids, tiny],
+            }][..],
+        ],
+        "{split:?}"
+    );
+}
+
+#[test]
+fn names_are_listed_as_a_sentence_lists_them() {
+    let none: [&str; 0] = [];
+    assert_eq!(listed("Manga", &none), "Manga");
+    assert_eq!(listed("Manga", &["Kids"]), "Manga and Kids");
+    assert_eq!(
+        listed("Manga", &["Kids", "Comics"]),
+        "Manga, Kids and Comics"
     );
 }

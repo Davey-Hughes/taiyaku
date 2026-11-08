@@ -1,3 +1,4 @@
+import { act } from 'react'
 import { expect } from 'vitest'
 import { tokenColour } from './colour'
 import { lengthOf } from './length'
@@ -366,13 +367,11 @@ export async function changesOf(region: Element, run: () => Promise<unknown>) {
 }
 
 /**
- * A real mouse pressed and then released, a frame apart, at the middle of
- * where `over` lies over `under`, which it must lie over by more than 4px
- * each way. Outside `act`, so that what the press changes, such as a
- * refusal going as focus leaves its form, is drawn between the press and
- * the release, as it would be for a person.
+ * The middle of where `over` lies over `under`, which it must lie over by
+ * more than 4px each way: where a press or a tap that `over` lets through
+ * would land on `under`.
  */
-export async function pressWhereOver(over: Element, under: Element) {
+export function middleWhereOver(over: Element, under: Element) {
   const a = over.getBoundingClientRect()
   const b = under.getBoundingClientRect()
   const left = Math.max(a.left, b.left)
@@ -383,7 +382,31 @@ export async function pressWhereOver(over: Element, under: Element) {
     [right - left, bottom - top].every((side) => side > 4),
     'lies over it',
   ).toBe(true)
-  await pressAt((left + right) / 2, (top + bottom) / 2)
+  return { x: (left + right) / 2, y: (top + bottom) / 2 }
+}
+
+/**
+ * A real mouse pressed and then released, a frame apart, at the middle of
+ * where `over` lies over `under` (`middleWhereOver`). Outside `act`, so that
+ * what the press changes, such as a refusal going as focus leaves its form,
+ * is drawn between the press and the release, as it would be for a person.
+ */
+export async function pressWhereOver(over: Element, under: Element) {
+  const { x, y } = middleWhereOver(over, under)
+  await pressAt(x, y)
+}
+
+/**
+ * A real mouse pressed and released at the middle of `el`, as `pressAt`
+ * presses, and what it started given `ms` to settle.
+ */
+export async function pressOn(el: Element | null, ms = 120) {
+  if (el === null) throw new Error('nothing to press')
+  const at = el.getBoundingClientRect()
+  await pressAt((at.left + at.right) / 2, (at.top + at.bottom) / 2)
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, ms))
+  })
 }
 
 /**

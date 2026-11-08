@@ -125,6 +125,7 @@ const root: librariesApi.LibraryDir = {
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  libraries: [{ id: 1, name: 'Manga' }],
   nested: [],
   inside: [],
 }
@@ -640,7 +641,7 @@ function answerPages() {
           {
             path: 'Foo 01.cbz',
             pages: 2,
-            directories: [{ root: 3, path: '/srv/manga', library: 1 }],
+            directories: [{ root: 3, path: '/srv/manga', libraries: [1] }],
           },
           { path: 'Foo 02.cbz', pages: 3, directories: [] },
         ],
@@ -915,12 +916,26 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
       libraries: [MANGA],
     })
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 0,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: emptyDerive,
       dry_run: true,
     })
     vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 0,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: emptyDerive,
       dry_run: false,
     })

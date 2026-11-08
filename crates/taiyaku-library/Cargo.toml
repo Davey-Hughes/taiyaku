@@ -85,7 +85,8 @@ rusqlite = { version = "0.38", features = ["trace", "hooks"] }
 # already use rather than a second copy of it. And for O117's `TempDir`.
 taiyaku-read = { path = "../taiyaku-read", features = ["test-support"] }
 
-# Exposes `account::Access::roots` to other crates' tests. Enabled only from a
+# Exposes `account::Access::roots`, `scan::file_under_its_own_library` and the
+# `test_support` fixtures to other crates' tests. Enabled only from a
 # `[dev-dependencies]` entry, so it reaches test builds and `--all-features`
 # builds and no binary this workspace ships.
 [features]

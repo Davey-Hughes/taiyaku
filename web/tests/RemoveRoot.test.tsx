@@ -86,19 +86,21 @@ const answer = (over: Partial<config.Removal> = {}): config.RemovalAnswer => ({
     positions: 3,
     notes: 27,
     left_with_no_library: [],
+    libraries_removed: [],
+    kept: [],
     ...over,
   },
   derive: derived(),
   dry_run: true,
 })
 
-async function settle(onRemoved = vi.fn(), lastOf?: string) {
+async function settle(onRemoved = vi.fn(), holders?: string[]) {
   let host: HTMLElement | undefined
   await act(async () => {
     host = mount(
       <RemoveRoot
         root={root}
-        lastOf={lastOf}
+        holders={holders}
         onCancel={vi.fn()}
         onRemoved={onRemoved}
       />,
@@ -161,8 +163,11 @@ describe('RemoveRoot', () => {
     )
   })
 
-  it('says the library goes too where this is its only directory', async () => {
-    const host = await settle(vi.fn(), 'Manga')
+  it('says the library goes too where its dry run says this is its only directory', async () => {
+    vi.mocked(config.removalCost).mockResolvedValue(
+      answer({ libraries_removed: ['Manga'] }),
+    )
+    const host = await settle()
     expect(host.querySelector('.last-dir')?.textContent).toBe(
       'This is the only directory of the library Manga, so removing it removes the library too.',
     )
@@ -176,11 +181,57 @@ describe('RemoveRoot', () => {
     expect(host.querySelector('.last-dir')).toBeNull()
   })
 
+  it('names each library its dry run says the removal empties, in one sentence for several', async () => {
+    vi.mocked(config.removalCost).mockResolvedValue(
+      answer({ libraries_removed: ['Kids', 'Teens'] }),
+    )
+    const host = await settle(vi.fn(), ['Manga', 'Kids', 'Teens'])
+    expect(host.querySelector('.last-dir')?.textContent).toBe(
+      'This is the only directory of the libraries Kids and Teens, so removing it removes them too.',
+    )
+  })
+
+  it('names every library holding the directory where several do, and only the counts where one does', async () => {
+    const shared = await settle(vi.fn(), ['Manga', 'Kids'])
+    expect(shared.querySelector('.counts')?.textContent).toBe(
+      'This removes it from Manga and Kids, and 412 works, 3 in-progress positions and 27 notes.',
+    )
+    const one = await settle(vi.fn(), ['Manga'])
+    expect(one.querySelector('.counts')?.textContent).toBe(
+      'This removes 412 works, 3 in-progress positions and 27 notes.',
+    )
+  })
+
+  it('names the library an account could see where another library holds the directory, and says of several only that each is among them', async () => {
+    vi.mocked(config.removalCost).mockResolvedValue(
+      answer({ left_with_no_library: ['alice'], libraries_removed: ['Kids'] }),
+    )
+    const one = await settle(vi.fn(), ['Manga', 'Kids'])
+    expect(one.querySelector('.left-with-no-library')?.textContent).toBe(
+      'alice can see only Kids. After this, alice will see no library until an administrator grants one.',
+    )
+    vi.mocked(config.removalCost).mockResolvedValue(
+      answer({
+        left_with_no_library: ['alice'],
+        libraries_removed: ['Manga', 'Kids'],
+        kept: [],
+      }),
+    )
+    const two = await settle(vi.fn(), ['Manga', 'Kids'])
+    expect(two.querySelector('.left-with-no-library')?.textContent).toBe(
+      'alice can see only libraries this removes. After this, alice will see no library until an administrator grants one.',
+    )
+  })
+
   it('names the accounts left with no library under the counts, and still offers the confirm', async () => {
     vi.mocked(config.removalCost).mockResolvedValue(
-      answer({ left_with_no_library: ['alice', 'bob'] }),
+      answer({
+        left_with_no_library: ['alice', 'bob'],
+        libraries_removed: ['Manga'],
+        kept: [],
+      }),
     )
-    const host = await settle(vi.fn(), 'Manga')
+    const host = await settle()
     expect(host.querySelector('.left-with-no-library')?.textContent).toBe(
       "alice and bob can see only this directory's library. After this, they will see no library until an administrator grants one.",
     )
@@ -203,7 +254,10 @@ describe('RemoveRoot', () => {
   })
 
   it('names nobody where no account is left with no library', async () => {
-    const host = await settle(vi.fn(), 'Manga')
+    vi.mocked(config.removalCost).mockResolvedValue(
+      answer({ libraries_removed: ['Manga'] }),
+    )
+    const host = await settle()
     expect(host.querySelector('.last-dir')).not.toBeNull()
     expect(host.querySelector('.left-with-no-library')).toBeNull()
     expect(host.textContent).not.toContain('will see no library')
@@ -403,6 +457,8 @@ describe('RemoveRoot', () => {
         positions: 3,
         notes: 27,
         left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
       },
       derive: derived({
         unwritable_documents: ['/srv/manga/.taiyaku/locked.json'],
@@ -435,7 +491,14 @@ describe('RemoveRoot', () => {
     // This is the most destructive action in the product; it should not read
     // like a debug print.
     vi.mocked(config.removalCost).mockResolvedValue({
-      removed: { works: 1, positions: 1, notes: 1, left_with_no_library: [] },
+      removed: {
+        works: 1,
+        positions: 1,
+        notes: 1,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived(),
       dry_run: true,
     })
@@ -446,7 +509,14 @@ describe('RemoveRoot', () => {
 
   it('still says zero in the plural', async () => {
     vi.mocked(config.removalCost).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 0,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived(),
       dry_run: true,
     })

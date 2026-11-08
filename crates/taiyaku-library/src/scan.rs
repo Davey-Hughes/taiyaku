@@ -80,25 +80,34 @@ pub struct Root {
     /// already holds a `Root` and `hand::save` is the only caller that does
     /// not.
     pub keeps_documents: bool,
-    /// The library this directory is filed under — migration 15. Every root has
-    /// one; see [`crate::libraries`].
-    pub library_id: i64,
+    /// The libraries this directory is in, ascending: its `library_root`
+    /// links (migration 19). Every writer leaves a directory at least one;
+    /// see [`crate::libraries`].
+    pub libraries: Vec<i64>,
 }
 
-/// Every scan root this library knows about, oldest first.
+/// Every scan root this library knows about, oldest first, once each.
+///
+/// **The links are a second query, never a join**: a join would answer a
+/// directory in two libraries twice, and every caller that walks or derives
+/// each root it is given would then do it twice. **Both read one snapshot**
+/// ([`crate::one_snapshot`]): a directory removed between them would come
+/// back in no library.
 ///
 /// # Errors
 ///
-/// Returns an error if the query against `root` fails.
+/// Returns an error if the query against `root` or `library_root` fails.
 pub fn roots(conn: &Connection) -> Result<Vec<Root>, String> {
+    let _snapshot =
+        crate::one_snapshot(conn).map_err(|e| format!("starting a read of the roots: {e}"))?;
     let mut stmt = conn
         .prepare(
             "SELECT id, path, edition_key, default_kind, default_language, exclude_globs, \
-             scan_interval_secs, keeps_documents, library_id \
+             scan_interval_secs, keeps_documents \
              FROM root ORDER BY id",
         )
         .map_err(|e| format!("listing roots: {e}"))?;
-    let rows = stmt
+    let mut roots = stmt
         .query_map([], |r| {
             Ok(Root {
                 id: r.get(0)?,
@@ -109,12 +118,26 @@ pub fn roots(conn: &Connection) -> Result<Vec<Root>, String> {
                 exclude_globs: r.get(5)?,
                 scan_interval_secs: r.get(6)?,
                 keeps_documents: r.get(7)?,
-                library_id: r.get(8)?,
+                libraries: Vec::new(),
             })
         })
+        .map_err(|e| format!("listing roots: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("listing roots: {e}"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("listing roots: {e}"))
+    let mut links = conn
+        .prepare("SELECT root_id, library_id FROM library_root ORDER BY root_id, library_id")
+        .map_err(|e| format!("listing the libraries of each root: {e}"))?;
+    let links = links
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+        .map_err(|e| format!("listing the libraries of each root: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("listing the libraries of each root: {e}"))?;
+    for (root_id, library_id) in links {
+        if let Ok(at) = roots.binary_search_by_key(&root_id, |root| root.id) {
+            roots[at].libraries.push(library_id);
+        }
+    }
+    Ok(roots)
 }
 
 /// Add a new scan root at `path`, with no defaults set.
@@ -139,10 +162,9 @@ pub fn add_root(conn: &Connection, path: &Path) -> Result<Root, String> {
 /// Which library a directory joins when it is added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InLibrary<'a> {
-    /// A library of its own, named for the directory by the
-    /// `root_gets_a_library` trigger (migration 16): its last path component,
-    /// or its whole path when a library already has that name in any ASCII
-    /// case, stripped of white space either way.
+    /// A library of its own, named for the directory ([`own_library_name`]):
+    /// its last path component, or its whole path when a library already has
+    /// that name in any ASCII case, stripped of white space either way.
     Own,
     /// The library with this name, created if there is none.
     Named(&'a str),
@@ -164,6 +186,17 @@ pub fn add_root_in(conn: &Connection, path: &Path, library: InLibrary<'_>) -> Re
     let canonical = path
         .canonicalize()
         .map_err(|e| format!("{}: {e}", path.display()))?;
+    insert_root(conn, &canonical, library)
+}
+
+/// [`add_root_in`] for a path already canonical, so crate-only: the directory,
+/// a library made for it, and their link, in one transaction, since the store
+/// cannot refuse a directory committed with no library (migration 19).
+pub(crate) fn insert_root(
+    conn: &Connection,
+    canonical: &Path,
+    library: InLibrary<'_>,
+) -> Result<Root, String> {
     let tx = crate::Nested::open(conn, "add_root")
         .map_err(|e| format!("starting to add root {}: {e}", canonical.display()))?;
     let chosen = match library {
@@ -175,58 +208,110 @@ pub fn add_root_in(conn: &Connection, path: &Path, library: InLibrary<'_>) -> Re
         InLibrary::Id(id) => Some(id),
     };
     tx.execute(
-        "INSERT INTO root (path, library_id) VALUES (?1, ?2)",
-        rusqlite::params![canonical.to_string_lossy(), chosen],
+        "INSERT INTO root (path) VALUES (?1)",
+        [canonical.to_string_lossy()],
     )
     .map_err(|e| format!("adding root {}: {e}", canonical.display()))?;
     let id = tx.last_insert_rowid();
+    // After the insert, so a path already held is refused as one first.
+    let library_id = match chosen {
+        Some(id) => id,
+        None => crate::libraries::create(&tx, &own_library_name(&tx, canonical)??)?,
+    };
+    tx.execute(
+        "INSERT INTO library_root (library_id, root_id) VALUES (?1, ?2)",
+        [library_id, id],
+    )
+    .map_err(|e| {
+        format!(
+            "filing root {} under library {library_id}: {e}",
+            canonical.display()
+        )
+    })?;
     // Read back rather than hard-coded, so the column's default — migration
-    // 012's `DEFAULT 0` — stays the one place that decides it, and so a
-    // library the `root_gets_a_library` trigger chose is the one recorded.
-    let (keeps_documents, library_id) = tx
+    // 012's `DEFAULT 0` — stays the one place that decides it.
+    let keeps_documents = tx
         .query_row(
-            "SELECT keeps_documents, library_id FROM root WHERE id = ?1",
+            "SELECT keeps_documents FROM root WHERE id = ?1",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
         )
         .map_err(|e| format!("reading root {}: {e}", canonical.display()))?;
     tx.commit()
         .map_err(|e| format!("committing root {}: {e}", canonical.display()))?;
     Ok(Root {
         id,
-        path: canonical,
+        path: canonical.to_path_buf(),
         edition_key: None,
         default_kind: None,
         default_language: None,
         exclude_globs: None,
         scan_interval_secs: None,
         keeps_documents,
-        library_id,
+        libraries: vec![library_id],
     })
 }
 
-/// Why a directory at `canonical` cannot be a library of its own, if it cannot.
+/// File root `root_id`, a row planted by SQL with no library, under a library
+/// of its own named as [`InLibrary::Own`] names one, and answer that library's
+/// id: for a fixture whose directories need not exist, so cannot be added.
 ///
-/// **The `root_gets_a_library` trigger (migration 16) names that library, and
-/// [`add_root_checked_in`] asks the trigger's own question here first**
-/// rather than leaving its insert to fail on `library.name`'s UNIQUE: the
-/// directory's last path component, or its whole path when the component is
-/// empty or already a library's name. When the whole path is a library's
-/// name too, the trigger has no third name to try, and [`InLibrary::Own`]
+/// # Errors
+///
+/// Returns an error if there is no root `root_id`, if no library of its own
+/// can be named for it, or if a write fails. Nothing is written then.
+#[cfg(any(test, feature = "test-support"))]
+pub fn file_under_its_own_library(conn: &Connection, root_id: i64) -> Result<i64, String> {
+    // One transaction: a failed link would otherwise leave the library just
+    // made with no directory, and `crate::libraries` says none stands empty.
+    let tx = crate::Nested::open(conn, "file_under_its_own_library")
+        .map_err(|e| format!("starting to file root {root_id}: {e}"))?;
+    let path: String = tx
+        .query_row("SELECT path FROM root WHERE id = ?1", [root_id], |r| {
+            r.get(0)
+        })
+        .map_err(|e| format!("reading root {root_id}: {e}"))?;
+    let library_id = crate::libraries::create(&tx, &own_library_name(&tx, Path::new(&path))??)?;
+    tx.execute(
+        "INSERT INTO library_root (library_id, root_id) VALUES (?1, ?2)",
+        [library_id, root_id],
+    )
+    .map_err(|e| format!("filing root {root_id} under library {library_id}: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("committing root {root_id}'s library: {e}"))?;
+    Ok(library_id)
+}
+
+/// Why a directory at `canonical` cannot be a library of its own, if it
+/// cannot: [`own_library_name`]'s refusal, which [`add_root_checked_in`] asks
+/// before anything is written, so it is this caller's to fix rather than a
+/// store fault from inside the add.
+fn own_library_clash(conn: &Connection, canonical: &Path) -> Result<Option<String>, String> {
+    Ok(own_library_name(conn, canonical)?.err())
+}
+
+/// The name [`InLibrary::Own`] gives a directory at `canonical`'s library, or
+/// why it can give none (the inner `Err`).
+///
+/// **The directory's last path component, or its whole path when the
+/// component is empty or already a library's name.** When the whole path is a
+/// library's name too, there is no third name to try, and [`InLibrary::Own`]
 /// promises none, so this refuses and says which names are taken. The last
-/// component is what follows the path's last `/`, as the trigger's `rtrim`
-/// finds it. Both names are stripped of white space by
-/// [`crate::libraries::trim_name`], as the trigger strips them with SQLite's
-/// two-argument `trim` over the same characters, and are asked in any ASCII
-/// case, as the trigger asks them. A component is empty for `/` and for a
-/// directory named only white space.
+/// component is what follows the path's last `/`. Both names are stripped of
+/// white space by [`crate::libraries::trim_name`], and asked in any ASCII
+/// case, as [`crate::libraries::id_of`] finds a name. A component is empty for
+/// `/` and for a directory named only white space.
 ///
 /// **A component that strips to `.` or `..` is refused too**, as a directory
 /// called `. ` or ` ..` would otherwise make a library of that name, which no
 /// page address holds ([`crate::has_no_address`]). Refused rather than given
-/// its whole path, because the trigger takes any component that is not empty
-/// and not taken.
-fn own_library_clash(conn: &Connection, canonical: &Path) -> Result<Option<String>, String> {
+/// its whole path, as any component that is not empty and not taken names the
+/// library.
+///
+/// # Errors
+///
+/// The outer `Err` is a store fault while looking a name up.
+fn own_library_name(conn: &Connection, canonical: &Path) -> Result<Result<String, String>, String> {
     let taken = |name: &str| -> Result<bool, String> {
         conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM library WHERE name = ?1 COLLATE NOCASE)",
@@ -239,18 +324,18 @@ fn own_library_clash(conn: &Connection, canonical: &Path) -> Result<Option<Strin
     let whole = crate::libraries::trim_name(&path);
     let leaf = crate::libraries::trim_name(path.rsplit('/').next().unwrap_or_default());
     if crate::has_no_address(leaf) {
-        return Ok(Some(format!(
+        return Ok(Err(format!(
             "{path} cannot be a library of its own: a library named for it would be called \
              `{leaf}`, and no address can hold “.” or “..” as a name; add it to a library by name"
         )));
     }
     if !leaf.is_empty() && !taken(leaf)? {
-        return Ok(None);
+        return Ok(Ok(leaf.to_string()));
     }
     if !taken(whole)? {
-        return Ok(None);
+        return Ok(Ok(whole.to_string()));
     }
-    Ok(Some(if leaf.is_empty() {
+    Ok(Err(if leaf.is_empty() {
         format!(
             "{path} cannot be a library of its own: a library is already called `{whole}`; \
              add it to a library by name"
@@ -276,14 +361,21 @@ fn own_library_clash(conn: &Connection, canonical: &Path) -> Result<Option<Strin
 /// ever changes, this one should change with it.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// What [`add_root_checked`] built: the row [`add_root_in`] inserted, the watch
-/// experiment run against it immediately, and the interval that experiment
-/// implies.
+/// What [`add_root_checked`] built: the row [`add_root_in`] inserted, or the
+/// row another library holds, now linked; the watch experiment run against a
+/// new row immediately, and the interval that experiment implies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Added {
     pub root: Root,
-    pub probe: crate::watch::Probe,
-    pub interval: Duration,
+    /// `None` for a link: the probe writes `scan_interval_secs`, which the
+    /// libraries holding the directory share.
+    pub probe: Option<crate::watch::Probe>,
+    /// The interval [`Added::probe`] implies, `None` where it did not run.
+    pub interval: Option<Duration>,
+    /// The names of the other libraries that already held the directory,
+    /// ascending by id, read inside the add's transaction while they stand:
+    /// empty for a directory new to the store.
+    pub also_in: Vec<String>,
 }
 
 /// Why [`add_root_checked`] could not add a root.
@@ -300,20 +392,20 @@ pub struct Added {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddRootError {
     /// `path` itself: it does not exist, this process cannot read it, or
-    /// `clash` refuses it against the roots held. The message already names
-    /// which, and for a clash, the colliding directory and its library by
-    /// name. Or the library it would join cannot be named: an
-    /// [`InLibrary::Named`] that [`crate::libraries::usable_name`] refuses,
-    /// or an [`InLibrary::Own`] whose two possible names are both taken,
-    /// which the message names. Or an [`InLibrary::Id`] no library holds.
+    /// [`vetted`] refuses it against the roots held. The message names which,
+    /// and for a clash, the colliding directory and its library by name. Or
+    /// the library it would join cannot be named or linked: an
+    /// [`InLibrary::Named`] that [`crate::libraries::usable_name`] refuses, an
+    /// [`InLibrary::Own`] whose two names are both taken or whose directory
+    /// another library holds, or an [`InLibrary::Id`] no library holds.
     /// For [`create_library`]: no directory given, a name `usable_name`
     /// refuses or that is already a library's, or two of the directories
     /// given overlapping.
     Unusable(String),
-    /// The store itself failed: opening or committing the transaction, `clash`'s
-    /// own reads, the library-name lookup, the insert inside [`add_root_in`], or the
-    /// post-insert [`update_root`] write that records the watch probe's
-    /// interval.
+    /// The store itself failed: opening or committing the transaction, [`vetted`]'s
+    /// own reads, the library-name lookup, the insert inside [`add_root_in`] or of
+    /// a link, or the post-insert [`update_root`] write that records the watch
+    /// probe's interval.
     Failed(String),
 }
 
@@ -350,15 +442,15 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 ///    question that differs.
 /// 2. **No clash with the roots held, compared inside the insert's own
 ///    transaction** (O204), so a directory another writer adds meanwhile is
-///    compared too. `clash` refuses a directory equal to any library's,
-///    inside or around one of the library it joins, or inside a directory
-///    member of any root. Both sides are canonical (this function's candidate,
-///    and every stored [`Root::path`], which [`add_root`] canonicalises), so a
-///    symlink or a `..` cannot slip a nested path past the comparison, and
-///    [`Path::starts_with`] compares whole components, so `/srv/manga2` is not
-///    inside `/srv/manga`. The refusal names the directory it meets and that
-///    directory's library.
-/// 3. **The watcher probe, run now rather than left for the first scan.**
+///    compared too ([`vetted`]). Both sides are canonical (this function's
+///    candidate, and every stored [`Root::path`], which [`add_root`]
+///    canonicalises), so a symlink or a `..` cannot slip a nested path past
+///    the comparison, and [`Path::starts_with`] compares whole components, so
+///    `/srv/manga2` is not inside `/srv/manga`. **A directory another library
+///    holds is linked** (overlapping-libraries spec §5): one `library_root`
+///    row, its shared settings as they stand.
+/// 3. **The watcher probe, run now rather than left for the first scan**, for
+///    a new directory only, as it writes the shared `scan_interval_secs`.
 ///    [`crate::watch::probe`] answers whether this root can be watched at
 ///    all — spec B §8's experiment — run at the moment a root is added
 ///    rather than discovered the first time [`scan_root`] or
@@ -370,10 +462,8 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 /// **And the library it joins can be named**, checked in the same
 /// transaction, before anything is written: an [`InLibrary::Named`] needs a name
 /// [`crate::libraries::usable_name`] takes, and an [`InLibrary::Own`] needs a
-/// name the `root_gets_a_library` trigger can give it (see
-/// `own_library_clash`). Otherwise the first would surface as a store fault
-/// and the second as a bare UNIQUE failure on `library.name`, though both are
-/// this caller's to fix.
+/// name [`own_library_name`] can give it. Otherwise each would surface as a
+/// store fault from inside the add, though both are this caller's to fix.
 ///
 /// **The library is created only once every validation has passed**, by
 /// [`add_root_in`], so a refused path names no library into being.
@@ -389,19 +479,21 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 ///
 /// Returns [`AddRootError::Unusable`] if `path` cannot be canonicalised (it
 /// must exist), if the canonical path cannot be read as a directory, if
-/// `clash` refuses it, or if the library it would
+/// [`vetted`] refuses it, or if the library it would
 /// join cannot be named (an [`InLibrary::Id`] no library holds is one) —
 /// every one of those is this caller's own mistake,
-/// an `error` a person can act on. A path already held is refused as one,
-/// `<path> is already a directory of the library `<name>``, and not as inside
-/// itself, which is what the nesting check alone would say of an equal path.
+/// an `error` a person can act on. A path the library already holds is
+/// refused as one, `<path> is already a directory of the library `<name>``,
+/// and not as inside itself, which is what the nesting check alone would say
+/// of an equal path; so is a path another library holds, sent as
+/// [`InLibrary::Own`], naming every library that holds it.
 ///
 /// Returns [`AddRootError::Failed`] if the store itself refuses along the
-/// way — opening or committing the transaction, `clash`'s own reads, the
+/// way — opening or committing the transaction, [`vetted`]'s own reads, the
 /// library-name lookup,
-/// the insert ([`add_root_in`]), or the write that records the watch probe's
-/// interval ([`update_root`]) — none of which is this caller's mistake to
-/// fix.
+/// the insert ([`add_root_in`]) or the link, or the write that records the
+/// watch probe's interval ([`update_root`]) — none of which is this caller's
+/// mistake to fix.
 pub fn add_root_checked_in(
     conn: &Connection,
     path: &Path,
@@ -441,14 +533,67 @@ pub fn add_root_checked_in(
             Some(id)
         }
     };
-    if let Some(why) = clash(&tx, &canonical, joins).map_err(AddRootError::Failed)? {
-        return Err(AddRootError::Unusable(why));
-    }
-    let root = add_root_in(&tx, &canonical, library).map_err(AddRootError::Failed)?;
+    let held = roots(&tx).map_err(AddRootError::Failed)?;
+    let placed = match vetted(&tx, &held, &canonical, joins).map_err(AddRootError::Failed)? {
+        Vetted::Refused(why) => return Err(AddRootError::Unusable(why)),
+        Vetted::New => {
+            Placed::New(add_root_in(&tx, &canonical, library).map_err(AddRootError::Failed)?)
+        }
+        Vetted::Link(held) => {
+            let into = match library {
+                // No library is named to link it into, and a library of its
+                // own would hold a directory another library already holds.
+                InLibrary::Own => {
+                    return Err(AddRootError::Unusable(format!(
+                        "{} is already a directory of {}",
+                        canonical.display(),
+                        the_libraries(&tx, &held).map_err(AddRootError::Failed)?.0
+                    )));
+                }
+                InLibrary::Id(id) => id,
+                InLibrary::Named(name) => match joins {
+                    Some(id) => id,
+                    None => crate::libraries::create(&tx, name).map_err(AddRootError::Failed)?,
+                },
+            };
+            Placed::Linked(linked(&tx, into, held).map_err(AddRootError::Failed)?)
+        }
+    };
     tx.commit().map_err(|e| {
         AddRootError::Failed(format!("committing root {}: {e}", canonical.display()))
     })?;
-    probed(conn, root)
+    match placed {
+        Placed::New(root) => probed(conn, root),
+        Placed::Linked(added) => Ok(added),
+    }
+}
+
+/// What an add wrote inside its transaction: a new directory, which is probed
+/// once it commits, or a link, which is not.
+enum Placed {
+    New(Root),
+    Linked(Added),
+}
+
+/// Directory `held`, which other libraries hold, linked into library `into`
+/// inside the caller's transaction: one `library_root` row and nothing else,
+/// as the settings, scans and documents are the directory's, not a library's.
+fn linked(conn: &Connection, into: i64, held: Root) -> Result<Added, String> {
+    conn.execute(
+        "INSERT INTO library_root (library_id, root_id) VALUES (?1, ?2)",
+        [into, held.id],
+    )
+    .map_err(|e| format!("linking {} into library {into}: {e}", held.path.display()))?;
+    let also_in = names_of(conn, &held.libraries)?;
+    let mut libraries = held.libraries.clone();
+    libraries.push(into);
+    libraries.sort_unstable();
+    Ok(Added {
+        root: Root { libraries, ..held },
+        probe: None,
+        interval: None,
+        also_in,
+    })
 }
 
 /// `path` in canonical form, having checked that it exists and that this
@@ -466,45 +611,79 @@ fn readable_dir(path: &Path) -> Result<PathBuf, AddRootError> {
     Ok(canonical)
 }
 
-/// Why `dir` cannot be a directory of `library` (`None`: one being made), read
-/// from the roots as `conn`'s transaction sees them. Overlapping-libraries spec
-/// §4 refuses:
-/// - a directory equal to any library's, which `root.path`'s UNIQUE would
-///   otherwise refuse as a store fault;
-/// - one inside or around a directory of `library`, whose settings and the
-///   other's would then both govern the files between them;
-/// - one inside or at a directory member of any root (see `reads_as_one_volume`).
-pub(crate) fn clash(
-    conn: &Connection,
-    dir: &Path,
-    library: Option<i64>,
-) -> Result<Option<String>, String> {
-    match beside(conn, dir, library, None)? {
-        Some(why) => Ok(Some(why)),
-        None => at_a_member(conn, dir),
-    }
+/// How `dir` would join `library` (`None`: one being made), as [`vetted`]
+/// answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Vetted {
+    /// Why it cannot.
+    Refused(String),
+    /// Another library holds this directory: the add links it.
+    Link(Root),
+    /// No library holds it: the add inserts it.
+    New,
 }
 
-/// `clash`'s first two refusals, with `except`, the directory a move moves, left
-/// out. A move asks only these: the third does not depend on the library, so
-/// moving a directory changes nothing it asks.
+/// How `dir` would join `library` (`None`: one being made), read from the
+/// roots as `conn`'s transaction sees them (spec §4, §5): refused by
+/// [`beside`], then a link to the directory another library holds there, then
+/// refused inside or at a directory member of any root (`reads_as_one_volume`).
+///
+/// **The link is asked after every directory of `library`**: first, it would
+/// link a directory inside or around one of `library`'s own. **A link is not
+/// asked the member check**: like a move, it changes no walk and no file's
+/// directory.
+///
+/// # Errors
+///
+/// A read fails, or the directory held at `dir` is in no library, which no
+/// writer leaves: linked, its answer would name no library that held it.
+pub(crate) fn vetted(
+    conn: &Connection,
+    held: &[Root],
+    dir: &Path,
+    library: Option<i64>,
+) -> Result<Vetted, String> {
+    if let Some(why) = beside(conn, held, dir, library, None)? {
+        return Ok(Vetted::Refused(why));
+    }
+    if let Some(existing) = held.iter().find(|root| root.path == dir) {
+        if existing.libraries.is_empty() {
+            return Err(format!("directory {} is in no library", dir.display()));
+        }
+        return Ok(Vetted::Link(existing.clone()));
+    }
+    Ok(match at_a_member(conn, held, dir)? {
+        Some(why) => Vetted::Refused(why),
+        None => Vetted::New,
+    })
+}
+
+/// [`vetted`]'s refusal against the directories of `library` among `held`,
+/// with `except`, the directory a move moves, left out: `dir` is already one
+/// of them, or sits inside or around one. A move asks only this: the member
+/// check does not depend on the library, so moving a directory changes
+/// nothing it asks. Every refusal names `library`, the one asked about.
 pub(crate) fn beside(
     conn: &Connection,
+    held: &[Root],
     dir: &Path,
     library: Option<i64>,
     except: Option<i64>,
 ) -> Result<Option<String>, String> {
-    let held: Vec<Root> = roots(conn)?
-        .into_iter()
-        .filter(|root| Some(root.id) != except)
+    // A library being made holds no directory yet.
+    let Some(target) = library else {
+        return Ok(None);
+    };
+    let held: Vec<&Root> = held
+        .iter()
+        .filter(|root| Some(root.id) != except && root.libraries.contains(&target))
         .collect();
     let chosen = dir.display();
-    for existing in &held {
-        // Named by its library, which is how the Libraries screen groups its
-        // directories, and not by its id, which no screen shows.
-        let name = || -> Result<String, String> {
-            Ok(crate::libraries::name_of(conn, existing.library_id)?.unwrap_or_default())
-        };
+    // Named by its library, which is how the Libraries screen groups its
+    // directories, and not by its id, which no screen shows.
+    let name = crate::libraries::name_of(conn, target)?
+        .ok_or_else(|| format!("there is no library {target}"))?;
+    for existing in held {
         // Equal paths first: each starts with the other, so the nesting check
         // would call a directory picked again inside itself. A held directory
         // inside the chosen one is named from the chosen one, so the reader is
@@ -512,23 +691,17 @@ pub(crate) fn beside(
         // part that differs. A chosen directory inside a held one keeps both full
         // paths: the held one is the shorter.
         let said = if dir == existing.path {
-            format!(
-                "{chosen} is already a directory of the library `{}`",
-                name()?
-            )
-        } else if Some(existing.library_id) != library {
-            continue;
+            format!("{chosen} is already a directory of the library `{name}`")
         } else if dir.starts_with(&existing.path) {
             format!(
-                "{chosen} is inside {}, which is already a directory of the same library, `{}`",
+                "{chosen} is inside {}, which is already a directory of the same library, \
+                 `{name}`",
                 existing.path.display(),
-                name()?
             )
         } else if let Ok(inner) = existing.path.strip_prefix(dir) {
             format!(
-                "{chosen} holds `{}`, which is already a directory of the same library, `{}`",
+                "{chosen} holds `{}`, which is already a directory of the same library, `{name}`",
                 inner.display(),
-                name()?
             )
         } else {
             continue;
@@ -538,10 +711,39 @@ pub(crate) fn beside(
     Ok(None)
 }
 
-/// `clash`'s third refusal.
-fn at_a_member(conn: &Connection, dir: &Path) -> Result<Option<String>, String> {
+/// "the library `A`", or "the libraries `A` and `B`", for every library
+/// holding `dir`, ascending by id, and whether it names more than one, for a
+/// sentence whose verb agrees.
+///
+/// # Errors
+///
+/// A read fails, a link names no library, or `dir` is in no library, which no
+/// writer leaves: the sentence would name none.
+fn the_libraries(conn: &Connection, dir: &Root) -> Result<(String, bool), String> {
+    let names = dir
+        .libraries
+        .iter()
+        .map(|&id| {
+            crate::libraries::name_of(conn, id)?
+                .map(|name| format!("`{name}`"))
+                .ok_or_else(|| format!("there is no library {id}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(match &names[..] {
+        [] => return Err(format!("directory {} is in no library", dir.path.display())),
+        [one] => (format!("the library {one}"), false),
+        [first, rest @ ..] => (
+            format!("the libraries {}", crate::libraries::listed(first, rest)),
+            true,
+        ),
+    })
+}
+
+/// [`vetted`]'s member check, naming every library holding the directory the
+/// member is under.
+fn at_a_member(conn: &Connection, held: &[Root], dir: &Path) -> Result<Option<String>, String> {
     let chosen = dir.display();
-    for existing in &roots(conn)? {
+    for existing in held {
         let Ok(under) = dir.strip_prefix(&existing.path) else {
             continue;
         };
@@ -550,10 +752,11 @@ fn at_a_member(conn: &Connection, dir: &Path) -> Result<Option<String>, String> 
             if !reads_as_one_volume(conn, existing.id, &rel_path)? {
                 continue;
             }
-            let name = crate::libraries::name_of(conn, existing.library_id)?.unwrap_or_default();
+            let (names, several) = the_libraries(conn, existing)?;
+            let reads = if several { "read" } else { "reads" };
             if above == under {
                 return Ok(Some(format!(
-                    "{chosen} is a folder the library `{name}` reads as the pages of one volume"
+                    "{chosen} is a folder {names} {reads} as the pages of one volume"
                 )));
             }
             let member = if rel_path.is_empty() {
@@ -562,7 +765,7 @@ fn at_a_member(conn: &Connection, dir: &Path) -> Result<Option<String>, String> 
                 existing.path.join(above)
             };
             return Ok(Some(format!(
-                "{chosen} is inside {}, which the library `{name}` reads as the pages of one volume",
+                "{chosen} is inside {}, which {names} {reads} as the pages of one volume",
                 member.display()
             )));
         }
@@ -609,8 +812,9 @@ fn probed(conn: &Connection, root: Root) -> Result<Added, AddRootError> {
             scan_interval_secs: Some(interval_secs),
             ..root
         },
-        probe,
-        interval,
+        probe: Some(probe),
+        interval: Some(interval),
+        also_in: Vec::new(),
     })
 }
 
@@ -630,10 +834,10 @@ pub struct Created {
 ///
 /// Every path is read from disk and compared with the other paths given before
 /// the transaction opens. Inside it, each is compared with the roots held
-/// (`clash`, as a library being made), and the library and its directories are
-/// inserted. The watch probes run after it commits,
-/// because each waits up to [`PROBE_TIMEOUT`] and a write transaction held
-/// that long would stall every other writer.
+/// ([`vetted`], as a library being made), and the library is inserted with
+/// each new directory, linking each another library holds. The new ones' watch
+/// probes run after it commits, because each waits up to [`PROBE_TIMEOUT`] and
+/// a write transaction held that long would stall every other writer.
 ///
 /// # Errors
 ///
@@ -680,31 +884,58 @@ pub fn create_library(
     // and a directory another writer recorded would be compared without it and
     // accepted (O204). The disk was read before it, so the write lock is not
     // held across a slow mount.
+    // Each path with the directory another library holds there, if one does.
+    let stored = roots(&tx).map_err(AddRootError::Failed)?;
+    let mut held = Vec::with_capacity(canonical.len());
     for path in &canonical {
-        if let Some(why) = clash(&tx, path, None).map_err(AddRootError::Failed)? {
-            return Err(AddRootError::Unusable(why));
-        }
+        held.push((
+            path,
+            match vetted(&tx, &stored, path, None).map_err(AddRootError::Failed)? {
+                Vetted::Refused(why) => return Err(AddRootError::Unusable(why)),
+                Vetted::Link(root) => Some(root),
+                Vetted::New => None,
+            },
+        ));
     }
-    if let Some(held) = crate::libraries::id_of(&tx, name).map_err(AddRootError::Failed)? {
-        let stored = crate::libraries::name_of(&tx, held)
+    if let Some(taken) = crate::libraries::id_of(&tx, name).map_err(AddRootError::Failed)? {
+        let stored = crate::libraries::name_of(&tx, taken)
             .map_err(AddRootError::Failed)?
             .unwrap_or_else(|| name.to_string());
+        // Adding it to that library is no advice for a directory already in it.
+        if let Some((path, _)) = held.iter().find(|(_, root)| {
+            root.as_ref()
+                .is_some_and(|root| root.libraries.contains(&taken))
+        }) {
+            return Err(AddRootError::Unusable(format!(
+                "{} is already a directory of the library `{stored}`",
+                path.display()
+            )));
+        }
         return Err(AddRootError::Unusable(format!(
             "a library is already called `{stored}`; add the directory to it instead"
         )));
     }
     let library_id = crate::libraries::create(&tx, name).map_err(AddRootError::Failed)?;
-    let mut inserted = Vec::with_capacity(canonical.len());
-    for path in &canonical {
-        inserted
-            .push(add_root_in(&tx, path, InLibrary::Id(library_id)).map_err(AddRootError::Failed)?);
+    let mut placed = Vec::with_capacity(held.len());
+    for (path, held) in held {
+        placed.push(match held {
+            Some(root) => {
+                Placed::Linked(linked(&tx, library_id, root).map_err(AddRootError::Failed)?)
+            }
+            None => Placed::New(
+                add_root_in(&tx, path, InLibrary::Id(library_id)).map_err(AddRootError::Failed)?,
+            ),
+        });
     }
     tx.commit()
         .map_err(|e| AddRootError::Failed(format!("committing the library `{name}`: {e}")))?;
 
-    let mut dirs = Vec::with_capacity(inserted.len());
-    for root in inserted {
-        dirs.push(probed(conn, root)?);
+    let mut dirs = Vec::with_capacity(placed.len());
+    for one in placed {
+        dirs.push(match one {
+            Placed::New(root) => probed(conn, root)?,
+            Placed::Linked(added) => added,
+        });
     }
     Ok(Created {
         library_id,
@@ -822,10 +1053,157 @@ pub struct Removal {
     pub positions: usize,
     pub notes: usize,
     /// The accounts, by name, that see no library once this removal deletes
-    /// the only library they are granted: [`only_grant_holders`], asked
-    /// before anything is deleted. Empty where the library stays, as it does
-    /// when a directory that is not its library's last goes.
+    /// every library they are granted: [`only_grant_holders`] of
+    /// [`Removal::libraries_removed`], asked before anything is deleted. Empty
+    /// where no library goes, as when a directory that is not its library's
+    /// last goes.
     pub left_with_no_library: Vec<String>,
+    /// The names of the libraries this removal empties, which go with their
+    /// last directory, ascending by id, read inside the removal's transaction
+    /// while they stand. A directory two libraries hold, and the last of
+    /// each, empties both.
+    pub libraries_removed: Vec<String>,
+    /// The directories a library's removal unlinks and leaves to the other
+    /// libraries that hold them, oldest first. Always empty for a directory's
+    /// removal, which takes the directory out of every library.
+    pub kept: Vec<Kept>,
+    /// The ids of the directories this removal deletes, oldest first, read
+    /// inside its transaction: whose scan slots a caller clears, since a
+    /// freed id is given to the next directory added.
+    pub removed: Vec<i64>,
+}
+
+/// A directory a library's removal leaves standing, because another library
+/// holds it too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kept {
+    pub root_id: i64,
+    pub path: PathBuf,
+    /// The names of the libraries that still hold it, ascending by id.
+    pub libraries: Vec<String>,
+}
+
+/// What Remove from this library did, or in a rehearsal would do: the sight
+/// fields of [`crate::relocate::Moved`], under the same names, since an
+/// unlink changes who sees a directory and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Unlinked {
+    /// The accounts, by name and in name order, that see the directory before
+    /// the unlink and not after, as [`crate::relocate::Moved::loses_sight`]
+    /// names them.
+    pub loses_sight: Vec<String>,
+    /// The library the directory left, where it was that library's last
+    /// directory, and the grants that went with it.
+    pub library_removed: Option<String>,
+    pub grants_removed: usize,
+    /// The accounts, by name, whose only grant went with that library:
+    /// [`only_grant_holders`], asked before the unlink. Empty where no
+    /// library is removed.
+    pub left_with_no_library: Vec<String>,
+}
+
+/// Why an unlink was not made. Nothing was changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnlinkError {
+    /// No such directory, no such library, or a library that does not hold
+    /// the directory.
+    Missing(String),
+    /// The directory's last link: Remove from this library never deletes, so
+    /// the directory can only be removed (overlapping-libraries spec §5,
+    /// decision 24).
+    Unusable(String),
+    /// A store fault.
+    Failed(String),
+}
+
+/// Take root `root_id` out of library `library_id`, which another library
+/// keeps holding, or with `dry_run` answer what that would do, found by doing
+/// it inside a transaction this rolls back.
+///
+/// **It deletes the link and nothing else.** Every row a directory's works are
+/// made of is keyed by the directory or by the work, never by a library, so
+/// no work, position or note goes, nothing is derived, and no document moves.
+/// Migration 19's `library_emptied_by_unlink` removes a library the unlink
+/// empties, and its grants with it, which is why those are read first.
+///
+/// # Errors
+///
+/// See [`UnlinkError`]. A refused or failed unlink changed nothing.
+pub fn unlink(
+    conn: &Connection,
+    root_id: i64,
+    library_id: i64,
+    dry_run: bool,
+) -> Result<Unlinked, UnlinkError> {
+    let tx = crate::Nested::open(conn, "unlink")
+        .map_err(|e| UnlinkError::Failed(format!("starting an unlink: {e}")))?;
+    let unlinked = apply_unlink(&tx, root_id, library_id)?;
+    if !dry_run {
+        tx.commit().map_err(|e| {
+            UnlinkError::Failed(format!(
+                "committing the unlink of root {root_id} from library {library_id}: {e}"
+            ))
+        })?;
+    }
+    Ok(unlinked)
+}
+
+/// Whether root `root_id` can be taken out of library `library_id`: the
+/// refusals an unlink makes first, in its words, for a caller to ask before it
+/// waits on anything, as [`crate::relocate::check_source`] is asked before a
+/// move waits, since a page older than an unlink names a link that has gone.
+///
+/// # Errors
+///
+/// [`UnlinkError::Missing`] or [`UnlinkError::Unusable`], as [`unlink`]
+/// refuses; [`UnlinkError::Failed`] for a store fault.
+pub fn check_unlink(conn: &Connection, root_id: i64, library_id: i64) -> Result<(), UnlinkError> {
+    unlinkable(conn, root_id, library_id).map(|_| ())
+}
+
+/// The library's name, where [`unlink`] would not refuse.
+fn unlinkable(conn: &Connection, root_id: i64, library_id: i64) -> Result<String, UnlinkError> {
+    let library = crate::libraries::name_of(conn, library_id)
+        .map_err(UnlinkError::Failed)?
+        .ok_or_else(|| UnlinkError::Missing(format!("there is no library {library_id}")))?;
+    let dir = roots(conn)
+        .map_err(UnlinkError::Failed)?
+        .into_iter()
+        .find(|root| root.id == root_id)
+        .ok_or_else(|| UnlinkError::Missing(format!("there is no directory {root_id}")))?;
+    if !dir.libraries.contains(&library_id) {
+        return Err(UnlinkError::Missing(format!(
+            "`{}` is not in {library}",
+            dir.path.display()
+        )));
+    }
+    if dir.libraries.len() == 1 {
+        return Err(UnlinkError::Unusable(format!(
+            "`{}` is in no other library, so it can only be removed: use Remove this directory.",
+            dir.path.display()
+        )));
+    }
+    Ok(library)
+}
+
+/// [`unlink`], inside the caller's transaction.
+fn apply_unlink(conn: &Connection, root_id: i64, library_id: i64) -> Result<Unlinked, UnlinkError> {
+    let library = unlinkable(conn, root_id, library_id)?;
+    let left = crate::relocate::leaving(conn, root_id, (library_id, library), || {
+        conn.execute(
+            "DELETE FROM library_root WHERE library_id = ?1 AND root_id = ?2",
+            [library_id, root_id],
+        )
+        .map(|_| ())
+        .map_err(|e| format!("unlinking root {root_id} from library {library_id}: {e}"))
+    })
+    .map_err(UnlinkError::Failed)?;
+    Ok(Unlinked {
+        loses_sight: left.loses_sight,
+        library_removed: left.library_removed,
+        grants_removed: left.grants_removed,
+        left_with_no_library: left.left_with_no_library,
+    })
 }
 
 /// Every work whose *every* member sits under root `?1` alone — the works
@@ -874,40 +1252,48 @@ const DOOMED_WORKS: &str = "
                                WHERE r2.member_id = m2.id AND r2.root_id != ?1))
            )";
 
-/// The accounts, by name and in name order, that see no library once library
-/// `library_id` goes: those limited to the libraries they are granted, and
-/// granted this one alone. Empty where there are none, and where
-/// `library_id` names no library.
+/// The accounts, by name and in name order, that see no library once every
+/// one of `libraries` goes: limited accounts granted at least one of them and
+/// none outside them.
 ///
-/// **An administrator is never named**: it sees every library whatever its
-/// rows say. **Nor is an account set to every library** that still holds a
-/// row, since the row restricts nothing until the account is limited.
-///
-/// Asked before the library is deleted, because its grants go with it. A
-/// removal and a directory move both report what this answers.
+/// **Asked of the set at once**: an account granted exactly the two libraries
+/// one removal empties holds another grant whichever is asked about alone.
+/// Never named: an administrator or an account set to every library, whose
+/// rows limit neither, and one with no grant left to lose. Asked before the
+/// libraries are deleted, because their grants go with them.
 pub(crate) fn only_grant_holders(
     conn: &Connection,
-    library_id: i64,
+    libraries: &[i64],
 ) -> Result<Vec<String>, String> {
+    if libraries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let among = (1..=libraries.len())
+        .map(|n| format!("?{n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let failed = |e: rusqlite::Error| format!("checking whose only grants {libraries:?} are: {e}");
     let mut statement = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT u.name
-               FROM user_library ul
-               JOIN user u ON u.id = ul.user_id
-              WHERE ul.library_id = ?1
-                AND u.role = 'user'
+               FROM user u
+              WHERE u.role = 'user'
                 AND u.every_library = 0
+                AND EXISTS (SELECT 1 FROM user_library ul
+                             WHERE ul.user_id = u.id AND ul.library_id IN ({among}))
                 AND NOT EXISTS (SELECT 1 FROM user_library held
-                                 WHERE held.user_id = ul.user_id
-                                   AND held.library_id <> ul.library_id)
-              ORDER BY u.name",
-        )
-        .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))?;
+                                 WHERE held.user_id = u.id
+                                   AND held.library_id NOT IN ({among}))
+              ORDER BY u.name"
+        ))
+        .map_err(failed)?;
     statement
-        .query_map([library_id], |r| r.get::<_, String>(0))
-        .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))?
+        .query_map(rusqlite::params_from_iter(libraries), |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(failed)?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("checking whose only grant library {library_id} is: {e}"))
+        .map_err(failed)
 }
 
 /// Hand what root `removed` holds to the directories that hold its files once
@@ -1176,7 +1562,8 @@ fn take_root(conn: &Connection, id: i64) -> Result<Removal, String> {
         works: usize::try_from(works).unwrap_or(usize::MAX),
         positions: usize::try_from(positions).unwrap_or(usize::MAX),
         notes: usize::try_from(notes).unwrap_or(usize::MAX),
-        left_with_no_library: Vec::new(),
+        removed: vec![id],
+        ..Removal::default()
     })
 }
 
@@ -1231,20 +1618,25 @@ fn repoint_kept_members(conn: &Connection, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// The library root `id` is the last directory of, which removing it deletes.
-/// `None` where the library keeps another directory, and where `id` names no
-/// root.
-fn emptied_by_removing(conn: &Connection, id: i64) -> Result<Option<i64>, String> {
-    conn.query_row(
-        "SELECT l.id FROM root r JOIN library l ON l.id = r.library_id
-          WHERE r.id = ?1
-            AND NOT EXISTS (SELECT 1 FROM root other
-                             WHERE other.library_id = r.library_id AND other.id <> r.id)",
-        [id],
-        |r| r.get::<_, i64>(0),
+/// Every library root `id` is the last directory of, which removing it
+/// deletes, ascending by id. Empty where each library holding it keeps another
+/// directory, and where `id` names no root. A directory two libraries hold can
+/// be the last of both.
+fn emptied_by_removing(conn: &Connection, id: i64) -> Result<Vec<i64>, String> {
+    let failed =
+        |e: rusqlite::Error| format!("checking which libraries root {id} is the last of: {e}");
+    conn.prepare(
+        "SELECT lr.library_id FROM library_root lr
+          WHERE lr.root_id = ?1
+            AND NOT EXISTS (SELECT 1 FROM library_root other
+                             WHERE other.library_id = lr.library_id AND other.root_id <> ?1)
+          ORDER BY lr.library_id",
     )
-    .optional()
-    .map_err(|e| format!("checking whether root {id} is its library's last directory: {e}"))
+    .map_err(failed)?
+    .query_map([id], |r| r.get::<_, i64>(0))
+    .map_err(failed)?
+    .collect::<Result<_, _>>()
+    .map_err(failed)
 }
 
 /// Delete root `id`, every work that lived entirely under it, and re-derive
@@ -1252,15 +1644,15 @@ fn emptied_by_removing(conn: &Connection, id: i64) -> Result<Option<i64>, String
 /// runs and commits.
 ///
 /// **Whoever is left with no library is read before anything is deleted**,
-/// where `id` is its library's last directory: the library goes with that
-/// directory, and its grants with the library, so afterwards nothing records
-/// who held them.
+/// where `id` is the last directory of a library or of several: each goes with
+/// that directory, and its grants with it, so afterwards nothing records who
+/// held them.
 ///
 /// **Delete-plus-derive, not a bare `DELETE FROM root`.** `scan_entry`,
-/// `dir_state` and `rule` cascade with the root, and a library left with no
-/// root goes with it (migration 15's `library_emptied_by_delete`), taking its
-/// `user_library` grants (`schema/003_scanner.sql`,
-/// `schema/015_libraries.sql`), but `work`, `edition`,
+/// `dir_state`, `rule` and its `library_root` links cascade with the root, and
+/// a library left with no link goes with it (migration 19's
+/// `library_emptied_by_unlink`), taking its `user_library` grants
+/// (`schema/003_scanner.sql`, `schema/019_library_links.sql`), but `work`, `edition`,
 /// `member`, `progress` and `note` do not follow — `progress` and `note` are
 /// keyed on `work_id` and carry no root at all, and `member.root_id` is `ON
 /// DELETE SET NULL`, not `CASCADE`, precisely so an ordinary rescan finding a
@@ -1291,10 +1683,9 @@ fn apply_removal(
     conn: &Connection,
     id: i64,
 ) -> Result<(Removal, crate::derive::DeriveReport, Carried), String> {
-    let left_with_no_library = match emptied_by_removing(conn, id)? {
-        Some(library_id) => only_grant_holders(conn, library_id)?,
-        None => Vec::new(),
-    };
+    let emptied = emptied_by_removing(conn, id)?;
+    let left_with_no_library = only_grant_holders(conn, &emptied)?;
+    let libraries_removed = names_of(conn, &emptied)?;
     // Spec §4: the directories around and inside `id` keep the files they
     // would walk, so `take_root` counts only what none of them holds, and the
     // rehearsal, which runs this function too, counts what the removal does.
@@ -1302,6 +1693,7 @@ fn apply_removal(
     hand_back(conn, id, &mut carried)?;
     let mut removal = take_root(conn, id)?;
     removal.left_with_no_library = left_with_no_library;
+    removal.libraries_removed = libraries_removed;
     let derived = crate::derive::derive_with(conn, crate::derive::Documents::Skip)?;
 
     Ok((removal, derived, carried))
@@ -1419,48 +1811,89 @@ pub fn remove_root(
     Ok((removal, derived))
 }
 
-/// Remove each directory of `library_id` in turn, summing what each takes, then
-/// derive once.
+/// The name of each library of `ids`, in order: read inside a removal's
+/// transaction before the libraries go, and a fault, never a gap, where one
+/// is missing.
+fn names_of(conn: &Connection, ids: &[i64]) -> Result<Vec<String>, String> {
+    ids.iter()
+        .map(|id| {
+            crate::libraries::name_of(conn, *id)?
+                .ok_or_else(|| format!("library {id} is linked and has no row"))
+        })
+        .collect()
+}
+
+/// Remove each directory `library_id` alone holds, summing what each takes,
+/// then unlink those another library holds too, counted nothing and named in
+/// [`Removal::kept`] (overlapping-libraries spec §5), and derive once where a
+/// directory went: `None` where none did, and nothing was derived.
 ///
-/// **One directory after another inside the caller's transaction, never one dry
-/// run per directory.** [`DOOMED_WORKS`] names a work for a directory only when
-/// every member of it is under that directory. A work with an edition under each
-/// of two directories is therefore named for neither while both stand, and for
-/// the second once [`take_root`] has deleted the first's members.
-///
-/// **Whoever is left with no library is read before the first directory goes**,
-/// for [`apply_removal`]'s reason. A library with no directory is not deleted
-/// here, since it goes only with its last directory, so it leaves no one.
+/// **One directory after another in the caller's transaction, never one dry run
+/// each**: a work with an edition under each of two directories is in
+/// [`DOOMED_WORKS`] for neither while both stand. Who is left with no library,
+/// and every name this answers, are read before anything goes.
 fn apply_library_removal(
     conn: &Connection,
     library_id: i64,
-) -> Result<(Removal, crate::derive::DeriveReport, Carried), String> {
-    let dirs: Vec<i64> = conn
-        .prepare("SELECT id FROM root WHERE library_id = ?1 ORDER BY id")
-        .map_err(|e| format!("listing the directories of library {library_id}: {e}"))?
-        .query_map([library_id], |r| r.get(0))
-        .map_err(|e| format!("listing the directories of library {library_id}: {e}"))?
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("listing the directories of library {library_id}: {e}"))?;
+) -> Result<(Removal, Option<crate::derive::DeriveReport>, Carried), String> {
+    let (shared, alone): (Vec<Root>, Vec<Root>) = roots(conn)?
+        .into_iter()
+        .filter(|root| root.libraries.contains(&library_id))
+        .partition(|root| root.libraries.len() > 1);
+    // A library with no directory goes only with its last one, so it stays,
+    // and a directory it alone holds empties no other library.
+    let emptied = if shared.is_empty() && alone.is_empty() {
+        Vec::new()
+    } else {
+        vec![library_id]
+    };
     let mut total = Removal {
-        left_with_no_library: if dirs.is_empty() {
-            Vec::new()
-        } else {
-            only_grant_holders(conn, library_id)?
-        },
+        left_with_no_library: only_grant_holders(conn, &emptied)?,
+        libraries_removed: names_of(conn, &emptied)?,
         ..Removal::default()
     };
+    for dir in &shared {
+        let others: Vec<i64> = dir
+            .libraries
+            .iter()
+            .copied()
+            .filter(|library| *library != library_id)
+            .collect();
+        total.kept.push(Kept {
+            root_id: dir.id,
+            path: dir.path.clone(),
+            libraries: names_of(conn, &others)?,
+        });
+    }
+    let removes_a_dir = !alone.is_empty();
     let mut carried = Carried::new();
-    for dir in dirs {
+    for dir in alone {
         // As in `apply_removal`. Directories of one library never nest, so a
         // directory given rows is another library's, not removed later here.
-        hand_back(conn, dir, &mut carried)?;
-        let taken = take_root(conn, dir)?;
+        hand_back(conn, dir.id, &mut carried)?;
+        let taken = take_root(conn, dir.id)?;
         total.works += taken.works;
         total.positions += taken.positions;
         total.notes += taken.notes;
+        total.removed.extend(taken.removed);
     }
-    let derived = crate::derive::derive_with(conn, crate::derive::Documents::Skip)?;
+    for dir in shared {
+        conn.execute(
+            "DELETE FROM library_root WHERE library_id = ?1 AND root_id = ?2",
+            [library_id, dir.id],
+        )
+        .map_err(|e| format!("unlinking root {} from library {library_id}: {e}", dir.id))?;
+    }
+    // A derive reads no link or grant, so a removal that only unlinks changes
+    // nothing a derive or its reconcile pass reads.
+    let derived = if removes_a_dir {
+        Some(crate::derive::derive_with(
+            conn,
+            crate::derive::Documents::Skip,
+        )?)
+    } else {
+        None
+    };
     Ok((total, derived, carried))
 }
 
@@ -1479,13 +1912,14 @@ pub fn library_removal_cost(
     let (removal, derived, _carried) = apply_library_removal(&tx, library_id)?;
     // Not committed: dropping `tx` is the rollback, as in `removal_cost`.
     drop(tx);
-    Ok((removal, derived))
+    Ok((removal, derived.unwrap_or_default()))
 }
 
-/// Remove library `library_id`: each of its directories, the works they alone
-/// accounted for, and the library, which migration 15 deletes with its last
-/// directory. Then derive again with documents reconciled, after the commit, for
-/// [`remove_root`]'s reason.
+/// Remove library `library_id`: each directory it alone holds and the works
+/// they alone accounted for, its links to the directories another library
+/// holds too, and the library, which migration 19 deletes with its last link.
+/// Where a directory went, derive again with documents reconciled, after the
+/// commit, for [`remove_root`]'s reason; where none did, the report is empty.
 ///
 /// # Errors
 ///
@@ -1497,9 +1931,12 @@ pub fn remove_library(
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
     let tx = crate::Nested::open(conn, "remove_library")
         .map_err(|e| format!("starting the library-removal transaction: {e}"))?;
-    let (removal, _predicted, carried) = apply_library_removal(&tx, library_id)?;
+    let (removal, predicted, carried) = apply_library_removal(&tx, library_id)?;
     tx.commit()
         .map_err(|e| format!("committing the removal of library {library_id}: {e}"))?;
+    if predicted.is_none() {
+        return Ok((removal, crate::derive::DeriveReport::default()));
+    }
     carry_documents(conn, &carried)
         .map_err(|e| format!("moving hand documents after removing library {library_id}: {e}"))?;
     let derived = crate::derive::derive(conn)

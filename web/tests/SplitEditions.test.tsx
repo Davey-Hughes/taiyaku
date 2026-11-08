@@ -37,14 +37,14 @@ const TWO: splitApi.SplitEdition[] = [
         path: 'Bar 01.cbz',
         pages: 4,
         directories: [
-          { root: 3, path: '/m', library: 1 },
-          { root: 7, path: '/s', library: 3 },
+          { root: 3, path: '/m', libraries: [1] },
+          { root: 7, path: '/s', libraries: [3] },
         ],
       },
       {
         path: 'Bar 02.cbz',
         pages: 6,
-        directories: [{ root: 7, path: '/s', library: 3 }],
+        directories: [{ root: 7, path: '/s', libraries: [3] }],
       },
     ],
     libraries: [
@@ -61,17 +61,17 @@ const TWO: splitApi.SplitEdition[] = [
       {
         path: 'Foo v01 part1.cbz',
         pages: 1,
-        directories: [{ root: 3, path: '/m', library: 1 }],
+        directories: [{ root: 3, path: '/m', libraries: [1] }],
       },
       {
         path: 'Foo v01 part2.cbz',
         pages: 3,
-        directories: [{ root: 5, path: '/k', library: 2 }],
+        directories: [{ root: 5, path: '/k', libraries: [2] }],
       },
       {
         path: 'Foo v01 part3.cbz',
         pages: 5,
-        directories: [{ root: 3, path: '/m', library: 1 }],
+        directories: [{ root: 3, path: '/m', libraries: [1] }],
       },
     ],
     libraries: [
@@ -213,6 +213,57 @@ describe('SplitEditions', () => {
       ['/s', undefined],
       ['/s', undefined],
     ])
+  })
+
+  it('links a directory several libraries hold once, under the first library the edition lists that holds it', async () => {
+    const [bar] = TWO
+    const held = (libraries: number[]) => ({
+      ...bar,
+      members: [
+        {
+          path: 'Bar 01.cbz',
+          pages: 4,
+          directories: [{ root: 3, path: '/m', libraries }],
+        },
+      ],
+    })
+    const link = async (edition: splitApi.SplitEdition) => {
+      vi.mocked(splitApi.listSplitEditions).mockResolvedValue({
+        editions: [edition],
+      })
+      const host = await settle()
+      return [
+        ...listed(host)[0].querySelectorAll(
+          ':scope > .split-edition-files > li > .split-edition-dirs > li',
+        ),
+      ].map((li) => [
+        li.textContent,
+        [...li.querySelectorAll('a')].map((a) => a.getAttribute('href')),
+      ])
+    }
+    // Manga (1) and Shared (3) both listed: Manga's page.
+    expect(await link(held([1, 3]))).toEqual([
+      ['/m', ['/config/libraries/Manga/dirs/3']],
+    ])
+    // Kids corner (2) is not the edition's: Shared's page.
+    expect(await link(held([2, 3]))).toEqual([
+      ['/m', ['/config/libraries/Shared/dirs/3']],
+    ])
+    // The server sends an edition's libraries by name, so Anime (4) comes
+    // before Manga (1) there: the edition's order, not the ids', picks
+    // Anime (spec decision 29).
+    expect(
+      await link({
+        ...held([1, 4]),
+        libraries: [
+          { id: 4, name: 'Anime', members: 1, pages: 4 },
+          ...bar.libraries,
+        ],
+      }),
+    ).toEqual([['/m', ['/config/libraries/Anime/dirs/3']]])
+    // Neither Kids corner (2) nor library 5 is the edition's: its path
+    // alone, with no link.
+    expect(await link(held([2, 5]))).toEqual([['/m', []]])
   })
 
   it('says how to split one under the list, and draws no empty line beside it', async () => {

@@ -2155,6 +2155,10 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             axum::routing::post(crate::libraries_api::add_dir),
         ),
         (
+            "/api/library/libraries/{id}/dirs/{dir}",
+            axum::routing::delete(crate::libraries_api::unlink_dir),
+        ),
+        (
             "/api/library/libraries/{id}/scan",
             axum::routing::get(crate::libraries_api::library_scan_status)
                 .post(crate::libraries_api::start_library_scan),
@@ -2591,6 +2595,16 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
             },
         ),
         (
+            "/api/library/libraries/{id}/dirs/{dir}",
+            GrantIndependent {
+                reason: "takes one directory out of one library, a write to \
+                          the whole store that changes what a library is and \
+                          so what a grant on it means, as \
+                          /api/library/roots/{id}/move does, with no \
+                          account's own grant to filter it by",
+            },
+        ),
+        (
             "/api/library/libraries/{id}/scan",
             GrantIndependent {
                 reason: "starts or reports on a scan of one library's \
@@ -2793,6 +2807,7 @@ pub(crate) fn narrowing_postures() -> Vec<(&'static str, NarrowingPosture)> {
         ("/api/library/libraries", ADMIN),
         ("/api/library/libraries/{id}", ADMIN),
         ("/api/library/libraries/{id}/dirs", ADMIN),
+        ("/api/library/libraries/{id}/dirs/{dir}", ADMIN),
         ("/api/library/libraries/{id}/scan", ADMIN),
         ("/api/library/split-editions", ADMIN),
         ("/api/library/dirs", ADMIN),

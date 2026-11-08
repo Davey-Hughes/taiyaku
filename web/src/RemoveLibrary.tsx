@@ -17,25 +17,27 @@
  * until an administrator grants one, which the person removing may not know
  * of; the server's dry run names it, and the real removal does what the dry
  * run described.
+ *
+ * **A directory another library holds too is left to it, and not counted as
+ * removed.** The dry run names each one with the libraries that keep it, so
+ * the confirm does not say a directory goes that stays.
  */
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import type { RemovalAnswer } from './config'
 import { HeldButton } from './HeldButton'
 import { useDrawn, useDrawnWait } from './hooks'
 import {
   type Library,
   libraryRemovalCost,
+  namesOf,
   noLibrarySentence,
   removeLibrary,
 } from './libraries'
 import { sentenceOf } from './message'
+import { PathWithBreaks } from './PathWithBreaks'
 import { DeriveSection } from './ScanReport'
 import { WaitWords } from './WaitWords'
-
-/** `n` of a thing, in the number the count is. Zero takes the plural. */
-function count(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`
-}
+import { count } from './count'
 
 /** The confirm's words while the removal is out. */
 const REMOVING = 'Removing…'
@@ -130,6 +132,42 @@ export function RemoveLibrary({
       })
   }
 
+  const kept = cost?.removed.kept ?? []
+  /**
+   * The library's directories the dry run does not name as kept, matched
+   * by path: the dry run counts no directories, and is asked again whenever
+   * the list's directories change. A filter, so a list staler than it cannot
+   * go below 0.
+   */
+  const removed = library.dirs.filter(
+    (dir) => !kept.some((one) => one.path === dir.path),
+  ).length
+  /**
+   * Each directory left, with the libraries that keep it, apart by
+   * semicolons: a list of libraries has its own commas and "and".
+   */
+  const leaves = kept.map((one, i) => (
+    <Fragment key={one.path}>
+      {i === 0 ? '' : '; '}
+      <code>
+        <PathWithBreaks path={one.path} />
+      </code>{' '}
+      to {namesOf(one.libraries)}
+    </Fragment>
+  ))
+  const figures =
+    cost === undefined ? undefined : (
+      <>
+        {count(cost.removed.works, 'work', 'works')},{' '}
+        {count(
+          cost.removed.positions,
+          'in-progress position',
+          'in-progress positions',
+        )}{' '}
+        and {count(cost.removed.notes, 'note', 'notes')}
+      </>
+    )
+
   return (
     <div
       className="remove-library"
@@ -146,15 +184,19 @@ export function RemoveLibrary({
       ) : (
         <>
           <p className="counts">
-            Removing {library.name} removes its{' '}
-            {count(library.dirs.length, 'directory', 'directories')},{' '}
-            {count(cost.removed.works, 'work', 'works')},{' '}
-            {count(
-              cost.removed.positions,
-              'in-progress position',
-              'in-progress positions',
-            )}{' '}
-            and {count(cost.removed.notes, 'note', 'notes')}.
+            Removing {library.name}{' '}
+            {removed === 0 && kept.length > 0 ? (
+              <>
+                leaves {leaves}, and removes {figures}
+              </>
+            ) : (
+              <>
+                removes its {count(removed, 'directory', 'directories')},{' '}
+                {figures}
+                {kept.length > 0 && <>, and leaves {leaves}</>}
+              </>
+            )}
+            .
           </p>
           {cost.removed.left_with_no_library.length > 0 && (
             <p className="left-with-no-library">

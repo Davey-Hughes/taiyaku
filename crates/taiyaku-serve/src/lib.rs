@@ -214,9 +214,11 @@ pub struct ScanProgress {
     /// it did; see [`crate::config_api::scan_status`]'s own doc comment.
     pub report: Option<serde_json::Value>,
     /// The library whose request reserved this slot: the library a Scan
-    /// library named, or the directory's own for a Scan directory. A
-    /// library's status names a scan by it, since a scan of one library walks
-    /// directories of others. `None` for a slot no request reserved.
+    /// library named, or for a Scan directory the library its page named,
+    /// else the directory's one library (decision 27). A library's status
+    /// names a scan by it, since a scan of one library walks directories of
+    /// others. `None` for a shared directory's scan named by no page, and for
+    /// a slot no request reserved.
     pub library: Option<i64>,
 }
 

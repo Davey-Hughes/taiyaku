@@ -52,6 +52,8 @@ import {
   type LibraryDir,
   libraryScanStatus,
   type MoveAnswer,
+  namesOf,
+  type UnlinkAnswer,
 } from './libraries'
 import { sentenceOf } from './message'
 import { invalidateLibraryViews, libraryScan } from './pageReads'
@@ -64,7 +66,7 @@ export interface DirPageProps {
   root: LibraryDir
   /** Only a directory added in this session has one. */
   probe?: Probe
-  /** Every other library, for Move…. */
+  /** Every library not holding the directory, for Move…. */
   others: { id: number; name: string }[]
   /**
    * What the screen says above the page: a list that could not be read, or
@@ -73,11 +75,15 @@ export interface DirPageProps {
   notices?: ReactNode
   onChanged: (quiet?: boolean) => void
   onRemoved: (answer: RemovalAnswer) => void
+  /** The directory left this library alone, which another keeps. */
+  onUnlinked: (answer: UnlinkAnswer) => void
   onMoved: (answer: MoveAnswer) => void
   /** A write sent from this page was refused once it had gone. See `RootRow`'s. */
   onLateRefusal?: (sentence: string) => void
   /** The person opened this from the library's Directories table: the heading takes focus. */
   arrived?: boolean
+  /** Another library's page of this directory was opened from this one. See `RootRow`'s. */
+  onOpen?: (to: string) => void
 }
 
 /**
@@ -98,7 +104,10 @@ function useOtherScan(
   move: boolean
   failure?: string
   forget: () => void
+  askAgain: () => void
 } {
+  /** Bumped by `askAgain`, which runs the read below afresh. */
+  const [asked, setAsked] = useState(0)
   const [mine, setMine] = useState(false)
   const [removal, setRemoval] = useState(false)
   const [move, setMove] = useState(false)
@@ -107,6 +116,7 @@ function useOtherScan(
   const own = useRef<ReadonlySet<number>>(new Set())
   own.current = new Set(library.dirs.map((one) => one.id))
   const libraryId = library.id
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `asked` is a trigger, not a closure read: `askAgain` bumps it to read the status afresh.
   useEffect(() => {
     // The sentence is about the hold it gave up, not about this one.
     setFailure(undefined)
@@ -172,10 +182,13 @@ function useOtherScan(
       cancelled = true
       clearTimeout(timer)
     }
-  }, [libraryId, rootId])
+  }, [libraryId, rootId, asked])
   // Stable, so `RootRow`'s Scan directory handler is not made afresh each draw.
   const forget = useCallback(() => setFailure(undefined), [])
-  return { self: mine, removal, move, failure, forget }
+  // Asks afresh for a refusal that says something holds which no read here
+  // has seen, so that the hold is drawn and polled until it ends.
+  const askAgain = useCallback(() => setAsked((n) => n + 1), [])
+  return { self: mine, removal, move, failure, forget, askAgain }
 }
 
 /**
@@ -184,26 +197,31 @@ function useOtherScan(
  * outermost first, then the directories inside it, folded under their count
  * so that a directory holding many stays one line until it is opened.
  * Nothing where there are none. `library` is the name of `root`'s library.
+ * Each other directory is said with every library holding it.
  */
 function Nesting({ root, library }: { root: LibraryDir; library: string }) {
   if (root.inside.length === 0 && root.nested.length === 0) return null
   const n = root.nested.length
   return (
     <div className="nesting">
-      {root.inside.map((one) => (
-        <p key={one.path}>
-          {one.shows
-            ? `Also shown in ${one.library}`
-            : one.kept_out_by === 'dot_name'
-              ? `Kept out of ${one.library}: its scans skip names starting with a dot`
-              : `Kept out of ${one.library} by its exclusions`}{' '}
-          (inside{' '}
-          <code>
-            <PathWithBreaks path={one.path} />
-          </code>
-          )
-        </p>
-      ))}
+      {root.inside.map((one) => {
+        const names = namesOf(one.libraries)
+        const its = one.libraries.length === 1 ? 'its' : 'their'
+        return (
+          <p key={one.path}>
+            {one.shows
+              ? `Also shown in ${names}`
+              : one.kept_out_by === 'dot_name'
+                ? `Kept out of ${names}: ${its} scans skip names starting with a dot`
+                : `Kept out of ${names} by ${its} exclusions`}{' '}
+            (inside{' '}
+            <code>
+              <PathWithBreaks path={one.path} />
+            </code>
+            )
+          </p>
+        )
+      })}
       {n > 0 && (
         <details>
           <summary>
@@ -217,7 +235,7 @@ function Nesting({ root, library }: { root: LibraryDir; library: string }) {
                 <code>
                   <PathWithBreaks path={folderIn(one.path, root.path)} />
                 </code>
-                <span>{one.library}</span>
+                <span>{namesOf(one.libraries)}</span>
                 <span>
                   {one.shown
                     ? `also shown in ${library}`
@@ -242,9 +260,11 @@ export function DirPage({
   notices,
   onChanged,
   onRemoved,
+  onUnlinked,
   onMoved,
   onLateRefusal,
   arrived,
+  onOpen,
 }: DirPageProps) {
   const {
     self: held,
@@ -252,12 +272,13 @@ export function DirPage({
     move: moveHeld,
     failure,
     forget,
+    askAgain,
   } = useOtherScan(library, root.id)
   return (
     <div className="dir-page">
       <RootRow
-        // By path, for the reason the library's table keys its rows so.
-        key={root.path}
+        // By library and path, for the reasons the screen keys this page so.
+        key={`${library.id}:${root.path}`}
         back={{
           to: libraryPath(library.name),
           label: library.name,
@@ -273,7 +294,8 @@ export function DirPage({
         nesting={<Nesting root={root} library={library.name} />}
         arrived={arrived}
         probe={probe}
-        lastOf={library.dirs.length === 1 ? library.name : undefined}
+        library={{ id: library.id, name: library.name }}
+        libraries={root.libraries}
         held={held}
         removalHeld={removalHeld}
         moveHeld={moveHeld}
@@ -281,14 +303,14 @@ export function DirPage({
         // hold given up says nothing of it.
         onScan={forget}
         onScanMoved={() => markStale(libraryScan(library.id))}
-        moveTo={{
-          from: { id: library.id, name: library.name },
-          targets: others,
-        }}
+        onHeldRefusal={askAgain}
+        moveTo={others}
         onChanged={onChanged}
         onRemoved={onRemoved}
+        onUnlinked={onUnlinked}
         onMoved={onMoved}
         onLateRefusal={onLateRefusal}
+        onOpen={onOpen}
       />
     </div>
   )

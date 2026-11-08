@@ -4264,8 +4264,7 @@ async fn an_account_granted_only_a_library_with_no_dir_sees_nothing() {
         )
         .expect("puts the work in a series, beside a library with no directory");
         crate::test_support::grant_root(&conn, 1);
-        conn.query_row("SELECT library_id FROM root WHERE id = 1", [], |r| r.get(0))
-            .expect("the held directory's library")
+        crate::test_support::library_of_root(&conn, 1)
     };
     let router =
         crate::test_support::authenticating(build_router(Arc::clone(&state)), &state.library);
@@ -4317,11 +4316,7 @@ async fn a_request_with_no_principal_sees_nothing() {
     use axum::http::HeaderMap;
 
     let (state, _fixture) = crate::test_support::state_whose_grant_waits_on_the_library();
-    let held_library: i64 = state
-        .library
-        .conn()
-        .query_row("SELECT library_id FROM root WHERE id = 1", [], |r| r.get(0))
-        .expect("the held directory's library");
+    let held_library = crate::test_support::library_of_root(&state.library.conn(), 1);
 
     let mut wrong = Vec::new();
     for (who, extensions, sees) in [

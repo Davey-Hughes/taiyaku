@@ -371,8 +371,20 @@ describe('the last row sits one --space-4 inside its box', () => {
 /** Three libraries, so that the Libraries table's first and last rows differ. */
 const SHELVES: librariesApi.Library[] = [
   MANGA,
-  { id: 2, name: 'Comics', works: 412, books: 0, dirs: [dir(41)] },
-  { id: 3, name: 'Light novels', works: 96, books: 0, dirs: [dir(42)] },
+  {
+    id: 2,
+    name: 'Comics',
+    works: 412,
+    books: 0,
+    dirs: [{ ...dir(41), libraries: [{ id: 2, name: 'Comics' }] }],
+  },
+  {
+    id: 3,
+    name: 'Light novels',
+    works: 96,
+    books: 0,
+    dirs: [{ ...dir(42), libraries: [{ id: 3, name: 'Light novels' }] }],
+  },
 ]
 
 /**
@@ -451,7 +463,14 @@ const LONG_LABEL = 'Members whose directory was removed mid-derive'
 
 /** What a removal would take, and what re-deriving after it would find. */
 const REMOVAL: config.RemovalAnswer = {
-  removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+  removed: {
+    works: 1,
+    positions: 0,
+    notes: 0,
+    left_with_no_library: [],
+    libraries_removed: [],
+    kept: [],
+  },
   derive: emptyDerive,
   dry_run: true,
 }
@@ -830,7 +849,8 @@ describe('no line of a two-line row or of a directory’s facts starts or ends w
       },
     ],
   }))
-  const ROW_CELLS = 'td:not(.lead)'
+  // An empty cell draws nothing, so it is no item (`lineEnds.ts`).
+  const ROW_CELLS = 'td:not(.lead):not(:empty)'
 
   for (const { name, width, entry, groups, items } of [
     {
@@ -885,6 +905,54 @@ describe('no line of a two-line row or of a directory’s facts starts or ends w
       expect(strays).toEqual([])
     })
   }
+})
+
+describe('a library’s Directories beside an open directory', () => {
+  /** The list's box's width inside its padding. */
+  const room = (box: HTMLElement) => {
+    const style = getComputedStyle(box)
+    return (
+      box.clientWidth -
+      Number.parseFloat(style.paddingLeft) -
+      Number.parseFloat(style.paddingRight)
+    )
+  }
+
+  it('draws its rows in two lines in a list 36rem or more wide whose box is narrower, and as a table once the box is 36rem', async () => {
+    answerPairs([], [MANGA])
+    const host = await shell(WIDE, dirPath(MANGA.name, 1))
+    const list = need(host, '.split-pair > .split-list')
+    const table = need(list, '.library-page .dir-table')
+    const box = table.closest('.settings-box') as HTMLElement
+    const row = () => need(table, 'tbody tr')
+    expect(room(box)).toBeGreaterThanOrEqual(576)
+    expect(getComputedStyle(row()).display).toBe('table-row')
+    // Narrow the window until the list is 590px, beside the open page at
+    // its measure and the gap: the list's own rule keeps four columns
+    // there, and its box is under 36rem.
+    const pair = need(host, '.split-pair')
+    const over =
+      pair.getBoundingClientRect().width -
+      Number.parseFloat(getComputedStyle(pair).columnGap) -
+      need(pair, ':scope > .split-detail').getBoundingClientRect().width -
+      590
+    await resize(WIDE - over, 900)
+    const width = list.getBoundingClientRect().width
+    expect(width).toBeGreaterThanOrEqual(576)
+    expect(width).toBeLessThan(600)
+    expect(room(box)).toBeLessThan(576)
+    expect(getComputedStyle(row()).display).toBe('flex')
+    const label = row()
+      .querySelectorAll('td')[1]
+      .querySelector('.cell-label') as HTMLElement
+    expect(getComputedStyle(label).display).toBe('inline')
+    // Each row's path stands as far in as the list's own two-line rows put
+    // theirs, clear of the stripe that marks the open row.
+    for (const tr of table.querySelectorAll('tbody tr')) {
+      const lead = need(tr, 'td.lead').getBoundingClientRect().left
+      expect(lead - tr.getBoundingClientRect().left).toBeGreaterThanOrEqual(12)
+    }
+  })
 })
 
 /**

@@ -202,8 +202,8 @@ fn print_usage() {
     println!("       taiyaku library libraries [--db PATH]");
     println!(
         "       taiyaku library scan  [--add PATH] [--library NAME | --root PATH] [--no-derive] \
-         [--db PATH]  (--add files a directory under --library, creating it; alone, as a \
-         library of its own)"
+         [--db PATH]  (--add files a directory under --library, creating it, or links it \
+         there where another library holds it; alone, as a library of its own)"
     );
     println!(
         "       taiyaku library user grant-library|revoke-library <user> <library> [--db PATH]"

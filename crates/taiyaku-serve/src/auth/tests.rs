@@ -124,6 +124,7 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/libraries",
         "/api/library/libraries/{id}",
         "/api/library/libraries/{id}/dirs",
+        "/api/library/libraries/{id}/dirs/{dir}",
         "/api/library/libraries/{id}/scan",
         "/api/library/split-editions",
         "/api/library/dirs",
@@ -1110,10 +1111,13 @@ fn two_dirs_numbered_apart_from_their_libraries(
     )
     .expect("two libraries, numbered apart from their directories");
     conn.execute(
-        "INSERT INTO root (id, path, library_id) VALUES (1, ?1, 70), (2, ?2, 80)",
+        "INSERT INTO root (id, path) VALUES (1, ?1), (2, ?2)",
         [held, withheld],
     )
-    .expect("two directories, each in a library of its own");
+    .expect("two directories");
+    // Each in a library of its own.
+    crate::test_support::link(conn, 70, 1);
+    crate::test_support::link(conn, 80, 2);
 }
 
 /// The library `dir` is in, read from the store, and checked to be
@@ -1122,11 +1126,7 @@ fn two_dirs_numbered_apart_from_their_libraries(
 /// The same helper `opds::tests` defines, for the reason [`channel`] gives.
 fn library_of(state: &ServeState, dir: i64) -> i64 {
     let conn = state.library.conn();
-    let library: i64 = conn
-        .query_row("SELECT library_id FROM root WHERE id = ?1", [dir], |r| {
-            r.get(0)
-        })
-        .expect("the directory's library");
+    let library = crate::test_support::library_of_root(&conn, dir);
     let dirs: Vec<i64> = conn
         .prepare("SELECT id FROM root")
         .expect("prepares")
@@ -1227,7 +1227,7 @@ fn router_with_material_under_a_withheld_root(
             .expect("a grant restricts a user, never an admin");
         conn.execute_batch(
             "INSERT INTO user_library (user_id, library_id)
-             SELECT 1, library_id FROM root WHERE id = 1;
+             SELECT 1, library_id FROM library_root WHERE root_id = 1;
              UPDATE user SET every_library = 0 WHERE id = 1;",
         )
         .expect("grants the fixture account the other root");
@@ -1343,7 +1343,7 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
             .expect("a grant restricts a user, never an admin");
         conn.execute_batch(
             "INSERT INTO user_library (user_id, library_id)
-             SELECT 1, library_id FROM root WHERE id = 1;
+             SELECT 1, library_id FROM library_root WHERE root_id = 1;
              UPDATE user SET every_library = 0 WHERE id = 1;",
         )
         .expect("grants only the visible root");
@@ -1459,7 +1459,7 @@ fn one_work_two_editions_split_across_roots(
             .expect("a grant restricts a user, never an admin");
         conn.execute_batch(
             "INSERT INTO user_library (user_id, library_id)
-             SELECT 1, library_id FROM root WHERE id = 1;
+             SELECT 1, library_id FROM library_root WHERE root_id = 1;
              UPDATE user SET every_library = 0 WHERE id = 1;",
         )
         .expect("grants only the visible root");
@@ -1576,11 +1576,8 @@ fn one_work_three_editions_hub_withheld(dir: &std::path::Path) -> (axum::Router,
         seed_edge("raw", "en");
         seed_edge("en", "fr");
 
-        conn.execute(
-            "INSERT INTO root (id, path) VALUES (1, '/visible-root'), (2, '/hidden-root')",
-            [],
-        )
-        .expect("two roots");
+        crate::test_support::plant_root(&conn, 1, "/visible-root");
+        crate::test_support::plant_root(&conn, 2, "/hidden-root");
         for key in ["en", "fr"] {
             conn.execute(
                 "UPDATE member SET root_id = 1 WHERE edition_id = \
@@ -1603,7 +1600,7 @@ fn one_work_three_editions_hub_withheld(dir: &std::path::Path) -> (axum::Router,
             .expect("a grant restricts a user, never an admin");
         conn.execute_batch(
             "INSERT INTO user_library (user_id, library_id)
-             SELECT 1, library_id FROM root WHERE id = 1;
+             SELECT 1, library_id FROM library_root WHERE root_id = 1;
              UPDATE user SET every_library = 0 WHERE id = 1;",
         )
         .expect("grants only the visible root");
@@ -1715,7 +1712,7 @@ async fn every_route_declares_its_grant_posture() {
     );
     assert_eq!(
         table.len() - driven,
-        38,
+        39,
         "the remaining guarded routes must be GrantIndependent — \
          see the `driven` assertion just above, which this one is the other \
          half of. A new admin-only route is GrantIndependent: it changes who \
@@ -3052,7 +3049,7 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
     );
     assert_eq!(
         counted(|p| matches!(p, NarrowingPosture::NoPages { .. })),
-        38,
+        39,
         "the NoPages routes, declared and not driven: a route moved here from a driven posture \
          moves this count and one above, and a new route that reads no pages moves this alone"
     );
@@ -3926,6 +3923,7 @@ const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
     "/api/library/libraries",
     "/api/library/libraries/{id}",
     "/api/library/libraries/{id}/dirs",
+    "/api/library/libraries/{id}/dirs/{dir}",
     "/api/library/libraries/{id}/scan",
     "/api/library/split-editions",
     "/api/library/dirs",

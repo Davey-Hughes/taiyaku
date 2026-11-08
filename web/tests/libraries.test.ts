@@ -3,6 +3,7 @@ import {
   addDir,
   createLibrary,
   libraryRemovalCost,
+  libraryRemovedSentence,
   libraryScanStatus,
   listDirs,
   listLibraries,
@@ -12,7 +13,13 @@ import {
   removeLibrary,
   renameLibrary,
   startLibraryScan,
+  unlinkCost,
+  unlinkDir,
+  withMovedDir,
+  withoutDir,
 } from '../src/libraries'
+import type { Moved } from '../src/libraries'
+import { dir } from './support/libraries'
 
 const answering = (body: unknown) => {
   const fetchMock = vi.fn().mockImplementation(() =>
@@ -90,17 +97,31 @@ describe('the libraries client', () => {
     ],
     [
       'moveCost',
-      () => moveCost(3, { library: 7 }),
+      () => moveCost(3, 9, { library: 7 }),
       'POST',
       '/api/library/roots/3/move?dry_run=true',
-      { library: 7 },
+      { from: 9, library: 7 },
     ],
     [
       'moveDir',
-      () => moveDir(3, { new_library: 'Extras' }),
+      () => moveDir(3, 9, { new_library: 'Extras' }),
       'POST',
       '/api/library/roots/3/move',
-      { new_library: 'Extras' },
+      { from: 9, new_library: 'Extras' },
+    ],
+    [
+      'unlinkCost',
+      () => unlinkCost(7, 3),
+      'DELETE',
+      '/api/library/libraries/7/dirs/3?dry_run=true',
+      undefined,
+    ],
+    [
+      'unlinkDir',
+      () => unlinkDir(7, 3),
+      'DELETE',
+      '/api/library/libraries/7/dirs/3',
+      undefined,
     ],
     [
       'startLibraryScan',
@@ -173,5 +194,193 @@ describe('noLibrarySentence', () => {
     ).toBe(
       "alice, bob and carol can see only this directory's library. After this, they will see no library until an administrator grants one.",
     )
+  })
+})
+
+describe('withoutDir', () => {
+  const MANGA = { id: 7, name: 'Manga' }
+  const KIDS = { id: 8, name: 'Kids' }
+  const TEENS = { id: 9, name: 'Teens' }
+  /**
+   * `/m` held by Manga, Kids and Teens, Manga and Teens holding another
+   * directory each, and Kids nothing else, so dropping `/m` from Kids can
+   * empty it.
+   */
+  const held = () => [
+    {
+      ...MANGA,
+      works: 0,
+      books: 0,
+      dirs: [dir(1, '/m', [MANGA, KIDS, TEENS]), dir(2, '/a', [MANGA])],
+    },
+    { ...KIDS, works: 0, books: 0, dirs: [dir(1, '/m', [MANGA, KIDS, TEENS])] },
+    {
+      ...TEENS,
+      works: 0,
+      books: 0,
+      dirs: [dir(3, '/t', [TEENS]), dir(1, '/m', [MANGA, KIDS, TEENS])],
+    },
+  ]
+  const paths = (libraries: ReturnType<typeof held>) =>
+    libraries.map((one) => [one.name, one.dirs.map((d) => d.path)])
+
+  it('drops an unlinked directory from its library alone', () => {
+    expect(paths(withoutDir(held(), 7, '/m', 'unlinked', []))).toEqual([
+      ['Manga', ['/a']],
+      ['Kids', ['/m']],
+      ['Teens', ['/t', '/m']],
+    ])
+  })
+
+  it('drops a removed directory from every library holding it, and each library the answer says it emptied', () => {
+    expect(paths(withoutDir(held(), 7, '/m', 'removed', ['Kids']))).toEqual([
+      ['Manga', ['/a']],
+      ['Teens', ['/t']],
+    ])
+  })
+
+  it('drops the library an unlink emptied, and no other', () => {
+    expect(paths(withoutDir(held(), 8, '/m', 'unlinked', ['Kids']))).toEqual([
+      ['Manga', ['/m', '/a']],
+      ['Teens', ['/t', '/m']],
+    ])
+  })
+
+  /** Each library's directories, each with the libraries it says hold it. */
+  const holders = (libraries: ReturnType<typeof held>) =>
+    libraries.map((one) => [
+      one.name,
+      one.dirs.map((d) => [d.path, d.libraries.map((l) => l.name)]),
+    ])
+
+  it('takes the library an unlink left out of the holders every other copy of the directory names, and touches no other directory', () => {
+    expect(holders(withoutDir(held(), 7, '/m', 'unlinked', []))).toEqual([
+      ['Manga', [['/a', ['Manga']]]],
+      ['Kids', [['/m', ['Kids', 'Teens']]]],
+      [
+        'Teens',
+        [
+          ['/t', ['Teens']],
+          ['/m', ['Kids', 'Teens']],
+        ],
+      ],
+    ])
+  })
+
+  it('takes an unlink that empties its library out of the holders every other copy names', () => {
+    expect(holders(withoutDir(held(), 8, '/m', 'unlinked', ['Kids']))).toEqual([
+      [
+        'Manga',
+        [
+          ['/m', ['Manga', 'Teens']],
+          ['/a', ['Manga']],
+        ],
+      ],
+      [
+        'Teens',
+        [
+          ['/t', ['Teens']],
+          ['/m', ['Manga', 'Teens']],
+        ],
+      ],
+    ])
+  })
+})
+
+describe('withMovedDir', () => {
+  const MANGA = { id: 7, name: 'Manga' }
+  const KIDS = { id: 8, name: 'Kids' }
+  /** Below Kids by id, so the server lists it first among `/m`'s holders. */
+  const COMICS = { id: 3, name: 'Comics' }
+  /** `/m` held by Manga and Kids, Manga holding `/a` too; Comics holding `/c`. */
+  const held = () => [
+    { ...COMICS, works: 0, books: 0, dirs: [dir(4, '/c', [COMICS])] },
+    {
+      ...MANGA,
+      works: 0,
+      books: 0,
+      dirs: [dir(1, '/m', [MANGA, KIDS]), dir(2, '/a', [MANGA])],
+    },
+    { ...KIDS, works: 0, books: 0, dirs: [dir(1, '/m', [MANGA, KIDS])] },
+  ]
+  const moved = (over: Partial<Moved> = {}): Moved => ({
+    library_id: 3,
+    library: 'Comics',
+    gains_sight: [],
+    loses_sight: [],
+    library_removed: null,
+    grants_removed: 0,
+    left_with_no_library: [],
+    ...over,
+  })
+  /** Each library's directories, each with the libraries it says hold it. */
+  const holders = (libraries: ReturnType<typeof held>) =>
+    libraries.map((one) => [
+      one.name,
+      one.dirs.map((d) => [d.path, d.libraries.map((l) => l.name)]),
+    ])
+
+  it('names the library a move went to in place of the one it left in every copy that stays, by id, and draws no row in that library, which the read that follows draws', () => {
+    expect(holders(withMovedDir(held(), 7, '/m', moved()))).toEqual([
+      ['Comics', [['/c', ['Comics']]]],
+      ['Manga', [['/a', ['Manga']]]],
+      ['Kids', [['/m', ['Comics', 'Kids']]]],
+    ])
+  })
+
+  it('takes away the library a move emptied', () => {
+    expect(
+      withMovedDir(held(), 7, '/m', moved({ library_removed: 'Manga' })).map(
+        (one) => one.name,
+      ),
+    ).toEqual(['Comics', 'Kids'])
+  })
+
+  it('names a library the move made among the holders, and draws the directory in no library the list does not hold', () => {
+    expect(
+      holders(
+        withMovedDir(
+          held(),
+          7,
+          '/m',
+          moved({ library_id: 12, library: 'Extras' }),
+        ),
+      ),
+    ).toEqual([
+      ['Comics', [['/c', ['Comics']]]],
+      ['Manga', [['/a', ['Manga']]]],
+      ['Kids', [['/m', ['Kids', 'Extras']]]],
+    ])
+  })
+})
+
+describe('libraryRemovedSentence', () => {
+  it.each([
+    [false, 0, 'Manga has no other directory, so it is removed.'],
+    [
+      false,
+      2,
+      'Manga has no other directory, so it is removed, with 2 grants.',
+    ],
+    [true, 1, 'Manga had no other directory, so it was removed, with 1 grant.'],
+  ] as const)(
+    'says the library a write empties, done %s, with %i grants',
+    (past, grants, said) => {
+      expect(
+        libraryRemovedSentence(
+          { library_removed: 'Manga', grants_removed: grants },
+          past,
+        ),
+      ).toBe(said)
+    },
+  )
+
+  it('says nothing where no library is emptied', () => {
+    expect(
+      libraryRemovedSentence(
+        { library_removed: null, grants_removed: 0 },
+        true,
+      ),
+    ).toBeUndefined()
   })
 })

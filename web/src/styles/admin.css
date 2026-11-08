@@ -1562,6 +1562,7 @@
    full border, and three danger-coloured elements around one already-guarded
    step is the shouting this comment starts by refusing. */
 .remove-root,
+.unlink-root,
 .remove-user,
 .remove-library {
   border: 1px solid var(--line);
@@ -1598,6 +1599,7 @@
 }
 
 .remove-root .counts,
+.unlink-root .counts,
 .move-root .counts,
 .remove-user .counts,
 .remove-library .counts {
@@ -1606,7 +1608,8 @@
 
 /* The library going with its last directory is a second thing removed, so it is
    drawn as strongly as the counts above it. */
-.remove-root .last-dir {
+.remove-root .last-dir,
+.unlink-root .last-dir {
   font-weight: 600;
   max-width: 60ch;
 }
@@ -1615,6 +1618,7 @@
    the one a person removing may know least about, so it is drawn as strongly
    as they are. */
 .remove-root .left-with-no-library,
+.unlink-root .left-with-no-library,
 .move-root .left-with-no-library,
 .remove-library .left-with-no-library {
   font-weight: 600;
@@ -1622,6 +1626,7 @@
 }
 
 .remove-root .irreversible,
+.unlink-root .kept,
 .remove-user .irreversible,
 .remove-library .irreversible {
   color: var(--muted);
@@ -1632,6 +1637,7 @@
 /* The button that does the thing takes the token on its border and its
    text; everything else in the block keeps the ordinary control look. */
 .remove-root .confirm,
+.unlink-root .confirm,
 .remove-user .confirm,
 .remove-library .confirm {
   border-color: var(--danger);
@@ -1641,6 +1647,7 @@
 
 /* O180: this button says "Remove " and then the whole path or name. */
 .remove-root .confirm,
+.unlink-root .confirm,
 .remove-user .confirm,
 .remove-library .confirm {
   overflow-wrap: anywhere;
@@ -1655,6 +1662,7 @@
    lower than the gap between the two buttons, so a press meant for Cancel
    does not open it and one meant for it does not land on Cancel. */
 .remove-root > .settings-actions,
+.unlink-root > .settings-actions,
 .remove-user > .settings-actions,
 .remove-library > .settings-actions {
   justify-content: flex-start;
@@ -1695,6 +1703,47 @@
 .add-root > [role="alert"] {
   flex-basis: 100%;
   margin: 0;
+}
+
+/* The room the add form took as a link was said, which `LibraryPage.tsx`
+   keeps as the box's height whatever the window does after, so that
+   nothing below it moves. Its lines start at the room's top. */
+.add-root[data-linked] {
+  align-content: flex-start;
+}
+
+/* What a link did: beside Add directory… where there is room, under it
+   where there is not, and, where its words need more than the room, laid
+   over whole rows of its box as a callout is, never past the box's content
+   foot (`linkedPlace.ts`'s `linkedPlace` says where), in the box of the
+   page's other answers, which takes a press there. */
+.add-root > .linked {
+  flex: 1 1 14rem;
+  align-self: center;
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  box-shadow: 0 4px 16px var(--scrim);
+  font-size: var(--text-ui);
+  overflow-wrap: anywhere;
+}
+
+/* Drawn empty until a link fills it, so that a screen reader reads it as it
+   fills, and out of the flow while empty: no room, no gap. */
+.add-root > .linked:empty {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+}
+
+/* The words of a link said on arrival, unseen, as the page is first drawn:
+   they hold the line's room in the flow until the line says them. */
+.add-root > .linked[data-room] {
+  visibility: hidden;
 }
 
 /* Configuration's tables: a row per library, directory or account, each a way
@@ -1771,6 +1820,29 @@
   font-weight: 400;
 }
 
+/* A library's Overlaps column takes no more room than its heading or its
+   widest word, so the path keeps the rest: a width its words outgrow. Its
+   words wrap only between each other, after a comma, never inside one. */
+.dir-table th.overlaps {
+  width: 1px;
+}
+
+.dir-table td.overlaps {
+  white-space: normal;
+}
+
+/* A Last scan cell's words from before its scan, kept while "Scanning…"
+   stands in for them: their width and no height, unseen and unselectable,
+   so the column, and the paths beside it, keep their size as the scan
+   ends (`LibraryPage.tsx`). */
+.dir-table .held-words {
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  user-select: none;
+}
+
 .config-table .mark {
   color: var(--muted);
   font-size: var(--text-meta);
@@ -1785,7 +1857,9 @@
 }
 
 /* At a phone's width a row is a block of two lines: the name, and the rest
-   after it, so the table never scrolls sideways. */
+   after it, so the table never scrolls sideways. One of three copies, with
+   the side-by-side list's (`settings.css`) and a library's Directories
+   table's below. */
 @media (width < 36rem) {
   .config-table thead {
     position: absolute;
@@ -1844,6 +1918,76 @@
   .config-table .cell-unit,
   .config-table .cell-label {
     display: inline;
+  }
+}
+
+/* A library's Directories table has a fourth column, Overlaps, so it draws
+   its rows in two lines while its own box is narrower than 36rem, on the
+   page and in the list beside an open directory alike: under that, a path
+   beside four columns has too little room. One of three copies of the
+   two-line rows, with the phone width's above and the side-by-side list's
+   (`settings.css`): an edit to one is an edit to each. */
+@container settings-box (width < 36rem) {
+  .dir-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .dir-table,
+  .dir-table tbody {
+    display: block;
+  }
+
+  .dir-table tbody tr {
+    display: flex;
+    flex-wrap: wrap;
+    padding: var(--space-2) var(--space-1);
+    border-bottom: 1px solid var(--line);
+  }
+
+  /* In the list beside an open page, as that list pads its own two-line
+     rows: room for the open row's stripe before its path. */
+  .split-pair .dir-table tbody tr {
+    padding-inline: var(--space-3);
+  }
+
+  .dir-table td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .dir-table td.lead {
+    flex-basis: 100%;
+  }
+
+  .dir-table td:not(.lead) {
+    white-space: normal;
+    color: var(--muted);
+    font-size: var(--text-meta);
+  }
+
+  .dir-table td:not(.lead):not(:last-child)::after {
+    content: "·" / "";
+    margin: 0 var(--space-2);
+  }
+
+  .dir-table td:not(.lead)[data-ends-line]::after {
+    visibility: hidden;
+  }
+
+  .dir-table .cell-label {
+    display: inline;
+  }
+
+  /* A cell is as wide as its own words here, so held ones would be a gap. */
+  .dir-table .held-words {
+    display: none;
   }
 }
 

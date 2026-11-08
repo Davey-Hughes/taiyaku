@@ -7,9 +7,12 @@
  * held under directories of two libraries counts in both, so the counts are
  * the server's and the screen only puts them beside the edition's totals.
  *
- * **A directory links to its page under the library holding it**, whose name
- * the address carries: the route names a directory's library by id, and the
- * name is found among the edition's libraries.
+ * **A directory links to its page under one library holding it**, the
+ * first the edition lists (spec decision 29), whose name the address
+ * carries: the route gives a directory's libraries as ids, so the name is
+ * found among the edition's libraries. A directory several libraries hold
+ * is one link, not one per library: links of one path to different pages
+ * could not be told apart.
  */
 import { Link } from 'react-router'
 import { dirPath } from './configAddress'
@@ -36,8 +39,9 @@ function sees(library: SplitLibrary, edition: SplitEdition): string {
 }
 
 /**
- * `dir`'s path, as a link to its page. A directory whose library the edition
- * does not list has no page to name, so its path is drawn alone.
+ * `dir`'s path, as a link to its page under the first library the edition
+ * lists that holds it. A directory none of whose libraries the edition
+ * lists has no page to name, so its path is drawn alone.
  */
 function DirLink({
   dir,
@@ -46,7 +50,9 @@ function DirLink({
   dir: MemberDirectory
   edition: SplitEdition
 }) {
-  const library = edition.libraries.find((one) => one.id === dir.library)
+  const library = edition.libraries.find((one) =>
+    dir.libraries.includes(one.id),
+  )
   const path = <code>{dir.path}</code>
   return library === undefined ? (
     path

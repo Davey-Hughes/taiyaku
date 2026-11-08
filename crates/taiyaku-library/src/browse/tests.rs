@@ -135,12 +135,7 @@ fn two_library_store() -> TwoLibraries {
             scan::scan_root(&conn, &root).expect("scans");
         }
         derive::derive(&conn).expect("derives");
-        let library_of = |root: i64| -> i64 {
-            conn.query_row("SELECT library_id FROM root WHERE id = ?1", [root], |r| {
-                r.get(0)
-            })
-            .expect("the directory's library")
-        };
+        let library_of = |root: i64| crate::test_support::library_of_root(&conn, root);
         (
             library_of(en_root),
             library_of(comics_root),
@@ -168,7 +163,7 @@ fn series_of(library: &Library, library_id: i64) -> Vec<i64> {
         .prepare(
             "SELECT DISTINCT s.id FROM series s
                JOIN work w ON w.series_id = s.id JOIN edition e ON e.work_id = w.id
-               JOIN member m ON m.edition_id = e.id JOIN root r ON r.id = m.root_id
+               JOIN member m ON m.edition_id = e.id JOIN library_root r ON r.root_id = m.root_id
               WHERE r.library_id = ?1 ORDER BY s.id",
         )
         .expect("prepares");
@@ -282,13 +277,7 @@ fn only_with_no_dir_sees_nothing() {
         .expect("reads")
         .collect::<rusqlite::Result<_>>()
         .expect("reads");
-    let library_id: i64 = conn
-        .query_row(
-            "SELECT library_id FROM root WHERE id = ?1",
-            [en_id],
-            |row| row.get(0),
-        )
-        .expect("the directories' library");
+    let library_id: i64 = crate::test_support::library_of_root(&conn, en_id);
     let slug = "series---v01";
 
     let granted_nothing = Access::Only {
@@ -1649,7 +1638,7 @@ fn raw_in_a_library_of_its_own(library: &Library, raw_root: i64) -> i64 {
         .expect("a second library");
     let raws = conn.last_insert_rowid();
     conn.execute(
-        "UPDATE root SET library_id = ?1 WHERE id = ?2",
+        "UPDATE library_root SET library_id = ?1 WHERE root_id = ?2",
         [raws, raw_root],
     )
     .expect("files the raw directory under it");
@@ -1674,11 +1663,7 @@ fn a_library_narrows_the_aligned_count_and_not_only_the_other_three() {
     raw_in_a_library_of_its_own(&library, raw_id);
 
     let conn = library.conn();
-    let english_library: i64 = conn
-        .query_row("SELECT library_id FROM root WHERE id = ?1", [en_id], |r| {
-            r.get(0)
-        })
-        .expect("the English directory's library");
+    let english_library: i64 = crate::test_support::library_of_root(&conn, en_id);
     assert!(
         ![en_id, raw_id].contains(&english_library),
         "library {english_library} shares a directory's id"
@@ -1712,11 +1697,7 @@ fn a_library_keeps_a_pair_whose_two_editions_are_both_in_it() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let manga: i64 = conn
-        .query_row("SELECT library_id FROM root WHERE id = ?1", [en_id], |r| {
-            r.get(0)
-        })
-        .expect("the library both directories are in");
+    let manga: i64 = crate::test_support::library_of_root(&conn, en_id);
     let grant = Access::Only {
         roots: vec![en_id, raw_id],
         libraries: vec![manga],
@@ -1765,7 +1746,7 @@ fn held_in_answers_the_slugs_of_the_works_under_a_librarys_directories() {
         s.comics
     );
     conn.execute(
-        "UPDATE root SET library_id = ?1 WHERE id = ?2",
+        "UPDATE library_root SET library_id = ?1 WHERE root_id = ?2",
         [s.comics, s.raw_root],
     )
     .expect("relabels the raw directory");
@@ -2001,7 +1982,7 @@ fn scanned_is_true_only_for_a_library_one_of_whose_dirs_was_walked() {
     let b = scan::add_root_in(&conn, unwalked.path(), scan::InLibrary::Named("Unwalked"))
         .expect("adds");
     let filed: Vec<(i64, i64)> = conn
-        .prepare("SELECT id, library_id FROM root ORDER BY id")
+        .prepare("SELECT root_id, library_id FROM library_root ORDER BY root_id")
         .expect("prepares")
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .expect("reads")
@@ -3043,11 +3024,7 @@ fn a_listing_narrowed_to_a_library_reads_page_zero_through_the_accounts_grant() 
     );
     let series_id = the_series(&conn);
     let first = Some(members[0].2.clone());
-    let manga: i64 = conn
-        .query_row("SELECT library_id FROM root WHERE id = ?1", [a_id], |r| {
-            r.get(0)
-        })
-        .expect("the first directory's library");
+    let manga: i64 = crate::test_support::library_of_root(&conn, a_id);
     let both = Access::Only {
         roots: vec![a_id, b_id],
         libraries: vec![manga, second],

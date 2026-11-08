@@ -106,13 +106,16 @@ pub(super) fn dump(conn: &Connection) -> Vec<String> {
         conn,
         &[
             "SELECT 'library ' || id || ' ' || name FROM library ORDER BY id",
-            "SELECT 'root ' || id || ' ' || library_id FROM root ORDER BY id",
+            "SELECT 'root ' || id FROM root ORDER BY id",
+            "SELECT 'link ' || library_id || ' ' || root_id FROM library_root ORDER BY root_id, library_id",
             "SELECT 'grant ' || user_id || ' ' || library_id FROM user_library ORDER BY 1",
         ],
     ));
     rows
 }
 
+/// The source must hold the directory, and the target must not: the source
+/// is such a library, so a move to it is refused in decision 25's words.
 #[test]
 fn a_dir_or_a_library_that_is_not_there_is_missing_and_its_own_library_is_a_mistake() {
     let top = tempdir("relocate-resolve");
@@ -132,20 +135,40 @@ fn a_dir_or_a_library_that_is_not_there_is_missing_and_its_own_library_is_a_mist
         None,
         &[("T", "v01", 2)],
     );
-    let held = dir(&conn, root.id).expect("the directory");
-    assert_eq!(held.library, "Manga");
+    let (manga, comics) = (
+        library_called(&conn, "Manga"),
+        library_called(&conn, "Comics"),
+    );
+    let held = dir(&conn, root.id, manga).expect("the directory");
+    assert_eq!(held.from_name, "Manga");
 
     assert!(
-        matches!(dir(&conn, 4242), Err(MoveError::Missing(why)) if why.contains("there is no directory 4242"))
+        matches!(dir(&conn, 4242, manga), Err(MoveError::Missing(why)) if why.contains("there is no directory 4242"))
     );
+    assert_eq!(
+        dir(&conn, root.id, 4242).err(),
+        Some(MoveError::Missing("there is no library 4242".to_string()))
+    );
+    let not_in = MoveError::Missing(format!("`{}` is not in Comics", root.path.display()));
+    assert_eq!(dir(&conn, root.id, comics).err(), Some(not_in.clone()));
+    let before = dump(&conn);
+    assert_eq!(
+        move_root(&conn, root.id, comics, Target::New("Made")),
+        Err(not_in),
+        "the move asks the same, before it makes a library"
+    );
+    assert_eq!(dump(&conn), before);
     assert!(matches!(
         resolve(&conn, &held, Target::Library(4242)),
         Err(MoveError::Missing(why)) if why.contains("4242")
     ));
-    assert!(matches!(
-        resolve(&conn, &held, Target::Library(held.library_id)),
-        Err(MoveError::Unusable(why)) if why.contains("already in `Manga`")
-    ));
+    assert_eq!(
+        resolve(&conn, &held, Target::Library(held.from)),
+        Err(MoveError::Unusable(format!(
+            "`{}` is already in Manga",
+            root.path.display()
+        )))
+    );
     for (name, says) in [
         ("  ", "needs a name"),
         ("comics", "already called `Comics`"),
@@ -190,7 +213,7 @@ fn a_move_makes_no_library_called_a_dot_name() {
         None,
         &[("S", "v01", 2)],
     );
-    let held = dir(&conn, root.id).expect("the directory");
+    let held = dir(&conn, root.id, root.libraries[0]).expect("the directory");
 
     for name in [".", "..", " .. "] {
         assert_eq!(
@@ -234,7 +257,7 @@ fn moving_the_last_dir_of_an_accounts_only_library_names_who_is_left_with_none()
         &[("S", "v01", 2)],
     );
     assert_ne!(
-        solo.id, solo.library_id,
+        solo.id, solo.libraries[0],
         "the fixture must tell a directory's id from its library's: {solo:?}"
     );
     scanned(&conn);
@@ -244,17 +267,22 @@ fn moving_the_last_dir_of_an_accounts_only_library_names_who_is_left_with_none()
     )
     .expect("an account");
     let sam = conn.last_insert_rowid();
-    crate::account::grant_library(&conn, sam, solo.library_id).expect("grants");
+    crate::account::grant_library(&conn, sam, solo.libraries[0]).expect("grants");
     let before = dump(&conn);
 
-    let rehearsed =
-        move_cost(&conn, solo.id, Target::Library(shelf_a.library_id)).expect("rehearses");
+    let rehearsed = move_cost(
+        &conn,
+        solo.id,
+        solo.libraries[0],
+        Target::Library(shelf_a.libraries[0]),
+    )
+    .expect("rehearses");
     assert_eq!(rehearsed.left_with_no_library, vec!["sam"], "{rehearsed:?}");
     assert_eq!(rehearsed.loses_sight, vec!["sam"], "{rehearsed:?}");
     assert_eq!(rehearsed.library_removed.as_deref(), Some("Solo"));
     assert_eq!(dump(&conn), before, "the rehearsal changes nothing");
 
-    let done = moved(&conn, &solo, Target::Library(shelf_a.library_id));
+    let done = moved(&conn, &solo, Target::Library(shelf_a.libraries[0]));
     assert_eq!(done, rehearsed, "the move does what the rehearsal said");
     let access = crate::account::access_for(&conn, sam).expect("reads");
     assert_eq!(
@@ -273,7 +301,7 @@ fn moving_the_last_dir_of_an_accounts_only_library_names_who_is_left_with_none()
         "the fixture: Shelf holds series, the moved directory's among them"
     );
 
-    crate::account::grant_library(&conn, sam, shelf_a.library_id).expect("grants Shelf");
+    crate::account::grant_library(&conn, sam, shelf_a.libraries[0]).expect("grants Shelf");
     let kept = moved(&conn, &shelf_a, Target::New("Fresh"));
     assert_eq!(kept.library_removed, None, "Shelf keeps another directory");
     assert_eq!(kept.left_with_no_library, Vec::<String>::new());
@@ -302,8 +330,19 @@ fn the_work(conn: &Connection, title_like: &str) -> (i64, String) {
     .unwrap_or_else(|e| panic!("one work like {title_like}: {e}"))
 }
 
+/// Move `root` out of its one library, read from the store rather than from
+/// `root`, which an earlier move in the test may have made stale.
 fn moved(conn: &Connection, root: &Root, target: Target<'_>) -> Moved {
-    move_root(conn, root.id, target).expect("moves")
+    let links = scan::roots(conn)
+        .expect("lists")
+        .into_iter()
+        .find(|held| held.id == root.id)
+        .expect("the directory")
+        .libraries;
+    let [from] = links[..] else {
+        panic!("the fixture moves a directory in one library: {links:?}");
+    };
+    move_root(conn, root.id, from, target).expect("moves")
 }
 
 fn an_account(conn: &Connection, name: &str, granted: &[i64]) -> i64 {
@@ -371,7 +410,7 @@ fn a_dir_leaving_a_library_that_keeps_another_keeps_its_works_as_they_were() {
 
     let before = kept(&conn);
 
-    let report = moved(&conn, &moving, Target::Library(other.library_id));
+    let report = moved(&conn, &moving, Target::Library(other.libraries[0]));
 
     assert_eq!(kept(&conn), before, "every row as it was");
     assert_eq!(
@@ -389,7 +428,7 @@ fn a_dir_leaving_a_library_that_keeps_another_keeps_its_works_as_they_were() {
     );
     assert_eq!(
         (report.library_id, report.library.as_str()),
-        (other.library_id, "B")
+        (other.libraries[0], "B")
     );
     assert_eq!((report.library_removed, report.grants_removed), (None, 0));
 }
@@ -424,12 +463,12 @@ fn a_dir_alone_in_its_library_takes_its_works_and_the_library_goes() {
     )
     .expect("an account");
     let sam = conn.last_insert_rowid();
-    for library in [moving.library_id, other.library_id] {
+    for library in [moving.libraries[0], other.libraries[0]] {
         crate::account::grant_library(&conn, sam, library).expect("grants");
     }
     let before = kept(&conn);
 
-    let report = moved(&conn, &moving, Target::Library(other.library_id));
+    let report = moved(&conn, &moving, Target::Library(other.libraries[0]));
 
     assert_eq!(kept(&conn), before, "every row as it was");
     assert_eq!(report.library_removed.as_deref(), Some("Solo"));
@@ -445,7 +484,7 @@ fn a_dir_alone_in_its_library_takes_its_works_and_the_library_goes() {
         "sam sees the directory through Solo before and through B after"
     );
     assert_eq!(
-        crate::libraries::name_of(&conn, moving.library_id).expect("reads"),
+        crate::libraries::name_of(&conn, moving.libraries[0]).expect("reads"),
         None
     );
 }
@@ -513,7 +552,8 @@ fn a_rehearsal_answers_what_the_move_would_and_leaves_everything_as_it_was() {
     };
     let before = (dump(&conn), files(dir.path()));
 
-    let rehearsed = move_cost(&conn, moving.id, Target::New("Fresh")).expect("rehearses");
+    let rehearsed =
+        move_cost(&conn, moving.id, moving.libraries[0], Target::New("Fresh")).expect("rehearses");
 
     assert_eq!(
         (dump(&conn), files(dir.path())),
@@ -525,7 +565,8 @@ fn a_rehearsal_answers_what_the_move_would_and_leaves_everything_as_it_was() {
         None
     );
 
-    let done = move_root(&conn, moving.id, Target::New("Fresh")).expect("moves");
+    let done =
+        move_root(&conn, moving.id, moving.libraries[0], Target::New("Fresh")).expect("moves");
     assert_eq!(
         Moved {
             library_id: 0,
@@ -568,7 +609,10 @@ fn a_new_library_is_made_for_the_dir_and_named_in_the_answer() {
     assert_eq!(
         scalar(
             &conn,
-            &format!("SELECT library_id FROM root WHERE id = {}", moving.id)
+            &format!(
+                "SELECT library_id FROM library_root WHERE root_id = {}",
+                moving.id
+            )
         ),
         report.library_id
     );
@@ -713,7 +757,7 @@ fn a_volume_and_its_chapters(conn: &Connection, dir: &Path) -> (Root, Root, Stri
     );
     a_position_and_a_note(conn, work, "raw");
     a_position_and_a_note(conn, work, "chapters");
-    an_account(conn, "ann", &[volume.library_id]);
+    an_account(conn, "ann", &[volume.libraries[0]]);
     (volume, chapters, slug)
 }
 
@@ -735,7 +779,10 @@ fn moving_a_dir_writes_no_work_edition_member_position_or_note() {
     assert_eq!(
         scalar(
             &conn,
-            &format!("SELECT library_id FROM root WHERE id = {}", chapters.id)
+            &format!(
+                "SELECT library_id FROM library_root WHERE root_id = {}",
+                chapters.id
+            )
         ),
         report.library_id
     );
@@ -758,7 +805,7 @@ fn an_account_granted_only_the_target_gains_sight_and_one_seeing_every_library_i
     let moving = a_dir(&conn, &dir.path().join("a"), "A", None, &[("S", "v01", 2)]);
     a_dir(&conn, &dir.path().join("a2"), "A", None, &[("U", "v01", 2)]);
     let b = a_dir(&conn, &dir.path().join("b"), "B", None, &[("T", "v01", 2)]);
-    let (a, b) = (moving.library_id, b.library_id);
+    let (a, b) = (moving.libraries[0], b.libraries[0]);
     an_account(&conn, "zed", &[b]);
     an_account(&conn, "cy", &[b]);
     an_account(&conn, "ann", &[a]);
@@ -795,12 +842,12 @@ fn an_account_whose_grant_reaches_a_moved_dir_on_both_sides_is_named_in_neither(
     let other = scan::add_root_checked_in(&conn, &o, InLibrary::Named("Other"))
         .expect("adds Other's directory")
         .root
-        .library_id;
+        .libraries[0];
     an_account(&conn, "both", &[n.manga, n.kids]);
     an_account(&conn, "other", &[other]);
 
-    let rehearsed = move_cost(&conn, n.m_kids, Target::Library(other)).expect("rehearses");
-    let report = move_root(&conn, n.m_kids, Target::Library(other)).expect("moves");
+    let rehearsed = move_cost(&conn, n.m_kids, n.kids, Target::Library(other)).expect("rehearses");
+    let report = move_root(&conn, n.m_kids, n.kids, Target::Library(other)).expect("moves");
 
     assert_eq!(report, rehearsed);
     assert_eq!(report.gains_sight, vec!["other"], "{report:?}");
@@ -827,7 +874,7 @@ fn after_a_move_each_library_a_dir_of_which_holds_an_edition_counts_and_names_th
             .collect::<Vec<_>>(),
         [("Chapters".to_string(), 1), ("Manga".to_string(), 1)]
     );
-    for library in [volume.library_id, report.library_id] {
+    for library in [volume.libraries[0], report.library_id] {
         assert_eq!(
             crate::browse::held_in(&conn, library).expect("reads"),
             HashSet::from([slug.clone()]),
@@ -878,21 +925,26 @@ fn a_dir_is_not_moved_inside_or_around_a_dir_of_the_library_it_joins() {
             ),
         ),
     ] {
-        let into = Target::Library(into.library_id);
+        let into = Target::Library(into.libraries[0]);
         assert_eq!(
-            move_cost(&conn, moving.id, into),
+            move_cost(&conn, moving.id, moving.libraries[0], into),
             Err(MoveError::Unusable(said.clone()))
         );
         assert_eq!(
-            move_root(&conn, moving.id, into),
+            move_root(&conn, moving.id, moving.libraries[0], into),
             Err(MoveError::Unusable(said))
         );
         assert_eq!(dump(&conn), before, "a refused move changed nothing");
     }
 
-    let moved = move_root(&conn, kids.id, Target::Library(other.library_id))
-        .expect("a directory moves to a library whose directories sit elsewhere");
-    assert_eq!(moved.library_id, other.library_id);
+    let moved = move_root(
+        &conn,
+        kids.id,
+        kids.libraries[0],
+        Target::Library(other.libraries[0]),
+    )
+    .expect("a directory moves to a library whose directories sit elsewhere");
+    assert_eq!(moved.library_id, other.libraries[0]);
 }
 
 /// A move does not ask the add's directory-member refusal, which does not
@@ -931,7 +983,124 @@ fn a_dir_inside_another_librarys_directory_member_moves_into_a_library() {
         "Manga reads the volume around Kids' directory as one member"
     );
 
-    let moved = move_root(&conn, kids.id, Target::Library(other.library_id))
-        .expect("a directory inside a directory member moves into a library");
-    assert_eq!(moved.library_id, other.library_id);
+    let moved = move_root(
+        &conn,
+        kids.id,
+        kids.libraries[0],
+        Target::Library(other.libraries[0]),
+    )
+    .expect("a directory inside a directory member moves into a library");
+    assert_eq!(moved.library_id, other.libraries[0]);
+}
+
+/// The libraries linking root `root_id`, ascending.
+fn links_of(conn: &Connection, root_id: i64) -> Vec<i64> {
+    let mut statement = conn
+        .prepare("SELECT library_id FROM library_root WHERE root_id = ?1 ORDER BY library_id")
+        .expect("prepares");
+    statement
+        .query_map([root_id], |r| r.get(0))
+        .expect("reads")
+        .collect::<rusqlite::Result<Vec<i64>>>()
+        .expect("reads")
+}
+
+/// `m` in Manga and, linked through the add, in Kids, which holds `k` too;
+/// Lib3 holds `c`. Manga is made first, so it is `m`'s lowest link. Answers
+/// `m` and the three library ids.
+fn a_dir_in_manga_and_kids(conn: &Connection, top: &Path) -> (Root, [i64; 3]) {
+    let m = a_dir(conn, &top.join("m"), "Manga", None, &[("S", "v01", 2)]);
+    a_dir(conn, &top.join("k"), "Kids", None, &[("T", "v01", 2)]);
+    a_dir(conn, &top.join("c"), "Lib3", None, &[("U", "v01", 2)]);
+    let linked = scan::add_root_checked_in(conn, &m.path, InLibrary::Named("Kids"))
+        .expect("links m into Kids");
+    let ids = [
+        library_called(conn, "Manga"),
+        library_called(conn, "Kids"),
+        library_called(conn, "Lib3"),
+    ];
+    assert_eq!(linked.also_in, ["Manga"], "the fixture links m");
+    assert_eq!(links_of(conn, m.id), vec![ids[0], ids[1]]);
+    scanned(conn);
+    (m, ids)
+}
+
+/// Overlapping-libraries spec §5: a move takes the directory out of the
+/// library it names and no other. Moved from Kids to Lib3, `m` stays in Manga,
+/// and only Kids' accounts that see it through no other library lose it.
+/// Moved on from Manga, its last directory, Manga goes with its grants.
+#[test]
+fn moving_a_shared_dir_from_one_library_leaves_it_in_the_other() {
+    let top = tempdir("relocate-shared");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let (m, [manga, kids, lib3]) = a_dir_in_manga_and_kids(&conn, top.path());
+    an_account(&conn, "kid", &[kids]);
+    an_account(&conn, "fan", &[manga]);
+    an_account(&conn, "both", &[kids, manga]);
+    an_account(&conn, "three", &[lib3]);
+    let works = kept(&conn);
+    let before = dump(&conn);
+
+    let rehearsed = move_cost(&conn, m.id, kids, Target::Library(lib3)).expect("rehearses");
+    assert_eq!(dump(&conn), before, "the rehearsal changes nothing");
+    let done = move_root(&conn, m.id, kids, Target::Library(lib3)).expect("moves");
+
+    assert_eq!(done, rehearsed);
+    assert_eq!(
+        done,
+        Moved {
+            library_id: lib3,
+            library: "Lib3".to_string(),
+            gains_sight: vec!["three".to_string()],
+            loses_sight: vec!["kid".to_string()],
+            library_removed: None,
+            grants_removed: 0,
+            left_with_no_library: Vec::new(),
+        }
+    );
+    assert_eq!(links_of(&conn, m.id), vec![manga, lib3], "Manga keeps m");
+    assert_eq!(kept(&conn), works, "no work row changes");
+
+    let emptied = move_root(&conn, m.id, manga, Target::Library(kids)).expect("moves");
+    assert_eq!(
+        emptied,
+        Moved {
+            library_id: kids,
+            library: "Kids".to_string(),
+            gains_sight: vec!["kid".to_string()],
+            loses_sight: vec!["fan".to_string()],
+            library_removed: Some("Manga".to_string()),
+            grants_removed: 2,
+            left_with_no_library: vec!["fan".to_string()],
+        }
+    );
+    assert_eq!(links_of(&conn, m.id), vec![kids, lib3]);
+    assert_eq!(
+        crate::libraries::name_of(&conn, manga).expect("reads"),
+        None
+    );
+}
+
+/// Decision 25: a move to a library that already holds the directory is
+/// refused, by the rehearsal and the move, and writes nothing. Without the
+/// refusal the link's key refuses the write, so the sentence is asserted.
+#[test]
+fn a_move_to_a_library_that_already_holds_the_dir_is_refused_and_writes_nothing() {
+    let top = tempdir("relocate-already-in");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let (m, [manga, kids, _]) = a_dir_in_manga_and_kids(&conn, top.path());
+    let before = dump(&conn);
+
+    for (from, to, name) in [(kids, manga, "Manga"), (manga, kids, "Kids")] {
+        let already = Err(MoveError::Unusable(format!(
+            "`{}` is already in {name}",
+            m.path.display()
+        )));
+        let target = Target::Library(to);
+        assert_eq!(move_cost(&conn, m.id, from, target), already, "{name}");
+        assert_eq!(move_root(&conn, m.id, from, target), already, "{name}");
+        assert_eq!(dump(&conn), before, "a refused move changed nothing");
+    }
 }

@@ -54,7 +54,7 @@ pub fn kept_out(outer: &scan::Root, inner: &scan::Root) -> Option<scan::KeptOut>
 pub fn of_libraries(roots: &[scan::Root], libraries: &[i64]) -> Vec<i64> {
     let own: Vec<i64> = roots
         .iter()
-        .filter(|root| libraries.contains(&root.library_id))
+        .filter(|root| root.libraries.iter().any(|id| libraries.contains(id)))
         .map(|root| root.id)
         .collect();
     reach(roots, &own)

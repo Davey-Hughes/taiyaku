@@ -78,7 +78,7 @@ use std::time::Instant;
 
 use axum::{
     Json,
-    extract::{Extension, Path as AxPath, Query, State},
+    extract::{Extension, Path as AxPath, Query, State, rejection::QueryRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -1146,6 +1146,9 @@ pub(crate) enum AdminAnswer {
     MissingDir(i64),
     /// `id` names no library — 404.
     MissingLibrary(i64),
+    /// A library that does not hold the directory named — 404, in the words
+    /// an unlink and a move answer it in.
+    NotIn(String),
     /// The caller's own mistake, decided before any store call or inside
     /// one: a body that could not be read as a patch, or a scan the caller
     /// asked for wrongly.
@@ -1167,6 +1170,7 @@ impl IntoResponse for AdminAnswer {
             Self::MissingLibrary(id) => {
                 (StatusCode::NOT_FOUND, format!("there is no library {id}"))
             }
+            Self::NotIn(why) => (StatusCode::NOT_FOUND, why),
             Self::Unusable(why) => (StatusCode::BAD_REQUEST, why),
             Self::Refused(why) => (StatusCode::CONFLICT, why),
             Self::Failed(why) => (StatusCode::INTERNAL_SERVER_ERROR, why),
@@ -1214,21 +1218,45 @@ pub(crate) fn root_json(
 }
 
 /// The success body for a directory added, in `libraries_api`: the row
-/// [`scan::add_root_checked_in`] minted, plus the watch probe it ran
-/// immediately and the interval that probe implies — [`scan::Added`]'s own
-/// three fields, over the wire.
+/// [`scan::add_root_checked_in`] minted or linked, plus the watch probe it ran
+/// and the interval that probe implies — [`scan::Added`]'s fields, over the
+/// wire — and `also_in`, the names of the libraries that already held it.
 ///
-/// `last_scan_at`/`last_scan_status` are sent `null` unconditionally rather
-/// than queried: a root this call just inserted has never been scanned, so
-/// both are genuinely absent and asking the database to confirm that would
-/// be a second round trip for an answer this call already knows.
-pub(crate) fn added_json(added: &scan::Added) -> serde_json::Value {
-    serde_json::json!({
-        "root": root_json(&added.root, None, None),
-        "watching": added.probe.watching,
-        "watch_reason": added.probe.reason,
-        "interval_secs": added.interval.as_secs(),
-    })
+/// **A link runs no probe**, so `watching`, `watch_reason` and `interval_secs`
+/// are `null` for one, and its row's scan columns are read: the directory was
+/// another library's, and may have been scanned. A new row's are sent `null`
+/// unread, as one this call just inserted has never been scanned.
+///
+/// # Errors
+///
+/// A read fails.
+pub(crate) fn added_json(
+    conn: &rusqlite::Connection,
+    added: &scan::Added,
+) -> Result<serde_json::Value, String> {
+    let also_in = &added.also_in;
+    let (at, status): (Option<String>, Option<String>) = if also_in.is_empty() {
+        (None, None)
+    } else {
+        conn.query_row(
+            "SELECT last_scan_at, last_scan_status FROM root WHERE id = ?1",
+            [added.root.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| {
+            format!(
+                "reading the scan status of {}: {e}",
+                added.root.path.display()
+            )
+        })?
+    };
+    Ok(serde_json::json!({
+        "root": root_json(&added.root, at.as_deref(), status.as_deref()),
+        "watching": added.probe.as_ref().map(|probe| probe.watching),
+        "watch_reason": added.probe.as_ref().and_then(|probe| probe.reason.as_deref()),
+        "interval_secs": added.interval.map(|interval| interval.as_secs()),
+        "also_in": also_in,
+    }))
 }
 
 /// A patch, as [`patch_root`]'s body is read.
@@ -1288,12 +1316,24 @@ pub(crate) fn removal_json(removal: &scan::Removal) -> serde_json::Value {
         positions,
         notes,
         left_with_no_library,
+        libraries_removed,
+        kept,
+        // The server's own: the scan slots it clears.
+        removed: _,
     } = removal;
     serde_json::json!({
         "works": works,
         "positions": positions,
         "notes": notes,
         "left_with_no_library": left_with_no_library,
+        "libraries_removed": libraries_removed,
+        "kept": kept
+            .iter()
+            .map(|kept| serde_json::json!({
+                "path": kept.path.to_string_lossy(),
+                "libraries": kept.libraries,
+            }))
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -1510,6 +1550,9 @@ pub(crate) fn finished_scan_json(
 pub(crate) struct ScanQuery {
     #[serde(default)]
     full: Option<String>,
+    /// The library whose page asks, which must hold the directory.
+    #[serde(default)]
+    library: Option<i64>,
 }
 
 /// `POST /api/library/roots/{id}/scan` — start a scan of root `id` in the
@@ -1534,23 +1577,34 @@ pub(crate) struct ScanQuery {
 /// will never be scanned.
 ///
 /// **`?full=` is refused, `400`, rather than silently accepted and ignored.**
-/// C4 §3's own API table lists it against this route, and nothing in
-/// `taiyaku_library::scan::scan_root` distinguishes a full scan from any other
-/// — every scan it runs already walks the whole tree. Accepting and quietly
-/// ignoring it would be precisely the shape C4 §3 writes rules against for a
-/// *scan report's* own fields, and no better for a request parameter deciding
-/// what kind of scan runs. Refusing it by name costs one field and a check;
-/// implementing an incremental scan is a real feature.
+/// C4 §6's API table lists it, but every scan already walks the whole tree;
+/// a parameter accepted and ignored is no better than the silent report C4 §3
+/// rules out. An incremental scan is a real feature.
+///
+/// **`?library=` names the library whose page asks** and must hold the
+/// directory, `404` otherwise, as an unlink and Move answer it. The slot names
+/// it, or else the directory's one library; a shared directory asked for by
+/// none is no library's (overlapping-libraries spec, decisions 27 and 30).
 pub(crate) async fn start_scan(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
     extensions: axum::http::Extensions,
     AxPath(id): AxPath<i64>,
-    Query(query): Query<ScanQuery>,
+    query: Result<Query<ScanQuery>, QueryRejection>,
 ) -> Response {
     if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
+    let query = match query {
+        Ok(Query(query)) => query,
+        Err(rejection) => {
+            return AdminAnswer::Unusable(format!(
+                "the query could not be read: {}",
+                rejection.body_text()
+            ))
+            .into_response();
+        }
+    };
     if query.full.is_some() {
         return AdminAnswer::Unusable(
             "?full= is not implemented — every scan already walks the whole tree; omit it"
@@ -1560,27 +1614,43 @@ pub(crate) async fn start_scan(
     }
 
     let lookup_state = Arc::clone(&state);
+    let asked = query.library;
     let found = tokio::task::spawn_blocking(move || {
         let conn = lookup_state.library.conn();
-        scan::roots(&conn).map_err(AdminAnswer::Failed)
+        let root = scan::roots(&conn)
+            .map_err(AdminAnswer::Failed)?
+            .into_iter()
+            .find(|r| r.id == id)
+            .ok_or(AdminAnswer::MissingDir(id))?;
+        match asked {
+            Some(library) if !root.libraries.contains(&library) => Err(
+                match taiyaku_library::libraries::name_of(&conn, library)
+                    .map_err(AdminAnswer::Failed)?
+                {
+                    Some(name) => {
+                        AdminAnswer::NotIn(format!("`{}` is not in {name}", root.path.display()))
+                    }
+                    None => AdminAnswer::MissingLibrary(library),
+                },
+            ),
+            _ => Ok(root),
+        }
     })
     .await;
     let root = match found {
-        Ok(Ok(roots)) => match roots.into_iter().find(|r| r.id == id) {
-            Some(root) => root,
-            None => return AdminAnswer::MissingDir(id).into_response(),
-        },
+        Ok(Ok(root)) => root,
         Ok(Err(no_answer)) => return no_answer.into_response(),
         Err(why) => return admin_panicked("looking up a directory to scan", &why),
     };
 
+    let library = asked.or(match root.libraries[..] {
+        [only] => Some(only),
+        _ => None,
+    });
     let started = Instant::now();
-    if let Err(refused) = crate::scan_jobs::reserve(
-        &state,
-        std::slice::from_ref(&root),
-        started,
-        root.library_id,
-    ) {
+    if let Err(refused) =
+        crate::scan_jobs::reserve(&state, std::slice::from_ref(&root), started, library)
+    {
         return AdminAnswer::Refused(refused).into_response();
     }
     crate::scan_jobs::spawn(state, vec![root], started, crate::scan_jobs::Reread::Dir);

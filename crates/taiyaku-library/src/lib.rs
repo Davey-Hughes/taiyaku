@@ -64,17 +64,13 @@ pub(crate) const NO_ADDRESS: &str = "An address cannot hold “.” or “..” 
 /// `...` or `a.b`, is an ordinary segment. Every write of a name a caller gave
 /// to `library.name` or `user.name` asks this first.
 ///
-/// **A library named for its directory is asked of the name the
-/// `root_gets_a_library` trigger would give it**, by
-/// `scan::add_root_checked_in` before the insert: the trigger strips white
-/// space off the directory's last component, so a directory called `. ` would
-/// make a library called `.`. The unchecked `scan::add_root` and
-/// `scan::add_root_in` do not ask it of an `InLibrary::Own` directory, as they
-/// run none of C4 §2's validations of a new directory: every caller outside
-/// the tests reaches them through `add_root_checked_in`, or through
-/// `scan::create_library` into a library it has already made, and the tests
-/// use them to plant rows. A row that already holds either name is left as it
-/// is.
+/// **A library named for its directory is asked of the name it would be
+/// given**, by `scan::add_root_checked_in` before the insert: the name is the
+/// directory's last component stripped of white space, so a directory called
+/// `. ` would make a library called `.`. The unchecked `scan::add_root` and
+/// `scan::add_root_in` refuse it too, as they make the library through
+/// `libraries::create`, which asks this of every name. A row that already
+/// holds either name is left as it is.
 pub(crate) fn has_no_address(name: &str) -> bool {
     matches!(name, "." | "..")
 }
@@ -531,6 +527,25 @@ impl std::ops::Deref for Working<'_> {
     }
 }
 
+/// A read transaction on `conn`, so that the statements read under it come
+/// from one committed state, never from both sides of a write committing
+/// between two of them; `None` where `conn` is already in a transaction,
+/// which reads one state already.
+///
+/// **`BEGIN DEFERRED`, spelled out**: [`Library::configure`] makes every
+/// `unchecked_transaction` `IMMEDIATE`, which would take the write lock for a
+/// read and hold up every writer meanwhile.
+///
+/// # Errors
+///
+/// If SQLite refuses the `BEGIN`.
+pub fn one_snapshot(conn: &Connection) -> rusqlite::Result<Option<rusqlite::Transaction<'_>>> {
+    if !conn.is_autocommit() {
+        return Ok(None);
+    }
+    rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Deferred).map(Some)
+}
+
 /// [`rusqlite::Transaction`]'s own shape — `Deref` to [`Connection`],
 /// `commit`, rollback on drop — open exactly as `Connection::
 /// unchecked_transaction` already does wherever nothing is open yet, and as
@@ -760,5 +775,8 @@ fn require_fts5_with_probe(conn: &Connection, create_probe_sql: &str) -> Result<
 
 #[cfg(test)]
 mod corpus;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support;
 #[cfg(test)]
 mod tests;

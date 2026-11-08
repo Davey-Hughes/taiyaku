@@ -36,6 +36,8 @@ vi.mock('../src/libraries', async (importOriginal) => ({
   libraryScanStatus: vi.fn(),
   moveCost: vi.fn(),
   moveDir: vi.fn(),
+  unlinkCost: vi.fn(),
+  unlinkDir: vi.fn(),
 }))
 
 /**
@@ -53,6 +55,7 @@ async function shown({
   if (root === undefined) throw new Error(`no directory ${at}`)
   const onChanged = vi.fn()
   const onRemoved = vi.fn()
+  const onUnlinked = vi.fn()
   const onMoved = vi.fn()
   let host: HTMLElement | undefined
   await act(async () => {
@@ -66,6 +69,7 @@ async function shown({
           others={[{ id: 8, name: 'Comics' }]}
           onChanged={onChanged}
           onRemoved={onRemoved}
+          onUnlinked={onUnlinked}
           onMoved={onMoved}
         />
       </MemoryRouter>,
@@ -74,7 +78,7 @@ async function shown({
     await Promise.resolve()
   })
   if (!host) throw new Error('nothing mounted')
-  return { host, onChanged, onRemoved, onMoved }
+  return { host, onChanged, onRemoved, onUnlinked, onMoved }
 }
 
 const control = (host: HTMLElement, text: string) =>
@@ -244,8 +248,11 @@ describe('DirPage', () => {
     expectRowsWired(host)
   })
 
-  it('tells a directory it is the last one, and no directory of two', async () => {
-    vi.mocked(config.removalCost).mockResolvedValue(counted(0))
+  it('tells a directory it is the last one where its dry run says so, and no directory whose dry run empties nothing', async () => {
+    vi.mocked(config.removalCost).mockResolvedValue({
+      ...counted(0),
+      removed: { ...counted(0).removed, libraries_removed: ['Manga'] },
+    })
     const one = await shown({
       library: manga({ dirs: [dir(1, '/media/Manga/Volumes')] }),
       at: 1,
@@ -255,10 +262,44 @@ describe('DirPage', () => {
       'the only directory of the library Manga',
     )
 
+    vi.mocked(config.removalCost).mockResolvedValue(counted(0))
     const two = await shown()
     await press(control(two.host, 'Remove…'))
     expect(two.host.querySelector('.remove-root .counts')).not.toBeNull()
     expect(two.host.querySelector('.last-dir')).toBeNull()
+  })
+
+  it('takes the libraries a removal empties from its dry run, not from the list drawn', async () => {
+    // The list drawn says Manga keeps another directory, and says nothing of
+    // whether Kids does: the dry run says the removal empties Kids alone.
+    const both = [
+      { id: 7, name: 'Manga' },
+      { id: 9, name: 'Kids' },
+    ]
+    vi.mocked(config.removalCost).mockResolvedValue({
+      ...counted(0),
+      removed: { ...counted(0).removed, libraries_removed: ['Kids'] },
+    })
+    const shared = await shown({
+      library: manga({
+        dirs: [dir(1, '/media/Manga/Volumes'), dir(2, '/media/Shared', both)],
+      }),
+    })
+    await press(control(shared.host, 'Remove…'))
+    expect(shared.host.querySelector('.last-dir')?.textContent).toBe(
+      'This is the only directory of the library Kids, so removing it removes the library too.',
+    )
+
+    // A library the list draws with one directory, which the dry run says
+    // the removal does not empty: another directory was added since.
+    vi.mocked(config.removalCost).mockResolvedValue(counted(0))
+    const stale = await shown({
+      library: manga({ dirs: [dir(1, '/media/Manga/Volumes')] }),
+      at: 1,
+    })
+    await press(control(stale.host, 'Remove…'))
+    expect(stale.host.querySelector('.remove-root .counts')).not.toBeNull()
+    expect(stale.host.querySelector('.last-dir')).toBeNull()
   })
 
   it('hands a directory’s removal up, and not as a move', async () => {
@@ -306,7 +347,7 @@ describe('DirPage', () => {
     })
     await press(host.querySelector('button[name="rehearse"]') as Element)
     await press(host.querySelector('.move-root .confirm') as Element)
-    expect(api.moveDir).toHaveBeenCalledWith(2, { library: 8 })
+    expect(api.moveDir).toHaveBeenCalledWith(2, 7, { library: 8 })
     expect(onMoved).toHaveBeenCalledWith(moved)
     expect(onRemoved).not.toHaveBeenCalled()
   })
@@ -345,14 +386,317 @@ const foldRows = (host: HTMLElement) =>
     [...li.children].map((cell) => cell.textContent),
   )
 
+describe('DirPage, one directory in two libraries', () => {
+  it('draws the directory afresh under the other library: a removal open under the first is gone', async () => {
+    vi.mocked(config.removalCost).mockResolvedValue(counted())
+    const both = [
+      { id: 7, name: 'Manga' },
+      { id: 9, name: 'Kids' },
+    ]
+    const library = manga({
+      dirs: [dir(1, '/media/Manga/Volumes'), dir(2, '/media/Shared', both)],
+    })
+    const { host } = await shown({ library })
+    await press(
+      row(section(host, 'Removal'), 'Remove this directory').querySelector(
+        'button',
+      ) as HTMLButtonElement,
+    )
+    expect(host.querySelector('.remove-root')).not.toBeNull()
+
+    const kids: api.Library = {
+      id: 9,
+      name: 'Kids',
+      works: 0,
+      books: 0,
+      dirs: [dir(2, '/media/Shared', both)],
+    }
+    await act(async () => {
+      rerender(
+        <MemoryRouter initialEntries={['/config/libraries/Kids/dirs/2']}>
+          <DirPage
+            library={kids}
+            root={kids.dirs[0]}
+            others={[]}
+            onChanged={vi.fn()}
+            onRemoved={vi.fn()}
+            onUnlinked={vi.fn()}
+            onMoved={vi.fn()}
+          />
+        </MemoryRouter>,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.dir-page .back a')?.textContent).toBe('‹ Kids')
+    expect(host.querySelector('.remove-root')).toBeNull()
+  })
+})
+
+describe('DirPage, a directory another library holds too', () => {
+  const MANGA = { id: 7, name: 'Manga' }
+  const KIDS = { id: 9, name: 'Kids' }
+  const TEENS = { id: 11, name: 'Teens' }
+  /** Manga, its second directory held by `holders` too. */
+  const sharing = (...holders: { id: number; name: string }[]) =>
+    manga({
+      dirs: [
+        dir(1, '/media/Manga/Volumes'),
+        dir(2, '/media/Shared', [MANGA, ...holders]),
+      ],
+    })
+  const unlinked = (dry_run: boolean): api.UnlinkAnswer => ({
+    unlinked: {
+      loses_sight: ['ana'],
+      library_removed: null,
+      grants_removed: 0,
+      left_with_no_library: [],
+    },
+    dry_run,
+  })
+  /** The Removal box's rows: each label, help and button. */
+  const removalRows = (host: HTMLElement) =>
+    [
+      ...section(host, 'Removal').querySelectorAll(
+        ':scope > .settings-box > .settings-group > .settings-row',
+      ),
+    ].map((one) => [
+      one.querySelector('.settings-row-label')?.textContent,
+      one.querySelector('.settings-row-help')?.textContent,
+      one.querySelector('button')?.textContent,
+    ])
+  const alsoIn = (host: HTMLElement) =>
+    host.querySelector('.dir-page .page-header .page-description > .also-in')
+  /** Scan directory, Move…, Remove from Manga… and Remove…. */
+  const fourHeld = (host: HTMLElement) =>
+    ['Scan directory', 'Move…', 'Remove from Manga…', 'Remove…'].map((text) =>
+      holdOf(control(host, text)),
+    )
+
+  beforeEach(() => {
+    vi.mocked(api.unlinkCost).mockResolvedValue(unlinked(true))
+    vi.mocked(api.unlinkDir).mockResolvedValue(unlinked(false))
+  })
+
+  it('is as it was for a directory in one library: no line naming another, and one Removal row', async () => {
+    const { host } = await shown()
+    expect(alsoIn(host)).toBeNull()
+    expect(removalRows(host)).toEqual([
+      [
+        'Remove this directory',
+        'Asks first, with what it would take.',
+        'Remove…',
+      ],
+    ])
+  })
+
+  it('says under its facts which other library holds it, linking to that library’s page of it', async () => {
+    const { host } = await shown({ library: sharing(KIDS) })
+    const line = alsoIn(host) as HTMLElement
+    expect(line.textContent).toBe(
+      'Also in Kids, which shares these settings and scans.',
+    )
+    expect(
+      [...line.querySelectorAll('a')].map((a) => [
+        a.textContent,
+        a.getAttribute('href'),
+      ]),
+    ).toEqual([['Kids', '/config/libraries/Kids/dirs/2']])
+    expect(line.previousElementSibling?.className).toBe('regime')
+  })
+
+  it('names two other libraries in one line, each a link, with the verb in the plural', async () => {
+    const { host } = await shown({ library: sharing(KIDS, TEENS) })
+    const line = alsoIn(host) as HTMLElement
+    expect(line.textContent).toBe(
+      'Also in Kids and Teens, which share these settings and scans.',
+    )
+    expect([...line.querySelectorAll('a')].map((a) => a.textContent)).toEqual([
+      'Kids',
+      'Teens',
+    ])
+    expect(removalRows(host)[0]?.[1]).toBe(
+      'Kids and Teens keep it; nothing is deleted.',
+    )
+  })
+
+  it('offers Remove from Manga beside Remove this directory, each in its own row with its own words', async () => {
+    const { host } = await shown({ library: sharing(KIDS) })
+    expect(removalRows(host)).toEqual([
+      [
+        'Remove from Manga',
+        'Kids keeps it; nothing is deleted.',
+        'Remove from Manga…',
+      ],
+      [
+        'Remove this directory',
+        'From every library that holds it, with what it would take.',
+        'Remove…',
+      ],
+    ])
+    expectRowsWired(host)
+  })
+
+  it('names every library holding it in Remove this directory’s confirm, and every library its dry run says it empties', async () => {
+    vi.mocked(config.removalCost).mockResolvedValue({
+      ...counted(5),
+      removed: { ...counted(5).removed, libraries_removed: ['Kids', 'Teens'] },
+    })
+    const { host } = await shown({ library: sharing(KIDS, TEENS) })
+    await press(control(host, 'Remove…'))
+    expect(host.querySelector('.remove-root .counts')?.textContent).toBe(
+      'This removes it from Manga, Kids and Teens, and 5 works, 2 in-progress positions and 0 notes.',
+    )
+    expect(host.querySelector('.remove-root .last-dir')?.textContent).toBe(
+      'This is the only directory of the libraries Kids and Teens, so removing it removes them too.',
+    )
+  })
+
+  it('holds Remove from Manga… exactly when Move… is, and Remove… on a held removal alone', async () => {
+    const library = sharing(KIDS)
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(library, 1))
+    const sibling = await shown({ library })
+    expect(fourHeld(sibling.host)).toEqual(['free', 'held', 'held', 'free'])
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      held_removals: [2],
+    })
+    const around = await shown({ library })
+    expect(fourHeld(around.host)).toEqual(['free', 'free', 'free', 'held'])
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+    })
+    const locked = await shown({ library })
+    expect(fourHeld(locked.host)).toEqual(['free', 'held', 'held', 'free'])
+  })
+
+  it('hands the unlink up as one, and neither as a removal nor as a move', async () => {
+    const { host, onUnlinked, onRemoved, onMoved, onChanged } = await shown({
+      library: sharing(KIDS),
+    })
+    await press(control(host, 'Remove from Manga…'))
+    expect(api.unlinkCost).toHaveBeenCalledWith(7, 2)
+    expect(host.querySelector('.unlink-root .counts')?.textContent).toBe(
+      'Removing this directory from Manga: ana will lose sight of it.',
+    )
+    await press(host.querySelector('.unlink-root .confirm') as Element)
+    expect(api.unlinkDir).toHaveBeenCalledWith(7, 2)
+    expect(onUnlinked).toHaveBeenCalledWith(unlinked(false))
+    expect(onRemoved).not.toHaveBeenCalled()
+    expect(onMoved).not.toHaveBeenCalled()
+    expect(onChanged).toHaveBeenCalled()
+  })
+
+  it('asks its library’s status again on a refusal for a hold it had not read, draws the hold, and takes the refusal away as the hold ends', async () => {
+    const library = sharing(KIDS)
+    vi.mocked(api.unlinkCost).mockRejectedValue(
+      new Error(
+        `/api/library/libraries/7/dirs/2?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or a rule save is running' })}`,
+      ),
+    )
+    // The first read finds nothing holding, the second the lock held, and
+    // the poll after it nothing again. By count, so that no answer queued
+    // for a read that never comes is left for the next test.
+    let reads = 0
+    vi.mocked(api.libraryScanStatus).mockImplementation(() => {
+      reads += 1
+      return Promise.resolve(
+        reads === 2 ? { ...idle(7), moves_held: true } : idle(7),
+      )
+    })
+    const { host } = await shown({ library })
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
+    await press(control(host, 'Remove from Manga…'))
+    await flush()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
+    expect(holdOf(control(host, 'Remove from Manga…'))).toBe('held')
+    expect(host.querySelector('.callout [role="alert"]')?.textContent).toBe(
+      'a scan or a rule save is running',
+    )
+    await tick()
+    expect(holdOf(control(host, 'Remove from Manga…'))).toBe('free')
+    expect(host.querySelector('.callout')).toBeNull()
+  })
+
+  it('draws the refusal on the directory’s last library over Remove from Manga…, naming Remove this directory', async () => {
+    const LAST =
+      '`/media/Shared` is in no other library, so it can only be removed: use Remove this directory.'
+    vi.mocked(api.unlinkCost).mockRejectedValue(
+      new Error(
+        `/api/library/libraries/7/dirs/2?dry_run=true: 400 ${JSON.stringify({ error: LAST })}`,
+      ),
+    )
+    const { host } = await shown({ library: sharing(KIDS) })
+    await press(control(host, 'Remove from Manga…'))
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    const callout = row(section(host, 'Removal'), 'Remove this directory')
+      .nextElementSibling as HTMLElement
+    expect(callout.classList.contains('callout')).toBe(true)
+    expect(callout.querySelector('[role="alert"]')?.textContent).toBe(LAST)
+    expect(holdOf(control(host, 'Remove…'))).toBe('free')
+  })
+})
+
 describe('DirPage, the directories around and inside it', () => {
+  it('names every library holding a directory around or inside it, and says "their" of two', async () => {
+    const library = manga({ name: 'Teens' })
+    library.dirs[1].inside = [
+      {
+        path: '/media',
+        libraries: ['Manga', 'Kids'],
+        shows: true,
+        kept_out_by: null,
+      },
+      {
+        path: '/media/Manga',
+        libraries: ['Manga', 'Kids'],
+        shows: false,
+        kept_out_by: 'exclusion',
+      },
+    ]
+    library.dirs[1].nested = [
+      {
+        id: 5,
+        path: '/media/Manga/Chapters/kids',
+        libraries: ['Kids', 'Archive'],
+        shown: true,
+        kept_out_by: null,
+      },
+    ]
+    const { host } = await shown({ library })
+    expect(insideLines(host)).toEqual([
+      'Also shown in Manga and Kids (inside /media)',
+      'Kept out of Manga and Kids by their exclusions (inside /media/Manga)',
+    ])
+    expect(foldRows(host)).toEqual([
+      ['kids/', 'Kids and Archive', 'also shown in Teens'],
+    ])
+
+    const dotted = manga({ name: 'Teens' })
+    dotted.dirs[1].inside = [
+      {
+        path: '/media/Manga',
+        libraries: ['Manga', 'Kids'],
+        shows: false,
+        kept_out_by: 'dot_name',
+      },
+    ]
+    const again = await shown({ library: dotted })
+    expect(insideLines(again.host)).toEqual([
+      'Kept out of Manga and Kids: their scans skip names starting with a dot (inside /media/Manga)',
+    ])
+  })
+
   it('folds one directory inside it under a closed line in the singular', async () => {
     const library = manga()
     library.dirs[1].nested = [
       {
         id: 5,
         path: '/media/Manga/Chapters/kids',
-        library: 'Kids',
+        libraries: ['Kids'],
         shown: true,
         kept_out_by: null,
       },
@@ -371,14 +715,14 @@ describe('DirPage, the directories around and inside it', () => {
       {
         id: 5,
         path: '/media/Manga/Chapters/kids',
-        library: 'Kids',
+        libraries: ['Kids'],
         shown: true,
         kept_out_by: null,
       },
       {
         id: 6,
         path: '/media/Manga/Chapters/old',
-        library: 'Archive',
+        libraries: ['Archive'],
         shown: false,
         kept_out_by: 'exclusion',
       },
@@ -399,7 +743,7 @@ describe('DirPage, the directories around and inside it', () => {
     library.dirs[1].inside = [
       {
         path: '/media/Manga',
-        library: 'Manga',
+        libraries: ['Manga'],
         shows: true,
         kept_out_by: null,
       },
@@ -416,13 +760,13 @@ describe('DirPage, the directories around and inside it', () => {
     library.dirs[1].inside = [
       {
         path: '/media/Manga',
-        library: 'Manga',
+        libraries: ['Manga'],
         shows: true,
         kept_out_by: null,
       },
       {
         path: '/media/Manga/Chapters',
-        library: 'Kids',
+        libraries: ['Kids'],
         shows: false,
         kept_out_by: 'exclusion',
       },
@@ -440,7 +784,7 @@ describe('DirPage, the directories around and inside it', () => {
       {
         id: 5,
         path: '/media/Manga/Chapters/.stash/kids',
-        library: 'Kids',
+        libraries: ['Kids'],
         shown: false,
         kept_out_by: 'dot_name',
       },
@@ -458,7 +802,7 @@ describe('DirPage, the directories around and inside it', () => {
     inner.dirs[1].inside = [
       {
         path: '/media/Manga',
-        library: 'Manga',
+        libraries: ['Manga'],
         shows: false,
         kept_out_by: 'dot_name',
       },
@@ -505,7 +849,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     expect(host.querySelector('.remove-root')).toBeNull()
 
     await press(control(host, 'Scan directory'))
-    expect(config.startScan).toHaveBeenCalledWith(2)
+    expect(config.startScan).toHaveBeenCalledWith(2, 7)
   })
 
   it('holds Remove… alone while a directory inside it that its library shows is scanning, and frees it when that ends', async () => {
@@ -516,7 +860,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
       {
         id: 5,
         path: '/media/Manga/Chapters/kids',
-        library: 'Kids',
+        libraries: ['Kids'],
         shown: true,
         kept_out_by: null,
       },
@@ -890,7 +1234,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     expect(host.querySelector('.dir-page > [role="alert"]')).not.toBeNull()
 
     await press(control(host, 'Scan directory'))
-    expect(config.startScan).toHaveBeenCalledWith(2)
+    expect(config.startScan).toHaveBeenCalledWith(2, 7)
     expect(host.querySelector('.dir-page > [role="alert"]')).toBeNull()
   })
 
@@ -920,6 +1264,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
             others={[{ id: 8, name: 'Comics' }]}
             onChanged={vi.fn()}
             onRemoved={vi.fn()}
+            onUnlinked={vi.fn()}
             onMoved={vi.fn()}
           />
         </MemoryRouter>,

@@ -235,8 +235,8 @@ pub(crate) fn waits_for(root: &scan::Root, to_do: &str) -> String {
 }
 
 /// Reserve the registry slot of each of `roots` for one scan that started at
-/// `started` at the request of `library`, or answer the sentence that refuses
-/// it, naming a directory already being scanned.
+/// `started` at the request of `library`, where one asked, or answer the
+/// sentence that refuses it, naming a directory already being scanned.
 ///
 /// The check and the reservations are one lock: a refusal reserves nothing,
 /// and two requests racing for the same directories cannot both find them free.
@@ -244,7 +244,7 @@ pub(crate) fn reserve(
     state: &ServeState,
     roots: &[scan::Root],
     started: Instant,
-    library: i64,
+    library: Option<i64>,
 ) -> Result<(), String> {
     let mut scans = state
         .scans
@@ -266,7 +266,7 @@ pub(crate) fn reserve(
                 started,
                 done: false,
                 report: None,
-                library: Some(library),
+                library,
             },
         );
     }

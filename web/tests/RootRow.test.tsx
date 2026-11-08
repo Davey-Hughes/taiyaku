@@ -1,4 +1,5 @@
 import { act, StrictMode } from 'react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from '../src/config'
 import * as api from '../src/libraries'
@@ -15,6 +16,8 @@ vi.mock('../src/libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/libraries')>()),
   moveCost: vi.fn(),
   moveDir: vi.fn(),
+  unlinkCost: vi.fn(),
+  unlinkDir: vi.fn(),
 }))
 vi.mock('../src/config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/config')>()),
@@ -132,20 +135,11 @@ async function tabThrough(host: HTMLElement, name: string) {
   })
 }
 
-async function settle(
-  over: Partial<config.Root> = {},
-  onChanged = vi.fn(),
-  lastOf?: string,
-) {
+async function settle(over: Partial<config.Root> = {}, onChanged = vi.fn()) {
   let host: HTMLElement | undefined
   await act(async () => {
     host = mount(
-      <RootRow
-        root={root(over)}
-        probe={undefined}
-        lastOf={lastOf}
-        onChanged={onChanged}
-      />,
+      <RootRow root={root(over)} probe={undefined} onChanged={onChanged} />,
     )
     await Promise.resolve()
   })
@@ -166,12 +160,26 @@ beforeEach(() => {
   // not stubbed in this suite, and the dialog renders its failure state with
   // no confirm button at all.
   vi.mocked(config.removalCost).mockResolvedValue({
-    removed: { works: 412, positions: 3, notes: 27, left_with_no_library: [] },
+    removed: {
+      works: 412,
+      positions: 3,
+      notes: 27,
+      left_with_no_library: [],
+      libraries_removed: [],
+      kept: [],
+    },
     derive: emptyDerive,
     dry_run: true,
   })
   vi.mocked(config.removeRoot).mockResolvedValue({
-    removed: { works: 412, positions: 3, notes: 27, left_with_no_library: [] },
+    removed: {
+      works: 412,
+      positions: 3,
+      notes: 27,
+      left_with_no_library: [],
+      libraries_removed: [],
+      kept: [],
+    },
     derive: emptyDerive,
     dry_run: false,
   })
@@ -256,8 +264,20 @@ describe('RootRow', () => {
     )
   })
 
-  it('draws the library name in the removal dialog where it is handed one', async () => {
-    const host = await settle({}, vi.fn(), 'Manga')
+  it('draws the library its removal’s dry run says goes with the directory', async () => {
+    vi.mocked(config.removalCost).mockResolvedValue({
+      removed: {
+        works: 412,
+        positions: 3,
+        notes: 27,
+        left_with_no_library: [],
+        libraries_removed: ['Manga'],
+        kept: [],
+      },
+      derive: emptyDerive,
+      dry_run: true,
+    })
+    const host = await settle()
     await act(async () => {
       press(host, 'Remove…').click()
       await Promise.resolve()
@@ -326,7 +346,7 @@ describe('RootRow', () => {
     expect(document.activeElement).toBe(box)
   })
 
-  it('draws no library sentence in the removal dialog without one', async () => {
+  it('draws no library sentence in the removal dialog where its dry run empties none', async () => {
     const host = await settle()
     await act(async () => {
       press(host, 'Remove…').click()
@@ -396,10 +416,8 @@ describe('RootRow', () => {
   })
 
   describe('Move…', () => {
-    const moveTo = {
-      from: { id: 5, name: 'Chapters' },
-      targets: [{ id: 7, name: 'Manga' }],
-    }
+    const library = { id: 5, name: 'Chapters' }
+    const moveTo = [{ id: 7, name: 'Manga' }]
     // The rehearsal and the move answer differently: what is handed up can
     // only be the move's.
     const answered = (dry_run: boolean): api.MoveAnswer => ({
@@ -422,6 +440,7 @@ describe('RootRow', () => {
         host = mount(
           <RootRow
             root={root()}
+            library={library}
             moveTo={moveTo}
             onChanged={vi.fn()}
             {...props}
@@ -560,7 +579,13 @@ describe('RootRow', () => {
       expect(host.querySelector('.move-root')).not.toBeNull()
       await act(async () => {
         rerender(
-          <RootRow root={root()} moveTo={moveTo} held onChanged={vi.fn()} />,
+          <RootRow
+            root={root()}
+            library={library}
+            moveTo={moveTo}
+            held
+            onChanged={vi.fn()}
+          />,
         )
         await Promise.resolve()
       })
@@ -588,7 +613,7 @@ describe('RootRow', () => {
         await Promise.resolve()
         await Promise.resolve()
       })
-      expect(api.moveDir).toHaveBeenCalledWith(3, { library: 7 })
+      expect(api.moveDir).toHaveBeenCalledWith(3, 5, { library: 7 })
       expect(onChanged).toHaveBeenCalledTimes(1)
       expect(onMoved).toHaveBeenCalledWith(answered(false))
       expect(host.querySelector('.move-root')).toBeNull()
@@ -1845,6 +1870,394 @@ describe('RootRow', () => {
   })
 })
 
+describe('RootRow, a directory another library holds too', () => {
+  const MANGA = { id: 7, name: 'Manga' }
+  const KIDS = { id: 9, name: 'Kids' }
+  const moveTo = [{ id: 8, name: 'Comics' }]
+  /** The unlink's rehearsal, or its answer: Manga stays, nobody loses sight. */
+  const unlinked = (dry_run: boolean): api.UnlinkAnswer => ({
+    unlinked: {
+      loses_sight: [],
+      library_removed: null,
+      grants_removed: 0,
+      left_with_no_library: [],
+    },
+    dry_run,
+  })
+  /** The row as Manga's page of a directory Kids holds too draws it. */
+  const shared = (props: Partial<Parameters<typeof RootRow>[0]> = {}) => (
+    <MemoryRouter>
+      <RootRow
+        root={root()}
+        library={MANGA}
+        libraries={[MANGA, KIDS]}
+        moveTo={moveTo}
+        onChanged={vi.fn()}
+        {...props}
+      />
+    </MemoryRouter>
+  )
+  const mounted = async (
+    props: Partial<Parameters<typeof RootRow>[0]> = {},
+  ) => {
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(shared(props))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    if (!host) throw new Error('nothing mounted')
+    return host
+  }
+  const redrawn = async (props: Partial<Parameters<typeof RootRow>[0]>) => {
+    await act(async () => {
+      rerender(shared(props))
+      await Promise.resolve()
+    })
+  }
+  const clicked = async (button: Element) => {
+    await act(async () => {
+      ;(button as HTMLElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  }
+  const unlink = (host: HTMLElement) => press(host, 'Remove from Manga…')
+  /** Each of the four actions, held, disabled or free. */
+  const holds = (host: HTMLElement) =>
+    Object.fromEntries(
+      ['Scan directory', 'Move…', 'Remove from Manga…', 'Remove…'].map(
+        (label) => [label, holdOf(press(host, label))],
+      ),
+    )
+
+  beforeEach(() => {
+    vi.mocked(api.unlinkCost).mockResolvedValue(unlinked(true))
+    vi.mocked(api.unlinkDir).mockResolvedValue(unlinked(false))
+  })
+
+  it('sends the page’s library with Scan directory', async () => {
+    const host = await mounted()
+    await clicked(press(host, 'Scan directory'))
+    expect(config.startScan).toHaveBeenCalledWith(3, 7)
+  })
+
+  it('holds Remove from Manga… exactly when Move… is, and Remove… for a scan around or inside it', async () => {
+    const host = await mounted()
+    expect(holds(host)).toEqual({
+      'Scan directory': 'free',
+      'Move…': 'free',
+      'Remove from Manga…': 'free',
+      'Remove…': 'free',
+    })
+    await redrawn({ moveHeld: true })
+    expect(holds(host)).toEqual({
+      'Scan directory': 'free',
+      'Move…': 'held',
+      'Remove from Manga…': 'held',
+      'Remove…': 'free',
+    })
+    await redrawn({ removalHeld: true })
+    expect(holds(host)).toEqual({
+      'Scan directory': 'free',
+      'Move…': 'free',
+      'Remove from Manga…': 'free',
+      'Remove…': 'held',
+    })
+    await redrawn({ held: true })
+    expect(holds(host)).toEqual({
+      'Scan directory': 'held',
+      'Move…': 'held',
+      'Remove from Manga…': 'held',
+      'Remove…': 'held',
+    })
+  })
+
+  it('holds the other actions by disabled while its dialog is open, and is itself held then', async () => {
+    const host = await mounted()
+    await clicked(unlink(host))
+    expect(host.querySelector('.unlink-root')).not.toBeNull()
+    expect(api.unlinkCost).toHaveBeenCalledWith(7, 3)
+    expect(holds(host)).toEqual({
+      'Scan directory': 'disabled',
+      'Move…': 'disabled',
+      'Remove from Manga…': 'held',
+      'Remove…': 'disabled',
+    })
+    await clicked(press(host, 'Cancel'))
+    await clicked(press(host, 'Remove…'))
+    expect(holdOf(unlink(host))).toBe('disabled')
+  })
+
+  it('draws both dialogs after both rows, so that opening either moves no row', async () => {
+    const host = await mounted()
+    const box = section(host, 'Removal').querySelector(
+      ':scope > .settings-box',
+    ) as HTMLElement
+    // The rows are a group's, the dialog the box's own, after it.
+    const parts = () =>
+      [...box.children].flatMap((one) =>
+        one.classList.contains('settings-group')
+          ? [...one.children].map(
+              (row) => row.querySelector('.settings-row-label')?.textContent,
+            )
+          : [one.className],
+      )
+    await clicked(unlink(host))
+    expect(parts()).toEqual([
+      'Remove from Manga',
+      'Remove this directory',
+      'unlink-root',
+    ])
+    await clicked(press(host, 'Cancel'))
+    await clicked(press(host, 'Remove…'))
+    expect(parts()).toEqual([
+      'Remove from Manga',
+      'Remove this directory',
+      'remove-root',
+    ])
+  })
+
+  it('hands focus back to Remove from Manga… when its dialog is cancelled', async () => {
+    const host = await mounted()
+    await clicked(unlink(host))
+    const cancel = press(host, 'Cancel')
+    act(() => cancel.focus())
+    await clicked(cancel)
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    expect(document.activeElement).toBe(unlink(host))
+  })
+
+  it('closes its dialog when a hold of the move comes, and hands focus to Remove from Manga…, held', async () => {
+    const host = await mounted()
+    await clicked(unlink(host))
+    act(() => press(host, 'Cancel').focus())
+    await redrawn({ moveHeld: true })
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    expect(document.activeElement).toBe(unlink(host))
+    expect(holdOf(unlink(host))).toBe('held')
+  })
+
+  it('takes its dialog away, and the hold it put on the others, when a list read finds no other library holding the directory', async () => {
+    const host = await mounted()
+    await clicked(unlink(host))
+    expect(holdOf(press(host, 'Remove…'))).toBe('disabled')
+    await redrawn({ libraries: [MANGA] })
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    expect(() => unlink(host)).toThrow()
+    expect(holdOf(press(host, 'Remove…'))).toBe('free')
+    expect(holdOf(press(host, 'Move…'))).toBe('free')
+  })
+
+  it('keeps its dialog through a hold of the removal alone', async () => {
+    const host = await mounted()
+    await clicked(unlink(host))
+    await redrawn({ removalHeld: true })
+    expect(host.querySelector('.unlink-root')).not.toBeNull()
+  })
+
+  it('hands what the unlink did up and asks for the list again', async () => {
+    const onUnlinked = vi.fn()
+    const onChanged = vi.fn()
+    const onRemoved = vi.fn()
+    const host = await mounted({ onUnlinked, onChanged, onRemoved })
+    await clicked(unlink(host))
+    await clicked(host.querySelector('.unlink-root .confirm') as Element)
+    expect(api.unlinkDir).toHaveBeenCalledWith(7, 3)
+    expect(onUnlinked).toHaveBeenCalledWith(unlinked(false))
+    expect(onChanged).toHaveBeenCalledTimes(1)
+    expect(onRemoved).not.toHaveBeenCalled()
+    expect(host.querySelector('.unlink-root')).toBeNull()
+  })
+
+  it('draws a refusal of its rehearsal in a callout after both rows, closes its dialog, and lets the next press take it away', async () => {
+    const LAST =
+      '`/srv/manga` is in no other library, so it can only be removed: use Remove this directory.'
+    vi.mocked(api.unlinkCost).mockRejectedValue(
+      new Error(
+        `/api/library/libraries/7/dirs/3?dry_run=true: 400 ${JSON.stringify({ error: LAST })}`,
+      ),
+    )
+    const host = await mounted()
+    await clicked(unlink(host))
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    // After the last row, from where it lies over the rows above it.
+    const row = press(host, 'Remove…').closest('.settings-row') as HTMLElement
+    const callout = row.nextElementSibling as HTMLElement
+    expect(callout.className).toBe('callout')
+    expect(callout.querySelector('[role="alert"]')?.textContent).toBe(LAST)
+    // Focus went with the dialog, and is handed back beneath the refusal.
+    expect(document.activeElement).toBe(unlink(host))
+    expect(holdOf(press(host, 'Remove…'))).toBe('free')
+    await clicked(press(host, 'Remove…'))
+    expect(host.querySelector('.callout')).toBeNull()
+  })
+
+  it('draws a refusal of the unlink itself as it draws its rehearsal’s', async () => {
+    vi.mocked(api.unlinkDir).mockRejectedValue(
+      new Error(
+        `/api/library/libraries/7/dirs/3: 409 ${JSON.stringify({ error: 'a scan of /srv/manga is reserved' })}`,
+      ),
+    )
+    const onUnlinked = vi.fn()
+    const host = await mounted({ onUnlinked })
+    await clicked(unlink(host))
+    const confirm = host.querySelector('.unlink-root .confirm') as HTMLElement
+    act(() => confirm.focus())
+    await clicked(confirm)
+    expect(onUnlinked).not.toHaveBeenCalled()
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    expect(host.querySelector('.callout [role="alert"]')?.textContent).toBe(
+      'a scan of /srv/manga is reserved',
+    )
+    expect(document.activeElement).toBe(unlink(host))
+  })
+
+  /** Remove from Manga… pressed, and its rehearsal refused as the lock is held. */
+  const refused = async (
+    props: Partial<Parameters<typeof RootRow>[0]> = {},
+  ) => {
+    vi.mocked(api.unlinkCost).mockRejectedValue(
+      new Error(
+        `/api/library/libraries/7/dirs/3?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or a rule save is running' })}`,
+      ),
+    )
+    const host = await mounted(props)
+    await clicked(unlink(host))
+    expect(host.querySelector('.callout [role="alert"]')).not.toBeNull()
+    vi.mocked(api.unlinkCost).mockResolvedValue(unlinked(true))
+    return host
+  }
+
+  it('takes its refusal away as focus leaves Remove from Manga…', async () => {
+    const host = await refused()
+    expect(document.activeElement).toBe(unlink(host))
+    expect(host.querySelector('.callout')).not.toBeNull()
+    act(() => press(host, 'Remove…').focus())
+    expect(host.querySelector('.callout')).toBeNull()
+  })
+
+  it('takes its refusal away as the hold of it ends, so that a press reaches Remove from Manga… again', async () => {
+    const host = await refused()
+    await redrawn({ moveHeld: true })
+    expect(holdOf(unlink(host))).toBe('held')
+    expect(host.querySelector('.callout')).not.toBeNull()
+    await redrawn({ moveHeld: false })
+    expect(host.querySelector('.callout')).toBeNull()
+    await clicked(unlink(host))
+    expect(host.querySelector('.unlink-root .confirm')).not.toBeNull()
+  })
+
+  it('sends focus to Remove… when a list read takes its dialog away while focus is in it', async () => {
+    const host = await mounted()
+    await clicked(unlink(host))
+    act(() => press(host, 'Cancel').focus())
+    await redrawn({ libraries: [MANGA] })
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    expect(document.activeElement).toBe(press(host, 'Remove…'))
+  })
+
+  it('sends focus to Remove… when a list read takes Remove from Manga… away while it has focus and no dialog is open', async () => {
+    const host = await mounted()
+    act(() => unlink(host).focus())
+    await redrawn({ libraries: [MANGA] })
+    expect(() => unlink(host)).toThrow()
+    expect(document.activeElement).toBe(press(host, 'Remove…'))
+  })
+
+  it('takes no focus when a list read finds no other library holding the directory while focus is on the page', async () => {
+    const host = await mounted()
+    act(() => (document.activeElement as HTMLElement | null)?.blur())
+    expect(document.activeElement).toBe(document.body)
+    await redrawn({ libraries: [MANGA] })
+    expect(() => unlink(host)).toThrow()
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('takes no focus when a list read finds no other library holding the directory once focus has left Remove from Manga… for the page', async () => {
+    const host = await mounted()
+    act(() => unlink(host).focus())
+    const box = host.querySelector(
+      'input[name="edition_key"]',
+    ) as HTMLInputElement
+    act(() => box.focus())
+    act(() => box.blur())
+    expect(document.activeElement).toBe(document.body)
+    await redrawn({ libraries: [MANGA] })
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('takes its refusal away at a click on it and not before, where focus moved to a box while the rehearsal was out', async () => {
+    const rehearsal = deferred<api.UnlinkAnswer>()
+    vi.mocked(api.unlinkCost).mockReturnValue(rehearsal.promise)
+    const host = await mounted()
+    await clicked(unlink(host))
+    const box = host.querySelector(
+      'input[name="edition_key"]',
+    ) as HTMLInputElement
+    act(() => box.focus())
+    await act(async () => {
+      rehearsal.reject(
+        new Error(
+          `/api/library/libraries/7/dirs/3?dry_run=true: 400 ${JSON.stringify({ error: 'no' })}`,
+        ),
+      )
+    })
+    const said = host.querySelector('.callout [role="alert"]') as HTMLElement
+    expect(said.textContent).toBe('no')
+    expect(document.activeElement).toBe(box)
+    await act(async () => {
+      said.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    })
+    expect(host.querySelector('.callout [role="alert"]')).toBe(said)
+    await clicked(said)
+    expect(host.querySelector('.callout')).toBeNull()
+    expect(host.querySelector('.unlink-root')).toBeNull()
+  })
+
+  it('tells its page of a refusal for a hold it was not told of, a 409, and of no other refusal', async () => {
+    const onScanMoved = vi.fn()
+    const onHeldRefusal = vi.fn()
+    const host = await mounted({ onScanMoved, onHeldRefusal })
+    vi.mocked(api.unlinkCost).mockRejectedValueOnce(
+      new Error(
+        `/api/library/libraries/7/dirs/3?dry_run=true: 400 ${JSON.stringify({ error: 'last' })}`,
+      ),
+    )
+    await clicked(unlink(host))
+    expect(
+      [onScanMoved, onHeldRefusal].map((f) => f.mock.calls.length),
+    ).toEqual([0, 0])
+    vi.mocked(api.unlinkCost).mockRejectedValueOnce(
+      new Error(
+        `/api/library/libraries/7/dirs/3?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or a rule save is running' })}`,
+      ),
+    )
+    await clicked(unlink(host))
+    expect(
+      [onScanMoved, onHeldRefusal].map((f) => f.mock.calls.length),
+    ).toEqual([1, 1])
+    vi.mocked(api.unlinkCost).mockResolvedValue(unlinked(true))
+    vi.mocked(api.unlinkDir).mockRejectedValueOnce(
+      new Error(
+        `/api/library/libraries/7/dirs/3: 409 ${JSON.stringify({ error: 'a scan of /srv/manga is reserved' })}`,
+      ),
+    )
+    await clicked(unlink(host))
+    await clicked(host.querySelector('.unlink-root .confirm') as Element)
+    expect(
+      [onScanMoved, onHeldRefusal].map((f) => f.mock.calls.length),
+    ).toEqual([2, 2])
+  })
+
+  it('takes no focus as a page of a directory no other library holds is first drawn', async () => {
+    act(() => (document.activeElement as HTMLElement | null)?.blur())
+    const host = await mounted({ libraries: [MANGA] })
+    expect(() => unlink(host)).toThrow()
+    expect(document.activeElement).toBe(document.body)
+  })
+})
+
 describe('RootRow, telling its page that the library’s scan status no longer holds (§9’s call 9)', () => {
   /** The row with `onScanMoved` a mock, once its mount read has answered. */
   async function settleTelling() {
@@ -2176,7 +2589,14 @@ describe('RootRow, an edit still in its box when the row goes', () => {
     await typeAndStay(row, 'default_language', 'ja')
     await flush(() =>
       removed.resolve({
-        removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+        removed: {
+          works: 1,
+          positions: 0,
+          notes: 0,
+          left_with_no_library: [],
+          libraries_removed: [],
+          kept: [],
+        },
         derive: emptyDerive,
         dry_run: false,
       }),
@@ -2208,10 +2628,8 @@ describe('RootRow, an edit still in its box when the row goes', () => {
       host = mount(
         <RootRow
           root={root()}
-          moveTo={{
-            from: { id: 5, name: 'Chapters' },
-            targets: [{ id: 7, name: 'Manga' }],
-          }}
+          library={{ id: 5, name: 'Chapters' }}
+          moveTo={[{ id: 7, name: 'Manga' }]}
           onMoved={onMoved}
           onChanged={vi.fn()}
         />,

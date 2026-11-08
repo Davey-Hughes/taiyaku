@@ -1,9 +1,14 @@
+import { act } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { userEvent } from 'vitest/browser'
 // **Required**, the same reason `Config.browser.test.tsx` gives.
 import '../src/index.css'
 import * as config from '../src/config'
 import * as librariesApi from '../src/libraries'
-import { byRole } from './support/located'
+import { deferred } from './support/async'
+import { holdOf } from './support/held'
+import { counted, dir, idle, scanningIn } from './support/libraries'
+import { buttonSaying, byRole } from './support/located'
 import { click, linkIn, openedAt } from './support/typedAddress'
 
 /**
@@ -15,12 +20,14 @@ import { click, linkIn, openedAt } from './support/typedAddress'
 
 vi.mock('../src/config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/config')>()),
+  removalCost: vi.fn(),
   scanStatus: vi.fn(),
 }))
 vi.mock('../src/libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/libraries')>()),
   libraryScanStatus: vi.fn(),
   listLibraries: vi.fn(),
+  unlinkCost: vi.fn(),
 }))
 
 /**
@@ -59,6 +66,7 @@ const LIBRARIES: librariesApi.Library[] = NAMES.map(([name], i) => ({
       keeps_documents: false,
       last_scan_at: null,
       last_scan_status: null,
+      libraries: [{ id: i + 1, name }],
       nested: [],
       inside: [],
     },
@@ -195,4 +203,128 @@ describe('a library’s address, through the app’s own router', () => {
       )
     },
   )
+})
+
+/**
+ * One directory in two libraries is two pages, Manga's and Kids', at one
+ * root id: what is open on one, and what holds it, is not the other's.
+ */
+describe('one directory in two libraries, through the app’s own router', () => {
+  const MANGA = { id: 1, name: 'Manga' }
+  const KIDS = { id: 2, name: 'Kids' }
+  const shared = () => dir(300, '/srv/shared', [MANGA, KIDS])
+  const libraries: librariesApi.Library[] = [
+    {
+      ...MANGA,
+      works: 0,
+      books: 0,
+      dirs: [shared(), dir(301, '/srv/manga', [MANGA])],
+    },
+    { ...KIDS, works: 0, books: 0, dirs: [shared()] },
+  ]
+
+  it('draws Kids’ page of a directory afresh after Manga’s: the removal opened on Manga’s is gone, and Manga’s scan holds nothing there', async () => {
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries })
+    vi.mocked(config.removalCost).mockResolvedValue(counted())
+    // A scan of Manga's other directory holds Manga's Move…; Kids' status
+    // is not answered until the end.
+    const kids = deferred<librariesApi.LibraryScanStatus>()
+    vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
+      id === MANGA.id
+        ? Promise.resolve(scanningIn(libraries[0], 301))
+        : kids.promise,
+    )
+    const host = await openedAt('/config/libraries/Manga/dirs/300', who)
+    const page = () => host.querySelector('.dir-page') as HTMLElement
+    expect(holdOf(buttonSaying(page(), 'Move…'))).toBe('held')
+    await click(buttonSaying(page(), 'Remove…'))
+    expect(page().querySelector('.remove-root')).not.toBeNull()
+
+    await act(async () => {
+      history.pushState(null, '', '/config/libraries/Kids/dirs/300')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      await new Promise((resolve) => setTimeout(resolve, 120))
+    })
+    expect(location.pathname).toBe('/config/libraries/Kids/dirs/300')
+    expect(titleOf(host, 'dir-page')).toBe('/srv/shared')
+    expect(page().querySelector('.back a')?.textContent).toBe('‹ Kids')
+    expect(page().querySelector('.remove-root')).toBeNull()
+    expect(holdOf(buttonSaying(page(), 'Move…'))).toBe('free')
+
+    await act(async () => {
+      kids.resolve(idle(KIDS.id))
+      await new Promise((resolve) => setTimeout(resolve, 120))
+    })
+    expect(holdOf(buttonSaying(page(), 'Move…'))).toBe('free')
+  })
+
+  it('goes to Kids’ page of the directory by a real click on Kids in its Also in line, made outside act with Manga’s Remove from Manga open: that is gone, and the line names Manga', async () => {
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries })
+    vi.mocked(librariesApi.unlinkCost).mockResolvedValue({
+      unlinked: {
+        loses_sight: [],
+        library_removed: null,
+        grants_removed: 0,
+        left_with_no_library: [],
+      },
+      dry_run: true,
+    })
+    const host = await openedAt('/config/libraries/Manga/dirs/300', who)
+    const page = () => host.querySelector('.dir-page') as HTMLElement
+    await click(buttonSaying(page(), 'Remove from Manga…'))
+    expect(page().querySelector('.unlink-root .confirm')).not.toBeNull()
+
+    const kids = linkIn(page().querySelector('.also-in') as Element, 'Kids')
+    // As the app runs: `BrowserRouter` commits the change of page in a
+    // transition, which `act` would hold until it ended.
+    globalThis.IS_REACT_ACT_ENVIRONMENT = false
+    try {
+      await userEvent.click(kids)
+      const until = performance.now() + 2000
+      while (
+        page()?.querySelector('.back a')?.textContent !== '‹ Kids' &&
+        performance.now() < until
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120))
+    } finally {
+      globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    }
+    expect(location.pathname).toBe('/config/libraries/Kids/dirs/300')
+    expect(page().querySelector('.back a')?.textContent).toBe('‹ Kids')
+    expect(page().querySelector('.unlink-root')).toBeNull()
+    expect(page().querySelector('.also-in')?.textContent).toBe(
+      'Also in Manga, which shares these settings and scans.',
+    )
+    expect(buttonSaying(page(), 'Remove from Kids…')).toBeDefined()
+  })
+
+  it('puts focus on the heading of Kids’ page of the directory that a real Enter on Kids in its Also in line opens, pressed outside act', async () => {
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries })
+    const host = await openedAt('/config/libraries/Manga/dirs/300', who)
+    const page = () => host.querySelector('.dir-page') as HTMLElement
+    const kids = linkIn(page().querySelector('.also-in') as Element, 'Kids')
+    // Focused inside the frame, so that the key goes to the page and not to
+    // the frame around it.
+    await act(async () => kids.focus())
+    expect(document.activeElement).toBe(kids)
+    globalThis.IS_REACT_ACT_ENVIRONMENT = false
+    try {
+      await userEvent.keyboard('{Enter}')
+      const until = performance.now() + 2000
+      while (
+        page()?.querySelector('.back a')?.textContent !== '‹ Kids' &&
+        performance.now() < until
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120))
+    } finally {
+      globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    }
+    expect(location.pathname).toBe('/config/libraries/Kids/dirs/300')
+    expect(page().querySelector('.back a')?.textContent).toBe('‹ Kids')
+    expect(document.activeElement).toBe(page().querySelector('.page-title'))
+  })
 })

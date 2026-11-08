@@ -58,7 +58,7 @@ fn root() -> Root {
         exclude_globs: None,
         scan_interval_secs: None,
         keeps_documents: false,
-        library_id: 1,
+        libraries: vec![1],
     }
 }
 

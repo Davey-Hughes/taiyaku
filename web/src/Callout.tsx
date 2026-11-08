@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { focusUnder } from './focusUnder'
 
 /**
  * What answers a form, laid right under the row of the control it answers,
@@ -268,22 +269,6 @@ function contentOf(row: Element) {
   }
 }
 
-/**
- * Whether the control with focus is drawn under `callout` while it says
- * something, and is marked as focused there (`:focus-visible`), so that its
- * ring is drawn on the callout (`settings.css`).
- */
-function coversFocus(callout: HTMLElement) {
-  const focused = document.activeElement
-  if (
-    !callout.firstElementChild?.hasChildNodes() ||
-    focused === null ||
-    !focused.matches(':focus-visible')
-  )
-    return false
-  const over = callout.getBoundingClientRect()
-  const at = focused.getBoundingClientRect()
-  const x = (at.left + at.right) / 2
-  const y = (at.top + at.bottom) / 2
-  return x > over.left && x < over.right && y > over.top && y < over.bottom
-}
+/** Whether the control with focus is drawn under `callout` while it says something. */
+const coversFocus = (callout: HTMLElement) =>
+  callout.firstElementChild?.hasChildNodes() === true && focusUnder(callout)

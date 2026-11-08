@@ -203,11 +203,12 @@ failed it.
 `slow-timeout = { period = "30s", terminate-after = 2 }` marks a test `SLOW`
 at 30 s and kills it at 60 s, both sized off a bisection of the whole
 workspace rather than guessed — nothing in 639 tests exceeds 0.75 s, so 30 s
-is 40x that and 60 s is 80x. An override exempts exactly the **twelve** files
-`--ignore-filename-regex` already exempts from both coverage steps above (nine
-alternatives, twelve matching files — counted 2026-08-18; this said eight,
-which was the count before `borrow_frequency`, `test_support` and
-`taiyaku-library/src/corpus.rs` joined the set) — the
+is 40x that and 60 s is 80x. An override exempts the tests of **nine** of the
+fourteen files `--ignore-filename-regex` exempts from both coverage steps above:
+its filter names tests, not files, and reaches every one of them but
+`borrow_frequency.rs` and the four `test_support.rs` (read from the filter
+against the files on 2026-11-06; this said twelve, the regex's whole count on
+2026-08-18) — the
 fifteen standing corpus checks, three `corpus::tests::` helpers that only
 assert how `TAIYAKU_CORPUS` is validated and touch no material, and the
 one-off experiment modules — at a 60 s `SLOW` mark with no `terminate-after`,
@@ -518,8 +519,9 @@ measured 2026-08-14: 72.22% regions on `taiyaku-serve/src/truth.rs` and
 **25.00%** instantiations on `stump/cache.rs`), so they would need their own
 numbers for no signal the line floor does not already give.
 
-The Rust figure is the workspace total with the thirteen files below ignored;
-without them it is **71.46%** lines, and the difference is not work anyone did
+The Rust figure is the workspace total with the fourteen files below ignored;
+without them it read **71.46%** lines on 2026-08-14, when eleven were ignored,
+and the difference is not work anyone did
 — it is code nobody intends to run in CI, which is the whole reason the
 exclusions exist. `taiyaku-cli/src/main.rs`, this branch's long pole, went from
 43.79% to **95.82%** regions and 97.23% lines when it was measured; its test
@@ -599,7 +601,8 @@ from the day it landed until this one. Here they are, with a reason each:
 | `taiyaku-cli/src/score_corpus.rs` | the same |
 | `taiyaku-serve/src/test_support.rs` | `#[cfg(test)]` scaffolding, and a third category rather than a gated module: cargo-llvm-cov's default exclusion drops a file whose basename contains `tests` and so misses this one, for want of an `s` |
 | `taiyaku-serve/src/stump/http/test_support.rs` | the same |
-| `taiyaku-read/src/test_support.rs` | the same, and the one of the three that is not only `#[cfg(test)]`: `taiyaku-read`'s `test-support` feature exposes it to `taiyaku-library`'s tests, since O104's strace harness serves `stamp` as well as `atomic`. Since O117 `taiyaku-serve` and `taiyaku-cli` enable it too, for its `TempDir`. Matched by the existing alternation from the day it landed, and listed the same day |
+| `taiyaku-read/src/test_support.rs` | the same, and the first of the four that is not only `#[cfg(test)]`: `taiyaku-read`'s `test-support` feature exposes it to `taiyaku-library`'s tests, since O104's strace harness serves `stamp` as well as `atomic`. Since O117 `taiyaku-serve` and `taiyaku-cli` enable it too, for its `TempDir`. Matched by the existing alternation from the day it landed, and listed the same day |
+| `taiyaku-library/src/test_support.rs` | the same, and like `taiyaku-read`'s also behind a `test-support` feature, which `taiyaku-serve` and `taiyaku-cli` enable for their tests: one copy of each fixture that files a directory planted by SQL under a library as the add would. Matched by the existing alternation from the day it landed, and listed before its branch merged |
 
 **The regex matches `/corpus.rs` by path segment, and that is the sharp edge.**
 A *new* `corpus.rs` added to a crate that is **not** corpus-gated would be
@@ -607,8 +610,9 @@ excluded silently, and its coverage would leave the number without leaving a
 trace. Nothing like that exists today — verified, not assumed, and **re-measured
 on 2026-08-14 from `cargo llvm-cov report --json` with and without the flag: 54
 files without the regex, 43 with it, and the eleven that disappear are exactly
-the eleven above.** *The table has since grown to thirteen — `taiyaku-library`'s
-`corpus.rs` on 2026-08-18 and `taiyaku-read`'s `test_support.rs` with O104 — and
+the eleven above.** *The table has since grown to fourteen — `taiyaku-library`'s
+`corpus.rs` on 2026-08-18, `taiyaku-read`'s `test_support.rs` with O104 and
+`taiyaku-library`'s with the overlapping-libraries PR 3 — and
 the 2026-08-14 figures in this paragraph are left as measured.* The workspace reads **71.46%** lines without the regex
 (7,573 of 10,598) against **93.95%** with it (6,735 of 7,169), both
 re-measured the same way.
@@ -640,7 +644,7 @@ for, arriving in the one document that explains that script. **A per-site list
 is checkable; a count is not** — and the fourth drift shows the converse edge:
 the list is only authoritative if something puts new entries *into* it, which is
 why the diff below is worth running when a file joins the regex and not only
-when a crate joins the workspace. The thirteen rows above are the list; every
+when a crate joins the workspace. The fourteen rows above are the list; every
 number
 in this paragraph is derived from them and was re-measured, not carried
 forward.
@@ -649,7 +653,7 @@ forward.
 used to end "re-run that diff when adding a crate", and asking a reader to
 remember a thing is the weakest form of a check there is. The per-file floor
 script now asserts the file count itself — 82 on 2026-09-13, 40 required — so a
-regex that quietly swallows more than these thirteen fails the job instead of waiting to
+regex that quietly swallows more than these fourteen fails the job instead of waiting to
 be noticed. Only *half*, because the automated half sees the count and not the
 names: a regex that dropped one file while a new crate added one would net to
 zero and pass. So the diff is still worth running when adding a crate, and it is

@@ -12,8 +12,10 @@ import { WAIT_DRAWN_AFTER_MS } from '../src/hooks'
 import * as librariesApi from '../src/libraries'
 import { LibraryPage } from '../src/LibraryPage'
 import { deferred, settleUntil } from './support/async'
+import { expectCallout, liesOver, pressAt, pressOn } from './support/callout'
 import { holdOf } from './support/held'
 import { counted, dir, idle, scanningIn } from './support/libraries'
+import { tapWhereOver } from './support/touch'
 import { typeInto } from './support/input'
 import { mount, rerender } from './support/mount'
 import * as usersApi from '../src/users'
@@ -47,6 +49,7 @@ vi.mock('../src/libraries', async (importOriginal) => ({
   moveDir: vi.fn(),
   removeLibrary: vi.fn(),
   startLibraryScan: vi.fn(),
+  unlinkCost: vi.fn(),
 }))
 vi.mock('../src/users', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/users')>()),
@@ -62,7 +65,10 @@ const MANGA = {
   name: 'Manga',
   works: 12,
   books: 0,
-  dirs: [dir(1, '/srv/manga/volumes'), dir(2, '/srv/manga/chapters')],
+  dirs: [
+    dir(1, '/srv/manga/volumes', [{ id: 1, name: 'Manga' }]),
+    dir(2, '/srv/manga/chapters', [{ id: 1, name: 'Manga' }]),
+  ],
 }
 
 beforeEach(() => {
@@ -294,6 +300,7 @@ const dirPageOf = (others = [{ id: 2, name: 'Light novels' }]) => (
       others={others}
       onChanged={() => undefined}
       onRemoved={() => undefined}
+      onUnlinked={() => undefined}
       onMoved={() => undefined}
     />
   </MemoryRouter>
@@ -403,6 +410,336 @@ describe('a directory’s page, held controls in a real browser', () => {
     expect(host.querySelector('.remove-root')).toBeNull()
     expect(document.activeElement).toBe(remove)
     expect(holdOf(remove)).toBe('held')
+  })
+
+  it('keeps focus on Remove from Manga…, pressed with Enter, held while the dialog it opens is open and when another directory’s scan closes that; Enter on it asks nothing more', async () => {
+    const both = [
+      { id: 1, name: 'Manga' },
+      { id: 3, name: 'Kids' },
+    ]
+    const shared = {
+      ...MANGA,
+      dirs: [dir(1, '/srv/manga/volumes', both), MANGA.dirs[1]],
+    }
+    const status = deferred<librariesApi.LibraryScanStatus>()
+    vi.mocked(librariesApi.libraryScanStatus).mockReturnValueOnce(
+      status.promise,
+    )
+    vi.mocked(librariesApi.unlinkCost).mockResolvedValue({
+      unlinked: {
+        loses_sight: [],
+        library_removed: null,
+        grants_removed: 0,
+        left_with_no_library: [],
+      },
+      dry_run: true,
+    })
+    await page.viewport(1280, 800)
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <MemoryRouter initialEntries={['/config/libraries/Manga/dirs/1']}>
+          <DirPage
+            library={shared}
+            root={shared.dirs[0]}
+            others={[{ id: 2, name: 'Light novels' }]}
+            onChanged={() => undefined}
+            onRemoved={() => undefined}
+            onUnlinked={() => undefined}
+            onMoved={() => undefined}
+          />
+        </MemoryRouter>,
+      )
+    })
+    if (host === undefined) throw new Error('nothing mounted')
+    await settle()
+    const unlink = called(host, 'Remove from Manga…')
+    await focusFirst(regime(host), unlink)
+    await keys('{Enter}')
+    await settle()
+    expect(document.activeElement).toBe(unlink)
+    expect(holdOf(unlink)).toBe('held')
+    expect(host.querySelector('.unlink-root .confirm')).not.toBeNull()
+    await keys('{Enter}')
+    expect(librariesApi.unlinkCost).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      status.resolve(scanningIn(shared, 2))
+    })
+    await settle()
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    expect(document.activeElement).toBe(unlink)
+    expect(holdOf(unlink)).toBe('held')
+    await keys('{Enter}')
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    expect(librariesApi.unlinkCost).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([1280, 390])(
+    'lays a refusal of Remove from Manga…, pressed with Enter, over that button’s row and not Remove this directory’s, its focus and ring kept beneath it, and takes it away as the hold that refused it ends, so that a real mouse press on the button opens its dialog again, the 409 having its library’s status read again, at %i',
+    async (width) => {
+      const both = [
+        { id: 1, name: 'Manga' },
+        { id: 3, name: 'Kids' },
+      ]
+      const shared = {
+        ...MANGA,
+        dirs: [dir(1, '/srv/manga/volumes', both), MANGA.dirs[1]],
+      }
+      const LOCKED =
+        'a scan or a rule save is running; remove the directory from this library when it has finished'
+      // The page's first read of its library's status finds nothing
+      // holding. The 409 has it read again, which answers once the refusal
+      // is drawn: the lock is held, and the poll that follows finds it free.
+      const status = deferred<librariesApi.LibraryScanStatus>()
+      vi.mocked(librariesApi.libraryScanStatus)
+        .mockResolvedValueOnce(idle(1))
+        .mockReturnValueOnce(status.promise)
+      vi.mocked(librariesApi.unlinkCost)
+        .mockRejectedValueOnce(
+          new Error(
+            `/api/library/libraries/1/dirs/1?dry_run=true: 409 ${JSON.stringify({ error: LOCKED })}`,
+          ),
+        )
+        .mockResolvedValue({
+          unlinked: {
+            loses_sight: [],
+            library_removed: null,
+            grants_removed: 0,
+            left_with_no_library: [],
+          },
+          dry_run: true,
+        })
+      await page.viewport(width, 800)
+      let host: HTMLElement | undefined
+      await act(async () => {
+        host = mount(
+          <MemoryRouter initialEntries={['/config/libraries/Manga/dirs/1']}>
+            <DirPage
+              library={shared}
+              root={shared.dirs[0]}
+              others={[{ id: 2, name: 'Light novels' }]}
+              onChanged={() => undefined}
+              onRemoved={() => undefined}
+              onUnlinked={() => undefined}
+              onMoved={() => undefined}
+            />
+          </MemoryRouter>,
+        )
+      })
+      if (host === undefined) throw new Error('nothing mounted')
+      await settle()
+      const unlink = called(host, 'Remove from Manga…')
+      const pressOn = async (el: Element) => {
+        const at = el.getBoundingClientRect()
+        await pressAt((at.left + at.right) / 2, (at.top + at.bottom) / 2)
+        await settle()
+      }
+
+      await focusFirst(regime(host), unlink)
+      await keys('{Enter}')
+      await settle()
+      expect(host.querySelector('.unlink-root')).toBeNull()
+      const said = host.querySelector(
+        '.callout > [role="alert"]',
+      ) as HTMLElement
+      expect(said.textContent).toBe(LOCKED)
+      // Drawn after Remove this directory's row, and laid over the row above
+      // it: Remove from Manga's own, button and all. Remove this directory,
+      // which a refusal on the last library names, stays in view.
+      const remove = called(host, 'Remove…')
+      await expectCallout(said, remove.closest('.settings-row') as Element, {
+        above: true,
+      })
+      expect([liesOver(said, unlink), liesOver(said, remove)]).toEqual([
+        true,
+        false,
+      ])
+      expect(document.activeElement).toBe(unlink)
+      expect(said.parentElement?.hasAttribute('data-over-focus')).toBe(true)
+
+      await act(async () => {
+        status.resolve({ ...idle(1), moves_held: true })
+      })
+      await settle()
+      expect(holdOf(unlink)).toBe('held')
+      expect(host.querySelector('.callout')).not.toBeNull()
+
+      await settleUntil(
+        'Remove from Manga…, free',
+        () => holdOf(unlink) === 'free',
+        config.SCAN_POLL_MS * 3,
+      )
+      expect(host.querySelector('.callout')).toBeNull()
+      await pressOn(unlink)
+      expect(host.querySelector('.unlink-root .confirm')).not.toBeNull()
+      expect(librariesApi.unlinkCost).toHaveBeenCalledTimes(2)
+    },
+  )
+})
+
+/** Manga's page, at `width`, of its first directory, at `path`, which Kids holds too. */
+async function sharedDirPage(path: string, width: number) {
+  const both = [
+    { id: 1, name: 'Manga' },
+    { id: 3, name: 'Kids' },
+  ]
+  const shared = { ...MANGA, dirs: [dir(1, path, both), MANGA.dirs[1]] }
+  await page.viewport(width, 800)
+  let host: HTMLElement | undefined
+  await act(async () => {
+    host = mount(
+      <MemoryRouter initialEntries={['/config/libraries/Manga/dirs/1']}>
+        <DirPage
+          library={shared}
+          root={shared.dirs[0]}
+          others={[{ id: 2, name: 'Light novels' }]}
+          onChanged={() => undefined}
+          onRemoved={() => undefined}
+          onUnlinked={() => undefined}
+          onMoved={() => undefined}
+        />
+      </MemoryRouter>,
+    )
+  })
+  if (host === undefined) throw new Error('nothing mounted')
+  await settle()
+  return host
+}
+
+/** A real tap where `over` lies over `under`, and what it started settled. */
+async function tapOver(over: Element, under: Element) {
+  await tapWhereOver(over, under)
+  await settle()
+}
+
+const lastLink = (path: string) =>
+  `\`${path}\` is in no other library, so it can only be removed: use Remove this directory.`
+
+const refusedWith = (sentence: string) =>
+  new Error(
+    `/api/library/libraries/1/dirs/1?dry_run=true: 400 ${JSON.stringify({ error: sentence })}`,
+  )
+
+const UNLINKED: librariesApi.UnlinkAnswer = {
+  unlinked: {
+    loses_sight: [],
+    library_removed: null,
+    grants_removed: 0,
+    left_with_no_library: [],
+  },
+  dry_run: true,
+}
+
+describe('a refusal of Remove from Manga…, in a real browser', () => {
+  it('goes at a real mouse press on it, focus beneath it or in a box elsewhere, which presses nothing beneath, and the next press on the button opens its dialog', async () => {
+    const path = '/srv/manga/volumes'
+    vi.mocked(librariesApi.unlinkCost)
+      .mockRejectedValueOnce(refusedWith(lastLink(path)))
+      .mockResolvedValue(UNLINKED)
+    const host = await sharedDirPage(path, 1280)
+    const unlink = called(host, 'Remove from Manga…')
+    const refusal = () =>
+      host.querySelector<HTMLElement>('.callout > [role="alert"]')
+
+    // Focus beneath it: the press blurs the button, to the page.
+    await focusFirst(regime(host), unlink)
+    await keys('{Enter}')
+    await settle()
+    expect(document.activeElement).toBe(unlink)
+    await pressOn(refusal() as HTMLElement)
+    expect(refusal()).toBeNull()
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    expect(librariesApi.unlinkCost).toHaveBeenCalledTimes(1)
+    await pressOn(unlink)
+    expect(host.querySelector('.unlink-root .confirm')).not.toBeNull()
+    await act(async () => {
+      called(host, 'Cancel').click()
+    })
+    expect(host.querySelector('.unlink-root')).toBeNull()
+
+    // Focus in a box, moved there while the rehearsal was out: the button
+    // has no focus to lose.
+    const out = deferred<librariesApi.UnlinkAnswer>()
+    vi.mocked(librariesApi.unlinkCost).mockReturnValueOnce(out.promise)
+    await pressOn(unlink)
+    const box = host.querySelector(
+      'input[name="edition_key"]',
+    ) as HTMLInputElement
+    await pressOn(box)
+    expect(document.activeElement).toBe(box)
+    await act(async () => {
+      out.reject(refusedWith(lastLink(path)))
+    })
+    await settle()
+    expect(document.activeElement).toBe(box)
+    await pressOn(refusal() as HTMLElement)
+    expect(refusal()).toBeNull()
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    await pressOn(unlink)
+    expect(host.querySelector('.unlink-root .confirm')).not.toBeNull()
+    expect(librariesApi.unlinkCost).toHaveBeenCalledTimes(4)
+  })
+
+  it('goes at a real tap on it where it lies over Remove from Manga…, focus beneath it or in a box elsewhere, and the tap presses nothing beneath', async () => {
+    const path = '/srv/manga/volumes'
+    vi.mocked(librariesApi.unlinkCost)
+      .mockRejectedValueOnce(refusedWith(lastLink(path)))
+      .mockResolvedValue(UNLINKED)
+    const host = await sharedDirPage(path, 390)
+    const unlink = called(host, 'Remove from Manga…')
+    const refusal = () =>
+      host.querySelector<HTMLElement>('.callout > [role="alert"]')
+
+    // Focus beneath it.
+    await focusFirst(regime(host), unlink)
+    await keys('{Enter}')
+    await settle()
+    expect(document.activeElement).toBe(unlink)
+    await tapOver(refusal() as HTMLElement, unlink)
+    expect(refusal()).toBeNull()
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    expect(librariesApi.unlinkCost).toHaveBeenCalledTimes(1)
+
+    // Focus in a box, moved there while the rehearsal was out.
+    const out = deferred<librariesApi.UnlinkAnswer>()
+    vi.mocked(librariesApi.unlinkCost).mockReturnValueOnce(out.promise)
+    await pressOn(unlink)
+    const box = host.querySelector(
+      'input[name="edition_key"]',
+    ) as HTMLInputElement
+    await pressOn(box)
+    expect(document.activeElement).toBe(box)
+    await act(async () => {
+      out.reject(refusedWith(lastLink(path)))
+    })
+    await settle()
+    await tapOver(refusal() as HTMLElement, unlink)
+    expect(refusal()).toBeNull()
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    expect(librariesApi.unlinkCost).toHaveBeenCalledTimes(2)
+  })
+
+  it('lies over Remove from Manga’s row and not Remove this directory’s at 390, for the last-library refusal of a long path', async () => {
+    const path = '/mnt/user/media/Manga/Shared'
+    vi.mocked(librariesApi.unlinkCost).mockRejectedValue(
+      refusedWith(lastLink(path)),
+    )
+    const host = await sharedDirPage(path, 390)
+    const unlink = called(host, 'Remove from Manga…')
+    await focusFirst(regime(host), unlink)
+    await keys('{Enter}')
+    await settle()
+    const said = host.querySelector('.callout > [role="alert"]') as HTMLElement
+    expect(said.textContent).toBe(lastLink(path))
+    const remove = called(host, 'Remove…')
+    await expectCallout(said, remove.closest('.settings-row') as Element, {
+      above: true,
+    })
+    expect([liesOver(said, unlink), liesOver(said, remove)]).toEqual([
+      true,
+      false,
+    ])
   })
 })
 

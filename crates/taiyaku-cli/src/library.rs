@@ -298,12 +298,12 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// `--no-derive` stops after the walk, which is what makes "what would the
 /// facts be" answerable without changing structure.
 ///
-/// **`--add PATH` files the directory under `--library NAME`**, creating that
-/// library where no library has the name, **and under a library of its own
-/// where `--library` is absent**, and prints which library that is, by the
-/// name the store holds, and whether the add created it. The directories to walk
-/// are chosen after the add, so `--add PATH --library NAME` walks the
-/// directories `NAME` reaches, the new one among them.
+/// **`--add PATH` files the directory under `--library NAME`**, making that
+/// library where none has the name, or links it there if another library holds
+/// it; **alone it makes a library of its own**, and refuses a held directory.
+/// It prints the library by the name the store holds, and whether it made it.
+/// The directories to walk are chosen after the add, so `--add PATH --library
+/// NAME` walks the directories `NAME` reaches, the new one among them.
 ///
 /// **A root that cannot be scanned does not take the others down with it,
 /// but it does take the exit status down with it.** Neither an outright
@@ -357,13 +357,30 @@ fn scan(args: &[String]) -> Result<(), String> {
         };
         let added = taiyaku_library::scan::add_root_checked_in(&conn, Path::new(path), filed)
             .map_err(|e| format!("adding root {path}: {e}"))?;
-        println!(
-            "{}",
-            added_line(
-                &stored_name(&conn, added.root.library_id)?,
-                joined.is_none()
-            )
-        );
+        // The library the request named or made, never one read off the
+        // directory, which may be in another library as well.
+        let library = match library_name {
+            Some(name) => taiyaku_library::libraries::id_of(&conn, name)?
+                .ok_or_else(|| format!("no library named `{name}` after adding {path}"))?,
+            // A library of its own is made only for a directory no library
+            // holds, so it is the directory's one library.
+            None => match added.root.libraries[..] {
+                [made] => made,
+                ref held => {
+                    return Err(format!(
+                        "{path} was added in its own library, yet is in libraries {held:?}"
+                    ));
+                }
+            },
+        };
+        let name = stored_name(&conn, library)?;
+        let line = match added.also_in.split_first() {
+            None => added_line(&name, joined.is_none()),
+            Some((first, rest)) => {
+                linked_line(&added.root.path, &name, joined.is_none(), (first, rest))
+            }
+        };
+        println!("{line}");
     }
 
     let roots = {
@@ -545,6 +562,25 @@ fn added_line(library: &str, created: bool) -> String {
         format!("created the library `{library}` for this directory")
     } else {
         format!("filed under the library `{library}`")
+    }
+}
+
+/// The line `--add` prints for a directory linked into `library`, which it
+/// made if `created`, naming each library that held it (`held`, the first and
+/// the rest), whose settings it keeps: the libraries share them.
+fn linked_line(path: &Path, library: &str, created: bool, held: (&str, &[String])) -> String {
+    let (first, rest) = held;
+    let verb = if rest.is_empty() { "holds" } else { "hold" };
+    let rest: Vec<String> = rest.iter().map(|name| format!("`{name}`")).collect();
+    let held = taiyaku_library::libraries::listed(&format!("`{first}`"), &rest);
+    let path = path.display();
+    if created {
+        format!(
+            "created the library `{library}` and linked `{path}` into it; {held} {verb} it too, \
+             and its settings stay"
+        )
+    } else {
+        format!("linked `{path}` into `{library}`; {held} {verb} it too, and its settings stay")
     }
 }
 

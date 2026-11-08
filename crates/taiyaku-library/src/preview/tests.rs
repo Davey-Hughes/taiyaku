@@ -393,7 +393,7 @@ fn two_libraries_sharing_a_title() -> (crate::tests::TempDir, crate::Library, cr
             "the fixture: one `Alpha` across both libraries, and one more series in each"
         );
         assert_ne!(
-            roots[1].id, roots[1].library_id,
+            roots[1].id, roots[1].libraries[0],
             "the fixture: the directory a rule names is not numbered as its library is"
         );
     }

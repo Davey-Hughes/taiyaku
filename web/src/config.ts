@@ -106,12 +106,21 @@ export interface Probe {
 }
 
 /**
- * The row a directory's adding minted and the probe it ran. A library's make
- * route answers a list of these, and a directory's own add route answers one.
+ * The row a directory's adding minted or linked, and the probe it ran. A
+ * library's make route answers a list of these, and a directory's own add
+ * route answers one.
+ *
+ * **A link runs no probe**, so `watching` and `interval_secs` are `null` for
+ * a directory another library already held: the probe would write the scan
+ * interval, a setting the libraries that hold it share.
  */
-export interface Added extends Probe {
+export interface Added {
   root: Root
-  interval_secs: number
+  watching: boolean | null
+  watch_reason: string | null
+  interval_secs: number | null
+  /** The libraries, by name, that held it before this add: none for a new one. */
+  also_in: string[]
 }
 
 /**
@@ -281,12 +290,24 @@ export interface Removal {
   positions: number
   notes: number
   /**
-   * The accounts, by name, whose only grant is the library this removal
-   * deletes, and who will see no library after it. Empty where the library
-   * stays. An administrator is never named: it sees every library whatever
-   * its grants say.
+   * The accounts, by name, every one of whose grants is of a library this
+   * removal deletes (`libraries_removed`), and who will see no library after
+   * it. Empty where no library goes. An administrator is never named: it sees
+   * every library whatever its grants say.
    */
   left_with_no_library: string[]
+  /**
+   * Every library, by name, the removal empties, which the server deletes
+   * with its last directory: a directory several libraries hold can empty
+   * each of them.
+   */
+  libraries_removed: string[]
+  /**
+   * The directories a library's removal leaves standing, because another
+   * library holds each too, with the libraries, by name, that keep it. Always
+   * empty for a directory's removal, which takes it out of every library.
+   */
+  kept: { path: string; libraries: string[] }[]
 }
 
 /**
@@ -340,13 +361,21 @@ export const removeRoot = (id: number): Promise<RemovalAnswer> =>
 /**
  * Start a scan. Answers 202 and the status URL; a scan already running
  * against this root answers 409 naming the one in flight.
+ *
+ * **`library` is the library whose page asks**, which must hold the
+ * directory. The scan is filed under it, so another library holding the
+ * directory says whose page started it; one asked for with none is filed
+ * under no library where several hold the directory.
  */
 export const startScan = (
   id: number,
+  library?: number,
 ): Promise<{ root_id: number; status_url: string }> =>
   expectBody(
     sendJson<{ root_id: number; status_url: string }>(
-      `/api/library/roots/${id}/scan`,
+      library === undefined
+        ? `/api/library/roots/${id}/scan`
+        : `/api/library/roots/${id}/scan?library=${library}`,
       'POST',
     ),
   )

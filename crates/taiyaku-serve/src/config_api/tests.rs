@@ -1795,7 +1795,7 @@ async fn removing_a_readers_only_library_names_the_reader_who_then_sees_nothing(
         let reader = conn.last_insert_rowid();
         conn.execute(
             "INSERT INTO user_library (user_id, library_id)
-             SELECT ?1, library_id FROM root WHERE id = ?2",
+             SELECT ?1, library_id FROM library_root WHERE root_id = ?2",
             [reader, id],
         )
         .expect("grants the reader the second root's library and no other");
@@ -2465,7 +2465,7 @@ async fn a_scan_report_counts_the_alignments_a_fold_left_behind() {
         axum::extract::Extension(an_administrator()),
         test_support::from_a_browser(),
         axum::extract::Path(root_id),
-        axum::extract::Query(crate::config_api::ScanQuery::default()),
+        Ok(axum::extract::Query(crate::config_api::ScanQuery::default())),
     )
     .await;
     assert_eq!(started.status(), StatusCode::ACCEPTED);
@@ -2562,7 +2562,7 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
         axum::extract::Extension(an_administrator()),
         test_support::from_a_browser(),
         axum::extract::Path(root_id),
-        axum::extract::Query(crate::config_api::ScanQuery::default()),
+        Ok(axum::extract::Query(crate::config_api::ScanQuery::default())),
     )
     .await;
 
@@ -2606,7 +2606,7 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
         axum::extract::Extension(an_administrator()),
         test_support::from_a_browser(),
         axum::extract::Path(root_id),
-        axum::extract::Query(crate::config_api::ScanQuery::default()),
+        Ok(axum::extract::Query(crate::config_api::ScanQuery::default())),
     )
     .await;
     assert_eq!(
@@ -2637,7 +2637,7 @@ async fn the_scan_report_names_what_it_could_not_read() {
         axum::extract::Extension(an_administrator()),
         test_support::from_a_browser(),
         axum::extract::Path(root_id),
-        axum::extract::Query(crate::config_api::ScanQuery::default()),
+        Ok(axum::extract::Query(crate::config_api::ScanQuery::default())),
     )
     .await;
     assert_eq!(started.status(), StatusCode::ACCEPTED);
@@ -2793,7 +2793,7 @@ async fn the_scan_reports_each_exclusion_field_with_its_own_value() {
         axum::extract::Extension(an_administrator()),
         test_support::from_a_browser(),
         axum::extract::Path(root_id),
-        axum::extract::Query(crate::config_api::ScanQuery::default()),
+        Ok(axum::extract::Query(crate::config_api::ScanQuery::default())),
     )
     .await;
     assert_eq!(started.status(), StatusCode::ACCEPTED);
@@ -2882,7 +2882,7 @@ async fn a_scan_report_names_the_work_a_folded_documents_orphan_was_absorbed_int
         axum::extract::Extension(an_administrator()),
         test_support::from_a_browser(),
         axum::extract::Path(root_id),
-        axum::extract::Query(crate::config_api::ScanQuery::default()),
+        Ok(axum::extract::Query(crate::config_api::ScanQuery::default())),
     )
     .await;
     assert_eq!(started.status(), StatusCode::ACCEPTED);
@@ -3052,7 +3052,7 @@ async fn a_second_roots_scan_is_not_blocked_by_the_first_roots_own_scan() {
         axum::extract::Extension(an_administrator()),
         test_support::from_a_browser(),
         axum::extract::Path(root_b),
-        axum::extract::Query(crate::config_api::ScanQuery::default()),
+        Ok(axum::extract::Query(crate::config_api::ScanQuery::default())),
     )
     .await;
 
@@ -4118,5 +4118,177 @@ async fn a_dir_is_not_removed_while_a_scan_around_or_inside_it_is_reserved() {
                 "inner_removed={inner_removed} {query}: nothing was removed"
             );
         }
+    }
+}
+
+/// One removal can empty two libraries: the second root's directory is the
+/// only one of its library and of Kids, which links it. Removing it names both
+/// libraries, by name and in id order, and every reader whose every grant was
+/// among them: `only_b`, and `b_and_kids`, whom asking of each library in turn
+/// would miss. `a_and_kids` keeps the first root's library, and `gone`,
+/// limited with no grant at all, has nothing to lose.
+#[tokio::test]
+async fn removing_a_dir_that_empties_two_libraries_names_both_and_whoever_held_only_them() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let id = test_support::second_root_id(&state);
+    let (path, own) = {
+        let conn = state.library.conn();
+        let root = taiyaku_library::scan::roots(&conn)
+            .expect("lists")
+            .into_iter()
+            .find(|root| root.id == id)
+            .expect("the second root");
+        (root.path.to_string_lossy().into_owned(), root.libraries[0])
+    };
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/api/library/libraries",
+        &serde_json::json!({ "name": "Kids", "dirs": [path] }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "Kids links the directory"
+    );
+    {
+        let conn = state.library.conn();
+        let named = |name: &str| {
+            taiyaku_library::libraries::id_of(&conn, name)
+                .expect("reads")
+                .expect("exists")
+        };
+        let kids = named("Kids");
+        let first = taiyaku_library::scan::roots(&conn).expect("lists")[0].libraries[0];
+        for (reader, grants) in [
+            ("only_b", vec![own]),
+            ("b_and_kids", vec![own, kids]),
+            ("a_and_kids", vec![first, kids]),
+        ] {
+            let account = taiyaku_library::account::add(&conn, reader, "pw", "user").expect("adds");
+            for library in grants {
+                taiyaku_library::account::grant_library(&conn, account, library).expect("grants");
+            }
+        }
+        let gone = taiyaku_library::account::add(&conn, "gone", "pw", "user").expect("adds");
+        conn.execute("UPDATE user SET every_library = 0 WHERE id = ?1", [gone])
+            .expect("gone is limited and granted nothing");
+    }
+    let library_name = get_json(&router, "/api/library/libraries").await["libraries"]
+        .as_array()
+        .expect("libraries")
+        .iter()
+        .find(|library| library["id"] == own)
+        .expect("the second root's library")["name"]
+        .clone();
+
+    let mut answers = Vec::new();
+    for query in ["?dry_run=true", ""] {
+        let response = send_json(
+            &router,
+            Method::DELETE,
+            &format!("/api/library/roots/{id}{query}"),
+            &serde_json::json!({}),
+        )
+        .await;
+        let status = response.status();
+        let text = test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::OK, "`{query}`: {text}");
+        let body: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
+        assert_eq!(
+            body["removed"]["libraries_removed"],
+            serde_json::json!([library_name, "Kids"]),
+            "`{query}`: {text}"
+        );
+        assert_eq!(
+            body["removed"]["left_with_no_library"],
+            serde_json::json!(["b_and_kids", "only_b"]),
+            "`{query}`: {text}"
+        );
+        assert_eq!(
+            body["removed"]["kept"],
+            serde_json::json!([]),
+            "`{query}`: {text}"
+        );
+        answers.push(body["removed"].clone());
+    }
+    assert_eq!(
+        answers[0], answers[1],
+        "the removal does what the dry run said"
+    );
+    let listed = get_json(&router, "/api/library/libraries").await;
+    assert_eq!(
+        listed["libraries"].as_array().expect("libraries").len(),
+        1,
+        "only the first root's library is left: {listed}"
+    );
+}
+
+/// A directory scan's `?library=` must hold the directory: 404 in the
+/// unlink's words, or naming the library that does not exist, as the unlink
+/// and Move answer them; one that is not a number is 400. Each is
+/// `{"error": …}`, and no slot is reserved.
+#[tokio::test]
+async fn a_dir_scan_for_a_library_that_does_not_hold_it_is_refused() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let library = |name: &str| {
+        listed["libraries"]
+            .as_array()
+            .expect("libraries")
+            .iter()
+            .find(|library| library["name"] == name)
+            .expect("the library")
+            .clone()
+    };
+    let (a, b) = (library("root-a"), library("root-b"));
+    let dir = a["dirs"][0]["id"].as_i64().expect("a directory id");
+    let path = a["dirs"][0]["path"].as_str().expect("a path");
+
+    for (query, answered, says) in [
+        (
+            format!("?library={}", b["id"]),
+            StatusCode::NOT_FOUND,
+            format!("`{path}` is not in root-b"),
+        ),
+        (
+            "?library=4242".to_string(),
+            StatusCode::NOT_FOUND,
+            "there is no library 4242".to_string(),
+        ),
+        (
+            "?library=one".to_string(),
+            StatusCode::BAD_REQUEST,
+            "the query could not be read: ".to_string(),
+        ),
+    ] {
+        let response = send_json(
+            &router,
+            Method::POST,
+            &format!("/api/library/roots/{dir}/scan{query}"),
+            &serde_json::json!({}),
+        )
+        .await;
+        let status = response.status();
+        let text = test_support::body_string(response).await;
+        assert_eq!(status, answered, "{query}: {text}");
+        let refused: serde_json::Value = serde_json::from_str(&text)
+            .unwrap_or_else(|why| panic!("{query}: not JSON ({why}): {text}"));
+        let keys: Vec<&String> = refused.as_object().expect("an object").keys().collect();
+        assert_eq!(keys, ["error"], "{query}: {text}");
+        let sentence = refused["error"].as_str().expect("a sentence");
+        if answered == StatusCode::NOT_FOUND {
+            assert_eq!(sentence, says, "{query}");
+        } else {
+            assert!(
+                sentence.starts_with(&says) && sentence.contains("library"),
+                "{query}: {sentence}"
+            );
+        }
+        assert!(
+            state.scans.lock().unwrap().get(&dir).is_none(),
+            "{query} reserved a slot"
+        );
     }
 }

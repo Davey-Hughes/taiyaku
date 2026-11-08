@@ -169,6 +169,56 @@ directory and library pages, and the last three in its whole-branch review.
 23. **New library's Directory path help** reads "The server checks that it
     can read the directory. It may sit inside or around another library's
     directory." Chosen over naming the overlaps a new library is refused.
+    Decision 26 replaces this wording.
+
+## Decisions the user made, 2026-11-05
+
+24. **A shared directory's page has two Removal rows.** Only while another
+    library holds the directory does Removal list "Remove from Manga" ("Kids
+    keeps it; nothing is deleted.") and "Remove this directory" ("From every
+    library that holds it, with what it would take."). A directory in one
+    library keeps its one Remove…. Remove from this library never deletes:
+    on a directory's last library it is refused, and the refusal points to
+    Remove this directory. Chosen over an unlink that removes the directory
+    when it is the last link.
+25. **Move to a library that already holds the directory is refused**
+    ("`/m` is already in Kids"), and such a library is left out of Move's
+    list. Chosen over treating it as an unlink.
+26. **New library's Directory path help** reads "The server checks that it
+    can read the directory. It may be another library's directory too, or
+    sit inside or around one."
+27. **A scan of a shared directory names the library whose page started
+    it.** The page sends its library with the scan, and the other library's
+    card reads "Manga is scanning `/m`, which Kids holds too." A scan asked
+    for without a library names none. Decision 20's line for a nested
+    directory stands. Chosen over filing every directory scan under no
+    library.
+
+## Decisions the user made, 2026-11-07
+
+28. **A library's Directories table says which directories overlap.** Its
+    rows gain a small column, Overlaps, that says at a glance whether a
+    directory overlaps another library's directory, and how, without naming
+    the library: "Shared" where another library holds the same directory,
+    "Inside" where it sits inside another library's directory, "Around"
+    where another library's directory sits inside it, several joined where
+    more than one holds ("Shared, Inside, Around"), and blank otherwise. At
+    a phone's width the row reads "Overlaps: Shared", as its other values
+    follow their labels. Chosen over marking shared directories only, and
+    over a bare mark.
+29. **Split editions link a directory several libraries hold once**, under
+    the first library the edition lists. Chosen over a link under each
+    library, which would give one path several links that could not be told
+    apart. Neither reveals anything to an account: the tab and every
+    directory page it links to are an administrator's alone, refused to
+    anyone else before they are read.
+30. **A directory scan for a library that does not hold the directory
+    answers 404**, "`/m` is not in Kids" or "there is no library N", as
+    Remove from this library and Move answer the same refusals. A
+    `?library=` that is not a number, like any query the scan cannot read,
+    is refused 400 in the `{"error": …}` shape, as the unlink and Move
+    refuse a query they cannot read. Chosen over the 400 the plan gave
+    both.
 
 ## 1. The model
 
@@ -518,10 +568,13 @@ rather than ruled (`docs/superpowers/plans/2026-11-04-overlapping-libraries-pr2.
 
 - A migration (`019`) adds `library_root (library_id, root_id)` and drops
   `root.library_id`. `root.path` stays unique: one directory, one set of
-  settings, linked to several libraries. `root_gets_a_library` becomes a
-  trigger on the link.
-- Every reader of `root.library_id` reads the link instead (the survey's
-  eleven sites, plus `libraries::list` and `libraries::books`). The web lists
+  settings, linked to several libraries. `root_gets_a_library` is dropped,
+  and the add names a directory's own library itself: a trigger on the link
+  cannot fire for a directory that has none, and SQLite has no deferred
+  triggers. A trigger refuses deleting a directory's last link while the
+  directory stands. Nothing can refuse a directory committed with no link,
+  so every writer makes the directory and its link in one transaction.
+- Every reader of `root.library_id` reads the link instead. The web lists
   keyed by `root.path` alone key by library and directory.
 - **Adding a directory another library holds** links it, rather than refusing.
 - **"Remove from this library"** unlinks; it deletes nothing while another
@@ -530,12 +583,57 @@ rather than ruled (`docs/superpowers/plans/2026-11-04-overlapping-libraries-pr2.
   and a directory left with none is removed.
 - **Move** becomes unlink and link.
 
+**What PR 3's plan settled that this section left open**, told to the user
+rather than ruled (`docs/superpowers/plans/2026-11-05-overlapping-libraries-pr3.md`):
+
+- **The own library is named in Rust**, in the add, by the names
+  `scan::own_library_clash` already works out. `root_gets_a_library` cannot
+  become a trigger on the link: such a trigger never fires for a directory
+  with no link, and SQLite has no deferred triggers. The code-point list
+  duplicated between migration 016 and `trim_name` then lives in Rust alone.
+- **The triggers are three.** `root_keeps_a_library` refuses deleting a
+  directory's last link unless the directory itself is being deleted.
+  `library_emptied_by_unlink` and `library_emptied_by_move` delete a library
+  left with no link. A directory committed with no link cannot be refused,
+  since a trigger at its insert cannot know whether a link follows, so each
+  public writer is tested to leave every directory with a link.
+- **Remove from this library refuses as Move does**: while the store's job
+  lock is held, and while a scan is reserved in this library. So the page
+  holds it exactly when it holds Move….
+- **A link runs no watch probe and changes no setting.** The probe writes
+  `scan_interval_secs`, which the libraries share. The add's answer says which
+  libraries already held the directory.
+- **New library over a directory another library holds links it**, as the add
+  does.
+- **`scan --add PATH` with no `--library`, over a directory another library
+  holds, is refused as now.** It names no library to link to.
+- **Move takes a required source library.** A default for a directory with one
+  link would let a stale page move it out of a library it was linked to since.
+- **The add asks W of the target library before it links.** Before PR 3,
+  `scan::beside` returned at the first equal path, before it asked about
+  nesting in the target, so a plain relaxation would have linked `/m/kids`
+  into a library that holds `/m` whenever `/m/kids` had the lower id.
+- **A removal that empties several libraries names each of them.** Its
+  `left_with_no_library` is every limited account whose every grant is among
+  them. Asking `only_grant_holders` of each library in turn would miss an
+  account granted exactly those.
+- **Removing a library unlinks its shared directories and removes the rest.**
+  It clears the scan slots of the removed directories only, and it says which
+  directories it leaves to which library ("…and leaves `/m` to Kids.").
+- **The directory page says the other libraries once**, in its header: "Also
+  in Kids, which shares these settings and scans." Each name links to that
+  library's page for the directory. The wording avoids decision 17's "Also
+  shown in", which means nested.
+- **After a link, the add says** "`/m` is also a directory of Kids. It keeps
+  the settings it has there." The line is drawn where the picker was.
+
 ## 6. Rulings this reverses or reopens
 
 - **Reversed:** the libraries design of 2026-10-05, decisions 1, 2 and 3
   (PR 1); its §3 "a series is in exactly one library" (PR 1); its §6.2 Move
   steps (PR 1); its §10 "two libraries cannot share a folder, and one library's
-  folder cannot sit inside another's" (PRs 2 and 3); "nested roots refused in
+  folder cannot sit inside another's" (PRs 2 and 3); its §2 "it now belongs
+  to exactly one library" (PR 3); "nested roots refused in
   both directions" in the library configuration design of 2026-08-14 §2, the
   build design of 2026-09-02 and the C4 screens spec of 2026-09-04, now
   refused only within one library (PR 2).

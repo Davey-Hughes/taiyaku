@@ -67,7 +67,10 @@ and reading logic runs in the browser and, later, inside a native shell.
 # --library NAME files the directory under that library, creating it, so two
 # directories (Volumes and Chapters, say) share one library page and one
 # grant; without it, a directory is a library of its own, and so can nest in
-# another library's directory.
+# another library's directory. A directory another library already holds is
+# linked into NAME rather than refused: one directory, with one set of
+# settings and one scan, in each library. Without --library it is refused,
+# since no library is named to link it into.
 # `taiyaku library libraries` lists the libraries. The derive that follows
 # reads every directory whichever library holds it, so a chapter release
 # whose files name their volume joins that volume's work: as another edition
@@ -277,15 +280,26 @@ directory browser, which lists only beneath the directories the server was
 started with (`--dirs`, or `TAIYAKU_DIRS`); more directories are added on the
 library's page. A refusal — a name already taken, a name no address could hold
 (`.` or `..`), a directory inside another of the same library, a path that
-cannot be read — is drawn as the server's own sentence. Removing a library or a
+cannot be read — is drawn as the server's own sentence. A directory another
+library already holds is not refused: adding it, or making a library from it,
+links it, and it keeps the settings it has there, which both libraries then
+share, as they share its scans. Its page says which other libraries hold it.
+Removing a library or a
 directory states what it will take — works, reading positions, notes — and
 offers no confirm button at
 all until those counts have arrived, and names any account the removal leaves
-seeing no library. A directory's page has **Move…**, to another library or a new
-one: a move changes only which library holds the directory, so before it offers
+seeing no library. A directory another library holds has two removals: one
+from this library alone, which deletes nothing and, like Move below, is
+refused while a scan is queued in this library, or while a scan, a rule save,
+a stamp, a move or another such removal is running, and **Remove this directory**,
+from every library that holds it; removing a library leaves such a directory
+to the libraries that still hold it. A directory's page has **Move…**, to another library or a new
+one: a move takes the directory out of this library and puts it in the other,
+and changes nothing else, so before it offers
 the move it names the accounts that will gain and lose sight of the directory,
 and it refuses a move while a scan is queued in either library, or while a scan,
-a rule save, a stamp or another move is running. **Scan library** on a library
+a rule save, a stamp, another move or a removal from a library is running. A library that already holds
+the directory is not offered. **Scan library** on a library
 walks in turn each directory the library shows — its own, and each nested in
 one of them that its walk would reach, each by its own rules — and derives
 once. A scan started from the screen reports both halves of what it did in
@@ -538,6 +552,8 @@ docker exec taiyaku taiyaku library scan --add /media/Manga/Volumes --library Ma
 A name is read without its surrounding white space and without regard to ASCII
 case, so `--library manga` files a directory under the library `Manga`. Left
 out, the directory becomes a library named for the directory, `Volumes` here.
+A directory another library already holds is linked into the named library and
+keeps its settings; left out, such a directory is refused.
 
 The first scan reads every archive once to hash it, so on a large library it
 takes as long as reading the whole share.

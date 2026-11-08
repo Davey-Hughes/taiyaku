@@ -1329,7 +1329,8 @@ fn router_with_a_real_page_under_a_withheld_root(
 fn two_dirs_numbered_apart_from_their_libraries(conn: &rusqlite::Connection) {
     conn.execute_batch(
         "INSERT INTO library (id, name) VALUES (70, 'Manga & Comics'), (80, 'withheld');
-         INSERT INTO root (id, path, library_id) VALUES (1, '/held', 70), (2, '/withheld', 80);",
+         INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/withheld');
+         INSERT INTO library_root (library_id, root_id) VALUES (70, 1), (80, 2);",
     )
     .expect("two directories, each in a library of its own");
 }
@@ -1342,11 +1343,7 @@ const HELD_LIBRARY: &str = "Manga &amp; Comics";
 /// directory's would otherwise find the directory of the same number and pass.
 fn library_of(state: &ServeState, dir: i64) -> i64 {
     let conn = state.library.conn();
-    let library: i64 = conn
-        .query_row("SELECT library_id FROM root WHERE id = ?1", [dir], |r| {
-            r.get(0)
-        })
-        .expect("the directory's library");
+    let library = crate::test_support::library_of_root(&conn, dir);
     let dirs: Vec<i64> = conn
         .prepare("SELECT id FROM root")
         .expect("prepares")

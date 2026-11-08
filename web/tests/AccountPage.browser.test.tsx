@@ -23,7 +23,11 @@ vi.mock('../src/users', async (importOriginal) => ({
   revokeUserSession: vi.fn(),
 }))
 
-const dir = (id: number, path: string): Library['dirs'][number] => ({
+const dir = (
+  id: number,
+  path: string,
+  library: { id: number; name: string },
+): Library['dirs'][number] => ({
   id,
   path,
   edition_key: null,
@@ -34,6 +38,7 @@ const dir = (id: number, path: string): Library['dirs'][number] => ({
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  libraries: [library],
   nested: [],
   inside: [],
 })
@@ -43,14 +48,14 @@ const MANGA: Library = {
   name: 'Manga',
   works: 0,
   books: 0,
-  dirs: [dir(700, '/media/Manga')],
+  dirs: [dir(700, '/media/Manga', { id: 70, name: 'Manga' })],
 }
 const COMICS: Library = {
   id: 80,
   name: 'Comics',
   works: 0,
   books: 0,
-  dirs: [dir(800, '/media/Comics')],
+  dirs: [dir(800, '/media/Comics', { id: 80, name: 'Comics' })],
 }
 
 const sam: usersApi.User = {

@@ -22,12 +22,12 @@ describe('the split-editions client', () => {
         {
           path: 'Blame! v01.cbz',
           pages: 200,
-          directories: [{ root: 3, path: '/media/a', library: 1 }],
+          directories: [{ root: 3, path: '/media/a', libraries: [1] }],
         },
         {
           path: 'Blame! v02.cbz',
           pages: 200,
-          directories: [{ root: 4, path: '/media/b', library: 2 }],
+          directories: [{ root: 4, path: '/media/b', libraries: [2] }],
         },
       ],
       libraries: [

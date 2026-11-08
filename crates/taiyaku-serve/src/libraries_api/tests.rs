@@ -293,8 +293,8 @@ async fn the_list_gives_each_library_its_own_dirs_works_and_books() {
                 };
                 conn.execute(
                     "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
-                     SELECT id, ?2, 'file', ?3, 1, 1 FROM root
-                      WHERE library_id = ?1 ORDER BY id LIMIT 1",
+                     SELECT root_id, ?2, 'file', ?3, 1, 1 FROM library_root
+                      WHERE library_id = ?1 ORDER BY root_id LIMIT 1",
                     rusqlite::params![library, rel, format],
                 )
                 .expect("a book under the library's first directory");
@@ -304,15 +304,15 @@ async fn the_list_gives_each_library_its_own_dirs_works_and_books() {
         // directory alone would miss.
         conn.execute(
             "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
-             SELECT id, 'a3.epub', 'file', 'epub-reflow', 1, 1 FROM root
-              WHERE library_id = ?1 ORDER BY id DESC LIMIT 1",
+             SELECT root_id, 'a3.epub', 'file', 'epub-reflow', 1, 1 FROM library_root
+              WHERE library_id = ?1 ORDER BY root_id DESC LIMIT 1",
             [a_id],
         )
         .expect("a book under the library's second directory");
         // A cbz entry is not a book.
         conn.execute(
             "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
-             SELECT id, 'c.cbz', 'file', 'zip', 1, 1 FROM root WHERE library_id = ?1 LIMIT 1",
+             SELECT root_id, 'c.cbz', 'file', 'zip', 1, 1 FROM library_root WHERE library_id = ?1 LIMIT 1",
             [b_id],
         )
         .expect("a cbz under b");
@@ -381,11 +381,18 @@ async fn the_list_gives_each_library_its_own_dirs_works_and_books() {
                 "keeps_documents",
                 "last_scan_at",
                 "last_scan_status",
+                "libraries",
                 "nested",
                 "path",
                 "scan_interval_secs",
             ],
-            "a directory is root_json's shape and nesting_json's two keys: {dir}"
+            "a directory is root_json's shape, the libraries holding it and nesting_json's \
+             two keys: {dir}"
+        );
+        assert_eq!(
+            dir["libraries"],
+            serde_json::json!([{ "id": a_id, "name": "zz-first" }]),
+            "{dir}"
         );
         // No directory here sits in another: `aaa-extra` and `root-b` lie
         // beside `root-a`, not inside it.
@@ -431,9 +438,16 @@ async fn a_library_is_created_with_its_dirs_and_then_listed() {
     for (one, (given, held)) in added.iter().zip(dirs.iter().zip(held)) {
         assert_eq!(
             keys_of(one),
-            vec!["interval_secs", "root", "watch_reason", "watching"],
+            vec![
+                "also_in",
+                "interval_secs",
+                "root",
+                "watch_reason",
+                "watching"
+            ],
             "{made}"
         );
+        assert_eq!(one["also_in"], serde_json::json!([]), "{made}");
         assert!(one["watching"].is_boolean(), "{made}");
         assert!(one["interval_secs"].is_number(), "{made}");
         assert!(
@@ -692,9 +706,16 @@ async fn a_dir_is_added_to_a_library_by_the_librarys_id() {
     assert_eq!(status, StatusCode::OK, "{added}");
     assert_eq!(
         keys_of(&added),
-        vec!["interval_secs", "root", "watch_reason", "watching"],
+        vec![
+            "also_in",
+            "interval_secs",
+            "root",
+            "watch_reason",
+            "watching"
+        ],
         "{added}"
     );
+    assert_eq!(added["also_in"], serde_json::json!([]), "{added}");
     assert!(added["watching"].is_boolean(), "{added}");
     let listed = get_json(&router, "/api/library/libraries").await;
     let a = the_library(&listed, "root-b");
@@ -741,7 +762,7 @@ async fn a_dir_is_added_to_a_library_by_the_librarys_id() {
             ),
         ),
         (
-            &path,
+            &into_a,
             serde_json::json!({ "path": held }),
             format!(
                 "{} is already a directory of the library `root-a`",
@@ -781,6 +802,32 @@ async fn a_dir_is_added_to_a_library_by_the_librarys_id() {
         canonical(&inside).display().to_string(),
         "{nested}"
     );
+
+    // Overlapping-libraries spec §5: root-b's own directory is linked into
+    // root-a. Nothing is probed, and the answer is the scanned row as it stands.
+    let b_dir = the_library(&listed, "root-b")["dirs"][0]["path"].clone();
+    let (got, linked) = answered(
+        &router,
+        Method::POST,
+        &into_a,
+        &serde_json::json!({ "path": b_dir }),
+    )
+    .await;
+    assert_eq!(got, StatusCode::OK, "{linked}");
+    assert_eq!(linked["also_in"], serde_json::json!(["root-b"]), "{linked}");
+    for unprobed in ["watching", "watch_reason", "interval_secs"] {
+        assert!(linked[unprobed].is_null(), "{unprobed}: {linked}");
+    }
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let mut row = the_library(&listed, "root-b")["dirs"][0].clone();
+    for listed_only in ["libraries", "nested", "inside"] {
+        row.as_object_mut().expect("an object").remove(listed_only);
+    }
+    assert_eq!(
+        linked["root"], row,
+        "the answer is the row as listed: {listed}"
+    );
+    assert_eq!(linked["root"]["last_scan_status"], "ok", "{linked}");
 }
 
 #[tokio::test]
@@ -839,8 +886,20 @@ async fn a_librarys_dry_run_counts_and_removes_nothing_and_the_removal_removes()
     );
     assert_eq!(
         keys_of(&rehearsed["removed"]),
-        vec!["left_with_no_library", "notes", "positions", "works"]
+        vec![
+            "kept",
+            "left_with_no_library",
+            "libraries_removed",
+            "notes",
+            "positions",
+            "works"
+        ]
     );
+    assert_eq!(
+        rehearsed["removed"]["libraries_removed"],
+        serde_json::json!(["root-b"])
+    );
+    assert_eq!(rehearsed["removed"]["kept"], serde_json::json!([]));
     assert_eq!(rehearsed["dry_run"], true);
     assert_eq!(rehearsed["removed"]["works"], 1, "{rehearsed}");
     assert!(rehearsed["derive"].is_object(), "{rehearsed}");
@@ -1655,7 +1714,7 @@ async fn a_panicking_scan_leaves_no_dir_running() {
     };
 
     let started = std::time::Instant::now();
-    crate::scan_jobs::reserve(&state, &roots, started, id).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started, Some(id)).expect("reserves");
     assert_eq!(get_json(&router, &the_scan_of(id)).await["running"], true);
     // The job dies holding the job lock, which poisons it: the scans after it
     // must go on regardless.
@@ -1805,6 +1864,11 @@ async fn an_api_key_reaches_no_libraries_route() {
         (Method::DELETE, "/api/library/libraries/1"),
         (Method::DELETE, "/api/library/libraries/1?dry_run=true"),
         (Method::POST, "/api/library/libraries/1/dirs"),
+        (Method::DELETE, "/api/library/libraries/1/dirs/1"),
+        (
+            Method::DELETE,
+            "/api/library/libraries/1/dirs/1?dry_run=true",
+        ),
         (Method::POST, "/api/library/roots/1/move"),
         (Method::POST, "/api/library/roots/1/move?dry_run=true"),
         (Method::GET, "/api/library/libraries/1/scan"),
@@ -1922,7 +1986,7 @@ async fn a_removal_reports_its_works_positions_and_notes_each_by_its_own_count()
         let works_of = |library: i64| -> Vec<i64> {
             conn.prepare(
                 "SELECT DISTINCT e.work_id FROM edition e
-                   JOIN member m ON m.edition_id = e.id JOIN root r ON r.id = m.root_id
+                   JOIN member m ON m.edition_id = e.id JOIN library_root r ON r.root_id = m.root_id
                   WHERE r.library_id = ?1 ORDER BY 1",
             )
             .expect("prepares")
@@ -1977,6 +2041,8 @@ async fn a_removal_reports_its_works_positions_and_notes_each_by_its_own_count()
             "positions": 3,
             "notes": 5,
             "left_with_no_library": [],
+            "libraries_removed": ["root-b"],
+            "kept": [],
         }),
         "{rehearsed}"
     );
@@ -1991,6 +2057,8 @@ async fn a_removal_reports_its_works_positions_and_notes_each_by_its_own_count()
             "positions": 3,
             "notes": 5,
             "left_with_no_library": [],
+            "libraries_removed": ["root-b"],
+            "kept": [],
         }),
         "{removed}"
     );
@@ -2063,7 +2131,7 @@ async fn a_job_answering_too_few_reports_releases_every_dir() {
         super::walked_dirs_of(&conn, id).expect("the directories")
     };
     let started = std::time::Instant::now();
-    crate::scan_jobs::reserve(&state, &roots, started, id).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started, Some(id)).expect("reserves");
 
     let job = crate::scan_jobs::spawn_job(std::sync::Arc::clone(&state), roots, started, |_, _| {
         Ok(vec![serde_json::json!({ "scan": "the first's" })])
@@ -2094,7 +2162,7 @@ async fn a_library_removed_while_its_scan_waits_leaves_nothing_behind() {
     };
     let started = std::time::Instant::now();
     let held = holding_the_job(&state);
-    crate::scan_jobs::reserve(&state, &roots, started, id).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started, Some(id)).expect("reserves");
     let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(&state),
         roots,
@@ -2124,7 +2192,7 @@ async fn a_scan_that_waited_through_a_removal_does_not_touch_the_dir_that_took_i
     };
     let started = std::time::Instant::now();
     let held = holding_the_job(&state);
-    crate::scan_jobs::reserve(&state, &roots, started, id).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started, Some(id)).expect("reserves");
     let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(&state),
         roots,
@@ -2162,7 +2230,7 @@ async fn a_scan_that_waited_through_a_new_dir_walks_nothing() {
     let captured = roots[0].id;
     let started = std::time::Instant::now();
     let held = holding_the_job(&state);
-    crate::scan_jobs::reserve(&state, &roots, started, id).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started, Some(id)).expect("reserves");
     let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(&state),
         roots,
@@ -2232,7 +2300,7 @@ async fn a_scan_that_waited_through_a_removal_leaves_a_later_scans_reservation_a
     };
     let started = std::time::Instant::now();
     let held = holding_the_job(&state);
-    crate::scan_jobs::reserve(&state, &roots, started, id).expect("reserves");
+    crate::scan_jobs::reserve(&state, &roots, started, Some(id)).expect("reserves");
     let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(&state),
         roots,
@@ -2247,7 +2315,7 @@ async fn a_scan_that_waited_through_a_removal_leaves_a_later_scans_reservation_a
         super::walked_dirs_of(&conn, fresh).expect("the directories")
     };
     let later = std::time::Instant::now();
-    crate::scan_jobs::reserve(&state, &fresh_roots, later, fresh).expect("reserves");
+    crate::scan_jobs::reserve(&state, &fresh_roots, later, Some(fresh)).expect("reserves");
 
     drop(held);
     the_job_ends(job).await;
@@ -2274,7 +2342,7 @@ fn a_waiting_scan(
     };
     let held = holding_the_job(state);
     let started = std::time::Instant::now();
-    crate::scan_jobs::reserve(state, &roots, started, id).expect("reserves");
+    crate::scan_jobs::reserve(state, &roots, started, Some(id)).expect("reserves");
     let job = crate::scan_jobs::spawn(
         std::sync::Arc::clone(state),
         roots,
@@ -2687,6 +2755,8 @@ async fn the_whole_flow_over_a_file_backed_store() {
             "positions": 0,
             "works": 3,
             "left_with_no_library": [],
+            "libraries_removed": ["Two Renamed"],
+            "kept": [],
         }),
         "{rehearsed}"
     );
@@ -2713,7 +2783,7 @@ async fn the_whole_flow_over_a_file_backed_store() {
         "no directory's slot outlives its library"
     );
     let conn = state.library.conn();
-    for (table, column) in [("library", "id"), ("root", "library_id")] {
+    for (table, column) in [("library", "id"), ("library_root", "library_id")] {
         let rows: i64 = conn
             .query_row(
                 &format!("SELECT count(*) FROM {table} WHERE {column} = ?1"),
@@ -2887,7 +2957,7 @@ async fn a_dir_is_rehearsed_and_then_moved_to_another_library() {
             }
         }
     }
-    let to = serde_json::json!({ "library": a });
+    let to = serde_json::json!({ "from": b, "library": a });
     let stored = the_store(&state);
 
     let (status, rehearsed) = moved(&router, dir, true, &to).await;
@@ -2944,7 +3014,7 @@ async fn moving_an_accounts_only_library_away_names_the_reader_who_then_sees_not
     // root-a gains a second directory before `solo` is made, so the moved
     // directory's id is not its library's, and a holder lookup keyed on the
     // directory's id finds no one.
-    let (dir, reader) = {
+    let (dir, from, reader) = {
         use taiyaku_library::scan::InLibrary;
         let conn = state.library.conn();
         let mut added = Vec::new();
@@ -2961,12 +3031,12 @@ async fn moving_an_accounts_only_library_away_names_the_reader_who_then_sees_not
         taiyaku_library::derive::derive(&conn).expect("derives");
         let solo = added.pop().expect("solo");
         assert_ne!(
-            solo.id, solo.library_id,
+            solo.id, solo.libraries[0],
             "the fixture must tell a directory's id from its library's: {solo:?}"
         );
         let reader = taiyaku_library::account::add(&conn, "reader", "pw", "user").expect("adds");
-        taiyaku_library::account::grant_library(&conn, reader, solo.library_id).expect("grants");
-        (solo.id, reader)
+        taiyaku_library::account::grant_library(&conn, reader, solo.libraries[0]).expect("grants");
+        (solo.id, solo.libraries[0], reader)
     };
     let listed = get_json(&router, "/api/library/libraries").await;
     let a = the_library(&listed, "root-a")["id"]
@@ -2977,7 +3047,7 @@ async fn moving_an_accounts_only_library_away_names_the_reader_who_then_sees_not
         1,
         "the fixture: the reader sees solo's series"
     );
-    let to = serde_json::json!({ "library": a });
+    let to = serde_json::json!({ "from": from, "library": a });
     let stored = the_store(&state);
 
     let (status, rehearsed) = moved(&router, dir, true, &to).await;
@@ -3018,7 +3088,7 @@ async fn a_dir_is_moved_to_a_library_made_for_it() {
         &router,
         dir,
         false,
-        &serde_json::json!({ "new_library": " Extras " }),
+        &serde_json::json!({ "from": a["id"], "new_library": " Extras " }),
     )
     .await;
 
@@ -3039,68 +3109,93 @@ async fn a_dir_is_moved_to_a_library_made_for_it() {
     );
 }
 
+/// `from` is required, and must hold the directory; the target must not.
 #[tokio::test]
 async fn a_move_that_names_no_one_target_or_nothing_there_is_the_callers_mistake() {
     let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
     let listed = get_json(&router, "/api/library/libraries").await;
     let a = the_library(&listed, "root-a");
     let own = a["id"].as_i64().expect("an id");
+    let b = the_library(&listed, "root-b")["id"]
+        .as_i64()
+        .expect("an id");
     let dir = a["dirs"][0]["id"].as_i64().expect("a directory id");
+    let path = a["dirs"][0]["path"].as_str().expect("a path");
     let stored = the_store(&state);
 
     for (body, status, says) in [
         (
-            serde_json::json!({}),
+            serde_json::json!({ "library": b }),
             StatusCode::BAD_REQUEST,
-            "exactly one",
+            "a move names `from`, the id of the library the directory leaves".to_string(),
         ),
         (
-            serde_json::json!({ "library": 1, "new_library": "X" }),
+            serde_json::json!({ "from": "one", "library": b }),
             StatusCode::BAD_REQUEST,
-            "exactly one",
+            "`from` must be a library id, a whole number".to_string(),
         ),
         (
-            serde_json::json!({ "library": "one" }),
+            serde_json::json!({ "from": own }),
             StatusCode::BAD_REQUEST,
-            "`library`",
+            "exactly one".to_string(),
         ),
         (
-            serde_json::json!({ "new_library": 7 }),
+            serde_json::json!({ "from": own, "library": 1, "new_library": "X" }),
             StatusCode::BAD_REQUEST,
-            "`new_library`",
+            "exactly one".to_string(),
         ),
         (
-            serde_json::json!({ "new_library": "  " }),
+            serde_json::json!({ "from": own, "library": "one" }),
             StatusCode::BAD_REQUEST,
-            "name",
+            "`library`".to_string(),
         ),
         (
-            serde_json::json!({ "new_library": "root-b" }),
+            serde_json::json!({ "from": own, "new_library": 7 }),
             StatusCode::BAD_REQUEST,
-            "root-b",
+            "`new_library`".to_string(),
         ),
         (
-            serde_json::json!({ "library": own }),
+            serde_json::json!({ "from": own, "new_library": "  " }),
             StatusCode::BAD_REQUEST,
-            "root-a",
+            "name".to_string(),
         ),
         (
-            serde_json::json!({ "library": 4242 }),
+            serde_json::json!({ "from": own, "new_library": "root-b" }),
+            StatusCode::BAD_REQUEST,
+            "root-b".to_string(),
+        ),
+        (
+            serde_json::json!({ "from": own, "library": own }),
+            StatusCode::BAD_REQUEST,
+            format!("`{path}` is already in root-a"),
+        ),
+        (
+            serde_json::json!({ "from": own, "library": 4242 }),
             StatusCode::NOT_FOUND,
-            "there is no library 4242",
+            "there is no library 4242".to_string(),
+        ),
+        (
+            serde_json::json!({ "from": b, "library": own }),
+            StatusCode::NOT_FOUND,
+            format!("`{path}` is not in root-b"),
+        ),
+        (
+            serde_json::json!({ "from": 4242, "library": b }),
+            StatusCode::NOT_FOUND,
+            "there is no library 4242".to_string(),
         ),
     ] {
         for dry_run in [true, false] {
             let (got, refused) = moved(&router, dir, dry_run, &body).await;
             assert_eq!(got, status, "{body}: {refused}");
-            assert!(the_sentence(&refused).contains(says), "{body}: {refused}");
+            assert!(the_sentence(&refused).contains(&says), "{body}: {refused}");
         }
     }
     let (status, missing) = moved(
         &router,
         4242,
         false,
-        &serde_json::json!({ "new_library": "X" }),
+        &serde_json::json!({ "from": own, "new_library": "X" }),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
@@ -3120,7 +3215,7 @@ async fn a_move_that_names_no_one_target_or_nothing_there_is_the_callers_mistake
         &router,
         Method::POST,
         "/api/library/roots/one/move",
-        &serde_json::json!({ "new_library": "X" }),
+        &serde_json::json!({ "from": own, "new_library": "X" }),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{no_id}");
@@ -3133,7 +3228,7 @@ async fn a_move_that_names_no_one_target_or_nothing_there_is_the_callers_mistake
         &router,
         Method::POST,
         &format!("/api/library/roots/{dir}/move?dryrun=true"),
-        &serde_json::json!({ "new_library": "X" }),
+        &serde_json::json!({ "from": own, "new_library": "X" }),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{misspelt}");
@@ -3153,8 +3248,11 @@ async fn a_move_spelt_any_other_way_is_refused_and_false_moves() {
     let dir = the_library(&listed, "root-b")["dirs"][0]["id"]
         .as_i64()
         .expect("a directory id");
+    let b = the_library(&listed, "root-b")["id"]
+        .as_i64()
+        .expect("an id");
     let path = format!("/api/library/roots/{dir}/move");
-    let to = serde_json::json!({ "library": a });
+    let to = serde_json::json!({ "from": b, "library": a });
     let stored = the_store(&state);
 
     for query in [
@@ -3185,8 +3283,9 @@ async fn a_move_spelt_any_other_way_is_refused_and_false_moves() {
     );
 }
 
-/// A move derives the whole store, so it does not run beside a scan: 409 at
-/// once, for a rehearsal too, and nothing moved.
+/// A move changes which directories a scan's library shows, so it does not
+/// run while a scan holds the job lock: 409 at once, for a rehearsal too, and
+/// nothing moved.
 #[tokio::test]
 async fn a_move_is_refused_while_a_scan_holds_the_library() {
     let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
@@ -3197,12 +3296,20 @@ async fn a_move_is_refused_while_a_scan_holds_the_library() {
     let dir = the_library(&listed, "root-b")["dirs"][0]["id"]
         .as_i64()
         .expect("a directory id");
+    let b = the_library(&listed, "root-b")["id"]
+        .as_i64()
+        .expect("an id");
     let stored = the_store(&state);
     let held = holding_the_job(&state);
 
     for dry_run in [true, false] {
-        let (status, refused) =
-            moved(&router, dir, dry_run, &serde_json::json!({ "library": a })).await;
+        let (status, refused) = moved(
+            &router,
+            dir,
+            dry_run,
+            &serde_json::json!({ "from": b, "library": a }),
+        )
+        .await;
         assert_eq!(status, StatusCode::CONFLICT, "{refused}");
         assert_eq!(keys_of(&refused), ["error", "volumes"], "{refused}");
         assert!(
@@ -3228,7 +3335,7 @@ async fn a_move_is_refused_while_a_scan_of_either_library_is_reserved() {
     let b = the_library(&listed, "root-b");
     let a_dir = a["dirs"][0]["id"].as_i64().expect("a directory id");
     let b_dir = b["dirs"][0]["id"].as_i64().expect("a directory id");
-    let to = serde_json::json!({ "library": a["id"] });
+    let to = serde_json::json!({ "from": b["id"], "library": a["id"] });
     let stored = the_store(&state);
 
     for (reserved, path) in [
@@ -3261,13 +3368,13 @@ async fn a_move_is_refused_while_a_scan_of_either_library_is_reserved() {
         state.scans.lock().unwrap().remove(&reserved);
     }
 
-    // A new library is made, so only the directory's own library is asked.
+    // A new library is made, so only the library it leaves is asked.
     a_scan_running_on(&state, a_dir);
     let (status, made) = moved(
         &router,
         b_dir,
         true,
-        &serde_json::json!({ "new_library": "Elsewhere" }),
+        &serde_json::json!({ "from": b["id"], "new_library": "Elsewhere" }),
     )
     .await;
     assert_eq!(
@@ -3277,12 +3384,13 @@ async fn a_move_is_refused_while_a_scan_of_either_library_is_reserved() {
     );
 }
 
-/// A scan reserved on a sibling of the moving directory, in the directory's own
-/// library, holds the move up: the library's derive would run under it.
+/// A scan reserved on a sibling of the moving directory, in the library it
+/// leaves, holds the move up: it may be that library's scan, queued, whose
+/// directories the move would change.
 #[tokio::test]
 async fn a_move_is_refused_while_a_scan_of_a_sibling_dir_is_reserved() {
     let (router, state, fixture) = test_support::router_over_a_single_scanned_work();
-    let (_, [moving, sibling]) = a_library_with_an_unscanned_second_dir(&router, &fixture).await;
+    let (from, [moving, sibling]) = a_library_with_an_unscanned_second_dir(&router, &fixture).await;
     let stored = the_store(&state);
     a_scan_running_on(&state, sibling);
 
@@ -3291,7 +3399,7 @@ async fn a_move_is_refused_while_a_scan_of_a_sibling_dir_is_reserved() {
             &router,
             moving,
             dry_run,
-            &serde_json::json!({ "new_library": "Elsewhere" }),
+            &serde_json::json!({ "from": from, "new_library": "Elsewhere" }),
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT, "{refused}");
@@ -3310,14 +3418,14 @@ async fn a_move_is_refused_while_a_scan_of_a_sibling_dir_is_reserved() {
 #[tokio::test]
 async fn a_store_fault_moving_a_dir_is_a_500_not_a_400() {
     let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
-    let dir = {
+    let (dir, from) = {
         let conn = state.library.conn();
-        let dir = taiyaku_library::scan::roots(&conn).expect("lists")[1].id;
+        let dir = taiyaku_library::scan::roots(&conn).expect("lists")[1].clone();
         conn.pragma_update(None, "query_only", true)
             .expect("sets query_only");
-        dir
+        (dir.id, dir.libraries[0])
     };
-    let body = serde_json::json!({ "new_library": "Elsewhere" });
+    let body = serde_json::json!({ "from": from, "new_library": "Elsewhere" });
 
     let response = crate::libraries_api::move_dir(
         axum::extract::State(std::sync::Arc::clone(&state)),
@@ -3425,7 +3533,7 @@ async fn no_library_is_made_or_renamed_called_a_dot_name() {
                 &router,
                 dir,
                 dry_run,
-                &serde_json::json!({ "new_library": name }),
+                &serde_json::json!({ "from": id, "new_library": name }),
             )
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "move {name:?}: {refused}");
@@ -3456,7 +3564,7 @@ async fn an_edition_merged_from_two_libraries_is_listed_with_each_librarys_share
         let members: Vec<(String, i64, i64)> = conn
             .prepare(
                 "SELECT m.path, m.pages, r.library_id FROM member m
-                   JOIN edition e ON e.id = m.edition_id JOIN root r ON r.id = m.root_id
+                   JOIN edition e ON e.id = m.edition_id JOIN library_root r ON r.root_id = m.root_id
                   WHERE e.key = 'raw' ORDER BY m.ordinal",
             )
             .and_then(|mut stmt| {
@@ -3500,7 +3608,7 @@ async fn an_edition_merged_from_two_libraries_is_listed_with_each_librarys_share
         serde_json::json!([{
             "root": root,
             "path": path,
-            "library": library,
+            "libraries": [library],
         }])
     };
     let (m, k) = (&roots[0], &roots[1]);
@@ -3554,7 +3662,7 @@ async fn a_copy_in_two_libraries_is_not_listed_as_split() {
             .expect("counts the members");
         let libraries = conn
             .prepare(
-                "SELECT l.name FROM member_root mr JOIN root r ON r.id = mr.root_id
+                "SELECT l.name FROM member_root mr JOIN library_root r ON r.root_id = mr.root_id
                    JOIN library l ON l.id = r.library_id ORDER BY l.name",
             )
             .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
@@ -3770,7 +3878,7 @@ async fn the_list_says_which_directories_around_and_inside_each_govern_their_own
     assert_eq!(
         outer["nested"],
         serde_json::json!([{
-            "id": n.m_kids, "path": m_kids, "library": "Kids", "shown": true, "kept_out_by": null,
+            "id": n.m_kids, "path": m_kids, "libraries": ["Kids"], "shown": true, "kept_out_by": null,
         }]),
         "{listed}"
     );
@@ -3780,7 +3888,7 @@ async fn the_list_says_which_directories_around_and_inside_each_govern_their_own
     assert_eq!(inner["nested"], serde_json::json!([]), "{listed}");
     assert_eq!(
         inner["inside"],
-        serde_json::json!([{ "path": m, "library": "Manga", "shows": true, "kept_out_by": null }]),
+        serde_json::json!([{ "path": m, "libraries": ["Manga"], "shows": true, "kept_out_by": null }]),
         "{listed}"
     );
 }
@@ -3858,23 +3966,23 @@ async fn a_directory_two_deep_is_inside_both_directories_around_it() {
     assert_eq!(
         the_dir(&listed, "Tiny", tiny)["inside"],
         serde_json::json!([
-            { "path": m, "library": "Manga", "shows": true, "kept_out_by": null },
-            { "path": m_kids, "library": "Kids", "shows": false, "kept_out_by": "exclusion" },
+            { "path": m, "libraries": ["Manga"], "shows": true, "kept_out_by": null },
+            { "path": m_kids, "libraries": ["Kids"], "shows": false, "kept_out_by": "exclusion" },
         ]),
         "{listed}"
     );
     assert_eq!(
         the_dir(&listed, "Manga", n.m)["nested"],
         serde_json::json!([
-            { "id": n.m_kids, "path": m_kids, "library": "Kids", "shown": true, "kept_out_by": null },
-            { "id": tiny, "path": tiny_path, "library": "Tiny", "shown": true, "kept_out_by": null },
+            { "id": n.m_kids, "path": m_kids, "libraries": ["Kids"], "shown": true, "kept_out_by": null },
+            { "id": tiny, "path": tiny_path, "libraries": ["Tiny"], "shown": true, "kept_out_by": null },
         ]),
         "{listed}"
     );
     assert_eq!(
         the_dir(&listed, "Kids", n.m_kids)["nested"],
         serde_json::json!([
-            { "id": tiny, "path": tiny_path, "library": "Tiny", "shown": false, "kept_out_by": "exclusion" },
+            { "id": tiny, "path": tiny_path, "libraries": ["Tiny"], "shown": false, "kept_out_by": "exclusion" },
         ]),
         "{listed}"
     );
@@ -4060,7 +4168,7 @@ async fn a_librarys_status_says_moves_are_held_while_the_job_lock_is() {
         &n.admin,
         Method::POST,
         &format!("/api/library/roots/{}/move", n.m),
-        &serde_json::json!({ "new_library": "Elsewhere" }),
+        &serde_json::json!({ "from": n.manga, "new_library": "Elsewhere" }),
     )
     .await;
     assert_eq!(
@@ -4073,4 +4181,1015 @@ async fn a_librarys_status_says_moves_are_held_while_the_job_lock_is() {
     job.await.expect("the scan ends");
     let manga = get_json(&n.admin, &the_scan_of(n.manga)).await;
     assert_eq!(moves_held(&manga), false, "{manga}");
+}
+
+/// Overlapping-libraries spec §5: a directory two libraries hold is listed
+/// under each, and each listing names every library holding it, ascending by
+/// id. New library over root-a's directory links it, and its `added` entry
+/// names root-a as the add's answer does, unprobed.
+#[tokio::test]
+async fn a_dir_two_libraries_hold_is_listed_under_each_naming_both() {
+    let (router, _state, _held) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a");
+    let (a_id, held) = (a["id"].as_i64().expect("an id"), a["dirs"][0].clone());
+
+    let (status, made) = answered(
+        &router,
+        Method::POST,
+        "/api/library/libraries",
+        &serde_json::json!({ "name": "New", "dirs": [held["path"]] }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let added = &made["added"][0];
+    assert_eq!(added["also_in"], serde_json::json!(["root-a"]), "{made}");
+    for unprobed in ["watching", "watch_reason", "interval_secs"] {
+        assert!(added[unprobed].is_null(), "{unprobed}: {made}");
+    }
+    assert_eq!(added["root"]["id"], held["id"], "{made}");
+    let new_id = made["library"]["id"].as_i64().expect("an id");
+    let both = serde_json::json!([
+        { "id": a_id, "name": "root-a" },
+        { "id": new_id, "name": "New" },
+    ]);
+    let listed = get_json(&router, "/api/library/libraries").await;
+    for library in ["root-a", "New"] {
+        let dirs = the_library(&listed, library)["dirs"]
+            .as_array()
+            .expect("dirs");
+        assert_eq!(dirs.len(), 1, "{library}: {listed}");
+        assert_eq!(dirs[0]["id"], held["id"], "{library}: {listed}");
+        assert_eq!(dirs[0]["libraries"], both, "{library}: {listed}");
+    }
+    assert_eq!(
+        the_library(&listed, "root-b")["dirs"][0]["libraries"]
+            .as_array()
+            .expect("libraries")
+            .len(),
+        1,
+        "{listed}"
+    );
+}
+
+/// Each directory around or inside a directory's own is named with every
+/// library holding it: Kids' `m/kids` linked into Other, and Manga's `m`
+/// into Outer, through the add.
+#[tokio::test]
+async fn the_nesting_lists_name_every_library_holding_a_directory() {
+    let n = test_support::router_over_a_library_nested_in_another();
+    let (m, m_kids) = (path_of(&n.state, n.m), path_of(&n.state, n.m_kids));
+    for (name, dir) in [("Other", &m_kids), ("Outer", &m)] {
+        let (status, made) = answered(
+            &n.admin,
+            Method::POST,
+            "/api/library/libraries",
+            &serde_json::json!({ "name": name, "dirs": [dir] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{name}: {made}");
+        assert_eq!(
+            made["added"][0]["also_in"].as_array().map(Vec::len),
+            Some(1)
+        );
+    }
+
+    let listed = get_json(&n.admin, "/api/library/libraries").await;
+
+    assert_eq!(
+        the_dir(&listed, "Manga", n.m)["nested"],
+        serde_json::json!([{
+            "id": n.m_kids, "path": m_kids, "libraries": ["Kids", "Other"], "shown": true,
+            "kept_out_by": null,
+        }]),
+        "{listed}"
+    );
+    assert_eq!(
+        the_dir(&listed, "Other", n.m_kids)["inside"],
+        serde_json::json!([{
+            "path": m, "libraries": ["Manga", "Outer"], "shows": true, "kept_out_by": null,
+        }]),
+        "{listed}"
+    );
+}
+
+/// A library sharing a directory with another is not removed while a scan
+/// of that directory is reserved, as for a directory of its own: 409 naming
+/// it. Kids links root-a's directory, whose lowest link is root-a's library.
+#[tokio::test]
+async fn a_library_is_not_removed_while_a_scan_of_a_dir_it_shares_is_reserved() {
+    let (router, state, _held) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let held = the_library(&listed, "root-a")["dirs"][0].clone();
+    let (status, made) = answered(
+        &router,
+        Method::POST,
+        "/api/library/libraries",
+        &serde_json::json!({ "name": "Kids", "dirs": [held["path"]] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let kids = made["library"]["id"].as_i64().expect("an id");
+    a_scan_running_on(&state, held["id"].as_i64().expect("an id"));
+    let stored = the_store(&state);
+
+    let (status, refused) = answered(
+        &router,
+        Method::DELETE,
+        &format!("/api/library/libraries/{kids}"),
+        &serde_json::json!({}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(
+        the_sentence(&refused),
+        format!(
+            "a scan of {} is running; remove the library once it has finished",
+            held["path"].as_str().expect("a path")
+        )
+    );
+    assert_eq!(the_store(&state), stored);
+}
+
+/// A directory in no library, which no writer leaves, is a fault where the
+/// list would name its libraries, not a directory drawn as no library's: here
+/// one planted by SQL inside Manga's `m`, which `m`'s `nested` would list.
+#[tokio::test]
+async fn a_directory_in_no_library_fails_the_list_where_it_would_be_named() {
+    let n = test_support::router_over_a_library_nested_in_another();
+    let planted = format!("{}/planted", path_of(&n.state, n.m));
+    n.state
+        .library
+        .conn()
+        .execute("INSERT INTO root (path) VALUES (?1)", [&planted])
+        .expect("plants a directory in no library");
+
+    let (status, failed) = answered(
+        &n.admin,
+        Method::GET,
+        "/api/library/libraries",
+        &serde_json::json!({}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{failed}");
+    assert_eq!(
+        the_sentence(&failed),
+        format!("directory {planted} is in no library")
+    );
+}
+
+#[tokio::test]
+async fn unlinking_a_dir_refuses_a_reader() {
+    a_reader_is_refused(Method::DELETE, "/api/library/libraries/1/dirs/1").await;
+}
+
+#[tokio::test]
+async fn rehearsing_an_unlink_refuses_a_reader() {
+    a_reader_is_refused(
+        Method::DELETE,
+        "/api/library/libraries/1/dirs/1?dry_run=true",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn unlinking_a_dir_refuses_nobody() {
+    an_unsigned_request_is_refused(Method::DELETE, "/api/library/libraries/1/dirs/1").await;
+}
+
+/// Kids, made over root-a's directory and one of its own; root-a holds the
+/// first too. Answers Kids' id and the two directories as listed.
+async fn kids_sharing_root_as_dir(
+    router: &axum::Router,
+    fixture: &test_support::Fixture,
+) -> (i64, serde_json::Value, serde_json::Value) {
+    let listed = get_json(router, "/api/library/libraries").await;
+    let shared = the_library(&listed, "root-a")["dirs"][0].clone();
+    let own = a_dir_of(fixture, "Own", "Gamma");
+    let (status, made) = answered(
+        router,
+        Method::POST,
+        "/api/library/libraries",
+        &serde_json::json!({ "name": "Kids", "dirs": [shared["path"], own] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let kids = made["library"]["id"].as_i64().expect("an id");
+    let listed = get_json(router, "/api/library/libraries").await;
+    let own = the_library(&listed, "Kids")["dirs"]
+        .as_array()
+        .expect("dirs")
+        .iter()
+        .find(|dir| dir["id"] != shared["id"])
+        .expect("Kids' own directory")
+        .clone();
+    (kids, shared, own)
+}
+
+fn unlink_path(library: i64, dir: &serde_json::Value, dry_run: bool) -> String {
+    let query = if dry_run { "?dry_run=true" } else { "" };
+    format!("/api/library/libraries/{library}/dirs/{}{query}", dir["id"])
+}
+
+/// `DELETE /api/library/libraries/{id}/dirs/{dir}`, Remove from this library,
+/// unlinks: the rehearsal answers in `relocate::Moved`'s names who loses
+/// sight, and writes nothing; the unlink answers the same, takes root-a's
+/// directory out of Kids alone, and deletes nothing.
+#[tokio::test]
+async fn a_dir_is_rehearsed_and_then_unlinked_from_one_library() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+    let (kids, shared, own) = kids_sharing_root_as_dir(&router, &fixture).await;
+    {
+        let conn = state.library.conn();
+        let kid = taiyaku_library::account::add(&conn, "kid", "pw", "user").expect("adds");
+        taiyaku_library::account::grant_library(&conn, kid, kids).expect("grants");
+    }
+    let (roots, works, links) = roots_works_and_links(&state);
+    let stored = the_store(&state);
+    let said = serde_json::json!({
+        "loses_sight": ["kid"],
+        "library_removed": null,
+        "grants_removed": 0,
+        "left_with_no_library": [],
+    });
+
+    let (status, rehearsed) = answered(
+        &router,
+        Method::DELETE,
+        &unlink_path(kids, &shared, true),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rehearsed}");
+    assert_eq!(keys_of(&rehearsed), ["dry_run", "unlinked"], "{rehearsed}");
+    assert_eq!(rehearsed["dry_run"], true);
+    assert_eq!(rehearsed["unlinked"], said, "{rehearsed}");
+    assert_eq!(the_store(&state), stored, "a rehearsal writes nothing");
+
+    let (status, unlinked) = answered(
+        &router,
+        Method::DELETE,
+        &unlink_path(kids, &shared, false),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{unlinked}");
+    assert_eq!(unlinked["dry_run"], false);
+    assert_eq!(unlinked["unlinked"], said, "{unlinked}");
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let ids = |library: &str| -> Vec<serde_json::Value> {
+        the_library(&listed, library)["dirs"]
+            .as_array()
+            .expect("dirs")
+            .iter()
+            .map(|dir| dir["id"].clone())
+            .collect()
+    };
+    assert_eq!(ids("Kids"), vec![own["id"].clone()], "{listed}");
+    assert_eq!(ids("root-a"), vec![shared["id"].clone()], "{listed}");
+    assert_eq!(
+        roots_works_and_links(&state),
+        (roots, works, links - 1),
+        "every directory and work stands, with one link fewer"
+    );
+}
+
+fn roots_works_and_links(state: &crate::ServeState) -> (i64, i64, i64) {
+    let conn = state.library.conn();
+    let count = |table: &str| -> i64 {
+        conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .expect("counts")
+    };
+    (count("root"), count("work"), count("library_root"))
+}
+
+/// The unlink's refusals, each writing nothing: a directory's last link is the
+/// caller's mistake, naming Remove this directory; a library that does not
+/// hold the directory, and a directory or library that does not exist, are
+/// 404; an id that is not a number is 400.
+#[tokio::test]
+async fn an_unlink_is_refused_on_a_last_link_and_where_the_library_does_not_hold_the_dir() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a");
+    let b = the_library(&listed, "root-b");
+    let a_id = a["id"].as_i64().expect("an id");
+    let b_dir = &b["dirs"][0];
+    let b_path = b_dir["path"].as_str().expect("a path");
+    let stored = the_store(&state);
+
+    for dry_run in [true, false] {
+        for (path, wanted, sentence) in [
+            (
+                unlink_path(b["id"].as_i64().expect("an id"), b_dir, dry_run),
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "`{b_path}` is in no other library, so it can only be removed: use Remove \
+                     this directory."
+                ),
+            ),
+            (
+                unlink_path(a_id, b_dir, dry_run),
+                StatusCode::NOT_FOUND,
+                format!("`{b_path}` is not in root-a"),
+            ),
+            (
+                unlink_path(a_id, &serde_json::json!({ "id": 999 }), dry_run),
+                StatusCode::NOT_FOUND,
+                "there is no directory 999".to_string(),
+            ),
+            (
+                unlink_path(999, b_dir, dry_run),
+                StatusCode::NOT_FOUND,
+                "there is no library 999".to_string(),
+            ),
+            (
+                format!(
+                    "/api/library/libraries/{a_id}/dirs/x{}",
+                    if dry_run { "?dry_run=true" } else { "" }
+                ),
+                StatusCode::BAD_REQUEST,
+                "`x` is not a directory id; an id is a whole number".to_string(),
+            ),
+        ] {
+            let (status, refused) =
+                answered(&router, Method::DELETE, &path, &serde_json::json!({})).await;
+            assert_eq!(status, wanted, "{path}: {refused}");
+            assert_eq!(the_sentence(&refused), sentence, "{path}");
+        }
+    }
+    assert_eq!(the_store(&state), stored);
+}
+
+/// Remove from this library refuses as Move does: 409 while the store's job
+/// lock is held, and while a scan is reserved on a directory this library
+/// holds, the shared one or its own, for the rehearsal too. A scan reserved on
+/// a directory only root-a holds does not refuse it: root-a keeps the
+/// directory, and its scan walks what it walked.
+#[tokio::test]
+async fn an_unlink_is_refused_while_the_job_lock_is_held_or_a_scan_is_reserved_in_the_library() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+    let (kids, shared, own) = kids_sharing_root_as_dir(&router, &fixture).await;
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let root_a = the_library(&listed, "root-a")["id"]
+        .as_i64()
+        .expect("an id");
+    let elsewhere = add_dir_to(&router, root_a, &a_dir_of(&fixture, "Elsewhere", "Delta")).await;
+    let stored = the_store(&state);
+
+    let held = holding_the_job(&state);
+    for dry_run in [true, false] {
+        let (status, refused) = answered(
+            &router,
+            Method::DELETE,
+            &unlink_path(kids, &shared, dry_run),
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+        assert_eq!(
+            the_sentence(&refused),
+            "a scan or a rule save is running; remove the directory from this library when it \
+             has finished"
+        );
+    }
+    drop(held);
+
+    for reserved in [&shared, &own] {
+        let id = reserved["id"].as_i64().expect("an id");
+        a_scan_running_on(&state, id);
+        for dry_run in [true, false] {
+            let (status, refused) = answered(
+                &router,
+                Method::DELETE,
+                &unlink_path(kids, &shared, dry_run),
+                &serde_json::json!({}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{id}: {refused}");
+            assert_eq!(
+                the_sentence(&refused),
+                format!(
+                    "a scan of {} is running; remove the directory from this library once it \
+                     has finished",
+                    reserved["path"].as_str().expect("a path")
+                )
+            );
+            assert!(
+                state
+                    .scans
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .is_some_and(|p| !p.done),
+                "the reservation on {id} was taken away"
+            );
+        }
+        state.scans.lock().unwrap().remove(&id);
+    }
+    assert_eq!(the_store(&state), stored);
+
+    a_scan_running_on(&state, elsewhere);
+    let (status, rehearsed) = answered(
+        &router,
+        Method::DELETE,
+        &unlink_path(kids, &shared, true),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a scan of root-a's other directory: {rehearsed}"
+    );
+}
+
+/// Removing a library leaves a directory another library holds to it: Kids
+/// links root-a's directory and has one of its own. The answer names the
+/// shared directory and root-a under `kept`, Kids under `libraries_removed`,
+/// and counts only the other's work. The shared directory's finished report,
+/// from root-a's scan, keeps its slot; the removed directory's slot is cleared.
+#[tokio::test]
+async fn removing_a_library_leaves_a_shared_dir_to_the_other_library_with_its_scan_report() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+    let (kids, shared, own) = kids_sharing_root_as_dir(&router, &fixture).await;
+    let own_id = own["id"].as_i64().expect("an id");
+    let (status, started) = answered(
+        &router,
+        Method::POST,
+        &a_dirs_scan(own_id),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    until_the_dirs_scan_ends(&router, own_id).await;
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let root_a = the_library(&listed, "root-a").clone();
+    let report = serde_json::json!({ "scanned": "by root-a" });
+    for slot in [&shared, &own] {
+        state.scans.lock().unwrap().insert(
+            slot["id"].as_i64().expect("an id"),
+            crate::ScanProgress {
+                started: std::time::Instant::now(),
+                done: true,
+                report: Some(report.clone()),
+                library: root_a["id"].as_i64(),
+            },
+        );
+    }
+    let path = format!("/api/library/libraries/{kids}");
+    let said = serde_json::json!({
+        "works": 1,
+        "positions": 0,
+        "notes": 0,
+        "left_with_no_library": [],
+        "libraries_removed": ["Kids"],
+        "kept": [{ "path": shared["path"], "libraries": ["root-a"] }],
+    });
+
+    let (status, rehearsed) = answered(
+        &router,
+        Method::DELETE,
+        &format!("{path}?dry_run=true"),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rehearsed}");
+    assert_eq!(rehearsed["removed"], said, "{rehearsed}");
+
+    let (status, removed) = answered(&router, Method::DELETE, &path, &serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(removed["removed"], said, "{removed}");
+    let after = get_json(&router, "/api/library/libraries").await;
+    assert_eq!(
+        after["libraries"]
+            .as_array()
+            .expect("libraries")
+            .iter()
+            .map(|library| library["name"].clone())
+            .collect::<Vec<_>>(),
+        ["root-a", "root-b"],
+        "{after}"
+    );
+    let root_a_after = the_library(&after, "root-a");
+    assert_eq!(root_a_after["works"], root_a["works"], "{after}");
+    assert_eq!(
+        root_a_after["dirs"][0]["libraries"],
+        serde_json::json!([{ "id": root_a["id"], "name": "root-a" }]),
+        "root-a keeps the directory, now its alone: {after}"
+    );
+    let scans = state.scans.lock().unwrap();
+    assert_eq!(
+        scans
+            .get(&shared["id"].as_i64().expect("an id"))
+            .and_then(|progress| progress.report.clone()),
+        Some(report),
+        "the shared directory keeps its slot and its report"
+    );
+    assert!(
+        !scans.contains_key(&own["id"].as_i64().expect("an id")),
+        "the removed directory's id can be given to the next one added"
+    );
+}
+
+/// Each account in `accounts`, limited to the libraries listed with it.
+fn accounts_granted(state: &crate::ServeState, accounts: &[(&str, &[i64])]) {
+    let conn = state.library.conn();
+    for (name, granted) in accounts {
+        let account = taiyaku_library::account::add(&conn, name, "pw", "user").expect("adds");
+        for library in *granted {
+            taiyaku_library::account::grant_library(&conn, account, *library).expect("grants");
+        }
+    }
+}
+
+/// The ids of the directories library `name` lists.
+fn dir_ids_of(listed: &serde_json::Value, name: &str) -> Vec<serde_json::Value> {
+    the_library(listed, name)["dirs"]
+        .as_array()
+        .expect("dirs")
+        .iter()
+        .map(|dir| dir["id"].clone())
+        .collect()
+}
+
+/// Overlapping-libraries spec §5: a move takes a shared directory out of
+/// `from` and no other library. Moved from Kids to root-b, root-a keeps
+/// root-a's directory, and only `kid`, who saw it through Kids alone, loses it.
+#[tokio::test]
+async fn a_shared_dir_moved_from_one_library_stays_in_the_other() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+    let (kids, shared, own) = kids_sharing_root_as_dir(&router, &fixture).await;
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let id_of = |name: &str| the_library(&listed, name)["id"].as_i64().expect("an id");
+    let (root_a, root_b) = (id_of("root-a"), id_of("root-b"));
+    accounts_granted(
+        &state,
+        &[
+            ("kid", &[kids]),
+            ("fan", &[root_a]),
+            ("both", &[kids, root_a]),
+            ("bee", &[root_b]),
+        ],
+    );
+    let dir = shared["id"].as_i64().expect("an id");
+    let to = serde_json::json!({ "from": kids, "library": root_b });
+    let stored = the_store(&state);
+
+    let (status, rehearsed) = moved(&router, dir, true, &to).await;
+    assert_eq!(status, StatusCode::OK, "{rehearsed}");
+    assert_eq!(the_store(&state), stored, "the rehearsal changed the store");
+    let (status, done) = moved(&router, dir, false, &to).await;
+
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["moved"], rehearsed["moved"]);
+    assert_eq!(
+        done["moved"],
+        serde_json::json!({
+            "library_id": root_b,
+            "library": "root-b",
+            "gains_sight": ["bee"],
+            "loses_sight": ["kid"],
+            "library_removed": null,
+            "grants_removed": 0,
+            "left_with_no_library": [],
+        })
+    );
+    let after = get_json(&router, "/api/library/libraries").await;
+    assert!(
+        dir_ids_of(&after, "root-a").contains(&shared["id"]),
+        "{after}"
+    );
+    assert!(
+        dir_ids_of(&after, "root-b").contains(&shared["id"]),
+        "{after}"
+    );
+    assert_eq!(dir_ids_of(&after, "Kids"), [own["id"].clone()], "{after}");
+}
+
+/// Decision 25: Move to a library that already holds the directory is
+/// refused, 400, in its words, by the rehearsal and the move, and nothing is
+/// written. The library it leaves is such a library too.
+#[tokio::test]
+async fn a_move_to_a_library_that_holds_the_dir_is_refused_in_decision_25s_words() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+    let (kids, shared, _) = kids_sharing_root_as_dir(&router, &fixture).await;
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let root_a = the_library(&listed, "root-a")["id"]
+        .as_i64()
+        .expect("an id");
+    let dir = shared["id"].as_i64().expect("an id");
+    let path = shared["path"].as_str().expect("a path");
+    let stored = the_store(&state);
+
+    for (from, to, name) in [
+        (kids, root_a, "root-a"),
+        (root_a, kids, "Kids"),
+        (kids, kids, "Kids"),
+    ] {
+        for dry_run in [true, false] {
+            let body = serde_json::json!({ "from": from, "library": to });
+            let (status, refused) = moved(&router, dir, dry_run, &body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {refused}");
+            assert_eq!(
+                the_sentence(&refused),
+                format!("`{path}` is already in {name}"),
+                "{body}"
+            );
+        }
+    }
+    assert_eq!(the_store(&state), stored);
+}
+
+/// A move waits for the scans of `from` and of the target, and no other:
+/// moving root-a's directory from Kids to root-b waits for a scan reserved on
+/// Kids' own directory or on root-b's, not for one on a directory root-a
+/// alone holds, though root-a holds the moving directory too.
+#[tokio::test]
+async fn a_move_waits_for_the_scans_of_the_library_it_leaves_and_the_one_it_joins() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+    let (kids, shared, own) = kids_sharing_root_as_dir(&router, &fixture).await;
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let id_of = |name: &str| the_library(&listed, name)["id"].as_i64().expect("an id");
+    let (root_a, root_b) = (id_of("root-a"), id_of("root-b"));
+    let b_dir = the_library(&listed, "root-b")["dirs"][0].clone();
+    let elsewhere = add_dir_to(&router, root_a, &a_dir_of(&fixture, "Elsewhere", "Delta")).await;
+    let dir = shared["id"].as_i64().expect("an id");
+    let to = serde_json::json!({ "from": kids, "library": root_b });
+
+    for reserved in [&own, &b_dir] {
+        let id = reserved["id"].as_i64().expect("an id");
+        a_scan_running_on(&state, id);
+        let (status, refused) = moved(&router, dir, true, &to).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{id}: {refused}");
+        assert_eq!(
+            refused["error"],
+            format!(
+                "a scan of {} is running; move the directory once it has finished",
+                reserved["path"].as_str().expect("a path")
+            )
+        );
+        state.scans.lock().unwrap().remove(&id);
+    }
+
+    a_scan_running_on(&state, elsewhere);
+    let (status, rehearsed) = moved(&router, dir, true, &to).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a scan of root-a's other directory: {rehearsed}"
+    );
+}
+
+/// Decision 27: a directory scan is named by the library whose page started
+/// it. Root-a's directory, which Kids holds too, is scanned for root-a and
+/// then for Kids, and each is named so on Kids' status; scanned for none, it
+/// is no library's. Kids' own directory, scanned for none, is Kids'.
+#[tokio::test]
+async fn a_dir_scan_is_named_by_the_library_it_was_started_from() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+    let (kids, shared, own) = kids_sharing_root_as_dir(&router, &fixture).await;
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let root_a = the_library(&listed, "root-a")["id"]
+        .as_i64()
+        .expect("an id");
+
+    for (dir, query, by) in [
+        (
+            &shared,
+            format!("?library={root_a}"),
+            serde_json::json!("root-a"),
+        ),
+        (
+            &shared,
+            format!("?library={kids}"),
+            serde_json::json!("Kids"),
+        ),
+        (&shared, String::new(), serde_json::Value::Null),
+        (&own, String::new(), serde_json::json!("Kids")),
+    ] {
+        let id = dir["id"].as_i64().expect("an id");
+        let held = holding_the_job(&state);
+        let (status, started) = answered(
+            &router,
+            Method::POST,
+            &format!("{}{query}", a_dirs_scan(id)),
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{id}{query}: {started}");
+        let status = get_json(&router, &the_scan_of(kids)).await;
+        assert_eq!(
+            status["scans"],
+            serde_json::json!([{ "library": by, "root_ids": [id] }]),
+            "{id}{query}: {status}"
+        );
+        drop(held);
+        until_the_library_scan_ends(&router, kids).await;
+    }
+}
+
+/// A page older than an unlink names a `from` that no longer holds the
+/// directory. It is refused at once, 404, in the move's words, and not told
+/// to wait for a scan of `from` that holds up a move it would never make.
+#[tokio::test]
+async fn a_stale_from_is_refused_before_the_move_waits_on_a_scan() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+    let (kids, shared, own) = kids_sharing_root_as_dir(&router, &fixture).await;
+    let (status, unlinked) = answered(
+        &router,
+        Method::DELETE,
+        &unlink_path(kids, &shared, false),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{unlinked}");
+    a_scan_running_on(&state, own["id"].as_i64().expect("an id"));
+    let dir = shared["id"].as_i64().expect("an id");
+    let stored = the_store(&state);
+
+    for dry_run in [true, false] {
+        let (status, refused) = moved(
+            &router,
+            dir,
+            dry_run,
+            &serde_json::json!({ "from": kids, "new_library": "Elsewhere" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{refused}");
+        assert_eq!(
+            the_sentence(&refused),
+            format!(
+                "`{}` is not in Kids",
+                shared["path"].as_str().expect("a path")
+            )
+        );
+    }
+    assert_eq!(the_store(&state), stored);
+}
+
+/// A page older than an unlink presses Remove from Kids on a directory Kids
+/// no longer holds. It is refused at once, 404, in the unlink's words, and not
+/// told to wait for a scan of Kids' own directory or for the job lock, which
+/// hold up an unlink it would never make.
+#[tokio::test]
+async fn a_stale_unlink_is_refused_before_it_waits_on_a_scan_or_the_lock() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+    let (kids, shared, own) = kids_sharing_root_as_dir(&router, &fixture).await;
+    let (status, unlinked) = answered(
+        &router,
+        Method::DELETE,
+        &unlink_path(kids, &shared, false),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{unlinked}");
+    let says = format!(
+        "`{}` is not in Kids",
+        shared["path"].as_str().expect("a path")
+    );
+    let stored = the_store(&state);
+
+    let own_id = own["id"].as_i64().expect("an id");
+    a_scan_running_on(&state, own_id);
+    for dry_run in [true, false] {
+        let (status, refused) = answered(
+            &router,
+            Method::DELETE,
+            &unlink_path(kids, &shared, dry_run),
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "a scan: {refused}");
+        assert_eq!(the_sentence(&refused), says);
+    }
+    state.scans.lock().unwrap().remove(&own_id);
+
+    let held = holding_the_job(&state);
+    for dry_run in [true, false] {
+        let (status, refused) = answered(
+            &router,
+            Method::DELETE,
+            &unlink_path(kids, &shared, dry_run),
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "the lock: {refused}");
+        assert_eq!(the_sentence(&refused), says);
+    }
+    drop(held);
+    assert_eq!(the_store(&state), stored);
+}
+
+/// A last link is refused at once, 400, pointing to Remove this directory,
+/// while the job lock is held: waiting would only end in the same refusal.
+#[tokio::test]
+async fn a_last_link_unlink_is_refused_before_it_waits_on_the_lock() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let root_a = the_library(&listed, "root-a");
+    let library = root_a["id"].as_i64().expect("an id");
+    let dir = root_a["dirs"][0].clone();
+    let stored = the_store(&state);
+
+    let held = holding_the_job(&state);
+    for dry_run in [true, false] {
+        let (status, refused) = answered(
+            &router,
+            Method::DELETE,
+            &unlink_path(library, &dir, dry_run),
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert_eq!(
+            the_sentence(&refused),
+            format!(
+                "`{}` is in no other library, so it can only be removed: use Remove this directory.",
+                dir["path"].as_str().expect("a path")
+            )
+        );
+    }
+    drop(held);
+    assert_eq!(the_store(&state), stored);
+}
+
+thread_local! {
+    /// The connection [`removing_a_library_at_the_first_row`] removes a
+    /// library on, and the library's id: a trace callback is a `fn`, which
+    /// captures nothing.
+    static REMOVER: std::cell::RefCell<Option<(taiyaku_library::Library, i64)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A trace callback that removes [`REMOVER`]'s library, on its own
+/// connection, at the first row the traced connection reads: after that
+/// read's snapshot is taken, and before any later statement takes its own.
+fn removing_a_library_at_the_first_row(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Row(_) = event
+        && let Some((other, id)) = REMOVER.with(|remover| remover.borrow_mut().take())
+    {
+        taiyaku_library::scan::remove_library(&other.conn(), id)
+            .expect("the other connection removes the library");
+    }
+}
+
+/// The Libraries list reads its links and its names from one snapshot. Kids,
+/// which shares Manga's `m` and holds a directory of its own, is removed from
+/// a second connection at the first row the list reads: the list is the
+/// state before the removal, never a link to a library with no name (a 500).
+#[test]
+fn the_libraries_list_reads_its_links_and_names_from_one_snapshot() {
+    use taiyaku_library::scan::{InLibrary, add_root_checked_in};
+    let fixture = test_support::Fixture::new("libraries-one-snapshot");
+    let (m, own) = (fixture.path().join("m"), fixture.path().join("own"));
+    std::fs::create_dir_all(&m).expect("mkdir");
+    std::fs::create_dir_all(&own).expect("mkdir");
+    let db = fixture.path().join("library.db");
+    let a = taiyaku_library::Library::open(&db).expect("the first connection");
+    let kids = {
+        let conn = a.conn();
+        add_root_checked_in(&conn, &m, InLibrary::Named("Manga")).expect("Manga holds m");
+        add_root_checked_in(&conn, &m, InLibrary::Named("Kids")).expect("links m into Kids");
+        add_root_checked_in(&conn, &own, InLibrary::Named("Kids")).expect("Kids holds own");
+        taiyaku_library::libraries::id_of(&conn, "Kids")
+            .expect("reads")
+            .expect("Kids")
+    };
+    let names = |listed: Vec<serde_json::Value>| -> Vec<serde_json::Value> {
+        listed
+            .into_iter()
+            .map(|library| library["name"].clone())
+            .collect()
+    };
+    let b = taiyaku_library::Library::open(&db).expect("a second connection");
+    REMOVER.with(|remover| *remover.borrow_mut() = Some((b, kids)));
+
+    let conn = a.conn();
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW,
+        Some(removing_a_library_at_the_first_row),
+    );
+    let listed = super::libraries_json(&conn);
+    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+
+    assert!(
+        REMOVER.with(|remover| remover.borrow().is_none()),
+        "the fixture: Kids was removed while the list read"
+    );
+    assert_eq!(
+        names(listed.expect("the list answers")),
+        ["Kids", "Manga"],
+        "the state before the removal"
+    );
+    assert_eq!(
+        names(super::libraries_json(&conn).expect("the list answers")),
+        ["Manga"],
+        "and Kids is gone after it"
+    );
+}
+
+/// An add's answer names the libraries that held the directory as the add
+/// read them, inside its transaction: Manga, removed after the link into Kids
+/// commits and before the answer is drawn, is still named, and the answer is
+/// not a 500.
+#[test]
+fn an_adds_answer_names_the_holders_the_add_read() {
+    use taiyaku_library::scan::{InLibrary, add_root_checked_in};
+    let fixture = test_support::Fixture::new("added-names-the-holders");
+    let m = fixture.path().join("m");
+    std::fs::create_dir_all(&m).expect("mkdir");
+    let library = taiyaku_library::Library::open_in_memory().expect("a library");
+    let conn = library.conn();
+    add_root_checked_in(&conn, &m, InLibrary::Named("Manga")).expect("Manga holds m");
+    let linked =
+        add_root_checked_in(&conn, &m, InLibrary::Named("Kids")).expect("links m into Kids");
+    let manga = taiyaku_library::libraries::id_of(&conn, "Manga")
+        .expect("reads")
+        .expect("Manga");
+    taiyaku_library::scan::remove_library(&conn, manga).expect("removes Manga");
+
+    let answer = crate::config_api::added_json(&conn, &linked).expect("the answer is drawn");
+    assert_eq!(answer["also_in"], serde_json::json!(["Manga"]), "{answer}");
+}
+
+/// Removing Kids clears the scan slots of the directories the removal deletes,
+/// as the store read them inside it: root-a's directory, unlinked from Kids
+/// after the handler read Kids' directories and before the removal, keeps
+/// root-a's finished report. The handler is held at the scan registry, which
+/// it asks after that read, while the test unlinks. Load can make this miss
+/// that defect, should the handler reach the read only after the unlink. It
+/// cannot fail correct code, which never clears a slot it did not remove.
+#[tokio::test]
+async fn a_dir_unlinked_while_its_library_is_removed_keeps_its_scan_report() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots_on_disk();
+    let (kids, shared, own) = kids_sharing_root_as_dir(&router, &fixture).await;
+    let (shared_id, own_id) = (
+        shared["id"].as_i64().expect("an id"),
+        own["id"].as_i64().expect("an id"),
+    );
+    let report = serde_json::json!({ "scanned": "by root-a" });
+    for slot in [shared_id, own_id] {
+        state.scans.lock().unwrap().insert(
+            slot,
+            crate::ScanProgress {
+                started: std::time::Instant::now(),
+                done: true,
+                report: Some(report.clone()),
+                library: None,
+            },
+        );
+    }
+
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (locked_tx, locked) = std::sync::mpsc::channel::<()>();
+    let holder = {
+        let state = std::sync::Arc::clone(&state);
+        std::thread::spawn(move || {
+            let _registry = state.scans.lock().unwrap();
+            locked_tx.send(()).expect("the test is waiting");
+            let _ = released.recv();
+        })
+    };
+    locked.recv().expect("the holder took the registry");
+    let removing = tokio::spawn({
+        let router = router.clone();
+        async move {
+            answered(
+                &router,
+                Method::DELETE,
+                &format!("/api/library/libraries/{kids}"),
+                &serde_json::json!({}),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    taiyaku_library::scan::unlink(&state.library.conn(), shared_id, kids, false)
+        .expect("unlinks root-a's directory from Kids meanwhile");
+    drop(release);
+    holder.join().expect("the holder ends");
+    let (status, removed) = removing.await.expect("the removal answers");
+
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(
+        removed["removed"]["kept"],
+        serde_json::json!([]),
+        "{removed}"
+    );
+    let scans = state.scans.lock().unwrap();
+    assert_eq!(
+        scans
+            .get(&shared_id)
+            .and_then(|progress| progress.report.clone()),
+        Some(report),
+        "root-a's directory keeps its slot and its report"
+    );
+    assert!(
+        scans.get(&own_id).is_none(),
+        "the removed directory's slot is cleared"
+    );
 }

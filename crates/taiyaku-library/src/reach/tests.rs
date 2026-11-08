@@ -17,7 +17,7 @@ fn root(id: i64, at: &str, library: i64, globs: Option<&str>) -> Root {
         exclude_globs: globs.map(str::to_owned),
         scan_interval_secs: None,
         keeps_documents: false,
-        library_id: library,
+        libraries: vec![library],
     }
 }
 
@@ -127,6 +127,41 @@ fn of_libraries_reaches_from_each_librarys_own_roots() {
     assert_eq!(of_libraries(&roots, &[80]), vec![5]);
     assert_eq!(of_libraries(&roots, &[90, 70, 80]), vec![2, 3, 5, 7]);
     assert_eq!(of_libraries(&roots, &[60]), Vec::<i64>::new(), "no roots");
+}
+
+/// **A directory in two libraries is in each**, read from its links through
+/// `scan::roots`: Kids, which holds `/m` beside Manga, shows `/m` and the
+/// directory Other holds inside it, as Manga does. Each library's lowest link
+/// alone would leave `/m` out of Kids.
+#[test]
+fn a_directory_linked_to_two_libraries_is_shown_by_each() {
+    let library = Library::open_in_memory().expect("in-memory");
+    let conn = library.conn();
+    conn.execute_batch(
+        "INSERT INTO library (id, name) VALUES (70, 'Manga'), (80, 'Kids'), (90, 'Other');
+         INSERT INTO root (id, path) VALUES (1, '/m'), (2, '/m/kids'), (3, '/o');
+         INSERT INTO library_root (library_id, root_id) VALUES (70, 1), (90, 2), (90, 3);",
+    )
+    .expect("three libraries, numbered apart from their directories");
+    crate::test_support::link(&conn, 80, 1);
+
+    let roots = scan::roots(&conn).expect("lists the roots");
+
+    assert_eq!(
+        roots
+            .iter()
+            .map(|root| (root.id, root.libraries.clone()))
+            .collect::<Vec<_>>(),
+        [(1, vec![70, 80]), (2, vec![90]), (3, vec![90])],
+        "each root once, with its links ascending"
+    );
+    assert_eq!(
+        of_libraries(&roots, &[80]),
+        vec![1, 2],
+        "Kids shows /m and what it holds"
+    );
+    assert_eq!(of_libraries(&roots, &[70]), vec![1, 2], "and so does Manga");
+    assert_eq!(of_libraries(&roots, &[90]), vec![2, 3]);
 }
 
 /// A scan of Manga walks `/m` before the directory nested in it, whatever

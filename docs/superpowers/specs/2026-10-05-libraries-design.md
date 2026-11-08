@@ -225,6 +225,10 @@ All of it at `main` 953b2486 unless a branch is named.
 **A library is a name and one or more folders.** A folder is today's root,
 unchanged: its path, its own settings, and its own scan facts. Nothing about a
 root moves except that it now belongs to exactly one library.
+*The overlapping-libraries design of 2026-11-02 has since reversed this: a
+folder is linked to one library or several, keeping one path, one set of
+settings and one scan, and migration 19 replaces `root.library_id` with those
+links. See `2026-11-02-overlapping-libraries-design.md` §5.*
 
 ### 2.1 Migration 15
 
@@ -651,9 +655,10 @@ The user creates the libraries in the UI before the first scan:
   another's.
   *The overlapping-libraries design of 2026-11-02 has since changed both: one
   library's folder can sit inside another's, and the walk of the outer folder
-  skips it, so a file is scanned under the deepest folder that holds it. Two
-  libraries still cannot share a folder. See
-  `2026-11-02-overlapping-libraries-design.md` §4.*
+  skips it, so a file is scanned under the deepest folder that holds it (§4);
+  and two libraries can share a folder, which is one folder with one set of
+  settings and one scan, linked to each (§5). See
+  `2026-11-02-overlapping-libraries-design.md` §4 and §5.*
 - **No EPUB or PDF reading** (§7).
 - **No narrowing of the derive pass to one library** (§2.2).
 

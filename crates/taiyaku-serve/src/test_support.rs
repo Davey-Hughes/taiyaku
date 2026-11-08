@@ -1,6 +1,8 @@
 use std::io::Write;
 
 use crate::{ServeState, Work};
+// The library crate's, so both crates' fixtures file a planted root alike.
+pub(crate) use taiyaku_library::test_support::{library_of_root, link, plant_root};
 
 /// A work of two cbz members, four pages, on disk under `root` — a directory
 /// the caller's [`Fixture`] owns, so the files go when the test ends.
@@ -978,14 +980,13 @@ pub(crate) fn state_whose_grant_waits_on_the_library() -> (std::sync::Arc<ServeS
         }
         zip.finish().expect("finishing an archive");
     }
-    state
-        .library
-        .conn()
-        .execute_batch(
-            "INSERT INTO root (id, path) VALUES (1, '/held'), (2, '/withheld');
-             UPDATE member SET root_id = 1;",
-        )
-        .expect("puts every member under root 1");
+    {
+        let conn = state.library.conn();
+        plant_root(&conn, 1, "/held");
+        plant_root(&conn, 2, "/withheld");
+        conn.execute("UPDATE member SET root_id = 1", [])
+            .expect("puts every member under root 1");
+    }
     (state, fixture)
 }
 
@@ -1508,13 +1509,31 @@ pub(crate) fn router_over_three_unrelated_series()
 /// grant-dropping.
 pub(crate) fn state_with_two_scanned_roots() -> (axum::Router, std::sync::Arc<ServeState>, Fixture)
 {
-    let fixture = Fixture::new("two-scanned-roots");
+    two_scanned_roots_over(Fixture::new("two-scanned-roots"), |_| library())
+}
+
+/// [`state_with_two_scanned_roots`], over a library in a file, so a request's
+/// working connection is not the shared one a test writes on meanwhile.
+pub(crate) fn state_with_two_scanned_roots_on_disk()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    two_scanned_roots_over(Fixture::new("two-scanned-roots-on-disk"), |fixture| {
+        let library = taiyaku_library::Library::open(&fixture.join("library.db"))
+            .expect("opens a file-backed library");
+        seed_fixture_account(&library);
+        std::sync::Arc::new(library)
+    })
+}
+
+fn two_scanned_roots_over(
+    fixture: Fixture,
+    library: impl FnOnce(&Fixture) -> std::sync::Arc<taiyaku_library::Library>,
+) -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
     let root_a = fixture.path().join("root-a");
     let root_b = fixture.path().join("root-b");
     write_pages(&root_a.join("Series A").join("Series A - v01"), 2);
     write_pages(&root_b.join("Series B").join("Series B - v01"), 2);
 
-    let library = library();
+    let library = library(&fixture);
     {
         let conn = library.conn();
         let a = taiyaku_library::scan::add_root(&conn, &root_a).expect("adds root a");
@@ -2563,17 +2582,37 @@ pub(crate) fn grant_root(conn: &rusqlite::Connection, root_id: i64) {
         [],
     )
     .expect("a grant restricts a user, never an admin");
+    let unlinked: Vec<i64> = conn
+        .prepare(
+            "SELECT id FROM root
+              WHERE NOT EXISTS (SELECT 1 FROM library_root WHERE root_id = root.id)
+              ORDER BY id",
+        )
+        .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+        .expect("lists the roots in no library");
+    // Every planted root, not this one alone, as the add would file it: a
+    // withheld directory is then in a library the grant does not name, so a
+    // grant widened past its library is seen to.
+    for planted in unlinked {
+        taiyaku_library::scan::file_under_its_own_library(conn, planted).unwrap_or_else(|e| {
+            panic!(
+                "root {planted} cannot be filed, so the fixture would hold a directory in no \
+                 library, which no writer leaves: {e}"
+            )
+        });
+    }
+    // Not an aggregate, which answers one row even for a root with no link.
     let granted = conn
         .execute(
             "INSERT INTO user_library (user_id, library_id)
-             SELECT 1, library_id FROM root WHERE id = ?1",
+             SELECT 1, library_id FROM library_root WHERE root_id = ?1
+              ORDER BY library_id LIMIT 1",
             [root_id],
         )
         .expect("grants the fixture account the root's library");
     assert_eq!(
         granted, 1,
-        "there is no root {root_id}, so nothing was granted and the account \
-         sees no library, which no grant test can mean"
+        "the fixture account is granted root {root_id}'s library"
     );
 }
 
@@ -2598,8 +2637,8 @@ pub(crate) fn router_over_a_granted_two_dir_library(
         let conn = library.conn();
         conn.execute_batch(
             "INSERT INTO library (id, name) VALUES (70, 'Shelf'), (80, 'Other');
-             INSERT INTO root (id, path, library_id) VALUES
-               (1, '/shelf-a', 70), (2, '/shelf-b', 70), (3, '/other', 80);",
+             INSERT INTO root (id, path) VALUES (1, '/shelf-a'), (2, '/shelf-b'), (3, '/other');
+             INSERT INTO library_root (library_id, root_id) VALUES (70, 1), (70, 2), (80, 3);",
         )
         .expect("a library of two directories and one of one");
         for (root, title, file) in [
@@ -2734,7 +2773,7 @@ fn work_whose_editions_sit_in_two_libraries(
                 "SELECT e.key, m.root_id, r.library_id FROM edition e
                    JOIN work w ON w.id = e.work_id
                    JOIN member m ON m.edition_id = e.id
-                   JOIN root r ON r.id = m.root_id
+                   JOIN library_root r ON r.root_id = m.root_id
                   WHERE w.slug = ?1 ORDER BY e.key",
             )
             .and_then(|mut stmt| {
@@ -2745,12 +2784,12 @@ fn work_whose_editions_sit_in_two_libraries(
         assert_eq!(
             placed,
             [
-                ("en".to_string(), h.id, h.library_id),
+                ("en".to_string(), h.id, h.libraries[0]),
                 ("raw".to_string(), o.id, 90)
             ],
             "the fixture: `en`'s member under Manga's directory, `raw`'s under Other's"
         );
-        assert_ne!(h.library_id, 90, "the fixture: two libraries");
+        assert_ne!(h.libraries[0], 90, "the fixture: two libraries");
         grant_root(
             &conn,
             match granted {
@@ -2962,7 +3001,7 @@ pub(crate) fn router_over_an_edition_merged_from_two_libraries_with_part2_named(
             .prepare(
                 "SELECT e.key, m.path, m.pages, r.library_id FROM edition e
                    JOIN member m ON m.edition_id = e.id
-                   JOIN root r ON r.id = m.root_id
+                   JOIN library_root r ON r.root_id = m.root_id
                   WHERE e.work_id = ?1 ORDER BY e.key, m.ordinal",
             )
             .and_then(|mut stmt| {

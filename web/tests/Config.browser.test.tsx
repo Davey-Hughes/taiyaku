@@ -36,6 +36,9 @@ import {
   layoutOf,
   liesOver,
   linesOf,
+  middleWhereOver,
+  pressAt,
+  pressOn,
   roomKept,
 } from './support/callout'
 import { expectDisclosure } from './support/disclosure'
@@ -52,6 +55,7 @@ import {
   pressArea,
 } from './support/pointer'
 import { rootFontAt } from './support/rootFont'
+import { tapAt } from './support/touch'
 import { holdTheClock, pass, WAIT_DRAWN_AFTER_MS } from './support/wait'
 
 /**
@@ -92,6 +96,7 @@ vi.mock('../src/libraries', async (importOriginal) => ({
   moveCost: vi.fn(),
   moveDir: vi.fn(),
   removeLibrary: vi.fn(),
+  unlinkCost: vi.fn(),
 }))
 
 vi.mock('../src/users', async (importOriginal) => ({
@@ -126,6 +131,7 @@ const root = (
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  libraries: [{ id: 1, name: 'Manga' }],
   nested: [],
   inside: [],
   ...over,
@@ -147,8 +153,11 @@ const libraryOf = (dir: librariesApi.LibraryDir): librariesApi.Library => ({
   name: 'Manga',
   works: 0,
   books: 0,
-  dirs: [dir],
+  dirs: [{ ...dir, libraries: [{ id: 70, name: 'Manga' }] }],
 })
+
+/** Comics, library 2, as its directories name it. */
+const COMICS = [{ id: 2, name: 'Comics' }]
 
 /** One library holding `dirs`, as the list route sends it. */
 const holding = (...dirs: librariesApi.LibraryDir[]) => ({
@@ -537,7 +546,7 @@ describe('the Libraries screen, with real keys and a real pointer', () => {
             name: 'Comics',
             works: 1,
             books: 0,
-            dirs: [root({ id: 5, path: '/srv/comics' })],
+            dirs: [root({ id: 5, path: '/srv/comics', libraries: COMICS })],
           },
         ],
       })
@@ -612,6 +621,178 @@ function expectStacked(table: HTMLElement, rows: string[][], short: string) {
   ).toContain(short)
 }
 
+describe('a library’s Directories table, with its Overlaps column', () => {
+  /** A real path's length: the column must leave a path like it its room. */
+  const LONG = '/mnt/user/media/Manga/Kobayashi-san Chi no Meidoragon - Lucoa'
+  const around = (path: string): librariesApi.AroundDir => ({
+    path,
+    libraries: ['Everything'],
+    shows: true,
+    kept_out_by: null,
+  })
+  /**
+   * Manga's directories: the long path, which overlaps in all three ways and
+   * whose last scan failed, so its row has the longest words; one inside
+   * another library's directory; and one that overlaps nothing.
+   */
+  const OVERLAPPING = holding(
+    root({
+      path: LONG,
+      last_scan_at: '2026-10-01 10:00:00',
+      last_scan_status: 'failed',
+      libraries: [{ id: 1, name: 'Manga' }, ...COMICS],
+      inside: [around('/mnt/user/media')],
+      nested: [
+        {
+          id: 9,
+          path: `${LONG}/Extras`,
+          libraries: ['Comics'],
+          shown: true,
+          kept_out_by: null,
+        },
+      ],
+    }),
+    root({
+      id: 4,
+      path: '/mnt/user/media/Manga/Chapters',
+      inside: [around('/mnt/user/media')],
+    }),
+    root({ id: 5, path: '/srv/comics', scan_interval_secs: null }),
+  )
+
+  /** The library page at `width`, its Directories table and that table's box. */
+  async function drawn(width: number) {
+    await sized(width, 900)
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(OVERLAPPING)
+    const host = await opened(LIBRARY)
+    await document.fonts.ready
+    const table = host.querySelector('.library-page .dir-table') as HTMLElement
+    return { host, table, box: table.closest('.settings-box') as HTMLElement }
+  }
+
+  /** Each of `table`'s cells, heading or not, drawn inside `box`. */
+  function expectInside(table: HTMLElement, box: HTMLElement) {
+    const edge = box.getBoundingClientRect()
+    for (const cell of table.querySelectorAll<HTMLElement>('th, td')) {
+      const at = cell.getBoundingClientRect()
+      if (at.width === 0) continue
+      expect(at.left, cell.textContent).toBeGreaterThanOrEqual(edge.left)
+      expect(at.right, cell.textContent).toBeLessThanOrEqual(edge.right)
+    }
+  }
+
+  /** The width of `text`'s first drawing in `cell`, and how many lines it takes. */
+  function wordIn(cell: Element, text: string) {
+    const node = [...cell.childNodes].find(
+      (one) =>
+        one.nodeType === Node.TEXT_NODE && one.textContent?.includes(text),
+    ) as Text
+    const range = document.createRange()
+    const at = (node.textContent ?? '').indexOf(text)
+    range.setStart(node, at)
+    range.setEnd(node, at + text.length)
+    const boxes = [...range.getClientRects()].filter((one) => one.width > 0)
+    return {
+      width: range.getBoundingClientRect().width,
+      lines: new Set(boxes.map((one) => Math.round(one.top))).size,
+    }
+  }
+
+  it('gives Overlaps no more room than its heading or its widest word, which it never breaks, and keeps every cell inside the box at 1280', async () => {
+    const { host, table, box } = await drawn(1280)
+    const heading = table.querySelector('thead th.overlaps') as HTMLElement
+    expect(heading.textContent).toBe('Overlaps')
+    const cells = [...table.querySelectorAll('tbody tr')].map(
+      (row) => row.querySelectorAll('td')[3],
+    )
+    expect(cells.map((cell) => (cell as HTMLElement).innerText)).toEqual([
+      'Shared, Inside, Around',
+      'Inside',
+      '',
+    ])
+    const words = ['Shared,', 'Inside,', 'Around'].map((word) =>
+      wordIn(cells[0], word),
+    )
+    for (const word of words) expect(word.lines).toBe(1)
+    const style = getComputedStyle(heading)
+    const room =
+      heading.getBoundingClientRect().width -
+      Number.parseFloat(style.paddingLeft) -
+      Number.parseFloat(style.paddingRight)
+    const widest = Math.max(
+      wordIn(heading, 'Overlaps').width,
+      ...words.map((word) => word.width),
+    )
+    expect(room).toBeLessThanOrEqual(widest + 1)
+    expectInside(table, box)
+    assertNoSidewaysScroll(host)
+  })
+
+  it('says Overlaps after its label at 390, draws nothing for a directory that overlaps nothing, and keeps every cell inside the box', async () => {
+    const { host, table, box } = await drawn(390)
+    expectStacked(
+      table,
+      [
+        [
+          LONG,
+          'Scan every: 24h',
+          'Last scan: 2026-10-01 10:00:00 UTC\u00a0·\u00a0failed',
+          'Overlaps: Shared, Inside, Around',
+        ],
+        [
+          '/mnt/user/media/Manga/Chapters',
+          'Scan every: 24h',
+          'Last scan: Never',
+          'Overlaps: Inside',
+        ],
+        ['/srv/comics', 'Scan every: not set', 'Last scan: Never', ''],
+      ],
+      '/srv/comics',
+    )
+    // The row that overlaps nothing ends its line at Last scan: no
+    // separator is drawn towards the empty cell after it.
+    const blank = table.querySelectorAll('tbody tr')[2]
+    const last = blank.querySelectorAll('td')[2]
+    expect(last.innerText).toBe('Last scan: Never')
+    expect(getComputedStyle(last, '::after').visibility).toBe('hidden')
+    expectInside(table, box)
+    assertNoSidewaysScroll(host)
+  })
+
+  it.each([
+    [600, 'two lines'],
+    [656, 'two lines'],
+    [657, 'a table'],
+  ])(
+    'draws its rows at %i in %s: four columns are a table once their box is 36rem wide',
+    async (width, drawnAs) => {
+      const { table, box } = await drawn(width)
+      const style = getComputedStyle(box)
+      const room =
+        box.clientWidth -
+        Number.parseFloat(style.paddingLeft) -
+        Number.parseFloat(style.paddingRight)
+      if (drawnAs === 'a table') expect(room).toBeGreaterThanOrEqual(576)
+      else expect(room).toBeLessThan(576)
+      const row = table.querySelector('tbody tr') as HTMLElement
+      const label = row
+        .querySelectorAll('td')[3]
+        .querySelector('.cell-label') as HTMLElement
+      if (drawnAs === 'a table') {
+        expect(getComputedStyle(row).display).toBe('table-row')
+        expect(getComputedStyle(label).display).toBe('none')
+      } else {
+        expect(getComputedStyle(row).display).toBe('flex')
+        expect(getComputedStyle(label).display).toBe('inline')
+        expect(
+          (table.querySelector('thead') as HTMLElement).getBoundingClientRect()
+            .width,
+        ).toBeLessThanOrEqual(1)
+      }
+    },
+  )
+})
+
 describe('the Libraries pages at a phone’s width', () => {
   /** The page of `UNBROKEN_LIBRARY`'s library, at its name. */
   const UNBROKEN_PAGE = `${TABLE}/${UNBROKEN_NAME}`
@@ -631,6 +812,7 @@ describe('the Libraries pages at a phone’s width', () => {
             ...UNBROKEN_ROOT,
             last_scan_at: '2026-10-01 10:00:00',
             last_scan_status: 'failed',
+            libraries: [{ id: 1, name: UNBROKEN_NAME }],
           },
         ],
       },
@@ -679,7 +861,7 @@ describe('the Libraries pages at a phone’s width', () => {
         name: 'Comics',
         works: 1,
         books: 0,
-        dirs: [root({ id: 5, path: '/srv/comics' })],
+        dirs: [root({ id: 5, path: '/srv/comics', libraries: COMICS })],
       },
     ],
   }
@@ -703,11 +885,12 @@ describe('the Libraries pages at a phone’s width', () => {
       LIBRARY,
       '.library-page .dir-table',
       [
-        ['/srv/manga', 'Scan every: 24h', 'Last scan: Never'],
+        ['/srv/manga', 'Scan every: 24h', 'Last scan: Never', ''],
         [
           '/srv/chapters',
           'Scan every: not set',
           'Last scan: 2026-10-01 10:00:00 UTC\u00a0·\u00a0failed',
+          '',
         ],
       ],
       '/srv/manga',
@@ -1121,7 +1304,14 @@ describe('the Configuration screens at 390px', () => {
       holding(UNBROKEN_ROOT),
     )
     vi.mocked(config.removalCost).mockResolvedValue({
-      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 1,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived(),
       dry_run: true,
     })
@@ -1158,7 +1348,14 @@ describe('the Configuration screens at 390px', () => {
       holding(UNBROKEN_ROOT),
     )
     vi.mocked(config.removalCost).mockResolvedValue({
-      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 1,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived(),
       dry_run: true,
     })
@@ -1215,7 +1412,13 @@ describe('the Configuration screens at 390px', () => {
           name: UNBROKEN_NAME,
           works: 0,
           books: 0,
-          dirs: [root({ id: 4, path: '/srv/other' })],
+          dirs: [
+            root({
+              id: 4,
+              path: '/srv/other',
+              libraries: [{ id: 2, name: UNBROKEN_NAME }],
+            }),
+          ],
         },
       ],
     })
@@ -1673,6 +1876,7 @@ describe('the Configuration screens at 390px', () => {
           watching: false,
           watch_reason: reason,
           interval_secs: 3600,
+          also_in: [],
         },
       ],
     })
@@ -1742,7 +1946,14 @@ describe('the Configuration screens at 390px', () => {
       holding(longPathRoot),
     )
     vi.mocked(config.removalCost).mockResolvedValue({
-      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 1,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived({
         unreadable: {
           total: 1,
@@ -2000,7 +2211,14 @@ describe('the Configuration screens at 390px', () => {
   it('keeps the library’s removal inside the window', async () => {
     await page.viewport(390, 844)
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 1,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived(),
       dry_run: true,
     })
@@ -2047,12 +2265,26 @@ describe('the Configuration screens at 390px', () => {
     // removed is no longer there to hold it.
     await page.viewport(390, 844)
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 1,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived(),
       dry_run: true,
     })
     vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
-      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 1,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived({
         unreadable: {
           total: 1,
@@ -2100,7 +2332,7 @@ describe('the Configuration screens at 390px', () => {
       name: 'Comics',
       works: 0,
       books: 0,
-      dirs: [root({ id: 5, path: '/srv/comics' })],
+      dirs: [root({ id: 5, path: '/srv/comics', libraries: COMICS })],
     }
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
       libraries: [
@@ -2113,12 +2345,26 @@ describe('the Configuration screens at 390px', () => {
       ],
     })
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 0,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived(),
       dry_run: true,
     })
     vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 0,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived({ lost_positions: 4 }),
       dry_run: false,
     })
@@ -2634,7 +2880,7 @@ describe('the Configuration screens at desktop width', () => {
       inside: [
         {
           path: '/home/davey/temp/manga-test',
-          library: 'Everything',
+          libraries: ['Everything'],
           shows: true,
           kept_out_by: null,
         },
@@ -2643,14 +2889,14 @@ describe('the Configuration screens at desktop width', () => {
         {
           id: 9,
           path: '/home/davey/temp/manga-test/Volumes/Kids in a long directory name',
-          library: 'Kids',
+          libraries: ['Kids'],
           shown: false,
           kept_out_by: 'exclusion',
         },
         {
           id: 10,
           path: '/home/davey/temp/manga-test/Volumes/old',
-          library: 'Archive',
+          libraries: ['Archive'],
           shown: true,
           kept_out_by: null,
         },
@@ -2715,7 +2961,7 @@ describe('the Configuration screens at desktop width', () => {
         {
           id: 9,
           path: '/home/davey/temp/manga-test/Volumes/Kids in a long directory name/weekly',
-          library: 'Kids',
+          libraries: ['Kids'],
           shown: true,
           kept_out_by: null,
         },
@@ -2769,6 +3015,621 @@ describe('the Configuration screens at desktop width', () => {
         act(() => rerender(<div />))
       }
     }
+  })
+})
+
+describe('a library page’s lines for a directory another library holds too', () => {
+  it('draws another library’s scan of a directory it holds too as its other scan lines are, muted at the UI size, and keeps it within the page at a phone’s width', async () => {
+    const shared = root({
+      ...longPathRoot,
+      libraries: [
+        { id: 1, name: 'Manga' },
+        { id: 2, name: 'Kids' },
+      ],
+    })
+    for (const [width, height] of [
+      [1280, 900],
+      [390, 844],
+    ]) {
+      await page.viewport(width, height)
+      vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(shared))
+      vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
+        library_id: 1,
+        running: true,
+        elapsed_secs: 3,
+        dirs: [{ root_id: 3, running: true }],
+        held_removals: [],
+        moves_held: false,
+        scans: [{ library: 'Kids', root_ids: [3] }],
+      })
+      const host = await opened(LIBRARY)
+      const line = host.querySelector(
+        '.library-page > .scanning',
+      ) as HTMLElement
+      expect(line?.textContent, `${width}`).toBe(
+        'Kids is scanning /home/davey/temp/manga-test/Volumes, which Manga holds too.',
+      )
+      const muted = getComputedStyle(
+        host.querySelector('.library-page .page-description') as Element,
+      )
+      const drawn = getComputedStyle(line)
+      expect(drawn.color, `${width}`).toBe(muted.color)
+      expect(drawn.fontSize, `${width}`).toBe(muted.fontSize)
+      const main = (
+        host.querySelector('main') as HTMLElement
+      ).getBoundingClientRect()
+      expect(
+        line.getBoundingClientRect().right,
+        `${width}`,
+      ).toBeLessThanOrEqual(main.right)
+      assertNoSidewaysScroll(host)
+      act(() => rerender(<div />))
+    }
+  })
+
+  /**
+   * Manga's page at `width`, a link of `path` from `also_in` answered as
+   * the picker, its browser open if `browse`, is pressed: `open` is how far
+   * below the top of the add form what is below it was with the picker
+   * open, and `reach` says it now.
+   */
+  async function linkedAt(
+    width: number,
+    height: number,
+    path: string,
+    also_in: string[],
+    browse = false,
+  ) {
+    await page.viewport(width, height)
+    const linked = root({
+      id: 4,
+      path,
+      libraries: [
+        { id: 1, name: 'Manga' },
+        { id: 2, name: also_in[0] },
+      ],
+    })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+      holding(longPathRoot),
+    )
+    vi.mocked(librariesApi.listDirs).mockResolvedValue({
+      path: null,
+      parent: null,
+      dirs: [
+        { name: 'manga', path: '/srv/manga' },
+        { name: 'comics', path: '/srv/comics' },
+      ],
+    })
+    const sent = deferred<config.Added>()
+    vi.mocked(librariesApi.addDir).mockReturnValue(sent.promise)
+    const host = await opened(LIBRARY)
+    const addRoot = () =>
+      host.querySelector('.library-page .add-root') as HTMLElement
+    await pressOn(addRoot().querySelector('button[name="add-dir"]'))
+    if (browse) {
+      await pressOn(addRoot().querySelector('button[name="browse"]'))
+      expect(addRoot().querySelector('.dir-browser .dir-list')).not.toBeNull()
+    }
+    await typeInto(
+      addRoot().querySelector('input[name="path"]') as HTMLInputElement,
+      path,
+    )
+    await pressOn(addRoot().querySelector('button[name="pick"]'))
+    await document.fonts.ready
+    const removal = () =>
+      host.querySelector('.library-page .settings-removal') as HTMLElement
+    /** From the top of the add form to the top of what is below it. */
+    const reach = () =>
+      removal().getBoundingClientRect().top -
+      addRoot().getBoundingClientRect().top
+    const open = reach()
+    expect(addRoot().querySelector('.dir-picker')).not.toBeNull()
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+      holding(longPathRoot, linked),
+    )
+    await act(async () => {
+      sent.resolve({
+        root: linked,
+        watching: null,
+        watch_reason: null,
+        interval_secs: null,
+        also_in,
+      })
+      await new Promise((resolve) => setTimeout(resolve, 120))
+    })
+    expect(addRoot().querySelector('.dir-picker')).toBeNull()
+    const line = addRoot().querySelector('.linked') as HTMLElement
+    return { host, addRoot, line, open, reach }
+  }
+
+  /** The live server's own path, and one of seventy characters. */
+  const PATHS = [
+    '/home/davey/temp/manga-test/Kids',
+    '/home/davey/temp/manga-test/Collections/Shonen Jump/Weekly/Extras/Kids',
+  ]
+  const SIZES = [
+    [1280, 900],
+    [390, 844],
+  ]
+  const EACH = SIZES.flatMap(([width, height]) =>
+    PATHS.map((path) => [width, height, path] as const),
+  )
+
+  /**
+   * Where a link's line lies in its box: `foot`, how far its foot is above
+   * the foot of the box's content, which is its last row's, inside that
+   * row's own padding; `clear`, how far above the Removal section's heading;
+   * `covers`, the box's rows and Add directory… that it lies over, and
+   * `halves`, those it covers only in part; and `onTop`, whether it is what
+   * is drawn at its top and at its foot.
+   */
+  function linePlace(host: HTMLElement, line: HTMLElement) {
+    const box = line.closest('.settings-box') as HTMLElement
+    const last = box.lastElementChild as HTMLElement
+    const contentFoot =
+      last.getBoundingClientRect().bottom -
+      Number.parseFloat(getComputedStyle(last).paddingBottom)
+    const heading = host.querySelector(
+      '.library-page .settings-removal .settings-section-title',
+    ) as HTMLElement
+    const at = line.getBoundingClientRect()
+    const under = [
+      ...box.querySelectorAll<HTMLElement>('tr, .add-root > button'),
+    ].filter(
+      (row) => row.getBoundingClientRect().height > 0 && liesOver(line, row),
+    )
+    const halves = under
+      .filter((row) => {
+        const r = row.getBoundingClientRect()
+        return !(r.top >= at.top - 0.5 && r.bottom <= at.bottom + 0.5)
+      })
+      .map((row) => row.textContent)
+    const drawnAt = (y: number) => {
+      const hit = document.elementFromPoint((at.left + at.right) / 2, y)
+      return hit !== null && line.contains(hit)
+    }
+    return {
+      foot: contentFoot - at.bottom,
+      clear: heading.getBoundingClientRect().top - at.bottom,
+      covers: under.map((row) => row.textContent),
+      halves,
+      onTop: drawnAt(at.top + 4) && drawnAt(at.bottom - 4),
+    }
+  }
+
+  it.each([
+    [1280, 900],
+    [390, 844],
+  ])(
+    'says a link with Add directory…, in the room the picker took, and moves nothing below it, at %ipx',
+    async (width, height) => {
+      const { host, addRoot, line, open, reach } = await linkedAt(
+        width,
+        height,
+        '/srv/manga/Kids',
+        ['Kids'],
+      )
+      expect(line.textContent).toBe(
+        '/srv/manga/Kids is also a directory of Kids. It keeps the settings it has there.',
+      )
+      expect(reach()).toBeCloseTo(open, 0)
+      const room = addRoot().getBoundingClientRect()
+      const at = line.getBoundingClientRect()
+      expect(at.top).toBeGreaterThanOrEqual(room.top - 0.5)
+      expect(at.bottom).toBeLessThanOrEqual(room.bottom + 0.5)
+      assertNoSidewaysScroll(host)
+    },
+  )
+
+  it.each(EACH)(
+    'says a link of two libraries at %ipx×%ipx, of %s, inside its box, moving nothing below it: where its words need more than the picker’s room, up over what is above it, each row whole',
+    async (width, height, path) => {
+      const { host, line, open, reach } = await linkedAt(width, height, path, [
+        'Kids',
+        'Comics',
+      ])
+      expect(line.textContent).toBe(
+        `${path} is also a directory of Kids and Comics. It keeps the settings it has there.`,
+      )
+      expect(reach()).toBeCloseTo(open, 0)
+      const place = linePlace(host, line)
+      expect(place.foot).toBeGreaterThanOrEqual(-0.5)
+      expect(place.clear).toBeGreaterThan(0)
+      expect(place.halves).toEqual([])
+      expect(place.onTop).toBe(true)
+      assertNoSidewaysScroll(host)
+    },
+  )
+
+  it.each(['mouse', 'tap'] as const)(
+    'takes a link’s line away at a real %s where it lies over a control of its box, pressing nothing beneath, and the next press there reaches the control beneath, at 390px',
+    async (input) => {
+      const { line } = await linkedAt(
+        390,
+        844,
+        '/home/davey/temp/manga-test/Kids',
+        ['Kids', 'Comics'],
+      )
+      const box = line.closest('.settings-box') as HTMLElement
+      const beneath = [
+        ...box.querySelectorAll<HTMLElement>('button, a, input, select'),
+      ].find((control) => liesOver(line, control))
+      expect(beneath, 'a control of the box under the line').toBeDefined()
+      const control = beneath as HTMLElement
+      let pressed = 0
+      control.addEventListener('click', () => {
+        pressed += 1
+      })
+      const { x, y } = middleWhereOver(line, control)
+      // The press lands on the line, over the control, and not on the
+      // control itself.
+      const first = document.elementFromPoint(x, y)
+      expect(first !== null && line.contains(first)).toBe(true)
+      if (input === 'tap') await tapAt(x, y)
+      else await pressAt(x, y)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 120))
+      })
+      expect(line.textContent).toBe('')
+      expect(pressed).toBe(0)
+      const next = document.elementFromPoint(x, y)
+      expect(next !== null && control.contains(next)).toBe(true)
+      await pressAt(x, y)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 120))
+      })
+      expect(pressed).toBe(1)
+    },
+  )
+
+  it('keeps the room it measured as the link was said when a phone turns to portrait, moving nothing below it', async () => {
+    const { host, addRoot, line, open, reach } = await linkedAt(
+      844,
+      390,
+      '/home/davey/temp/manga-test/Kids',
+      ['Kids', 'Comics'],
+    )
+    const kept = addRoot().getBoundingClientRect().height
+    expect(reach()).toBeCloseTo(open, 0)
+    await page.viewport(390, 844)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 120))
+    })
+    expect(addRoot().getBoundingClientRect().height).toBeCloseTo(kept, 0)
+    expect(reach()).toBeCloseTo(open, 0)
+    // Its words reflowed with no render of the page, and it is laid inside
+    // its box again.
+    const place = linePlace(host, line)
+    expect(place.foot).toBeGreaterThanOrEqual(-0.5)
+    expect(place.halves).toEqual([])
+    expect(place.onTop).toBe(true)
+  })
+
+  it('keeps the whole room of a picker whose directory browser was open as the link was said, moving nothing below it', async () => {
+    const { line, open, reach } = await linkedAt(
+      1280,
+      900,
+      '/srv/manga/Kids',
+      ['Kids'],
+      true,
+    )
+    expect(line.textContent).toContain('is also a directory of Kids')
+    expect(reach()).toBeCloseTo(open, 0)
+  })
+
+  /**
+   * The page of Extras, made at `width` over `path`, which Kids and Comics
+   * hold, as the app draws it: the make is sent outside `act`, which would
+   * draw only the last of its changes. `seen` is how far below the add form
+   * the Removal section was, and what the line said, at each change to the
+   * page from the make on.
+   */
+  async function madeAt(width: number, height: number, path: string) {
+    await page.viewport(width, height)
+    const made: librariesApi.Library = {
+      ...holding(root({ id: 4, path })).libraries[0],
+      id: 5,
+      name: 'Extras',
+    }
+    vi.mocked(librariesApi.createLibrary).mockResolvedValueOnce({
+      library: made,
+      added: [
+        {
+          root: made.dirs[0],
+          watching: null,
+          watch_reason: null,
+          interval_secs: null,
+          also_in: ['Kids', 'Comics'],
+        },
+      ],
+    })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+      holding(longPathRoot),
+    )
+    const host = await opened(NEW_LIBRARY)
+    await typeInto(
+      host.querySelector('input[name="library-name"]') as HTMLInputElement,
+      'Extras',
+    )
+    await typeInto(
+      host.querySelector('input[name="path"]') as HTMLInputElement,
+      path,
+    )
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [...holding(longPathRoot).libraries, made],
+    })
+    await document.fonts.ready
+    const reach = () => {
+      const addRoot = host.querySelector('.library-page .add-root')
+      const removal = host.querySelector('.library-page .settings-removal')
+      return addRoot === null || removal === null
+        ? undefined
+        : removal.getBoundingClientRect().top -
+            addRoot.getBoundingClientRect().top
+    }
+    const seen: { reach: number; said: string }[] = []
+    const watcher = new MutationObserver(() => {
+      const now = reach()
+      if (now === undefined) return
+      seen.push({
+        reach: now,
+        said:
+          host.querySelector('.library-page .add-root > .linked')
+            ?.textContent ?? '',
+      })
+    })
+    watcher.observe(host, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+    })
+    globalThis.IS_REACT_ACT_ENVIRONMENT = false
+    try {
+      ;(host.querySelector('form.add-library') as Element).dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      )
+      const until = performance.now() + 3000
+      while (
+        (host.querySelector('.library-page .add-root > .linked')?.textContent ??
+          '') === '' &&
+        performance.now() < until
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120))
+    } finally {
+      watcher.disconnect()
+      globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    }
+    const line = host.querySelector(
+      '.library-page .add-root > .linked',
+    ) as HTMLElement
+    return { host, line, seen, reach: () => reach() ?? Number.NaN }
+  }
+
+  it.each(EACH)(
+    'says a link New library made on the made library’s page at %ipx×%ipx, of %s, in a room the page has from its first paint, inside its box, moving nothing below it as the line says it',
+    async (width, height, path) => {
+      const { host, line, seen } = await madeAt(width, height, path)
+      expect(line.textContent).toBe(
+        `${path} is also a directory of Kids and Comics. It keeps the settings it has there.`,
+      )
+      // At every change the page saw, the Removal section was where it is.
+      expect(seen.length).toBeGreaterThan(0)
+      for (const one of seen) {
+        expect(one.reach, `${one.said === '' ? 'empty' : 'said'}`).toBeCloseTo(
+          seen[0].reach,
+          0,
+        )
+      }
+      const place = linePlace(host, line)
+      // In the room the page had from its first paint, over nothing.
+      expect(place.covers).toEqual([])
+      expect(place.foot).toBeGreaterThanOrEqual(-0.5)
+      expect(place.clear).toBeGreaterThan(0)
+      expect(place.halves).toEqual([])
+      expect(place.onTop).toBe(true)
+      assertNoSidewaysScroll(host)
+    },
+  )
+
+  it.each([
+    [390, 1280],
+    [1280, 390],
+  ])(
+    'keeps the made library’s page’s line inside its box, clear of the Removal heading, and the room it had, as the window goes from %ipx to %ipx and back',
+    async (from, to) => {
+      const sizes = { 390: [390, 844], 1280: [1280, 900] } as const
+      const [width, height] = sizes[from as 390 | 1280]
+      const { host, line, reach } = await madeAt(width, height, PATHS[1])
+      const kept = reach()
+      for (const [step, [w, h]] of [
+        sizes[to as 390 | 1280],
+        sizes[from as 390 | 1280],
+      ].entries()) {
+        await page.viewport(w, h)
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 120))
+        })
+        const place = linePlace(host, line)
+        const at = `step ${step}, ${w}px`
+        expect(reach(), at).toBeCloseTo(kept, 0)
+        expect(place.foot, at).toBeGreaterThanOrEqual(-0.5)
+        expect(place.clear, at).toBeGreaterThan(0)
+        expect(place.halves, at).toEqual([])
+        expect(place.onTop, at).toBe(true)
+      }
+    },
+  )
+
+  it('lays a link’s line too tall for the room under Add directory… over the rows above that room instead, each whole, the button in view, at 390px, moving nothing below it', async () => {
+    const { host, addRoot, line, open, reach } = await linkedAt(
+      390,
+      844,
+      PATHS[1],
+      ['Kids', 'Comics', 'Teens', 'Light novels'],
+    )
+    const room = addRoot()
+    const roomAt = room.getBoundingClientRect()
+    const padding = getComputedStyle(room)
+    const roomHeight =
+      roomAt.height -
+      Number.parseFloat(padding.paddingTop) -
+      Number.parseFloat(padding.paddingBottom)
+    const at = line.getBoundingClientRect()
+    // Its words need more than the room.
+    expect(at.height).toBeGreaterThan(roomHeight)
+    const add = room.querySelector('button[name="add-dir"]') as HTMLElement
+    expect(liesOver(line, add)).toBe(false)
+    const middle = add.getBoundingClientRect()
+    expect(
+      document.elementFromPoint(
+        (middle.left + middle.right) / 2,
+        (middle.top + middle.bottom) / 2,
+      ),
+    ).toBe(add)
+    expect(at.bottom).toBeLessThanOrEqual(roomAt.top + 0.5)
+    const rows = [
+      ...host.querySelectorAll<HTMLElement>('.library-page .dir-table tr'),
+    ].filter((row) => row.getBoundingClientRect().height > 0)
+    expect(at.top).toBeGreaterThanOrEqual(
+      Math.min(...rows.map((row) => row.getBoundingClientRect().top)) - 0.5,
+    )
+    const place = linePlace(host, line)
+    expect(place.covers.length).toBeGreaterThan(0)
+    expect(place.halves).toEqual([])
+    expect(place.clear).toBeGreaterThan(0)
+    expect(place.onTop).toBe(true)
+    expect(reach()).toBeCloseTo(open, 0)
+  })
+
+  it('keeps a link’s line too tall for its room beside Add directory… at 1280px, laid up from the room’s foot over no row of the table', async () => {
+    const { host, addRoot, line, open, reach } = await linkedAt(
+      1280,
+      900,
+      PATHS[1],
+      ['Kids', 'Comics', 'Teens', 'Light novels'],
+    )
+    const add = addRoot().querySelector('button[name="add-dir"]') as HTMLElement
+    expect(liesOver(line, add)).toBe(false)
+    const place = linePlace(host, line)
+    expect(place.covers).toEqual([])
+    expect(place.foot).toBeGreaterThanOrEqual(-0.5)
+    expect(place.clear).toBeGreaterThan(0)
+    expect(place.onTop).toBe(true)
+    expect(reach()).toBeCloseTo(open, 0)
+  })
+
+  it('lays a link’s line too tall for the rows above its room up from the room’s foot over Add directory… instead, inside its box, at 390px', async () => {
+    const holders = Array.from(
+      { length: 16 },
+      (_, i) => `Collection ${String.fromCharCode(65 + i)}`,
+    )
+    const { host, addRoot, line, open, reach } = await linkedAt(
+      390,
+      844,
+      PATHS[1],
+      holders,
+    )
+    const add = addRoot().querySelector('button[name="add-dir"]') as HTMLElement
+    const rows = [
+      ...host.querySelectorAll<HTMLElement>('.library-page .dir-table tr'),
+    ].filter((row) => row.getBoundingClientRect().height > 0)
+    const first = Math.min(
+      ...rows.map((row) => row.getBoundingClientRect().top),
+    )
+    const at = line.getBoundingClientRect()
+    // More words than the rows above the room have room for.
+    expect(at.height).toBeGreaterThan(
+      addRoot().getBoundingClientRect().top - first,
+    )
+    expect(at.top).toBeGreaterThanOrEqual(first - 0.5)
+    expect(liesOver(line, add)).toBe(true)
+    const place = linePlace(host, line)
+    expect(place.foot).toBeGreaterThanOrEqual(-0.5)
+    expect(place.clear).toBeGreaterThan(0)
+    expect(place.halves).toEqual([])
+    expect(place.onTop).toBe(true)
+    expect(reach()).toBeCloseTo(open, 0)
+  })
+
+  it('takes the focus ring off a link’s line as focus leaves Add directory… beneath it: by a real Tab onward, and by a real click on nothing that takes focus, at 390px', async () => {
+    const { host, addRoot, line } = await linkedAt(390, 844, PATHS[0], [
+      'Kids',
+      'Comics',
+    ])
+    const add = addRoot().querySelector('button[name="add-dir"]') as HTMLElement
+    const rows = host.querySelectorAll<HTMLElement>(
+      '.library-page .dir-table .row-link',
+    )
+    await act(async () => rows[rows.length - 1].focus())
+    const ringed = () => ({
+      marked: line.hasAttribute('data-over-focus'),
+      outline: getComputedStyle(line).outlineStyle,
+    })
+    await act(async () => {
+      await userEvent.tab()
+    })
+    expect(document.activeElement).toBe(add)
+    expect(ringed()).toEqual({ marked: true, outline: 'solid' })
+
+    await act(async () => {
+      await userEvent.tab()
+    })
+    expect(document.activeElement).not.toBe(add)
+    expect(ringed()).toEqual({ marked: false, outline: 'none' })
+
+    await act(async () => {
+      await userEvent.tab({ shift: true })
+    })
+    expect(document.activeElement).toBe(add)
+    expect(ringed()).toEqual({ marked: true, outline: 'solid' })
+
+    const nothing = host.querySelector(
+      '.library-page .page-description',
+    ) as HTMLElement
+    await act(async () => {
+      await userEvent.click(nothing)
+    })
+    expect(document.activeElement).toBe(document.body)
+    expect(ringed()).toEqual({ marked: false, outline: 'none' })
+  })
+
+  it('draws the focus ring on a link’s line where a real Tab reaches Add directory… beneath it at 390px, and a real Enter there still opens the picker', async () => {
+    const { host, addRoot, line } = await linkedAt(390, 844, PATHS[0], [
+      'Kids',
+      'Comics',
+    ])
+    const add = addRoot().querySelector('button[name="add-dir"]') as HTMLElement
+    expect(liesOver(line, add)).toBe(true)
+    const rows = host.querySelectorAll<HTMLElement>(
+      '.library-page .dir-table .row-link',
+    )
+    const before = rows[rows.length - 1]
+    expect(liesOver(line, before)).toBe(false)
+    // Focused inside the frame, so that the keys go to the page.
+    await act(async () => before.focus())
+    expect(line.hasAttribute('data-over-focus')).toBe(false)
+    expect(getComputedStyle(line).outlineStyle).toBe('none')
+
+    await act(async () => {
+      await userEvent.tab()
+    })
+    expect(document.activeElement).toBe(add)
+    expect(line.hasAttribute('data-over-focus')).toBe(true)
+    const ring = getComputedStyle(line)
+    expect(ring.outlineStyle).toBe('solid')
+    expect(ring.outlineWidth).toBe('2px')
+    expect(getComputedStyle(add).outlineStyle).toBe('none')
+
+    await act(async () => {
+      await userEvent.keyboard('{Enter}')
+    })
+    expect(addRoot().querySelector('.dir-picker')).not.toBeNull()
+    expect(document.activeElement).toBe(
+      addRoot().querySelector('input[name="path"]'),
+    )
   })
 })
 
@@ -3120,7 +3981,13 @@ describe('the libraries screen at desktop width', () => {
         name: 'Light novels',
         works: 0,
         books: 3,
-        dirs: [root({ id: 4, path: '/srv/novels' })],
+        dirs: [
+          root({
+            id: 4,
+            path: '/srv/novels',
+            libraries: [{ id: 2, name: 'Light novels' }],
+          }),
+        ],
       },
     ],
   }
@@ -3201,7 +4068,14 @@ describe('the libraries screen at desktop width', () => {
 
   it('lights a Directories row under the pointer only while the row is a link', async () => {
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 5, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 5,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived(),
       dry_run: true,
     })
@@ -3233,12 +4107,26 @@ describe('the libraries screen at desktop width', () => {
   it('puts the removal’s report on the measure, as a grid', async () => {
     const host = await shown(routed(LIBRARY))
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 5, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 5,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived(),
       dry_run: true,
     })
     vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
-      removed: { works: 5, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 5,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived({ lost_positions: 4 }),
       dry_run: false,
     })
@@ -3732,7 +4620,13 @@ describe('a library’s grant', () => {
         name: LONG_NAME,
         works: 0,
         books: 0,
-        dirs: [root({ id: 4, path: '/srv/media/anthology/Chapters' })],
+        dirs: [
+          root({
+            id: 4,
+            path: '/srv/media/anthology/Chapters',
+            libraries: [{ id: 2, name: LONG_NAME }],
+          }),
+        ],
       },
     ],
   }
@@ -3878,7 +4772,7 @@ describe('a checkbox and a radio', () => {
             name: 'Comics',
             works: 0,
             books: 0,
-            dirs: [root({ id: 4, path: '/srv/comics' })],
+            dirs: [root({ id: 4, path: '/srv/comics', libraries: COMICS })],
           },
         ],
       })
@@ -4171,7 +5065,14 @@ describe('the settings pages’ disclosures', () => {
     await sized(1280, 800)
     vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(root()))
     vi.mocked(config.removalCost).mockResolvedValue({
-      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 1,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived(),
       dry_run: true,
     })
@@ -4191,7 +5092,14 @@ describe('the settings pages’ disclosures', () => {
     await sized(1280, 800)
     vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(root()))
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 1, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 1,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: derived(),
       dry_run: true,
     })
@@ -4206,7 +5114,14 @@ describe('the settings pages’ disclosures', () => {
 
 describe('a removal’s confirm, its button and Cancel', () => {
   const COST = {
-    removed: { works: 1896, positions: 0, notes: 0, left_with_no_library: [] },
+    removed: {
+      works: 1896,
+      positions: 0,
+      notes: 0,
+      left_with_no_library: [],
+      libraries_removed: [],
+      kept: [],
+    },
     derive: derived(),
     dry_run: true as const,
   }
@@ -4220,7 +5135,14 @@ describe('a removal’s confirm, its button and Cancel', () => {
           name: 'Volumes',
           works: 1896,
           books: 0,
-          dirs: [root(), root({ id: 4, path: '/srv/volumes' })],
+          dirs: [
+            root({ libraries: [{ id: 1, name: 'Volumes' }] }),
+            root({
+              id: 4,
+              path: '/srv/volumes',
+              libraries: [{ id: 1, name: 'Volumes' }],
+            }),
+          ],
         },
       ],
     })
@@ -4256,6 +5178,57 @@ describe('a removal’s confirm, its button and Cancel', () => {
       const box = host.querySelector('.remove-root') as HTMLElement
       expect(box.querySelector('.confirm')?.textContent).toBe(`Remove ${path}`)
       expectRemovalFoot(box, lines)
+    },
+  )
+
+  it.each([1280, 390])(
+    'lays out a directory’s removal from one library of two at %i',
+    async (width) => {
+      await sized(width, 844)
+      const both = [
+        { id: 1, name: 'Manga' },
+        { id: 2, name: 'Kids' },
+      ]
+      vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+        libraries: [
+          {
+            id: 1,
+            name: 'Manga',
+            works: 0,
+            books: 0,
+            dirs: [root({ libraries: both })],
+          },
+          {
+            id: 2,
+            name: 'Kids',
+            works: 0,
+            books: 0,
+            dirs: [root({ libraries: both })],
+          },
+        ],
+      })
+      vi.mocked(librariesApi.unlinkCost).mockResolvedValue({
+        unlinked: {
+          loses_sight: ['alice'],
+          library_removed: null,
+          grants_removed: 0,
+          left_with_no_library: [],
+        },
+        dry_run: true,
+      })
+      const host = await opened(DIR)
+      await press(
+        buttonSaying(
+          host.querySelector('.dir-page') as Element,
+          'Remove from Manga…',
+        ),
+      )
+      await document.fonts.ready
+      const box = host.querySelector('.unlink-root') as HTMLElement
+      expect(box.querySelector('.confirm')?.textContent).toBe(
+        'Remove from Manga',
+      )
+      expectRemovalFoot(box, 1)
     },
   )
 

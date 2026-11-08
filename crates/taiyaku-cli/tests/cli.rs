@@ -335,6 +335,33 @@ fn library_scan_add_says_which_library_the_dir_is_filed_under() {
     );
 }
 
+/// `scan --add PATH --library NAME` over a directory another library holds
+/// links it and says so first, naming each library that held it, and the
+/// library when it made it.
+#[test]
+fn library_scan_add_over_another_librarys_dir_says_it_linked_it() {
+    let tree = TempDir::new("cli-scan-add-linked");
+    let db_dir = TempDir::new("cli-scan-add-linked-db");
+    let db = db_path(&db_dir);
+    let (volumes, _) = add_dir(&tree, &db, "Volumes", Some("Manga"));
+    add_dir(&tree, &db, "shelf", Some("Kids"));
+
+    let (_, into_kids) = add_dir(&tree, &db, "Volumes", Some("Kids"));
+    let (_, into_new) = add_dir(&tree, &db, "Volumes", Some("New"));
+
+    let first_line = |printed: &str| printed.lines().next().unwrap_or_default().to_string();
+    assert_eq!(
+        [first_line(&into_kids), first_line(&into_new)],
+        [
+            format!("linked `{volumes}` into `Kids`; `Manga` holds it too, and its settings stay"),
+            format!(
+                "created the library `New` and linked `{volumes}` into it; `Manga` and `Kids` \
+                 hold it too, and its settings stay"
+            ),
+        ]
+    );
+}
+
 /// `scan --add PATH --library NAME` says whether it made the library: the
 /// first directory added under a name no library answers to creates it, and the
 /// next joins it.

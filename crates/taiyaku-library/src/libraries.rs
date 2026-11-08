@@ -3,10 +3,10 @@
 //!
 //! **A library is born with a directory and goes with its last one.** There is no
 //! public way to make an empty one: [`crate::scan::add_root_in`] creates a
-//! named library in the same transaction as the directory it is created for, and
-//! the `root_gets_a_library` trigger (migration 16) files a root inserted
-//! without a library under one of its own, and migration 15's
-//! `library_emptied_by_delete` deletes a library whose last root goes. A grant
+//! library, named or of the directory's own, in the same transaction as the
+//! directory it is created for and the `library_root` link between them, and
+//! migration 19's `library_emptied_by_unlink` and `library_emptied_by_move`
+//! delete a library whose last link goes. A grant
 //! names a library and `account::access_for` resolves it to the directories
 //! that library reaches, so a grant of an empty library would grant nothing.
 //!
@@ -51,7 +51,10 @@ pub fn list(conn: &Connection) -> Result<Vec<Listed>, String> {
         .map_err(|e| format!("listing libraries: {e}"))?;
     let roots = crate::scan::roots(conn)?;
     let mut dirs = conn
-        .prepare("SELECT path FROM root WHERE library_id = ?1 ORDER BY id")
+        .prepare(
+            "SELECT r.path FROM library_root lr JOIN root r ON r.id = lr.root_id
+              WHERE lr.library_id = ?1 ORDER BY r.id",
+        )
         .map_err(|e| format!("listing a library's directories: {e}"))?;
     let mut listed = Vec::with_capacity(rows.len());
     for (id, name) in rows {
@@ -93,13 +96,31 @@ fn works_under(conn: &Connection, dirs: &[i64]) -> rusqlite::Result<usize> {
     .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
 }
 
+/// `first`, "`first` and `b`", or "`first`, `b` and `c`": names in a sentence,
+/// as every answer that names several libraries lists them, so the store's
+/// refusals and the CLI's lines cannot drift apart. Never empty: a list of no
+/// library is a caller's fault to answer, not a sentence.
+#[must_use]
+pub fn listed<S: AsRef<str>>(first: &str, rest: &[S]) -> String {
+    let mut text = first.to_string();
+    if let Some((last, between)) = rest.split_last() {
+        for name in between {
+            text.push_str(", ");
+            text.push_str(name.as_ref());
+        }
+        text.push_str(" and ");
+        text.push_str(last.as_ref());
+    }
+    text
+}
+
 /// `name` with white space stripped from both ends: the characters Unicode
 /// calls White_Space, which `str::trim` strips.
 ///
 /// **One character set wherever a library name is made or looked up.**
-/// Migration 16's trigger names a library with SQLite's two-argument `trim`
-/// over the same characters, listed by code point, so a name made by either
-/// is found by a lookup made through this one. `libraries/tests.rs` checks the
+/// Migration 16 stripped the names already stored with SQLite's two-argument
+/// `trim` over the same characters, listed by code point, so a name it left is
+/// found by a lookup made through this one. `libraries/tests.rs` checks the
 /// lists against this.
 pub(crate) fn trim_name(name: &str) -> &str {
     name.trim()
@@ -304,13 +325,13 @@ pub struct SplitMember {
     pub directories: Vec<MemberDirectory>,
 }
 
-/// A directory holding a copy of a member, and the library that directory is
-/// filed under.
+/// A directory holding a copy of a member, and every library it is in.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct MemberDirectory {
     pub root: i64,
     pub path: String,
-    pub library: i64,
+    /// Ascending.
+    pub libraries: Vec<i64>,
 }
 
 /// A library holding some of a [`SplitEdition`]'s members, under the
@@ -337,7 +358,8 @@ pub struct SplitLibrary {
 ///
 /// # Errors
 ///
-/// Returns an error if a read fails.
+/// Returns an error if a read fails, or if a member's directory is in no
+/// library, which no writer leaves.
 pub fn split_editions(conn: &Connection) -> Result<Vec<SplitEdition>, String> {
     let failed = |e: rusqlite::Error| format!("listing the split editions: {e}");
     let roots = crate::scan::roots(conn)?;
@@ -397,13 +419,36 @@ pub fn split_editions(conn: &Connection) -> Result<Vec<SplitEdition>, String> {
     let mut members = conn
         .prepare("SELECT id, path, pages FROM member WHERE edition_id = ?1 ORDER BY ordinal")
         .map_err(failed)?;
+    // Each directory's libraries in the statement that finds it, so a
+    // directory added since `roots` was read is named as it stands, and once:
+    // a join through `library_root` would answer it once per link.
     let mut directories = conn
         .prepare(
-            "SELECT r.id, r.path, r.library_id FROM member_root mr
+            "SELECT r.id, r.path,
+                    (SELECT group_concat(lr.library_id) FROM library_root lr
+                      WHERE lr.root_id = r.id)
+               FROM member_root mr
                JOIN root r ON r.id = mr.root_id
               WHERE mr.member_id = ?1 ORDER BY r.path, r.id",
         )
         .map_err(failed)?;
+    let libraries_of = |path: &str, listed: Option<String>| -> Result<Vec<i64>, String> {
+        let mut libraries = listed
+            .as_deref()
+            .unwrap_or_default()
+            .split(',')
+            .filter(|id| !id.is_empty())
+            .map(|id| {
+                id.parse::<i64>()
+                    .map_err(|e| format!("reading the libraries of {path}: {e}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if libraries.is_empty() {
+            return Err(format!("directory {path} is in no library"));
+        }
+        libraries.sort_unstable();
+        Ok(libraries)
+    };
     let mut split = Vec::with_capacity(found.len());
     for (edition_id, work, title, edition) in found {
         let held = members
@@ -421,14 +466,23 @@ pub fn split_editions(conn: &Connection) -> Result<Vec<SplitEdition>, String> {
         for (member_id, path, pages) in held {
             let under = directories
                 .query_map([member_id], |r| {
-                    Ok(MemberDirectory {
-                        root: r.get(0)?,
-                        path: r.get(1)?,
-                        library: r.get(2)?,
-                    })
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
                 })
                 .and_then(Iterator::collect::<Result<Vec<_>, _>>)
-                .map_err(failed)?;
+                .map_err(failed)?
+                .into_iter()
+                .map(|(root, path, listed)| {
+                    Ok(MemberDirectory {
+                        root,
+                        libraries: libraries_of(&path, listed)?,
+                        path,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             // A member under two directories one library reaches is one of its
             // members, not two.
             let mut counted: Vec<i64> = Vec::new();

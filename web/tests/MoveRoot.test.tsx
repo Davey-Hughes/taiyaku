@@ -207,7 +207,7 @@ describe('MoveRoot', () => {
     expect(confirm(host)).toBeNull()
     await press(see(host))
 
-    expect(api.moveCost).toHaveBeenCalledWith(3, { library: 7 })
+    expect(api.moveCost).toHaveBeenCalledWith(3, 5, { library: 7 })
     expect(
       [...host.querySelectorAll('.move-counts > p')].map((p) => p.textContent),
     ).toEqual([
@@ -331,7 +331,7 @@ describe('MoveRoot', () => {
     await flush(() => held.resolve(done))
 
     expect(api.moveDir).toHaveBeenCalledTimes(1)
-    expect(api.moveDir).toHaveBeenCalledWith(3, { library: 7 })
+    expect(api.moveDir).toHaveBeenCalledWith(3, 5, { library: 7 })
     expect(onMoved).toHaveBeenCalledWith(done)
   })
 
@@ -359,7 +359,7 @@ describe('MoveRoot', () => {
       'Extras',
     )
     await press(see(host))
-    expect(api.moveCost).toHaveBeenCalledWith(3, { new_library: 'Extras' })
+    expect(api.moveCost).toHaveBeenCalledWith(3, 5, { new_library: 'Extras' })
     expect(host.querySelector('.move-counts')?.textContent).toContain(
       'Moving this directory from Chapters to Extras: ',
     )
@@ -382,7 +382,7 @@ describe('MoveRoot', () => {
       '.',
     )
     await press(see(host))
-    expect(api.moveCost).toHaveBeenCalledWith(3, { new_library: '.' })
+    expect(api.moveCost).toHaveBeenCalledWith(3, 5, { new_library: '.' })
     expect(
       [...host.querySelectorAll('[role="alert"]')].map((a) => [
         a.previousElementSibling?.matches('.move-rehearse'),

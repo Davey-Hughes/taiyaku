@@ -5,13 +5,13 @@
  */
 import { getJson } from './api'
 
-/** A directory holding a copy of a member, and the library it is in. */
+/** A directory holding a copy of a member, and the libraries it is in. */
 export interface MemberDirectory {
   /** The directory's id, which its page is addressed by. */
   root: number
   path: string
-  /** The library's id, one of the edition's `libraries`. */
-  library: number
+  /** Every library holding it, by id, ascending. */
+  libraries: number[]
 }
 
 /** One file of a split edition and the directories holding a copy of it. */

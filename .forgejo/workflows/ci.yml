@@ -202,18 +202,18 @@ jobs:
         id: rust_coverage
         # `cargo llvm-cov nextest` runs the tests — this is the test step, not
         # an addition to it, and the `nextest` subcommand is what applies
-        # `.config/nextest.toml`'s per-test timeout. Thirteen files are ignored,
+        # `.config/nextest.toml`'s per-test timeout. Fourteen files are ignored,
         # in three groups: gated one-off measurement modules, the ones that
-        # cannot execute without TAIYAKU_CORPUS which CI does not have, and three
-        # `test_support` modules — two `#[cfg(test)] pub(crate)` in taiyaku-serve
-        # and one in taiyaku-read that its `test-support` feature also exposes to
-        # taiyaku-library's tests, since O104. The count is of the files the
-        # regex matches, not of its nine alternations: `band_sweep.rs`,
+        # cannot execute without TAIYAKU_CORPUS which CI does not have, and four
+        # `test_support` modules — two `#[cfg(test)] pub(crate)` in taiyaku-serve,
+        # and one each in taiyaku-read and taiyaku-library that a `test-support`
+        # feature also exposes to other crates' tests. The count is of the files
+        # the regex matches, not of its nine alternations: `band_sweep.rs`,
         # `borrow_frequency.rs`, `geometry_experiment.rs`, `model_experiment.rs`,
         # `region_experiment.rs`, `score_corpus.rs` and `truth_population.rs` in
-        # taiyaku-cli, plus `corpus.rs` in taiyaku-cli, taiyaku-serve and
+        # taiyaku-cli, `corpus.rs` in taiyaku-cli, taiyaku-serve and
         # taiyaku-library, and `test_support.rs` twice in taiyaku-serve and once
-        # in taiyaku-read, which is two alternations matching three files each.
+        # each in taiyaku-read and taiyaku-library.
         #
         # `test_support` is named here only because cargo-llvm-cov's own default
         # exclusion misses it: that default drops a source file whose basename
@@ -223,11 +223,11 @@ jobs:
         # Note the regex matches `/corpus.rs` by path segment, so a *new*
         # `corpus.rs` added to some crate that is not corpus-gated would be
         # silently excluded too. Nothing like that exists today — the whole
-        # workspace holds exactly these thirteen matching files — but a coverage
+        # workspace holds exactly these fourteen matching files — but a coverage
         # exclusion that grows on its own is the failure this list is shaped to
         # avoid. The "Coverage floor, per file" step below asserts a minimum
         # file count, so a regex that quietly swallows far more than these
-        # thirteen fails the job. They are named with a reason each in
+        # fourteen fails the job. They are named with a reason each in
         # docs/ci.md, "The coverage gates".
         #
         # `--fail-under-lines 93` is the gate. The slack under the threshold is

@@ -1762,10 +1762,10 @@ pub fn status(conn: &Connection, access: &Access) -> Result<Status, String> {
     let mut stmt = prepare(
         conn,
         "SELECT l.id, l.name,
-                EXISTS (SELECT 1 FROM dir_state d JOIN root dr ON dr.id = d.root_id
+                EXISTS (SELECT 1 FROM dir_state d JOIN library_root dr ON dr.root_id = d.root_id
                          WHERE dr.library_id = l.id)
            FROM library l
-          WHERE EXISTS (SELECT 1 FROM root r WHERE r.library_id = l.id)
+          WHERE EXISTS (SELECT 1 FROM library_root r WHERE r.library_id = l.id)
           ORDER BY l.name COLLATE NOCASE, l.id",
     )
     .map_err(|e| format!("preparing the library listing: {e}"))?;

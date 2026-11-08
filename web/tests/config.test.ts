@@ -232,6 +232,23 @@ describe('the roots client', () => {
     expect(fetchMock.mock.calls[1]?.[1]).toBeUndefined()
   })
 
+  it('names the library whose page asks for a scan as a query, and none where none is given', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(() =>
+        json({ root_id: 3, status_url: '/api/library/roots/3/scan' }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    await startScan(3, 7)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      '/api/library/roots/3/scan?library=7',
+    )
+    const started = fetchMock.mock.calls[0]?.[1] as RequestInit
+    expect([started.method, started.body]).toEqual(['POST', undefined])
+    await startScan(3)
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/library/roots/3/scan')
+  })
+
   it('refuses to pass off an empty 204 as a body', async () => {
     // `expectBody`'s whole job. A route that answered 204 where this client
     // expects a body would otherwise hand `undefined` to a screen that then

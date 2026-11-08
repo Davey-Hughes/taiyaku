@@ -134,7 +134,12 @@ const SERIES_PAGE = {
   ),
 }
 
-const dir = (id: number, path: string): librariesApi.LibraryDir => ({
+/** A directory, the only one of library `id`, which is named `name`. */
+const dir = (
+  id: number,
+  path: string,
+  name: string,
+): librariesApi.LibraryDir => ({
   id,
   path,
   edition_key: 'en',
@@ -145,6 +150,7 @@ const dir = (id: number, path: string): librariesApi.LibraryDir => ({
   keeps_documents: false,
   last_scan_at: '2026-10-05T21:14:09Z',
   last_scan_status: 'ok',
+  libraries: [{ id, name }],
   nested: [],
   inside: [],
 })
@@ -202,7 +208,7 @@ beforeEach(() => {
       name: `Shelf ${i + 1}`,
       works: 0,
       books: 0,
-      dirs: [dir(10 + i, `/srv/shelf ${i + 1}`)],
+      dirs: [dir(10 + i, `/srv/shelf ${i + 1}`, `Shelf ${i + 1}`)],
     })),
   })
   vi.mocked(usersApi.listUsers).mockResolvedValue({ users: [] })

@@ -4860,7 +4860,7 @@ fn an_edition_of_across_two_libraries_is_accepted_as_a_rule_for_the_subjects_one
     let (library, dirs) = derived_from(&[(&base, APART), (&colour, APART)]);
     let conn = library.conn();
     assert_ne!(
-        dirs[0].library_id, dirs[1].library_id,
+        dirs[0].libraries[0], dirs[1].libraries[0],
         "the two directories are two libraries",
     );
     let subject = series_in(&conn, "Foo - Color");

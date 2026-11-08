@@ -55,9 +55,12 @@ export interface NamedLibrary {
 
 export interface MoveRootProps {
   root: Root
-  /** The library the directory is in. */
+  /**
+   * The library whose page the dialog opened on, which the move takes the
+   * directory out of: another library holding it keeps it.
+   */
   from: NamedLibrary
-  /** Every other library. */
+  /** Every library not holding the directory. */
   targets: NamedLibrary[]
   /**
    * The server would refuse the move now, and what is quoted here may be
@@ -186,7 +189,7 @@ export function MoveRoot({
     setCost(undefined)
     setFailure(undefined)
     setAsking(true)
-    moveCost(root.id, to)
+    moveCost(root.id, from.id, to)
       .then((answer) => {
         if (seq !== latest.current) return
         setAsking(false)
@@ -203,7 +206,7 @@ export function MoveRoot({
     if (to === undefined || inFlight.current) return
     inFlight.current = true
     setMoving(true)
-    moveDir(root.id, to)
+    moveDir(root.id, from.id, to)
       .then((answer) => onMoved(answer))
       .catch((err: unknown) => {
         inFlight.current = false

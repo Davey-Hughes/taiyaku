@@ -16,8 +16,12 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
 
-/** A Configuration table's cells after the name's, which a two-line row wraps. */
-export const ROW_CELLS = 'tbody td:not(.lead)'
+/**
+ * A Configuration table's cells after the name's, which a two-line row wraps.
+ * An empty cell says nothing there, so it is no item: the cell before it ends
+ * its line, and no separator is drawn towards it.
+ */
+export const ROW_CELLS = 'tbody td:not(.lead):not(:empty)'
 
 /**
  * A ref for the element holding the items, and the marking of each item

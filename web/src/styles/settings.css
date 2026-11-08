@@ -269,9 +269,10 @@
   overflow-wrap: anywhere;
 }
 
-/* What a directory's page says of the directories around and inside it,
-   under the facts and a step from them, as the facts are a step from the
-   title. */
+/* What a directory's page says of the other libraries holding it, and of
+   the directories around and inside it, under the facts and a step from
+   them, as the facts are a step from the title. */
+.page-description > .also-in,
 .nesting > p,
 .nesting > details {
   margin: var(--space-1) 0 0;
@@ -444,14 +445,17 @@
 /* A control under a callout, such as the held button the line saying two
    passwords differ lies over, keeps its focus beneath it, and the ring that
    marks that focus is drawn on the callout, which is what is seen there
-   (`data-over-focus`, set by `Callout.tsx`); the control's own, outside its
-   edge, would show as a sliver beside the callout. Inside the callout's
-   edge, so that it stays inside the box as the callout does. */
-section:has(.callout[data-over-focus]) :focus-visible {
+   (`data-over-focus`, set by `Callout.tsx`, and by `LibraryPage.tsx` on a
+   link's line); the control's own, outside its edge, would show as a sliver
+   beside the callout. Inside the callout's edge, so that it stays inside the
+   box as the callout does. */
+section:has(.callout[data-over-focus], .linked[data-over-focus])
+:focus-visible {
   outline: none;
 }
 
-.callout[data-over-focus] > :not(:empty) {
+.callout[data-over-focus] > :not(:empty),
+.add-root > .linked[data-over-focus] {
   outline: 2px solid var(--accent);
   outline-offset: -4px;
 }
@@ -627,6 +631,7 @@ section:has(.callout[data-over-focus]) :focus-visible {
 
 .settings-removal .remove-user,
 .settings-removal .remove-root,
+.settings-removal .unlink-root,
 .settings-removal .remove-library {
   margin: 0;
   padding: var(--space-3) 0;
@@ -1068,7 +1073,8 @@ section:has(.callout[data-over-focus]) :focus-visible {
 /* A list beside an open page keeps every column, and while its column is
    too narrow for them it draws the two-line rows `admin.css` draws at a
    phone's width: the name, then the rest after it, so the list never
-   scrolls sideways. `.split-list` is the container this asks. */
+   scrolls sideways. `.split-list` is the container this asks. One of three
+   copies, with `admin.css`'s phone width's and Directories table's. */
 @container split-list (width < 36rem) {
   .split-pair .config-table thead {
     position: absolute;

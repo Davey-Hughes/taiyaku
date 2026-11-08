@@ -109,7 +109,9 @@ const SPLIT: splitApi.SplitEdition = {
     {
       path: LONG,
       pages: 4,
-      directories: [{ root: MANGA.dirs[2].id, path: LONG, library: MANGA.id }],
+      directories: [
+        { root: MANGA.dirs[2].id, path: LONG, libraries: [MANGA.id] },
+      ],
     },
     { path: 'v02.cbz', pages: 5, directories: [] },
   ],

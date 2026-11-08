@@ -41,6 +41,14 @@ vi.mock('../src/libraries', async (importOriginal) => ({
   startLibraryScan: vi.fn(),
 }))
 
+/** Comics, library 8, of one directory of its own. */
+const comics = () =>
+  manga({
+    id: 8,
+    name: 'Comics',
+    dirs: [dir(80, '/media/Comics', [{ id: 8, name: 'Comics' }])],
+  })
+
 /**
  * The page at its own route, with each handler a mock, in a list that holds
  * `others` beside it.
@@ -468,7 +476,7 @@ describe('LibraryPage', () => {
   })
 
   it('says as it is typed that another library holds the name in another case, tied to the box, and holds Save at once until the name is free', async () => {
-    const { host } = await shown(manga(), [manga({ id: 8, name: 'Comics' })])
+    const { host } = await shown(manga(), [comics()])
     await press(button(host, 'rename-library'))
     const note = clashNote(host) as HTMLElement
     // Drawn, empty, before it has anything to say, so that its words are
@@ -498,7 +506,7 @@ describe('LibraryPage', () => {
   })
 
   it('sends nothing on Enter in the box while the name clashes', async () => {
-    const { host } = await shown(manga(), [manga({ id: 8, name: 'Comics' })])
+    const { host } = await shown(manga(), [comics()])
     await press(button(host, 'rename-library'))
     await typeInto(nameBox(host), 'comics')
     await submit(host.querySelector('form.rename-library') as Element)
@@ -518,7 +526,7 @@ describe('LibraryPage', () => {
     await press(button(host, 'rename-library'))
     await typeInto(nameBox(host), 'Comics')
     await submit(host.querySelector('form.rename-library') as Element)
-    await redraw(manga(), [manga({ id: 8, name: 'Comics' })])
+    await redraw(manga(), [comics()])
 
     const said = () =>
       [...(editorAnswer(host)?.children ?? [])]
@@ -544,7 +552,7 @@ describe('LibraryPage', () => {
     await press(button(host, 'rename-library'))
     await typeInto(nameBox(host), 'Comics')
     await submit(host.querySelector('form.rename-library') as Element)
-    await redraw(manga(), [manga({ id: 8, name: 'Comics' })])
+    await redraw(manga(), [comics()])
 
     expect(
       [...(editorAnswer(host)?.children ?? [])]
@@ -566,7 +574,7 @@ describe('LibraryPage', () => {
     act(() => save.focus())
     expect(document.activeElement).toBe(save)
     // Another admin took the name; a scan's end reads the list again.
-    await redraw(manga(), [manga({ id: 8, name: 'Comics' })])
+    await redraw(manga(), [comics()])
     expect(save.disabled).toBe(true)
     expect(document.activeElement).toBe(nameBox(host))
     await pressEscape(nameBox(host))
@@ -579,7 +587,7 @@ describe('LibraryPage', () => {
     await typeInto(nameBox(host), 'Comics')
     const cancel = button(host, 'cancel-rename')
     act(() => cancel.focus())
-    await redraw(manga(), [manga({ id: 8, name: 'Comics' })])
+    await redraw(manga(), [comics()])
     expect(button(host, 'save-rename').disabled).toBe(true)
     expect(document.activeElement).toBe(cancel)
   })
@@ -660,7 +668,7 @@ describe('LibraryPage', () => {
 
   it('takes the library’s own name, in any case, as no clash', async () => {
     vi.mocked(api.renameLibrary).mockResolvedValue({ id: 7, name: 'MANGA' })
-    const { host } = await shown(manga(), [manga({ id: 8, name: 'Comics' })])
+    const { host } = await shown(manga(), [comics()])
     await press(button(host, 'rename-library'))
     expect(nameBox(host).value).toBe('Manga')
     expect(clashNote(host)?.textContent).toBe('')
@@ -678,6 +686,7 @@ describe('LibraryPage', () => {
       watching: true,
       watch_reason: null,
       interval_secs: 86400,
+      also_in: [],
     }
     vi.mocked(api.addDir).mockResolvedValue(added)
     const { host, onAdded, onChanged } = await shown()
@@ -800,7 +809,14 @@ describe('LibraryPage', () => {
 
   it('hands up the real answer of a removal, by id and name, and does not reload itself', async () => {
     const answer = (works: number, dry_run: boolean): config.RemovalAnswer => ({
-      removed: { works, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: emptyDerive,
       dry_run,
     })
@@ -913,6 +929,7 @@ describe('LibraryPage', () => {
       watching: true,
       watch_reason: null,
       interval_secs: 86400,
+      also_in: [],
     }
     vi.mocked(api.addDir)
       .mockRejectedValueOnce(
@@ -1051,7 +1068,7 @@ describe('LibraryPage, a library and its directories', () => {
     ).toBe(table)
     expect(
       [...table.querySelectorAll('thead th')].map((th) => th.textContent),
-    ).toEqual(['Path', 'Scan every', 'Last scan'])
+    ).toEqual(['Path', 'Scan every', 'Last scan', 'Overlaps'])
     // Per row, so a value drawn in the wrong row or under the wrong column
     // is seen.
     expect(
@@ -1065,7 +1082,7 @@ describe('LibraryPage, a library and its directories', () => {
     ).toEqual([
       {
         links: [['/media/Manga/Volumes', '/config/libraries/Manga/dirs/1']],
-        cells: ['/media/Manga/Volumes', '24h', 'Never'],
+        cells: ['/media/Manga/Volumes', '24h', 'Never', ''],
       },
       {
         links: [['/media/Manga/Chapters', '/config/libraries/Manga/dirs/4']],
@@ -1073,9 +1090,69 @@ describe('LibraryPage, a library and its directories', () => {
           '/media/Manga/Chapters',
           'not set',
           '2026-10-01 10:00:00 UTC\u00a0·\u00a0failed',
+          '',
         ],
       },
     ])
+  })
+
+  it('says under Overlaps how each directory overlaps another library’s, without naming one: Shared, Inside, Around, in that order, or nothing', async () => {
+    const kids = { id: 8, name: 'Kids' }
+    const around = (path: string): api.AroundDir => ({
+      path,
+      libraries: ['Everything'],
+      shows: true,
+      kept_out_by: null,
+    })
+    // Kept out of the outer directory's library: it still overlaps.
+    const keptOut = (id: number, path: string): api.NestedDir => ({
+      id,
+      path,
+      libraries: ['Kids'],
+      shown: false,
+      kept_out_by: 'exclusion',
+    })
+    const { host } = await shown(
+      manga({
+        dirs: [
+          dir(1, '/media/Manga/Volumes', [{ id: 7, name: 'Manga' }, kids]),
+          { ...dir(2, '/media/All/Chapters'), inside: [around('/media/All')] },
+          {
+            ...dir(3, '/media/Manga/Extras'),
+            nested: [keptOut(30, '/media/Manga/Extras/Kids')],
+          },
+          {
+            ...dir(4, '/media/All/Omnibus', [{ id: 7, name: 'Manga' }, kids]),
+            inside: [around('/media/All')],
+            nested: [keptOut(31, '/media/All/Omnibus/Kids')],
+          },
+          dir(5, '/srv/alone'),
+        ],
+      }),
+    )
+    // Per row, each cell read alone, so a word drawn in the wrong row is seen.
+    const cells = [...host.querySelectorAll('.dir-table tbody tr')].map(
+      (row) => row.querySelectorAll('td')[3],
+    )
+    expect(cells.map(cellValue)).toEqual([
+      'Shared',
+      'Inside',
+      'Around',
+      'Shared, Inside, Around',
+      '',
+    ])
+    // Each word says its column's heading where the headings are not drawn;
+    // a directory that overlaps nothing draws nothing, label and all.
+    expect(
+      cells.map((cell) => cell.querySelector('.cell-label')?.textContent),
+    ).toEqual([
+      'Overlaps: ',
+      'Overlaps: ',
+      'Overlaps: ',
+      'Overlaps: ',
+      undefined,
+    ])
+    expect(cells[4].childNodes).toHaveLength(0)
   })
 
   it('says Scanning… in the table for each directory being scanned, and its last scan once that ends', async () => {
@@ -1164,11 +1241,20 @@ describe('LibraryPage, a library and its directories', () => {
       watching: true,
       watch_reason: null,
       interval_secs: 86400,
+      also_in: [],
     }
     vi.mocked(api.addDir).mockResolvedValue(added)
     const before = manga()
     const after = manga({
-      dirs: [...before.dirs, { ...added.root, nested: [], inside: [] }],
+      dirs: [
+        ...before.dirs,
+        {
+          ...added.root,
+          libraries: [{ id: 7, name: 'Manga' }],
+          nested: [],
+          inside: [],
+        },
+      ],
     })
     // The screen's reload, which hands the page the list read again.
     function Reloading() {
@@ -1431,7 +1517,7 @@ const nesting = () => {
     {
       id: 5,
       path: '/media/Manga/Volumes/Kids',
-      library: 'Kids',
+      libraries: ['Kids'],
       shown: true,
       kept_out_by: null,
     },
@@ -1440,7 +1526,7 @@ const nesting = () => {
     {
       id: 6,
       path: '/media/Manga/Chapters/Tiny',
-      library: 'Tiny',
+      libraries: ['Tiny'],
       shown: false,
       kept_out_by: 'exclusion',
     },
@@ -1518,11 +1604,7 @@ describe('LibraryPage, a directory inside one of its own', () => {
     ])
     expect(holdOf(button(host, 'scan-library'))).toBe('held')
     // The table lists its own directories, and neither is scanning.
-    expect(
-      [...host.querySelectorAll('.dir-table tbody tr')].map(
-        (row) => row.querySelector('td:last-child')?.textContent,
-      ),
-    ).not.toContain('Last scan: Scanning…')
+    expect(lastScans(host)).toEqual(['Never', 'Never'])
 
     await tick()
     vi.mocked(api.libraryScanStatus).mockResolvedValue(walking())
@@ -1537,7 +1619,7 @@ describe('LibraryPage, a directory inside one of its own', () => {
       {
         id: 6,
         path: '/media/Manga/Chapters/Tiny/weekly',
-        library: 'Tiny',
+        libraries: ['Tiny'],
         shown: true,
         kept_out_by: null,
       },
@@ -1570,7 +1652,7 @@ describe('LibraryPage, a directory inside one of its own', () => {
     library.dirs[0].nested.push({
       id: 7,
       path: '/media/Manga/Volumes/Kids/tiny',
-      library: 'Tiny',
+      libraries: ['Tiny'],
       shown: true,
       kept_out_by: null,
     })
@@ -1596,7 +1678,7 @@ describe('LibraryPage, a directory inside one of its own', () => {
       {
         id: 8,
         path: '/media/Manga/Chapters/Kids',
-        library: 'Kids',
+        libraries: ['Kids'],
         shown: true,
         kept_out_by: null,
       },
@@ -1664,7 +1746,7 @@ describe('LibraryPage, a directory inside one of its own', () => {
       {
         id: 5,
         path: '/media/Manga/Volumes/a',
-        library: 'Kids',
+        libraries: ['Kids'],
         shown: true,
         kept_out_by: null,
       },
@@ -1673,7 +1755,7 @@ describe('LibraryPage, a directory inside one of its own', () => {
       {
         id: 8,
         path: '/media/Manga/Chapters/b',
-        library: 'Kids',
+        libraries: ['Kids'],
         shown: true,
         kept_out_by: null,
       },
@@ -1692,6 +1774,48 @@ describe('LibraryPage, a directory inside one of its own', () => {
         (line) => line.textContent,
       ),
     ).toEqual(['Kids is scanning a/ and b/, which Manga shows.'])
+  })
+
+  it('names no library for a scan none asked for, of a folder two libraries hold, in one folder or two', async () => {
+    const library = nesting()
+    library.dirs[0].nested = [
+      {
+        id: 5,
+        path: '/media/Manga/Volumes/a',
+        libraries: ['Kids', 'Teens'],
+        shown: true,
+        kept_out_by: null,
+      },
+    ]
+    library.dirs[1].nested = [
+      {
+        id: 8,
+        path: '/media/Manga/Chapters/b',
+        libraries: ['Kids', 'Teens'],
+        shown: true,
+        kept_out_by: null,
+      },
+    ]
+    const status = (...ids: number[]): api.LibraryScanStatus => ({
+      ...walking(5),
+      dirs: [1, 2, 5, 8].map((id) => ({
+        root_id: id,
+        running: ids.includes(id),
+      })),
+      scans: [{ library: null, root_ids: ids }],
+    })
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(status(5))
+    const { host } = await shown(library)
+    const lines = () =>
+      [...host.querySelectorAll('.library-page > .scanning')].map(
+        (line) => line.textContent,
+      )
+    expect(lines()).toEqual(['a/ is being scanned, which Manga shows.'])
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(status(5, 8))
+    await tick()
+    await flush()
+    expect(lines()).toEqual(['a/ and b/ are being scanned, which Manga shows.'])
   })
 
   it('says a scan is running in this library while one of its own directories is scanning, though one inside it is too', async () => {
@@ -2124,6 +2248,7 @@ describe('LibraryPage, scans and removals of a library and its directories exclu
       watching: true,
       watch_reason: null,
       interval_secs: 86400,
+      also_in: [],
     })
     const { host } = await shown()
     expect(host.querySelector('.library-page > .scanning')).not.toBeNull()
@@ -2608,4 +2733,403 @@ describe('LibraryPage, the status read on a return', () => {
       ])
     },
   )
+})
+
+describe('LibraryPage, a directory another library holds too', () => {
+  const MANGA = { id: 7, name: 'Manga' }
+  const KIDS = { id: 3, name: 'Kids' }
+  /** Kids, library 3, of `/m`, which Manga holds too, and a directory of its own. */
+  const kids = () =>
+    manga({
+      id: 3,
+      name: 'Kids',
+      dirs: [dir(4, '/m', [MANGA, KIDS]), dir(5, '/media/Kids', [KIDS])],
+    })
+  /** Kids before the add: its own directory alone. */
+  const kidsAlone = () =>
+    manga({ id: 3, name: 'Kids', dirs: [dir(5, '/media/Kids', [KIDS])] })
+  /** The add's answer for `path`, held before by the libraries named. */
+  const answer = (path: string, also_in: string[]): config.Added => ({
+    root: dir(9, path, [...(also_in.length > 0 ? [MANGA] : []), KIDS]),
+    watching: also_in.length > 0 ? null : true,
+    watch_reason: null,
+    interval_secs: also_in.length > 0 ? null : 86400,
+    also_in,
+  })
+  /** Kids once the list is read again after the add of `/m`. */
+  const kidsHolding = () =>
+    manga({
+      id: 3,
+      name: 'Kids',
+      dirs: [dir(9, '/m', [MANGA, KIDS]), dir(5, '/media/Kids', [KIDS])],
+    })
+  async function added(path: string, also_in: string[]) {
+    vi.mocked(api.addDir).mockResolvedValue(answer(path, also_in))
+    const shownPage = await shown(kidsAlone())
+    const picker = await openPicker(shownPage.host)
+    await typeInto(
+      picker.querySelector('input[name="path"]') as HTMLInputElement,
+      path,
+    )
+    await press(picker.querySelector('button[name="pick"]') as Element)
+    await flush()
+    return shownPage
+  }
+  const linkLine = (host: HTMLElement) =>
+    section(host, 'Directories').querySelector(
+      ':scope > .settings-box > .add-root > .linked',
+    )
+
+  it('says, where the picker was, that a directory another library held is also its directory and keeps its settings, naming that library', async () => {
+    const { host, onAdded } = await added('/m', ['Manga'])
+    expect(onAdded).toHaveBeenCalledWith([answer('/m', ['Manga'])])
+    expect(host.querySelector('.add-root .dir-picker')).toBeNull()
+    const line = linkLine(host)
+    expect(line?.textContent).toBe(
+      '/m is also a directory of Manga. It keeps the settings it has there.',
+    )
+    expect(line?.getAttribute('role')).toBe('status')
+    expect(line?.previousElementSibling).toBe(button(host, 'add-dir'))
+  })
+
+  it('names every library that held it, as a list is said', async () => {
+    const { host } = await added('/m', ['Manga', 'Comics'])
+    expect(linkLine(host)?.textContent).toBe(
+      '/m is also a directory of Manga and Comics. It keeps the settings it has there.',
+    )
+  })
+
+  it('says nothing of a link for a new directory, its live region drawn empty', async () => {
+    const { host, onAdded } = await added('/media/New', [])
+    expect(onAdded).toHaveBeenCalledWith([answer('/media/New', [])])
+    expect(host.querySelector('.add-root .dir-picker')).toBeNull()
+    expect(linkLine(host)?.textContent).toBe('')
+    expect(host.querySelector('.add-root')?.textContent).toBe('Add directory…')
+  })
+
+  it('fills the live region it drew empty while the picker was open, so that a screen reader reads the link out', async () => {
+    vi.mocked(api.addDir).mockResolvedValue(answer('/m', ['Manga']))
+    const { host } = await shown(kidsAlone())
+    const region = linkLine(host) as HTMLElement
+    expect(region.getAttribute('role')).toBe('status')
+    expect(region.textContent).toBe('')
+    const picker = await openPicker(host)
+    expect(linkLine(host)).toBe(region)
+    const changes = changesIn(region)
+    await typeInto(
+      picker.querySelector('input[name="path"]') as HTMLInputElement,
+      '/m',
+    )
+    await press(picker.querySelector('button[name="pick"]') as Element)
+    await flush()
+    expect(linkLine(host)).toBe(region)
+    expect(region.textContent).toContain('is also a directory of Manga')
+    expect(changes()).toBeGreaterThan(0)
+  })
+
+  it('takes the line away as Add directory… opens the picker again', async () => {
+    const { host } = await added('/m', ['Manga'])
+    expect(linkLine(host)?.textContent).not.toBe('')
+    await openPicker(host)
+    expect(linkLine(host)?.textContent).toBe('')
+    await press(button(host, 'cancel-add'))
+    expect(linkLine(host)?.textContent).toBe('')
+  })
+
+  it('takes the line away at a click on it, which lies over what is below it', async () => {
+    const { host } = await added('/m', ['Manga'])
+    const line = linkLine(host) as HTMLElement
+    expect(line.textContent).not.toBe('')
+    await press(line)
+    expect(linkLine(host)).toBe(line)
+    expect(line.textContent).toBe('')
+  })
+
+  it('takes the line away at a press of any other action on the page', async () => {
+    const { host } = await added('/m', ['Manga'])
+    expect(linkLine(host)?.textContent).not.toBe('')
+    await press(button(host, 'rename-library'))
+    expect(linkLine(host)?.textContent).toBe('')
+  })
+
+  it('keeps the line through a press on words of the page that are no action', async () => {
+    const { host } = await added('/m', ['Manga'])
+    await press(host.querySelector('.library-page .page-title') as Element)
+    expect(linkLine(host)?.textContent).not.toBe('')
+  })
+
+  it('keeps the line while the list has yet to hold the directory, and takes it away once the list holds it no longer, as after Remove from this library or a move on the directory’s page beside it', async () => {
+    const { host, redraw } = await added('/m', ['Manga'])
+    expect(linkLine(host)?.textContent).not.toBe('')
+    await redraw(kidsHolding())
+    expect(linkLine(host)?.textContent).not.toBe('')
+    await redraw(kidsAlone())
+    expect(linkLine(host)?.textContent).toBe('')
+  })
+
+  it('says which library scans a directory it holds too, while that library’s scan walks it', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(3),
+      running: true,
+      elapsed_secs: 3,
+      dirs: [
+        { root_id: 4, running: true },
+        { root_id: 5, running: false },
+      ],
+      scans: [{ library: 'Manga', root_ids: [4] }],
+    })
+    const { host } = await shown(kids())
+    expect(
+      [...host.querySelectorAll('.library-page > .scanning')].map(
+        (line) => line.textContent,
+      ),
+    ).toEqual(['Manga is scanning /m, which Kids holds too.'])
+    expect(holdOf(button(host, 'scan-library'))).toBe('held')
+  })
+
+  it('says a directory it holds too is being scanned, where no library asked for the scan', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(3),
+      running: true,
+      elapsed_secs: 3,
+      dirs: [
+        { root_id: 4, running: true },
+        { root_id: 5, running: false },
+      ],
+      scans: [{ library: null, root_ids: [4] }],
+    })
+    const { host } = await shown(kids())
+    expect(
+      [...host.querySelectorAll('.library-page > .scanning')].map(
+        (line) => line.textContent,
+      ),
+    ).toEqual(['/m is being scanned, which Kids holds too.'])
+  })
+
+  it('says its own scan is running, and names no library, while its own scan walks a directory it holds too', async () => {
+    // Its own scan of that directory alone, as Scan directory on its page
+    // starts one: no other directory of its own is scanning to say so.
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(3),
+      running: true,
+      elapsed_secs: 3,
+      dirs: [
+        { root_id: 4, running: true },
+        { root_id: 5, running: false },
+      ],
+      scans: [{ library: 'Kids', root_ids: [4] }],
+    })
+    const { host } = await shown(kids())
+    expect(
+      [...host.querySelectorAll('.library-page > .scanning')].map(
+        (line) => line.textContent,
+      ),
+    ).toEqual(['A scan is running in this library… 3s'])
+  })
+
+  it('says its own scan is running where no library asked for the scan of a directory it alone holds', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(3),
+      running: true,
+      elapsed_secs: 3,
+      dirs: [
+        { root_id: 4, running: false },
+        { root_id: 5, running: true },
+      ],
+      scans: [{ library: null, root_ids: [5] }],
+    })
+    const { host } = await shown(kids())
+    expect(
+      [...host.querySelectorAll('.library-page > .scanning')].map(
+        (line) => line.textContent,
+      ),
+    ).toEqual(['A scan is running in this library… 3s'])
+  })
+
+  describe('where its line is laid, read in jsdom, which lays nothing out', () => {
+    /** A box's `[top, bottom, left, right]`, as a stub draws it. */
+    type At = readonly [number, number, number, number]
+    const px = (length: string) => Number.parseFloat(length) || 0
+    /** What the stub draws each part of the page at; zero where unset. */
+    let where = new Map<Element, At>()
+    /** Where the flow lays the line, before its own `top` and padding. */
+    let lineAt: At = [0, 0, 0, 0]
+    let observers: Array<{ answer: () => void; observed: Element[] }> = []
+
+    /**
+     * Each part drawn where `where` says, and the line where `lineAt` says,
+     * moved by its own `top` and grown by its padding, as a browser draws
+     * a box `position: relative`.
+     */
+    function drawnAt(this: Element) {
+      const line = this.matches('.add-root > .linked')
+      let [top, bottom, left, right] = line
+        ? lineAt
+        : (where.get(this) ?? [0, 0, 0, 0])
+      if (line) {
+        const { style } = this as HTMLElement
+        top += px(style.top)
+        bottom += px(style.top) + px(style.paddingTop) + px(style.paddingBottom)
+      }
+      return DOMRect.fromRect({
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+      })
+    }
+
+    beforeEach(() => {
+      where = new Map()
+      lineAt = [0, 0, 0, 0]
+      observers = []
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+        drawnAt,
+      )
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          observed: Element[] = []
+          answer: () => void
+          constructor(callback: () => void) {
+            this.answer = callback
+            observers.push(this)
+          }
+          observe(el: Element) {
+            this.observed.push(el)
+          }
+          unobserve() {}
+          disconnect() {
+            observers = observers.filter((each) => each !== this)
+          }
+        },
+      )
+      // jsdom marks no focus as seen; a key press would, here.
+      const matches = Element.prototype.matches
+      vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
+        this: Element,
+        selector: string,
+      ) {
+        if (selector === ':focus-visible')
+          return this === document.activeElement
+        return matches.call(this, selector)
+      })
+    })
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+      vi.unstubAllGlobals()
+    })
+
+    /**
+     * The page once `/m` is said to be Manga's too, its Directories box
+     * drawn 16–374 wide: the table's head 0–40 and `/media/Kids`'s row
+     * 40–100, then the add form's room 100–140 with Add directory… at
+     * 16–150 in it; and the line laid beside the button, inside the room,
+     * as a wider window lays it.
+     */
+    async function laidOut() {
+      const page = await added('/m', ['Manga'])
+      const box = section(page.host, 'Directories').querySelector(
+        ':scope > .settings-box',
+      ) as HTMLElement
+      const rows = [...box.querySelectorAll('tr')]
+      expect(rows).toHaveLength(2)
+      where.set(rows[0], [0, 40, 16, 374])
+      where.set(rows[1], [40, 100, 16, 374])
+      where.set(box.querySelector('.add-root') as Element, [100, 140, 16, 374])
+      const add = button(page.host, 'add-dir')
+      where.set(add, [100, 140, 16, 150])
+      lineAt = [100, 140, 160, 374]
+      const watching = observers.filter((each) => each.observed.includes(box))
+      expect(watching, 'what watches the Directories box').toHaveLength(1)
+      /** The box changing size, with no render of the page. */
+      const resized = () =>
+        act(() => {
+          for (const each of watching) each.answer()
+        })
+      resized()
+      const line = linkLine(page.host) as HTMLElement
+      expect(line.textContent).not.toBe('')
+      return { ...page, box, add, line, resized }
+    }
+
+    const placeOf = (line: HTMLElement) => [
+      line.style.top,
+      line.style.paddingTop,
+      line.style.paddingBottom,
+      line.style.marginBottom,
+    ]
+
+    it('lays the line again as its box changes size, with no render: too tall for the room under Add directory…, over the rows above the room, the button in view', async () => {
+      const { line, resized } = await laidOut()
+      expect(placeOf(line), 'beside the button, inside the room').toEqual([
+        '',
+        '',
+        '',
+        '',
+      ])
+      // The phone turned: the line under the button, 50 tall. The rows
+      // above have room for it at 40–100: up 100, 10 more than its words,
+      // which a margin gives back to the flow.
+      lineAt = [140, 190, 16, 374]
+      resized()
+      expect(placeOf(line), 'over the row above the room').toEqual([
+        '-100px',
+        '5px',
+        '5px',
+        '-10px',
+      ])
+      // Turned back: read where the flow lays it, not where it was moved
+      // to, it fits beside the button again.
+      lineAt = [100, 140, 160, 374]
+      resized()
+      expect(placeOf(line), 'beside the button again').toEqual(['', '', '', ''])
+    })
+
+    it('rings the line while the control with focus lies under it, as the box changes size and as focus moves, with no render', async () => {
+      const { add, line, resized } = await laidOut()
+      const ringed = () => line.hasAttribute('data-over-focus')
+      // Focus came back to Add directory… as the picker closed.
+      expect(document.activeElement).toBe(add)
+      expect(ringed(), 'beside the button').toBe(false)
+      // 120 tall under the button: no room above, so it is laid up from
+      // the room's foot over the button, 0–140.
+      lineAt = [140, 260, 16, 374]
+      resized()
+      expect(line.style.top).toBe('-140px')
+      expect(ringed(), 'over the focused button').toBe(true)
+      act(() => add.blur())
+      expect(ringed(), 'once focus leaves the button').toBe(false)
+      act(() => add.focus())
+      expect(ringed(), 'once focus comes back to it').toBe(true)
+    })
+
+    it('stops watching the box and focus once the page goes', async () => {
+      const adds = vi.spyOn(document, 'addEventListener')
+      const removes = vi.spyOn(document, 'removeEventListener')
+      const { box } = await laidOut()
+      act(() => rerender(<div />))
+      expect(
+        observers.filter((each) => each.observed.includes(box)),
+        'what still watches the box',
+      ).toEqual([])
+      const focusOnes = (spy: typeof adds) =>
+        spy.mock.calls.filter(
+          ([type]) => type === 'focusin' || type === 'focusout',
+        )
+      expect(focusOnes(adds).length).toBeGreaterThan(0)
+      expect(
+        focusOnes(adds)
+          .filter(
+            ([type, listener]) =>
+              !focusOnes(removes).some(
+                ([gone, was]) => gone === type && was === listener,
+              ),
+          )
+          .map(([type]) => type),
+        'focus listeners left on the document',
+      ).toEqual([])
+    })
+  })
 })

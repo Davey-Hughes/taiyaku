@@ -45,11 +45,11 @@ describe('admin.css marks the removal blocks with --danger', () => {
   it('puts the token on the strip and on the confirm button', () => {
     const strip = rules(adminSource).find(
       ({ prelude }) =>
-        prelude === '.remove-root, .remove-user, .remove-library',
+        prelude === '.remove-root, .unlink-root, .remove-user, .remove-library',
     )
     expect(
       strip,
-      '.remove-root, .remove-user, .remove-library must exist',
+      '.remove-root, .unlink-root, .remove-user, .remove-library must exist',
     ).toBeTruthy()
     expect(strip?.body).toMatch(
       /(?:^|;)\s*box-shadow:\s*inset 3px 0 0 var\(--danger\)/,
@@ -58,11 +58,11 @@ describe('admin.css marks the removal blocks with --danger', () => {
     const confirm = rules(adminSource).find(
       ({ prelude }) =>
         prelude ===
-        '.remove-root .confirm, .remove-user .confirm, .remove-library .confirm',
+        '.remove-root .confirm, .unlink-root .confirm, .remove-user .confirm, .remove-library .confirm',
     )
     expect(
       confirm,
-      '.remove-root .confirm, .remove-user .confirm, .remove-library .confirm must exist',
+      '.remove-root .confirm, .unlink-root .confirm, .remove-user .confirm, .remove-library .confirm must exist',
     ).toBeTruthy()
     expect(confirm?.body).toMatch(/(?:^|;)\s*border-color:\s*var\(--danger\)/)
     expect(confirm?.body).toMatch(/;\s*color:\s*var\(--danger\)/)

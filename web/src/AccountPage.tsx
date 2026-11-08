@@ -83,6 +83,7 @@ import {
 import { WaitWords } from './WaitWords'
 import { JOINING_DOT } from './joiningDot'
 import { inUtc } from './utc'
+import { count } from './count'
 
 export interface AccountPageProps {
   /**
@@ -161,16 +162,6 @@ export interface AccountPageProps {
 
 /** The confirm's words while the removal is out. */
 const REMOVING = 'Removing…'
-
-/**
- * `n` of a thing, in the number the count actually is.
- *
- * Zero takes the plural — "0 API keys" — which is English rather than an
- * oversight. `RemoveRoot` carries the same helper and the same note.
- */
-function count(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`
-}
 
 /**
  * The page's frame, which is drawn from the moment the screen is, whether or

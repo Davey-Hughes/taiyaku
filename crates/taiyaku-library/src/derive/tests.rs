@@ -5269,7 +5269,7 @@ fn a_volume_and_its_chapter_release_in_two_libraries_are_one_work_of_two_edition
     let conn = library.conn();
     let a = scanned_root(&conn, volumes.path(), None);
     let b = scanned_root(&conn, chapters.path(), Some("en"));
-    assert_ne!(a.library_id, b.library_id, "the fixture: two libraries");
+    assert_ne!(a.libraries[0], b.libraries[0], "the fixture: two libraries");
 
     let report = derive::derive(&conn).expect("derives");
 
@@ -5519,11 +5519,20 @@ fn relabelling_a_directorys_library_changes_no_work_series_edition_or_position()
         "the fixture: both positions written"
     );
 
-    crate::relocate::move_root(&conn, m.id, crate::relocate::Target::Library(e.library_id))
-        .expect("moves a directory out of a library that keeps another");
-    let gone =
-        crate::relocate::move_root(&conn, l.id, crate::relocate::Target::Library(e.library_id))
-            .expect("moves a directory out of a library it was alone in");
+    crate::relocate::move_root(
+        &conn,
+        m.id,
+        m.libraries[0],
+        crate::relocate::Target::Library(e.libraries[0]),
+    )
+    .expect("moves a directory out of a library that keeps another");
+    let gone = crate::relocate::move_root(
+        &conn,
+        l.id,
+        l.libraries[0],
+        crate::relocate::Target::Library(e.libraries[0]),
+    )
+    .expect("moves a directory out of a library it was alone in");
     assert!(
         gone.library_removed.is_some(),
         "the fixture: that library went"
@@ -5605,7 +5614,7 @@ fn a_hand_document_naming_a_new_series_mints_one_the_next_document_finds() {
     let root = scanned_root(&conn, dir.path(), None);
     let other = scanned_root(&conn, elsewhere.path(), None);
     assert_ne!(
-        root.library_id, other.library_id,
+        root.libraries[0], other.libraries[0],
         "the fixture: two libraries"
     );
     derive::derive(&conn).expect("derives");
@@ -5673,7 +5682,7 @@ fn a_hand_document_resolves_one_title_to_the_oldest_series_in_the_store() {
     let root = scanned_root(&conn, dir.path(), None);
     let other = scanned_root(&conn, elsewhere.path(), None);
     assert_ne!(
-        root.library_id, other.library_id,
+        root.libraries[0], other.libraries[0],
         "the fixture: two libraries"
     );
     derive::derive(&conn).expect("derives");
@@ -5864,8 +5873,13 @@ fn a_work_spanning_two_libraries_stays_whole() {
     )
     .expect("a position on the edition whose directory is about to move");
 
-    crate::relocate::move_root(&conn, o.id, crate::relocate::Target::New("Other"))
-        .expect("moves the other directory to a library of its own");
+    crate::relocate::move_root(
+        &conn,
+        o.id,
+        o.libraries[0],
+        crate::relocate::Target::New("Other"),
+    )
+    .expect("moves the other directory to a library of its own");
     let report = derive::derive(&conn).expect("re-derives");
 
     let editions: Vec<(i64, String)> = conn
@@ -6167,7 +6181,7 @@ fn a_chapter_only_dir_names_the_series_of_its_title() {
     let conn = library.conn();
     let v = scanned_root(&conn, volumes.path(), None);
     let c = scanned_root(&conn, chapters.path(), None);
-    assert_ne!(v.library_id, c.library_id, "the fixture: two libraries");
+    assert_ne!(v.libraries[0], c.libraries[0], "the fixture: two libraries");
 
     let report = derive::derive(&conn).expect("derives");
 
@@ -6276,7 +6290,7 @@ fn a_volume_held_in_two_libraries_is_one_work_of_one_member() {
     )
     .expect("a position");
     let b = scanned_root(&conn, second.path(), None);
-    assert_ne!(a.library_id, b.library_id, "the fixture: two libraries");
+    assert_ne!(a.libraries[0], b.libraries[0], "the fixture: two libraries");
 
     let report = derive::derive(&conn).expect("derives both");
 

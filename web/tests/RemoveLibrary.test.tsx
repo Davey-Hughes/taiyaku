@@ -33,6 +33,7 @@ const dir = (id: number, path: string): api.LibraryDir => ({
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  libraries: [{ id: 7, name: 'Manga' }],
   nested: [],
   inside: [],
 })
@@ -51,6 +52,8 @@ const answer = (over: Partial<config.Removal> = {}): config.RemovalAnswer => ({
     positions: 1,
     notes: 0,
     left_with_no_library: [],
+    libraries_removed: [],
+    kept: [],
     ...over,
   },
   derive: emptyDerive,
@@ -94,6 +97,54 @@ describe('RemoveLibrary', () => {
     )
     expect(host.querySelector('.confirm')?.textContent).toBe('Remove Manga')
     expect(api.libraryRemovalCost).toHaveBeenCalledWith(7)
+  })
+
+  it('counts as removed only the directories no other library holds, and says which it leaves to which library', async () => {
+    vi.mocked(api.libraryRemovalCost).mockResolvedValue(
+      answer({ kept: [{ path: '/media/Manga/Volumes', libraries: ['Kids'] }] }),
+    )
+    const host = await shown()
+    const counts = host.querySelector('.counts')
+    expect(counts?.textContent).toBe(
+      'Removing Manga removes its 1 directory, 12 works, 1 in-progress position and 0 notes, and leaves /media/Manga/Volumes to Kids.',
+    )
+    expect(counts?.querySelector('code')?.textContent).toBe(
+      '/media/Manga/Volumes',
+    )
+  })
+
+  it('says a library whose every directory another library holds leaves each to the libraries that keep it, apart by semicolons, and counts no directory', async () => {
+    vi.mocked(api.libraryRemovalCost).mockResolvedValue(
+      answer({
+        works: 0,
+        positions: 0,
+        kept: [
+          { path: '/media/Manga/Volumes', libraries: ['Kids', 'Teens'] },
+          { path: '/media/Manga/Chapters', libraries: ['Comics'] },
+        ],
+      }),
+    )
+    const host = await shown()
+    expect(host.querySelector('.counts')?.textContent).toBe(
+      'Removing Manga leaves /media/Manga/Volumes to Kids and Teens; /media/Manga/Chapters to Comics, and removes 0 works, 0 in-progress positions and 0 notes.',
+    )
+  })
+
+  it('counts no fewer than no directories where the dry run names a directory kept that the list does not hold', async () => {
+    vi.mocked(api.libraryRemovalCost).mockResolvedValue(
+      answer({
+        kept: [
+          { path: '/media/Manga/Volumes', libraries: ['Kids'] },
+          { path: '/media/Manga/Chapters', libraries: ['Kids'] },
+          { path: '/media/Manga/Extras', libraries: ['Kids'] },
+        ],
+      }),
+    )
+    const host = await shown()
+    const said = host.querySelector('.counts')?.textContent
+    expect(said).toBe(
+      'Removing Manga leaves /media/Manga/Volumes to Kids; /media/Manga/Chapters to Kids; /media/Manga/Extras to Kids, and removes 12 works, 1 in-progress position and 0 notes.',
+    )
   })
 
   it('says a removal takes only what no other library holds', async () => {

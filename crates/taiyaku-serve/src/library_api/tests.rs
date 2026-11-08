@@ -101,8 +101,7 @@ async fn one_work_is_served_by_slug_and_a_missing_one_is_a_404() {
         // one member a root and no `scan_entry` at all reproduces that
         // without running a second scan just to remove one row.
         let conn = state.library.conn();
-        conn.execute("INSERT INTO root (id, path) VALUES (1, '/library/w')", [])
-            .expect("a root for the fixture's one member");
+        test_support::plant_root(&conn, 1, "/library/w");
         conn.execute("UPDATE member SET root_id = 1", [])
             .expect("files the member under it");
     }
@@ -546,25 +545,19 @@ async fn the_grid_carries_the_two_fields_the_chips_sort_and_filter_on() {
 
 /// The library a directory is in, read from the store rather than assumed.
 fn library_of(conn: &rusqlite::Connection, root: i64) -> i64 {
-    conn.query_row("SELECT library_id FROM root WHERE id = ?1", [root], |r| {
-        r.get(0)
-    })
-    .unwrap_or_else(|e| panic!("directory {root}'s library: {e}"))
+    test_support::library_of_root(conn, root)
 }
 
-/// Two directories, each a library of its own (`root_gets_a_library` makes one
-/// per directory inserted without one), with every member of the fixture's one
-/// work under the first. Answers the two libraries' ids, the material's first.
+/// Two directories, each a library of its own ([`test_support::plant_root`]),
+/// with every member of the fixture's one work under the first. Answers the
+/// two libraries' ids, the material's first.
 ///
 /// **Directory ids 5 and 6**, so neither library's id is a directory's: a narrowing
 /// that read a library id as a directory id would find nothing under either.
 fn two_libraries_one_holding_the_work(state: &crate::ServeState) -> (i64, i64) {
     let conn = state.library.conn();
-    conn.execute(
-        "INSERT INTO root (id, path) VALUES (5, '/held'), (6, '/elsewhere')",
-        [],
-    )
-    .expect("two directories");
+    test_support::plant_root(&conn, 5, "/held");
+    test_support::plant_root(&conn, 6, "/elsewhere");
     conn.execute("UPDATE member SET root_id = 5", [])
         .expect("files every member under the first");
     let (held, elsewhere) = (library_of(&conn, 5), library_of(&conn, 6));
@@ -633,9 +626,7 @@ async fn a_library_scoped_grid_carries_no_unfiled_work() {
     let (router, state, _fixture) = test_support::router_over_a_library().await;
     let shelf = {
         let conn = state.library.conn();
-        conn.execute("INSERT INTO root (id, path) VALUES (5, '/shelf')", [])
-            .expect("a directory, and so a library");
-        library_of(&conn, 5)
+        test_support::plant_root(&conn, 5, "/shelf")
     };
 
     let all = get_json(&router, "/api/library/series").await;
@@ -845,11 +836,8 @@ async fn the_status_lists_libraries_and_nothing_else() {
     let (router, state, _fixture) = test_support::router_over_a_library().await;
     let (shelf, walked) = {
         let conn = state.library.conn();
-        conn.execute(
-            "INSERT INTO root (id, path) VALUES (5, '/shelf'), (6, '/walked')",
-            [],
-        )
-        .expect("two directories, and so two libraries");
+        test_support::plant_root(&conn, 5, "/shelf");
+        test_support::plant_root(&conn, 6, "/walked");
         conn.execute(
             "INSERT INTO dir_state (root_id, rel_path, mtime, entry_count) \
              VALUES (6, '', 0, 0)",
@@ -930,7 +918,7 @@ async fn the_status_says_whether_the_caller_sees_only_granted_libraries() {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
     let library: i64 = {
         let conn = state.library.conn();
-        conn.query_row("SELECT library_id FROM root", [], |r| r.get(0))
+        conn.query_row("SELECT library_id FROM library_root", [], |r| r.get(0))
             .expect("the fixture's one library")
     };
     let status = || async { get_json(&router, "/api/library/status").await };
@@ -1334,11 +1322,9 @@ async fn no_browse_route_stalls_the_runtime() {
     // measurement.
     let slug: String = {
         let conn = state.library.conn();
-        conn.execute_batch(
-            "INSERT INTO root (id, path) VALUES (1, '/held');
-             UPDATE member SET root_id = 1;",
-        )
-        .expect("puts every member under root 1");
+        test_support::plant_root(&conn, 1, "/held");
+        conn.execute("UPDATE member SET root_id = 1", [])
+            .expect("puts every member under root 1");
         conn.query_row("SELECT slug FROM work", [], |row| row.get(0))
             .expect("the fixture's one work")
     };

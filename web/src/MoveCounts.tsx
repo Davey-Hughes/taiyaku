@@ -11,12 +11,7 @@
  * one out reads as a list that could not be read. Where both are empty, that
  * is said once.
  */
-import { type Moved, namesOf } from './libraries'
-
-/** `n` of a thing, in the number the count is. */
-function count(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`
-}
+import { libraryRemovedSentence, type Moved, namesOf } from './libraries'
 
 /**
  * Who gains sight of the directory and who loses it, as one clause with no
@@ -44,7 +39,7 @@ export interface MoveCountsProps {
 }
 
 export function MoveCounts({ moved, from, past = false }: MoveCountsProps) {
-  const grants = count(moved.grants_removed, 'grant', 'grants')
+  const removed = libraryRemovedSentence(moved, past)
   return (
     <div className="move-counts">
       <p className="counts">
@@ -52,13 +47,7 @@ export function MoveCounts({ moved, from, past = false }: MoveCountsProps) {
           ? `${sightOf(moved, past, 'No account')}.`
           : `Moving this directory from ${from} to ${moved.library}: ${sightOf(moved, past, 'no account')}.`}
       </p>
-      {moved.library_removed !== null && (
-        <p>
-          {moved.library_removed} {past ? 'had' : 'has'} no other directory, so
-          it {past ? 'was' : 'is'} removed
-          {moved.grants_removed > 0 && `, with ${grants}`}.
-        </p>
-      )}
+      {removed !== undefined && <p>{removed}</p>}
     </div>
   )
 }

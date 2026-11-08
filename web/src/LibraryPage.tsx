@@ -77,6 +77,7 @@ import {
   type ReactNode,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react'
@@ -94,17 +95,21 @@ import {
 } from './config'
 import { dirPath, LIBRARIES, libraryNameClash, nameAt } from './configAddress'
 import { DirPicker } from './DirPicker'
+import { focusUnder } from './focusUnder'
 import { HeldButton } from './HeldButton'
 import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
 import {
   addDir,
   folderIn,
   type Library,
+  type LibraryDir,
   type LibraryScanStatus,
   type NestedDir,
+  namesOf,
   renameLibrary,
   startLibraryScan,
 } from './libraries'
+import { linkedPlace } from './linkedPlace'
 import { messageOf, sentenceOf } from './message'
 import { NameClash } from './NameClash'
 import { invalidateLibraryViews, libraryScan, ROOTS } from './pageReads'
@@ -124,6 +129,7 @@ import {
 import { usePage } from './usePage'
 import { WaitWords } from './WaitWords'
 import { ROW_CELLS, useLineEnds } from './lineEnds'
+import { count } from './count'
 
 export interface LibraryPageProps {
   /**
@@ -154,6 +160,13 @@ export interface LibraryPageProps {
    * it was on, so the heading takes focus.
    */
   arrived?: boolean
+  /**
+   * A directory New library linked as it made this library, which other
+   * libraries held, by name: the page says so as an add's link is said.
+   */
+  linkedAtMaking?: { path: string; also_in: string[] }
+  /** The page has taken `linkedAtMaking`, which is not said a second time. */
+  onLinkedAtMakingTaken?: () => void
   /** A directory was added here: its probe is the screen's to keep. */
   onAdded: (added: Added[]) => void
   /**
@@ -210,6 +223,23 @@ function walkedBy(library: Library): { id: number; path: string }[] {
 }
 
 /**
+ * How `dir` overlaps another library's directory, as its row's Overlaps cell
+ * says it, without naming the library (spec decision 28): Shared, where
+ * another library holds it too; Inside, where it sits in another library's
+ * directory; Around, where another library's directory sits in it. A
+ * library's own directories are never the same or nested, so every one the
+ * server names is another library's. A directory inside that this library
+ * does not show counts too: it overlaps all the same.
+ */
+function overlapsOf(dir: LibraryDir): string[] {
+  return [
+    ...(dir.libraries.length > 1 ? ['Shared'] : []),
+    ...(dir.inside.length > 0 ? ['Inside'] : []),
+    ...(dir.nested.length > 0 ? ['Around'] : []),
+  ]
+}
+
+/**
  * The directories inside `library`'s own that it shows, each with the path of
  * the one it sits in, `outer`.
  */
@@ -223,15 +253,15 @@ function shownInside(library: Library): (NestedDir & { outer: string })[] {
 
 /**
  * One line's worth for each of `scans` that walks directories inside
- * `library`'s own: the library that asked for it, falling back to the
- * directory's own where none is named, and the folders it walks here, the
- * topmost only, each once, so two of its directories of one name inside two
- * of this library's are said once.
+ * `library`'s own: the library that asked for it, `null` where none did
+ * (spec decision 27), and the folders it walks here, the topmost only, each
+ * once, so two of its directories of one name inside two of this library's
+ * are said once.
  */
 function scansInside(
   library: Library,
   scans: LibraryScanStatus['scans'],
-): { key: string; by: string; folders: string[] }[] {
+): { key: string; by: string | null; folders: string[] }[] {
   const inside = shownInside(library)
   return scans.flatMap((scan) => {
     const walked = inside.filter((one) => scan.root_ids.includes(one.id))
@@ -239,24 +269,131 @@ function scansInside(
       (one) => !walked.some((other) => one.path.startsWith(`${other.path}/`)),
     )
     if (topmost.length === 0) return []
-    const by = scan.library ?? topmost[0].library
+    const by = scan.library
     const folders = [
       ...new Set(topmost.map((one) => folderIn(one.path, one.outer))),
     ]
-    return [{ key: `${by}\u0000${folders.join('\u0000')}`, by, folders }]
+    return [{ key: `${by ?? ''}\u0000${folders.join('\u0000')}`, by, folders }]
   })
 }
+
+/**
+ * One line's worth for each of `scans` that another library asked for, or
+ * none did, which walks directories of `library`'s own that another library
+ * holds too: who asked, `null` where none did, and those directories, by id
+ * and path (spec decision 27). A scan `library` asked for is its own.
+ */
+function scansShared(
+  library: Library,
+  scans: LibraryScanStatus['scans'],
+): { key: string; by: string | null; ids: number[]; folders: string[] }[] {
+  return scans.flatMap((scan) => {
+    if (scan.library === library.name) return []
+    const walked = library.dirs.filter(
+      (dir) => dir.libraries.length > 1 && scan.root_ids.includes(dir.id),
+    )
+    if (walked.length === 0) return []
+    const by = scan.library
+    const folders = walked.map((dir) => dir.path)
+    return [
+      {
+        key: `shared\u0000${by ?? ''}\u0000${folders.join('\u0000')}`,
+        by,
+        ids: walked.map((dir) => dir.id),
+        folders,
+      },
+    ]
+  })
+}
+
+/**
+ * The room the add form takes in `root` as it is drawn, the picker's whole,
+ * its directory browser among it, or Add directory… alone: what a link's
+ * line is drawn in, so that nothing below it moves. A content height, as
+ * `height` takes one.
+ */
+function roomOf(root: HTMLElement | null): number {
+  if (root === null) return 0
+  const style = getComputedStyle(root)
+  return Math.max(
+    0,
+    root.clientHeight -
+      (Number.parseFloat(style.paddingTop) || 0) -
+      (Number.parseFloat(style.paddingBottom) || 0),
+  )
+}
+
+const px = (length: string) => Number.parseFloat(length) || 0
+
+/**
+ * Lays a link's line where `linkedPlace` says, read from the page as it is
+ * drawn: as `top`, and padding a `margin-bottom` gives back, so it keeps
+ * its place in the flow. Its own place is taken off first, so that what is
+ * read is where the flow lays it now.
+ */
+function placeLinked(line: HTMLElement | null, room: HTMLElement | null) {
+  if (line === null || room === null) return
+  for (const side of [
+    'top',
+    'padding-top',
+    'padding-bottom',
+    'margin-bottom',
+  ]) {
+    line.style.removeProperty(side)
+  }
+  if (!line.hasChildNodes()) return
+  const roomStyle = getComputedStyle(room)
+  const box = room.closest('.settings-box') ?? room
+  const drawn = (parts: Iterable<Element>) =>
+    Array.from(parts, (part) => part.getBoundingClientRect())
+  const place = linkedPlace({
+    room: room.getBoundingClientRect(),
+    padTop: px(roomStyle.paddingTop),
+    padBottom: px(roomStyle.paddingBottom),
+    line: line.getBoundingClientRect(),
+    tableRows: drawn(box.querySelectorAll('tr')),
+    roomRows: drawn(
+      [...room.children].filter(
+        (part) =>
+          part.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ),
+  })
+  if (place === undefined) return
+  line.style.top = `${place.top}px`
+  if (place.grows === 0) return
+  const style = getComputedStyle(line)
+  line.style.paddingTop = `${px(style.paddingTop) + place.grows / 2}px`
+  line.style.paddingBottom = `${px(style.paddingBottom) + place.grows / 2}px`
+  line.style.marginBottom = `${-place.grows}px`
+}
+
+/** Whether `line` says a link over the control with focus (`focusUnder`). */
+const overFocus = (line: HTMLElement | null) =>
+  line?.hasChildNodes() === true && focusUnder(line)
+
+/** What the line says of a link: the directory, and who else holds it. */
+function LinkedWords({ path, also_in }: { path: string; also_in: string[] }) {
+  return (
+    <>
+      <code>
+        <PathWithBreaks path={path} />
+      </code>{' '}
+      is also a directory of {namesOf(also_in)}. It keeps the settings it has
+      there.
+    </>
+  )
+}
+
+/** A link's line taken away by a press, its room kept. */
+const quieted = <T extends object>(link: T | undefined) =>
+  link === undefined ? undefined : { ...link, quiet: true }
 
 /** The directories a library's status names as scanning, by id. */
 function runningIds(status: LibraryScanStatus): ReadonlySet<number> {
   return new Set(
     status.dirs.filter((one) => one.running).map((one) => one.root_id),
   )
-}
-
-/** `n` of a thing, in the number the count is. Zero takes the plural. */
-function count(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`
 }
 
 /** Save's words while a rename is out, and the width Save keeps for them. */
@@ -268,6 +405,8 @@ export function LibraryPage({
   libraries,
   notices,
   arrived = false,
+  linkedAtMaking,
+  onLinkedAtMakingTaken,
   onAdded,
   onChanged,
   onRenamed,
@@ -312,6 +451,38 @@ export function LibraryPage({
     setRenamed(undefined)
   }, [library?.name])
   const [adding, setAdding] = useState(false)
+  /**
+   * The directory the last add, or the making of the library, linked, which
+   * other libraries held; the room the line saying so is drawn in, until it
+   * is measured; and whether the list has held the directory since, after
+   * which the list no longer holding it means the link went.
+   */
+  const [linked, setLinked] = useState<
+    | {
+        path: string
+        also_in: string[]
+        room?: number
+        held: boolean
+        /** Taken away by a press, its room still kept. */
+        quiet?: boolean
+      }
+    | undefined
+  >()
+  // The line goes with the link: a removal or a move of the directory from
+  // a page drawn beside this one leaves this page mounted.
+  if (linked !== undefined && library !== undefined) {
+    const holds = library.dirs.some((dir) => dir.path === linked.path)
+    if (holds && !linked.held) setLinked({ ...linked, held: true })
+    else if (!holds && linked.held) setLinked(undefined)
+  }
+  // Taken once it is handed over, after the page's first paint, so the
+  // line fills a live region already drawn empty, which is what a screen
+  // reader reads out.
+  useEffect(() => {
+    if (linkedAtMaking === undefined) return
+    setLinked({ ...linkedAtMaking, held: false })
+    onLinkedAtMakingTaken?.()
+  }, [linkedAtMaking, onLinkedAtMakingTaken])
   /**
    * What the name box holds once Rename… has opened it, and the library's
    * own name before that: the page is drawn before the list names it.
@@ -653,6 +824,48 @@ export function LibraryPage({
   }, [renaming])
 
   const addRoot = useRef<HTMLDivElement>(null)
+  const linkedLine = useRef<HTMLParagraphElement>(null)
+  // A link said on arrival keeps the room the add form takes as the page is
+  // first drawn, measured once it is: Add directory… and the line's words,
+  // drawn unseen there until the line says them.
+  useEffect(() => {
+    if (linked === undefined || linked.room !== undefined) return
+    if (addRoot.current === null) return
+    setLinked({ ...linked, room: roomOf(addRoot.current) })
+  })
+  /**
+   * Whether the line lies over the control with focus, such as Add
+   * directory… under it at a phone's width: the ring is drawn on the line
+   * (`settings.css`), as a callout's is.
+   */
+  const [lineOverFocus, setLineOverFocus] = useState(false)
+  // After every render, since any of them may change the line's words or
+  // the rows above it.
+  useLayoutEffect(() => {
+    placeLinked(linkedLine.current, addRoot.current)
+    setLineOverFocus(overFocus(linkedLine.current))
+  })
+  const pageDrawn = library !== undefined && ready
+  // A change of the box's size, such as a phone turning, reflows the line's
+  // words with no render of the page, and focus moves with none either.
+  useEffect(() => {
+    const box = addRoot.current?.closest('.settings-box')
+    if (!pageDrawn || box == null || typeof ResizeObserver === 'undefined')
+      return
+    const resized = new ResizeObserver(() => {
+      placeLinked(linkedLine.current, addRoot.current)
+      setLineOverFocus(overFocus(linkedLine.current))
+    })
+    resized.observe(box)
+    const focusMoved = () => setLineOverFocus(overFocus(linkedLine.current))
+    document.addEventListener('focusin', focusMoved)
+    document.addEventListener('focusout', focusMoved)
+    return () => {
+      resized.disconnect()
+      document.removeEventListener('focusin', focusMoved)
+      document.removeEventListener('focusout', focusMoved)
+    }
+  }, [pageDrawn])
   const addingWas = useRef(adding)
   // The button pressed is replaced by what it opens or closes, so focus
   // follows it: into the path box when the picker opens, and back to
@@ -702,14 +915,48 @@ export function LibraryPage({
 
   const title = renamed?.from === library.name ? renamed.to : library.name
   /**
-   * While none of the library's own directories is scanning, a line for each
-   * library whose scan walks directories inside them, which the table does
-   * not list: that library's name and the folders it walks here, the topmost
-   * only, each once.
+   * The room a link was said in, once it is known and while the picker is
+   * shut: kept after a press takes the line away, so that its going moves
+   * nothing either, until the picker takes the room back.
    */
-  const scanLines = library.dirs.some((root) => scanning.has(root.id))
+  const kept =
+    linked?.room === undefined || adding
+      ? undefined
+      : { ...linked, room: linked.room }
+  /** The link said, while no press has taken it away. */
+  const said = kept?.quiet === true ? undefined : kept
+  /**
+   * A link said on arrival, while its room is still to be measured: its
+   * words are drawn unseen, so the room is in the page from its first paint,
+   * and the line, a live region drawn empty, says them a commit later.
+   */
+  const unsaid = adding
+    ? undefined
+    : linked === undefined
+      ? linkedAtMaking
+      : linked.room === undefined
+        ? linked
+        : undefined
+  /**
+   * While no scan of the library's own is running, a line for each scan
+   * another library asked for, or none did, that walks its directories:
+   * those another library holds too, by path, and those inside its own,
+   * which the table does not list, the topmost only, each once. A directory
+   * of its own scanning in none of those is its own scan's.
+   */
+  const shared = scansShared(library, scans)
+  const sharedIds = new Set(shared.flatMap((line) => line.ids))
+  const scanLines = library.dirs.some(
+    (root) => scanning.has(root.id) && !sharedIds.has(root.id),
+  )
     ? []
-    : scansInside(library, scans)
+    : [
+        ...shared.map((line) => ({ ...line, holds: true })),
+        ...scansInside(library, scans).map((line) => ({
+          ...line,
+          holds: false,
+        })),
+      ]
 
   const scan = () => {
     if (startingRef.current) return
@@ -791,6 +1038,16 @@ export function LibraryPage({
     setAddFailure(undefined)
     return addDir(library.id, path).then(
       (added) => {
+        setLinked(
+          added.also_in.length === 0
+            ? undefined
+            : {
+                path: added.root.path,
+                also_in: added.also_in,
+                room: roomOf(addRoot.current),
+                held: false,
+              },
+        )
         setAdding(false)
         onAdded([added])
         // A new root, which Rules draws.
@@ -827,7 +1084,19 @@ export function LibraryPage({
   }
 
   return (
-    <div className="library-page">
+    // A line saying a link lies over what is below it and takes a press
+    // there, so a press of any action on the page takes it away, as a
+    // press on it does: it never holds a control beneath it for long.
+    <div
+      className="library-page"
+      onClickCapture={(e) => {
+        if (
+          said !== undefined &&
+          (e.target as Element).closest('button, a, summary, label') !== null
+        )
+          setLinked(quieted)
+      }}
+    >
       <PageHeader
         key="header"
         back={{ to: LIBRARIES, label: 'Libraries' }}
@@ -952,7 +1221,7 @@ export function LibraryPage({
       {running &&
         scanLines.map((line) => (
           <p key={line.key} className="scanning">
-            {line.by} is scanning{' '}
+            {line.by === null ? '' : `${line.by} is scanning `}
             {line.folders.map((folder, i) => (
               <Fragment key={folder}>
                 {i === 0 ? '' : i === line.folders.length - 1 ? ' and ' : ', '}
@@ -961,7 +1230,12 @@ export function LibraryPage({
                 </code>
               </Fragment>
             ))}
-            , which {library.name} shows.
+            {line.by === null
+              ? line.folders.length === 1
+                ? ' is being scanned'
+                : ' are being scanned'
+              : ''}
+            , which {library.name} {line.holds ? 'holds too' : 'shows'}.
           </p>
         ))}
       <Fragment key="notices">{notices}</Fragment>
@@ -975,15 +1249,19 @@ export function LibraryPage({
               <th scope="col">Path</th>
               <th scope="col">Scan every</th>
               <th scope="col">Last scan</th>
+              <th scope="col" className="overlaps">
+                Overlaps
+              </th>
             </tr>
           </thead>
           <tbody>
             {library.dirs.map((root) => {
               const to = dirPath(library.name, root.id)
+              const overlaps = overlapsOf(root)
               return (
                 // By path, not id: a freed `root.id` is given to the next
-                // directory added, and a path cannot collide, since no two
-                // directories overlap.
+                // directory added, and a path cannot collide, since a
+                // library's own directories are never the same or nested.
                 <tr key={root.path}>
                   <td className="lead">
                     {removing ? (
@@ -1012,14 +1290,46 @@ export function LibraryPage({
                   </td>
                   <td>
                     <span className="cell-label">Last scan: </span>
-                    {scanning.has(root.id) ? 'Scanning…' : lastScan(root)}
+                    {scanning.has(root.id) ? (
+                      <>
+                        Scanning…
+                        {/* What the cell said before, unseen and unread,
+                            keeps the column as wide as it was, so the paths
+                            beside it keep their lines as the scan ends and
+                            nothing below them moves. */}
+                        <span className="held-words" aria-hidden="true">
+                          {lastScan(root)}
+                        </span>
+                      </>
+                    ) : (
+                      lastScan(root)
+                    )}
+                  </td>
+                  {/* Empty where it overlaps nothing, label and all, so a
+                      two-line row has no item there (`lineEnds.ts`). */}
+                  <td className="overlaps">
+                    {overlaps.length > 0 && (
+                      <>
+                        <span className="cell-label">Overlaps: </span>
+                        {overlaps.join(', ')}
+                      </>
+                    )}
                   </td>
                 </tr>
               )
             })}
           </tbody>
         </table>
-        <div className="add-root" ref={addRoot}>
+        {/* Kept at the room measured as the link was said, whatever the
+            window does after, so the line moves nothing below it: where its
+            words need more, it lies up over what is above it in its box
+            (`linkedPlace`). */}
+        <div
+          className="add-root"
+          ref={addRoot}
+          data-linked={kept === undefined ? undefined : ''}
+          style={kept === undefined ? undefined : { height: `${kept.room}px` }}
+        >
           {adding ? (
             <DirPicker
               action="Add directory"
@@ -1042,11 +1352,33 @@ export function LibraryPage({
             <button
               type="button"
               name="add-dir"
-              onClick={() => setAdding(true)}
+              onClick={() => {
+                setLinked(undefined)
+                setAdding(true)
+              }}
               disabled={removing}
             >
               Add directory…
             </button>
+          )}
+          {/* Drawn empty while nothing is said, picker open or not, so that
+              a screen reader reads it as it fills. */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: it takes no focus, so no key can reach it; the press it takes is a pointer's, which would otherwise reach the control beneath, and it goes at the click, not at the pointer's press, so a tap's click lands on it too. */}
+          <p
+            className="linked"
+            ref={linkedLine}
+            data-over-focus={lineOverFocus ? '' : undefined}
+            role="status"
+            onClick={() => setLinked(quieted)}
+          >
+            {said !== undefined && (
+              <LinkedWords path={said.path} also_in={said.also_in} />
+            )}
+          </p>
+          {unsaid !== undefined && (
+            <p className="linked" data-room="" aria-hidden="true">
+              <LinkedWords path={unsaid.path} also_in={unsaid.also_in} />
+            </p>
           )}
           {addFailure !== undefined && <Refusal>{addFailure}</Refusal>}
         </div>

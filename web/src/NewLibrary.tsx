@@ -162,7 +162,7 @@ export function NewLibrary({
           </Row>
           <Row
             label="Directory path"
-            help="The server checks that it can read the directory. It may sit inside or around another library’s directory."
+            help="The server checks that it can read the directory. It may be another library’s directory too, or sit inside or around one."
           >
             {(ids) => (
               <DirPicker

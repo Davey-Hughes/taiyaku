@@ -2026,7 +2026,7 @@ fn a_root(id: i64, path: &Path) -> taiyaku_library::scan::Root {
         exclude_globs: None,
         scan_interval_secs: None,
         keeps_documents: false,
-        library_id: 1,
+        libraries: vec![1],
     }
 }
 
@@ -2084,19 +2084,19 @@ fn select_roots_keeps_only_the_named_librarys_dirs() {
     let dir = scratch("select-roots-library");
     let roots = vec![
         taiyaku_library::scan::Root {
-            library_id: 70,
+            libraries: vec![70],
             ..a_root(1, &dir.join("a"))
         },
         taiyaku_library::scan::Root {
-            library_id: 80,
+            libraries: vec![80],
             ..a_root(70, &dir.join("b"))
         },
         taiyaku_library::scan::Root {
-            library_id: 70,
+            libraries: vec![70],
             ..a_root(3, &dir.join("c"))
         },
         taiyaku_library::scan::Root {
-            library_id: 60,
+            libraries: vec![60],
             ..a_root(4, &dir.join("d"))
         },
     ];
@@ -2113,7 +2113,7 @@ fn select_roots_keeps_only_the_named_librarys_dirs() {
 fn select_roots_refuses_a_library_with_no_dir_to_walk() {
     let dir = scratch("select-roots-empty-library");
     let roots = vec![taiyaku_library::scan::Root {
-        library_id: 80,
+        libraries: vec![80],
         ..a_root(1, &dir.join("a"))
     }];
     let err = select_roots(roots, None, Some(70)).unwrap_err();
@@ -2385,6 +2385,73 @@ fn scan_add_takes_a_root_containing_a_known_root_only_into_another_library() {
     assert_eq!(roots_and_members(&db).0, 2);
     assert_eq!(works_members_and_pages(&db), (1, 1, 1));
     assert_eq!(entries_and_paths(&db), (3, 3));
+}
+
+/// Overlapping-libraries spec §5: `--add` with `--library` over a directory
+/// another library holds links it, and adds no root. With no `--library` it
+/// names no library to link into, so it is refused as before and links
+/// nothing.
+#[test]
+fn scan_add_links_a_held_root_only_into_a_library_it_names() {
+    let dir = scratch("scan-add-held");
+    let tree = dir.join("library");
+    std::fs::create_dir_all(tree.join("Series/Series - v01")).expect("mkdir");
+    std::fs::write(tree.join("Series/Series - v01/000.jpg"), b"page").expect("write");
+    let db = dir.join("library.db");
+    let add = |library: Option<&str>| {
+        let mut args: Vec<String> = vec![
+            "scan".into(),
+            "--add".into(),
+            tree.display().to_string(),
+            "--db".into(),
+            db.display().to_string(),
+        ];
+        if let Some(name) = library {
+            args.extend(["--library".into(), name.to_string()]);
+        }
+        command(&args)
+    };
+    let links = || -> (i64, i64) {
+        let library = taiyaku_library::Library::open(&db).expect("open");
+        let conn = library.conn();
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).expect("count") };
+        (
+            count("SELECT count(*) FROM root"),
+            count("SELECT count(*) FROM library_root"),
+        )
+    };
+    add(Some("Manga")).expect("Manga holds the tree");
+
+    let refused = add(None).expect_err("no library is named to link into");
+    assert!(
+        refused.ends_with(&format!(
+            "{} is already a directory of the library `Manga`",
+            tree.canonicalize().unwrap().display()
+        )),
+        "{refused}"
+    );
+    assert_eq!(links(), (1, 1));
+
+    add(Some("Kids")).expect("links the tree into Kids");
+    assert_eq!(links(), (1, 2));
+}
+
+#[test]
+fn the_linked_line_names_the_library_and_every_library_that_held_the_dir() {
+    let m = std::path::Path::new("/m");
+    assert_eq!(
+        linked_line(m, "Kids", false, ("Manga", &[])),
+        "linked `/m` into `Kids`; `Manga` holds it too, and its settings stay"
+    );
+    assert_eq!(
+        linked_line(m, "Kids", false, ("Manga", &["Comics".to_string()])),
+        "linked `/m` into `Kids`; `Manga` and `Comics` hold it too, and its settings stay"
+    );
+    assert_eq!(
+        linked_line(m, "New", true, ("Manga", &[])),
+        "created the library `New` and linked `/m` into it; `Manga` holds it too, and its \
+         settings stay"
+    );
 }
 
 #[test]

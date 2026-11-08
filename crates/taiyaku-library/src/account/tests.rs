@@ -143,8 +143,7 @@ fn using_a_key_records_that_it_was_used() {
 fn access_is_read_per_user() {
     let library = library();
     let conn = library.conn();
-    conn.execute("INSERT INTO root (id, path) VALUES (7, '/library')", [])
-        .expect("root");
+    crate::test_support::plant_root(&conn, 7, "/library");
 
     assert_eq!(
         access_for(&conn, 1).expect("reads"),
@@ -161,7 +160,8 @@ fn access_is_read_per_user() {
     );
 
     conn.execute(
-        "INSERT INTO user_library (user_id, library_id) SELECT 1, library_id FROM root WHERE id = 7",
+        "INSERT INTO user_library (user_id, library_id)
+         SELECT 1, library_id FROM library_root WHERE root_id = 7",
         [],
     )
     .expect("grant");
@@ -1246,19 +1246,12 @@ fn revoking_a_session_ends_that_one_and_says_whether_it_did() {
 }
 
 fn a_root(conn: &rusqlite::Connection, id: i64, path: &str) {
-    conn.execute(
-        "INSERT INTO root (id, path) VALUES (?1, ?2)",
-        rusqlite::params![id, path],
-    )
-    .expect("adding a root");
+    crate::test_support::plant_root(conn, id, path);
 }
 
 /// The library root `root` is filed under.
 fn library_of(conn: &rusqlite::Connection, root: i64) -> i64 {
-    conn.query_row("SELECT library_id FROM root WHERE id = ?1", [root], |r| {
-        r.get(0)
-    })
-    .expect("the root's library")
+    crate::test_support::library_of_root(conn, root)
 }
 
 #[test]
@@ -1321,8 +1314,8 @@ fn an_account_with_no_grant_sees_every_library() {
 fn a_two_dir_library_and_another(conn: &rusqlite::Connection) {
     conn.execute_batch(
         "INSERT INTO library (id, name) VALUES (70, 'Shelf'), (80, 'Other');
-         INSERT INTO root (id, path, library_id) VALUES
-           (7, '/srv/manga', 70), (8, '/srv/raw', 70), (9, '/srv/other', 80);",
+         INSERT INTO root (id, path) VALUES (7, '/srv/manga'), (8, '/srv/raw'), (9, '/srv/other');
+         INSERT INTO library_root (library_id, root_id) VALUES (70, 7), (70, 8), (80, 9);",
     )
     .expect("a library of two directories and one of one");
 }
@@ -1462,7 +1455,8 @@ fn two_accounts_granted_libraries(conn: &rusqlite::Connection) -> (i64, i64) {
     a_two_dir_library_and_another(conn);
     conn.execute_batch(
         "INSERT INTO library (id, name) VALUES (60, 'Zines');
-         INSERT INTO root (id, path, library_id) VALUES (6, '/srv/zines', 60);",
+         INSERT INTO root (id, path) VALUES (6, '/srv/zines');
+         INSERT INTO library_root (library_id, root_id) VALUES (60, 6);",
     )
     .expect("a library of one directory");
     let reader = add(conn, "reader", "pw", "user").expect("adds an account");

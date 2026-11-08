@@ -17,10 +17,12 @@
  * component exists to prevent, and "the dry run failed" is exactly when a
  * person is most likely to press on regardless.
  *
- * **An account whose only grant is the directory's library is named beneath
- * the counts**, where removing the directory removes the library: it will see
- * no library afterwards, which nothing else here says. The confirm is still
- * offered.
+ * **Each library the removal empties is named beneath the counts, from the
+ * dry run**, which the server deletes with its last directory: a directory
+ * several libraries hold can be the last of each, which no one library's
+ * list says. **So is each account all of whose grants are of those
+ * libraries**: it will see no library afterwards, which nothing else here
+ * says. The confirm is still offered.
  *
  * **Zero is drawn.** "This removes 0 works, 0 in-progress positions and 0
  * notes" is a different sentence from a dialog that mentions no counts, and
@@ -41,22 +43,13 @@ import {
   removeRoot,
   type Root,
 } from './config'
-import { noLibrarySentence } from './libraries'
+import { namesOf, noLibrarySentence } from './libraries'
 import { DeriveSection } from './ScanReport'
 import { HeldButton } from './HeldButton'
 import { useDrawn, useDrawnWait } from './hooks'
 import { sentenceOf } from './message'
 import { WaitWords } from './WaitWords'
-
-/**
- * `n` of a thing, in the number the count actually is.
- *
- * Zero takes the plural — "0 works" — which is English rather than an
- * oversight; only one is singular.
- */
-function count(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`
-}
+import { count } from './count'
 
 /** The confirm's words while the removal is out. */
 const REMOVING = 'Removing…'
@@ -64,10 +57,10 @@ const REMOVING = 'Removing…'
 export interface RemoveRootProps {
   root: Root
   /**
-   * The library's name, where this is its only directory: the library goes with
-   * it, and the dialog says so.
+   * Every library holding the directory, by name, where more than one does:
+   * the counts say it goes from each.
    */
-  lastOf?: string
+  holders?: string[]
   /**
    * A scan of the directory, or of one around or inside it, is reserved, so
    * the server would refuse the removal and the counts quoted here are from
@@ -90,9 +83,20 @@ export interface RemoveRootProps {
   onLateRefusal?: (sentence: string) => void
 }
 
+/**
+ * Whom the dialog says an account left seeing no library could see: the
+ * directory's one library, the emptied library by name where another library
+ * holds the directory too, and for several, only that each is among them,
+ * since an account granted some of them sees none afterwards all the same.
+ */
+function emptiedOnes(emptied: string[], holders: number): string {
+  if (emptied.length > 1) return 'libraries this removes'
+  return holders > 1 ? namesOf(emptied) : "this directory's library"
+}
+
 export function RemoveRoot({
   root,
-  lastOf,
+  holders = [],
   held = false,
   onCancel,
   onRemoved,
@@ -141,6 +145,8 @@ export function RemoveRoot({
     }
   }, [root.id])
 
+  const emptied = cost?.removed.libraries_removed ?? []
+
   const confirm = () => {
     if (inFlight.current) return
     inFlight.current = true
@@ -173,7 +179,9 @@ export function RemoveRoot({
       ) : (
         <>
           <p className="counts">
-            This removes {count(cost.removed.works, 'work', 'works')},{' '}
+            This removes{' '}
+            {holders.length > 1 && `it from ${namesOf(holders)}, and `}
+            {count(cost.removed.works, 'work', 'works')},{' '}
             {count(
               cost.removed.positions,
               'in-progress position',
@@ -181,17 +189,18 @@ export function RemoveRoot({
             )}{' '}
             and {count(cost.removed.notes, 'note', 'notes')}.
           </p>
-          {lastOf !== undefined && (
+          {emptied.length > 0 && (
             <p className="last-dir">
-              This is the only directory of the library {lastOf}, so removing it
-              removes the library too.
+              {emptied.length === 1
+                ? `This is the only directory of the library ${emptied[0]}, so removing it removes the library too.`
+                : `This is the only directory of the libraries ${namesOf(emptied)}, so removing it removes them too.`}
             </p>
           )}
           {cost.removed.left_with_no_library.length > 0 && (
             <p className="left-with-no-library">
               {noLibrarySentence(
                 cost.removed.left_with_no_library,
-                "this directory's library",
+                emptiedOnes(emptied, holders.length),
               )}
             </p>
           )}

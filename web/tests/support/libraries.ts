@@ -10,8 +10,15 @@ import type {
 } from '../../src/libraries'
 import { emptyDerive } from './derive'
 
-/** A directory with only its path and a daily scan set. */
-export const dir = (id: number, path: string): LibraryDir => ({
+/**
+ * A directory with only its path and a daily scan set, held by `libraries`:
+ * `manga()`'s library alone unless they are named.
+ */
+export const dir = (
+  id: number,
+  path: string,
+  libraries: LibraryDir['libraries'] = [{ id: 7, name: 'Manga' }],
+): LibraryDir => ({
   id,
   path,
   edition_key: null,
@@ -22,6 +29,7 @@ export const dir = (id: number, path: string): LibraryDir => ({
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  libraries,
   nested: [],
   inside: [],
 })
@@ -70,7 +78,14 @@ export const scanningIn = (
 
 /** A removal's dry run that would take `works` works. */
 export const counted = (works = 5): RemovalAnswer => ({
-  removed: { works, positions: 2, notes: 0, left_with_no_library: [] },
+  removed: {
+    works,
+    positions: 2,
+    notes: 0,
+    left_with_no_library: [],
+    libraries_removed: [],
+    kept: [],
+  },
   derive: emptyDerive,
   dry_run: true,
 })

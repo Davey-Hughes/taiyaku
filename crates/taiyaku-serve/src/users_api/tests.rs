@@ -335,7 +335,7 @@ async fn a_misspelled_dry_run_is_refused_rather_than_deleting() {
 fn the_fixture_library(state: &crate::ServeState) -> (i64, String) {
     let conn = state.library.conn();
     conn.query_row(
-        "SELECT l.id, l.name FROM root r JOIN library l ON l.id = r.library_id",
+        "SELECT l.id, l.name FROM library_root r JOIN library l ON l.id = r.library_id",
         [],
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
     )

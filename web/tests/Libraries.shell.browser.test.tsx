@@ -111,10 +111,14 @@ const dir = (
   keeps_documents: false,
   last_scan_at: '2026-10-05T21:14:09Z',
   last_scan_status: 'ok',
+  libraries: [{ id: 1, name: 'Manga' }],
   nested: [],
   inside: [],
   ...over,
 })
+
+/** What Light novels' directories say of the library holding them. */
+const IN_NOVELS = { libraries: [{ id: 2, name: 'Light novels' }] }
 
 const MANGA: librariesApi.Library = {
   id: 1,
@@ -134,7 +138,7 @@ const NOVELS: librariesApi.Library = {
   name: 'Light novels',
   works: 0,
   books: 14,
-  dirs: [dir(3, '/mnt/user/media 1/Light Novels')],
+  dirs: [dir(3, '/mnt/user/media 1/Light Novels', IN_NOVELS)],
 }
 
 /**
@@ -150,7 +154,11 @@ const SHELVES = Array.from(
     name: `Shelf ${i + 1}`,
     works: 0,
     books: 0,
-    dirs: [dir(10 + i, `/srv/shelf ${i + 1}`)],
+    dirs: [
+      dir(10 + i, `/srv/shelf ${i + 1}`, {
+        libraries: [{ id: 10 + i, name: `Shelf ${i + 1}` }],
+      }),
+    ],
   }),
 )
 /** Manga with directories enough that its page is taller than the window too. */
@@ -323,12 +331,26 @@ const sidebarNames = (host: HTMLElement) =>
 /** Removes the Manga library from the foot of its page. */
 async function removeManga(host: HTMLElement) {
   vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-    removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
+    removed: {
+      works: 0,
+      positions: 0,
+      notes: 0,
+      left_with_no_library: [],
+      libraries_removed: [],
+      kept: [],
+    },
     derive: emptyDerive,
     dry_run: true,
   })
   vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
-    removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
+    removed: {
+      works: 0,
+      positions: 0,
+      notes: 0,
+      left_with_no_library: [],
+      libraries_removed: [],
+      kept: [],
+    },
     derive: { ...emptyDerive, lost_positions: 4 },
     dry_run: false,
   })
@@ -504,12 +526,26 @@ describe('the Libraries screen in the real Shell', () => {
     })
     // At the top of a page that fits, the report is in view as it lands.
     vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 0,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: emptyDerive,
       dry_run: true,
     })
     vi.mocked(librariesApi.removeLibrary).mockResolvedValue({
-      removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
+      removed: {
+        works: 0,
+        positions: 0,
+        notes: 0,
+        left_with_no_library: [],
+        libraries_removed: [],
+        kept: [],
+      },
       derive: emptyDerive,
       dry_run: false,
     })
@@ -732,7 +768,11 @@ describe('the Libraries screen in the real Shell', () => {
           name: 'Comics',
           works: 0,
           books: 0,
-          dirs: [dir(9, '/srv/comics')],
+          dirs: [
+            dir(9, '/srv/comics', {
+              libraries: [{ id: 3, name: 'Comics' }],
+            }),
+          ],
         },
         added: [],
       })
@@ -775,7 +815,7 @@ describe('the Libraries screen in the real Shell', () => {
       name: 'Manga',
       works: 0,
       books: 0,
-      dirs: [dir(9, '/srv/manga')],
+      dirs: [dir(9, '/srv/manga', { libraries: [{ id: 3, name: 'Manga' }] })],
     }
     let made = false
     vi.mocked(librariesApi.createLibrary).mockImplementation(async () => {
@@ -1119,6 +1159,86 @@ describe('the Libraries screen in the real Shell', () => {
       reveal.mockRestore()
     }
   })
+
+  for (const [width, height] of SIZES) {
+    it(`keeps the Last scan column as wide, and each path on as many lines, while a scan runs as once it ends, at ${width}`, async () => {
+      let scanning = true
+      vi.mocked(librariesApi.startLibraryScan).mockResolvedValue({
+        library_id: 1,
+        status_url: '/x',
+        root_ids: LONG_MANGA.dirs.map((one) => one.id),
+      })
+      listLongManga()
+      const host = await shell(width, height, MANGA_PAGE)
+      vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
+        Promise.resolve({
+          library_id: id,
+          held_removals: [],
+          moves_held: false,
+          scans: [],
+          running: id === 1 && scanning,
+          elapsed_secs: 1,
+          dirs: [],
+        }),
+      )
+      await click(host.querySelector('button[name="scan-library"]') as Element)
+      await settle()
+      const rows = () => [
+        ...host.querySelectorAll<HTMLElement>(
+          '.library-page .dir-table tbody tr',
+        ),
+      ]
+      /** The Last scan column's width, and each row's height and words there. */
+      const drawn = () => ({
+        column: (
+          host.querySelectorAll(
+            '.library-page .dir-table thead th',
+          )[2] as Element
+        ).getBoundingClientRect().width,
+        heights: rows().map((tr) => tr.getBoundingClientRect().height),
+        said: rows().map(
+          (tr) => (tr.querySelectorAll('td')[2] as HTMLElement).innerText,
+        ),
+      })
+      // The label is drawn only where the headings are not.
+      const label = width === 390 ? 'Last scan: ' : ''
+      const during = drawn()
+      expect(during.said).toEqual(
+        LONG_MANGA.dirs.map(() => `${label}Scanning…`),
+      )
+      // The words held for the width are neither seen, read out nor selected,
+      // and take no height; in a two-line row, where a cell is as wide as
+      // its own words, they are not drawn at all.
+      for (const tr of rows()) {
+        const held = tr.querySelector('td:nth-child(3) [aria-hidden="true"]')
+        expect(held?.textContent).toBe('2026-10-05T21:14:09Z UTC')
+        const style = getComputedStyle(held as Element)
+        if (width === 390) {
+          expect(style.display).toBe('none')
+          continue
+        }
+        expect(style.visibility).toBe('hidden')
+        expect(style.userSelect).toBe('none')
+        expect((held as Element).getBoundingClientRect().height).toBe(0)
+      }
+      scanning = false
+      await settleUntil(
+        'the scan’s end',
+        () => !drawn().said.includes(`${label}Scanning…`),
+        3 * config.SCAN_POLL_MS,
+      )
+      await settle()
+      const after = drawn()
+      expect(after.said).toEqual(
+        LONG_MANGA.dirs.map(() => `${label}2026-10-05T21:14:09Z UTC`),
+      )
+      // A two-line row's cell is as wide as its own words, so there a time
+      // may take a line that Scanning… did not; held words would be a gap.
+      if (width === 390) return
+      expect(after.column).toBe(during.column)
+      expect(after.heights).toEqual(during.heights)
+    })
+  }
 
   for (const [width, height] of SIZES) {
     it(`does not scroll a person typing at the foot when a scan ends and the list cannot be read, at ${width}`, async () => {
@@ -2467,7 +2587,10 @@ describe('Move… in its dialog, in the real Shell', () => {
     it(`puts See what this would do under the last field, where the boxes start, and the move and Cancel alone on one line at the foot, at ${width}`, async () => {
       vi.mocked(librariesApi.listLibraries).mockResolvedValue({
         libraries: [
-          { ...NOVELS, dirs: [dir(3, '/home/davey/temp/manga-test/Volumes')] },
+          {
+            ...NOVELS,
+            dirs: [dir(3, '/home/davey/temp/manga-test/Volumes', IN_NOVELS)],
+          },
           MANGA,
         ],
       })
@@ -2720,7 +2843,14 @@ describe('Move… in its dialog, in the real Shell', () => {
         ],
       })
       vi.mocked(librariesApi.libraryRemovalCost).mockResolvedValue({
-        removed: { works: 0, positions: 0, notes: 0, left_with_no_library: [] },
+        removed: {
+          works: 0,
+          positions: 0,
+          notes: 0,
+          left_with_no_library: [],
+          libraries_removed: [],
+          kept: [],
+        },
         derive: emptyDerive,
         dry_run: true,
       })
@@ -2887,7 +3017,7 @@ describe('Move… in its dialog, in the real Shell', () => {
   it('keeps Move…’s dialog inside the page’s gutter at 390, a long path broken inside it and its height inside the window, scrolling inside itself, and nothing scrolling sideways', async () => {
     const long = `/mnt/user/media 1/Light Novels/${'Volumes'.repeat(12)}`
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
-      libraries: [{ ...NOVELS, dirs: [dir(3, long)] }, MANGA],
+      libraries: [{ ...NOVELS, dirs: [dir(3, long, IN_NOVELS)] }, MANGA],
     })
     const host = await shell(390, 600, NOVELS_DIR_PAGE)
     const doc = document.documentElement
