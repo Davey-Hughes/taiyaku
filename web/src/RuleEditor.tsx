@@ -553,8 +553,8 @@ export function RuleEditor() {
         // came back to adopt. The failure text goes to `heldNotice` rather
         // than `failure` because `commit` fires a preview whose success path
         // calls `setFailure(undefined)`, and the reason a person most needs
-        // to read here is the 409 `save_rules` answers while a scan holds
-        // `library_job`.
+        // to read here is the 409 `save_rules` answers while another library
+        // job holds `library_job` (the serve crate's `LibraryJob` names them).
         setFailure(undefined)
         commit(
           rules.map((rule, i) => (i === pending.index ? pending.rule : rule)),

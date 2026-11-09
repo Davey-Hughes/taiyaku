@@ -1355,7 +1355,7 @@ async fn while_a_librarys_scan_runs_its_dirs_answer_as_scanning() {
     let name = get_json(&router, "/api/library/libraries").await["libraries"][0]["name"].clone();
     assert_eq!(
         running["scans"],
-        serde_json::json!([{ "library": name, "root_ids": dirs }]),
+        serde_json::json!([{ "library_id": id, "library": name, "root_ids": dirs }]),
         "{running}"
     );
     assert_eq!(running["running"], true, "{running}");
@@ -3284,10 +3284,10 @@ async fn a_move_spelt_any_other_way_is_refused_and_false_moves() {
 }
 
 /// A move changes which directories a scan's library shows, so it does not
-/// run while a scan holds the job lock: 409 at once, for a rehearsal too, and
-/// nothing moved.
+/// run while anything holds the job lock: 409 at once, for a rehearsal too,
+/// and nothing moved. The holder is neutral, so the sentence names no one job.
 #[tokio::test]
-async fn a_move_is_refused_while_a_scan_holds_the_library() {
+async fn a_move_is_refused_while_the_job_lock_is_held() {
     let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
     let listed = get_json(&router, "/api/library/libraries").await;
     let a = the_library(&listed, "root-a")["id"]
@@ -3312,11 +3312,10 @@ async fn a_move_is_refused_while_a_scan_holds_the_library() {
         .await;
         assert_eq!(status, StatusCode::CONFLICT, "{refused}");
         assert_eq!(keys_of(&refused), ["error", "volumes"], "{refused}");
-        assert!(
-            refused["error"]
-                .as_str()
-                .expect("an error")
-                .contains("running")
+        assert_eq!(
+            refused["error"],
+            "a scan or another library job is running; move the directory once it has finished",
+            "{refused}"
         );
         assert_eq!(refused["volumes"], serde_json::json!([]), "{refused}");
     }
@@ -4122,7 +4121,7 @@ async fn a_librarys_status_names_each_scan_by_the_library_that_asked_for_it() {
     let manga = get_json(&n.admin, &the_scan_of(n.manga)).await;
     assert_eq!(
         manga["scans"],
-        serde_json::json!([{ "library": "Kids", "root_ids": [n.m_kids, tiny] }]),
+        serde_json::json!([{ "library_id": n.kids, "library": "Kids", "root_ids": [n.m_kids, tiny] }]),
         "{manga}"
     );
     drop(held);
@@ -4140,7 +4139,7 @@ async fn a_librarys_status_names_each_scan_by_the_library_that_asked_for_it() {
     let manga = get_json(&n.admin, &the_scan_of(n.manga)).await;
     assert_eq!(
         manga["scans"],
-        serde_json::json!([{ "library": "Kids", "root_ids": [n.m_kids] }]),
+        serde_json::json!([{ "library_id": n.kids, "library": "Kids", "root_ids": [n.m_kids] }]),
         "{manga}"
     );
     drop(held);
@@ -4552,8 +4551,8 @@ async fn an_unlink_is_refused_while_the_job_lock_is_held_or_a_scan_is_reserved_i
         assert_eq!(status, StatusCode::CONFLICT, "{refused}");
         assert_eq!(
             the_sentence(&refused),
-            "a scan or a rule save is running; remove the directory from this library when it \
-             has finished"
+            "a scan or another library job is running; remove the directory from this library \
+             once it has finished"
         );
     }
     drop(held);
@@ -4857,19 +4856,31 @@ async fn a_dir_scan_is_named_by_the_library_it_was_started_from() {
         .as_i64()
         .expect("an id");
 
-    for (dir, query, by) in [
+    for (dir, query, by_id, by) in [
         (
             &shared,
             format!("?library={root_a}"),
+            serde_json::json!(root_a),
             serde_json::json!("root-a"),
         ),
         (
             &shared,
             format!("?library={kids}"),
+            serde_json::json!(kids),
             serde_json::json!("Kids"),
         ),
-        (&shared, String::new(), serde_json::Value::Null),
-        (&own, String::new(), serde_json::json!("Kids")),
+        (
+            &shared,
+            String::new(),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+        ),
+        (
+            &own,
+            String::new(),
+            serde_json::json!(kids),
+            serde_json::json!("Kids"),
+        ),
     ] {
         let id = dir["id"].as_i64().expect("an id");
         let held = holding_the_job(&state);
@@ -4884,12 +4895,163 @@ async fn a_dir_scan_is_named_by_the_library_it_was_started_from() {
         let status = get_json(&router, &the_scan_of(kids)).await;
         assert_eq!(
             status["scans"],
-            serde_json::json!([{ "library": by, "root_ids": [id] }]),
+            serde_json::json!([{ "library_id": by_id, "library": by, "root_ids": [id] }]),
             "{id}{query}: {status}"
         );
         drop(held);
         until_the_library_scan_ends(&router, kids).await;
     }
+}
+
+/// O254: a scan Kids asked for of root-a's directory, which Kids held when the
+/// scan was reserved, is named by no library once Kids no longer reaches the
+/// directory: moved out of Kids into Teens, or Kids removed. Each change goes
+/// through the store, as a request committing between the scan's check and
+/// its reservation would; the route refuses it once the scan is reserved.
+#[tokio::test]
+async fn a_scan_is_named_by_no_library_once_its_library_no_longer_reaches_the_directory() {
+    for case in ["moved", "removed"] {
+        let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+        let (kids, shared, _) = kids_sharing_root_as_dir(&router, &fixture).await;
+        let listed = get_json(&router, "/api/library/libraries").await;
+        let root_a = the_library(&listed, "root-a")["id"]
+            .as_i64()
+            .expect("an id");
+        let dir = shared["id"].as_i64().expect("an id");
+        let held = holding_the_job(&state);
+        let (status, started) = answered(
+            &router,
+            Method::POST,
+            &format!("{}?library={kids}", a_dirs_scan(dir)),
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{case}: {started}");
+        let before = get_json(&router, &the_scan_of(root_a)).await;
+        assert_eq!(
+            before["scans"],
+            serde_json::json!([{ "library_id": kids, "library": "Kids", "root_ids": [dir] }]),
+            "{case}, before: {before}"
+        );
+        let teens = {
+            let conn = state.library.conn();
+            if case == "moved" {
+                let moved = taiyaku_library::relocate::move_root(
+                    &conn,
+                    dir,
+                    kids,
+                    taiyaku_library::relocate::Target::New("Teens"),
+                )
+                .expect("moves root-a's directory out of Kids");
+                Some(moved.library_id)
+            } else {
+                taiyaku_library::scan::remove_library(&conn, kids).expect("removes Kids");
+                None
+            }
+        };
+
+        for library in std::iter::once(root_a).chain(teens) {
+            let status = get_json(&router, &the_scan_of(library)).await;
+            assert_eq!(
+                status["scans"],
+                serde_json::json!([{ "library_id": null, "library": null, "root_ids": [dir] }]),
+                "{case}, library {library}: {status}"
+            );
+        }
+        drop(held);
+        until_the_library_scan_ends(&router, root_a).await;
+    }
+}
+
+/// O254: a library removed after the status read the directories and before
+/// it read the names joins the one group no library is named by, its id with
+/// its name. The handler is held at the scan registry, which it asks between
+/// the two reads, while the test removes Kids. Load can make this miss that
+/// defect, should the handler reach the first read only after the removal. It
+/// cannot fail correct code.
+#[tokio::test]
+async fn a_scan_is_named_by_no_library_when_its_library_goes_between_the_status_reads() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+    let (kids, shared, _) = kids_sharing_root_as_dir(&router, &fixture).await;
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let root_a = the_library(&listed, "root-a")["id"]
+        .as_i64()
+        .expect("an id");
+    let dir = shared["id"].as_i64().expect("an id");
+    let held = holding_the_job(&state);
+    let (status, started) = answered(
+        &router,
+        Method::POST,
+        &format!("{}?library={kids}", a_dirs_scan(dir)),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let before = get_json(&router, &the_scan_of(root_a)).await;
+    assert_eq!(
+        before["scans"],
+        serde_json::json!([{ "library_id": kids, "library": "Kids", "root_ids": [dir] }]),
+        "before: {before}"
+    );
+
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (locked_tx, locked) = std::sync::mpsc::channel::<()>();
+    let holder = {
+        let state = std::sync::Arc::clone(&state);
+        std::thread::spawn(move || {
+            let _registry = state.scans.lock().unwrap();
+            locked_tx.send(()).expect("the test is waiting");
+            let _ = released.recv();
+        })
+    };
+    locked.recv().expect("the holder took the registry");
+    let reading = tokio::spawn({
+        let router = router.clone();
+        async move { get_json(&router, &the_scan_of(root_a)).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    taiyaku_library::scan::remove_library(&state.library.conn(), kids)
+        .expect("removes Kids meanwhile");
+    drop(release);
+    holder.join().expect("the holder ends");
+    let status = reading.await.expect("the status answers");
+
+    assert_eq!(
+        status["scans"],
+        serde_json::json!([{ "library_id": null, "library": null, "root_ids": [dir] }]),
+        "{status}"
+    );
+    drop(held);
+    until_the_library_scan_ends(&router, root_a).await;
+}
+
+/// O254: a scan's library is sent by its id, which a page compares with its
+/// own, and by the name it has when the status is read, which a page shows.
+#[tokio::test]
+async fn a_scans_library_is_sent_by_its_id_and_the_name_it_has_now() {
+    let (router, state, fixture) = test_support::state_with_two_scanned_roots();
+    let (kids, shared, _) = kids_sharing_root_as_dir(&router, &fixture).await;
+    let dir = shared["id"].as_i64().expect("an id");
+    let held = holding_the_job(&state);
+    let (status, started) = answered(
+        &router,
+        Method::POST,
+        &format!("{}?library={kids}", a_dirs_scan(dir)),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    taiyaku_library::libraries::rename(&state.library.conn(), kids, "Children")
+        .expect("renames Kids");
+
+    let status = get_json(&router, &the_scan_of(kids)).await;
+    assert_eq!(
+        status["scans"],
+        serde_json::json!([{ "library_id": kids, "library": "Children", "root_ids": [dir] }]),
+        "{status}"
+    );
+    drop(held);
+    until_the_library_scan_ends(&router, kids).await;
 }
 
 /// A page older than an unlink names a `from` that no longer holds the
@@ -5112,8 +5274,66 @@ fn an_adds_answer_names_the_holders_the_add_read() {
         .expect("Manga");
     taiyaku_library::scan::remove_library(&conn, manga).expect("removes Manga");
 
-    let answer = crate::config_api::added_json(&conn, &linked).expect("the answer is drawn");
+    let answer = crate::config_api::added_json(&linked);
     assert_eq!(answer["also_in"], serde_json::json!(["Manga"]), "{answer}");
+}
+
+/// An add's answer sends a linked directory's scan columns as the add read
+/// them, inside its transaction: `m`, scanned under Manga and removed after
+/// the link into Kids commits, still answers Manga's scan, and the answer is
+/// drawn, not a 500, for a row that is gone (O254).
+#[test]
+fn an_adds_answer_reads_the_directorys_scan_status_inside_the_add() {
+    use taiyaku_library::scan::{InLibrary, add_root_checked_in};
+    let fixture = test_support::Fixture::new("added-reads-the-scan-status");
+    let m = fixture.path().join("m");
+    std::fs::create_dir_all(&m).expect("mkdir");
+    let library = taiyaku_library::Library::open_in_memory().expect("a library");
+    let conn = library.conn();
+    let held = add_root_checked_in(&conn, &m, InLibrary::Named("Manga")).expect("Manga holds m");
+    taiyaku_library::scan::scan_root(&conn, &held.root).expect("scans m");
+    let (at, status): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT last_scan_at, last_scan_status FROM root WHERE id = ?1",
+            [held.root.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("reads m's scan columns");
+    assert!(at.is_some(), "the fixture: the scan recorded its time");
+    assert_eq!(status.as_deref(), Some("ok"), "the fixture: m scanned");
+    let linked =
+        add_root_checked_in(&conn, &m, InLibrary::Named("Kids")).expect("links m into Kids");
+    taiyaku_library::scan::remove_root(&conn, held.root.id).expect("removes m");
+
+    let answer = crate::config_api::added_json(&linked);
+    assert_eq!(answer["root"]["last_scan_status"], "ok", "{answer}");
+    assert_eq!(
+        answer["root"]["last_scan_at"],
+        serde_json::json!(at),
+        "{answer}"
+    );
+}
+
+/// New library's answer for a library another request removed after it was
+/// made and before its list entry was read is a refusal, a 409, not a store
+/// fault: the store did what both requests asked (O254).
+#[test]
+fn a_library_removed_before_its_answer_is_drawn_is_refused_not_failed() {
+    let fixture = test_support::Fixture::new("created-then-removed");
+    let m = fixture.path().join("m");
+    std::fs::create_dir_all(&m).expect("mkdir");
+    let library = taiyaku_library::Library::open_in_memory().expect("a library");
+    let conn = library.conn();
+    let made = taiyaku_library::scan::create_library(&conn, "Kids", &[m]).expect("makes Kids");
+    taiyaku_library::scan::remove_library(&conn, made.library_id).expect("removes Kids");
+
+    match super::created_json(&conn, &made) {
+        Err(super::AdminAnswer::Refused(why)) => assert_eq!(
+            why,
+            "another request removed Kids before it could be listed"
+        ),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
 }
 
 /// Removing Kids clears the scan slots of the directories the removal deletes,

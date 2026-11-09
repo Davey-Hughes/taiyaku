@@ -487,7 +487,7 @@ describe('a directory’s page, held controls in a real browser', () => {
         dirs: [dir(1, '/srv/manga/volumes', both), MANGA.dirs[1]],
       }
       const LOCKED =
-        'a scan or a rule save is running; remove the directory from this library when it has finished'
+        'a scan or another library job is running; remove the directory from this library once it has finished'
       // The page's first read of its library's status finds nothing
       // holding. The 409 has it read again, which answers once the refusal
       // is drawn: the lock is held, and the poll that follows finds it free.
@@ -757,7 +757,7 @@ const moved = (dry_run: boolean): librariesApi.MoveAnswer => ({
 })
 
 const REFUSED = new Error(
-  '/api/library/roots/1/move: 409 {"error":"a scan or a rule save is running; move the directory when it has finished","volumes":[]}',
+  '/api/library/roots/1/move: 409 {"error":"a scan or another library job is running; move the directory once it has finished","volumes":[]}',
 )
 
 describe('Move…’s dialog, held controls in a real browser', () => {

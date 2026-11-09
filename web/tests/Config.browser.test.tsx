@@ -2978,8 +2978,8 @@ describe('the Configuration screens at desktop width', () => {
       held_removals: own ? [] : [3],
       moves_held: false,
       scans: own
-        ? [{ library: 'Manga', root_ids: [3, 9] }]
-        : [{ library: 'Kids', root_ids: [9] }],
+        ? [{ library_id: 1, library: 'Manga', root_ids: [3, 9] }]
+        : [{ library_id: 2, library: 'Kids', root_ids: [9] }],
     })
     for (const own of [false, true]) {
       for (const [width, height] of [
@@ -3040,7 +3040,7 @@ describe('a library page’s lines for a directory another library holds too', (
         dirs: [{ root_id: 3, running: true }],
         held_removals: [],
         moves_held: false,
-        scans: [{ library: 'Kids', root_ids: [3] }],
+        scans: [{ library_id: 2, library: 'Kids', root_ids: [3] }],
       })
       const host = await opened(LIBRARY)
       const line = host.querySelector(

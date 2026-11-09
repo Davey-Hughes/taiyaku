@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension};
 
 /// The directory, inside a root, that holds documents taiyaku owns.
-const DIR: &str = ".taiyaku";
+pub(crate) const DIR: &str = ".taiyaku";
 
 /// Where this work's `<content_key>.library.json` belongs, or `None` when the
 /// work has no member under any root.
@@ -330,17 +330,16 @@ pub fn load(
 /// moved the address commits: a rollback that left the file moved would
 /// strand it where the database never pointed. **Never overwrites:** a file
 /// already there stays, as does the one at `old`, which [`reconcile`] reports
-/// while it lies under a root and nothing reports once a hand-back has removed
-/// its directory (O247). A move into another directory needs that directory's
-/// root to keep documents, so a root that declined them is given no
-/// `.taiyaku`; a rename within one directory, as most rekeys are, creates
-/// nothing and needs none.
+/// while it lies under a root and a removal reports once it does not. A move
+/// into another directory needs that directory's root to keep documents, so a
+/// root that declined them is given no `.taiyaku`; a rename within one
+/// directory, as most rekeys are, creates nothing and needs none.
 ///
 /// # Errors
 ///
 /// Returns an error if SQLite fails resolving the new address. **Not** if the
-/// work is gone, nor if the rename fails: what stays is left where it was
-/// (O247).
+/// work is gone, nor if the rename fails: what stays is left where it was, for
+/// the caller to report.
 pub fn rename_from(conn: &Connection, work_id: i64, old: &Path) -> Result<bool, String> {
     // A hand-back's derive can fold the work away before this runs, and
     // `path_for` refuses a work that is not there.
@@ -372,9 +371,19 @@ pub fn rename_from(conn: &Connection, work_id: i64, old: &Path) -> Result<bool, 
     Ok(std::fs::rename(old, &new_path).is_ok())
 }
 
+/// The title the document at `path` carries, for an [`Orphan`]: `None` where
+/// it carries none or cannot be read, since the file is reported either way.
+pub(crate) fn title_in(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| crate::librarydoc::LibraryDoc::from_json(&text).ok())
+        .and_then(|doc| doc.title)
+}
+
 /// A document under `<root>/.taiyaku` that **nothing in the library
-/// addresses**: a rekey left it behind at the old `content_key`, or a fold
-/// absorbed the work it belonged to.
+/// addresses**: a rekey left it behind at the old `content_key`, a fold
+/// absorbed the work it belonged to, or a removal could not carry it out of a
+/// removed directory's `.taiyaku`, which no root's [`reconcile`] reads.
 ///
 /// **Not** a document a live work still addresses whose root has simply
 /// declined to keep it — that is [`Declined`]. `expected.get(&path)` answers
@@ -393,13 +402,12 @@ pub fn rename_from(conn: &Connection, work_id: i64, old: &Path) -> Result<bool, 
 /// can never reach this arm merely because its root opted out.
 ///
 /// **The title travels with the path because the path is a hash.** The
-/// filename is the `content_key` the document was written under, which names
-/// content that no longer exists; and a title-only document — the common case,
+/// filename is the `content_key` the document was written under, which no
+/// person reads a work from; and a title-only document — the common case,
 /// and the one the metadata editor's single control produces — carries no
 /// series, no volume and no member digests either (O80). So there is no route
-/// back to a work from the file's contents, and a report naming only the path
-/// leaves a person nothing to act on. The title is the one actionable thing
-/// in it.
+/// back to a work from the file's contents, and the title is the one thing in
+/// a report a person can act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Orphan {
     pub path: PathBuf,
@@ -677,10 +685,7 @@ pub fn reconcile(conn: &Connection, root: &crate::scan::Root) -> Result<Reconcil
                 // the title out of it if we can either way; a document we
                 // cannot parse still has to be reported, just with less to
                 // say.
-                let title = std::fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|text| crate::librarydoc::LibraryDoc::from_json(&text).ok())
-                    .and_then(|doc| doc.title);
+                let title = title_in(&path);
                 // **Branch on `expected`, not on `root.keeps_documents`
                 // again.** A path `expected` still names is addressed by a
                 // live work no matter what this root has decided about

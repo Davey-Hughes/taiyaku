@@ -139,9 +139,8 @@ pub struct ServeState {
     /// only to write its finished report back. A crate this size gains
     /// nothing from a lock-free map for that shape of access.
     pub scans: Arc<std::sync::Mutex<std::collections::HashMap<i64, ScanProgress>>>,
-    /// The lock a scan's derive and a save's `preview::apply` both take
-    /// before calling [`taiyaku_library::Library::working`] — whole-branch
-    /// review, I4.
+    /// The store's job lock: [`LibraryJob`] names the jobs that take it, a
+    /// scan's derive and a save's `preview::apply` among them.
     ///
     /// **Why a second lock rather than teaching [`Self::scans`] the
     /// question.** `scans` answers "is *this root* already scanning," keyed
@@ -169,14 +168,14 @@ pub struct ServeState {
     /// call, so holding a `std::sync::Mutex` for the length of a derivation
     /// costs that one thread, not the async runtime.
     ///
-    /// **A save does not wait on this lock; it answers `409` at once if a
-    /// scan or another save already holds it** — `config_api::NoAnswer::Busy`,
-    /// the same spirit as the `409` [`Self::scans`] already answers for a
-    /// second scan of one root: a caller learns why its save did not land
-    /// rather than the request simply taking as long as whatever else is
-    /// running. A scan blocks instead: it already runs unwatched in the
-    /// background, and `scan_status` is where a caller learns how long that
-    /// took either way.
+    /// **A save does not wait on this lock; it answers `409` at once if
+    /// anything already holds it** ([`LibraryJob`] names the jobs that take
+    /// it) — `config_api::NoAnswer::Busy`, the same spirit as the `409`
+    /// [`Self::scans`] already answers for a second scan of one root: a
+    /// caller learns why its save did not land rather than the request simply
+    /// taking as long as whatever else is running. A scan blocks instead: it
+    /// already runs unwatched in the background, and `scan_status` is where a
+    /// caller learns how long that took either way.
     pub library_job: Arc<LibraryJob>,
     /// The directories `GET /api/library/dirs` may list beneath:
     /// `--dirs`, or `TAIYAKU_DIRS`. Empty lists nothing.

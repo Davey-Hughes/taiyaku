@@ -1,8 +1,8 @@
 use super::*;
 
-/// A guard from `try_lock`, as a rule save, a stamp and a move take one, says
-/// the lock is held for as long as it lives, which a library's scan status
-/// reads as `moves_held`, and free once it is dropped.
+/// A guard from `try_lock`, which every job [`LibraryJob`] names takes except
+/// a scan, says the lock is held for as long as it lives, which a library's
+/// scan status reads as `moves_held`, and free once it is dropped.
 #[test]
 fn a_try_lock_guard_says_the_lock_is_held_until_it_drops() {
     let job = LibraryJob::default();

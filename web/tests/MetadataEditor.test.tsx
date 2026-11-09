@@ -768,7 +768,7 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
     vi.mocked(stamp.performStamp).mockRejectedValue(
       new Error(
-        '/api/library/works/w/stamp-comicinfo: 409 a scan or another library job is currently running',
+        '/api/library/works/w/stamp-comicinfo: 409 a scan or another library job is running; stamp again once it has finished',
       ),
     )
     const host = mount(

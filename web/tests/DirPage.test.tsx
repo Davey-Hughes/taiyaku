@@ -594,7 +594,7 @@ describe('DirPage, a directory another library holds too', () => {
     const library = sharing(KIDS)
     vi.mocked(api.unlinkCost).mockRejectedValue(
       new Error(
-        `/api/library/libraries/7/dirs/2?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or a rule save is running' })}`,
+        `/api/library/libraries/7/dirs/2?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or another library job is running; remove the directory from this library once it has finished' })}`,
       ),
     )
     // The first read finds nothing holding, the second the lock held, and
@@ -614,7 +614,7 @@ describe('DirPage, a directory another library holds too', () => {
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
     expect(holdOf(control(host, 'Remove from Manga…'))).toBe('held')
     expect(host.querySelector('.callout [role="alert"]')?.textContent).toBe(
-      'a scan or a rule save is running',
+      'a scan or another library job is running; remove the directory from this library once it has finished',
     )
     await tick()
     expect(holdOf(control(host, 'Remove from Manga…'))).toBe('free')

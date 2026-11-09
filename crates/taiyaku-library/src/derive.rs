@@ -315,7 +315,8 @@ pub struct DeriveReport {
     /// honest rather than noisy — the condition really is still true.
     pub unwritable_documents: Vec<String>,
     /// Documents under a root's `.taiyaku` that nothing in the library
-    /// addresses — O81.
+    /// addresses — O81 — and, after a removal, each document its carry left in
+    /// a removed directory's `.taiyaku`, which no root's reconcile reads.
     ///
     /// **Never a document a live work still addresses.** A root that has
     /// declined to keep documents reports those under
@@ -324,9 +325,8 @@ pub struct DeriveReport {
     /// addressed file an orphan would name *every* hand document in the
     /// library as stranded on the first derive after upgrading.
     ///
-    /// Each carries the title out of the file, because the filename is the
-    /// `content_key` the document was written under and names content that no
-    /// longer exists. See [`crate::hand::Orphan`].
+    /// Each carries the title out of the file, whose name is a `content_key`,
+    /// a hash no person reads a work from. See [`crate::hand::Orphan`].
     pub orphan_documents: Vec<crate::hand::Orphan>,
     /// Documents at a work's own address whose root has declined to keep
     /// them: `root.keeps_documents` is off, so nothing is owed, but a live

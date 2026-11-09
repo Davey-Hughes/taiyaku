@@ -3001,7 +3001,7 @@ describe('Move… in its dialog, in the real Shell', () => {
     await act(async () => {
       sent.reject(
         new Error(
-          '/api/library/roots/3/move: 409 {"error":"a scan or a rule save is running; move the directory when it has finished","volumes":[]}',
+          '/api/library/roots/3/move: 409 {"error":"a scan or another library job is running; move the directory once it has finished","volumes":[]}',
         ),
       )
       await new Promise((r) => setTimeout(r, 20))

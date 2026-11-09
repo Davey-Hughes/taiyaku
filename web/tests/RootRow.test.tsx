@@ -2119,7 +2119,7 @@ describe('RootRow, a directory another library holds too', () => {
   ) => {
     vi.mocked(api.unlinkCost).mockRejectedValue(
       new Error(
-        `/api/library/libraries/7/dirs/3?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or a rule save is running' })}`,
+        `/api/library/libraries/7/dirs/3?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or another library job is running; remove the directory from this library once it has finished' })}`,
       ),
     )
     const host = await mounted(props)
@@ -2230,7 +2230,7 @@ describe('RootRow, a directory another library holds too', () => {
     ).toEqual([0, 0])
     vi.mocked(api.unlinkCost).mockRejectedValueOnce(
       new Error(
-        `/api/library/libraries/7/dirs/3?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or a rule save is running' })}`,
+        `/api/library/libraries/7/dirs/3?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or another library job is running; remove the directory from this library once it has finished' })}`,
       ),
     )
     await clicked(unlink(host))

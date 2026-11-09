@@ -306,12 +306,12 @@ async fn the_plan_route_reports_a_member_it_could_not_read() {
 
 /// **A stamp refuses rather than queues behind a scan.**
 ///
-/// `ServeState::library_job` is the lock a scan and a rule save already share.
-/// A stamp takes it too, and it matters more here than for a save: a scan
-/// re-derives while the stamp rewrites the very archives it is walking, and
-/// `derive` can rekey a work under a stamp midway through moving its members'
-/// digests. Tried and not waited for, so a caller learns why rather than
-/// watching the clock.
+/// `ServeState::library_job` is the store's job lock, taken by every job
+/// `LibraryJob`'s doc names. A stamp takes it, and it matters more here than
+/// for a save: a scan re-derives while the stamp rewrites the very archives it
+/// is walking, and `derive` can rekey a work under a stamp midway through
+/// moving its members' digests. Tried and not waited for, so a caller learns
+/// why rather than watching the clock.
 #[tokio::test]
 async fn a_stamp_refuses_while_another_library_job_holds_the_lock() {
     let (router, state, _fixture) = test_support::router_over_a_scanned_cbz();
@@ -345,11 +345,17 @@ async fn a_stamp_refuses_while_another_library_job_holds_the_lock() {
         .expect("the lock is held before the request goes out");
 
     let response = send_json(&router, Method::POST, &path, &planned).await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
 
     release.send(()).expect("releases the lock");
     holder.join().expect("the holder thread finishes");
 
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(status, StatusCode::CONFLICT, "{text}");
+    assert_eq!(
+        text,
+        "a scan or another library job is running; stamp again once it has finished"
+    );
 
     // And it is a refusal, not a loss: the same confirmation lands once the
     // lock is free.

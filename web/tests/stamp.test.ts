@@ -106,9 +106,12 @@ describe('performStamp', () => {
       'fetch',
       vi.fn().mockImplementation(
         () =>
-          new Response('a scan or another library job is currently running', {
-            status: 409,
-          }),
+          new Response(
+            'a scan or another library job is running; stamp again once it has finished',
+            {
+              status: 409,
+            },
+          ),
       ),
     )
 

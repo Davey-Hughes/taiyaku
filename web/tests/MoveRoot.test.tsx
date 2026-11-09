@@ -518,7 +518,7 @@ describe('MoveRoot', () => {
   it('keeps the dialog and says why when the move itself fails', async () => {
     vi.mocked(api.moveDir).mockRejectedValue(
       new Error(
-        '/api/library/roots/3/move: 409 {"error":"a scan or a rule save is running; move the directory when it has finished","volumes":[]}',
+        '/api/library/roots/3/move: 409 {"error":"a scan or another library job is running; move the directory once it has finished","volumes":[]}',
       ),
     )
     const { host, onMoved } = shown()
@@ -635,7 +635,7 @@ describe('MoveRoot', () => {
       await flush(() =>
         sent.reject(
           new Error(
-            '/api/library/roots/3/move: 409 {"error":"a scan or a rule save is running; move the directory when it has finished","volumes":[]}',
+            '/api/library/roots/3/move: 409 {"error":"a scan or another library job is running; move the directory once it has finished","volumes":[]}',
           ),
         ),
       )
@@ -842,7 +842,7 @@ describe('MoveRoot', () => {
       await flush(() =>
         sent.reject(
           new Error(
-            '/api/library/roots/3/move: 409 {"error":"a scan or a rule save is running; move the directory when it has finished","volumes":[]}',
+            '/api/library/roots/3/move: 409 {"error":"a scan or another library job is running; move the directory once it has finished","volumes":[]}',
           ),
         ),
       )

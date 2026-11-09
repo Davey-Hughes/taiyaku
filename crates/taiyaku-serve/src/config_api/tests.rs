@@ -3445,10 +3445,10 @@ async fn a_save_refuses_while_the_library_job_lock_is_held() {
     holder.join().expect("the holder thread did not panic");
 
     assert_eq!(status, StatusCode::CONFLICT, "{text}");
-    assert!(
-        text.to_lowercase().contains("scan"),
+    assert_eq!(
+        text, "a scan or another library job is running; save again once it has finished",
         "the refusal must say why, the same spirit as the existing 409 for a second scan of \
-         one root: {text}"
+         one root"
     );
 
     // Once the lock is free, the identical request must succeed — proving

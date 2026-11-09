@@ -281,14 +281,15 @@ function scansInside(
  * One line's worth for each of `scans` that another library asked for, or
  * none did, which walks directories of `library`'s own that another library
  * holds too: who asked, `null` where none did, and those directories, by id
- * and path (spec decision 27). A scan `library` asked for is its own.
+ * and path (spec decision 27). A scan `library` asked for is its own, told by
+ * its id, so a rename while it runs leaves it its own.
  */
 function scansShared(
   library: Library,
   scans: LibraryScanStatus['scans'],
 ): { key: string; by: string | null; ids: number[]; folders: string[] }[] {
   return scans.flatMap((scan) => {
-    if (scan.library === library.name) return []
+    if (scan.library_id === library.id) return []
     const walked = library.dirs.filter(
       (dir) => dir.libraries.length > 1 && scan.root_ids.includes(dir.id),
     )

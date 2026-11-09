@@ -4968,6 +4968,344 @@ fn removing_one_directory_of_a_copy_keeps_the_work_and_removing_the_other_takes_
     assert_eq!(held(&conn), (Vec::new(), 0, 0), "the work goes, with both");
 }
 
+/// A removal that re-points a member at another directory's copy carries its
+/// work's hand document there where that directory keeps documents, so no
+/// derive finds an orphan or writes one afresh. Where it keeps none, the
+/// document stays in `b/.taiyaku` and the removal lists it. Each case runs
+/// twice, on a fresh copy: removing `b`, and removing its library `B`.
+#[test]
+fn a_removal_carries_the_document_of_a_work_it_re_points_at_another_copy() {
+    for a_keeps in [true, false] {
+        for whole_library in [false, true] {
+            let case = format!("a_keeps={a_keeps}, whole_library={whole_library}");
+            let copy = crate::tests::a_volume_copied_into_two_libraries();
+            let conn = copy.conn();
+            let work: i64 = conn
+                .query_row("SELECT id FROM work", [], |r| r.get(0))
+                .expect("the one work");
+            keep_documents(&conn, &copy.b);
+            if a_keeps {
+                keep_documents(&conn, &copy.a);
+            }
+            let mut doc = crate::librarydoc::of(&conn, work).expect("projects the work");
+            doc.title = Some("Foo v01, by hand".to_string());
+            crate::librarydoc::apply(&conn, work, &doc).expect("sets the title by hand");
+            let at_b = crate::hand::save(&conn, work)
+                .expect("saves the title")
+                .path
+                .expect("the fixture: an address");
+            assert!(
+                at_b.is_file() && at_b.starts_with(&copy.b.path),
+                "the fixture: the document is b's: {at_b:?}"
+            );
+            let at_a = copy
+                .a
+                .path
+                .join(".taiyaku")
+                .join(at_b.file_name().expect("a file name"));
+
+            let derived = removed(&conn, &copy.b, whole_library);
+
+            assert_eq!(
+                crate::hand::path_for(&conn, work).expect("addresses"),
+                Some(at_a.clone()),
+                "{case}: the fixture: a's address, under the same key"
+            );
+            if a_keeps {
+                assert!(
+                    std::fs::read_to_string(&at_a)
+                        .expect("reads it")
+                        .contains("Foo v01, by hand"),
+                    "{case}: the document b kept"
+                );
+                assert_eq!(
+                    (
+                        files_in(&copy.b.path.join(".taiyaku")),
+                        derived.orphan_documents,
+                        derived.repaired_documents
+                    ),
+                    (Vec::<String>::new(), Vec::new(), 0),
+                    "{case}: carried out of b/.taiyaku, no orphan, and nothing written afresh"
+                );
+            } else {
+                assert!(at_b.is_file(), "{case}: the document stays");
+                assert!(
+                    !copy.a.path.join(".taiyaku").exists(),
+                    "{case}: and a is given no .taiyaku"
+                );
+                assert_eq!(
+                    derived.orphan_documents,
+                    [crate::hand::Orphan {
+                        path: at_b.clone(),
+                        title: Some("Foo v01, by hand".to_string()),
+                        absorbed_into: None,
+                    }],
+                    "{case}: listed with its title"
+                );
+            }
+        }
+    }
+}
+
+/// A removal that deletes a work's member under the removed directory, while
+/// another directory keeps the rest of the work, moves the work's address
+/// there. Bleach v01's c001 is in `x` and c002 in `y`, one work addressed in
+/// `x`, and `x` has a library of its own. The document is carried where `y`
+/// keeps documents; where it keeps none, it stays in `x/.taiyaku` and the
+/// removal lists it. Each case runs twice: removing `x`, and its library.
+#[test]
+fn a_removal_carries_the_document_of_a_work_whose_member_under_the_removed_directory_goes() {
+    for y_keeps in [true, false] {
+        for whole_library in [false, true] {
+            let case = format!("y_keeps={y_keeps}, whole_library={whole_library}");
+            let top = crate::tests::tempdir(&format!(
+                "documents-spread-{}-{}",
+                u8::from(y_keeps),
+                u8::from(whole_library)
+            ));
+            for rel in ["x/Bleach v01 - c001.cbz", "y/Bleach v01 - c002.cbz"] {
+                write_archive_labelled(&top.path().join(rel), 3, "jpg", rel);
+            }
+            let library = Library::open_in_memory().expect("open");
+            let conn = library.conn();
+            let [x, y] = ["x", "y"].map(|dir| {
+                add_root_checked_in(&conn, &top.path().join(dir), InLibrary::Named("Manga"))
+                    .expect("adds a directory to Manga")
+                    .root
+            });
+            scan_root(&conn, &x).expect("scans x");
+            scan_root(&conn, &y).expect("scans y");
+            crate::derive::derive(&conn).expect("derives");
+            let work = work_of(&conn, &x.path.join("Bleach v01 - c001.cbz"));
+            assert_eq!(
+                work_of(&conn, &y.path.join("Bleach v01 - c002.cbz")),
+                work,
+                "the fixture: one work"
+            );
+            keep_documents(&conn, &x);
+            if y_keeps {
+                keep_documents(&conn, &y);
+            }
+            let mut doc = crate::librarydoc::of(&conn, work).expect("projects the work");
+            doc.title = Some("Bleach v01, by hand".to_string());
+            crate::librarydoc::apply(&conn, work, &doc).expect("sets the title by hand");
+            let at_x = crate::hand::save(&conn, work)
+                .expect("saves the title")
+                .path
+                .expect("the fixture: an address");
+            assert!(
+                at_x.is_file() && at_x.starts_with(x.path.join(".taiyaku")),
+                "the fixture: the document is x's: {at_x:?}"
+            );
+            crate::relocate::move_root(
+                &conn,
+                x.id,
+                x.libraries[0],
+                crate::relocate::Target::New("X"),
+            )
+            .expect("moves x to a library of its own");
+            let x = roots(&conn)
+                .expect("lists the directories")
+                .into_iter()
+                .find(|root| root.id == x.id)
+                .expect("x");
+
+            let derived = removed(&conn, &x, whole_library);
+
+            let at = crate::hand::path_for(&conn, work)
+                .expect("addresses")
+                .expect("an address");
+            assert!(
+                at.starts_with(y.path.join(".taiyaku")),
+                "{case}: the fixture: addressed in y now: {at:?}"
+            );
+            if y_keeps {
+                assert!(
+                    std::fs::read_to_string(&at)
+                        .expect("reads it")
+                        .contains("Bleach v01, by hand"),
+                    "{case}: the document x kept"
+                );
+                assert_eq!(
+                    (
+                        files_in(&x.path.join(".taiyaku")),
+                        derived.orphan_documents,
+                        derived.repaired_documents
+                    ),
+                    (Vec::<String>::new(), Vec::new(), 0),
+                    "{case}: carried out of x/.taiyaku, no orphan, and nothing written afresh"
+                );
+            } else {
+                assert!(at_x.is_file(), "{case}: the document stays");
+                assert!(
+                    !y.path.join(".taiyaku").exists(),
+                    "{case}: and y is given no .taiyaku"
+                );
+                assert_eq!(
+                    derived.orphan_documents,
+                    [crate::hand::Orphan {
+                        path: at_x.clone(),
+                        title: Some("Bleach v01, by hand".to_string()),
+                        absorbed_into: None,
+                    }],
+                    "{case}: listed with its title"
+                );
+            }
+        }
+    }
+}
+
+/// A removal notes every work with a member under the removed directory, so a
+/// work whose document is under a directory that stays is carried too, and the
+/// carry leaves it there. Series v01's hub edition `en` is in `y`, which keeps
+/// documents, and its `raw` edition in `x`, which has a library of its own.
+/// Removing `x`, or its library, moves neither the hub nor the address, so the
+/// document stays as it was and `y`'s reconcile, not the removal, answers for
+/// it: nothing lists it.
+#[test]
+fn a_removal_leaves_unlisted_a_document_under_a_directory_that_stays() {
+    for whole_library in [false, true] {
+        let case = format!("whole_library={whole_library}");
+        let top = crate::tests::tempdir(&format!("documents-live-{}", u8::from(whole_library)));
+        write_pages(&top.path().join("y/Series/Series - v01"), 2);
+        write_pages(&top.path().join("x/Series/Series - v01"), 3);
+        let library = Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        let [x, y] = ["x", "y"].map(|dir| {
+            add_root_checked_in(&conn, &top.path().join(dir), InLibrary::Named("Manga"))
+                .expect("adds a directory to Manga")
+                .root
+        });
+        update_root(
+            &conn,
+            y.id,
+            &RootPatch {
+                edition_key: Some(Some("en".to_string())),
+                ..Default::default()
+            },
+        )
+        .expect("y's edition sorts first, so it is the hub");
+        keep_documents(&conn, &y);
+        for root in roots(&conn).expect("lists the directories") {
+            scan_root(&conn, &root).expect("scans");
+        }
+        crate::derive::derive(&conn).expect("derives");
+        let (works, work): (i64, i64) = conn
+            .query_row("SELECT count(*), max(id) FROM work", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .expect("counts the works");
+        let mut held: Vec<Option<i64>> = conn
+            .prepare("SELECT m.root_id FROM member m JOIN edition e ON e.id = m.edition_id")
+            .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+            .expect("lists the members' directories");
+        held.sort_unstable();
+        assert_eq!(
+            (works, held),
+            (1, vec![Some(x.id.min(y.id)), Some(x.id.max(y.id))]),
+            "the fixture: one work, with a member in each directory"
+        );
+        let mut doc = crate::librarydoc::of(&conn, work).expect("projects the work");
+        doc.title = Some("Series v01, by hand".to_string());
+        crate::librarydoc::apply(&conn, work, &doc).expect("sets the title by hand");
+        let at_y = crate::hand::save(&conn, work)
+            .expect("saves the title")
+            .path
+            .expect("the fixture: an address");
+        assert!(
+            at_y.is_file() && at_y.starts_with(y.path.join(".taiyaku")),
+            "the fixture: the document is y's: {at_y:?}"
+        );
+        let before = std::fs::read(&at_y).expect("reads it");
+        crate::relocate::move_root(
+            &conn,
+            x.id,
+            x.libraries[0],
+            crate::relocate::Target::New("X"),
+        )
+        .expect("moves x to a library of its own");
+        let x = roots(&conn)
+            .expect("lists the directories")
+            .into_iter()
+            .find(|root| root.id == x.id)
+            .expect("x");
+
+        let derived = removed(&conn, &x, whole_library);
+
+        assert_eq!(
+            crate::hand::path_for(&conn, work).expect("addresses"),
+            Some(at_y.clone()),
+            "{case}: the fixture: the same address under y"
+        );
+        assert_eq!(
+            std::fs::read(&at_y).expect("reads it"),
+            before,
+            "{case}: the document is untouched"
+        );
+        assert_eq!(
+            (derived.orphan_documents, derived.repaired_documents),
+            (Vec::new(), 0),
+            "{case}: not listed, and nothing written afresh"
+        );
+    }
+}
+
+/// A work a removal deletes keeps its document where it was, unlisted: so when
+/// a library's one directory goes, and so when its two directories holding a
+/// copy each go, though removing `b` first re-points the member at `a`'s copy
+/// before removing `a` takes the work.
+#[test]
+fn a_library_removal_that_takes_a_work_from_both_its_copies_leaves_its_document_unlisted() {
+    for copied in [false, true] {
+        let (b_dir, a_dir) = crate::tests::a_copy_of_one_volume();
+        let library = Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        let b = add_root_in(&conn, b_dir.path(), InLibrary::Named("Both")).expect("adds b");
+        let mut dirs = vec![b.clone()];
+        if copied {
+            dirs.push(add_root_in(&conn, a_dir.path(), InLibrary::Named("Both")).expect("adds a"));
+        }
+        for dir in &dirs {
+            scan_root(&conn, dir).expect("scans");
+        }
+        crate::derive::derive(&conn).expect("derives");
+        let mut held = dirs.iter().map(|dir| dir.id).collect::<Vec<_>>();
+        held.sort_unstable();
+        assert_eq!(
+            (
+                crate::tests::the_member(&conn).0,
+                crate::tests::member_root_ids(&conn)
+            ),
+            (Some(b.id), held),
+            "copied={copied}: the fixture: one member, b's, held under every directory"
+        );
+        keep_documents(&conn, &b);
+        let work: i64 = conn
+            .query_row("SELECT id FROM work", [], |r| r.get(0))
+            .expect("the one work");
+        let mut doc = crate::librarydoc::of(&conn, work).expect("projects the work");
+        doc.title = Some("Foo v01, by hand".to_string());
+        crate::librarydoc::apply(&conn, work, &doc).expect("sets the title by hand");
+        let at_b = crate::hand::save(&conn, work)
+            .expect("saves the title")
+            .path
+            .expect("the fixture: an address");
+
+        let derived = removed(&conn, &b, true);
+
+        let works: i64 = conn
+            .query_row("SELECT count(*) FROM work", [], |r| r.get(0))
+            .expect("counts");
+        assert_eq!(works, 0, "copied={copied}: the fixture: the work goes");
+        assert!(at_b.is_file(), "copied={copied}: the document stays");
+        assert_eq!(
+            derived.orphan_documents,
+            Vec::new(),
+            "copied={copied}: unlisted"
+        );
+    }
+}
+
 /// A member whose primary directory `b` went with no removal around it, as
 /// one can between a derive reading the roots and writing them, has its
 /// `root_id` `NULL` and a copy recorded under `a` alone. It is `a`'s: removing
@@ -6520,6 +6858,7 @@ fn a_directory_only_pattern_around_a_removed_directory_holds_back_directories_al
 struct Documented {
     _top: crate::tests::TempDir,
     library: Library,
+    manga: Root,
     kids: Root,
     v01: i64,
     /// Bleach v01's document under Manga, and the same name under Kids.
@@ -6554,6 +6893,7 @@ fn documented(label: &str, kids_keeps: bool) -> Documented {
     Documented {
         _top: top,
         library,
+        manga,
         kids,
         v01,
         at_manga,
@@ -6732,6 +7072,200 @@ fn a_hand_over_never_overwrites_a_document_at_the_nested_address() {
         [d.at_kids.display().to_string()],
         "Kids' disagrees with the store"
     );
+}
+
+/// `root` removed, alone or, where `whole_library`, with its one library: the
+/// derive report the removal answers.
+fn removed(conn: &Connection, root: &Root, whole_library: bool) -> crate::derive::DeriveReport {
+    if whole_library {
+        remove_library(conn, root.libraries[0])
+    } else {
+        remove_root(conn, root.id)
+    }
+    .unwrap_or_else(|e| panic!("removes {}: {e}", root.path.display()))
+    .1
+}
+
+/// A hand-back into a directory that keeps no documents leaves the document in
+/// `m/kids/.taiyaku`, which no root's reconcile reads once Kids is gone, so the
+/// removal lists it as an orphan with its title. Bleach v02 is handed back too
+/// and has no document, so nothing names it.
+#[test]
+fn a_hand_back_into_a_directory_that_keeps_no_documents_reports_the_document_it_leaves() {
+    for whole_library in [false, true] {
+        let d = documented(&format!("documents-left-{}", u8::from(whole_library)), true);
+        let conn = d.library.conn();
+        scan_root(&conn, &d.kids).expect("scans Kids");
+        crate::derive::derive(&conn).expect("derives");
+        assert!(d.at_kids.is_file(), "the fixture: the document is Kids'");
+        conn.execute(
+            "UPDATE root SET keeps_documents = 0 WHERE id = ?1",
+            [d.manga.id],
+        )
+        .expect("Manga keeps none");
+
+        let derived = removed(&conn, &d.kids, whole_library);
+
+        assert_eq!(
+            (d.at_kids.is_file(), d.at_manga.exists()),
+            (true, false),
+            "whole_library={whole_library}: the document stays in m/kids/.taiyaku"
+        );
+        assert_eq!(
+            derived.orphan_documents,
+            [crate::hand::Orphan {
+                path: d.at_kids.clone(),
+                title: Some("Bleach, by hand".to_string()),
+                absorbed_into: None,
+            }],
+            "whole_library={whole_library}: listed with its title"
+        );
+    }
+}
+
+/// A hand-back whose directory cannot be made leaves the document as one that
+/// keeps none does: a plain file stands where `m/.taiyaku` must go. The
+/// removal lists the document it left as an orphan, apart from the address
+/// its derive could not write.
+#[test]
+fn a_hand_back_that_cannot_make_the_outer_taiyaku_reports_the_document() {
+    for whole_library in [false, true] {
+        let d = documented(
+            &format!("documents-blocked-{}", u8::from(whole_library)),
+            true,
+        );
+        let conn = d.library.conn();
+        scan_root(&conn, &d.kids).expect("scans Kids");
+        crate::derive::derive(&conn).expect("derives");
+        let outer = d.manga.path.join(".taiyaku");
+        assert_eq!(
+            (d.at_kids.is_file(), files_in(&outer)),
+            (true, Vec::<String>::new()),
+            "the fixture: Kids' scan carried the document out of m/.taiyaku"
+        );
+        // A file where the directory must go, not `set_readonly`: CI runs as
+        // root and ignores the write bit.
+        std::fs::remove_dir(&outer).expect("removes the empty m/.taiyaku");
+        std::fs::write(&outer, b"not a directory").expect("a file where m/.taiyaku must go");
+
+        let derived = removed(&conn, &d.kids, whole_library);
+
+        assert!(
+            d.at_kids.is_file(),
+            "whole_library={whole_library}: the document stays in m/kids/.taiyaku"
+        );
+        assert_eq!(
+            derived.orphan_documents,
+            [crate::hand::Orphan {
+                path: d.at_kids.clone(),
+                title: Some("Bleach, by hand".to_string()),
+                absorbed_into: None,
+            }],
+            "whole_library={whole_library}: listed with its title"
+        );
+        assert_eq!(
+            derived.unwritable_documents,
+            [format!("{}: File exists (os error 17)", outer.display())],
+            "whole_library={whole_library}: the address the derive could not write"
+        );
+    }
+}
+
+/// A hand-back never overwrites: with a document already at Manga's address,
+/// the one in `m/kids/.taiyaku` stays, and the removal lists it as an orphan,
+/// while the one at the address is left as it is.
+#[test]
+fn a_hand_back_never_overwrites_and_reports_the_document_it_leaves() {
+    for whole_library in [false, true] {
+        let d = documented(
+            &format!("documents-back-occupied-{}", u8::from(whole_library)),
+            true,
+        );
+        let conn = d.library.conn();
+        scan_root(&conn, &d.kids).expect("scans Kids");
+        crate::derive::derive(&conn).expect("derives");
+        assert!(d.at_kids.is_file(), "the fixture: the document is Kids'");
+        std::fs::write(
+            &d.at_manga,
+            br#"{"taiyaku_library":1,"updated":"x","title":"Squatter"}"#,
+        )
+        .expect("a document at Manga's address");
+
+        let derived = removed(&conn, &d.kids, whole_library);
+
+        assert!(
+            std::fs::read_to_string(&d.at_manga)
+                .expect("reads it")
+                .contains("Squatter"),
+            "whole_library={whole_library}: not overwritten"
+        );
+        assert!(
+            d.at_kids.is_file(),
+            "whole_library={whole_library}: and not moved"
+        );
+        assert_eq!(
+            derived.orphan_documents,
+            [crate::hand::Orphan {
+                path: d.at_kids.clone(),
+                title: Some("Bleach, by hand".to_string()),
+                absorbed_into: None,
+            }],
+            "whole_library={whole_library}: listed with its title"
+        );
+    }
+}
+
+/// The inward hand-back: removing Manga before Kids' first scan hands Bleach to
+/// Kids, which keeps no documents, so v01's document stays in `m/.taiyaku`,
+/// no root's once Manga is gone, and the removal lists it.
+#[test]
+fn removing_the_outer_reports_the_document_a_nested_directory_that_keeps_none_did_not_take() {
+    for whole_library in [false, true] {
+        let (_top, library, manga) = manga_holding(
+            &format!("documents-inward-{}", u8::from(whole_library)),
+            NEST_FILES,
+        );
+        let conn = library.conn();
+        keep_documents(&conn, &manga);
+        let v01 = read_bleach_v01(&conn, &manga);
+        let at_manga = crate::hand::save(&conn, v01)
+            .expect("saves the title")
+            .path
+            .expect("the fixture: an address");
+        assert!(at_manga.is_file(), "the fixture: the document is Manga's");
+        let kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+            .expect("adds Kids")
+            .root;
+
+        let derived = removed(&conn, &manga, whole_library);
+
+        assert_eq!(
+            crate::hand::path_for(&conn, v01).expect("addresses"),
+            Some(
+                kids.path
+                    .join(".taiyaku")
+                    .join(at_manga.file_name().expect("a file name"))
+            ),
+            "the fixture: Kids' address"
+        );
+        assert!(
+            at_manga.is_file(),
+            "whole_library={whole_library}: the document stays"
+        );
+        assert!(
+            !kids.path.join(".taiyaku").exists(),
+            "whole_library={whole_library}: and Kids is given no .taiyaku"
+        );
+        assert_eq!(
+            derived.orphan_documents,
+            [crate::hand::Orphan {
+                path: at_manga.clone(),
+                title: Some("Bleach, by hand".to_string()),
+                absorbed_into: None,
+            }],
+            "whole_library={whole_library}: listed with its title"
+        );
+    }
 }
 
 /// The straddle: Bleach v01's c001 under `m/kids` and c002 under `m`, one work.

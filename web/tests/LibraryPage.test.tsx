@@ -1507,9 +1507,9 @@ describe('LibraryPage, whose reports a scan draws', () => {
 })
 
 /**
- * Manga with Kids' `/media/Manga/Volumes/Kids`, directory 5, inside its
- * Volumes, and Tiny's `/media/Manga/Chapters/Tiny`, directory 6, inside its
- * Chapters, which Manga's patterns keep out.
+ * Manga with Kids' (library 3) `/media/Manga/Volumes/Kids`, directory 5, inside
+ * its Volumes, and Tiny's (library 9) `/media/Manga/Chapters/Tiny`, directory 6,
+ * inside its Chapters, which Manga's patterns keep out.
  */
 const nesting = () => {
   const library = manga()
@@ -1543,9 +1543,11 @@ const walking = (...ids: number[]): api.LibraryScanStatus => {
     moves_held: false,
     // Manga's scan holds its own directories; Kids' own scan holds 5 alone.
     scans: [
-      ...(own.length > 0 ? [{ library: 'Manga', root_ids: ids }] : []),
+      ...(own.length > 0
+        ? [{ library_id: 7, library: 'Manga', root_ids: ids }]
+        : []),
       ...(own.length === 0 && ids.includes(5)
-        ? [{ library: 'Kids', root_ids: [5] }]
+        ? [{ library_id: 3, library: 'Kids', root_ids: [5] }]
         : []),
     ],
     running: ids.length > 0,
@@ -1631,8 +1633,8 @@ describe('LibraryPage, a directory inside one of its own', () => {
         running: id === 5 || id === 6,
       })),
       scans: [
-        { library: 'Kids', root_ids: [5] },
-        { library: 'Tiny', root_ids: [6] },
+        { library_id: 3, library: 'Kids', root_ids: [5] },
+        { library_id: 9, library: 'Tiny', root_ids: [6] },
       ],
     })
     const { host } = await shown(library)
@@ -1662,7 +1664,7 @@ describe('LibraryPage, a directory inside one of its own', () => {
         root_id: id,
         running: id === 5 || id === 7,
       })),
-      scans: [{ library: 'Kids', root_ids: [5, 7] }],
+      scans: [{ library_id: 3, library: 'Kids', root_ids: [5, 7] }],
     })
     const { host } = await shown(library)
     expect(
@@ -1689,7 +1691,7 @@ describe('LibraryPage, a directory inside one of its own', () => {
         root_id: id,
         running: id === 5 || id === 8,
       })),
-      scans: [{ library: 'Kids', root_ids: [5, 8] }],
+      scans: [{ library_id: 3, library: 'Kids', root_ids: [5, 8] }],
     })
     const { host } = await shown(library)
     expect(
@@ -1766,7 +1768,7 @@ describe('LibraryPage, a directory inside one of its own', () => {
         root_id: id,
         running: id === 5 || id === 8,
       })),
-      scans: [{ library: 'Kids', root_ids: [5, 8] }],
+      scans: [{ library_id: 3, library: 'Kids', root_ids: [5, 8] }],
     })
     const { host } = await shown(library)
     expect(
@@ -1802,7 +1804,7 @@ describe('LibraryPage, a directory inside one of its own', () => {
         root_id: id,
         running: ids.includes(id),
       })),
-      scans: [{ library: null, root_ids: ids }],
+      scans: [{ library_id: null, library: null, root_ids: ids }],
     })
     vi.mocked(api.libraryScanStatus).mockResolvedValue(status(5))
     const { host } = await shown(library)
@@ -2876,7 +2878,7 @@ describe('LibraryPage, a directory another library holds too', () => {
         { root_id: 4, running: true },
         { root_id: 5, running: false },
       ],
-      scans: [{ library: 'Manga', root_ids: [4] }],
+      scans: [{ library_id: 7, library: 'Manga', root_ids: [4] }],
     })
     const { host } = await shown(kids())
     expect(
@@ -2896,7 +2898,7 @@ describe('LibraryPage, a directory another library holds too', () => {
         { root_id: 4, running: true },
         { root_id: 5, running: false },
       ],
-      scans: [{ library: null, root_ids: [4] }],
+      scans: [{ library_id: null, library: null, root_ids: [4] }],
     })
     const { host } = await shown(kids())
     expect(
@@ -2917,7 +2919,28 @@ describe('LibraryPage, a directory another library holds too', () => {
         { root_id: 4, running: true },
         { root_id: 5, running: false },
       ],
-      scans: [{ library: 'Kids', root_ids: [4] }],
+      scans: [{ library_id: 3, library: 'Kids', root_ids: [4] }],
+    })
+    const { host } = await shown(kids())
+    expect(
+      [...host.querySelectorAll('.library-page > .scanning')].map(
+        (line) => line.textContent,
+      ),
+    ).toEqual(['A scan is running in this library… 3s'])
+  })
+
+  it('says its own scan is running after the library is renamed, by its id', async () => {
+    // The status names a library as it is called when read; the page's list
+    // may still hold the name it had.
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(3),
+      running: true,
+      elapsed_secs: 3,
+      dirs: [
+        { root_id: 4, running: true },
+        { root_id: 5, running: false },
+      ],
+      scans: [{ library_id: 3, library: 'Children', root_ids: [4] }],
     })
     const { host } = await shown(kids())
     expect(
@@ -2936,7 +2959,7 @@ describe('LibraryPage, a directory another library holds too', () => {
         { root_id: 4, running: false },
         { root_id: 5, running: true },
       ],
-      scans: [{ library: null, root_ids: [5] }],
+      scans: [{ library_id: null, library: null, root_ids: [5] }],
     })
     const { host } = await shown(kids())
     expect(

@@ -171,11 +171,9 @@ pub(crate) async fn perform(
             let _job = match state.library_job.try_lock() {
                 Ok(guard) => guard,
                 Err(std::sync::TryLockError::WouldBlock) => {
-                    return Err(NoAnswer::Refused(
-                        "a scan or another library job is currently running against this \
-                         library; wait for it to finish and stamp again"
-                            .to_string(),
-                    ));
+                    return Err(NoAnswer::Refused(crate::library_job::waits_for_the_job(
+                        "stamp again",
+                    )));
                 }
                 Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             };

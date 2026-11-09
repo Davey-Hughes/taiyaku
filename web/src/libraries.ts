@@ -234,14 +234,21 @@ export interface LibraryScanStatus {
    */
   held_removals: number[]
   /**
-   * The running directories by the library whose request reserved them,
-   * named, or `null` where none did: a scan another library asked for walks
+   * The running directories by the library whose request reserved them, by
+   * its id, which a page compares with its own, and the name it has now,
+   * which a page shows; both `null` where none did, or where that library no
+   * longer reaches the directory. A scan another library asked for walks
    * directories this one shows.
    */
-  scans: { library: string | null; root_ids: number[] }[]
+  scans: {
+    library_id: number | null
+    library: string | null
+    root_ids: number[]
+  }[]
   /**
-   * Whether a library job (a scan of any library, a rule save, a stamp or a
-   * move) holds the server's job lock, for which it refuses every move.
+   * Whether a library job holds the server's job lock (the serve crate's
+   * `LibraryJob` names them), for which it refuses every move and every
+   * removal from a library.
    */
   moves_held: boolean
 }

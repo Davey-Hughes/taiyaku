@@ -43,9 +43,11 @@
 //!
 //! **This module writes nothing to the library tree but the hand documents it
 //! moves.** §10. When a directory takes a work's files over or hands them
-//! back, the work's document under `.taiyaku` moves with them, into a root
-//! that keeps documents (`carry_documents`). Otherwise the one file the
-//! scanner ever creates is `watch.rs`'s probe, which is not this.
+//! back, or a removal deletes or re-points a member of a work that survives
+//! it, the work's document under `.taiyaku` follows its address, into a root
+//! that keeps documents (`carry_documents`). What the carry cannot move out of
+//! a removed directory, the removal reports as an orphan. Otherwise the one
+//! file the scanner ever creates is `watch.rs`'s probe, which is not this.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -376,6 +378,13 @@ pub struct Added {
     /// ascending by id, read inside the add's transaction while they stand:
     /// empty for a directory new to the store.
     pub also_in: Vec<String>,
+    /// The directory row's `last_scan_at`, read inside the add's transaction,
+    /// as [`Added::also_in`] is, so an answer drawn after the commit needs no
+    /// row that a removal since may have deleted: `None` for a directory new
+    /// to the store, which has never been scanned.
+    pub last_scan_at: Option<String>,
+    /// The row's `last_scan_status`, read with [`Added::last_scan_at`].
+    pub last_scan_status: Option<String>,
 }
 
 /// Why [`add_root_checked`] could not add a root.
@@ -578,6 +587,7 @@ enum Placed {
 /// Directory `held`, which other libraries hold, linked into library `into`
 /// inside the caller's transaction: one `library_root` row and nothing else,
 /// as the settings, scans and documents are the directory's, not a library's.
+/// Its scan columns are read there too, for [`Added::last_scan_at`]'s reason.
 fn linked(conn: &Connection, into: i64, held: Root) -> Result<Added, String> {
     conn.execute(
         "INSERT INTO library_root (library_id, root_id) VALUES (?1, ?2)",
@@ -585,6 +595,13 @@ fn linked(conn: &Connection, into: i64, held: Root) -> Result<Added, String> {
     )
     .map_err(|e| format!("linking {} into library {into}: {e}", held.path.display()))?;
     let also_in = names_of(conn, &held.libraries)?;
+    let (last_scan_at, last_scan_status) = conn
+        .query_row(
+            "SELECT last_scan_at, last_scan_status FROM root WHERE id = ?1",
+            [held.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| format!("reading the scan status of {}: {e}", held.path.display()))?;
     let mut libraries = held.libraries.clone();
     libraries.push(into);
     libraries.sort_unstable();
@@ -593,6 +610,8 @@ fn linked(conn: &Connection, into: i64, held: Root) -> Result<Added, String> {
         probe: None,
         interval: None,
         also_in,
+        last_scan_at,
+        last_scan_status,
     })
 }
 
@@ -815,6 +834,8 @@ fn probed(conn: &Connection, root: Root) -> Result<Added, AddRootError> {
         probe: Some(probe),
         interval: Some(interval),
         also_in: Vec::new(),
+        last_scan_at: None,
+        last_scan_status: None,
     })
 }
 
@@ -1450,7 +1471,7 @@ fn hand_back(tx: &Connection, removed: i64, carried: &mut Carried) -> Result<usi
     Ok(copied)
 }
 
-/// Each work whose hand document a hand-over or a hand-back must carry, with
+/// Each work whose hand document a hand-over or a removal must carry, with
 /// the address the document is at.
 type Carried = BTreeMap<i64, PathBuf>;
 
@@ -1479,11 +1500,41 @@ fn note_addresses(
 /// commit that moved the members, for [`crate::hand::rename_from`]'s reason,
 /// and before the derive that follows, whose `hand::reconcile` would
 /// otherwise report it as an orphan and write a fresh one at the new address.
-fn carry_documents(conn: &Connection, carried: &Carried) -> Result<(), String> {
-    for (work, old) in carried {
-        crate::hand::rename_from(conn, *work, old)?;
+/// Answers each document that stays in a `.taiyaku` no root holds now, which
+/// no `reconcile` reads, for the caller to report.
+fn carry_documents(
+    conn: &Connection,
+    carried: &Carried,
+) -> Result<Vec<crate::hand::Orphan>, String> {
+    // Most scans and removals carry nothing, and need no read after their
+    // commit that could fail them.
+    if carried.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(())
+    let held: Vec<PathBuf> = roots(conn)?
+        .into_iter()
+        .map(|root| root.path.join(crate::hand::DIR))
+        .collect();
+    let mut left = Vec::new();
+    for (work, old) in carried {
+        if crate::hand::rename_from(conn, *work, old)? {
+            continue;
+        }
+        // Most carried works have no document. One under a live root is not
+        // listed: it can still be its work's document, which listing would
+        // call an orphan, and if it is not, that root's `reconcile` reports it.
+        let under_a_root = old
+            .parent()
+            .is_some_and(|dir| held.iter().any(|kept| kept == dir));
+        if old.is_file() && !under_a_root {
+            left.push(crate::hand::Orphan {
+                path: old.clone(),
+                title: crate::hand::title_in(old),
+                absorbed_into: None,
+            });
+        }
+    }
+    Ok(left)
 }
 
 /// Each of `all` that a scan must not run beside while the directories
@@ -1514,16 +1565,13 @@ pub fn removal_touches(all: &[Root], removed: &[i64]) -> Vec<Root> {
 ///
 /// A member whose every `member_root` row is `id`'s is deleted, not left under
 /// no directory (O54). One with a copy elsewhere is kept, and where `id` held
-/// its `root_id` and `path` they are re-pointed here at that copy; see
-/// [`repoint_kept_members`].
-fn take_root(conn: &Connection, id: i64) -> Result<Removal, String> {
-    let works: i64 = conn
-        .query_row(
-            &format!("SELECT COUNT(*) FROM ({DOOMED_WORKS})"),
-            [id],
-            |r| r.get(0),
-        )
-        .map_err(|e| format!("counting the works root {id} alone accounts for: {e}"))?;
+/// its `root_id` and `path` they are re-pointed at that copy; see
+/// [`repoint_kept_members`]. Each surviving work of either goes in `carried`.
+fn take_root(conn: &Connection, id: i64, carried: &mut Carried) -> Result<Removal, String> {
+    let doomed: Vec<i64> = conn
+        .prepare(DOOMED_WORKS)
+        .and_then(|mut stmt| stmt.query_map([id], |r| r.get(0))?.collect())
+        .map_err(|e| format!("reading the works root {id} alone accounts for: {e}"))?;
     let positions: i64 = conn
         .query_row(
             &format!("SELECT COUNT(*) FROM progress WHERE work_id IN ({DOOMED_WORKS})"),
@@ -1539,11 +1587,29 @@ fn take_root(conn: &Connection, id: i64) -> Result<Removal, String> {
         )
         .map_err(|e| format!("counting the notes root {id} would take: {e}"))?;
 
+    // A work this deletes keeps its document where it is, unlisted, as when its
+    // one directory goes: a library removal's earlier directory may have noted
+    // it while a copy here kept it alive.
+    for work in &doomed {
+        carried.remove(work);
+    }
     conn.execute(
         &format!("DELETE FROM work WHERE id IN ({DOOMED_WORKS})"),
         [id],
     )
     .map_err(|e| format!("deleting the works root {id} alone accounts for: {e}"))?;
+    // Read before any member of `id` is deleted, re-pointed or left with no
+    // directory: each can move a surviving work's address, and afterwards
+    // nothing names the one its document is at.
+    let touched: Vec<i64> = conn
+        .prepare(
+            "SELECT DISTINCT e.work_id FROM member m
+               JOIN edition e ON e.id = m.edition_id
+              WHERE m.root_id = ?1",
+        )
+        .and_then(|mut stmt| stmt.query_map([id], |r| r.get(0))?.collect())
+        .map_err(|e| format!("reading the works root {id} holds members of: {e}"))?;
+    note_addresses(conn, touched, carried)?;
     conn.execute(
         "DELETE FROM member
           WHERE id IN (SELECT member_id FROM member_root WHERE root_id = ?1)
@@ -1559,7 +1625,7 @@ fn take_root(conn: &Connection, id: i64) -> Result<Removal, String> {
         .map_err(|e| format!("removing root {id}: {e}"))?;
 
     Ok(Removal {
-        works: usize::try_from(works).unwrap_or(usize::MAX),
+        works: doomed.len(),
         positions: usize::try_from(positions).unwrap_or(usize::MAX),
         notes: usize::try_from(notes).unwrap_or(usize::MAX),
         removed: vec![id],
@@ -1691,7 +1757,7 @@ fn apply_removal(
     // rehearsal, which runs this function too, counts what the removal does.
     let mut carried = Carried::new();
     hand_back(conn, id, &mut carried)?;
-    let mut removal = take_root(conn, id)?;
+    let mut removal = take_root(conn, id, &mut carried)?;
     removal.left_with_no_library = left_with_no_library;
     removal.libraries_removed = libraries_removed;
     let derived = crate::derive::derive_with(conn, crate::derive::Documents::Skip)?;
@@ -1752,10 +1818,7 @@ pub fn removal_cost(
 
 /// Remove root `id` for real: delete it, delete every work that lived
 /// entirely under it, re-derive, and reconcile `<root>/.taiyaku/` on every
-/// root that remains — the works just deleted are exactly the ones whose
-/// documents become orphans, and reporting that back is
-/// [`crate::hand::reconcile`]'s job, run here the same way
-/// [`fn@crate::derive::derive`] runs it on every other call site.
+/// root that remains, as [`fn@crate::derive::derive`] does everywhere else.
 ///
 /// **Two derive passes, not one.** [`apply_removal`] always derives under
 /// [`crate::derive::Documents::Skip`] (see that function's own doc), so the
@@ -1781,7 +1844,9 @@ pub fn removal_cost(
 /// that does depend on it — `repaired_documents`, `unwritable_documents`,
 /// `orphan_documents`, `declined_documents`, `stale_documents` — is `Skip`'s
 /// own report, and reporting it dropped and reporting nothing would say
-/// the removal reconciled documents.
+/// the removal reconciled documents. Its `orphan_documents` ends with each
+/// document the carry left in a `.taiyaku` no root holds now, which no
+/// `reconcile` reads.
 ///
 /// **[`crate::Nested`], not `unchecked_transaction` directly** — see
 /// [`removal_cost`]'s own doc for why.
@@ -1793,8 +1858,9 @@ pub fn removal_cost(
 /// fails — in which case the removal itself has already committed and only
 /// the reconciliation pass over its aftermath did not complete. Likewise if
 /// SQLite fails, after the commit, while carrying the hand documents of the
-/// works a hand-back moved: the removal has committed, the documents not yet
-/// carried stay where they were, and the reconciling derive is not run.
+/// works whose members it handed back, deleted or re-pointed: the removal has
+/// committed, the documents not yet carried stay where they were, and the
+/// reconciling derive is not run.
 pub fn remove_root(
     conn: &Connection,
     id: i64,
@@ -1804,10 +1870,11 @@ pub fn remove_root(
     let (removal, _predicted, carried) = apply_removal(&tx, id)?;
     tx.commit()
         .map_err(|e| format!("committing the removal of root {id}: {e}"))?;
-    carry_documents(conn, &carried)
+    let left = carry_documents(conn, &carried)
         .map_err(|e| format!("moving hand documents after removing root {id}: {e}"))?;
-    let derived = crate::derive::derive(conn)
+    let mut derived = crate::derive::derive(conn)
         .map_err(|e| format!("reconciling documents after removing root {id}: {e}"))?;
+    derived.orphan_documents.extend(left);
     Ok((removal, derived))
 }
 
@@ -1871,7 +1938,7 @@ fn apply_library_removal(
         // As in `apply_removal`. Directories of one library never nest, so a
         // directory given rows is another library's, not removed later here.
         hand_back(conn, dir.id, &mut carried)?;
-        let taken = take_root(conn, dir.id)?;
+        let taken = take_root(conn, dir.id, &mut carried)?;
         total.works += taken.works;
         total.positions += taken.positions;
         total.notes += taken.notes;
@@ -1919,7 +1986,8 @@ pub fn library_removal_cost(
 /// they alone accounted for, its links to the directories another library
 /// holds too, and the library, which migration 19 deletes with its last link.
 /// Where a directory went, derive again with documents reconciled, after the
-/// commit, for [`remove_root`]'s reason; where none did, the report is empty.
+/// commit, for [`remove_root`]'s reason, and end its `orphan_documents` with
+/// what the carry left, as that does; where none did, the report is empty.
 ///
 /// # Errors
 ///
@@ -1937,10 +2005,11 @@ pub fn remove_library(
     if predicted.is_none() {
         return Ok((removal, crate::derive::DeriveReport::default()));
     }
-    carry_documents(conn, &carried)
+    let left = carry_documents(conn, &carried)
         .map_err(|e| format!("moving hand documents after removing library {library_id}: {e}"))?;
-    let derived = crate::derive::derive(conn)
+    let mut derived = crate::derive::derive(conn)
         .map_err(|e| format!("reconciling documents after removing library {library_id}: {e}"))?;
+    derived.orphan_documents.extend(left);
     Ok((removal, derived))
 }
 
@@ -2499,6 +2568,11 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
     report.bad_exclude_patterns = excluder.complaints;
     tx.commit()
         .map_err(|e| format!("committing the scan of {}: {e}", root.path.display()))?;
+    // What the carry leaves is not reported here. A hand-over notes addresses
+    // under directories that are roots when it commits, whose `reconcile`
+    // reports what stays there; a removal of one of them committing before
+    // this carry runs can leave a document under no root, and this scan does
+    // not list it.
     carry_documents(conn, &taken.carried).map_err(|e| {
         format!(
             "moving hand documents after the scan of {}: {e}",

@@ -1511,12 +1511,17 @@ describe('RuleEditor', () => {
   it('keeps a held edit when the save fails, and states the failure where the preview cannot wipe it — O96', async () => {
     // Spec §5.1. `commit` fires a preview whose success path clears
     // `failure`, so the save's own reason goes to the notice slot on this
-    // path — otherwise the 409 a scan causes flashes and vanishes.
+    // path — otherwise the 409 a scan or another library job causes flashes
+    // and vanishes.
     const { host, fail } = await heldSave()
     await editPatternAndBlur(host, 'Edited/.*')
 
     await act(async () => {
-      fail(new Error('a scan is currently running'))
+      fail(
+        new Error(
+          'a scan or another library job is running; save again once it has finished',
+        ),
+      )
       await Promise.resolve()
       await Promise.resolve()
       await Promise.resolve()
@@ -1527,7 +1532,8 @@ describe('RuleEditor', () => {
     ).toBe('Edited/.*')
     // Said as what was not done and why, then what became of the edit.
     expect(host.querySelector('.held-edit')?.textContent).toBe(
-      'The rules were not saved: a scan is currently running. Your edit to ' +
+      'The rules were not saved: a scan or another library job is running; ' +
+        'save again once it has finished. Your edit to ' +
         'rule 2 arrived while the save was running — it is applied to the ' +
         'list on screen and is unsaved.',
     )

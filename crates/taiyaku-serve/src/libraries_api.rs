@@ -323,7 +323,10 @@ fn new_library_from_json(body: &serde_json::Value) -> Result<(String, Vec<PathBu
 
 /// `POST /api/library/libraries`: a library and its directories, all of them or
 /// nothing. Answers the library as the list would, and each directory's watch
-/// probe, which runs on the working connection, not the shared one.
+/// probe, which runs on the working connection, not the shared one. The list
+/// is read after the library commits, so a removal can land between: that
+/// answers 409, as the store did what both requests asked and is not at fault
+/// (O254).
 pub(crate) async fn create_library(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -341,26 +344,7 @@ pub(crate) async fn create_library(
     let created = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(AdminAnswer::Failed)?;
         let made = scan::create_library(&working, &name, &dirs).map_err(added_error)?;
-        let library = libraries_json(&working)
-            .map_err(AdminAnswer::Failed)?
-            .into_iter()
-            .find(|library| library["id"] == made.library_id)
-            .ok_or_else(|| {
-                AdminAnswer::Failed(format!(
-                    "library {} was made and is not listed",
-                    made.library_id
-                ))
-            })?;
-        let added = made
-            .dirs
-            .iter()
-            .map(|added| added_json(&working, added))
-            .collect::<Result<Vec<_>, String>>()
-            .map_err(AdminAnswer::Failed)?;
-        Ok::<_, AdminAnswer>(serde_json::json!({
-            "library": library,
-            "added": added,
-        }))
+        created_json(&working, &made)
     })
     .await;
 
@@ -369,6 +353,29 @@ pub(crate) async fn create_library(
         Ok(Err(no_answer)) => no_answer.into_response(),
         Err(why) => admin_panicked("creating a library", &why),
     }
+}
+
+/// [`create_library`]'s answer for the library `made`: its entry as the list
+/// draws it, and each directory's add.
+fn created_json(
+    working: &rusqlite::Connection,
+    made: &scan::Created,
+) -> Result<serde_json::Value, AdminAnswer> {
+    let library = libraries_json(working)
+        .map_err(AdminAnswer::Failed)?
+        .into_iter()
+        .find(|library| library["id"] == made.library_id)
+        .ok_or_else(|| {
+            AdminAnswer::Refused(format!(
+                "another request removed {} before it could be listed",
+                made.name
+            ))
+        })?;
+    let added = made.dirs.iter().map(added_json).collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "library": library,
+        "added": added,
+    }))
 }
 
 /// `PATCH /api/library/libraries/{id}`: rename. Answers the name as stored.
@@ -465,7 +472,7 @@ pub(crate) async fn add_dir(
         dirs_of(&working, id)?;
         let added = scan::add_root_checked_in(&working, &path, scan::InLibrary::Id(id))
             .map_err(added_error)?;
-        added_json(&working, &added).map_err(AdminAnswer::Failed)
+        Ok::<_, AdminAnswer>(added_json(&added))
     })
     .await;
 
@@ -643,7 +650,7 @@ pub(crate) async fn start_library_scan(
 /// it ([`scan::removal_touches`]), and `moves_held` says a move would wait for
 /// the job lock ([`crate::LibraryJob::is_held`]), so a page holds what would be
 /// refused. `scans` groups the running directories by the library that
-/// reserved them (`null` where none did).
+/// reserved them while it still reaches them, by id and name; else `null`.
 pub(crate) async fn library_scan_status(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -667,7 +674,8 @@ pub(crate) async fn library_scan_status(
 }
 
 /// How long a reserved scan has run, and the library whose request reserved
-/// it ([`crate::ScanProgress::library`]).
+/// it ([`crate::ScanProgress::library`]), which the status names only while
+/// that library still reaches the directory.
 type Reserved = (std::time::Duration, Option<i64>);
 
 /// [`library_scan_status`]'s body for library `id`.
@@ -712,20 +720,44 @@ fn scan_status_json(state: &ServeState, id: i64) -> Result<serde_json::Value, Ad
         .iter()
         .filter_map(|(_, running)| running.map(|(elapsed, _)| elapsed))
         .max();
-    let mut scans: std::collections::BTreeMap<Option<i64>, Vec<i64>> =
-        std::collections::BTreeMap::new();
-    for (root_id, running) in &dirs {
-        if let Some((_, by)) = running {
-            scans.entry(*by).or_default().push(*root_id);
-        }
-    }
+    // A running directory is named by the library that reserved it only while
+    // that library still reaches it (O254): a move, an unlink or a removal can
+    // commit between a scan's check and its reservation, and the slot keeps
+    // the library it was reserved under. Reach, not links: a library's scan
+    // walks the directories nested in its own, and decision 20 names it there.
+    let mut reached: HashMap<i64, Vec<i64>> = HashMap::new();
+    let asked: Vec<(i64, Option<i64>)> = dirs
+        .iter()
+        .filter_map(|(root_id, running)| {
+            let (_, by) = (*running)?;
+            let by = by.filter(|by| {
+                reached
+                    .entry(*by)
+                    .or_insert_with(|| taiyaku_library::reach::of_libraries(&all, &[*by]))
+                    .contains(root_id)
+            });
+            Some((*root_id, by))
+        })
+        .collect();
     // Only the libraries that asked for a running scan are named, usually one.
     let mut names: HashMap<i64, String> = HashMap::new();
     let conn = state.library.conn();
-    for by in scans.keys().flatten() {
-        if let Some(name) = libraries::name_of(&conn, *by).map_err(AdminAnswer::Failed)? {
-            names.insert(*by, name);
+    let named: std::collections::BTreeSet<i64> = asked.iter().filter_map(|(_, by)| *by).collect();
+    for by in named {
+        if let Some(name) = libraries::name_of(&conn, by).map_err(AdminAnswer::Failed)? {
+            names.insert(by, name);
         }
+    }
+    // A library removed since `all` was read has no name. Its directories join
+    // the one group no library is named by, so a page that compares ids never
+    // meets an id without its name.
+    let mut scans: std::collections::BTreeMap<Option<i64>, Vec<i64>> =
+        std::collections::BTreeMap::new();
+    for (root_id, by) in asked {
+        scans
+            .entry(by.filter(|by| names.contains_key(by)))
+            .or_default()
+            .push(root_id);
     }
 
     Ok(serde_json::json!({
@@ -744,6 +776,7 @@ fn scan_status_json(state: &ServeState, id: i64) -> Result<serde_json::Value, Ad
         "scans": scans
             .iter()
             .map(|(by, root_ids)| serde_json::json!({
+                "library_id": by,
                 "library": by.and_then(|by| names.get(&by)),
                 "root_ids": root_ids,
             }))
@@ -758,8 +791,7 @@ fn scan_status_json(state: &ServeState, id: i64) -> Result<serde_json::Value, Ad
 /// first**: a scan that is queued holds no job lock, so the lock alone would
 /// not see it, and `scan_jobs::Reread::Library` would answer `CHANGED` for
 /// its library. **Then it asks for the lock and does not wait for it**, as
-/// `config_api::save_rules` does: a scan of any library, a rule save, a stamp,
-/// a move or an unlink holds it.
+/// `config_api::save_rules` does; [`crate::LibraryJob`] names what holds it.
 fn relinking<'a>(
     state: &'a ServeState,
     roots: &[scan::Root],
@@ -781,9 +813,9 @@ fn relinking<'a>(
     match state.library_job.try_lock() {
         Ok(held) => Ok(held),
         Err(std::sync::TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
-        Err(std::sync::TryLockError::WouldBlock) => Err(format!(
-            "a scan or a rule save is running; {to_do} when it has finished"
-        )),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            Err(crate::library_job::waits_for_the_job(to_do))
+        }
     }
 }
 

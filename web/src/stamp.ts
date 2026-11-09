@@ -115,8 +115,9 @@ export const stampPlan = (slug: string): Promise<StampPlan> =>
  * Do it.
  *
  * A refusal arrives as a thrown `Error` carrying the server's own sentence: a
- * 409 is either the plan no longer matching the library or a scan already
- * running, and both are worth printing verbatim rather than translating.
+ * 409 is either the plan no longer matching the library or a library job
+ * already running (the serve crate's `LibraryJob` names them), and both are
+ * worth printing verbatim rather than translating.
  */
 export async function performStamp(
   slug: string,

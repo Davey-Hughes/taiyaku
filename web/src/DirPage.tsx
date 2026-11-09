@@ -3,17 +3,18 @@
  * the directory's own settings, scan, move and removal, which are `RootRow`'s.
  *
  * **The page holds only what the server refuses.** **A scan of another of
- * its library's directories holds Move… alone**: the server refuses a move
- * while a scan of either library is reserved, and takes the rest, since a
- * scan asked of this directory waits for the other to finish and a removal
- * does not wait. **A scan of a directory around or inside this one, of any
- * library, holds Remove…**: the server refuses a removal while one is
- * reserved, and takes the scan. **Anything holding the server's job lock
- * holds Move…**, a running scan of any library, a rule save, a stamp or
- * another move: a move does not wait for the lock and is refused while it is
- * held. The library's status says the first in `dirs`, the second as
- * `held_removals` and the third as `moves_held`, so it is read once on mount
- * and, while any holds, again each poll until none does.
+ * its library's directories holds Move… and Remove from this library**: the
+ * server refuses a move while a scan of either library is reserved, and that
+ * removal while a scan of this one is, and takes the rest, since a scan asked
+ * of this directory waits for the other to finish and Remove… does not wait.
+ * **A scan of a directory around or inside this one, of any library, holds
+ * Remove…**: the server refuses a removal while one is reserved, and takes
+ * the scan. **Anything holding the server's job lock holds Move… and Remove
+ * from this library** (the serve crate's `LibraryJob` names what takes it):
+ * neither waits for the lock, and each is refused while it is held. The
+ * library's status says the first in `dirs`, the second as `held_removals`
+ * and the third as `moves_held`, so it is read once on mount and, while any
+ * holds, again each poll until none does.
  * A failed poll keeps the hold until `POLL_MISSES_ALLOWED` have failed in a
  * row, as `RootRow`'s poll keeps watching its scan. A scan of this
  * directory alone is `RootRow`'s own to see. One the library's status names

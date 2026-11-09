@@ -10,14 +10,29 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 
-/// [`crate::ServeState::library_job`]'s lock, and whether something holds it,
-/// which a library's scan status reads without taking the lock: a move asked
-/// while it is held is refused (`libraries_api::move_dir`), so a directory's
-/// page holds Move… for as long.
+/// [`crate::ServeState::library_job`]'s lock, which these jobs take one at a
+/// time across the whole store. A scan of any library (`scan_jobs::run`)
+/// waits for it. A rule save (`config_api::save_rules`), a stamp
+/// (`stamp::perform`), a move (`libraries_api::move_dir`) and a removal from a
+/// library (`libraries_api::unlink_dir`) try it once and refuse in
+/// `waits_for_the_job`'s words. A library's scan status reads
+/// [`LibraryJob::is_held`] without taking the lock, so a directory's page
+/// holds Move… and Remove from this library for as long as it is held.
 #[derive(Debug, Default)]
 pub struct LibraryJob {
     lock: Mutex<()>,
     held: AtomicBool,
+}
+
+/// The refusal of anything that asks for [`LibraryJob`]'s lock while it is
+/// held: `to_do` is what was asked, in the words it is said in ("stamp
+/// again").
+///
+/// It names no one holder because [`LibraryJob`] records only that the lock
+/// is held, not who holds it: a sentence naming some of its takers is wrong
+/// whenever one it leaves out holds the lock (O245).
+pub(crate) fn waits_for_the_job(to_do: &str) -> String {
+    format!("a scan or another library job is running; {to_do} once it has finished")
 }
 
 /// [`LibraryJob`]'s lock while held: it clears [`LibraryJob::is_held`] as it

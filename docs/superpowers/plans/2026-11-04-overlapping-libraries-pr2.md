@@ -383,7 +383,7 @@ pub fn rename_from(conn: &Connection, work_id: i64, old: &Path) -> Result<bool, 
 - Inside the transaction, before any member is re-pointed (and, in a removal, before its `Skip` derive, which can rekey), the hand-over and `hand_back` collect `(work_id, path_for(work_id))` for each work whose hub's first member they move.
 - After the commit, and before the derive that follows, each pair is renamed with `rename_from`. That covers the scan's commit in Task 4, and the removal's commit, before its `Reconcile` derive, in Task 5.
 - So a removal that rekeys the work carries the directory and the key in one rename. That fixes, for handed-back works, the stranding the store survey §6 found.
-- A receiving directory that keeps no documents leaves the document where it was. `reconcile` then reports it as an orphan, as it does today. *(True of a hand-over only: a hand-back leaves it in the removed directory's `.taiyaku`, which no root reconciles, so nothing reports it; `docs/status.md`, O247.)* Where an address is occupied, the file is not moved, and `reconcile` reports both.
+- A receiving directory that keeps no documents leaves the document where it was. `reconcile` then reports it as an orphan, as it does today. *(True of a hand-over only: a hand-back leaves it in the removed directory's `.taiyaku`, which no root reconciles, so nothing reports it; `docs/status.md`, O247.)* *O247 has since closed, on 2026-11-08 — see its entry in `docs/status.md`.* Where an address is occupied, the file is not moved, and `reconcile` reports both.
 
 - [ ] **Step 1.** Baseline: run `taiyaku-library`.
 - [ ] **Step 2: Write the failing tests.** Fixture: Manga keeps documents, with a hand-set title on Bleach v01.

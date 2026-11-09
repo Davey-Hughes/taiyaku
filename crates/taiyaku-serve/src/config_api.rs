@@ -133,10 +133,10 @@ enum NoAnswer {
     Unusable(String),
     /// A store failure, which is a 500 rather than anything a caller can fix.
     Failed(String),
-    /// A scan or another save already holds [`crate::ServeState::library_job`]
-    /// — 409, [`save_rules`]'s own whole-branch review, I4. The same spirit as
-    /// [`start_scan`]'s own `409` for a second scan of one root: naming why is
-    /// cheaper than a caller discovering it by watching the clock.
+    /// Another job already holds [`crate::ServeState::library_job`] (any job
+    /// [`crate::LibraryJob`] names) — 409. The same spirit as [`start_scan`]'s
+    /// own `409` for a second scan of one root: naming why is cheaper than a
+    /// caller discovering it by watching the clock.
     Busy(String),
 }
 
@@ -990,22 +990,21 @@ pub(crate) async fn preview_rules(
 /// caught here rather than reaching `rules::replace_all`'s own foreign key and
 /// surfacing SQLite's raw text.
 ///
-/// **Refuses, `409`, rather than racing a scan — whole-branch review, I4.**
+/// **Refuses, `409`, rather than racing a scan.**
 /// [`crate::ServeState::library_job`] is the lock this route and a scan's own
 /// derive both take before ever calling [`taiyaku_library::Library::working`] —
 /// see that field's own doc comment for the interleaving it closes: a save's
 /// single transaction landing between two of a scan's own, replacing the rule
 /// table and re-deriving the whole library out from under a scan still mid-pass
 /// under the rules that transaction just replaced. This route never waits for
-/// the lock — it tries once and answers at once if a scan or another save
-/// already holds it, the same shape [`start_scan`]'s own registry already
-/// answers for a second scan of one root.
+/// the lock — it tries once and answers at once if any of the jobs
+/// [`crate::LibraryJob`] names already holds it, the same shape
+/// [`start_scan`]'s own registry already answers for a second scan of one root.
 ///
-/// **Carries the whole derive report — whole-branch review, I5.** Every other
-/// `derive` caller in this product reports what happened under
-/// `<root>/.taiyaku/`. `"derive"` is [`derive_report_json`] — the identical
-/// renderer [`finished_scan_json`] already uses — over
-/// [`taiyaku_library::preview::Applied::derive_report`].
+/// **Carries the whole derive report.** Every other `derive` caller in this
+/// product reports what happened under `<root>/.taiyaku/`. `"derive"` is
+/// [`derive_report_json`] — the identical renderer [`finished_scan_json`]
+/// already uses — over [`taiyaku_library::preview::Applied::derive_report`].
 pub(crate) async fn save_rules(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -1029,11 +1028,9 @@ pub(crate) async fn save_rules(
         let _job = match state.library_job.try_lock() {
             Ok(guard) => guard,
             Err(std::sync::TryLockError::WouldBlock) => {
-                return Err(NoAnswer::Busy(
-                    "a scan or another save is currently running against this library; wait \
-                     for it to finish and save again"
-                        .to_string(),
-                ));
+                return Err(NoAnswer::Busy(crate::library_job::waits_for_the_job(
+                    "save again",
+                )));
             }
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
@@ -1153,10 +1150,13 @@ pub(crate) enum AdminAnswer {
     /// one: a body that could not be read as a patch, or a scan the caller
     /// asked for wrongly.
     Unusable(String),
-    /// Well-formed, names a real directory or library, and still not allowed —
-    /// 409: in [`crate::scan_jobs::removal_waits_for`]'s words, a scan of it
-    /// is reserved; in [`crate::scan_jobs::reserve`]'s, a scan would be a
-    /// second.
+    /// A well-formed request the store refuses, or cannot answer as asked —
+    /// 409. A refusal says why: a scan of a directory is reserved
+    /// ([`crate::scan_jobs::waits_for`]), a scan of it would be a second
+    /// ([`crate::scan_jobs::reserve`]), or the store's job lock is held, which
+    /// names no directory or library ([`crate::library_job::waits_for_the_job`]).
+    /// New library cannot answer as asked when another request removes the
+    /// library it made before its answer is drawn.
     Refused(String),
     /// A store failure — 500: one inside [`scan::update_root`] or
     /// [`scan::remove_root`], say.
@@ -1223,40 +1223,21 @@ pub(crate) fn root_json(
 /// wire — and `also_in`, the names of the libraries that already held it.
 ///
 /// **A link runs no probe**, so `watching`, `watch_reason` and `interval_secs`
-/// are `null` for one, and its row's scan columns are read: the directory was
-/// another library's, and may have been scanned. A new row's are sent `null`
-/// unread, as one this call just inserted has never been scanned.
-///
-/// # Errors
-///
-/// A read fails.
-pub(crate) fn added_json(
-    conn: &rusqlite::Connection,
-    added: &scan::Added,
-) -> Result<serde_json::Value, String> {
-    let also_in = &added.also_in;
-    let (at, status): (Option<String>, Option<String>) = if also_in.is_empty() {
-        (None, None)
-    } else {
-        conn.query_row(
-            "SELECT last_scan_at, last_scan_status FROM root WHERE id = ?1",
-            [added.root.id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(|e| {
-            format!(
-                "reading the scan status of {}: {e}",
-                added.root.path.display()
-            )
-        })?
-    };
-    Ok(serde_json::json!({
-        "root": root_json(&added.root, at.as_deref(), status.as_deref()),
+/// are `null` for one. Its scan columns are the ones the add read inside its
+/// transaction, for [`scan::Added::last_scan_at`]'s reason; a new row's are
+/// `null`, as one the add just inserted has never been scanned.
+pub(crate) fn added_json(added: &scan::Added) -> serde_json::Value {
+    serde_json::json!({
+        "root": root_json(
+            &added.root,
+            added.last_scan_at.as_deref(),
+            added.last_scan_status.as_deref(),
+        ),
         "watching": added.probe.as_ref().map(|probe| probe.watching),
         "watch_reason": added.probe.as_ref().and_then(|probe| probe.reason.as_deref()),
         "interval_secs": added.interval.map(|interval| interval.as_secs()),
-        "also_in": also_in,
-    }))
+        "also_in": added.also_in,
+    })
 }
 
 /// A patch, as [`patch_root`]'s body is read.

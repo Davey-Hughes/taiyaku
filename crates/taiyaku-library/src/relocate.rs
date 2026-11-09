@@ -50,11 +50,11 @@ pub enum MoveError {
     /// one that is empty, taken, or one a page address cannot hold
     /// (`crate::has_no_address`).
     Unusable(String),
-    /// The move cannot be made now. This module refuses none: its caller
-    /// does, while a scan, a rule save, a stamp or another move is in the way.
-    /// `volumes` is always empty, because a move relabels a directory and no
-    /// volume can stand in its way; it stays so the 409's body keeps the shape
-    /// clients read.
+    /// The move cannot be made now. This module refuses none: its caller does,
+    /// while a scan in either library is reserved or a job holds the serve
+    /// crate's job lock (its `LibraryJob` names them). `volumes` is always
+    /// empty, as a move relabels a directory and no volume can stand in its
+    /// way; it stays so the 409's body keeps the shape clients read.
     Refused { why: String, volumes: Vec<String> },
     /// A store fault.
     Failed(String),
