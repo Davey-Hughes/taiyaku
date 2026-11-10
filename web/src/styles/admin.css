@@ -1831,10 +1831,11 @@
   white-space: normal;
 }
 
-/* A Last scan cell's words from before its scan, kept while "Scanning…"
-   stands in for them: their width and no height, unseen and unselectable,
-   so the column, and the paths beside it, keep their size as the scan
-   ends (`LibraryPage.tsx`). */
+/* A Last scan cell's words from as it scanned, and the widest words a scan's
+   end can give it, kept beside what it says until the page is left (O253):
+   their width and no height, unseen and unselectable, so the column, and the
+   paths beside it, keep, as a scan drawn there ends, the size they took
+   when the row was first drawn scanning (`LibraryPage.tsx`). */
 .dir-table .held-words {
   display: block;
   height: 0;

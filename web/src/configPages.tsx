@@ -37,9 +37,9 @@ interface Said {
   /** Taken when the answer itself moved the person to `at`. */
   focus?: boolean
   /**
-   * Which answer the line says, given by `place`. A line that follows a
-   * rename to the page's new address is the same answer, and does not take
-   * focus again.
+   * Which answer the line says, given by `place`, so that each answer takes
+   * focus once, two in the same words too. A line `follow` carries keeps it,
+   * and does not take focus again at the new address.
    */
   n?: number
 }
@@ -75,10 +75,12 @@ export interface LateAnswers<Line extends Said> {
   /**
    * A rename moved the page at `from`, and every page beneath it, to `to`.
    * What is drawn there goes with it: the line, the late refusals and an
-   * arrival. An answer to a write sent from beneath `from` before the rename
-   * is placed as though sent from the same page beneath `to`. Called in the
-   * transition that moves the person to the new address, so that nothing is
-   * drawn for a frame at an address the person is not at.
+   * arrival. Libraries takes its line away first, since a rename is a write
+   * answered on the library's pages (O255). An answer to a write sent from
+   * beneath `from` before the rename is placed as though sent from the same
+   * page beneath `to`. Called in the transition that moves the person to the
+   * new address, so that nothing is drawn for a frame at an address the
+   * person is not at.
    */
   follow: (from: string, to: string) => void
   /**
@@ -228,10 +230,9 @@ export function useLateAnswers<Line extends Said>(
   // has it read. Focus alone scrolls only as far as the nearest edge, which
   // for a line taller than the window is its foot, so its head is put at the
   // top of the view, clear of the phone bar, as well, when it is not already
-  // in view. Taken once per answer: the list reading again, or a rename
-  // moving the line to the page's new address, leaves focus where it is. A
-  // line drawn on a page the person went to themselves is neither focused
-  // nor scrolled to: they are doing something else there.
+  // in view. Taken once per answer (`Said.n`): the list reading again leaves
+  // focus where it is. A line drawn on a page the person went to themselves
+  // is neither focused nor scrolled to: they are doing something else there.
   const taking = shown?.focus === true ? shown.n : undefined
   useEffect(() => {
     const el = lineEl.current

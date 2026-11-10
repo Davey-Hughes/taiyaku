@@ -2250,6 +2250,245 @@ describe('RootRow, a directory another library holds too', () => {
     ).toEqual([2, 2])
   })
 
+  it('tells its page of a refusal in Move…’s dialog or Remove…’s for a hold, a 409, and of no other refusal', async () => {
+    const onScanMoved = vi.fn()
+    const onHeldRefusal = vi.fn()
+    const host = await mounted({ onScanMoved, onHeldRefusal })
+    const told = () =>
+      [onScanMoved, onHeldRefusal].map((f) => f.mock.calls.length)
+    const rehearseMove = async () => {
+      await act(async () => {
+        const box = host.querySelector(
+          'select[name="move-target"]',
+        ) as HTMLSelectElement
+        Object.getOwnPropertyDescriptor(
+          HTMLSelectElement.prototype,
+          'value',
+        )?.set?.call(box, '8')
+        box.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+      await clicked(
+        host.querySelector('button[name="rehearse"]') as HTMLElement,
+      )
+    }
+    const cancel = () =>
+      clicked(
+        [...host.querySelectorAll('.remove-root button')].find(
+          (b) => b.textContent === 'Cancel',
+        ) as HTMLElement,
+      )
+
+    vi.mocked(api.moveCost).mockRejectedValueOnce(
+      new Error(
+        `/api/library/roots/3/move?dry_run=true: 400 ${JSON.stringify({ error: 'no' })}`,
+      ),
+    )
+    await clicked(press(host, 'Move…'))
+    await rehearseMove()
+    expect(told()).toEqual([0, 0])
+    vi.mocked(api.moveCost).mockRejectedValueOnce(
+      new Error(
+        `/api/library/roots/3/move?dry_run=true: 409 ${JSON.stringify({ error: 'a scan of /srv/manga is running; move the directory once it has finished', volumes: [] })}`,
+      ),
+    )
+    await rehearseMove()
+    expect(told()).toEqual([1, 1])
+    await clicked(press(host, 'Cancel'))
+
+    vi.mocked(config.removalCost).mockRejectedValueOnce(
+      new Error(
+        `/api/library/roots/3?dry_run=true: 500 ${JSON.stringify({ error: 'the disk is full' })}`,
+      ),
+    )
+    await clicked(press(host, 'Remove…'))
+    expect(told()).toEqual([1, 1])
+    await cancel()
+    vi.mocked(config.removalCost).mockRejectedValueOnce(
+      new Error(
+        `/api/library/roots/3?dry_run=true: 409 ${JSON.stringify({ error: 'a scan of /srv/manga is running; remove the directory once it has finished' })}`,
+      ),
+    )
+    await clicked(press(host, 'Remove…'))
+    expect(told()).toEqual([2, 2])
+  })
+
+  /** One poll's interval, and what it started settles. */
+  const polled = () =>
+    act(async () => {
+      vi.advanceTimersByTime(config.SCAN_POLL_MS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+  const RUNNING: config.ScanStatus = {
+    root_id: 3,
+    running: true,
+    elapsed_secs: 2,
+    report: null,
+    last_scan_at: null,
+    last_scan_status: null,
+  }
+  /** Remove from Manga…'s rehearsal refused for a hold, and its own read answered. */
+  const refusedForItsScan = async (host: HTMLElement) => {
+    vi.mocked(config.scanStatus).mockResolvedValue(RUNNING)
+    vi.mocked(api.unlinkCost).mockRejectedValueOnce(
+      new Error(
+        `/api/library/libraries/7/dirs/3?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or another library job is running; remove the directory from this library once it has finished' })}`,
+      ),
+    )
+    await clicked(unlink(host))
+    await flush()
+  }
+
+  it('closes its dialog when a scan the mount read finds begins, and hands focus to Remove from Manga…, held', async () => {
+    const status = deferred<config.ScanStatus>()
+    vi.mocked(config.scanStatus).mockReturnValue(status.promise)
+    const host = await mounted()
+    await clicked(unlink(host))
+    const confirm = host.querySelector('.unlink-root .confirm') as HTMLElement
+    act(() => confirm.focus())
+    await flush(() => status.resolve(RUNNING))
+    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 2s')
+    expect(host.querySelector('.unlink-root')).toBeNull()
+    expect(document.activeElement).toBe(unlink(host))
+    expect(holdOf(unlink(host))).toBe('held')
+  })
+
+  it('takes a scan up after a refusal with no report of an earlier scan beside Scanning…, as Scan directory does', async () => {
+    const host = await mounted()
+    await clicked(press(host, 'Scan directory'))
+    vi.mocked(config.scanStatus).mockResolvedValue({
+      ...RUNNING,
+      running: false,
+      report: { error: 'the scan panicked' },
+    })
+    await polled()
+    expect(section(host, 'Scan report').textContent).toContain(
+      'the scan panicked',
+    )
+
+    await refusedForItsScan(host)
+    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 2s')
+    expect(host.textContent).not.toContain('the scan panicked')
+  })
+
+  it('takes a scan up after a refusal with no notice of a watch given up, and its failed polls counted afresh, as Scan directory does', async () => {
+    const host = await mounted()
+    await clicked(press(host, 'Scan directory'))
+    vi.mocked(config.scanStatus).mockRejectedValue(
+      new Error('/api/library/roots/3/scan: 502 bad gateway'),
+    )
+    for (let i = 0; i < config.POLL_MISSES_ALLOWED; i++) await polled()
+    expect(host.querySelector('.scanning')).toBeNull()
+    expect(host.querySelector('.scan-notice')?.textContent).toBe('bad gateway')
+
+    await refusedForItsScan(host)
+    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 2s')
+    expect(host.querySelector('.scan-notice')).toBeNull()
+    // One failed poll is a blip, which the watch outlasts.
+    vi.mocked(config.scanStatus).mockRejectedValueOnce(
+      new Error('/api/library/roots/3/scan: 502 bad gateway'),
+    )
+    await polled()
+    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 2s')
+    expect(host.querySelector('.scan-notice')).toBeNull()
+  })
+
+  it('reads its own status on a refusal for a hold, and leaves itself as it was where no scan of its own is running', async () => {
+    const host = await mounted()
+    expect(config.scanStatus).toHaveBeenCalledTimes(1)
+    // A finished scan's report, which only a scan this row watched is drawn
+    // with.
+    vi.mocked(config.scanStatus).mockResolvedValue({
+      root_id: 3,
+      running: false,
+      report: { error: 'the scan panicked' },
+      last_scan_at: null,
+      last_scan_status: null,
+    })
+    vi.mocked(api.unlinkCost).mockRejectedValueOnce(
+      new Error(
+        `/api/library/libraries/7/dirs/3?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or another library job is running; remove the directory from this library once it has finished' })}`,
+      ),
+    )
+    await clicked(unlink(host))
+    await flush()
+    expect(config.scanStatus).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('.scanning')).toBeNull()
+    expect(
+      [
+        ...host.querySelectorAll(
+          '.settings-section > .settings-section-head > .settings-section-title',
+        ),
+      ].map((title) => title.textContent),
+    ).toEqual(['How it is scanned', 'How it is read', 'Removal'])
+    expect(holds(host)).toEqual({
+      'Scan directory': 'free',
+      'Move…': 'free',
+      'Remove from Manga…': 'free',
+      'Remove…': 'free',
+    })
+  })
+
+  it('reads no status of its own on a refusal for a hold while it watches its own scan, so that the answer cannot take that scan up again once it has ended (O252)', async () => {
+    const host = await mounted()
+    /** Move…'s rehearsal, asked for Comics and refused for a hold. */
+    const refusedMove = async () => {
+      vi.mocked(api.moveCost).mockRejectedValueOnce(
+        new Error(
+          `/api/library/roots/3/move?dry_run=true: 409 ${JSON.stringify({ error: 'a scan of /srv/manga is running; move the directory once it has finished', volumes: [] })}`,
+        ),
+      )
+      await clicked(
+        host.querySelector('button[name="rehearse"]') as HTMLElement,
+      )
+      await flush()
+    }
+    await clicked(press(host, 'Move…'))
+    await act(async () => {
+      const box = host.querySelector(
+        'select[name="move-target"]',
+      ) as HTMLSelectElement
+      Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        'value',
+      )?.set?.call(box, '8')
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    vi.mocked(config.scanStatus).mockResolvedValue(RUNNING)
+    await refusedMove()
+    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 2s')
+
+    // The dialog keeps its refusal, and the rehearsal is asked for again
+    // while the scan is watched. A read sent for it answers only once the
+    // poll has seen the scan end.
+    const late = deferred<config.ScanStatus>()
+    let polling = false
+    vi.mocked(config.scanStatus).mockImplementation(() =>
+      polling
+        ? Promise.resolve({
+            ...RUNNING,
+            running: false,
+            report: { error: 'the scan panicked' },
+          })
+        : late.promise,
+    )
+    const before = vi.mocked(config.scanStatus).mock.calls.length
+    await refusedMove()
+    polling = true
+    await polled()
+    polling = false
+    expect(host.querySelector('.scanning')).toBeNull()
+    expect(section(host, 'Scan report').textContent).toContain(
+      'the scan panicked',
+    )
+    await flush(() => late.resolve(RUNNING))
+    expect(host.querySelector('.scanning')).toBeNull()
+    expect(section(host, 'Scan report').textContent).toContain(
+      'the scan panicked',
+    )
+    expect(vi.mocked(config.scanStatus).mock.calls.length - before).toBe(1)
+  })
+
   it('takes no focus as a page of a directory no other library holds is first drawn', async () => {
     act(() => (document.activeElement as HTMLElement | null)?.blur())
     const host = await mounted({ libraries: [MANGA] })

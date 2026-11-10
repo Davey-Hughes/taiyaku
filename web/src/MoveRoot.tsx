@@ -30,7 +30,7 @@
  * What they hold is held from the send.
  */
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import type { Root } from './config'
+import { type Root, statusOf } from './config'
 import { HeldButton } from './HeldButton'
 import {
   type MoveAnswer,
@@ -40,7 +40,7 @@ import {
   noLibrarySentence,
 } from './libraries'
 import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
-import { sentenceOf } from './message'
+import { messageOf, sentenceOf } from './message'
 import { MoveCounts } from './MoveCounts'
 import { PathWithBreaks } from './PathWithBreaks'
 import { Refusal } from './Refusal'
@@ -65,12 +65,19 @@ export interface MoveRootProps {
   /**
    * The server would refuse the move now, and what is quoted here may be
    * from before what holds it. The dialog cancels itself when this becomes
-   * true, as its Cancel does, and so not while its move is out.
+   * true, as its Cancel does, but not while its move is out, nor while it
+   * draws a refusal: the person closes it then.
    */
   held?: boolean
   onCancel: () => void
   /** Called once the directory has moved, with what the move did. */
   onMoved: (answer: MoveAnswer) => void
+  /**
+   * The rehearsal or the move was refused, with why and the answer's
+   * status. The dialog draws the sentence itself: this tells its owner, for
+   * whom a 409 is a hold that may not be drawn yet.
+   */
+  onRefused?: (sentence: string, status?: number) => void
   /** The move was refused once this dialog had gone, with why. */
   onLateRefusal?: (sentence: string) => void
 }
@@ -86,6 +93,7 @@ export function MoveRoot({
   held = false,
   onCancel,
   onMoved,
+  onRefused,
   onLateRefusal,
 }: MoveRootProps) {
   const drawn = useDrawn()
@@ -104,12 +112,16 @@ export function MoveRoot({
   const inFlight = useRef(false)
   /** The newest rehearsal. Answers need not arrive in order. */
   const latest = useRef(0)
-  // Read when `held` changes, and not a dependency: a move that is refused
-  // while the hold stands must leave its refusal drawn.
-  const state = useRef({ moving, onCancel })
-  state.current = { moving, onCancel }
+  // Read when `held` changes, and not a dependency. A move that is out
+  // answers into this dialog, and a refusal drawn here stays: its sentence
+  // is the server's own words for what holds the move, which the held
+  // button beneath does not give, so it is read before the dialog goes
+  // (O252).
+  const state = useRef({ moving, failure, onCancel })
+  state.current = { moving, failure, onCancel }
   useEffect(() => {
-    if (held && !state.current.moving) state.current.onCancel()
+    const now = state.current
+    if (held && !now.moving && now.failure === undefined) now.onCancel()
   }, [held])
 
   // Before the first paint, so that no frame draws it closed. Asked only of
@@ -172,6 +184,10 @@ export function MoveRoot({
   // focus, which would fall to the page: it goes to Move to, where a
   // library is chosen again.
   useFocusLeavesHeld(to === undefined, seeButton, targetSelect)
+  // A refused move takes the confirm away (`confirm`), and focus in it
+  // would fall to the page: it goes to See what this would do, where the
+  // move is asked about again. A target gone has moved it to Move to first.
+  useFocusLeavesHeld(cost === undefined, confirmButton, seeButton)
 
   /** A different target is a different move: what was rehearsed is gone. */
   const forget = () => {
@@ -181,7 +197,10 @@ export function MoveRoot({
     setAsking(false)
   }
 
-  const refuse = (err: unknown) => setFailure(sentenceOf(err))
+  const refuse = (err: unknown) => {
+    setFailure(sentenceOf(err))
+    onRefused?.(sentenceOf(err), statusOf(messageOf(err)))
+  }
 
   const rehearse = () => {
     if (to === undefined || asking || moving) return

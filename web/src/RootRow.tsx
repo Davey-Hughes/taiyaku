@@ -60,6 +60,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
 } from 'react'
@@ -136,21 +137,24 @@ export interface RootRowProps {
    * A scan of this directory is reserved, as its library's status says before
    * the directory's own does: the server refuses every action here, so Scan
    * directory, Move…, Remove from this library and Remove… do nothing then
-   * and are drawn held, and an open removal, unlink or move dialog is closed.
+   * and are drawn held, and an open removal, unlink or move dialog is closed
+   * unless it draws a refusal, which the person reads and closes.
    */
   held?: boolean
   /**
    * A scan of a directory around or inside this one is reserved, for which
    * the server refuses this one's removal: Remove… is drawn held and an open
-   * removal dialog is closed. What the scan does to a move is `moveHeld`'s.
+   * removal dialog is closed unless it draws a refusal. What the scan does
+   * to a move is `moveHeld`'s.
    */
   removalHeld?: boolean
   /**
    * The server refuses every move of this directory: its job lock is held, or
    * a scan of another of the library's directories is reserved. Move… is
-   * drawn held and an open move dialog is closed. The server refuses taking
-   * it out of this library alone for the same reasons, so this holds Remove
-   * from this library and closes its dialog too.
+   * drawn held and an open move dialog is closed unless it draws a refusal.
+   * The server refuses taking it out of this library alone for the same
+   * reasons, so this holds Remove from this library and closes its dialog
+   * too.
    */
   moveHeld?: boolean
   /**
@@ -181,9 +185,10 @@ export interface RootRowProps {
    */
   onChanged: (quiet?: boolean) => void
   /**
-   * Remove from this library was refused for a hold (a 409) that nothing
-   * drawn here said: the page asks its library's status again, so that the
-   * hold is drawn, and the refusal goes as the hold ends.
+   * Move…, Remove from this library or Remove… was refused for a hold (a
+   * 409) that nothing drawn here said: the page asks its library's status
+   * again, so that the hold is drawn, and Remove from this library's
+   * refusal goes as the hold ends.
    */
   onHeldRefusal?: () => void
   /** Scan directory was pressed and a scan of this directory is being asked for. */
@@ -407,6 +412,9 @@ export function RootRow({
   const [unlinkRefusal, setUnlinkRefusal] = useState<string | undefined>()
   const [moving, setMoving] = useState(false)
   const [running, setRunning] = useState(false)
+  /** `running` as last drawn, for a refusal answered after that draw. */
+  const watchesScan = useRef(running)
+  watchesScan.current = running
   const [starting, setStarting] = useState(false)
   const [elapsed, setElapsed] = useState<number | undefined>()
   const [report, setReport] = useState<ScanOutcome | null>(null)
@@ -575,9 +583,6 @@ export function RootRow({
       })
   }
 
-  /** Which dialog is open, for `absorb`, which is made once. */
-  const open = useRef({ confirming, unlinking, moving })
-  open.current = { confirming, unlinking, moving }
   /**
    * Fold one status answer into this row's state.
    *
@@ -592,15 +597,6 @@ export function RootRow({
     }) => {
       setElapsed(status.elapsed_secs)
       if (status.running) {
-        // A removal or a move being confirmed quotes counts from before this
-        // scan. The scan closes it as a hold from elsewhere does, and focus
-        // goes back to the button that opened it as it does then.
-        if (open.current.confirming) backToRemove.current = true
-        if (open.current.unlinking) backToUnlink.current = true
-        if (open.current.moving) backToMove.current = true
-        setConfirming(false)
-        setUnlinking(false)
-        setMoving(false)
         setRunning(true)
         return
       }
@@ -666,6 +662,19 @@ export function RootRow({
     }
   }, [])
 
+  /**
+   * What the watch of a scan starts from: no report or notice of an earlier
+   * one, and no failed polls counted against it, so that one blip does not
+   * end it. A press of Scan directory starts one, and so does a scan taken
+   * up after a refusal.
+   */
+  const watchAfresh = useCallback(() => {
+    setScanNotice(undefined)
+    setReport(null)
+    setElapsed(undefined)
+    misses.current = 0
+  }, [])
+
   const begin = useCallback(() => {
     // Guarded synchronously, not by the hold alone: that would let two rapid
     // presses both send, and the second's 409 — about the admin's own scan —
@@ -677,10 +686,7 @@ export function RootRow({
     setFailure(undefined)
     setUnlinkRefusal(undefined)
     setConflict(undefined)
-    setScanNotice(undefined)
-    setReport(null)
-    setElapsed(undefined)
-    misses.current = 0
+    watchAfresh()
     // At the press, so a return while the start is out waits for a read sent
     // after it; and again at the answer, for a read out across the start,
     // which the server may have answered before it registered the scan.
@@ -718,7 +724,15 @@ export function RootRow({
           setRunning(true)
         }
       })
-  }, [root.id, root.path, library?.id, onScan, onLateRefusal, drawn])
+  }, [
+    root.id,
+    root.path,
+    library?.id,
+    onScan,
+    onLateRefusal,
+    drawn,
+    watchAfresh,
+  ])
 
   useEffect(() => {
     if (!running) return
@@ -780,6 +794,7 @@ export function RootRow({
    * so it is held by `HeldButton` and keeps it. A press of one of the others
    * holds it by `disabled`: focus is on the button pressed then, and a button
    * that cannot take focus as its hold comes on stays out of the tab order.
+   * An open dialog is given the same hold, and cancels by its own rule.
    */
   const scanning = running || held
   /** The other libraries holding the directory, where this page's is known. */
@@ -817,6 +832,15 @@ export function RootRow({
   }, [unlinking, shared])
   /** What holds Remove from this library, as it holds Move…, but its own press. */
   const unlinkHeld = scanning || moveHeld
+  /*
+   * A hold from the page says why it holds, beside what it holds (O250):
+   * Move…'s in a line under the header, the removals' in their rows' help.
+   * Not while this directory's own scan is drawn, whose "Scanning…" says it.
+   */
+  const moveWaits = moveHeld && !running
+  const removalWaits = removalHeld && !running
+  /** The Move… line's, which describes Move… while it is drawn. */
+  const moveWaitsId = useId()
   const wasUnlinkHeld = useRef(unlinkHeld)
   // A refusal drawn over Remove from this library goes as the hold that
   // refused it ends: it would say what is no longer so, over a button that
@@ -825,6 +849,31 @@ export function RootRow({
     if (wasUnlinkHeld.current && !unlinkHeld) setUnlinkRefusal(undefined)
     wasUnlinkHeld.current = unlinkHeld
   }, [unlinkHeld])
+  /**
+   * A dialog was refused for a hold (a 409), proof of something holding, as
+   * Scan directory's 409 is. The page reads its library's status so that
+   * the hold is drawn and its end seen. That status leaves a scan of this
+   * directory alone to this row (`DirPage`'s `useOtherScan`), so the row
+   * reads its own once and takes up a scan it finds running, as the mount
+   * read does: "Scanning…", and every action held. A refusal for any other
+   * hold finds none, and leaves the row as it is.
+   */
+  const heldRefusal = () => {
+    moved.current?.()
+    onHeldRefusal?.()
+    // Not while the row watches its scan: the poll reads the same, and this
+    // read answered after the poll saw the scan end would take it up again.
+    if (watchesScan.current) return
+    scanStatus(root.id)
+      .then((status) => {
+        if (!status.running) return
+        watchAfresh()
+        absorb(status)
+      })
+      .catch(() => {
+        // Silent, as the mount read is: the refusal has said what failed.
+      })
+  }
   /** Each press of the page's actions clears the refusal of an earlier one. */
   const pressed = (then: () => void) => () => {
     setUnlinkRefusal(undefined)
@@ -935,6 +984,7 @@ export function RootRow({
                 onClick={pressed(() => setMoving(true))}
                 held={scanning || moveHeld || moving}
                 disabled={starting || confirming || unlinking}
+                aria-describedby={moveWaits ? moveWaitsId : undefined}
               >
                 Move…
               </HeldButton>
@@ -945,6 +995,12 @@ export function RootRow({
       {running && (
         <p className="scanning">
           Scanning…{elapsed === undefined ? '' : ` ${Math.round(elapsed)}s`}
+        </p>
+      )}
+      {moveWaits && moveTo !== undefined && library !== undefined && (
+        <p id={moveWaitsId} className="move-waits">
+          A scan or another library job is running; move this directory once it
+          has finished.
         </p>
       )}
       {notices}
@@ -963,7 +1019,7 @@ export function RootRow({
           root={root}
           from={library}
           targets={moveTo}
-          held={held || moveHeld}
+          held={scanning || moveHeld}
           onCancel={() => {
             backToMove.current = true
             setMoving(false)
@@ -972,6 +1028,10 @@ export function RootRow({
             setMoving(false)
             onMoved?.(answer)
             onChanged()
+          }}
+          // The dialog draws the refusal itself.
+          onRefused={(_, status) => {
+            if (status === 409) heldRefusal()
           }}
           onLateRefusal={onLateRefusal}
         />
@@ -1065,47 +1125,62 @@ export function RootRow({
                 same reasons. */}
               <Row
                 label={`Remove from ${library.name}`}
-                help={`${namesOf(alsoIn.map((one) => one.name))} ${alsoIn.length === 1 ? 'keeps' : 'keep'} it; nothing is deleted.`}
+                help={
+                  moveWaits
+                    ? 'Waits for a scan or another library job to finish.'
+                    : `${namesOf(alsoIn.map((one) => one.name))} ${alsoIn.length === 1 ? 'keeps' : 'keep'} it; nothing is deleted.`
+                }
+                action
               >
-                <HeldButton
-                  ref={unlinkButton}
-                  type="button"
-                  onClick={pressed(() => setUnlinking(true))}
-                  // Focus leaving it takes its refusal away, as focus leaving
-                  // a form takes the form's (`Account`): so that a press on
-                  // the refusal, which takes the press, frees the button.
-                  onFocus={unlinkFocus.onFocus}
-                  onBlur={(e) => {
-                    unlinkFocus.onBlur(e)
-                    if (unlinkRefusal !== undefined && focusLeaves(e)) {
-                      setUnlinkRefusal(undefined)
-                    }
-                  }}
-                  held={unlinkHeld || unlinking}
-                  disabled={starting || moving || confirming}
-                >
-                  Remove from {library.name}…
-                </HeldButton>
+                {(ids) => (
+                  <HeldButton
+                    ref={unlinkButton}
+                    type="button"
+                    onClick={pressed(() => setUnlinking(true))}
+                    // Focus leaving it takes its refusal away, as focus
+                    // leaving a form takes the form's (`Account`): so that a
+                    // press on the refusal, which takes the press, frees the
+                    // button.
+                    onFocus={unlinkFocus.onFocus}
+                    onBlur={(e) => {
+                      unlinkFocus.onBlur(e)
+                      if (unlinkRefusal !== undefined && focusLeaves(e)) {
+                        setUnlinkRefusal(undefined)
+                      }
+                    }}
+                    held={unlinkHeld || unlinking}
+                    disabled={starting || moving || confirming}
+                    aria-describedby={ids.help}
+                  >
+                    Remove from {library.name}…
+                  </HeldButton>
+                )}
               </Row>
             </>
           )}
           <Row
             label="Remove this directory"
             help={
-              alsoIn.length > 0
-                ? 'From every library that holds it, with what it would take.'
-                : 'Asks first, with what it would take.'
+              removalWaits
+                ? 'Waits for a scan of a directory around or inside this one.'
+                : alsoIn.length > 0
+                  ? 'From every library that holds it, with what it would take.'
+                  : 'Asks first, with what it would take.'
             }
+            action
           >
-            <HeldButton
-              ref={removeButton}
-              type="button"
-              onClick={pressed(() => setConfirming(true))}
-              held={scanning || removalHeld || confirming}
-              disabled={starting || moving || unlinking}
-            >
-              Remove…
-            </HeldButton>
+            {(ids) => (
+              <HeldButton
+                ref={removeButton}
+                type="button"
+                onClick={pressed(() => setConfirming(true))}
+                held={scanning || removalHeld || confirming}
+                disabled={starting || moving || unlinking}
+                aria-describedby={ids.help}
+              >
+                Remove…
+              </HeldButton>
+            )}
           </Row>
           {/* After both rows, though it answers the first: with no row below
             it, a refusal lies over the rows above the last (`Callout`), so
@@ -1131,7 +1206,7 @@ export function RootRow({
             root={root}
             from={library}
             keptBy={alsoIn.map((one) => one.name)}
-            held={held || moveHeld}
+            held={scanning || moveHeld}
             onCancel={() => {
               backToUnlink.current = true
               setUnlinking(false)
@@ -1140,12 +1215,8 @@ export function RootRow({
               backToUnlink.current = true
               setUnlinking(false)
               setUnlinkRefusal(sentence)
-              // As Scan directory's 409 does: proof of something holding,
-              // which the page reads so that its end takes the refusal away.
-              if (status === 409) {
-                moved.current?.()
-                onHeldRefusal?.()
-              }
+              // The hold's end takes the refusal away.
+              if (status === 409) heldRefusal()
             }}
             onFocus={unlinkFocus.onFocus}
             onBlur={unlinkFocus.onBlur}
@@ -1163,7 +1234,7 @@ export function RootRow({
             holders={
               alsoIn.length > 0 ? libraries.map((one) => one.name) : undefined
             }
-            held={held || removalHeld}
+            held={scanning || removalHeld}
             onCancel={() => {
               backToRemove.current = true
               setConfirming(false)
@@ -1176,6 +1247,10 @@ export function RootRow({
               edited.current.clear()
               onRemoved?.(answer)
               onChanged()
+            }}
+            // The dialog draws the refusal itself.
+            onRefused={(_, status) => {
+              if (status === 409) heldRefusal()
             }}
             onLateRefusal={onLateRefusal}
           />

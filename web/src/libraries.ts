@@ -81,11 +81,42 @@ export function folderIn(inner: string, outer: string): string {
 export type DirRemoval = 'unlinked' | 'removed'
 
 /**
+ * `held` with the names on each line, inside or around any directory, of a
+ * directory whose path `written` picks, as `names` rewrites them. A line left
+ * naming no library goes, as no library holds that directory any more. The
+ * fold and "Also shown in …" lines and the Overlaps cell are drawn from these
+ * lines (O252).
+ */
+function withLinesOf(
+  held: Library[],
+  written: (path: string) => boolean,
+  names: (libraries: string[]) => string[],
+): Library[] {
+  const relined = <T extends { path: string; libraries: string[] }>(
+    lines: T[],
+  ) =>
+    lines.flatMap((line) => {
+      if (!written(line.path)) return [line]
+      const libraries = names(line.libraries)
+      return libraries.length > 0 ? [{ ...line, libraries }] : []
+    })
+  return held.map((one) => ({
+    ...one,
+    dirs: one.dirs.map((dir) => ({
+      ...dir,
+      nested: relined(dir.nested),
+      inside: relined(dir.inside),
+    })),
+  }))
+}
+
+/**
  * `held` once directory `path` has left library `id` as `how` says, without
  * each library the answer names as `emptied`: the server deletes a library
  * with its last directory. After an unlink, each library still holding the
- * directory no longer names `id` among its holders. An unlink empties no
- * library but `id`.
+ * directory no longer names `id` among its holders, nor does any line
+ * another directory draws for it; after a removal, no such line is left. An
+ * unlink empties no library but `id`.
  */
 export function withoutDir(
   held: Library[],
@@ -94,7 +125,9 @@ export function withoutDir(
   how: DirRemoval,
   emptied: string[],
 ): Library[] {
-  return held
+  // Read before `emptied` is taken out: an unlink can empty `id` itself.
+  const left = held.find((one) => one.id === id)?.name
+  const kept = held
     .filter((one) => !emptied.includes(one.name))
     .map((one) =>
       how === 'removed' || one.id === id
@@ -113,6 +146,11 @@ export function withoutDir(
             ),
           },
     )
+  return withLinesOf(
+    kept,
+    (at) => at === path,
+    (names) => (how === 'removed' ? [] : names.filter((name) => name !== left)),
+  )
 }
 
 /**
@@ -124,24 +162,19 @@ export function withoutDir(
  */
 export function withoutLibrary(held: Library[], id: number): Library[] {
   const name = held.find((one) => one.id === id)?.name
-  const unnamed = <T extends { libraries: string[] }>(lines: T[]) =>
-    lines
-      .map((line) => ({
-        ...line,
-        libraries: line.libraries.filter((one) => one !== name),
-      }))
-      .filter((line) => line.libraries.length > 0)
-  return held
-    .filter((one) => one.id !== id)
-    .map((one) => ({
-      ...one,
-      dirs: one.dirs.map((dir) => ({
-        ...dir,
-        libraries: dir.libraries.filter((holder) => holder.id !== id),
-        nested: unnamed(dir.nested),
-        inside: unnamed(dir.inside),
+  return withLinesOf(
+    held
+      .filter((one) => one.id !== id)
+      .map((one) => ({
+        ...one,
+        dirs: one.dirs.map((dir) => ({
+          ...dir,
+          libraries: dir.libraries.filter((holder) => holder.id !== id),
+        })),
       })),
-    }))
+    () => true,
+    (names) => names.filter((one) => one !== name),
+  )
 }
 
 /**
@@ -177,28 +210,35 @@ export function withLibraryRenamed(
 /**
  * `held` with library `made` last, as the make answered it: each other
  * library's copy of a directory it linked names it among its holders, in
- * the server's order, by id.
+ * the server's order, by id, and so does each line another directory draws
+ * for one. Library ids only grow, so a made library's is the largest and
+ * its name goes last on a line.
  */
 export function withLibraryMade(held: Library[], made: Library): Library[] {
   const linked = new Set(made.dirs.map((dir) => dir.path))
   const me = { id: made.id, name: made.name }
+  const others = held
+    .filter((one) => one.id !== made.id)
+    .map((one) => ({
+      ...one,
+      dirs: one.dirs.map((dir) =>
+        linked.has(dir.path)
+          ? {
+              ...dir,
+              libraries: [
+                ...dir.libraries.filter((holder) => holder.id !== made.id),
+                me,
+              ].sort((a, b) => a.id - b.id),
+            }
+          : dir,
+      ),
+    }))
   return [
-    ...held
-      .filter((one) => one.id !== made.id)
-      .map((one) => ({
-        ...one,
-        dirs: one.dirs.map((dir) =>
-          linked.has(dir.path)
-            ? {
-                ...dir,
-                libraries: [
-                  ...dir.libraries.filter((holder) => holder.id !== made.id),
-                  me,
-                ].sort((a, b) => a.id - b.id),
-              }
-            : dir,
-        ),
-      })),
+    ...withLinesOf(
+      others,
+      (at) => linked.has(at),
+      (names) => [...names.filter((name) => name !== made.name), made.name],
+    ),
     made,
   ]
 }
@@ -373,10 +413,10 @@ export interface Moved {
 /**
  * `held` once directory `path` has moved out of library `id` as `moved`
  * says: gone from `id`, which goes too where the move emptied it. Each copy
- * that stays names the library it went to in place of `id` among its
- * holders, in the server's order, by id. No row is drawn in the library it
- * went to: the read that follows draws that, as it draws a row the client
- * cannot know.
+ * that stays, and each line another directory draws for it, names the
+ * library it went to in place of `id` among its holders, in the server's
+ * order, by id. No row is drawn in the library it went to: the read that
+ * follows draws that, as it draws a row the client cannot know.
  */
 export function withMovedDir(
   held: Library[],
@@ -389,7 +429,7 @@ export function withMovedDir(
     [...libraries.filter((one) => one.id !== id && one.id !== to.id), to].sort(
       (a, b) => a.id - b.id,
     )
-  return held
+  const kept = held
     .filter((one) => !(one.id === id && moved.library_removed !== null))
     .map((one) =>
       one.id === id
@@ -403,6 +443,20 @@ export function withMovedDir(
             ),
           },
     )
+  // A line carries names alone, so the ids that order it come from the
+  // directory's own copy, which names every holder with its id, a library a
+  // move made among them; `held` has no row for that library until the list
+  // is read again. Where that copy is gone, a read that came after the move
+  // has drawn the lines already.
+  const own = held
+    .find((one) => one.id === id)
+    ?.dirs.find((dir) => dir.path === path)
+  return withLinesOf(
+    kept,
+    (at) => at === path,
+    (names) =>
+      own === undefined ? names : holders(own.libraries).map((one) => one.name),
+  )
 }
 
 /**

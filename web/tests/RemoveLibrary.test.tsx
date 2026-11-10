@@ -147,10 +147,10 @@ describe('RemoveLibrary', () => {
     )
   })
 
-  it('says a removal takes only what no other library holds', async () => {
+  it('says a removal takes only what no other library holds, changes no archive, and says where a staying work’s documents go (O256)', async () => {
     const host = await shown()
     expect(host.querySelector('.irreversible')?.textContent).toBe(
-      "Nothing here can be undone from this screen. The files on disk are untouched; what goes is everything derived from files no other library's directories hold, and everything anybody recorded against a work that goes.",
+      "Nothing here can be undone from this screen. What goes is everything derived from files no other library's directories hold, and everything anybody recorded against a work that goes. No archive on disk is changed. A work that stays takes its documents under .taiyaku/ to the directory that now holds its files, if that directory keeps documents; the report after the removal lists any left behind as orphaned documents.",
     )
   })
 
@@ -347,6 +347,128 @@ describe('RemoveLibrary', () => {
     })
   })
 
+  it('drops its counts and its confirm when the removal itself is refused for a hold, and leaves the refusal and Cancel, as Move’s dialog does (O252)', async () => {
+    vi.mocked(api.removeLibrary).mockRejectedValue(
+      new Error(
+        '/api/library/libraries/7: 409 {"error":"a scan of /media/Manga/Volumes is running; remove the library once it has finished"}',
+      ),
+    )
+    const onCancel = vi.fn()
+    const host = await shown(vi.fn(), onCancel)
+    expect(host.querySelector('.counts')).not.toBeNull()
+    await press(host.querySelector('.confirm') as Element)
+    expect(
+      [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
+    ).toEqual([
+      'a scan of /media/Manga/Volumes is running; remove the library once it has finished',
+    ])
+    expect(host.querySelector('.counts')).toBeNull()
+    expect(host.querySelector('.irreversible')).toBeNull()
+    expect(host.querySelector('.removal-derive')).toBeNull()
+    expect(host.querySelector('.confirm')).toBeNull()
+    expect(
+      [...host.querySelectorAll('button')].map((b) => b.textContent),
+    ).toEqual(['Cancel'])
+    expect(host.textContent).not.toContain('Working out')
+    await press(
+      [...host.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Cancel',
+      ) as Element,
+    )
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(api.removeLibrary).toHaveBeenCalledTimes(1)
+  })
+
+  it('puts focus on Cancel when a refusal for a hold takes away the confirm that had it, so that focus does not fall to the page (O252)', async () => {
+    vi.mocked(api.removeLibrary).mockRejectedValue(
+      new Error(
+        '/api/library/libraries/7: 409 {"error":"a scan of /media/Manga/Volumes is running; remove the library once it has finished"}',
+      ),
+    )
+    const host = await shown()
+    const confirm = host.querySelector('.confirm') as HTMLButtonElement
+    act(() => confirm.focus())
+    expect(document.activeElement).toBe(confirm)
+    await press(confirm)
+    expect(host.querySelector('.confirm')).toBeNull()
+    expect(document.activeElement).toBe(
+      [...host.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Cancel',
+      ),
+    )
+  })
+
+  describe('telling its owner of a refusal (O252)', () => {
+    const shownTelling = async () => {
+      const onRefused = vi.fn()
+      const onLateRefusal = vi.fn()
+      let host: HTMLElement | undefined
+      await act(async () => {
+        host = mount(
+          <RemoveLibrary
+            library={library}
+            onCancel={vi.fn()}
+            onRemoved={vi.fn()}
+            onRefused={onRefused}
+            onLateRefusal={onLateRefusal}
+          />,
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      if (!host) throw new Error('nothing mounted')
+      return { host, onRefused, onLateRefusal }
+    }
+
+    it('tells it of a dry run refused for a hold, with the answer’s status, and draws the sentence itself', async () => {
+      vi.mocked(api.libraryRemovalCost).mockRejectedValue(
+        new Error(
+          '/api/library/libraries/7?dry_run=true: 409 {"error":"a scan of /media/Manga/Volumes is running; remove the library once it has finished"}',
+        ),
+      )
+      const { host, onRefused } = await shownTelling()
+      expect(onRefused).toHaveBeenCalledTimes(1)
+      expect(onRefused).toHaveBeenCalledWith(
+        'a scan of /media/Manga/Volumes is running; remove the library once it has finished',
+        409,
+      )
+      expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+        'a scan of /media/Manga/Volumes is running; remove the library once it has finished',
+      )
+    })
+
+    it('tells it of a removal refused while it is drawn, with the answer’s status', async () => {
+      vi.mocked(api.removeLibrary).mockRejectedValue(
+        new Error('/api/library/libraries/7: 500 {"error":"the disk is full"}'),
+      )
+      const { host, onRefused, onLateRefusal } = await shownTelling()
+      expect(onRefused).not.toHaveBeenCalled()
+      await press(host.querySelector('.confirm') as Element)
+      expect(onRefused).toHaveBeenCalledTimes(1)
+      expect(onRefused).toHaveBeenCalledWith('the disk is full', 500)
+      expect(onLateRefusal).not.toHaveBeenCalled()
+    })
+
+    it('tells it nothing of a removal refused once it has gone, which goes to the late refusal alone', async () => {
+      const out = deferred<config.RemovalAnswer>()
+      vi.mocked(api.removeLibrary).mockReturnValue(out.promise)
+      const { host, onRefused, onLateRefusal } = await shownTelling()
+      await press(host.querySelector('.confirm') as Element)
+      act(() => rerender(<div />))
+      await flush(() =>
+        out.reject(
+          new Error(
+            '/api/library/libraries/7: 409 {"error":"a scan of /media/Manga/Volumes is running; remove the library once it has finished"}',
+          ),
+        ),
+      )
+      expect(onLateRefusal).toHaveBeenCalledWith(
+        'Manga was not removed (a scan of /media/Manga/Volumes is running; remove the library once it has finished).',
+      )
+      expect(onRefused).not.toHaveBeenCalled()
+    })
+  })
+
   it('draws the real removal’s failure as the server’s sentence', async () => {
     vi.mocked(api.removeLibrary).mockRejectedValue(
       new Error('/api/library/libraries/7: 500 {"error":"the disk is full"}'),
@@ -477,6 +599,30 @@ describe('RemoveLibrary', () => {
       expect(api.libraryRemovalCost).toHaveBeenCalledTimes(1)
       expect(host.querySelector('.confirm')?.textContent).toBe('Removing…')
       expect(host.textContent).not.toContain('Working out')
+    })
+
+    it('puts focus on Cancel when the hold’s end takes away the held confirm that had it while the cost is asked again', async () => {
+      const host = await shown()
+      await act(async () => {
+        rerender(show(true))
+        await Promise.resolve()
+      })
+      const confirm = host.querySelector('.confirm') as HTMLButtonElement
+      expect(holdOf(confirm)).toBe('held')
+      act(() => confirm.focus())
+      expect(document.activeElement).toBe(confirm)
+      const again = deferred<config.RemovalAnswer>()
+      vi.mocked(api.libraryRemovalCost).mockReturnValueOnce(again.promise)
+      await act(async () => {
+        rerender(show(false))
+        await Promise.resolve()
+      })
+      expect(host.querySelector('.confirm')).toBeNull()
+      expect(document.activeElement).toBe(
+        [...host.querySelectorAll('button')].find(
+          (b) => b.textContent === 'Cancel',
+        ),
+      )
     })
 
     it('asks again after a refusal when a hold ends, and draws the new figures over a live confirm', async () => {

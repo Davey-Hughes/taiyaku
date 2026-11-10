@@ -42,12 +42,13 @@ import {
   removalCost,
   removeRoot,
   type Root,
+  statusOf,
 } from './config'
 import { namesOf, noLibrarySentence } from './libraries'
 import { DeriveSection } from './ScanReport'
 import { HeldButton } from './HeldButton'
-import { useDrawn, useDrawnWait } from './hooks'
-import { sentenceOf } from './message'
+import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
+import { messageOf, sentenceOf } from './message'
 import { WaitWords } from './WaitWords'
 import { count } from './count'
 
@@ -65,7 +66,8 @@ export interface RemoveRootProps {
    * A scan of the directory, or of one around or inside it, is reserved, so
    * the server would refuse the removal and the counts quoted here are from
    * before it. The dialog cancels itself when this becomes true, as its
-   * Cancel does, and so not while its removal is out.
+   * Cancel does, but not while its removal is out, nor while it draws a
+   * refusal: the person closes it then.
    */
   held?: boolean
   onCancel: () => void
@@ -79,6 +81,12 @@ export interface RemoveRootProps {
    * run's, which can differ.
    */
   onRemoved: (answer: RemovalAnswer) => void
+  /**
+   * The dry run or the removal was refused while the dialog was drawn, with
+   * why and the answer's status. The dialog draws the sentence itself: this
+   * tells its owner, for whom a 409 is a hold that may not be drawn yet.
+   */
+  onRefused?: (sentence: string, status?: number) => void
   /** The removal was refused once this dialog had gone, with why. */
   onLateRefusal?: (sentence: string) => void
 }
@@ -100,6 +108,7 @@ export function RemoveRoot({
   held = false,
   onCancel,
   onRemoved,
+  onRefused,
   onLateRefusal,
 }: RemoveRootProps) {
   const drawn = useDrawn()
@@ -109,12 +118,16 @@ export function RemoveRoot({
   const removingDrawn = useDrawnWait(removing)
   /** The dry run's wait, drawn once it has lasted; until then it keeps its room. */
   const costDrawn = useDrawnWait(cost === undefined && failure === undefined)
-  // Read when `held` changes, and not a dependency: a removal that is refused
-  // while the hold stands must leave its refusal drawn.
-  const state = useRef({ removing, onCancel })
-  state.current = { removing, onCancel }
+  // Read when `held` changes, and not a dependency. A removal that is out
+  // answers into this dialog, and a refusal drawn here stays: its sentence
+  // is the server's own words for what holds the removal, which the held
+  // button beneath does not give, so it is read before the dialog goes
+  // (O252).
+  const state = useRef({ removing, failure, onCancel })
+  state.current = { removing, failure, onCancel }
   useEffect(() => {
-    if (held && !state.current.removing) state.current.onCancel()
+    const now = state.current
+    if (held && !now.removing && now.failure === undefined) now.onCancel()
   }, [held])
   /**
    * Whether the real `DELETE` is already on its way.
@@ -127,6 +140,15 @@ export function RemoveRoot({
    * luck: C4 §2 calls it the most destructive action in the product.
    */
   const inFlight = useRef(false)
+  // Read by the dry run's answer, which may come after a render that handed
+  // over a fresh closure.
+  const refused = useRef(onRefused)
+  refused.current = onRefused
+  const confirmButton = useRef<HTMLButtonElement>(null)
+  const cancelButton = useRef<HTMLButtonElement>(null)
+  // A refusal for a hold takes the confirm away, and focus in it would fall
+  // to the page: Cancel, the one control left, takes it.
+  useFocusLeavesHeld(cost === undefined, confirmButton, cancelButton)
 
   useEffect(() => {
     let cancelled = false
@@ -139,6 +161,7 @@ export function RemoveRoot({
       .catch((err: unknown) => {
         if (cancelled) return
         setFailure(sentenceOf(err))
+        refused.current?.(sentenceOf(err), statusOf(messageOf(err)))
       })
     return () => {
       cancelled = true
@@ -158,8 +181,17 @@ export function RemoveRoot({
         inFlight.current = false
         setRemoving(false)
         const sentence = sentenceOf(err)
-        if (drawn.current) setFailure(sentence)
-        else onLateRefusal?.(`${root.path} was not removed (${sentence}).`)
+        if (drawn.current) {
+          const status = statusOf(messageOf(err))
+          // A removal refused for a hold leaves what the dry run counted
+          // behind it: what holds it may change the store, so the counts
+          // and the confirm go, as a refused move's do, and the dialog is
+          // opened again to ask (O252). Any other failure keeps them, so
+          // that the removal can be tried again.
+          if (status === 409) setCost(undefined)
+          setFailure(sentence)
+          refused.current?.(sentence, status)
+        } else onLateRefusal?.(`${root.path} was not removed (${sentence}).`)
       })
   }
 
@@ -205,10 +237,13 @@ export function RemoveRoot({
             </p>
           )}
           <p className="irreversible">
-            Nothing here can be undone from this screen. The files on disk are
-            untouched; what goes is everything derived from files no other
-            directory holds, and everything anybody recorded against a work that
-            goes.
+            Nothing here can be undone from this screen. What goes is everything
+            derived from files no other directory holds, and everything anybody
+            recorded against a work that goes. No archive on disk is changed. A
+            work that stays takes its documents under .taiyaku/ to the directory
+            that now holds its files, if that directory keeps documents; the
+            report after the removal lists any left behind as orphaned
+            documents.
           </p>
         </>
       )}
@@ -218,6 +253,7 @@ export function RemoveRoot({
       <div className="settings-actions">
         {cost !== undefined && (
           <HeldButton
+            ref={confirmButton}
             type="button"
             className="confirm keeps-wait-width"
             onClick={confirm}
@@ -231,6 +267,7 @@ export function RemoveRoot({
           </HeldButton>
         )}
         <HeldButton
+          ref={cancelButton}
           type="button"
           onClick={() => {
             if (!removing) onCancel()

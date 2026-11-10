@@ -330,6 +330,36 @@ export function Libraries() {
   drawn.current = libraries
 
   /**
+   * A write answered on library `id`'s page, or a press of its Scan library,
+   * takes away the report drawn there, or on the page of a directory beside
+   * it: the report says what was held before that write, which an add of the
+   * same directory contradicts (O255). A report on another library's pages
+   * is theirs. Says whether the report held focus.
+   */
+  const wroteOn = useCallback(
+    (id: number): boolean => {
+      const at = nameAt(here.current, LIBRARIES)
+      const held = drawn.current
+      const own =
+        at !== undefined &&
+        held !== undefined &&
+        byName(held, at.name)?.id === id
+      if (!own) return false
+      const focused =
+        reportEl.current?.contains(document.activeElement) === true
+      setReport(undefined)
+      return focused
+    },
+    [here, setReport],
+  )
+
+  /**
+   * Counts the adds whose answer took away a report that held focus, which
+   * the library's page then puts on Add directory… (O255).
+   */
+  const [addFocus, setAddFocus] = useState(0)
+
+  /**
    * A directory New library linked as it made the library it goes to, for
    * that library's page to say, once.
    */
@@ -478,12 +508,12 @@ export function Libraries() {
    * A library was renamed. While the address is still this library's, its
    * page follows the name: the address is replaced, not pushed, with an
    * open directory's part kept, so Back does not return to an address that
-   * now names nothing. What the page says goes with it (`follow`), and so
-   * does an answer still out from it. The list takes the new name in the
-   * same transition, so the page is never drawn at an address the list
-   * cannot find. The list is read here, at once, so that a read sent before
-   * the rename, which would say the old name, is overtaken; the change of
-   * page this makes reads nothing more.
+   * names nothing. What the page says and an answer still out from it go
+   * with it (`follow`), but for its report, taken away (`wroteOn`). The list
+   * takes the new name in the same transition, so the page is never drawn
+   * at an address the list cannot find, and is read here, at once, to
+   * overtake a read sent before the rename, which would say the old name;
+   * the change of page this makes reads nothing more.
    */
   const libraryRenamed = useCallback(
     (id: number, name: string) => {
@@ -504,6 +534,7 @@ export function Libraries() {
       // keep the old name until they read them again.
       void invalidate(USER_LIST, SPLIT_EDITIONS)
       startTransition(() => {
+        wroteOn(id)
         setLibraries((list) => list && withLibraryRenamed(list, id, name))
         if (moves) {
           // From the library's own page as the address spells it.
@@ -512,7 +543,7 @@ export function Libraries() {
         }
       })
     },
-    [here, follow, navigate, reread],
+    [here, follow, navigate, reread, wroteOn],
   )
 
   const reportLabel = useId()
@@ -635,7 +666,16 @@ export function Libraries() {
                       }
                       onLinkedAtMakingTaken={madeLinkTaken}
                       onOpen={setArrival}
-                      onAdded={remember}
+                      onAdded={(added) => {
+                        remember(added)
+                        if (library !== undefined && wroteOn(library.id)) {
+                          setAddFocus((n) => n + 1)
+                        }
+                      }}
+                      addFocus={addFocus}
+                      onScan={() => {
+                        if (library !== undefined) wroteOn(library.id)
+                      }}
                       onChanged={changed}
                       onRenamed={libraryRenamed}
                       onLateRefusal={say}
@@ -756,7 +796,9 @@ function LibraryAt({
         />
         {notices}
         <Missing key={at?.name}>
-          There is no library at this address: it may have been removed.
+          There is no library at this address: it may have been removed, or the
+          libraries list on this page is out of date; reload the page to read it
+          again.
         </Missing>
       </div>
     )
@@ -789,7 +831,9 @@ function DirAt({
         {notices}
         <Missing key={did}>
           This library has no directory at this address: it may have been
-          removed, moved to another library, or removed from this library.
+          removed, moved to another library, or removed from this library, or
+          the libraries list on this page is out of date; reload the page to
+          read it again.
         </Missing>
       </div>
     )

@@ -338,11 +338,11 @@ async function removeDrawnLibrary(host: HTMLElement) {
 
 /** What the page for a library name the list does not hold says. */
 const NO_SUCH_LIBRARY =
-  'There is no library at this address: it may have been removed.'
+  'There is no library at this address: it may have been removed, or the libraries list on this page is out of date; reload the page to read it again.'
 
 /** What the page for a directory id its library does not hold says. */
 const NO_SUCH_DIR =
-  'This library has no directory at this address: it may have been removed, moved to another library, or removed from this library.'
+  'This library has no directory at this address: it may have been removed, moved to another library, or removed from this library, or the libraries list on this page is out of date; reload the page to read it again.'
 
 /** The page drawn for an address that names nothing: its header and line. */
 const missingPage = (host: HTMLElement) =>
@@ -413,6 +413,31 @@ const removal = (
   derive: { ...emptyDerive, lost_positions: lost },
   dry_run,
 })
+
+/**
+ * A removal that left the document at `path` in a `.taiyaku` no directory
+ * holds any more, which its derive answers as an orphan
+ * (`scan::carry_documents`). The Remove dialogs tell the person that the
+ * report lists such a document (O256).
+ */
+const leftBehind = (path: string): config.RemovalAnswer => ({
+  ...removal(),
+  derive: {
+    ...emptyDerive,
+    orphan_documents: [{ path, title: 'Berserk', absorbed_into: null }],
+  },
+})
+
+/**
+ * Each orphaned document a drawn removal report lists, as it reads. A report
+ * that is not drawn throws, so its failure is not read as an empty list.
+ */
+function orphansIn(report: Element | null) {
+  if (report === null) throw new Error('no removal report is drawn')
+  return [...report.querySelectorAll('[data-field="orphan_documents"] li')].map(
+    (li) => li.textContent,
+  )
+}
 
 /** A move to Comics that removed nothing, with `moved` over it. */
 const movedAnswer = (
@@ -2854,6 +2879,25 @@ describe('Libraries, a library’s removal', () => {
     expect(host.querySelector('.removal-report')).toBeNull()
   })
 
+  it('lists in its report a document the removal left behind', async () => {
+    // A work spanning both libraries keeps its member under /media/Comics,
+    // which keeps no documents, so its document stays where it was.
+    twoLibraries()
+    vi.mocked(api.removeLibrary).mockResolvedValue(
+      leftBehind('/media/Manga/.taiyaku/berserk.library.json'),
+    )
+    const host = await at('/config/libraries/Manga')
+    vi.mocked(api.listLibraries).mockResolvedValue({
+      libraries: [library(2, 'Comics', ['/media/Comics'])],
+    })
+    await removeDrawnLibrary(host)
+
+    expect(here()).toBe(TABLE)
+    expect(
+      orphansIn(host.querySelector('.library-table > .removal-report')),
+    ).toEqual(['/media/Manga/.taiyaku/berserk.library.json — Berserk'])
+  })
+
   it('moves focus to the removal report, which is named, when one is drawn', async () => {
     twoLibraries()
     const host = await at('/config/libraries/Manga')
@@ -3200,6 +3244,25 @@ describe('Libraries, a directory’s removal', () => {
     // The library stays, with the directory that is left.
     expect(libraryTitle(host)).toBe('Manga')
     expect(paths(host)).toEqual(['/media/Manga/Volumes'])
+  })
+
+  it('lists in its report a document the removal left behind', async () => {
+    // A work spanning both directories keeps its member under
+    // /media/Manga/Volumes, which keeps no documents, so its document stays
+    // where it was.
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [two()] })
+    vi.mocked(config.removeRoot).mockResolvedValue(
+      leftBehind('/media/Manga/Chapters/.taiyaku/berserk.library.json'),
+    )
+    const host = await at('/config/libraries/Manga/dirs/11')
+    vi.mocked(api.listLibraries).mockResolvedValue({
+      libraries: [library(1, 'Manga', ['/media/Manga/Volumes'])],
+    })
+    await removeDrawnDir(host)
+
+    expect(
+      orphansIn(host.querySelector('.library-page > .removal-report')),
+    ).toEqual(['/media/Manga/Chapters/.taiyaku/berserk.library.json — Berserk'])
   })
 
   it('drops a directory’s report once its library’s page is left, so the page opened again draws none', async () => {
@@ -3654,6 +3717,313 @@ describe('Libraries, one directory in several libraries', () => {
     expect(document.activeElement).toBe(
       host.querySelector('.dir-page .page-title'),
     )
+  })
+})
+
+/**
+ * A report drawn on a library's own page, or on a directory's page beside
+ * it, and the writes answered on the library's page that take it away
+ * (O255). `/media/Shared` (30) is Manga's and Kids', and each holds a
+ * directory of its own besides, so an unlink from Kids leaves Kids.
+ */
+describe('Libraries, a report and the next write on its library’s page', () => {
+  const MANGA = { id: 1, name: 'Manga' }
+  const KIDS = { id: 2, name: 'Kids' }
+  const shared = () => dir(30, '/media/Shared', [MANGA, KIDS])
+  const both = (): api.Library[] => [
+    {
+      ...MANGA,
+      works: 0,
+      books: 0,
+      dirs: [dir(10, '/media/Manga', [MANGA]), shared()],
+    },
+    {
+      ...KIDS,
+      works: 0,
+      books: 0,
+      dirs: [dir(20, '/media/Kids', [KIDS]), shared()],
+    },
+  ]
+  const REMOVED = 'Removed /media/Shared from Kids.'
+  /** The opening line of the report drawn on Kids' own page. */
+  const kidsReport = (host: HTMLElement) =>
+    host.querySelector('.library-page .removal-report > p')?.textContent
+
+  afterEach(() => {
+    vi.mocked(useFitsPair).mockReset()
+  })
+
+  /**
+   * Unlinks `/media/Shared` from Kids on its page, which sends the person to
+   * Kids' page and draws the report there. The list cannot be read after.
+   */
+  async function unlinked() {
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: both() })
+    vi.mocked(api.unlinkCost).mockResolvedValue(unlinkAnswer(null, true))
+    vi.mocked(api.unlinkDir).mockResolvedValue(unlinkAnswer())
+    const host = await at('/config/libraries/Kids/dirs/30')
+    vi.mocked(api.listLibraries).mockRejectedValue(locked())
+    await unlinkDrawnDir(host, 'Kids')
+    expect(here()).toBe('/config/libraries/Kids')
+    expect(kidsReport(host)).toBe(REMOVED)
+    return host
+  }
+
+  /** Adds `path` on the library page drawn, through its picker. */
+  async function addOn(host: HTMLElement, path: string) {
+    await press(host.querySelector('button[name="add-dir"]') as Element)
+    await typeInto(
+      host.querySelector('.add-root input[name="path"]') as HTMLInputElement,
+      path,
+    )
+    await press(host.querySelector('.add-root button[name="pick"]') as Element)
+  }
+
+  const sharedAdded = (): config.Added => ({
+    root: shared(),
+    watching: null,
+    watch_reason: null,
+    interval_secs: null,
+    also_in: ['Manga'],
+  })
+
+  it('takes the report away at the answer to an add on that page, at once while the list cannot be read', async () => {
+    const host = await unlinked()
+    vi.mocked(api.addDir).mockResolvedValue(sharedAdded())
+    await addOn(host, '/media/Shared')
+    await flush()
+
+    expect(api.addDir).toHaveBeenCalledWith(2, '/media/Shared')
+    expect(host.querySelector('.linked')?.textContent).toBe(
+      '/media/Shared is also a directory of Manga. It keeps the settings it has there.',
+    )
+    expect(here()).toBe('/config/libraries/Kids')
+    expect(host.querySelector('.removal-report')).toBeNull()
+    expect(host.textContent).not.toContain(REMOVED)
+  })
+
+  it('takes the report away at a press of Scan library on that page, before the scan answers', async () => {
+    const host = await unlinked()
+    const started = deferred<api.LibraryScanStarted>()
+    vi.mocked(api.startLibraryScan).mockReturnValue(started.promise)
+    await press(host.querySelector('button[name="scan-library"]') as Element)
+
+    expect(api.startLibraryScan).toHaveBeenCalledWith(2)
+    expect(here()).toBe('/config/libraries/Kids')
+    expect(host.querySelector('.removal-report')).toBeNull()
+    expect(host.textContent).not.toContain(REMOVED)
+  })
+
+  it('keeps the report on another library’s page when an add sent from a page the person left answers there', async () => {
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: both() })
+    vi.mocked(api.unlinkCost).mockResolvedValue(unlinkAnswer(null, true))
+    vi.mocked(api.unlinkDir).mockResolvedValue(unlinkAnswer())
+    const add = deferred<config.Added>()
+    vi.mocked(api.addDir).mockReturnValue(add.promise)
+    const host = await at('/config/libraries/Manga')
+    await addOn(host, '/media/Extras')
+    expect(api.addDir).toHaveBeenCalledWith(1, '/media/Extras')
+    await go('/config/libraries/Kids/dirs/30')
+    vi.mocked(api.listLibraries).mockRejectedValue(locked())
+    await unlinkDrawnDir(host, 'Kids')
+    expect(here()).toBe('/config/libraries/Kids')
+    expect(kidsReport(host)).toBe(REMOVED)
+
+    await flush(() =>
+      add.resolve({
+        ...sharedAdded(),
+        root: dir(11, '/media/Extras', [MANGA]),
+        also_in: [],
+      }),
+    )
+    await flush()
+    expect(here()).toBe('/config/libraries/Kids')
+    expect(kidsReport(host)).toBe(REMOVED)
+  })
+
+  /** The opening line of the report drawn on the directory's page. */
+  const dirReport = (host: HTMLElement) =>
+    host.querySelector('.dir-page [aria-live="polite"] > .removal-report > p')
+      ?.textContent
+
+  /**
+   * Draws the report on Kids' page of `/media/Kids` (20), beside Kids' own
+   * page: the unlink of `/media/Shared` from Kids answers once the person
+   * has gone from its page to that one. The list cannot be read after.
+   */
+  async function lateOnDirPage() {
+    vi.mocked(useFitsPair).mockReturnValue(true)
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: both() })
+    vi.mocked(api.unlinkCost).mockResolvedValue(unlinkAnswer(null, true))
+    const unlink = deferred<api.UnlinkAnswer>()
+    vi.mocked(api.unlinkDir).mockReturnValue(unlink.promise)
+    const host = await at('/config/libraries/Kids/dirs/30')
+    vi.mocked(api.listLibraries).mockRejectedValue(locked())
+    await press(
+      button(
+        host.querySelector('.dir-page') as HTMLElement,
+        'Remove from Kids…',
+      ),
+    )
+    await press(host.querySelector('.unlink-root .confirm') as Element)
+    expect(api.unlinkDir).toHaveBeenCalledWith(2, 30)
+    await follow(host, '/media/Kids')
+    expect(here()).toBe('/config/libraries/Kids/dirs/20')
+    await flush(() => unlink.resolve(unlinkAnswer()))
+    await flush()
+    expect(dirReport(host)).toBe(REMOVED)
+    return host
+  }
+
+  it('takes a report drawn on a directory’s page away at a press of Scan library on its library’s page beside it', async () => {
+    const host = await lateOnDirPage()
+    vi.mocked(api.startLibraryScan).mockReturnValue(
+      deferred<api.LibraryScanStarted>().promise,
+    )
+    await press(
+      host.querySelector(
+        '.library-page button[name="scan-library"]',
+      ) as Element,
+    )
+    expect(api.startLibraryScan).toHaveBeenCalledWith(2)
+    expect(here()).toBe('/config/libraries/Kids/dirs/20')
+    expect(host.querySelector('.removal-report')).toBeNull()
+    expect(host.textContent).not.toContain(REMOVED)
+  })
+
+  it('takes a report drawn on a directory’s page away at the answer to an add on its library’s page beside it, and puts focus on Add directory… where the report held it', async () => {
+    const host = await lateOnDirPage()
+    const add = deferred<config.Added>()
+    vi.mocked(api.addDir).mockReturnValue(add.promise)
+    await addOn(host, '/media/Extras')
+    expect(api.addDir).toHaveBeenCalledWith(2, '/media/Extras')
+    const report = host.querySelector(
+      '.dir-page .removal-report',
+    ) as HTMLElement
+    act(() => report.focus())
+    expect(document.activeElement).toBe(report)
+
+    await flush(() =>
+      add.resolve({
+        ...sharedAdded(),
+        root: dir(21, '/media/Extras', [KIDS]),
+        also_in: [],
+      }),
+    )
+    await flush()
+    expect(here()).toBe('/config/libraries/Kids/dirs/20')
+    expect(host.querySelector('.removal-report')).toBeNull()
+    expect(host.textContent).not.toContain(REMOVED)
+    expect(document.activeElement).toBe(
+      host.querySelector('.library-page button[name="add-dir"]'),
+    )
+  })
+
+  it('takes a report drawn on a directory’s page away at a rename of its library beside it, and does not carry it to the new address', async () => {
+    const host = await lateOnDirPage()
+    vi.mocked(api.renameLibrary).mockResolvedValue({ id: 2, name: 'Children' })
+    await press(
+      button(host.querySelector('.library-page') as HTMLElement, 'Rename…'),
+    )
+    await typeInto(
+      host.querySelector(
+        'form.rename-library input[name="library-name"]',
+      ) as HTMLInputElement,
+      'Children',
+    )
+    await submit(host.querySelector('form.rename-library') as Element)
+    await flush()
+    expect(api.renameLibrary).toHaveBeenCalledWith(2, 'Children')
+    expect(here()).toBe('/config/libraries/Children/dirs/20')
+    expect(libraryTitle(host)).toBe('Children')
+    expect(host.querySelector('.removal-report')).toBeNull()
+    expect(host.textContent).not.toContain(REMOVED)
+  })
+
+  it('puts focus on Add directory… when an add sent from an earlier drawing of the page answers there and takes away the report that holds focus', async () => {
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: both() })
+    vi.mocked(api.unlinkCost).mockResolvedValue(unlinkAnswer(null, true))
+    vi.mocked(api.unlinkDir).mockResolvedValue(unlinkAnswer())
+    const add = deferred<config.Added>()
+    vi.mocked(api.addDir).mockReturnValue(add.promise)
+    const host = await at('/config/libraries/Kids')
+    await addOn(host, '/media/Extras')
+    expect(api.addDir).toHaveBeenCalledWith(2, '/media/Extras')
+    // Alone where the two do not fit, so Kids' page goes as it opens and is
+    // drawn afresh on the way back.
+    await follow(host, '/media/Shared')
+    expect(here()).toBe('/config/libraries/Kids/dirs/30')
+    expect(host.querySelector('.library-page')).toBeNull()
+    vi.mocked(api.listLibraries).mockRejectedValue(locked())
+    await unlinkDrawnDir(host, 'Kids')
+    expect(here()).toBe('/config/libraries/Kids')
+    const report = host.querySelector('.library-page > .removal-report')
+    expect(report?.querySelector(':scope > p')?.textContent).toBe(REMOVED)
+    expect(document.activeElement).toBe(report)
+
+    await flush(() =>
+      add.resolve({
+        ...sharedAdded(),
+        root: dir(21, '/media/Extras', [KIDS]),
+        also_in: [],
+      }),
+    )
+    await flush()
+    expect(host.querySelector('.removal-report')).toBeNull()
+    const addButton = host.querySelector('.library-page button[name="add-dir"]')
+    expect(addButton).not.toBeNull()
+    expect(document.activeElement).toBe(addButton)
+
+    // Kids' page drawn afresh later takes nothing from that add.
+    await go('/config/libraries/Kids/dirs/20')
+    await go('/config/libraries/Kids')
+    const drawnAfresh = host.querySelector(
+      '.library-page button[name="add-dir"]',
+    )
+    expect(drawnAfresh).not.toBeNull()
+    expect(drawnAfresh).not.toBe(addButton)
+    expect(document.activeElement).not.toBe(drawnAfresh)
+  })
+
+  it('leaves focus where the person put it when an add sent from an earlier drawing of the page answers there and takes away a report that does not hold it', async () => {
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: both() })
+    vi.mocked(api.unlinkCost).mockResolvedValue(unlinkAnswer(null, true))
+    const unlink = deferred<api.UnlinkAnswer>()
+    vi.mocked(api.unlinkDir).mockReturnValue(unlink.promise)
+    const add = deferred<config.Added>()
+    vi.mocked(api.addDir).mockReturnValue(add.promise)
+    const host = await at('/config/libraries/Kids')
+    await addOn(host, '/media/Extras')
+    expect(api.addDir).toHaveBeenCalledWith(2, '/media/Extras')
+    await follow(host, '/media/Shared')
+    vi.mocked(api.listLibraries).mockRejectedValue(locked())
+    await unlinkDrawnDir(host, 'Kids')
+    expect(api.unlinkDir).toHaveBeenCalledWith(2, 30)
+    await follow(host, '‹ Kids')
+    expect(here()).toBe('/config/libraries/Kids')
+    const scan = host.querySelector(
+      '.library-page button[name="scan-library"]',
+    ) as HTMLButtonElement
+    act(() => scan.focus())
+    await flush(() => unlink.resolve(unlinkAnswer()))
+    await flush()
+    expect(
+      host.querySelector(
+        '.library-page > [aria-live="polite"] > .removal-report > p',
+      )?.textContent,
+    ).toBe(REMOVED)
+    expect(document.activeElement).toBe(scan)
+
+    await flush(() =>
+      add.resolve({
+        ...sharedAdded(),
+        root: dir(21, '/media/Extras', [KIDS]),
+        also_in: [],
+      }),
+    )
+    await flush()
+    expect(host.querySelector('.removal-report')).toBeNull()
+    expect(document.activeElement).toBe(scan)
   })
 })
 
@@ -4153,7 +4523,7 @@ describe('Libraries, addressed by name', () => {
   const CHAPTERS_REMOVED =
     'What re-deriving after removing /media/Manga/Chapters found:'
 
-  it('keeps a directory’s removal report on its library’s page through a rename of the library, which takes focus no more', async () => {
+  it('takes a directory’s removal report on its library’s page away at a rename of the library, rather than carrying it to the new address', async () => {
     const removed = mangaRenamedAndRemoved('Shelves')
     const host = await at(`${TABLE}/Manga/dirs/11`)
     await removeDrawnDir(host)
@@ -4169,12 +4539,9 @@ describe('Libraries, addressed by name', () => {
     await renameTo(host, 'Shelves')
     expect(here()).toBe(`${TABLE}/Shelves`)
     expect(libraryTitle(host)).toBe('Shelves')
-    const kept = host.querySelector('.library-page > .removal-report')
-    expect(kept?.querySelector(':scope > p')?.textContent).toBe(
-      CHAPTERS_REMOVED,
-    )
-    // The editor's close puts focus on the title; the report took focus once,
-    // when its answer moved the person to it.
+    expect(host.querySelector('.removal-report')).toBeNull()
+    expect(host.textContent).not.toContain(CHAPTERS_REMOVED)
+    // The editor's close puts focus on the title.
     expect(document.activeElement).toBe(libraryHeading(host))
   })
 

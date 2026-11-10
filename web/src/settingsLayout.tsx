@@ -272,6 +272,14 @@ export type RowProps = {
   | {
       group?: never
       /**
+       * A row whose control is a button, named by its own words: a function
+       * child is handed the ids all the same, for its `aria-describedby`, so
+       * a help that says why it is held is read with it (O250), but the label
+       * labels nothing. As the button's `<label>` it would name the button in
+       * its words' place, and a click on the words would press it.
+       */
+      action?: boolean
+      /**
        * The control. A function for a form control, which is handed the ids
        * that tie the label and the help to it, so a click on the label
        * reaches the control and the name stays the label's words alone, not
@@ -289,11 +297,19 @@ export type RowProps = {
        * so that a group of checkboxes can be added as `'group'` beside it.
        */
       group: 'radiogroup'
+      action?: never
       children: ReactNode
     }
 )
 
-export function Row({ label, help, check = false, group, children }: RowProps) {
+export function Row({
+  label,
+  help,
+  check = false,
+  action = false,
+  group,
+  children,
+}: RowProps) {
   const id = useId()
   const ids: RowIds = {
     control: `${id}-control`,
@@ -305,7 +321,7 @@ export function Row({ label, help, check = false, group, children }: RowProps) {
   return (
     <div className={check ? 'settings-row settings-row-check' : 'settings-row'}>
       <div className="settings-row-text">
-        {form ? (
+        {form && !action ? (
           <label className="settings-row-label" htmlFor={ids.control}>
             {/* One element, because under a coarse pointer a check row's
                 label is a grid (`settings.css`) and each child of a grid is

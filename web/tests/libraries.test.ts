@@ -15,10 +15,17 @@ import {
   startLibraryScan,
   unlinkCost,
   unlinkDir,
+  withLibraryMade,
   withMovedDir,
   withoutDir,
 } from '../src/libraries'
-import type { Moved } from '../src/libraries'
+import type {
+  AroundDir,
+  Library,
+  LibraryDir,
+  Moved,
+  NestedDir,
+} from '../src/libraries'
 import { dir } from './support/libraries'
 
 const answering = (body: unknown) => {
@@ -197,6 +204,82 @@ describe('noLibrarySentence', () => {
   })
 })
 
+/**
+ * The lines other directories draw for `/m/k`, which Kids and Teens hold:
+ * Manga's `/m` around it names it on a nested line, and Comics' `/m/k/s`
+ * inside it on an inside line, each with both holders. Kids holds nothing
+ * else, so a write taking `/m/k` out of it empties it.
+ */
+const NESTING = (() => {
+  const COMICS = { id: 3, name: 'Comics' }
+  const MANGA = { id: 7, name: 'Manga' }
+  const KIDS = { id: 8, name: 'Kids' }
+  const TEENS = { id: 9, name: 'Teens' }
+  const nestedLine = (
+    id: number,
+    path: string,
+    libraries: string[],
+  ): NestedDir => ({ id, path, libraries, shown: true, kept_out_by: null })
+  const aroundLine = (path: string, libraries: string[]): AroundDir => ({
+    path,
+    libraries,
+    shows: true,
+    kept_out_by: null,
+  })
+  const k = (): LibraryDir => ({
+    ...dir(2, '/m/k', [KIDS, TEENS]),
+    nested: [nestedLine(4, '/m/k/s', ['Comics'])],
+    inside: [aroundLine('/m', ['Manga'])],
+  })
+  const held = (): Library[] => [
+    {
+      ...COMICS,
+      works: 0,
+      books: 0,
+      dirs: [
+        {
+          ...dir(4, '/m/k/s', [COMICS]),
+          inside: [
+            aroundLine('/m', ['Manga']),
+            aroundLine('/m/k', ['Kids', 'Teens']),
+          ],
+        },
+      ],
+    },
+    {
+      ...MANGA,
+      works: 0,
+      books: 0,
+      dirs: [
+        {
+          ...dir(1, '/m', [MANGA]),
+          nested: [
+            nestedLine(2, '/m/k', ['Kids', 'Teens']),
+            nestedLine(4, '/m/k/s', ['Comics']),
+          ],
+        },
+      ],
+    },
+    { ...KIDS, works: 0, books: 0, dirs: [k()] },
+    { ...TEENS, works: 0, books: 0, dirs: [dir(3, '/t', [TEENS]), k()] },
+  ]
+  /**
+   * Each library's directories, each with its holders and its nested and
+   * inside lines, each line with the names it carries, in order.
+   */
+  const lines = (libraries: Library[]) =>
+    libraries.map((one) => [
+      one.name,
+      one.dirs.map((d) => [
+        d.path,
+        d.libraries.map((l) => l.name),
+        d.nested.map((l) => [l.path, l.libraries]),
+        d.inside.map((l) => [l.path, l.libraries]),
+      ]),
+    ])
+  return { held, lines }
+})()
+
 describe('withoutDir', () => {
   const MANGA = { id: 7, name: 'Manga' }
   const KIDS = { id: 8, name: 'Kids' }
@@ -285,6 +368,97 @@ describe('withoutDir', () => {
       ],
     ])
   })
+
+  it('takes the library an unlink left, which it emptied, off the lines other directories draw for the directory, on both sides', () => {
+    const { held, lines } = NESTING
+    expect(lines(withoutDir(held(), 8, '/m/k', 'unlinked', ['Kids']))).toEqual([
+      [
+        'Comics',
+        [
+          [
+            '/m/k/s',
+            ['Comics'],
+            [],
+            [
+              ['/m', ['Manga']],
+              ['/m/k', ['Teens']],
+            ],
+          ],
+        ],
+      ],
+      [
+        'Manga',
+        [
+          [
+            '/m',
+            ['Manga'],
+            [
+              ['/m/k', ['Teens']],
+              ['/m/k/s', ['Comics']],
+            ],
+            [],
+          ],
+        ],
+      ],
+      [
+        'Teens',
+        [
+          ['/t', ['Teens'], [], []],
+          ['/m/k', ['Teens'], [['/m/k/s', ['Comics']]], [['/m', ['Manga']]]],
+        ],
+      ],
+    ])
+  })
+
+  it('takes the library an unlink left, which it did not empty, off the lines other directories draw for the directory, and keeps the library still holding it there', () => {
+    // Teens keeps `/t`, so this unlink empties no library: the names taken
+    // off the lines are the library left, not the libraries emptied.
+    const { held, lines } = NESTING
+    expect(lines(withoutDir(held(), 9, '/m/k', 'unlinked', []))).toEqual([
+      [
+        'Comics',
+        [
+          [
+            '/m/k/s',
+            ['Comics'],
+            [],
+            [
+              ['/m', ['Manga']],
+              ['/m/k', ['Kids']],
+            ],
+          ],
+        ],
+      ],
+      [
+        'Manga',
+        [
+          [
+            '/m',
+            ['Manga'],
+            [
+              ['/m/k', ['Kids']],
+              ['/m/k/s', ['Comics']],
+            ],
+            [],
+          ],
+        ],
+      ],
+      [
+        'Kids',
+        [['/m/k', ['Kids'], [['/m/k/s', ['Comics']]], [['/m', ['Manga']]]]],
+      ],
+      ['Teens', [['/t', ['Teens'], [], []]]],
+    ])
+  })
+
+  it('takes the line of a removed directory away from every other directory, on both sides', () => {
+    const { held, lines } = NESTING
+    expect(lines(withoutDir(held(), 8, '/m/k', 'removed', ['Kids']))).toEqual([
+      ['Comics', [['/m/k/s', ['Comics'], [], [['/m', ['Manga']]]]]],
+      ['Manga', [['/m', ['Manga'], [['/m/k/s', ['Comics']]], []]]],
+      ['Teens', [['/t', ['Teens'], [], []]]],
+    ])
+  })
 })
 
 describe('withMovedDir', () => {
@@ -350,6 +524,238 @@ describe('withMovedDir', () => {
       ['Comics', [['/c', ['Comics']]]],
       ['Manga', [['/a', ['Manga']]]],
       ['Kids', [['/m', ['Kids', 'Extras']]]],
+    ])
+  })
+
+  it('names the library a move went to in place of the one it left on the lines other directories draw for the directory, on both sides', () => {
+    const { held, lines } = NESTING
+    expect(
+      lines(
+        withMovedDir(held(), 8, '/m/k', moved({ library_removed: 'Kids' })),
+      ),
+    ).toEqual([
+      [
+        'Comics',
+        [
+          [
+            '/m/k/s',
+            ['Comics'],
+            [],
+            [
+              ['/m', ['Manga']],
+              ['/m/k', ['Comics', 'Teens']],
+            ],
+          ],
+        ],
+      ],
+      [
+        'Manga',
+        [
+          [
+            '/m',
+            ['Manga'],
+            [
+              ['/m/k', ['Comics', 'Teens']],
+              ['/m/k/s', ['Comics']],
+            ],
+            [],
+          ],
+        ],
+      ],
+      [
+        'Teens',
+        [
+          ['/t', ['Teens'], [], []],
+          [
+            '/m/k',
+            ['Comics', 'Teens'],
+            [['/m/k/s', ['Comics']]],
+            [['/m', ['Manga']]],
+          ],
+        ],
+      ],
+    ])
+  })
+
+  it('names a library the move made last on the lines other directories draw for the directory, as its id is the largest', () => {
+    const { held, lines } = NESTING
+    expect(
+      lines(
+        withMovedDir(
+          held(),
+          8,
+          '/m/k',
+          moved({ library_id: 12, library: 'Extras', library_removed: 'Kids' }),
+        ),
+      ),
+    ).toEqual([
+      [
+        'Comics',
+        [
+          [
+            '/m/k/s',
+            ['Comics'],
+            [],
+            [
+              ['/m', ['Manga']],
+              ['/m/k', ['Teens', 'Extras']],
+            ],
+          ],
+        ],
+      ],
+      [
+        'Manga',
+        [
+          [
+            '/m',
+            ['Manga'],
+            [
+              ['/m/k', ['Teens', 'Extras']],
+              ['/m/k/s', ['Comics']],
+            ],
+            [],
+          ],
+        ],
+      ],
+      [
+        'Teens',
+        [
+          ['/t', ['Teens'], [], []],
+          [
+            '/m/k',
+            ['Teens', 'Extras'],
+            [['/m/k/s', ['Comics']]],
+            [['/m', ['Manga']]],
+          ],
+        ],
+      ],
+    ])
+  })
+
+  it('keeps a library a move made, which the list does not hold, on the lines when a second move of the directory follows', () => {
+    const { held, lines } = NESTING
+    const first = withMovedDir(
+      held(),
+      8,
+      '/m/k',
+      moved({ library_id: 12, library: 'Extras', library_removed: 'Kids' }),
+    )
+    expect(lines(withMovedDir(first, 9, '/m/k', moved()))).toEqual([
+      [
+        'Comics',
+        [
+          [
+            '/m/k/s',
+            ['Comics'],
+            [],
+            [
+              ['/m', ['Manga']],
+              ['/m/k', ['Comics', 'Extras']],
+            ],
+          ],
+        ],
+      ],
+      [
+        'Manga',
+        [
+          [
+            '/m',
+            ['Manga'],
+            [
+              ['/m/k', ['Comics', 'Extras']],
+              ['/m/k/s', ['Comics']],
+            ],
+            [],
+          ],
+        ],
+      ],
+      ['Teens', [['/t', ['Teens'], [], []]]],
+    ])
+  })
+
+  it('changes nothing for a move answered after a read that already draws it, where the library it left holds the directory no longer', () => {
+    const { held } = NESTING
+    const answer = moved({ library_removed: 'Kids' })
+    const after = withMovedDir(held(), 8, '/m/k', answer)
+    const teens = after.find((one) => one.name === 'Teens')
+    const k = teens?.dirs.find((d) => d.path === '/m/k')
+    if (k === undefined) throw new Error('the fixture holds /m/k in Teens')
+    const read = after.map((one) =>
+      one.name === 'Comics' ? { ...one, dirs: [...one.dirs, k] } : one,
+    )
+    expect(withMovedDir(read, 8, '/m/k', answer)).toEqual(read)
+  })
+})
+
+describe('withLibraryMade', () => {
+  it('adds the library a make linked a directory to, last, to the lines other directories draw for that directory, on both sides', () => {
+    const { held, lines } = NESTING
+    const extras = { id: 12, name: 'Extras' }
+    const made: Library = {
+      ...extras,
+      works: 0,
+      books: 0,
+      dirs: [
+        dir(2, '/m/k', [
+          { id: 8, name: 'Kids' },
+          { id: 9, name: 'Teens' },
+          extras,
+        ]),
+      ],
+    }
+    expect(lines(withLibraryMade(held(), made))).toEqual([
+      [
+        'Comics',
+        [
+          [
+            '/m/k/s',
+            ['Comics'],
+            [],
+            [
+              ['/m', ['Manga']],
+              ['/m/k', ['Kids', 'Teens', 'Extras']],
+            ],
+          ],
+        ],
+      ],
+      [
+        'Manga',
+        [
+          [
+            '/m',
+            ['Manga'],
+            [
+              ['/m/k', ['Kids', 'Teens', 'Extras']],
+              ['/m/k/s', ['Comics']],
+            ],
+            [],
+          ],
+        ],
+      ],
+      [
+        'Kids',
+        [
+          [
+            '/m/k',
+            ['Kids', 'Teens', 'Extras'],
+            [['/m/k/s', ['Comics']]],
+            [['/m', ['Manga']]],
+          ],
+        ],
+      ],
+      [
+        'Teens',
+        [
+          ['/t', ['Teens'], [], []],
+          [
+            '/m/k',
+            ['Kids', 'Teens', 'Extras'],
+            [['/m/k/s', ['Comics']]],
+            [['/m', ['Manga']]],
+          ],
+        ],
+      ],
+      ['Extras', [['/m/k', ['Kids', 'Teens', 'Extras'], [], []]]],
     ])
   })
 })

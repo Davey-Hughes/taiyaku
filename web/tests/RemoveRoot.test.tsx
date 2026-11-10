@@ -156,10 +156,10 @@ describe('RemoveRoot', () => {
     )
   })
 
-  it('says a removal takes only what no other directory holds', async () => {
+  it('says a removal takes only what no other directory holds, changes no archive, and says where a staying work’s documents go (O256)', async () => {
     const host = await settle()
     expect(host.querySelector('.irreversible')?.textContent).toBe(
-      'Nothing here can be undone from this screen. The files on disk are untouched; what goes is everything derived from files no other directory holds, and everything anybody recorded against a work that goes.',
+      'Nothing here can be undone from this screen. What goes is everything derived from files no other directory holds, and everything anybody recorded against a work that goes. No archive on disk is changed. A work that stays takes its documents under .taiyaku/ to the directory that now holds its files, if that directory keeps documents; the report after the removal lists any left behind as orphaned documents.',
     )
   })
 
@@ -333,6 +333,69 @@ describe('RemoveRoot', () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toBe(
       'a scan is running',
     )
+  })
+
+  it('drops its counts and its confirm when the removal itself is refused for a hold, and leaves the refusal and Cancel, as Move’s dialog does (O252)', async () => {
+    vi.mocked(config.removeRoot).mockRejectedValue(
+      new Error(
+        '/api/library/roots/3: 409 {"error":"a scan of /srv/manga is running; remove the directory once it has finished"}',
+      ),
+    )
+    const onCancel = vi.fn()
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <RemoveRoot root={root} onCancel={onCancel} onRemoved={vi.fn()} />,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    if (!host) throw new Error('nothing mounted')
+    const mounted = host
+    expect(mounted.querySelector('.counts')).not.toBeNull()
+    await act(async () => {
+      press(mounted, 'Remove /srv/manga').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(
+      [...mounted.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
+    ).toEqual([
+      'a scan of /srv/manga is running; remove the directory once it has finished',
+    ])
+    expect(mounted.querySelector('.counts')).toBeNull()
+    expect(mounted.querySelector('.irreversible')).toBeNull()
+    expect(mounted.querySelector('.removal-derive')).toBeNull()
+    expect(mounted.querySelector('.confirm')).toBeNull()
+    expect(
+      [...mounted.querySelectorAll('button')].map((b) => b.textContent),
+    ).toEqual(['Cancel'])
+    expect(mounted.textContent).not.toContain('Working out')
+    await act(async () => {
+      press(mounted, 'Cancel').click()
+      await Promise.resolve()
+    })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(config.removeRoot).toHaveBeenCalledTimes(1)
+  })
+
+  it('puts focus on Cancel when a refusal for a hold takes away the confirm that had it, so that focus does not fall to the page (O252)', async () => {
+    vi.mocked(config.removeRoot).mockRejectedValue(
+      new Error(
+        '/api/library/roots/3: 409 {"error":"a scan of /srv/manga is running; remove the directory once it has finished"}',
+      ),
+    )
+    const host = await settle()
+    const confirm = press(host, 'Remove /srv/manga')
+    act(() => confirm.focus())
+    expect(document.activeElement).toBe(confirm)
+    await act(async () => {
+      confirm.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.confirm')).toBeNull()
+    expect(document.activeElement).toBe(press(host, 'Cancel'))
   })
 
   it('does not offer a confirm while the counts are unknown', async () => {

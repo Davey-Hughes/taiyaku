@@ -6,7 +6,7 @@ import { NO_ADDRESS } from '../src/configAddress'
 import { WAIT_DRAWN_AFTER_MS } from '../src/hooks'
 import * as api from '../src/libraries'
 import { LibraryPage } from '../src/LibraryPage'
-import { deferred, flush } from './support/async'
+import { deferred, flush, land } from './support/async'
 import { emptyDerive } from './support/derive'
 import { press, submit, typeInto } from './support/input'
 import { holdOf } from './support/held'
@@ -21,7 +21,7 @@ import {
 } from './support/libraries'
 import { mount, rerender } from './support/mount'
 import { keptGrid, keptSplitEditions } from './support/reads'
-import { expectRowsWired, row, section } from './support/settingsRows'
+import { expectRowsWired, helpOf, row, section } from './support/settingsRows'
 import { cellValue } from './support/table'
 import { watchDrawn } from './support/wait'
 
@@ -1718,6 +1718,78 @@ describe('LibraryPage, a directory inside one of its own', () => {
     expect(holdOf(button(host, 'remove-library'))).toBe('free')
   })
 
+  /** The Removal box's one row, and the help its label has. */
+  const removalHelp = (host: HTMLElement) =>
+    helpOf(row(section(host, 'Removal'), 'Remove this library'))?.textContent
+
+  it('says in Remove…’s help why it is held while a scan around one of its directories holds it, and its words of today once a later read names none (O250)', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      held_removals: [1],
+    })
+    const { host } = await shown()
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    expect(removalHelp(host)).toBe(
+      "Waits for a scan of a directory around or inside one of Manga's directories.",
+    )
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+    await tick()
+    await flush()
+    expect(holdOf(button(host, 'remove-library'))).toBe('free')
+    expect(removalHelp(host)).toBe('Asks first, with what it would take.')
+  })
+
+  it('describes Remove… by its row’s help, held or not (O250)', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      held_removals: [1],
+    })
+    const { host } = await shown()
+    /** What Remove…'s `aria-describedby` names, read through the id. */
+    const described = () => {
+      const named = document.getElementById(
+        button(host, 'remove-library').getAttribute('aria-describedby') ?? '',
+      )
+      expect(named).toBe(
+        helpOf(row(section(host, 'Removal'), 'Remove this library')),
+      )
+      return named?.textContent
+    }
+    expect(described()).toBe(
+      "Waits for a scan of a directory around or inside one of Manga's directories.",
+    )
+    // The row's words label nothing: the button is named by its own.
+    expect(section(host, 'Removal').querySelector('label')).toBeNull()
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+    await tick()
+    await flush()
+    expect(described()).toBe('Asks first, with what it would take.')
+  })
+
+  it('keeps Remove…’s words of today while the library’s own scan holds it beside a removal held around one of its directories, and says why once only that holds it (O250)', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...scanningIn(manga(), 1, 2),
+      held_removals: [1],
+    })
+    const { host } = await shown()
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    expect(removalHelp(host)).toBe('Asks first, with what it would take.')
+
+    // The library's scan ends with the removal still held: the words come.
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      held_removals: [1],
+    })
+    await tick()
+    await flush()
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    expect(removalHelp(host)).toBe(
+      "Waits for a scan of a directory around or inside one of Manga's directories.",
+    )
+  })
+
   it('keeps Remove… held through two failed reads of a held removal, and frees it on the third, saying why', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValueOnce({
       ...idle(7),
@@ -2472,6 +2544,294 @@ describe('LibraryPage, its scan status as it is drawn', () => {
     expect(lastScans(host)).toEqual(['Scanning…', 'Scanning…'])
     await tick()
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('LibraryPage, its removal refused (O252)', () => {
+  /** The client's error for a refusal of the dry run or of the removal. */
+  const refusal = (write: boolean, status: number, body: string) =>
+    new Error(
+      `/api/library/libraries/7${write ? '' : '?dry_run=true'}: ${status} ${body}`,
+    )
+  const HELD =
+    '{"error":"a scan of /media/Manga/Volumes is running; remove the library once it has finished"}'
+
+  /** Opens Remove…'s dialog and, for the removal, presses its confirm. */
+  const refuse = async (host: HTMLElement, write: boolean) => {
+    await press(button(host, 'remove-library'))
+    if (write) {
+      await press(host.querySelector('.remove-library .confirm') as Element)
+    }
+    await land()
+  }
+
+  const cancelRemoval = (host: HTMLElement) =>
+    press(
+      [...host.querySelectorAll('.remove-library button')].find(
+        (b) => b.textContent === 'Cancel',
+      ) as Element,
+    )
+
+  /** What Remove…'s `aria-describedby` names, read through the id. */
+  const described = (host: HTMLElement) => {
+    const named = document.getElementById(
+      button(host, 'remove-library').getAttribute('aria-describedby') ?? '',
+    )
+    expect(named).toBe(
+      helpOf(row(section(host, 'Removal'), 'Remove this library')),
+    )
+    return named?.textContent
+  }
+
+  /** Every alert on the page that says something. */
+  const alerts = (host: HTMLElement) =>
+    [...host.querySelectorAll('[role="alert"]')]
+      .map((a) => a.textContent)
+      .filter((words) => words !== '')
+
+  it.each([
+    { at: 'its dry run', write: false },
+    { at: 'the removal', write: true },
+  ])(
+    'reads its status again when $at is refused for a hold, so that after Cancel Remove… is held and says why until a later read names no hold',
+    async ({ write }) => {
+      vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
+      if (!write) {
+        vi.mocked(api.libraryRemovalCost).mockRejectedValue(
+          refusal(write, 409, HELD),
+        )
+      }
+      vi.mocked(api.removeLibrary).mockRejectedValue(refusal(write, 409, HELD))
+      const { host } = await shown()
+      expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
+      vi.mocked(api.libraryScanStatus).mockResolvedValue({
+        ...idle(7),
+        held_removals: [1],
+      })
+
+      await refuse(host, write)
+      expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
+      // The dialog draws the refusal, and the page no second copy of it.
+      expect(alerts(host)).toEqual([
+        'a scan of /media/Manga/Volumes is running; remove the library once it has finished',
+      ])
+      expect(host.querySelector('.remove-library .confirm')).toBeNull()
+
+      await cancelRemoval(host)
+      expect(host.querySelector('.remove-library')).toBeNull()
+      expect(holdOf(button(host, 'remove-library'))).toBe('held')
+      expect(described(host)).toBe(
+        "Waits for a scan of a directory around or inside one of Manga's directories.",
+      )
+
+      // Polled as a hold the page reads on arrival is, until it ends.
+      vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+      await tick()
+      await flush()
+      expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
+      expect(holdOf(button(host, 'remove-library'))).toBe('free')
+      expect(described(host)).toBe('Asks first, with what it would take.')
+    },
+  )
+
+  it.each([
+    { at: 'its dry run', write: false },
+    { at: 'the removal', write: true },
+  ])(
+    'reads no status when $at fails for anything but a hold',
+    async ({ write }) => {
+      const failure = refusal(write, 500, '{"error":"the disk is full"}')
+      vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
+      if (!write) {
+        vi.mocked(api.libraryRemovalCost).mockRejectedValue(failure)
+      }
+      vi.mocked(api.removeLibrary).mockRejectedValue(failure)
+      const { host } = await shown()
+
+      await refuse(host, write)
+      expect(alerts(host)).toEqual(['the disk is full'])
+      expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
+
+      await cancelRemoval(host)
+      expect(holdOf(button(host, 'remove-library'))).toBe('free')
+      expect(described(host)).toBe('Asks first, with what it would take.')
+      await tick()
+      expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('takes up a scan of its own that the status read after a refusal finds running, as one found on arrival is', async () => {
+    vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
+    vi.mocked(api.removeLibrary).mockRejectedValue(refusal(true, 409, HELD))
+    const { host } = await shown()
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
+
+    await refuse(host, true)
+    await cancelRemoval(host)
+    expect(scanDrawn()).toBe(
+      JSON.stringify([
+        'A scan is running in this library… 3s',
+        ['Scanning…', 'Never'],
+        'held',
+        'held',
+      ]),
+    )
+    // Watched from here as any scan is: the poll finds it ended.
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+    await tick()
+    expect(scanDrawn()).toBe(
+      JSON.stringify([null, ['Never', 'Never'], 'free', 'free']),
+    )
+  })
+
+  it('draws the hold again when its dry run is refused for a hold the page gave up after failed reads, and the status read again says it in the words it last read', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValueOnce({
+      ...idle(7),
+      held_removals: [1],
+    })
+    vi.mocked(api.libraryRemovalCost).mockRejectedValue(
+      refusal(false, 409, HELD),
+    )
+    const { host } = await shown()
+    vi.mocked(api.libraryScanStatus).mockRejectedValue(
+      new Error('/api/library/libraries/7/scan: 500 the store is locked'),
+    )
+    for (const _ of [1, 2, 3]) {
+      await tick()
+      await flush()
+    }
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(4)
+    expect(holdOf(button(host, 'remove-library'))).toBe('free')
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      held_removals: [1],
+    })
+    await refuse(host, false)
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(5)
+    await cancelRemoval(host)
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    expect(described(host)).toBe(
+      "Waits for a scan of a directory around or inside one of Manga's directories.",
+    )
+
+    // Polled again, as any hold the page draws is, until it ends.
+    await tick()
+    await flush()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(6)
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+    await tick()
+    await flush()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(7)
+    expect(holdOf(button(host, 'remove-library'))).toBe('free')
+    expect(described(host)).toBe('Asks first, with what it would take.')
+  })
+
+  it('draws no hold from the status read after a refusal when a newer read, answered first, named none', async () => {
+    vi.mocked(api.libraryRemovalCost).mockRejectedValue(
+      refusal(false, 409, HELD),
+    )
+    const { host, redraw } = await shown()
+    vi.mocked(api.libraryScanStatus).mockResolvedValueOnce({
+      ...idle(7),
+      held_removals: [1],
+    })
+    await refuse(host, false)
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
+    expect(described(host)).toBe(
+      "Waits for a scan of a directory around or inside one of Manga's directories.",
+    )
+
+    // A directory added under the open dialog asks its dry run again, which
+    // is refused again; the read that refusal sends is answered late.
+    const late = deferred<api.LibraryScanStatus>()
+    vi.mocked(api.libraryScanStatus).mockReturnValueOnce(late.promise)
+    await redraw(
+      manga({ dirs: [...manga().dirs, dir(3, '/media/Manga/Extras')] }),
+    )
+    await land()
+    expect(api.libraryRemovalCost).toHaveBeenCalledTimes(2)
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
+
+    // The held poll's read, sent after it, answers first: nothing holds.
+    vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
+    await tick()
+    await flush()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(4)
+    expect(described(host)).toBe('Asks first, with what it would take.')
+
+    await flush(() => late.resolve({ ...idle(7), held_removals: [1] }))
+    await land()
+    await cancelRemoval(host)
+    expect(holdOf(button(host, 'remove-library'))).toBe('free')
+    expect(described(host)).toBe('Asks first, with what it would take.')
+    await tick()
+    await flush()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(4)
+  })
+
+  it('draws the hold the page gave up when the read a refusal sends names it in other words and is overtaken by a newer one that fails', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValueOnce({
+      ...idle(7),
+      held_removals: [1],
+    })
+    vi.mocked(api.libraryRemovalCost).mockRejectedValue(
+      refusal(false, 409, HELD),
+    )
+    const { host, redraw } = await shown()
+    vi.mocked(api.libraryScanStatus).mockRejectedValue(
+      new Error('/api/library/libraries/7/scan: 500 the store is locked'),
+    )
+    for (const _ of [1, 2, 3]) {
+      await tick()
+      await flush()
+    }
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(4)
+    expect(holdOf(button(host, 'remove-library'))).toBe('free')
+
+    // The server now holds the removal in other words than the page last read.
+    const heldWider = { ...idle(7), held_removals: [1, 3] }
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(heldWider)
+    const first = deferred<api.LibraryScanStatus>()
+    const second = deferred<api.LibraryScanStatus>()
+    vi.mocked(api.libraryScanStatus)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    await refuse(host, false)
+    // A directory added under the open dialog asks its dry run again, which
+    // is refused again, and that refusal's read overtakes the first's.
+    await redraw(
+      manga({ dirs: [...manga().dirs, dir(3, '/media/Manga/Extras')] }),
+    )
+    await land()
+    expect(api.libraryRemovalCost).toHaveBeenCalledTimes(2)
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(6)
+
+    await flush(() => first.resolve(heldWider))
+    await flush(() =>
+      second.reject(
+        new Error('/api/library/libraries/7/scan: 500 the store is locked'),
+      ),
+    )
+    await land()
+    await cancelRemoval(host)
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    expect(described(host)).toBe(
+      "Waits for a scan of a directory around or inside one of Manga's directories.",
+    )
+
+    // Polled, as any hold the page draws is, until it ends.
+    await tick()
+    await flush()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(7)
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+    await tick()
+    await flush()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(8)
+    expect(holdOf(button(host, 'remove-library'))).toBe('free')
+    expect(described(host)).toBe('Asks first, with what it would take.')
   })
 })
 

@@ -23,9 +23,9 @@
  * the confirm does not say a directory goes that stays.
  */
 import { Fragment, useEffect, useRef, useState } from 'react'
-import type { RemovalAnswer } from './config'
+import { type RemovalAnswer, statusOf } from './config'
 import { HeldButton } from './HeldButton'
-import { useDrawn, useDrawnWait } from './hooks'
+import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
 import {
   type Library,
   libraryRemovalCost,
@@ -33,7 +33,7 @@ import {
   noLibrarySentence,
   removeLibrary,
 } from './libraries'
-import { sentenceOf } from './message'
+import { messageOf, sentenceOf } from './message'
 import { PathWithBreaks } from './PathWithBreaks'
 import { DeriveSection } from './ScanReport'
 import { WaitWords } from './WaitWords'
@@ -53,6 +53,12 @@ export interface RemoveLibraryProps {
   onCancel: () => void
   /** Called once the library is gone, with what the removal did. */
   onRemoved: (answer: RemovalAnswer) => void
+  /**
+   * The dry run or the removal was refused while the dialog was drawn, with
+   * why and the answer's status. The dialog draws the sentence itself: this
+   * tells its owner, for whom a 409 is a hold that may not be drawn yet.
+   */
+  onRefused?: (sentence: string, status?: number) => void
   /** The removal was refused once this dialog had gone, with why. */
   onLateRefusal?: (sentence: string) => void
 }
@@ -62,6 +68,7 @@ export function RemoveLibrary({
   blocked = false,
   onCancel,
   onRemoved,
+  onRefused,
   onLateRefusal,
 }: RemoveLibraryProps) {
   const drawn = useDrawn()
@@ -96,6 +103,16 @@ export function RemoveLibrary({
   const costDrawn = useDrawnWait(cost === undefined && failure === undefined)
   /** A ref as well as `removing`: two presses before a render both read false. */
   const inFlight = useRef(false)
+  // Read by the dry run's answer, which may come after a render that handed
+  // over a fresh closure.
+  const refused = useRef(onRefused)
+  refused.current = onRefused
+  const confirmButton = useRef<HTMLButtonElement>(null)
+  const cancelButton = useRef<HTMLButtonElement>(null)
+  // The confirm goes with the counts: on a refusal for a hold, at a hold's
+  // end, and when the directories change. Focus in it would fall to the
+  // page, so Cancel, the one control left, takes it.
+  useFocusLeavesHeld(cost === undefined, confirmButton, cancelButton)
 
   useEffect(() => {
     let cancelled = false
@@ -108,6 +125,7 @@ export function RemoveLibrary({
       .catch((err: unknown) => {
         if (cancelled) return
         setFailure(sentenceOf(err))
+        refused.current?.(sentenceOf(err), statusOf(messageOf(err)))
       })
     return () => {
       cancelled = true
@@ -127,8 +145,17 @@ export function RemoveLibrary({
         inFlight.current = false
         setRemoving(false)
         const sentence = sentenceOf(err)
-        if (drawn.current) setFailure(sentence)
-        else onLateRefusal?.(`${library.name} was not removed (${sentence}).`)
+        if (!drawn.current) {
+          onLateRefusal?.(`${library.name} was not removed (${sentence}).`)
+          return
+        }
+        // As a directory's removal does (`RemoveRoot`): a refusal for a hold
+        // takes the counts and the confirm away, and any other failure keeps
+        // them to try again. A hold this page sees end asks the cost again.
+        const status = statusOf(messageOf(err))
+        if (status === 409) setAsked(undefined)
+        setFailure(sentence)
+        refused.current?.(sentence, status)
       })
   }
 
@@ -207,10 +234,13 @@ export function RemoveLibrary({
             </p>
           )}
           <p className="irreversible">
-            Nothing here can be undone from this screen. The files on disk are
-            untouched; what goes is everything derived from files no other
-            library's directories hold, and everything anybody recorded against
-            a work that goes.
+            Nothing here can be undone from this screen. What goes is everything
+            derived from files no other library's directories hold, and
+            everything anybody recorded against a work that goes. No archive on
+            disk is changed. A work that stays takes its documents under
+            .taiyaku/ to the directory that now holds its files, if that
+            directory keeps documents; the report after the removal lists any
+            left behind as orphaned documents.
           </p>
         </>
       )}
@@ -220,6 +250,7 @@ export function RemoveLibrary({
       <div className="settings-actions">
         {cost !== undefined && (
           <HeldButton
+            ref={confirmButton}
             type="button"
             className="confirm keeps-wait-width"
             onClick={confirm}
@@ -233,6 +264,7 @@ export function RemoveLibrary({
           </HeldButton>
         )}
         <HeldButton
+          ref={cancelButton}
           type="button"
           onClick={() => {
             if (!removing) onCancel()

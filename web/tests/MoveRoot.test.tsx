@@ -436,6 +436,19 @@ describe('MoveRoot', () => {
     expect(holdOf(see(host))).toBe('free')
   })
 
+  it('sends focus to See what this would do when a refused move takes away the confirm that had it, so that focus does not fall to the page (O252)', async () => {
+    vi.mocked(api.moveDir).mockRejectedValue(scanHeld(false))
+    const { host } = shown()
+    await choose(host, '7')
+    await press(see(host))
+    const move = confirm(host) as HTMLButtonElement
+    act(() => move.focus())
+    expect(document.activeElement).toBe(move)
+    await press(move)
+    expect(confirm(host)).toBeNull()
+    expect(document.activeElement).toBe(see(host))
+  })
+
   it('draws no rehearsal answered after the target changed', async () => {
     const slow = deferred<api.MoveAnswer>()
     vi.mocked(api.moveCost).mockReturnValueOnce(slow.promise)

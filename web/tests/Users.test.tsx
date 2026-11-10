@@ -2010,6 +2010,26 @@ describe('Users, an answer that comes after the person has moved on', () => {
     expect(host.textContent).not.toContain('Removed sam.')
   })
 
+  it('keeps the line said on another account’s page through a write answered there', async () => {
+    const { host, answer } = await removing()
+    await go('/config/users/kim')
+    await answer()
+    const region = host.querySelector('.account-page > [aria-live="polite"]')
+    expect(region?.textContent).toBe('Removed sam.')
+
+    vi.mocked(usersApi.patchUser).mockResolvedValue({
+      ...kim,
+      can_download: false,
+    })
+    await press(host.querySelector('input[name="can_download"]') as Element)
+    await flush()
+    expect(usersApi.patchUser).toHaveBeenCalledWith(3, { can_download: false })
+    expect(here()).toBe('/config/users/kim')
+    expect(
+      host.querySelector('.account-page > [aria-live="polite"]')?.textContent,
+    ).toBe('Removed sam.')
+  })
+
   it('leaves the person on the table when a removal answers there, says so there without taking focus, and reads the list once', async () => {
     const { host, answer } = await removing()
     await follow(host, '‹ Users')

@@ -67,9 +67,10 @@
  * are held too while the status names a removal waiting for a scan around or
  * inside one of the library's directories (`held_removals`), which the
  * server refuses the removal for; the status is read again each poll's
- * interval until it names none. A scan holds neither Rename… nor Add
- * directory…; the removal holds both, and the Directories table draws its
- * paths without links while it is open: a directory's page offers Scan
+ * interval until it names none, and once at a refusal of the removal for a
+ * hold, which the page may not be drawing. A scan holds neither Rename… nor
+ * Add directory…; the removal holds both, and the Directories table draws
+ * its paths without links while it is open: a directory's page offers Scan
  * directory, Move… and Remove… on a directory the removal is taking.
  */
 import {
@@ -169,6 +170,19 @@ export interface LibraryPageProps {
   onLinkedAtMakingTaken?: () => void
   /** A directory was added here: its probe is the screen's to keep. */
   onAdded: (added: Added[]) => void
+  /**
+   * Counts the adds whose answer took the screen's report on this page, or
+   * on a directory's page beside it, away while it held focus, which may be
+   * an add sent from an earlier drawing of the page. Each puts focus on Add
+   * directory… (O255).
+   */
+  addFocus?: number
+  /**
+   * Scan library was pressed, and a scan asked for: what the screen said on
+   * this page, or on a directory's page beside it, was of the library before
+   * it (O255).
+   */
+  onScan?: () => void
   /**
    * The list reloads on a rename, an added directory or a finished scan.
    * `quiet` is a scan that ended by itself: no press started that read.
@@ -397,6 +411,31 @@ function runningIds(status: LibraryScanStatus): ReadonlySet<number> {
   )
 }
 
+/**
+ * A time as a Last scan cell says it after a failed scan and after a refused
+ * one, in figures no time the server writes draws wider: it writes
+ * `YYYY-MM-DD HH:MM:SS`, and eights are the UI face's widest figures. An ok
+ * time, their opening words, is narrower than either.
+ */
+const WIDEST_ENDS = ['failed', 'refused'].map((status) =>
+  lastScan({ last_scan_at: '8888-88-88 88:88:88', last_scan_status: status }),
+)
+
+/**
+ * The words a directory's Last scan cell holds unseen while it scans: what it
+ * said, and the widest words any scan's end can give it. The layout takes the
+ * widest in whatever face draws them, so the column widens as the page first
+ * draws the row scanning, and the end of no scan it draws as scanning moves
+ * it (O253).
+ * A scan it never draws, one the scheduler, another tab or the CLI runs while
+ * the page is idle, still moves the column when the list is next read: an
+ * idle page reads no status to see it by.
+ */
+const heldWhileScanning = (dir: LibraryDir): string[] => [
+  lastScan(dir),
+  ...WIDEST_ENDS,
+]
+
 /** Save's words while a rename is out, and the width Save keeps for them. */
 const SAVING = 'Saving…'
 
@@ -409,6 +448,8 @@ export function LibraryPage({
   linkedAtMaking,
   onLinkedAtMakingTaken,
   onAdded,
+  addFocus,
+  onScan,
   onChanged,
   onRenamed,
   onRemoved,
@@ -530,6 +571,22 @@ export function LibraryPage({
   useEffect(() => {
     for (const id of scanning) covered.current.add(id)
   }, [scanning])
+  /**
+   * The words each directory's Last scan cell has held while it scanned, by
+   * path, since the page was entered. They stay unseen beside what it says
+   * after, so that the column keeps the width it took as the row was first
+   * drawn scanning until the page is left, and the end of no scan the page
+   * draws moves it (O253; `heldWhileScanning` says which it does not draw).
+   */
+  const heldWords = useRef(new Map<string, Set<string>>())
+  useEffect(() => {
+    for (const dir of library?.dirs ?? []) {
+      if (!scanning.has(dir.id)) continue
+      const held = heldWords.current.get(dir.path) ?? new Set<string>()
+      for (const words of heldWhileScanning(dir)) held.add(words)
+      heldWords.current.set(dir.path, held)
+    }
+  }, [scanning, library])
   /**
    * The scan the page watches. While it came from a status, kept or read,
    * each newer status is taken whole; one the page started is followed by
@@ -880,6 +937,17 @@ export function LibraryPage({
       )
       ?.focus()
   }, [adding])
+  const addFocusWas = useRef(addFocus)
+  // The report that held focus is gone, so focus goes where an add's answer
+  // on this page puts it rather than to the document. A page drawn after
+  // that add takes nothing from it.
+  useEffect(() => {
+    if (addFocusWas.current === addFocus) return
+    addFocusWas.current = addFocus
+    addRoot.current
+      ?.querySelector<HTMLElement>('button[name="add-dir"]')
+      ?.focus()
+  }, [addFocus])
 
   const removeButton = useRef<HTMLButtonElement>(null)
   /**
@@ -966,6 +1034,7 @@ export function LibraryPage({
     setFailure(undefined)
     setConflict(undefined)
     setReports(undefined)
+    onScan?.()
     covered.current = new Set()
     misses.current = 0
     // A start, or a 409, which is proof of a scan, leaves the status the
@@ -1004,6 +1073,32 @@ export function LibraryPage({
           setFailure(sentenceOf(err))
         }
       })
+  }
+
+  /**
+   * The removal's dialog was refused for a hold (a 409), proof of something
+   * holding that the page may not draw (O252): the status taken may not name
+   * it, or the page gave it up after failed reads. The status is read again
+   * through the store, so `taken` draws an answer in new words as it draws a
+   * return's read: a removal held around one of the library's directories
+   * holds Remove… and is polled until it ends, and a scan of the library is
+   * taken up. Silent if it fails: the dialog has said what was refused.
+   */
+  const heldRefusal = () => {
+    const scan = libraryScan(library.id)
+    void readNow(scan).then(
+      () => {
+        // An answer in the words the store holds keeps its object, so
+        // `taken` never sees it, and a hold the page gave up would stay
+        // given up. So the hold is drawn here too, from the newest answer
+        // the store holds: not from this read's, which a newer read may have
+        // overtaken, and which would then hold Remove… over a hold that read
+        // saw end.
+        const kept = entryOf(scan)?.answer
+        if (kept !== undefined) setRemovalHeld(kept.held_removals.length > 0)
+      },
+      () => undefined,
+    )
   }
 
   const rename = (e: React.FormEvent) => {
@@ -1259,6 +1354,12 @@ export function LibraryPage({
             {library.dirs.map((root) => {
               const to = dirPath(library.name, root.id)
               const overlaps = overlapsOf(root)
+              const said = scanning.has(root.id) ? 'Scanning…' : lastScan(root)
+              const held = new Set([
+                ...(heldWords.current.get(root.path) ?? []),
+                ...(scanning.has(root.id) ? heldWhileScanning(root) : []),
+              ])
+              held.delete(said)
               return (
                 // By path, not id: a freed `root.id` is given to the next
                 // directory added, and a path cannot collide, since a
@@ -1291,20 +1392,22 @@ export function LibraryPage({
                   </td>
                   <td>
                     <span className="cell-label">Last scan: </span>
-                    {scanning.has(root.id) ? (
-                      <>
-                        Scanning…
-                        {/* What the cell said before, unseen and unread,
-                            keeps the column as wide as it was, so the paths
-                            beside it keep their lines as the scan ends and
-                            nothing below them moves. */}
-                        <span className="held-words" aria-hidden="true">
-                          {lastScan(root)}
-                        </span>
-                      </>
-                    ) : (
-                      lastScan(root)
-                    )}
+                    {said}
+                    {/* What the cell has said as it scanned, and the widest
+                        words a scan's end can give it, unseen and unread,
+                        keep the column as wide as it was made when the row
+                        was first drawn scanning, so the paths beside it keep
+                        their lines as a scan drawn here ends and nothing
+                        below them moves. */}
+                    {[...held].map((words) => (
+                      <span
+                        key={words}
+                        className="held-words"
+                        aria-hidden="true"
+                      >
+                        {words}
+                      </span>
+                    ))}
                   </td>
                   {/* Empty where it overlaps nothing, label and all, so a
                       two-line row has no item there (`lineEnds.ts`). */}
@@ -1401,19 +1504,29 @@ export function LibraryPage({
       <RemovalSection title="Removal">
         <Row
           label="Remove this library"
-          help="Asks first, with what it would take."
+          help={
+            // Why a scan it does not walk holds it, which no scan line says
+            // (O250); its own scan's lines say theirs.
+            removalHeld && !running
+              ? `Waits for a scan of a directory around or inside one of ${library.name}'s directories.`
+              : 'Asks first, with what it would take.'
+          }
+          action
         >
-          {/* Held as Scan library is, and for the same reasons. */}
-          <HeldButton
-            ref={removeButton}
-            type="button"
-            name="remove-library"
-            onClick={() => setRemoving(true)}
-            held={running || removalHeld || removing}
-            disabled={starting}
-          >
-            Remove…
-          </HeldButton>
+          {(ids) => (
+            // Held as Scan library is, and for the same reasons.
+            <HeldButton
+              ref={removeButton}
+              type="button"
+              name="remove-library"
+              onClick={() => setRemoving(true)}
+              held={running || removalHeld || removing}
+              disabled={starting}
+              aria-describedby={ids.help}
+            >
+              Remove…
+            </HeldButton>
+          )}
         </Row>
         {removing && (
           <RemoveLibrary
@@ -1426,6 +1539,10 @@ export function LibraryPage({
             onRemoved={(answer) => {
               setRemoving(false)
               onRemoved(library.id, library.name, answer)
+            }}
+            // The dialog draws the refusal itself.
+            onRefused={(_, status) => {
+              if (status === 409) heldRefusal()
             }}
             onLateRefusal={onLateRefusal}
           />

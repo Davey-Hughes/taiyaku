@@ -128,14 +128,13 @@ export function useDrawnWait(waiting: boolean): boolean {
 
 /**
  * Moves focus to `box` when `held` comes on while `button` has it. Each
- * caller makes `button` `disabled` while `held` is true, not `aria-disabled`
- * as `HeldButton`'s `held` does, and a browser moves focus off a control
- * that becomes disabled to the page.
- * `box` is the field the hold sends the person back to: where the value that
- * disables the button is changed, or where a refusal that ends the wait
- * holding it is put right. Whether the button has focus is read as the
- * render that disables it is drawn, while it is still enabled, since a
- * browser may move focus off it as soon as it is disabled.
+ * caller makes `button` `disabled` while `held` is true (not `aria-disabled`,
+ * as `HeldButton`'s `held` does) or stops drawing it, and a browser moves
+ * focus off a control that becomes disabled, or goes, to the page. `box` is
+ * where the person goes on from: where the value that disables the button
+ * is changed, where a refusal that ends the wait holding it is put right, or
+ * the control a dialog has left. Whether the button has focus is read as the
+ * render that holds it is drawn, before a browser can move focus off it.
  */
 export function useFocusLeavesHeld(
   held: boolean,

@@ -31,7 +31,7 @@ import {
   WAIT_DRAWN_AFTER_MS,
   watchDrawn,
 } from './support/wait'
-import { row, section } from './support/settingsRows'
+import { helpOf, row, section } from './support/settingsRows'
 import * as usersApi from '../src/users'
 
 /**
@@ -1239,6 +1239,295 @@ describe('the Libraries screen in the real Shell', () => {
       expect(after.heights).toEqual(during.heights)
     })
   }
+
+  /** Manga with each directory's last scan as `over` says. */
+  const mangaScanned = (
+    over: Pick<librariesApi.LibraryDir, 'last_scan_at' | 'last_scan_status'>,
+  ): librariesApi.Library => ({
+    ...MANGA,
+    dirs: MANGA.dirs.map((one) => ({ ...one, ...over })),
+  })
+  /** What each of Manga's directories says under Last scan, in order. */
+  const lastScanSaid = (host: HTMLElement) =>
+    [
+      ...host.querySelectorAll<HTMLElement>(
+        '.library-page .dir-table tbody td:nth-child(3)',
+      ),
+    ].map((td) => td.innerText)
+  /** The width of the Directories table's Last scan column. */
+  const lastScanColumn = (host: HTMLElement) =>
+    (
+      host.querySelectorAll('.library-page .dir-table thead th')[2] as Element
+    ).getBoundingClientRect().width
+
+  /**
+   * Manga's page in a window of `size`, 1280 wide unless it says otherwise,
+   * with a scan of the whole library pressed there and run to its end. The
+   * list answers `before` until the scan ends and `after` from then on, as a
+   * read made for what the scan found would. The Last scan column's width is
+   * taken before the press, at it, and once the cells say `after`'s words;
+   * `drawn` is each width it is drawn at from before the press to the end,
+   * taken as each change to the table lands, before the frame is painted, and
+   * once while it stays the same.
+   */
+  async function acrossAScan(
+    before: { scan: Parameters<typeof mangaScanned>[0]; said: string },
+    after: { scan: Parameters<typeof mangaScanned>[0]; said: string },
+    size: (typeof SIZES)[number] = SIZES[1],
+  ) {
+    const [width, height] = size
+    // The label is drawn only where the headings are not.
+    const label = width === 390 ? 'Last scan: ' : ''
+    let ended = false
+    vi.mocked(librariesApi.listLibraries).mockImplementation(async () => ({
+      libraries: [NOVELS, mangaScanned(ended ? after.scan : before.scan)],
+    }))
+    vi.mocked(librariesApi.startLibraryScan).mockResolvedValue({
+      library_id: 1,
+      status_url: '/x',
+      root_ids: MANGA.dirs.map((one) => one.id),
+    })
+    const host = await shell(width, height, MANGA_PAGE)
+    expect(lastScanSaid(host)).toEqual(
+      MANGA.dirs.map(() => `${label}${before.said}`),
+    )
+    const widthBefore = lastScanColumn(host)
+    vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
+      Promise.resolve({
+        library_id: id,
+        held_removals: [],
+        moves_held: false,
+        scans: [],
+        running: id === 1 && !ended,
+        elapsed_secs: 1,
+        dirs: [],
+      }),
+    )
+    const drawn = [widthBefore]
+    const observer = new MutationObserver(() => {
+      const now = lastScanColumn(host)
+      if (drawn.at(-1) !== now) drawn.push(now)
+    })
+    observer.observe(
+      host.querySelector('.library-page .dir-table') as Element,
+      { childList: true, subtree: true, characterData: true },
+    )
+    try {
+      await click(host.querySelector('button[name="scan-library"]') as Element)
+      await settle()
+      expect(lastScanSaid(host)).toEqual(
+        MANGA.dirs.map(() => `${label}Scanning…`),
+      )
+      const atPress = lastScanColumn(host)
+      ended = true
+      await settleUntil(
+        'the scan’s end, and the list read again',
+        () =>
+          lastScanSaid(host).every((one) => one === `${label}${after.said}`),
+        3 * config.SCAN_POLL_MS,
+      )
+      await settle()
+      expect(lastScanSaid(host)).toEqual(
+        MANGA.dirs.map(() => `${label}${after.said}`),
+      )
+      return {
+        host,
+        before: widthBefore,
+        atPress,
+        atEnd: lastScanColumn(host),
+        drawn,
+      }
+    } finally {
+      observer.disconnect()
+    }
+  }
+
+  it('widens the Last scan column of a table at a failed scan’s words as a scan is pressed, and not as that scan ends well, and draws it narrower once the page is left and come back to, at 1280', async () => {
+    const { host, before, atPress, atEnd, drawn } = await acrossAScan(
+      {
+        scan: {
+          last_scan_at: '2026-10-01 10:00:00',
+          last_scan_status: 'failed',
+        },
+        said: '2026-10-01 10:00:00 UTC\u00a0·\u00a0failed',
+      },
+      {
+        scan: { last_scan_at: '2026-10-01 10:00:00', last_scan_status: 'ok' },
+        said: '2026-10-01 10:00:00 UTC',
+      },
+    )
+    expect(atEnd).toBe(atPress)
+    expect(atPress).toBeGreaterThan(before)
+    expect(drawn).toEqual([before, atPress])
+
+    // Left by its back link and opened again from the table, both by real
+    // clicks made as the app makes them, outside `act`: the page is new,
+    // and the column is as wide as the words it says.
+    const libraryPage = () => host.querySelector('.library-page')
+    globalThis.IS_REACT_ACT_ENVIRONMENT = false
+    try {
+      const until = async (done: () => boolean) => {
+        const by = performance.now() + 2000
+        while (!done() && performance.now() < by) {
+          await new Promise((resolve) => setTimeout(resolve, 20))
+        }
+      }
+      await userEvent.click(
+        libraryPage()?.querySelector('.page-header .back a') as Element,
+      )
+      await until(() => libraryPage() === null && rows(host).includes('Manga'))
+      expect(libraryPage()).toBeNull()
+      const manga = [
+        ...host.querySelectorAll('.library-table tbody .row-link'),
+      ].find((link) => link.textContent === 'Manga')
+      await userEvent.click(manga as Element)
+      await until(
+        () =>
+          libraryPage() !== null &&
+          lastScanSaid(host).every((one) => one === '2026-10-01 10:00:00 UTC'),
+      )
+      await new Promise((resolve) => setTimeout(resolve, 120))
+    } finally {
+      globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    }
+    expect(lastScanSaid(host)).toEqual(
+      MANGA.dirs.map(() => '2026-10-01 10:00:00 UTC'),
+    )
+    expect(lastScanColumn(host)).toBeLessThan(atEnd)
+  })
+
+  // Each way the server ends a scan: refused draws wider than failed in the
+  // UI face, so a sample that covered only failed would show at refused.
+  for (const [status, said] of [
+    ['ok', '2088-08-08 08:08:08 UTC'],
+    ['failed', '2088-08-08 08:08:08 UTC\u00a0·\u00a0failed'],
+    ['refused', '2088-08-08 08:08:08 UTC\u00a0·\u00a0refused'],
+  ] as const) {
+    it(`widens a never-scanned table’s Last scan column as a scan is pressed, and not as that scan ends ${status}, at 1280`, async () => {
+      const { before, atPress, atEnd, drawn } = await acrossAScan(
+        { scan: { last_scan_at: null, last_scan_status: null }, said: 'Never' },
+        {
+          // Noughts and eights, the UI face's widest figures, after the
+          // year's two: a time the server could write, which a sample
+          // narrower than it would not cover, and one that ends refused
+          // wider than a sample that covered only failed.
+          scan: {
+            last_scan_at: '2088-08-08 08:08:08',
+            last_scan_status: status,
+          },
+          said,
+        },
+      )
+      expect(atPress).toBeGreaterThan(before)
+      expect(atEnd).toBe(atPress)
+      expect(drawn).toEqual([before, atPress])
+    })
+  }
+
+  it('keeps the Last scan column as wide once a scan ends at a time drawn narrower than the one before it, at 1280', async () => {
+    // Eights and noughts before, ones after: the UI face's figures are not
+    // all one width, so the two times differ in width as well as in words.
+    const { before, atPress, atEnd, drawn } = await acrossAScan(
+      {
+        scan: { last_scan_at: '2026-10-08 08:08:08', last_scan_status: 'ok' },
+        said: '2026-10-08 08:08:08 UTC',
+      },
+      {
+        scan: { last_scan_at: '2026-11-11 11:11:11', last_scan_status: 'ok' },
+        said: '2026-11-11 11:11:11 UTC',
+      },
+    )
+    expect(atEnd).toBe(atPress)
+    expect(atPress).toBeGreaterThan(before)
+    expect(drawn).toEqual([before, atPress])
+  })
+
+  it('widens a scanned table’s Last scan column as a scan is pressed, and not as a scan after a good one ends failed, at 1280', async () => {
+    const { before, atPress, atEnd, drawn } = await acrossAScan(
+      {
+        scan: { last_scan_at: '2026-10-01 10:00:00', last_scan_status: 'ok' },
+        said: '2026-10-01 10:00:00 UTC',
+      },
+      {
+        // Noughts and eights, the UI face's widest figures, after the
+        // year's two: a failed scan's words at a time the server could
+        // write, which a sample narrower than them would not cover.
+        scan: {
+          last_scan_at: '2088-08-08 08:08:08',
+          last_scan_status: 'failed',
+        },
+        said: '2088-08-08 08:08:08 UTC\u00a0·\u00a0failed',
+      },
+    )
+    expect(atEnd).toBe(atPress)
+    expect(atPress).toBeGreaterThan(before)
+    expect(drawn).toEqual([before, atPress])
+  })
+
+  it('widens a scanned table’s Last scan column as a scan is pressed, and not as that scan ends well at a time drawn wider than the one before it, at 1280', async () => {
+    // Ones before, noughts and eights after: the UI face's figures are not
+    // all one width, so the two times differ in width as well as in words.
+    const { before, atPress, atEnd, drawn } = await acrossAScan(
+      {
+        scan: { last_scan_at: '2026-11-11 11:11:11', last_scan_status: 'ok' },
+        said: '2026-11-11 11:11:11 UTC',
+      },
+      {
+        scan: { last_scan_at: '2088-08-08 08:08:08', last_scan_status: 'ok' },
+        said: '2088-08-08 08:08:08 UTC',
+      },
+    )
+    expect(atEnd).toBe(atPress)
+    expect(atPress).toBeGreaterThan(before)
+    expect(drawn).toEqual([before, atPress])
+  })
+
+  it('draws no held words in a two-line row once a scan has ended, and the row keeps inside the table, at 390', async () => {
+    const { host } = await acrossAScan(
+      {
+        scan: {
+          last_scan_at: '2026-10-01 10:00:00',
+          last_scan_status: 'failed',
+        },
+        said: '2026-10-01 10:00:00 UTC\u00a0·\u00a0failed',
+      },
+      {
+        scan: { last_scan_at: '2026-10-01 10:00:00', last_scan_status: 'ok' },
+        said: '2026-10-01 10:00:00 UTC',
+      },
+      SIZES[0],
+    )
+    const table = host.querySelector('.library-page .dir-table') as Element
+    const rowsDrawn = [...table.querySelectorAll('tbody tr')]
+    expect(rowsDrawn).toHaveLength(MANGA.dirs.length)
+    for (const tr of rowsDrawn) {
+      const cell = tr.querySelector('td:nth-child(3)') as HTMLElement
+      const held = [...cell.querySelectorAll('.held-words')]
+      // The failed scan's words and the widest a scan's end can give are
+      // still kept, so what keeps them out of the row is the two-line rule,
+      // not their absence.
+      expect(held.map((one) => one.textContent)).toEqual([
+        '2026-10-01 10:00:00 UTC\u00a0·\u00a0failed',
+        '8888-88-88 88:88:88 UTC\u00a0·\u00a0failed',
+        '8888-88-88 88:88:88 UTC\u00a0·\u00a0refused',
+      ])
+      for (const one of held) {
+        expect(getComputedStyle(one).display).toBe('none')
+        const box = one.getBoundingClientRect()
+        expect([box.width, box.height]).toEqual([0, 0])
+      }
+      expect(cell.scrollWidth).toBeLessThanOrEqual(cell.clientWidth)
+      expect(cell.getBoundingClientRect().right).toBeLessThanOrEqual(
+        tr.getBoundingClientRect().right,
+      )
+      expect(tr.getBoundingClientRect().right).toBeLessThanOrEqual(
+        table.getBoundingClientRect().right,
+      )
+    }
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
+      document.documentElement.clientWidth,
+    )
+  })
 
   for (const [width, height] of SIZES) {
     it(`does not scroll a person typing at the foot when a scan ends and the list cannot be read, at ${width}`, async () => {
@@ -3051,6 +3340,65 @@ describe('Move… in its dialog, in the real Shell', () => {
         .map((el) => `${el.tagName.toLowerCase()}.${el.className}`),
     ).toEqual([])
     expect(box.scrollWidth).toBeLessThanOrEqual(box.clientWidth)
+    expect(doc.scrollWidth).toBeLessThanOrEqual(doc.clientWidth)
+  })
+
+  it('keeps the line saying why Move… waits, muted as a scan’s line, and Remove from Light novels’s help grown by why it waits, inside the page at 390 while the job lock holds both, and nothing scrolling sideways (O250)', async () => {
+    const shared = dir(3, '/mnt/user/media 1/Light Novels', {
+      libraries: [
+        { id: 2, name: 'Light novels' },
+        { id: 1, name: 'Manga' },
+      ],
+    })
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue({
+      libraries: [
+        { ...NOVELS, dirs: [shared] },
+        { ...MANGA, dirs: [...MANGA.dirs, shared] },
+      ],
+    })
+    vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
+      Promise.resolve({
+        library_id: id,
+        held_removals: [],
+        moves_held: true,
+        scans: [],
+        running: false,
+        elapsed_secs: null,
+        dirs: [],
+      }),
+    )
+    const host = await shell(390, 844, NOVELS_DIR_PAGE)
+    const dirPage = host.querySelector('.dir-page') as HTMLElement
+    const unlink = [...dirPage.querySelectorAll<HTMLElement>('button')].find(
+      (b) => b.textContent === 'Remove from Light novels…',
+    ) as HTMLElement
+    expect(holdOf(moveButton(host))).toBe('held')
+    expect(holdOf(unlink)).toBe('held')
+
+    const line = [...dirPage.querySelectorAll<HTMLElement>(':scope > p')].find(
+      (one) =>
+        one.textContent ===
+        'A scan or another library job is running; move this directory once it has finished.',
+    ) as HTMLElement
+    expect(line).toBeDefined()
+    expect(getComputedStyle(line).color).toBe(tokenColour(dirPage, '--muted'))
+    const removal = section(host, 'Removal')
+    const help = helpOf(row(removal, 'Remove from Light novels')) as HTMLElement
+    expect(help.textContent).toBe(
+      'Waits for a scan or another library job to finish.',
+    )
+
+    const within = (el: HTMLElement, outer: HTMLElement) => {
+      const at = el.getBoundingClientRect()
+      const box = outer.getBoundingClientRect()
+      expect(at.left).toBeGreaterThanOrEqual(box.left - 0.5)
+      expect(at.right).toBeLessThanOrEqual(box.right + 0.5)
+      expect(el.scrollWidth).toBeLessThanOrEqual(el.clientWidth)
+    }
+    within(line, dirPage)
+    within(help, removal.querySelector('.settings-box') as HTMLElement)
+    expect(dirPage.scrollWidth).toBeLessThanOrEqual(dirPage.clientWidth)
+    const doc = document.documentElement
     expect(doc.scrollWidth).toBeLessThanOrEqual(doc.clientWidth)
   })
 
