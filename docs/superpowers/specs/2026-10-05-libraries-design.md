@@ -95,6 +95,8 @@ state. Each carried a recommendation, and the user accepted all six on
      A library counts as watched only if every folder's probe succeeded or
      was left unverified with the switch on. Otherwise it uses the short
      interval.
+   - *Superseded on 2026-11-10 by the owner's ruling that the schedule is per
+     directory: `docs/superpowers/specs/2026-11-10-pre-deploy-design.md`, §4.*
 
 **Further decisions, 2026-10-05, made while planning F1** (the F1 plan,
 `docs/superpowers/plans/2026-10-05-libraries-f1-model.md`, records them with its
@@ -638,6 +640,8 @@ The user creates the libraries in the UI before the first scan:
 - **Part C (scheduled scans)**: the schedule is per library (decision 6). C's
   roots-screen settings (§4.3 of the deployment spec) become library settings.
   Its scheduler walks a library's folders in turn, as Scan now does.
+  *Superseded on 2026-11-10 with decision 6: the schedule is per directory,
+  `docs/superpowers/specs/2026-11-10-pre-deploy-design.md`, §4.*
 - **Part D (missing works)**: the missing list groups by library, and a
   library's removal counts include its missing works. A partial mount is per
   folder, and that is unchanged.
