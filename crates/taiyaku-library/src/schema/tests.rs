@@ -98,34 +98,36 @@ fn a_migration_that_fails_part_way_leaves_no_trace_and_can_be_retried() {
         .expect("the same database migrates once the migration is corrected");
 }
 
-/// Each migration commits on its own, so the version names exactly what is on
-/// disk: migration 1's tables stay, migration 2's do not, and the version sits
-/// at 1 rather than at 0 or 2.
+/// An older database's migrations each commit on their own, so the version
+/// names exactly what is on disk: from version 1, migration 2's table stays,
+/// migration 3's does not, and the version sits at 2 rather than at 1 or 3.
 #[test]
-fn a_later_migration_failing_leaves_the_earlier_one_committed() {
+fn an_older_database_keeps_each_migration_that_committed_before_a_later_one_failed() {
     let conn = Connection::open_in_memory().expect("in-memory connection");
+    migrate_with(&conn, &["CREATE TABLE first (x);"]).expect("the database is at version 1");
 
     let refused = migrate_with(
         &conn,
         &[
             "CREATE TABLE first (x);",
-            "CREATE TABLE second (x); CREATE TABLE second (x);",
+            "CREATE TABLE second (x);",
+            "CREATE TABLE third (x); CREATE TABLE third (x);",
         ],
     )
-    .expect_err("migration 2 must fail");
+    .expect_err("migration 3 must fail");
     assert!(
-        refused.contains("applying schema version 2"),
+        refused.contains("applying schema version 3"),
         "the message names the version that failed: {refused}"
     );
 
     let names = table_names(&conn);
     assert!(
-        names.contains(&"first".to_string()),
-        "migration 1 committed and must survive: {names:?}"
+        names.contains(&"second".to_string()),
+        "migration 2 committed and must survive: {names:?}"
     );
     assert!(
-        !names.contains(&"second".to_string()),
-        "migration 2 rolled back whole: {names:?}"
+        !names.contains(&"third".to_string()),
+        "migration 3 rolled back whole: {names:?}"
     );
 
     let version: String = conn
@@ -136,9 +138,48 @@ fn a_later_migration_failing_leaves_the_earlier_one_committed() {
         )
         .expect("the version row");
     assert_eq!(
-        version, "1",
+        version, "2",
         "the version names the last migration that committed"
     );
+}
+
+/// **A fresh database is built in one transaction** (O269), so a later
+/// migration failing takes the earlier ones with it: nothing of migration 1
+/// stays, no version is recorded, and the next open starts again from an
+/// empty file. Committed one at a time, the file would sit at version 1, which
+/// every other open reads as an older database to back up first.
+#[test]
+fn a_fresh_database_whose_second_migration_fails_stays_at_version_zero() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+
+    let refused = migrate_with(
+        &conn,
+        &[
+            MIGRATIONS[0],
+            "CREATE TABLE second (x); CREATE TABLE second (x);",
+        ],
+    )
+    .expect_err("migration 2 must fail");
+    assert!(
+        refused.contains("applying schema version 2"),
+        "the message names the version that failed: {refused}"
+    );
+
+    let names = table_names(&conn);
+    assert_eq!(
+        names,
+        vec!["meta".to_string()],
+        "migration 1 rolled back with migration 2, leaving only the version's table"
+    );
+    assert_eq!(
+        version(&conn).expect("reading the version"),
+        0,
+        "a fresh database that failed to build is still fresh"
+    );
+
+    migrate_with(&conn, &[MIGRATIONS[0], "CREATE TABLE second (x);"])
+        .expect("the same database builds once the migration is corrected");
+    assert_eq!(version(&conn).expect("reading the version"), 2);
 }
 
 /// Two connections onto one real file, the way two processes reach one
@@ -337,6 +378,132 @@ fn a_fresh_database_and_an_up_to_date_one_take_no_backup() {
         backups.is_empty(),
         "nor does one already at this build's version: {backups:?}"
     );
+}
+
+/// **Opens that arrive while another builds a fresh database all succeed and
+/// take no backup** (O269). The builder is the open path itself, held by an
+/// update hook at its second version row. Built migration by migration,
+/// version 1 has committed there, so the other opens back up a part-built
+/// store and two in one second collide on its name; built in one transaction,
+/// they read version 0 and wait on the write lock. Holding the builder gives
+/// the opens half a second to read the version mid-build, not milliseconds.
+#[test]
+fn opens_arriving_while_another_builds_a_fresh_database_all_succeed_and_take_no_backup() {
+    const OPENS: usize = 3;
+    let dir = crate::tests::tempdir("fresh-build-race");
+    let db = dir.path().join("library.db");
+
+    let builder = Connection::open(&db).expect("the builder opens the file");
+    let (held, is_held) = std::sync::mpsc::channel::<()>();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let mut version_rows = 0;
+    builder
+        .update_hook(Some(
+            move |_: rusqlite::hooks::Action, _: &str, table: &str, _: i64| {
+                if table == "meta" {
+                    version_rows += 1;
+                    if version_rows == 2 {
+                        let _ = held.send(());
+                        // Ends early if the test thread has gone, so a failure
+                        // there cannot leave the scope waiting on this thread.
+                        let _ = released.recv();
+                    }
+                }
+            },
+        ))
+        .expect("installing the hook");
+
+    let barrier = std::sync::Barrier::new(OPENS);
+    let outcomes = std::thread::scope(|scope| {
+        let release = release;
+        let building =
+            scope.spawn(|| crate::Library::from_connection(builder, Some(db.clone())).map(|_| ()));
+        is_held
+            .recv()
+            .expect("the builder reaches its second version row");
+        let opens: Vec<_> = (0..OPENS)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    crate::Library::open(&db).map(|_| ())
+                })
+            })
+            .collect();
+        // Long enough for every open to read the version, well inside the
+        // five seconds an open waits for the write lock.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        release.send(()).expect("releasing the builder");
+        let mut outcomes = vec![building.join().expect("the builder did not panic")];
+        outcomes.extend(
+            opens
+                .into_iter()
+                .map(|o| o.join().expect("no open panicked")),
+        );
+        outcomes
+    });
+
+    for outcome in &outcomes {
+        assert!(
+            outcome.is_ok(),
+            "every open of a fresh database must succeed: {outcomes:?}"
+        );
+    }
+    let backups = backups_beside(&db);
+    assert!(
+        backups.is_empty(),
+        "a fresh database has nothing to back up, however many opens build it: {backups:?}"
+    );
+    assert_eq!(version_on_disk(&db), SCHEMA_VERSION);
+}
+
+/// The schema a fresh database gets in one transaction (O269) is the one it
+/// got migration by migration: every table, index, trigger and view as
+/// `sqlite_master` holds it, every table's foreign keys, and how many rows
+/// each table was seeded with. Foreign keys are off for both builds, set by
+/// `without_foreign_keys` before any transaction opens, where the pragma
+/// takes effect.
+#[test]
+fn a_fresh_database_built_in_one_transaction_matches_one_built_migration_by_migration() {
+    fn shape(conn: &Connection) -> Vec<Vec<String>> {
+        let mut shape = rows_of(
+            conn,
+            "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name",
+        );
+        for table in table_names(conn) {
+            let keys = rows_of(
+                conn,
+                &format!("SELECT * FROM pragma_foreign_key_list('{table}') ORDER BY id, seq"),
+            );
+            shape.extend(keys.into_iter().map(|mut key| {
+                key.insert(0, table.clone());
+                key
+            }));
+            let count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |row| {
+                    row.get(0)
+                })
+                .expect("counting a table's rows");
+            shape.push(vec![table, count.to_string()]);
+        }
+        shape
+    }
+
+    let whole = Connection::open_in_memory().expect("in-memory connection");
+    migrate(&whole).expect("built in one transaction");
+
+    let stepwise = Connection::open_in_memory().expect("in-memory connection");
+    for applied in 1..=MIGRATIONS.len() {
+        migrate_with(&stepwise, &MIGRATIONS[..applied]).expect("one migration more");
+    }
+
+    assert_eq!(version(&whole).expect("version"), SCHEMA_VERSION);
+    assert_eq!(version(&stepwise).expect("version"), SCHEMA_VERSION);
+    let (whole, stepwise) = (shape(&whole), shape(&stepwise));
+    assert!(
+        whole.iter().any(|row| row.len() == 9),
+        "the comparison reaches at least one foreign key: {whole:?}"
+    );
+    assert_eq!(whole, stepwise);
 }
 
 /// `migrate` refuses a newer database, and nothing is written beside it first.

@@ -1,10 +1,11 @@
 //! Migrations, versioned in `meta`.
 //!
-//! Applied in order, each inside its own transaction, with the version row
-//! written as that transaction's last statement — so a migration that fails
-//! leaves the database exactly as it found it: no half-applied schema, the
-//! version where it was, and the same file openable again once the migration
-//! is corrected.
+//! Applied in order, an older database's each inside its own transaction, a
+//! fresh database's all inside one (O269, see [`apply_pending`]), with each
+//! version row written after its migration — so a migration that fails leaves
+//! the database exactly as that transaction found it: no half-applied schema,
+//! the version where it was, and the same file openable again once the
+//! migration is corrected.
 //!
 //! **The version not advancing is not on its own the safe outcome**, which is
 //! why the transaction matters. A half-applied migration whose version stayed
@@ -75,7 +76,9 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
 /// `(current, SCHEMA_VERSION)` when [`migrate`] would change a database that
 /// holds something, which the open backs up first (O263). `None` for a fresh
 /// one, one at this build's version, and a newer one, which `migrate` refuses
-/// before anything is written beside it.
+/// before anything is written beside it. A fresh database another open is
+/// building still reads as fresh, because [`apply_pending`] commits its whole
+/// build at once.
 pub(crate) fn pending_migration(conn: &Connection) -> Result<Option<(u32, u32)>, String> {
     ensure_meta(conn)?;
     let current = version(conn)?;
@@ -119,10 +122,10 @@ fn migrate_with(conn: &Connection, migrations: &[&str]) -> Result<(), String> {
 /// `schema::tests::migration_4_rebuilds_user_without_taking_the_notes_with_it`
 /// fails the moment this wrapper is removed.
 ///
-/// **What disabling them costs is paid back in [`apply_pending`]**, which runs
-/// `PRAGMA foreign_key_check` inside each migration's own transaction: nothing
-/// enforces the constraints during the run, so the enforcement that would have
-/// happened continuously happens once, before the version row is written.
+/// **What disabling them costs is paid back in [`apply_one`]**, which runs
+/// `PRAGMA foreign_key_check` after each migration, inside its transaction:
+/// nothing enforces the constraints during the run, so the enforcement that
+/// would have happened continuously happens once, before its version row.
 ///
 /// The restored value is read rather than assumed `ON`, because `Library::open`
 /// sets it and a caller holding a bare `Connection` — which is what this
@@ -186,7 +189,7 @@ fn written_by_a_newer_taiyaku(current: u32, known: u32) -> String {
     )
 }
 
-/// Apply every migration after `current`, each in its own transaction.
+/// Apply every migration after `current`, a fresh database's all at once.
 ///
 /// **`current` is a hint, not the decision.** It was read before any
 /// transaction was open, and on a fresh database two processes reach it at the
@@ -200,9 +203,9 @@ fn written_by_a_newer_taiyaku(current: u32, known: u32) -> String {
 ///
 /// A transaction per migration does not close that on its own: the *decision*
 /// would be taken before the transaction began. So the version is read a
-/// second time, inside the transaction whose `BEGIN IMMEDIATE` has already
-/// taken the write lock — where whatever the other process committed is
-/// visible, and cannot change again until this transaction ends.
+/// second time, under the write lock `BEGIN IMMEDIATE` took, and that read
+/// decides: at 0 every migration runs in this one transaction (O269), so no
+/// other open sees a part-built database, takes it for older and backs it up.
 fn apply_pending(conn: &Connection, migrations: &[&str], current: u32) -> Result<(), String> {
     let known = u32::try_from(migrations.len()).unwrap_or(u32::MAX);
     for (index, sql) in migrations.iter().enumerate() {
@@ -216,7 +219,7 @@ fn apply_pending(conn: &Connection, migrations: &[&str], current: u32) -> Result
         // per already-applied migration on every `Library::open` — which
         // matters because `serve` and `library import` share a file by
         // default. Deleting it changes no answer and no test, deliberately:
-        // it is a cost guard, and the correctness is three lines down.
+        // it is a cost guard, and the correctness is the read under the lock.
         if target <= current {
             continue;
         }
@@ -244,38 +247,53 @@ fn apply_pending(conn: &Connection, migrations: &[&str], current: u32) -> Result
         if target <= applied {
             continue;
         }
-        tx.execute_batch(sql)
-            .map_err(|e| format!("applying schema version {target}: {e}"))?;
-        // **`without_foreign_keys` turned them off around this whole run**, so
-        // nothing enforced them while the migration ran. The enforcement that
-        // would otherwise have happened continuously happens once, here, inside
-        // the same transaction — a migration that left an orphan rolls back
-        // rather than committing a database that the next `Library::open`, which
-        // sets `foreign_keys = ON`, would enforce constraints over and fail on.
-        //
-        // Inside the transaction and before the version row, so the rollback is
-        // the same one every other failure in this loop takes.
-        let orphans: i64 = tx
-            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-                row.get(0)
-            })
-            .map_err(|e| format!("checking foreign keys after schema version {target}: {e}"))?;
-        if orphans > 0 {
-            return Err(format!(
-                "schema version {target} left {orphans} row(s) violating a foreign key; \
-                 rolling back rather than committing a database that cannot be reopened"
-            ));
+        if applied == 0 {
+            for (target, sql) in (1..=known).zip(migrations) {
+                apply_one(&tx, target, sql)?;
+            }
+            return tx
+                .commit()
+                .map_err(|e| format!("committing schema versions 1 to {known}: {e}"));
         }
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [target.to_string()],
-        )
-        .map_err(|e| format!("recording schema version {target}: {e}"))?;
+        apply_one(&tx, target, sql)?;
         tx.commit()
             .map_err(|e| format!("committing schema version {target}: {e}"))?;
     }
     Ok(())
+}
+
+/// One migration, the foreign-key check after it and its version row, inside
+/// the caller's transaction, which commits them or rolls them back on drop.
+fn apply_one(tx: &Connection, target: u32, sql: &str) -> Result<(), String> {
+    tx.execute_batch(sql)
+        .map_err(|e| format!("applying schema version {target}: {e}"))?;
+    // **`without_foreign_keys` turned them off around this whole run**, so
+    // nothing enforced them while the migration ran. The enforcement that
+    // would otherwise have happened continuously happens once, here, inside
+    // the same transaction — a migration that left an orphan rolls back
+    // rather than committing a database that the next `Library::open`, which
+    // sets `foreign_keys = ON`, would enforce constraints over and fail on.
+    //
+    // Inside the transaction and before the version row, so the rollback is
+    // the same one every other failure in `apply_pending` takes.
+    let orphans: i64 = tx
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .map_err(|e| format!("checking foreign keys after schema version {target}: {e}"))?;
+    if orphans > 0 {
+        return Err(format!(
+            "schema version {target} left {orphans} row(s) violating a foreign key; \
+             rolling back rather than committing a database that cannot be reopened"
+        ));
+    }
+    tx.execute(
+        "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [target.to_string()],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("recording schema version {target}: {e}"))
 }
 
 #[cfg(test)]
