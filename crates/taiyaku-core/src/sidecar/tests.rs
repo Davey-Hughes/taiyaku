@@ -2697,3 +2697,26 @@ fn a_document_declaring_this_builds_version_still_parses() {
         VERSION
     );
 }
+
+/// The whole sentence, key included: the library, truth and regions
+/// documents refuse in these words with their own keys, so the sidecar's
+/// must stay the one they were taken from (O264).
+#[test]
+fn a_newer_documents_refusal_is_the_whole_sentence_naming_the_taiyaku_key() {
+    let newer = VERSION + 1;
+    let json = format!(
+        r#"{{"taiyaku": {newer}, "work": {{"title": "T", "reading": "rtl"}},
+            "editions": {{"a": {{"label": "A", "members": [
+              {{"path": "a.cbz", "sha256": "00", "pages": 2}}]}}}},
+            "hub": "a", "alignments": []}}"#
+    );
+    let refusal = Sidecar::from_json(&json).expect_err("a newer document is not readable here");
+    assert_eq!(
+        refusal,
+        format!(
+            "this document declares taiyaku format version {newer}, and this build reads \
+             {VERSION}. Refusing to read it rather than dropping the fields it does not \
+             understand and writing them back out as version {VERSION} — upgrade taiyaku instead"
+        )
+    );
+}

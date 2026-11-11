@@ -1629,6 +1629,67 @@ async fn a_restricted_readers_works_list_counts_only_the_editions_they_may_see()
     );
 }
 
+/// O262: the list feed links a work whose slug holds a letter outside ASCII by
+/// its percent-encoded slug, and that link answers with the work's own feed.
+#[tokio::test]
+async fn the_works_feed_links_a_slug_outside_ascii_percent_encoded_and_the_link_answers() {
+    let (router, _state, _fixture) =
+        crate::test_support::router_over_two_scanned_volumes_with_a_non_ascii_title();
+
+    let response = crate::test_support::get(&router, "/opds/v1.2/works").await;
+    let status = response.status();
+    let body = crate::test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    for (href, title) in [
+        (
+            "/opds/v1.2/works/kabushikigaisha-magi-lumi%C3%A8re-v01-2024",
+            "<title>Kabushikigaisha Magi-Lumière - v01 (2024)</title>",
+        ),
+        (
+            "/opds/v1.2/works/kabushikigaisha-magi-lumi%C3%A8re-v02-2024",
+            "<title>Kabushikigaisha Magi-Lumière - v02 (2024)</title>",
+        ),
+    ] {
+        assert!(
+            body.contains(&format!("href=\"{href}\"")),
+            "the list feed links {href}: {body}"
+        );
+        let response = crate::test_support::get(&router, href).await;
+        let status = response.status();
+        let feed = crate::test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::OK, "{href}: {feed}");
+        assert!(feed.contains(title), "{href} names {title}: {feed}");
+    }
+}
+
+/// O262: a work feed links an edition whose key holds a letter outside ASCII
+/// by its percent-encoded key, in every link it builds from the key, and the
+/// download link answers.
+#[tokio::test]
+async fn a_work_feed_links_an_edition_key_outside_ascii_percent_encoded() {
+    let (router, _state, _fixture) =
+        crate::test_support::router_over_two_scanned_volumes_with_a_non_ascii_title();
+
+    for work in [
+        "/opds/v1.2/works/kabushikigaisha-magi-lumi%C3%A8re-v01-2024",
+        "/opds/v1.2/works/kabushikigaisha-magi-lumi%C3%A8re-v02-2024",
+    ] {
+        let response = crate::test_support::get(&router, work).await;
+        let status = response.status();
+        let feed = crate::test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::OK, "{work}: {feed}");
+        for link in ["download", "cover", "pages/{pageNumber}"] {
+            let href = format!("href=\"{work}/%C3%A9dition/{link}\"");
+            assert!(feed.contains(&href), "{work}'s feed holds {href}: {feed}");
+        }
+
+        let download = format!("{work}/%C3%A9dition/download");
+        let response = crate::test_support::get(&router, &download).await;
+        assert_eq!(response.status(), StatusCode::OK, "{download} answers");
+    }
+}
+
 /// The full-hide case beside the partial one above: a work with no edition
 /// inside the grant must answer exactly as a work that does not exist —
 /// `browse::work`'s own contract.

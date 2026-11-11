@@ -42,10 +42,11 @@ pub struct Exported {
     /// the three whose state has a meaningful absence.
     pub removed: Vec<PathBuf>,
     /// The sibling documents left exactly as they were, because this library
-    /// has never had their content: see [`work`]'s "What an export will not
-    /// touch". Written first, then stale, each group in the same fixed order.
-    /// Empty for a `--dir` export, which is writing somewhere the caller
-    /// named rather than over a reader's own files.
+    /// has never had their content or because a newer taiyaku wrote them: see
+    /// [`work`]'s "What an export will not touch". Written first, then stale,
+    /// each group in the same fixed order. Empty for a `--dir` export, which
+    /// is writing somewhere the caller named rather than over a reader's own
+    /// files.
     pub kept: Vec<PathBuf>,
     /// The other readers holding notes or a reading position for this work,
     /// whose state is **not** in the documents just written.
@@ -187,26 +188,26 @@ pub struct Exported {
 /// over a file and taking one away are the same claim — that the database is
 /// the current copy of that document — and it is only true where the database
 /// ever had it: read into rows on an import, or written out of them by an
-/// export like this one. `migrate::absorbed` is that fact, and where it is
-/// false and a file is sitting at the path, this leaves it alone and reports
-/// it in [`Exported::kept`].
+/// export like this one. `migrate::absorbed` is that fact; where it is false
+/// and a file is there, it is left alone and listed in [`Exported::kept`].
 ///
-/// Three shapes reach that branch:
+/// Four shapes reach [`Exported::kept`]:
 ///
 /// - a sibling **restored from a backup or copied back from another machine**
 ///   after the first import. `migrate` records every document as settled on
 ///   that first pass, including the ones with no file at all, so a file that
 ///   turns up later is never read. `taiyaku serve <sidecar>...` imports every
-///   path on every start, so the marker is there after the first start a work
-///   is ever served.
+///   path on every start, so the marker is there once a work is first served.
 /// - a **malformed** sibling, which records nothing at all, so that fixing it
 ///   and importing again works — the recovery path `migrate`'s own doc and
 ///   design §4.3 both promise.
 /// - a sibling **left unread because the rows already held state** for that
 ///   document. The rows win, which is what makes this a migration rather than
 ///   a sync; that is not a reason to destroy a file nothing has read.
+/// - a sibling, the sidecar included, that **a newer taiyaku wrote**, absorbed
+///   or not: rewriting or removing it would lose what this build cannot read.
 ///
-/// The escape from all three is the same and is the reader's to take: move
+/// The escape from all four is the same and is the reader's to take: move
 /// the file aside, and the next export writes a fresh one from the rows.
 ///
 /// **Writing one claims it**, so an export is not one-shot: the document that
@@ -319,6 +320,10 @@ pub fn work(
     for (suffix, document, text) in &documents {
         let path = target.join(format!("{stem}.{suffix}"));
         let claim = if in_place { *document } else { None };
+        if in_place && path.is_file() && newer_sibling(&path, suffix) {
+            kept.push(path);
+            continue;
+        }
         if let Some(document) = claim
             && path.is_file()
             && !crate::migrate::absorbed_for(conn, work_id, document, user_id)?
@@ -342,7 +347,8 @@ pub fn work(
         let path = target.join(format!("{stem}.{suffix}"));
         if in_place
             && path.is_file()
-            && !crate::migrate::absorbed_for(conn, work_id, document, user_id)?
+            && (newer_sibling(&path, suffix)
+                || !crate::migrate::absorbed_for(conn, work_id, document, user_id)?)
         {
             kept.push(path);
             continue;
@@ -468,6 +474,65 @@ pub(crate) fn stem_of(sidecar_path: Option<&str>) -> String {
             || "taiyaku".to_string(),
             |s| s.to_string_lossy().to_string(),
         )
+}
+
+/// Each versioned sibling's suffix, the key its version sits under, and the
+/// version this build writes. A suffix with no row here declares no version,
+/// so it is never [`newer_sibling`].
+const VERSIONED: [(&str, &str, u32); 4] = [
+    ("json", "taiyaku", taiyaku_core::VERSION),
+    (
+        "library.json",
+        "taiyaku_library",
+        crate::librarydoc::VERSION,
+    ),
+    (
+        "progress.json",
+        "taiyaku_progress",
+        crate::progressdoc::VERSION,
+    ),
+    ("truth.json", "taiyaku_truth", taiyaku_core::TRUTH_VERSION),
+];
+
+/// Whether the file at `path` declares its document's version above the one
+/// this build writes. Writing over it would drop every field this build has no
+/// name for and stamp it with an older number, and removing it would lose it
+/// whole, so an in-place export keeps it, absorbed or not (O264).
+fn newer_sibling(path: &Path, suffix: &str) -> bool {
+    VERSIONED.iter().any(|(versioned, key, writes)| {
+        *versioned == suffix
+            && crate::migrate::declared_version(path, key)
+                .is_some_and(|declared| declared > u64::from(*writes))
+    })
+}
+
+/// Refuse, in [`taiyaku_core::refuse_newer`]'s words and naming the file, when
+/// a document an in-place export of this work would write or remove declares
+/// a version above the one this build writes. One rule for every versioned
+/// sibling, asked before a stamp moves any digest: the export would keep such
+/// a document, and a sidecar, library or truth one would name the old digests.
+///
+/// # Errors
+///
+/// Returns that refusal, or an error if the work's row cannot be read. A work
+/// with no sidecar has no in-place documents and is never refused.
+pub(crate) fn refuse_newer_in_place(conn: &Connection, work_id: i64) -> Result<(), String> {
+    let (slug, sidecar_path) = work_row(conn, work_id)?;
+    let Some(sidecar_path) = sidecar_path else {
+        return Ok(());
+    };
+    let target = target_dir(None, Some(&sidecar_path), &slug, work_id)?;
+    let stem = stem_of(Some(&sidecar_path));
+    for (suffix, key, writes) in VERSIONED {
+        let path = target.join(format!("{stem}.{suffix}"));
+        if let Some(declared) = crate::migrate::declared_version(&path, key) {
+            // Past `u32` is newer than any build, so it is named at the largest.
+            let declared = u32::try_from(declared).unwrap_or(u32::MAX);
+            taiyaku_core::refuse_newer(key, declared, writes)
+                .map_err(|why| format!("{}: {why}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -31,6 +31,7 @@
 //! somewhere else, and editions being added — which is the whole list of
 //! things that actually happen to a library.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension};
@@ -132,14 +133,14 @@ pub fn root_keeps_documents(conn: &Connection, work_id: i64) -> Result<Option<bo
 /// its sidecar and is written by [`crate::export::work`]. The other is a
 /// scanned work whose root has declined to keep documents at all — there is
 /// an address `path_for` could name, but nothing is owed at it. `persisted`
-/// is `false` when an address existed and the write did not land, which is a
-/// read-only root and not an error: see [`save`].
+/// is `false` when an address existed and the write did not land (a read-only
+/// root, or a newer document left as it is), which is not an error: see [`save`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Saved {
     pub path: Option<PathBuf>,
     pub persisted: bool,
     /// Why the document did not reach the disk, when it did not — the
-    /// `io::Error`'s own message, naming the path.
+    /// `io::Error`'s own message, naming the path, or that a newer taiyaku wrote it.
     ///
     /// **A bool alone would not be honest enough.**
     /// `taiyaku_read::atomic::write` is built to distinguish a staging
@@ -162,17 +163,17 @@ pub struct Saved {
     pub keeps_documents: Option<bool>,
 }
 
-/// Project this work's hand-fixed metadata and write it to
-/// [`path_for`]'s address — unless the root that address sits under has
-/// declined to keep documents, in which case nothing is written — then
-/// record the `LIBRARY` marker either way.
+/// Project this work's hand-fixed metadata and write it to [`path_for`]'s
+/// address — unless the root declines documents, so nothing is written, or a
+/// newer taiyaku wrote the document there, so it is left as it is (O264) —
+/// then record the `LIBRARY` marker, except over that newer document.
 ///
-/// **The marker is recorded whether or not the file lands, and that is
-/// deliberate — including when there is no address to land it at.** It is the
-/// same marker `derive::write_work`'s own read-back arms, and it means one
-/// thing only: **this work's document has been read back from disk, so do not
-/// read it again.** Migration 011 answers "do not overwrite" per field, with a
-/// `_hand` column each, so the marker carries none of it (O80).
+/// **Bar a newer document in a root that keeps documents, the marker is
+/// recorded whether or not the file lands, deliberately, even with no address.**
+/// It is the same marker `derive::write_work`'s own read-back arms, and it
+/// means one thing only: **this work's document has been read back from disk,
+/// so do not read it again.** Migration 011 answers "do not overwrite" per
+/// field, with a `_hand` column each, so the marker carries none of it (O80).
 ///
 /// An edit made against a read-only root is still an edit the next scan must
 /// not revert; so is one made against an imported work, whose sidecar leaves
@@ -231,6 +232,30 @@ pub fn save(conn: &Connection, work_id: i64) -> Result<Saved, String> {
     }
 
     let path = path_for(conn, work_id)?;
+
+    // **A newer taiyaku's document is left as it is** (O264): this build would
+    // rewrite or remove it from rows, dropping every field it has no column
+    // for, so the guard comes before both. The rows keep the edit and `why`
+    // says the file did not. Returning before the marker leaves it as the
+    // read-back left it, so this build goes on reporting the document in
+    // `DeriveReport::unreadable_hand` and a build that can read it reads it
+    // back.
+    if let Some(path) = &path
+        && let Some(declared) = crate::migrate::declared_version(path, "taiyaku_library")
+        && declared > u64::from(crate::librarydoc::VERSION)
+    {
+        return Ok(Saved {
+            path: Some(path.clone()),
+            persisted: false,
+            why: Some(format!(
+                "{}: a newer taiyaku wrote this document (taiyaku_library {declared}; this build \
+                 writes {}), so it was left as it is",
+                path.display(),
+                crate::librarydoc::VERSION
+            )),
+            keeps_documents,
+        });
+    }
 
     let (persisted, why) = match &path {
         // No address to write to at all — an imported work, whose document
@@ -324,6 +349,82 @@ pub fn load(
     let doc = crate::librarydoc::LibraryDoc::from_json(&text)
         .map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(Some((path, doc)))
+}
+
+/// Refuse, in [`taiyaku_core::refuse_newer`]'s words and naming the file, when
+/// the document at this work's address declares a version above the one this
+/// build writes. A stamp asks before it moves the digests the document keys
+/// members by: [`save`] leaves such a document as it is, naming the old ones,
+/// and so does a root that declines documents, so it asks whatever the root.
+///
+/// # Errors
+///
+/// Returns that refusal, or an error if the work's address cannot be read.
+pub(crate) fn refuse_newer(conn: &Connection, work_id: i64) -> Result<(), String> {
+    let Some(path) = path_for(conn, work_id)? else {
+        return Ok(());
+    };
+    if let Some(declared) = crate::migrate::declared_version(&path, "taiyaku_library") {
+        // Past `u32` is newer than any build, so it is named at the largest.
+        let declared = u32::try_from(declared).unwrap_or(u32::MAX);
+        taiyaku_core::refuse_newer("taiyaku_library", declared, crate::librarydoc::VERSION)
+            .map_err(|why| format!("{}: {why}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Re-key the hand document at `path` in place: each member it names by an
+/// old digest in `moved` takes the new one and nothing else changes, so an
+/// edit made in the file survives (O44 leaves that to the person). Answers
+/// whether the re-keyed document was written. A file that is missing, is not
+/// a library document this build reads, or names no moved digest is left as
+/// it is. Whatever the root: a rebuilt library reads the file either way.
+pub(crate) fn rekey(path: &Path, moved: &BTreeMap<String, String>) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    if crate::librarydoc::LibraryDoc::from_json(&text).is_err() {
+        return false;
+    }
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    let mut renamed = Vec::new();
+    let members = doc
+        .get_mut("members")
+        .and_then(serde_json::Value::as_array_mut);
+    for member in members.into_iter().flatten() {
+        let Some(sha256) = member.get_mut("sha256") else {
+            continue;
+        };
+        let Some(old) = sha256.as_str().map(str::to_owned) else {
+            continue;
+        };
+        if let Some(new) = moved.get(&old) {
+            *sha256 = serde_json::Value::String(new.clone());
+            renamed.push((old, new.clone()));
+        }
+    }
+    if renamed.is_empty() {
+        return false;
+    }
+    // The file's own text with only those strings replaced keeps its layout
+    // and key order, so it diffs as the one change; where that text reads as
+    // anything else (a digest quoted elsewhere), the document is written whole.
+    let mut patched = text;
+    for (old, new) in &renamed {
+        patched = patched.replace(&format!("\"{old}\""), &format!("\"{new}\""));
+    }
+    let reread = serde_json::from_str::<serde_json::Value>(&patched).ok();
+    let out = if reread.as_ref() == Some(&doc) {
+        patched
+    } else {
+        match serde_json::to_string_pretty(&doc) {
+            Ok(whole) => whole,
+            Err(_) => return false,
+        }
+    };
+    taiyaku_read::atomic::write(path, out.as_bytes(), "json").is_ok()
 }
 
 /// Move the document at `old` to this work's address, after the change that

@@ -244,11 +244,14 @@ impl TruthDoc {
     /// `pages` entry keyed by something other than a page number. The message
     /// embeds `serde_json`'s own, which names the field and byte offset.
     ///
-    /// Also returns an error if any box lies outside the page — see
-    /// [`off_the_page`] for why that is refused rather than stored.
+    /// Also returns an error if the document declares a `taiyaku_truth`
+    /// version newer than [`VERSION`] — see [`crate::refuse_newer`] — and if
+    /// any box lies outside the page — see [`off_the_page`] for why that is
+    /// refused rather than stored.
     pub fn from_json(text: &str) -> Result<Self, String> {
         let doc: Self = serde_json::from_str(text)
             .map_err(|e| format!("not a readable truth document: {e}"))?;
+        crate::refuse_newer("taiyaku_truth", doc.taiyaku_truth, VERSION)?;
         for (edition, labelled) in &doc.editions {
             for (page, regions) in &labelled.pages {
                 for (index, region) in regions.iter().enumerate() {

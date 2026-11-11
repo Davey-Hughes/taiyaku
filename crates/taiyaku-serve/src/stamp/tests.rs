@@ -160,6 +160,13 @@ async fn stamping_rewrites_the_archive_and_a_second_plan_is_empty() {
     let planned = get_json(&router, &path).await;
     let response = send_json(&router, Method::POST, &path, &planned).await;
     assert_eq!(response.status(), StatusCode::OK);
+    let answer: serde_json::Value =
+        serde_json::from_str(&test_support::body_string(response).await).expect("JSON");
+    assert_eq!(
+        answer["document_rewritten"],
+        serde_json::json!(false),
+        "nobody edited this work, so it has no hand document to rewrite: {answer}"
+    );
 
     let after = get_json(&router, &path).await;
     assert_eq!(
@@ -171,6 +178,46 @@ async fn stamping_rewrites_the_archive_and_a_second_plan_is_empty() {
         after["total_bytes"].as_u64(),
         Some(0),
         "and the total goes with them: {after}"
+    );
+}
+
+/// A hand-edited work's document keys members by the digests a stamp moves,
+/// so the stamp rewrites it, and the answer says so for the screen to show.
+#[tokio::test]
+async fn the_stamp_answers_that_it_rewrote_a_hand_edited_works_document() {
+    let (router, state, _fixture) = test_support::router_over_a_scanned_cbz();
+    grant_can_stamp(&state);
+    {
+        let conn = state.library.conn();
+        let work_id: i64 = conn
+            .query_row("SELECT id FROM work", [], |row| row.get(0))
+            .expect("the fixture's one work");
+        let sha256: String = conn
+            .query_row("SELECT sha256 FROM member", [], |row| row.get(0))
+            .expect("the member's digest");
+        let mut doc = taiyaku_library::librarydoc::of(&conn, work_id).expect("projects");
+        doc.members = vec![taiyaku_library::librarydoc::MemberMeta {
+            sha256,
+            chapter: Some(7.0),
+            chapter_source: Some(taiyaku_library::librarydoc::ChapterSource::Hand),
+        }];
+        taiyaku_library::librarydoc::apply(&conn, work_id, &doc).expect("applies the edit");
+        let saved = taiyaku_library::hand::save(&conn, work_id).expect("saves");
+        assert!(saved.persisted, "the fixture keeps documents: {saved:?}");
+    }
+    let slug = a_slug(&state);
+    let path = format!("/api/library/works/{slug}/stamp-comicinfo");
+
+    let planned = get_json(&router, &path).await;
+    let response = send_json(&router, Method::POST, &path, &planned).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let answer: serde_json::Value =
+        serde_json::from_str(&test_support::body_string(response).await).expect("JSON");
+
+    assert_eq!(
+        answer["document_rewritten"],
+        serde_json::json!(true),
+        "{answer}"
     );
 }
 

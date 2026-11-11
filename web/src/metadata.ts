@@ -17,9 +17,9 @@
  *
  * - **`persisted` is always a plain boolean.** `false` means the row was
  *   written and is safe from the next scan, but the `<stem>.library.json`
- *   sidecar did not reach disk: a read-only root, or a work with no on-disk
- *   address at all (every work imported from a sidecar directly, rather than
- *   scanned under a root).
+ *   sidecar did not reach disk: the write failed (a read-only root), the work
+ *   has no on-disk address at all (every work imported from a sidecar
+ *   directly), or a newer taiyaku wrote the document there, left as it is.
  * - **`why` is present only when non-empty, and is never `[]`.** It is
  *   absent on the *ordinary* path — every write that both updated the row
  *   and reached disk — and present as a non-empty array of reasons only when

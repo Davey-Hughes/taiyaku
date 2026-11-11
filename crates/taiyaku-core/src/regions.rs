@@ -147,8 +147,14 @@ impl RegionDoc {
     /// `axis` value other than `"v"` or `"h"`, a `pages` entry keyed by
     /// something other than a page number. The message embeds `serde_json`'s
     /// own, which names the field and byte offset.
+    ///
+    /// Also returns an error if the document declares a `taiyaku_regions`
+    /// version newer than [`VERSION`] — see [`crate::refuse_newer`].
     pub fn from_json(text: &str) -> Result<Self, String> {
-        serde_json::from_str(text).map_err(|e| format!("not a readable regions document: {e}"))
+        let doc: Self = serde_json::from_str(text)
+            .map_err(|e| format!("not a readable regions document: {e}"))?;
+        crate::refuse_newer("taiyaku_regions", doc.taiyaku_regions, VERSION)?;
+        Ok(doc)
     }
 
     /// # Panics

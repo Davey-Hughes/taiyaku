@@ -223,6 +223,484 @@ fn a_database_migrated_past_this_build_while_it_waited_is_refused_rather_than_ig
     );
 }
 
+/// A file database one migration short of this build, in WAL mode as every
+/// open leaves one, so its bytes change only if a later open writes to it.
+fn one_version_short(label: &str) -> (crate::tests::TempDir, std::path::PathBuf) {
+    let dir = crate::tests::tempdir(label);
+    let db = dir.path().join("library.db");
+    let conn = Connection::open(&db).expect("a file database");
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .expect("WAL mode");
+    migrate_with(&conn, &MIGRATIONS[..SCHEMA_VERSION as usize - 1])
+        .expect("migrated to one version short");
+    drop(conn);
+    (dir, db)
+}
+
+fn version_on_disk(db: &std::path::Path) -> u32 {
+    version(&Connection::open(db).expect("a plain connection")).expect("the version")
+}
+
+fn backups_beside(db: &std::path::Path) -> Vec<crate::backup::Backup> {
+    crate::backup::list(&crate::backup::directory_for(db)).expect("listing the backups")
+}
+
+/// The name the open mints is one `list` reads back as taken before this
+/// build's version, and the copy holds the database as it stood (O263).
+#[test]
+fn an_open_that_migrates_backs_the_database_up_first_under_the_version_it_migrates_to() {
+    let (_dir, db) = one_version_short("backup-before-migrating");
+
+    crate::Library::open(&db).expect("the open migrates");
+
+    let backups = backups_beside(&db);
+    assert_eq!(backups.len(), 1, "the open took one backup: {backups:?}");
+    let taken = &backups[0];
+    assert!(
+        taken.name.starts_with("library-")
+            && taken
+                .name
+                .ends_with(&format!("-before-v{SCHEMA_VERSION}.db")),
+        "named for the version the open migrates to: {}",
+        taken.name
+    );
+    assert_eq!(
+        taken.before,
+        Some(SCHEMA_VERSION),
+        "and listed as taken before that version"
+    );
+    let copy = crate::backup::directory_for(&db).join(&taken.name);
+    assert_eq!(
+        version_on_disk(&copy),
+        SCHEMA_VERSION - 1,
+        "the backup holds the database before the migration"
+    );
+    assert_eq!(
+        version_on_disk(&db),
+        SCHEMA_VERSION,
+        "the database migrated"
+    );
+}
+
+/// Two versions short, the version the open migrates to is this build's, not
+/// the next one up: one short cannot tell the two apart.
+#[test]
+fn a_database_two_versions_short_is_backed_up_under_this_builds_version() {
+    let dir = crate::tests::tempdir("backup-two-short");
+    let db = dir.path().join("library.db");
+    let conn = Connection::open(&db).expect("a file database");
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .expect("WAL mode");
+    migrate_with(&conn, &MIGRATIONS[..SCHEMA_VERSION as usize - 2])
+        .expect("migrated to two versions short");
+    drop(conn);
+
+    crate::Library::open(&db).expect("the open migrates");
+
+    let backups = backups_beside(&db);
+    assert_eq!(backups.len(), 1, "the open took one backup: {backups:?}");
+    assert!(
+        backups[0]
+            .name
+            .ends_with(&format!("-before-v{SCHEMA_VERSION}.db")),
+        "named for this build's version: {}",
+        backups[0].name
+    );
+    assert_eq!(
+        backups[0].before,
+        Some(SCHEMA_VERSION),
+        "and listed as taken before it"
+    );
+    let copy = crate::backup::directory_for(&db).join(&backups[0].name);
+    assert_eq!(
+        version_on_disk(&copy),
+        SCHEMA_VERSION - 2,
+        "the backup holds the database two versions short"
+    );
+}
+
+#[test]
+fn a_fresh_database_and_an_up_to_date_one_take_no_backup() {
+    let dir = crate::tests::tempdir("backup-skipped");
+    let db = dir.path().join("library.db");
+
+    crate::Library::open(&db).expect("a fresh open");
+    let backups = backups_beside(&db);
+    assert!(
+        backups.is_empty(),
+        "a fresh database takes none: {backups:?}"
+    );
+
+    crate::Library::open(&db).expect("an open with nothing to migrate");
+    let backups = backups_beside(&db);
+    assert!(
+        backups.is_empty(),
+        "nor does one already at this build's version: {backups:?}"
+    );
+}
+
+/// `migrate` refuses a newer database, and nothing is written beside it first.
+#[test]
+fn a_newer_database_is_refused_with_no_backup_taken() {
+    let dir = crate::tests::tempdir("backup-newer");
+    let db = dir.path().join("library.db");
+    crate::Library::open(&db).expect("a fresh open");
+    Connection::open(&db)
+        .expect("a plain connection")
+        .execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+            [(SCHEMA_VERSION + 1).to_string()],
+        )
+        .expect("a newer build's version");
+
+    let refused = crate::Library::open(&db).expect_err("a newer database is refused");
+    assert!(
+        refused.contains("newer taiyaku"),
+        "the refusal is migrate's: {refused}"
+    );
+    let backups = backups_beside(&db);
+    assert!(backups.is_empty(), "and no backup was taken: {backups:?}");
+}
+
+/// Without its backup the migration has no way back, so a backup that fails
+/// refuses it, and a WAL-mode file is left byte for byte as it was (O263).
+#[test]
+fn a_backup_that_fails_refuses_the_migration_and_leaves_the_file_as_it_was() {
+    let (_dir, db) = one_version_short("backup-fails");
+    let as_it_was = std::fs::read(&db).expect("the database's bytes");
+    std::fs::write(
+        crate::backup::directory_for(&db),
+        "a file where the directory goes",
+    )
+    .expect("the backups directory made a plain file");
+
+    let refused = crate::Library::open(&db).expect_err("the open is refused");
+
+    let canonical = db.canonicalize().expect("the path the open names");
+    assert!(
+        refused.starts_with("the backup library-")
+            && refused.contains(&format!(
+                "-before-v{SCHEMA_VERSION}.db could not be taken before migrating {}, \
+                 so the database was not migrated: ",
+                canonical.display()
+            )),
+        "the refusal names the backup and says the database was not migrated: {refused}"
+    );
+    assert!(
+        std::fs::read(&db).expect("the database's bytes again") == as_it_was,
+        "the database's bytes are as they were"
+    );
+    assert_eq!(
+        version_on_disk(&db),
+        SCHEMA_VERSION - 1,
+        "the database was not migrated"
+    );
+}
+
+/// A backup whose file cannot be created refuses the migration as well: only a
+/// name already taken counts as success. `/proc/self` takes no new file
+/// whatever the user, root included, so this needs no permission to deny.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_backup_whose_file_cannot_be_created_refuses_the_migration() {
+    let (_dir, db) = one_version_short("backup-create-refused");
+    let backups = crate::backup::directory_for(&db);
+    std::os::unix::fs::symlink("/proc/self", &backups).expect("the backups directory linked");
+
+    let conn = Connection::open(&db).expect("a plain connection");
+    let name = format!("library-20261110T120000Z-before-v{SCHEMA_VERSION}.db");
+    let why = crate::backup::take_named(&conn, &backups, &name).expect_err("the create is refused");
+    assert!(
+        matches!(why, crate::backup::TakeError::Failed(_)),
+        "a create refused is a fault, not a name taken: {why:?}"
+    );
+    drop(conn);
+
+    let refused = crate::Library::open(&db).expect_err("the open is refused");
+    assert!(
+        refused.contains("so the database was not migrated: creating "),
+        "the refusal says why: {refused}"
+    );
+    assert_eq!(
+        version_on_disk(&db),
+        SCHEMA_VERSION - 1,
+        "the database was not migrated"
+    );
+}
+
+/// A second process opening the database in the same second took the same
+/// backup, so finding it there is success, the migration runs, and the backup
+/// already there is left alone.
+#[test]
+fn a_backup_already_under_the_name_is_success_and_the_migration_runs() {
+    let (_dir, db) = one_version_short("backup-exists");
+    let name = format!("library-20261110T120000Z-before-v{SCHEMA_VERSION}.db");
+    let backups = crate::backup::directory_for(&db);
+    std::fs::create_dir_all(&backups).expect("the backups directory");
+    std::fs::write(backups.join(&name), "the other process's backup").expect("a backup there");
+
+    let conn = Connection::open(&db).expect("a plain connection");
+    crate::backup::before_migration(&conn, &db, &name).expect("a backup already there is success");
+    migrate(&conn).expect("and the migration runs");
+
+    assert_eq!(version(&conn).expect("the version"), SCHEMA_VERSION);
+    assert_eq!(
+        std::fs::read(backups.join(&name)).expect("the backup's bytes"),
+        b"the other process's backup",
+        "the backup already there is untouched"
+    );
+}
+
+/// A copy cut off by a kill or a power cut can leave a file under a backup's
+/// name, dated after the database's last write, that holds nothing. It is not
+/// the backup, so the open takes a whole one of its own (O263).
+#[test]
+fn an_empty_file_under_a_backups_name_does_not_stand_for_the_database() {
+    let (_dir, db) = one_version_short("backup-cut-copy");
+    let backups = crate::backup::directory_for(&db);
+    std::fs::create_dir_all(&backups).expect("the backups directory");
+    let cut = format!("library-20261111T000000Z-before-v{SCHEMA_VERSION}.db");
+    std::fs::write(backups.join(&cut), b"").expect("a cut copy under a backup's name");
+
+    crate::Library::open(&db).expect("the open migrates");
+
+    let taken: Vec<_> = backups_beside(&db)
+        .into_iter()
+        .filter(|backup| backup.name != cut)
+        .collect();
+    assert_eq!(
+        taken.len(),
+        1,
+        "the open took a backup of its own: {taken:?}"
+    );
+    assert_eq!(
+        version_on_disk(&backups.join(&taken[0].name)),
+        SCHEMA_VERSION - 1,
+        "a whole one, holding the database before the migration"
+    );
+}
+
+/// Another open taking the same backup holds its unfinished copy beside the
+/// name until it is whole, and one cut off leaves it there. Neither is the
+/// backup, so the migration is refused rather than run without one (O263).
+#[test]
+fn a_backup_still_being_taken_refuses_the_migration() {
+    let (_dir, db) = one_version_short("backup-being-taken");
+    let name = format!("library-20261110T120000Z-before-v{SCHEMA_VERSION}.db");
+    let backups = crate::backup::directory_for(&db);
+    std::fs::create_dir_all(&backups).expect("the backups directory");
+    std::fs::write(backups.join(format!(".{name}.partial")), b"part of a copy")
+        .expect("another open's unfinished copy");
+
+    let conn = Connection::open(&db).expect("a plain connection");
+    let refused =
+        crate::backup::before_migration(&conn, &db, &name).expect_err("the migration is refused");
+
+    assert_eq!(
+        refused,
+        format!(
+            "the backup {name} could not be taken before migrating {}, so the database was \
+             not migrated: another open is taking it, or one cut off left it unfinished; an \
+             open in a later second takes one of its own",
+            db.display()
+        )
+    );
+    assert!(
+        backups_beside(&db).is_empty(),
+        "nothing is listed as the backup"
+    );
+    drop(conn);
+    assert_eq!(
+        version_on_disk(&db),
+        SCHEMA_VERSION - 1,
+        "the database was not migrated"
+    );
+}
+
+/// [`one_version_short`], with a trigger refusing the version row, so every
+/// open's migration fails at its last step and rolls back, whatever the
+/// migration is: nothing here names one, so a new migration needs no change.
+fn one_whose_next_migration_fails(label: &str) -> (crate::tests::TempDir, std::path::PathBuf) {
+    let (dir, db) = one_version_short(label);
+    Connection::open(&db)
+        .expect("a plain connection")
+        .execute_batch(
+            "CREATE TRIGGER refuse_the_next_version BEFORE UPDATE ON meta
+             WHEN OLD.key = 'schema_version'
+             BEGIN SELECT RAISE(ABORT, 'refused by the test'); END;",
+        )
+        .expect("a trigger refusing the next version");
+    (dir, db)
+}
+
+/// An open whose migration fails, refused by the migration rather than by the
+/// backup before it.
+fn open_refused_by_its_migration(db: &std::path::Path) {
+    let refused = crate::Library::open(db).expect_err("the migration fails");
+    assert_eq!(
+        refused,
+        format!("recording schema version {SCHEMA_VERSION}: refused by the test"),
+        "the migration refused the open"
+    );
+}
+
+/// Waits until the clock has moved into a later second than when it was
+/// called, so the next backup name differs from every one minted before.
+fn wait_for_the_next_second() {
+    let second = |t: std::time::SystemTime| {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs()
+    };
+    let started = second(std::time::SystemTime::now());
+    while second(std::time::SystemTime::now()) == started {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// A migration that fails restarts a container on `unless-stopped` in a loop.
+/// Each start falls in a later second and mints a new name, and nothing ever
+/// deletes a `-before-v<N>` backup, so a backup per attempt would fill the
+/// disk. The database has not changed since the first attempt's backup, so
+/// that one stands for the second (O263).
+#[test]
+fn a_migration_that_keeps_failing_takes_one_backup_while_the_database_is_unchanged() {
+    let (_dir, db) = one_whose_next_migration_fails("backup-restart-loop");
+
+    open_refused_by_its_migration(&db);
+    wait_for_the_next_second();
+    open_refused_by_its_migration(&db);
+
+    let backups = backups_beside(&db);
+    assert_eq!(
+        backups.len(),
+        1,
+        "the second attempt took no backup of its own: {backups:?}"
+    );
+    assert_eq!(backups[0].before, Some(SCHEMA_VERSION));
+}
+
+/// The README's restore moves a file into place, which keeps its older
+/// modification time. Where a rename sets the change time, as this test's
+/// temporary directory must, the skip counts it and backs up again (O263).
+#[test]
+fn a_database_moved_into_place_between_two_failed_migrations_is_backed_up_again() {
+    let (dir, db) = one_whose_next_migration_fails("backup-moved-in");
+    let restored = dir.path().join("restored.db");
+    std::fs::copy(&db, &restored).expect("a copy to restore");
+    Connection::open(&restored)
+        .expect("the copy")
+        .execute(
+            "INSERT INTO meta (key, value) VALUES ('restored', 'by a move')",
+            [],
+        )
+        .expect("a mark on the copy");
+
+    open_refused_by_its_migration(&db);
+    wait_for_the_next_second();
+    std::fs::rename(&restored, &db).expect("the restore, by a move");
+    open_refused_by_its_migration(&db);
+
+    let backups = backups_beside(&db);
+    assert_eq!(
+        backups.len(),
+        2,
+        "the second attempt backed the restored database up: {backups:?}"
+    );
+    let newest = crate::backup::directory_for(&db).join(&backups[0].name);
+    let restored: String = Connection::open(&newest)
+        .expect("the newest backup")
+        .query_row("SELECT value FROM meta WHERE key = 'restored'", [], |row| {
+            row.get(0)
+        })
+        .expect("the newest backup is the restored database");
+    assert_eq!(restored, "by a move");
+}
+
+/// The skip holds only while the database is unchanged: a write between two
+/// failed attempts, checkpointed into the main file, is backed up again.
+#[test]
+fn a_database_written_between_two_failed_migrations_is_backed_up_again() {
+    let (_dir, db) = one_whose_next_migration_fails("backup-written-between");
+
+    open_refused_by_its_migration(&db);
+    wait_for_the_next_second();
+    Connection::open(&db)
+        .expect("a plain connection")
+        .execute(
+            "INSERT INTO meta (key, value) VALUES ('written', 'between the attempts')",
+            [],
+        )
+        .expect("a write between the attempts");
+    open_refused_by_its_migration(&db);
+
+    let backups = backups_beside(&db);
+    assert_eq!(
+        backups.len(),
+        2,
+        "the second attempt backed the changed database up: {backups:?}"
+    );
+    let newest = crate::backup::directory_for(&db).join(&backups[0].name);
+    let written: String = Connection::open(&newest)
+        .expect("the newest backup")
+        .query_row("SELECT value FROM meta WHERE key = 'written'", [], |row| {
+            row.get(0)
+        })
+        .expect("the write is in the newest backup");
+    assert_eq!(written, "between the attempts");
+}
+
+/// The `-wal` counts as the database: a write still in it, with its writer
+/// open so nothing has reached the main file, is backed up again too.
+#[test]
+fn a_write_still_in_the_wal_between_two_failed_migrations_is_backed_up_again() {
+    let (_dir, db) = one_whose_next_migration_fails("backup-written-to-the-wal");
+
+    open_refused_by_its_migration(&db);
+    wait_for_the_next_second();
+    let writer = Connection::open(&db).expect("a plain connection");
+    writer
+        .execute(
+            "INSERT INTO meta (key, value) VALUES ('written', 'into the wal')",
+            [],
+        )
+        .expect("a write between the attempts");
+    open_refused_by_its_migration(&db);
+    drop(writer);
+
+    let backups = backups_beside(&db);
+    assert_eq!(
+        backups.len(),
+        2,
+        "the second attempt backed the changed database up: {backups:?}"
+    );
+}
+
+/// Only a backup before the same version stands for an attempt: one taken
+/// before migrating to another version, even after the database's last write,
+/// does not.
+#[test]
+fn a_backup_before_another_version_does_not_stand_for_this_migration() {
+    let (_dir, db) = one_version_short("backup-other-version");
+    let backups = crate::backup::directory_for(&db);
+    std::fs::create_dir_all(&backups).expect("the backups directory");
+    let other = format!("library-20261110T120000Z-before-v{}.db", SCHEMA_VERSION - 1);
+    std::fs::write(backups.join(&other), "an older migration's backup")
+        .expect("a backup before another version");
+
+    crate::Library::open(&db).expect("the open migrates");
+
+    let taken: Vec<_> = backups_beside(&db)
+        .into_iter()
+        .filter(|backup| backup.before == Some(SCHEMA_VERSION))
+        .collect();
+    assert_eq!(
+        taken.len(),
+        1,
+        "the open took its own backup before this version: {taken:?}"
+    );
+}
+
 fn table_names(conn: &Connection) -> Vec<String> {
     let mut stmt = conn
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")

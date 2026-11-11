@@ -728,3 +728,99 @@ fn a_library_json_that_does_not_parse_is_reported_and_skipped() {
         "nothing was written from an unreadable file"
     );
 }
+
+/// A truth or library document a newer taiyaku wrote is refused and left with
+/// no marker, so the next import reads it again: a marker would leave a file
+/// this library never had beside the work for good (O264).
+#[test]
+fn a_newer_truth_or_library_json_is_not_settled_and_the_next_import_reads_it() {
+    let root = scratch("newer-truth-library");
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let (work_id, path) = a_work(&conn, &root);
+    let truth = |version: u32| {
+        format!(
+            r#"{{"taiyaku_truth":{version},"editions":{{"raw-mono":{{"members":[],"pages":{{"0":[]}}}}}}}}"#
+        )
+    };
+    let hand = |version: u32| {
+        format!(r#"{{"taiyaku_library":{version},"updated":"2026-11-10T09:00:00Z","volume":3.0}}"#)
+    };
+    let newer_truth = taiyaku_core::TRUTH_VERSION + 1;
+    let newer_library = librarydoc::VERSION + 1;
+    write_sibling(&root, "truth.json", &truth(newer_truth));
+    write_sibling(&root, "library.json", &hand(newer_library));
+
+    let first = work(&conn, work_id, THE_READER, &path).expect("does not fail the import");
+
+    match &first.truth {
+        Some(TruthOutcome::Malformed(why)) => assert!(
+            why.contains(&format!(
+                "this document declares taiyaku_truth format version {newer_truth}"
+            )),
+            "{why}"
+        ),
+        other => panic!("expected the newer truth.json refused, got {other:?}"),
+    }
+    match &first.library {
+        Some(LibraryOutcome::Malformed(why)) => assert!(
+            why.contains(&format!(
+                "this document declares taiyaku_library format version {newer_library}"
+            )),
+            "{why}"
+        ),
+        other => panic!("expected the newer library.json refused, got {other:?}"),
+    }
+    assert_eq!(marker(&conn, work_id, TRUTH).expect("reads"), None);
+    assert_eq!(marker(&conn, work_id, LIBRARY).expect("reads"), None);
+
+    write_sibling(&root, "truth.json", &truth(taiyaku_core::TRUTH_VERSION));
+    write_sibling(&root, "library.json", &hand(librarydoc::VERSION));
+    let second = work(&conn, work_id, THE_READER, &path).expect("migrates");
+
+    assert_eq!(
+        second.truth,
+        Some(TruthOutcome::Applied { pages: 1, boxes: 0 })
+    );
+    assert_eq!(second.library, Some(LibraryOutcome::Applied));
+}
+
+// -- declared_version ---------------------------------------------------
+
+/// Only a non-negative integer under the key declares a version; anything else
+/// declares none, so no writer refuses a file for it.
+#[test]
+fn a_declared_version_is_a_non_negative_integer_under_the_key_or_nothing() {
+    let root = scratch("declared-version");
+    let at = |name: &str, text: &str| {
+        let path = root.join(name);
+        std::fs::write(&path, text).unwrap();
+        path
+    };
+
+    assert_eq!(
+        declared_version(
+            &at("two.json", r#"{"taiyaku_library": 2}"#),
+            "taiyaku_library"
+        ),
+        Some(2)
+    );
+    assert_eq!(
+        declared_version(&root.join("missing.json"), "taiyaku_library"),
+        None
+    );
+    for (name, text) in [
+        ("not-json.json", "{ nope"),
+        ("array.json", r#"[{"taiyaku_library": 2}]"#),
+        ("other-key.json", r#"{"taiyaku": 2}"#),
+        ("string.json", r#"{"taiyaku_library": "2"}"#),
+        ("negative.json", r#"{"taiyaku_library": -1}"#),
+        ("fraction.json", r#"{"taiyaku_library": 2.5}"#),
+    ] {
+        assert_eq!(
+            declared_version(&at(name, text), "taiyaku_library"),
+            None,
+            "{name}: {text}"
+        );
+    }
+}

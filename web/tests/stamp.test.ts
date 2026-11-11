@@ -73,6 +73,7 @@ describe('performStamp', () => {
         rewritten: 1,
         content_key: 'k2',
         document_moved: true,
+        document_rewritten: true,
         sidecar_rewritten: true,
       }),
     )

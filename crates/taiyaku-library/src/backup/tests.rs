@@ -94,7 +94,7 @@ fn listing_a_directory_that_does_not_exist_yet_is_empty_rather_than_an_error() {
     assert_eq!(list(&dir).expect("lists"), Vec::new());
 }
 
-/// `VACUUM INTO` refuses an existing target rather than overwriting it, and
+/// `take_named` refuses an existing target rather than overwriting it, and
 /// PR2 §4 keeps that failure as itself rather than adding a suffix counter for
 /// a case only a test loop produces.
 #[test]
@@ -125,8 +125,107 @@ fn a_second_backup_in_the_same_second_is_refused_rather_than_overwriting() {
         stand_in,
         "the existing file is untouched, not half-overwritten"
     );
+    assert_eq!(
+        std::fs::read_dir(&into)
+            .expect("reads the directory")
+            .count(),
+        1,
+        "and the refused take leaves nothing of its own beside it"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `take_named` creates the file before the copy, so a copy that fails would
+/// leave it under a backup's name, listed as one.
+#[test]
+fn a_backup_whose_copy_fails_leaves_no_file_under_its_name() {
+    let dir = scratch("failed-copy");
+    let db = dir.join("library.db");
+    let library = Library::open(&db).expect("opens a library");
+    let into = directory_for(&db);
+    let conn = library.conn();
+    let name = "library-20261110T120000Z.db";
+
+    // SQLite refuses a `VACUUM` inside a transaction, before it writes a page.
+    conn.execute_batch("BEGIN").expect("begins");
+    let why = take_named(&conn, &into, name).expect_err("the copy fails");
+    conn.execute_batch("ROLLBACK").expect("rolls back");
+
+    assert!(
+        matches!(why, TakeError::Failed(_)),
+        "a copy that fails is a fault: {why:?}"
+    );
+    assert!(
+        why.to_string().contains("within a transaction"),
+        "the copy's own error is the one returned: {why}"
+    );
+    assert!(
+        std::fs::symlink_metadata(into.join(name)).is_err(),
+        "nothing is left under the name"
+    );
+    assert!(
+        list(&into).expect("lists").is_empty(),
+        "and nothing lists as a backup"
+    );
+    assert_eq!(
+        std::fs::read_dir(&into)
+            .expect("reads the directory")
+            .count(),
+        0,
+        "nor is the copy it began left anywhere in the directory"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// [`before_migration`] reads `Exists` as success and migrates, so a create
+/// refused for any reason but the name being taken has to be a fault.
+#[test]
+fn a_create_refused_for_any_reason_but_a_taken_name_is_a_fault() {
+    let name = "library-20261110T120000Z.db";
+    let target = Path::new("/backups/library-20261110T120000Z.db");
+    let error = |kind| std::io::Error::from(kind);
+
+    let denied = create_refused(name, target, &error(std::io::ErrorKind::PermissionDenied));
+    assert!(
+        matches!(denied, TakeError::Failed(_)),
+        "a create refused is a fault: {denied:?}"
+    );
+    assert!(
+        denied.to_string().starts_with("creating /backups/library-"),
+        "and names the file: {denied}"
+    );
+
+    let taken = create_refused(name, target, &error(std::io::ErrorKind::AlreadyExists));
+    assert!(
+        matches!(taken, TakeError::Exists(_)),
+        "a name already taken is not: {taken:?}"
+    );
+}
+
+/// A file the failed copy leaves behind lists as a backup, so the message
+/// names a removal that failed, and only one that did.
+#[test]
+fn a_copy_that_fails_names_a_file_it_could_not_remove() {
+    let name = "library-20261110T120000Z.db";
+    let copy = "the copy's error";
+    let error = |kind| Err(std::io::Error::from(kind));
+
+    assert_eq!(
+        copy_failed(name, &copy, &error(std::io::ErrorKind::PermissionDenied)).to_string(),
+        format!(
+            "writing the backup {name}: {copy}; the file it made could not be removed: {}",
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied)
+        ),
+    );
+    for removed in [Ok(()), error(std::io::ErrorKind::NotFound)] {
+        assert_eq!(
+            copy_failed(name, &copy, &removed).to_string(),
+            format!("writing the backup {name}: {copy}"),
+            "nothing is left to name after {removed:?}"
+        );
+    }
 }
 
 /// PR2 §8: five backups, `keep: 2`, the three oldest go and **nothing else in
@@ -183,6 +282,185 @@ fn pruning_more_than_there_are_deletes_nothing_and_zero_deletes_all() {
 
     assert_eq!(prune(&dir, 0).expect("prunes").len(), 2);
     assert!(list(&dir).expect("lists").is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// O263: a backup taken before a migration is named for the version the
+/// migration moves to, and `stamp_of` reads that version back out of the name.
+#[test]
+fn stamp_of_reads_the_version_a_backup_was_taken_before() {
+    assert_eq!(
+        stamp_of("library-20261110T120000Z-before-v19.db"),
+        Some(("20261110T120000Z".to_string(), Some(19))),
+        "a tagged name answers its stamp and its version"
+    );
+    assert_eq!(
+        stamp_of("library-20261110T120000Z.db"),
+        Some(("20261110T120000Z".to_string(), None)),
+        "a plain name answers its stamp and no version"
+    );
+}
+
+/// O263: one version has one spelling, so `N` is digits alone. This test and
+/// the next two are split by the defect each catches, so a loop stopping at
+/// one defect's row cannot hide another defect's.
+#[test]
+fn stamp_of_refuses_a_version_that_is_not_written_as_digits() {
+    for name in [
+        "library-20261110T120000Z-before-v.db",
+        "library-20261110T120000Z-before-vx.db",
+        "library-20261110T120000Z-before-v+5.db",
+        "library-20261110T120000Z-before-v1/9.db",
+    ] {
+        assert_eq!(stamp_of(name), None, "`{name}` is not a backup name");
+    }
+}
+
+/// O263: a leading zero would give one version a second spelling, and a
+/// version past `u32` is not one the schema can reach.
+#[test]
+fn stamp_of_refuses_a_version_with_a_leading_zero_or_past_u32() {
+    for name in [
+        "library-20261110T120000Z-before-v019.db",
+        "library-20261110T120000Z-before-v4294967296.db",
+    ] {
+        assert_eq!(stamp_of(name), None, "`{name}` is not a backup name");
+    }
+}
+
+/// O263: nothing but one `-before-v<N>` sits between the stamp and `.db`, and
+/// a name with a letter outside ASCII where the stamp ends is refused rather
+/// than cut inside the letter.
+#[test]
+fn stamp_of_refuses_any_other_tail_after_the_stamp() {
+    for name in [
+        "library-20261110T120000Z-before-v19-before-v19.db",
+        "library-20261110T120000Z-x-before-v19.db",
+        "library-20261110T120000Z-after-v19.db",
+        "library-20261110T120000é-before-v19.db",
+    ] {
+        assert_eq!(stamp_of(name), None, "`{name}` is not a backup name");
+    }
+}
+
+/// O263: the Backup tab draws what `list` answers, so a backup taken before a
+/// migration is listed beside the ones taken on request, carrying its version.
+#[test]
+fn listing_answers_a_backup_named_for_a_migration_with_its_version() {
+    let dir = scratch("listing-before");
+    std::fs::write(dir.join("library-20261110T120000Z-before-v19.db"), b"abc").expect("writes");
+    std::fs::write(dir.join("library-20261109T120000Z.db"), b"x").expect("writes");
+
+    assert_eq!(
+        list(&dir).expect("lists"),
+        vec![
+            Backup {
+                name: "library-20261110T120000Z-before-v19.db".to_string(),
+                bytes: 3,
+                taken: "20261110T120000Z".to_string(),
+                before: Some(19),
+            },
+            Backup {
+                name: "library-20261109T120000Z.db".to_string(),
+                bytes: 1,
+                taken: "20261109T120000Z".to_string(),
+                before: None,
+            },
+        ],
+        "both listed, newest first, and only the tagged one carries a version"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// O263: `take_named` handed a tagged name answers the version it holds, as
+/// `list` would for the file it wrote.
+#[test]
+fn take_named_answers_the_version_a_tagged_name_holds() {
+    let dir = scratch("take-named-before");
+    let db = dir.join("library.db");
+    let library = Library::open(&db).expect("opens a library");
+    let into = directory_for(&db);
+    let conn = library.conn();
+
+    let taken =
+        take_named(&conn, &into, "library-20261110T120000Z-before-v19.db").expect("takes it");
+    assert_eq!(taken.before, Some(19), "{taken:?}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Writes a stand-in file under each backup name.
+fn write_backups(dir: &std::path::Path, names: &[&str]) {
+    for name in names {
+        std::fs::write(dir.join(name), b"stand-in").expect("writes a backup");
+    }
+}
+
+/// O263, spec decision 8: `--keep` neither counts nor deletes a backup taken
+/// before a migration. With the tagged one newest, counting it would fill
+/// `keep: 1` and both plain backups would go.
+#[test]
+fn pruning_neither_counts_nor_deletes_a_tagged_backup_that_is_newest() {
+    let dir = scratch("prune-tagged-newest");
+    write_backups(
+        &dir,
+        &[
+            "library-20261101T000000Z.db",
+            "library-20261102T000000Z.db",
+            "library-20261103T000000Z-before-v19.db",
+        ],
+    );
+
+    let removed = prune(&dir, 1).expect("prunes");
+
+    assert_eq!(
+        removed,
+        vec!["library-20261101T000000Z.db".to_string()],
+        "only the older plain backup goes"
+    );
+    assert!(
+        dir.join("library-20261102T000000Z.db").exists(),
+        "the newer plain backup is the one kept"
+    );
+    assert!(
+        dir.join("library-20261103T000000Z-before-v19.db").exists(),
+        "the tagged backup is kept"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// O263, spec decision 8: with the tagged one oldest, a `prune` that deleted
+/// it would take it as the first past `keep`.
+#[test]
+fn pruning_neither_counts_nor_deletes_a_tagged_backup_that_is_oldest() {
+    let dir = scratch("prune-tagged-oldest");
+    write_backups(
+        &dir,
+        &[
+            "library-20261031T000000Z-before-v19.db",
+            "library-20261101T000000Z.db",
+            "library-20261102T000000Z.db",
+        ],
+    );
+
+    let removed = prune(&dir, 1).expect("prunes");
+
+    assert_eq!(
+        removed,
+        vec!["library-20261101T000000Z.db".to_string()],
+        "only the older plain backup goes"
+    );
+    assert!(
+        dir.join("library-20261102T000000Z.db").exists(),
+        "the newer plain backup is the one kept"
+    );
+    assert!(
+        dir.join("library-20261031T000000Z-before-v19.db").exists(),
+        "the tagged backup is kept"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -246,7 +524,7 @@ fn pruning_a_symlinked_backup_is_left_alone_entirely() {
 
 /// **`take_named` is `pub`, so the shape check belongs on it.** Without one,
 /// `take_named(conn, dir, "../../library.db")` joins straight onto the
-/// directory and writes outside it — and `VACUUM INTO`'s refusal of an
+/// directory and writes outside it — and the exclusive create's refusal of an
 /// existing target does not hold for a target that does not exist yet.
 #[test]
 fn take_named_refuses_a_name_that_is_not_a_backup_name() {
@@ -291,4 +569,130 @@ fn a_backup_path_that_is_not_a_directory_is_an_error_not_an_empty_listing() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// While a copy runs nothing is under the backup's name: a file there would
+/// list as a backup and, before a migration, stand for the database while
+/// holding part of it (O263). Another connection's exclusive lock holds the
+/// copy at its start while the directory is read.
+#[test]
+fn nothing_is_under_a_backups_name_while_its_copy_runs() {
+    let dir = scratch("copy-runs");
+    let db = dir.join("library.db");
+    Connection::open(&db)
+        .expect("a file database")
+        .execute_batch("CREATE TABLE t (x); INSERT INTO t VALUES (1);")
+        .expect("something to copy");
+    let into = directory_for(&db);
+    let name = "library-20261110T120000Z.db";
+    let holder = Connection::open(&db).expect("a second connection");
+    holder
+        .execute_batch("BEGIN EXCLUSIVE")
+        .expect("holds the file");
+
+    let copier = {
+        let (db, into) = (db.clone(), into.clone());
+        std::thread::spawn(move || {
+            let conn = Connection::open(&db).expect("the copy's connection");
+            conn.busy_timeout(std::time::Duration::from_secs(20))
+                .expect("waits for the lock");
+            take_named(&conn, &into, name)
+        })
+    };
+    let started = std::time::Instant::now();
+    while std::fs::read_dir(&into).map_or(true, |mut entries| entries.next().is_none()) {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the copy never began"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let named = std::fs::symlink_metadata(into.join(name)).is_ok();
+    let listed = list(&into).expect("lists");
+    holder.execute_batch("ROLLBACK").expect("lets the copy go");
+    let taken = copier
+        .join()
+        .expect("the copy's thread")
+        .expect("the copy finishes");
+
+    assert!(
+        !named && listed.is_empty(),
+        "nothing is under the name, or listed, while the copy runs: {listed:?}"
+    );
+    assert_eq!(
+        list(&into).expect("lists"),
+        vec![taken],
+        "and the whole copy is, once it is done"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A copy cut off before it reached its name leaves its stage, a dot name
+/// `stamp_of` refuses: never listed, so never pruned or downloaded, and left
+/// for a person to delete (O263).
+#[test]
+fn a_copy_left_unfinished_is_neither_listed_nor_pruned() {
+    let dir = scratch("unfinished");
+    let into = dir.join("backups");
+    std::fs::create_dir_all(&into).expect("the backups directory");
+    write_backups(&into, &["library-20261110T120000Z.db"]);
+    let stage = into.join(".library-20261110T120001Z-before-v19.db.partial");
+    std::fs::write(&stage, b"part of a copy").expect("a copy left unfinished");
+
+    let listed: Vec<String> = list(&into)
+        .expect("lists")
+        .into_iter()
+        .map(|backup| backup.name)
+        .collect();
+    assert_eq!(listed, ["library-20261110T120000Z.db"], "only the backup");
+    assert_eq!(
+        prune(&into, 0).expect("prunes"),
+        ["library-20261110T120000Z.db"],
+        "and only the backup goes"
+    );
+    assert!(stage.exists(), "the unfinished copy is left as it was");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// O104's ordering, for a backup: the copy is synced before it is renamed to
+/// its name and the directory after, or a power cut could leave the name over
+/// pages never written, which the next open would take as the backup (O263).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_backup_is_synced_before_its_rename_and_its_directory_after_it() {
+    use taiyaku_read::test_support::{assert_replaced_durably, traced};
+
+    const CHILD: &str = "TAIYAKU_TEST_BACKUP_SYNC_CHILD";
+    let name = "library-20261110T120000Z-before-v19.db";
+    if let Some(db) = std::env::var_os(CHILD) {
+        let db = std::path::PathBuf::from(db);
+        let conn = Connection::open(&db).expect("the traced copy's connection");
+        // `VACUUM INTO` syncs its copy at this connection's level, so with it
+        // off the only sync left is the one `take_named` makes itself.
+        conn.pragma_update(None, "synchronous", "OFF")
+            .expect("no sync from SQLite");
+        take_named(&conn, &directory_for(&db), name).expect("the traced backup");
+        return;
+    }
+
+    let temp = scratch("synced");
+    let dir = std::fs::canonicalize(temp.path()).expect("the test directory resolves");
+    let db = dir.join("library.db");
+    drop(Library::open(&db).expect("a library"));
+
+    let calls = traced(
+        "backup::tests::a_backup_is_synced_before_its_rename_and_its_directory_after_it",
+        (CHILD, db.as_os_str()),
+        &dir.join("strace.log"),
+    );
+
+    let into = directory_for(&db);
+    assert_eq!(
+        list(&into).expect("lists").len(),
+        1,
+        "the traced child must actually have taken the backup"
+    );
+    assert_replaced_durably(&calls, &into.join(name), &into);
 }

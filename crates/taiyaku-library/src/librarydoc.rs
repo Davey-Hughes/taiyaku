@@ -35,7 +35,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use taiyaku_core::Direction;
 
-/// Bumped when an existing field would mean something else.
+/// Bumped for any new field, not only for one that would mean something else.
+///
+/// An older taiyaku's `hand::save` rewrites this document from its rows and
+/// drops any field it has no column for, so no new field is additive here the
+/// way one is in the sidecar. The bump is what lets that older build see the
+/// document is newer than it reads (O264).
 pub const VERSION: u32 = 1;
 
 /// A whole `<stem>.library.json`.
@@ -215,8 +220,14 @@ impl LibraryDoc {
     /// match this document's shape — a `kind` or `role` outside its closed
     /// set, for instance. The message embeds `serde_json`'s own, which names
     /// the field and byte offset.
+    ///
+    /// Also returns an error if the document declares a `taiyaku_library`
+    /// version newer than [`VERSION`] — see [`taiyaku_core::refuse_newer`].
     pub fn from_json(text: &str) -> Result<Self, String> {
-        serde_json::from_str(text).map_err(|e| format!("not a readable library document: {e}"))
+        let doc: Self = serde_json::from_str(text)
+            .map_err(|e| format!("not a readable library document: {e}"))?;
+        taiyaku_core::refuse_newer("taiyaku_library", doc.taiyaku_library, VERSION)?;
+        Ok(doc)
     }
 
     /// # Panics

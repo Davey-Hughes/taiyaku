@@ -1891,6 +1891,21 @@ async fn patch_alignments(
                 // `correcting_a_work_with_no_document_writes_rows_and_no_file`
                 // reproduces exactly that.
                 if found.has_document() {
+                    // **A newer taiyaku's sidecar is refused, not written
+                    // down** (O264): `next` is this build's projection, so the
+                    // write would drop every field it has no name for and
+                    // stamp it version 1. Asked before the file, and so before
+                    // the rows, in the words a stamp over the file uses, less
+                    // the file's path: any account granted the work calls this.
+                    if let Some(declared) =
+                        taiyaku_library::migrate::declared_version(&found.path, "taiyaku")
+                    {
+                        // Past `u32` is newer than any build, so it is named
+                        // at the largest.
+                        let declared = u32::try_from(declared).unwrap_or(u32::MAX);
+                        taiyaku_core::refuse_newer("taiyaku", declared, taiyaku_core::VERSION)
+                            .map_err(|why| (StatusCode::CONFLICT, why).into_response())?;
+                    }
                     taiyaku_read::atomic::write(&found.path, json.as_bytes(), "json")
                         .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
                 }

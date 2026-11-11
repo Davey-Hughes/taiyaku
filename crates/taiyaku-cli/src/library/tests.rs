@@ -3548,7 +3548,7 @@ fn exporting_another_reader_in_place_is_refused_and_names_the_way_out() {
 /// `taiyaku library backup` writes a real, openable snapshot into the
 /// directory the server will look in, and `--keep` prunes what it displaced.
 ///
-/// **One invocation, not two.** `VACUUM INTO` refuses an existing target and
+/// **One invocation, not two.** A backup refuses a name already taken, and
 /// the name carries a whole-second timestamp, so two runs inside the same
 /// second collide — which is `backup.rs`'s deliberate refusal rather than a
 /// defect, and is exactly what a second command call here would test by

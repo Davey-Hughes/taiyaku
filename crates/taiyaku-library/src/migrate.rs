@@ -432,6 +432,20 @@ pub(crate) fn record_absorbed(
     Ok(())
 }
 
+/// The format version the document at `path` declares under `key`, read as
+/// plain JSON rather than as the document, so a writer can ask before it
+/// writes over or removes a file a newer taiyaku wrote (O264).
+///
+/// `None` for a file that is missing or unreadable, is not JSON, is not an
+/// object, lacks `key`, or holds anything but a non-negative integer there:
+/// none of those declares a newer version, and each writer already has its
+/// own answer for such a file.
+pub fn declared_version(path: &Path, key: &str) -> Option<u64> {
+    let text = std::fs::read(path).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&text).ok()?;
+    value.as_object()?.get(key)?.as_u64()
+}
+
 /// `<stem>.<suffix>`, beside `sidecar_path` — [`export::stem_of`]'s
 /// arithmetic, reused rather than carried a second time.
 fn sibling_path(sidecar_path: &Path, suffix: &str) -> PathBuf {

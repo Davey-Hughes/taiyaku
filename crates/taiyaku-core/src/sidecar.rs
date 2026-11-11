@@ -391,6 +391,31 @@ pub struct Sidecar {
 /// The format version this build writes.
 pub const VERSION: u32 = 1;
 
+/// **A document declaring a format version newer than this build reads is
+/// refused**, in one sentence for each document whose key is listed below.
+///
+/// `key` is the version field (`taiyaku`, `taiyaku_library`, `taiyaku_truth`,
+/// `taiyaku_regions`; `taiyaku_progress` refuses in its own words), named so
+/// that whoever holds several documents beside one archive can tell which was
+/// refused. [`Sidecar::readable_version`] gives the reason to refuse rather
+/// than read, and it holds for each: each is written back whole by something
+/// that drops the fields it has no name for (O264). Only newer is refused.
+///
+/// # Errors
+///
+/// Returns an error naming `key` and both versions if `declared` exceeds
+/// `reads`.
+pub fn refuse_newer(key: &str, declared: u32, reads: u32) -> Result<(), String> {
+    if declared > reads {
+        return Err(format!(
+            "this document declares {key} format version {declared}, and this build reads \
+             {reads}. Refusing to read it rather than dropping the fields it does not \
+             understand and writing them back out as version {reads} — upgrade taiyaku instead"
+        ));
+    }
+    Ok(())
+}
+
 /// Where an alignment being merged is allowed to start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Anchor {
@@ -550,15 +575,7 @@ impl Sidecar {
     /// Returns an error naming both versions if `self.taiyaku` exceeds
     /// [`VERSION`].
     pub fn readable_version(&self) -> Result<(), String> {
-        if self.taiyaku > VERSION {
-            return Err(format!(
-                "this document declares taiyaku format version {}, and this build reads {VERSION}. \
-                 Refusing to read it rather than dropping the fields it does not understand and \
-                 writing them back out as version {VERSION} — upgrade taiyaku instead",
-                self.taiyaku
-            ));
-        }
-        Ok(())
+        refuse_newer("taiyaku", self.taiyaku, VERSION)
     }
 
     /// # Panics

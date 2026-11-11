@@ -1065,10 +1065,10 @@ fn export_reports_wrote_removed_kept_and_the_summary_line_on_real_stdout() {
     );
     assert!(
         out.contains(&format!(
-            "kept {} (this library has never read it, so it was not \
-             overwritten; move it aside and export again to replace it with \
-             what this library holds — which is no file at all where it \
-             holds nothing)",
+            "kept {} (this library has never read it, or a newer taiyaku \
+             wrote it, so it was not overwritten; move it aside and export \
+             again to replace it with what this library holds — which is no \
+             file at all where it holds nothing)",
             truth_json.display()
         )),
         "the unabsorbed truth.json must be reported kept: {out}"

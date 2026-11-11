@@ -173,3 +173,46 @@ fn the_document_sits_beside_the_sidecar_keeping_a_dotted_stem() {
         "set_extension twice would eat the dot"
     );
 }
+
+/// The other side of the refusal below: the version this build writes still
+/// parses, so that refusal cannot be met by refusing everything.
+#[test]
+fn a_document_declaring_this_builds_version_parses() {
+    let json = format!(r#"{{"taiyaku_truth":{VERSION},"editions":{{}}}}"#);
+    let parsed = TruthDoc::from_json(&json).expect("this build's own version parses");
+    assert_eq!(parsed.taiyaku_truth, VERSION);
+}
+
+/// A newer document is refused rather than read without the fields this
+/// build has no name for, which anything writing it back would then drop
+/// (O264).
+#[test]
+fn a_document_from_a_newer_taiyaku_is_refused_in_the_sidecars_words() {
+    let newer = VERSION + 1;
+    let json = format!(r#"{{"taiyaku_truth":{newer},"editions":{{}}}}"#);
+    let refusal = TruthDoc::from_json(&json).expect_err("a newer document is not readable here");
+    let words = format!(
+        "this document declares taiyaku_truth format version {newer}, and this build reads \
+         {VERSION}. Refusing to read it rather than dropping the fields it does not understand \
+         and writing them back out as version {VERSION} — upgrade taiyaku instead"
+    );
+    assert!(
+        refusal.contains(&words),
+        "the refusal is the sidecar's sentence with this document's key: {refusal}"
+    );
+
+    // A newer version may change what a box's numbers mean, so its boxes are
+    // not judged by this build's page rule: an "off the page" refusal would
+    // invite a hand fix of a file that is only newer.
+    let off_the_page = format!(
+        r#"{{"taiyaku_truth":{newer},"editions":{{"e":{{"members":[],
+            "pages":{{"3":[{{"x":2.0,"y":0.1,"w":0.2,"h":0.2,
+            "axis":"v","kind":"dialogue"}}]}}}}}}}}"#
+    );
+    let refusal =
+        TruthDoc::from_json(&off_the_page).expect_err("a newer document is not readable here");
+    assert!(
+        refusal.contains(&words),
+        "the version is checked before the boxes: {refusal}"
+    );
+}

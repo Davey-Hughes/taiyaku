@@ -1246,10 +1246,47 @@ fn reimporting_over_a_placeholder_row_with_no_editions_is_a_plain_import_that_re
     assert_eq!(count, 1, "no second work was minted");
 }
 
-/// `slugify`'s fallback: a title with nothing ASCII-alphanumeric in it — every
-/// character replaced by `-` and then trimmed away — must not become the
-/// empty string, which `unique_slug`'s collision check would otherwise treat
-/// as a real, empty slug.
+/// **A slug keeps letters outside ASCII, collapses each run of other
+/// characters to one `-` and drops the archive's extension (O262).** A slug
+/// is the reader's address, the API's and OPDS's id and an export
+/// directory's name, and it is never minted again, so a title that loses its
+/// letters or ends in `-cbz` keeps that address for good.
+#[test]
+fn a_slug_keeps_letters_outside_ascii_collapses_runs_and_drops_the_extension() {
+    let cases = [
+        ("Spy × Family - v01 (2020).cbz", "spy-family-v01-2020"),
+        (
+            "Kabushikigaisha Magi-Lumière - v02 (2024).cbz",
+            "kabushikigaisha-magi-lumière-v02-2024",
+        ),
+        ("「五等分の花嫁 第01巻」", "五等分の花嫁-第01巻"),
+        ("V01.CBZ", "v01"),
+        ("Spy × Family - v02.epub", "spy-family-v02"),
+        ("Spy × Family - v03.7z", "spy-family-v03"),
+        // One extension, not every one: the inner `.cbz` is part of the title.
+        ("a.cbz.cbz", "a-cbz"),
+    ];
+    // Compared as one list so a failure shows every title's answer at once.
+    let got: Vec<(&str, String)> = cases
+        .iter()
+        .map(|&(title, _)| (title, super::slugify(title)))
+        .collect();
+    let expected: Vec<(&str, String)> = cases
+        .iter()
+        .map(|&(title, slug)| (title, slug.to_string()))
+        .collect();
+    assert_eq!(
+        got, expected,
+        "each title's slug: Unicode letters and digits lowercased, each run of \
+         other characters one `-`, none at either end, and a trailing archive \
+         extension dropped whatever its case"
+    );
+}
+
+/// `slugify`'s fallback: a title with nothing alphanumeric in it — every
+/// character a separator, and so trimmed away — must not become the empty
+/// string, which `unique_slug`'s collision check would otherwise treat as a
+/// real, empty slug.
 #[test]
 fn a_title_with_no_alphanumeric_characters_slugifies_to_work() {
     let library = Library::open_in_memory().expect("library");

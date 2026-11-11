@@ -2603,11 +2603,11 @@ fn serve_works_imports_the_given_path_and_the_work_carries_the_librarys_slug() {
     let works = works.snapshot();
 
     assert_eq!(works.len(), 1, "one path, one work");
-    // `slugify("Serve Works Fixture")`: lowercased, non-alphanumerics to
-    // `-`, trimmed — not `works::work_id(&path)`, which would slugify the
-    // *filename* `taiyaku` instead. The two are unrelated on purpose (see
-    // `library.rs`'s doc comment on the hazard); this pins that `serve_works`
-    // uses the library's title-derived one.
+    // `slugify("Serve Works Fixture")`: lowercased, each run of other
+    // characters becomes one `-`, trimmed — not `works::work_id(&path)`,
+    // which would slugify the *filename* `taiyaku` instead. The two are
+    // unrelated on purpose (see `library.rs`'s doc comment on the hazard);
+    // this pins that `serve_works` uses the library's title-derived one.
     assert_eq!(works[0].id, "serve-works-fixture");
     assert_eq!(works[0].sidecar().editions.len(), 1);
 

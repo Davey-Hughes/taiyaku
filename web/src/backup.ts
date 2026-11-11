@@ -1,10 +1,10 @@
 /**
  * The `/api/library/backups*` client — spec C4 §5 and the build design's §6.3.
  *
- * **There is no restore here and no schedule here**, and neither is an
- * omission: C4 §5 puts restore out of band (stop the server, move the file,
- * start it) and the server half declined an in-server timer. A cron entry runs
- * `taiyaku library backup`, and `--keep` is where retention lives.
+ * **There is no restore here and no schedule here**: C4 §5 puts restore out
+ * of band and the server half declined an in-server timer. A cron entry runs
+ * `taiyaku library backup` and `--keep` prunes what it took. The server's own
+ * backup is taken only before a migration, and `--keep` leaves it alone.
  *
  * **The download is a URL rather than a fetch**, for the reason `api.ts` gives
  * for `pageUrl`: it goes straight into an `<a href download>`, the route sends

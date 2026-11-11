@@ -17,8 +17,8 @@
  *   the cross-work data — collections, tags, external ids, users, read
  *   history. That distinction is invisible unless something says it.
  * - **There is no schedule here.** A cron entry runs `taiyaku library backup`
- *   and `--keep` is where retention lives; the screen states the command
- *   rather than offering a control the server half deliberately declined.
+ *   and `--keep` prunes what it took. The server's own backup is taken only
+ *   before a migration, and `--keep` leaves it alone.
  *
  * **The failure is never classified by status, and what it carries is the
  * server's own sentence inside `api.ts`'s envelope.** Both refusals this
@@ -193,8 +193,10 @@ export function Backup() {
             <p>
               <strong>There is no schedule here.</strong> Run{' '}
               <code>taiyaku library backup</code> from cron, with{' '}
-              <code>--keep N</code> to prune old ones. The server backs up only
-              when asked.
+              <code>--keep N</code> to prune old ones. Before each migration the
+              server takes one of its own, whose name ends in{' '}
+              <code>-before-v</code> and the schema version it migrates to;{' '}
+              <code>--keep</code> leaves those alone, so delete them by hand.
             </p>
           </details>
         </>

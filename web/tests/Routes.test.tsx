@@ -13,8 +13,13 @@ import { mount } from './support/mount'
 // dependency array — so it records one entry per *mount*, not per render.
 // `vi.hoisted` runs during the same hoisting pass `vi.mock`'s factories do,
 // which is what makes this safe to close over from inside the factory (see
-// `App.test.tsx`'s `ports` for the same pattern).
-const { mounts } = vi.hoisted(() => ({ mounts: [] as string[] }))
+// `App.test.tsx`'s `ports` for the same pattern). `onMount.current` is called
+// with `work` from the same effect, so a test can do what the real `App` does
+// with the slug it is handed; it is a no-op unless a test sets it.
+const { mounts, onMount } = vi.hoisted(() => ({
+  mounts: [] as string[],
+  onMount: { current: (_work: string): void => {} },
+}))
 
 // Wrapped rather than replaced: every other test in this file needs
 // `useParams` to keep answering for real, off the URL `MemoryRouter` was
@@ -35,6 +40,7 @@ vi.mock('../src/App', () => ({
     // biome-ignore lint/correctness/useExhaustiveDependencies: `work` is read once per mount, deliberately — tracking it would fire this effect on every prop-only update too, which is exactly the case this test needs to tell apart from a genuine remount.
     useEffect(() => {
       mounts.push(work)
+      onMount.current(work)
     }, [])
     return (
       <div data-testid="reader">
@@ -152,6 +158,8 @@ describe('the routes', () => {
   // left on for whichever test happens to run next in the file.
   afterEach(() => {
     vi.useRealTimers()
+    vi.unstubAllGlobals()
+    onMount.current = () => {}
   })
 
   it('opens the reader on the work in the URL', () => {
@@ -162,6 +170,25 @@ describe('the routes', () => {
     expect(host.querySelector('[data-testid="reader"]')?.textContent).toContain(
       'gotoubun-v01',
     )
+  })
+
+  /**
+   * O262: a slug outside ASCII arrives percent-encoded, as a browser delivers
+   * the path, and the reader asks the server for it encoded once: the router
+   * hands `App` the decoded slug, and `api.ts`'s `seg` encodes it for the
+   * request. Encoded again or not at all, the one request names another work.
+   */
+  it('asks the server for a slug outside ASCII encoded once — O262', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response('{"taiyaku":1}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    onMount.current = (work) => {
+      void api.getSidecarWithEtag(work)
+    }
+    at('/read/lumi%C3%A8re-v02')
+    await flush()
+    expect(fetchMock.mock.calls).toEqual([['/api/works/lumi%C3%A8re-v02']])
   })
 
   it('puts the reader inside its route box, which blacks out the page before the reader draws', () => {

@@ -93,9 +93,13 @@ fn rewrite_fixture_archive(fixture: &Fixture, name: &str, entries: &[(&str, &[u8
 }
 
 fn digest_of(path: &std::path::Path) -> String {
+    sha256_hex(&std::fs::read(path).expect("reading the archive"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest as _, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(std::fs::read(path).expect("reading the archive"));
+    hasher.update(bytes);
     hasher.finalize().iter().fold(String::new(), |mut hex, b| {
         use std::fmt::Write as _;
         let _ = write!(hex, "{b:02x}");
@@ -537,6 +541,46 @@ fn a_rewrite_returns_the_new_digest_and_leaves_no_temp_behind() {
         strays.is_empty(),
         "the staging file was renamed, not left: {strays:?}"
     );
+    // The filter above passes with or without the dot, and in any directory,
+    // so the path is pinned whole: a dot name the walk skips (O185), beside
+    // the archive, since a rename across file systems fails with EXDEV.
+    assert_eq!(
+        super::staging_path(&path),
+        path.with_file_name(".Series - v01.cbz.taiyaku-stamp"),
+        "the stage is a dot name in the archive's own directory"
+    );
+}
+
+/// A stamp cut while staging can leave a whole, valid archive at the staging
+/// name until that archive is stamped again. The next scan must not read it
+/// as a second file of the work (O185).
+#[test]
+fn a_scan_skips_an_archive_left_at_the_staging_name() {
+    let dir = crate::tests::tempdir("stamp-leftover");
+    let archive = dir.path().join("v01.cbz");
+    crate::scan::tests::write_archive(&archive, 2);
+    crate::scan::tests::write_archive(&super::staging_path(&archive), 2);
+
+    let library = crate::Library::open_in_memory().expect("an in-memory library opens");
+    let conn = library.conn();
+    let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
+    crate::scan::scan_root(&conn, &root).expect("the scan");
+
+    let entries: Vec<String> = conn
+        .prepare(
+            "SELECT rel_path FROM scan_entry WHERE root_id = ?1 AND kind = 'file'
+              ORDER BY rel_path",
+        )
+        .expect("prepares")
+        .query_map([root.id], |row| row.get(0))
+        .expect("queries")
+        .collect::<Result<_, _>>()
+        .expect("reads");
+    assert_eq!(
+        entries,
+        ["v01.cbz"],
+        "the archive alone, not the leftover beside it"
+    );
 }
 
 /// One work imported from a sidecar sitting beside its archive.
@@ -548,6 +592,12 @@ fn a_rewrite_returns_the_new_digest_and_leaves_no_temp_behind() {
 /// stamp that moved a member's `sha256` and left `taiyaku.json` naming the
 /// old one would have written the staleness it was meant to record.
 fn imported_work() -> Fixture {
+    imported_work_named("taiyaku.json")
+}
+
+/// [`imported_work`], with its sidecar under `name`: import takes a sidecar
+/// by any name, and the export names its siblings by that name's stem.
+fn imported_work_named(name: &str) -> Fixture {
     let dir = crate::tests::tempdir("stamp-imported");
     let archive = dir.path().join("v01.cbz");
     crate::scan::tests::write_archive(&archive, 2);
@@ -564,7 +614,7 @@ fn imported_work() -> Fixture {
 
     // On disk as well as in the database: `import::sidecar` reads a document,
     // it does not write one, and the file is what this test is about.
-    let sidecar = dir.path().join("taiyaku.json");
+    let sidecar = dir.path().join(name);
     std::fs::write(&sidecar, &json).expect("writing the fixture sidecar");
 
     let library = crate::Library::open_in_memory().expect("an in-memory library opens");
@@ -725,8 +775,171 @@ fn applying_to_an_imported_work_rewrites_its_sidecar_with_the_new_digest() {
     let after = std::fs::read_to_string(&sidecar).expect("the sidecar is still there");
     assert_ne!(before, after, "the sidecar was rewritten");
     assert!(
+        applied.sidecar_rewritten,
+        "and the stamp says so: {applied:?}"
+    );
+    assert!(
         after.contains(&applied.members[0].1),
         "and it names the digest the archive now has: {after}"
+    );
+}
+
+/// A sidecar not named `<stem>.json` is not what the export writes: it writes
+/// `taiyaku.json` beside `taiyaku.sidecar`, and the stamp must not tell the
+/// person the file they keep was rewritten (O264).
+#[test]
+fn a_sidecar_under_another_name_is_not_reported_rewritten() {
+    let fixture = imported_work_named("taiyaku.sidecar");
+    let sidecar = fixture.dir.path().join("taiyaku.sidecar");
+    let before = std::fs::read_to_string(&sidecar).expect("the fixture wrote a sidecar");
+
+    let applied = {
+        let conn = fixture.conn();
+        apply(
+            &conn,
+            fixture.work_id,
+            1,
+            &plan(&conn, fixture.work_id).expect("plans"),
+        )
+        .expect("applies")
+    };
+
+    assert!(
+        !applied.sidecar_rewritten,
+        "the file at sidecar_path was not written: {applied:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&sidecar).expect("still there"),
+        before,
+        "and it is as it was"
+    );
+    let beside = std::fs::read_to_string(fixture.dir.path().join("taiyaku.json"))
+        .expect("the export wrote taiyaku.json beside it");
+    assert!(
+        beside.contains(&applied.members[0].1),
+        "and that is where the new digest went: {beside}"
+    );
+}
+
+/// The stamp's export keeps a document a newer taiyaku wrote, which would then
+/// name the digests the stamp moved, so the stamp refuses before it touches
+/// any archive (O264). Answers the refusal, the archive's digest before and
+/// after, and the member row's digest after.
+fn stamp_beside_a_newer(
+    name: &str,
+    text: &str,
+) -> (Result<Applied, String>, String, String, String) {
+    let fixture = imported_work();
+    let archive = fixture.dir.path().join("v01.cbz");
+    std::fs::write(fixture.dir.path().join(name), text).expect("a newer taiyaku's document");
+    let before = digest_of(&archive);
+    let conn = fixture.conn();
+    let planned = plan(&conn, fixture.work_id).expect("plans");
+    assert_eq!(
+        planned.len(),
+        1,
+        "the archive must be in the plan, or nothing would change anyway"
+    );
+
+    let refused = apply(&conn, fixture.work_id, 1, &planned);
+
+    let row: String = conn
+        .query_row("SELECT sha256 FROM member LIMIT 1", [], |r| r.get(0))
+        .expect("the member's digest");
+    (refused, before, digest_of(&archive), row)
+}
+
+#[test]
+fn a_stamp_over_a_sidecar_a_newer_taiyaku_wrote_is_refused_before_any_archive_is_touched() {
+    let newer = r#"{"taiyaku": 2, "from": "newer"}"#;
+    let (refused, before, after, row) = stamp_beside_a_newer("taiyaku.json", newer);
+
+    let refusal = refused.expect_err("a newer sidecar refuses the stamp");
+    assert!(
+        refusal.ends_with(
+            "taiyaku.json: this document declares taiyaku format version 2, and this build \
+             reads 1. Refusing to read it rather than dropping the fields it does not \
+             understand and writing them back out as version 1 — upgrade taiyaku instead"
+        ),
+        "refuse_newer's sentence, naming the file: {refusal}"
+    );
+    assert_eq!(after, before, "no archive's bytes changed");
+    assert_eq!(row, before, "and the member row still names them");
+}
+
+#[test]
+fn a_stamp_beside_a_library_document_a_newer_taiyaku_wrote_is_refused_too() {
+    let newer = r#"{"taiyaku_library": 2, "from": "newer"}"#;
+    let (refused, before, after, _) = stamp_beside_a_newer("taiyaku.library.json", newer);
+
+    let refusal = refused.expect_err("a newer sibling refuses the stamp");
+    assert!(
+        refusal.contains(
+            "taiyaku.library.json: this document declares taiyaku_library format version 2"
+        ),
+        "{refusal}"
+    );
+    assert_eq!(after, before, "no archive's bytes changed");
+}
+
+#[test]
+fn a_stamp_beside_a_progress_document_a_newer_taiyaku_wrote_is_refused_too() {
+    let newer = r#"{"taiyaku_progress": 2, "from": "newer"}"#;
+    let (refused, before, after, _) = stamp_beside_a_newer("taiyaku.progress.json", newer);
+
+    let refusal = refused.expect_err("a newer progress document refuses the stamp");
+    assert!(
+        refusal.contains(
+            "taiyaku.progress.json: this document declares taiyaku_progress format version 2"
+        ),
+        "{refusal}"
+    );
+    assert_eq!(after, before, "no archive's bytes changed");
+}
+
+#[test]
+fn a_stamp_beside_a_truth_document_a_newer_taiyaku_wrote_is_refused_too() {
+    let newer = r#"{"taiyaku_truth": 2, "from": "newer"}"#;
+    let (refused, before, after, _) = stamp_beside_a_newer("taiyaku.truth.json", newer);
+
+    let refusal = refused.expect_err("a newer truth document refuses the stamp");
+    assert!(
+        refusal
+            .contains("taiyaku.truth.json: this document declares taiyaku_truth format version 2"),
+        "{refusal}"
+    );
+    assert_eq!(after, before, "no archive's bytes changed");
+}
+
+/// The flag comes from what the export wrote. `apply` refuses before it gets
+/// here over a newer sidecar, so this pins the unit that answers it: the export
+/// keeps that sidecar, and the stamp must not say it was rewritten (O264).
+#[test]
+fn a_sidecar_the_export_kept_is_not_reported_rewritten() {
+    let fixture = imported_work();
+    let sidecar = fixture.dir.path().join("taiyaku.json");
+    let newer = r#"{"taiyaku": 2, "from": "newer"}"#;
+    std::fs::write(&sidecar, newer).expect("a newer taiyaku's sidecar");
+    let conn = fixture.conn();
+    let sidecar_path: String = conn
+        .query_row(
+            "SELECT sidecar_path FROM work WHERE id = ?1",
+            [fixture.work_id],
+            |r| r.get(0),
+        )
+        .expect("an imported work has a sidecar path");
+
+    let rewritten =
+        rewrite_sidecar(&conn, fixture.work_id, 1, Some(&sidecar_path)).expect("exports");
+
+    assert!(
+        !rewritten,
+        "the export kept the sidecar, so it was not rewritten"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&sidecar).expect("still there"),
+        newer,
+        "and it is as the newer taiyaku left it"
     );
 }
 
@@ -1136,7 +1349,894 @@ fn a_stamp_moves_the_hand_document_to_the_works_new_address() {
         std::fs::read_to_string(&now)
             .expect("reads")
             .contains("Hand-Set Title"),
-        "and it is the same document, not a fresh one"
+        "and it still carries the hand edit"
+    );
+}
+
+/// [`one_work`] in a root that keeps documents, with chapter 7 set on its
+/// member by hand and saved as a metadata PATCH saves it. Answers the member's
+/// digest before any stamp, which the document keys the chapter by.
+fn hand_chaptered(fixture: &Fixture) -> String {
+    let conn = fixture.conn();
+    conn.execute("UPDATE root SET keeps_documents = 1", [])
+        .expect("the root keeps documents");
+    let sha256: String = conn
+        .query_row("SELECT sha256 FROM member", [], |r| r.get(0))
+        .expect("the member's digest");
+    let mut doc = crate::librarydoc::of(&conn, fixture.work_id).expect("projects");
+    doc.members = vec![crate::librarydoc::MemberMeta {
+        sha256: sha256.clone(),
+        chapter: Some(7.0),
+        chapter_source: Some(crate::librarydoc::ChapterSource::Hand),
+    }];
+    crate::librarydoc::apply(&conn, fixture.work_id, &doc).expect("applies the hand edit");
+    let saved = crate::hand::save(&conn, fixture.work_id).expect("saves the hand document");
+    assert!(
+        saved.persisted,
+        "the fixture's document is on disk: {saved:?}"
+    );
+    sha256
+}
+
+/// Stamp the fixture's work as planned, which must succeed.
+fn stamp_all(fixture: &Fixture) -> Applied {
+    let conn = fixture.conn();
+    apply(
+        &conn,
+        fixture.work_id,
+        1,
+        &plan(&conn, fixture.work_id).expect("plans"),
+    )
+    .expect("applies")
+}
+
+/// The hand document at the work's address now.
+fn document_at_address(fixture: &Fixture) -> String {
+    let conn = fixture.conn();
+    let path = crate::hand::path_for(&conn, fixture.work_id)
+        .expect("resolves")
+        .expect("the work has an address");
+    std::fs::read_to_string(&path).expect("the document is at the work's address")
+}
+
+/// The chapter a fresh library over `dir` reads back for its one member,
+/// with its root keeping documents or not. The read-back ignores that
+/// setting, so either way it reads the document the directory holds.
+fn rebuilt_chapter(dir: &std::path::Path, keeps_documents: bool) -> (Option<f64>, Option<String>) {
+    let rebuilt = crate::Library::open_in_memory().expect("an in-memory library opens");
+    let conn = rebuilt.conn();
+    let root = crate::scan::add_root(&conn, dir).expect("adding the root");
+    conn.execute(
+        "UPDATE root SET keeps_documents = ?1",
+        [i64::from(keeps_documents)],
+    )
+    .expect("setting the root's documents");
+    crate::scan::scan_root(&conn, &root).expect("the scan");
+    crate::derive::derive(&conn).expect("the derive");
+    conn.query_row(
+        "SELECT chapter_declared, chapter_source FROM member",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .expect("the member")
+}
+
+/// The hand document keys members by `sha256` and a stamp moves those digests,
+/// so the stamp re-keys it under the new ones. Left naming the old ones, a
+/// library rebuilt from this directory reads it back and drops the chapter.
+#[test]
+fn a_stamp_rewrites_the_hand_document_under_the_new_digests_and_a_rebuild_keeps_its_chapter() {
+    let fixture = one_work();
+    let old = hand_chaptered(&fixture);
+
+    let applied = stamp_all(&fixture);
+    let new = applied.members[0].1.clone();
+    assert!(
+        applied.document_rewritten,
+        "the stamp says it rewrote the document: {applied:?}"
+    );
+
+    let document = document_at_address(&fixture);
+    assert!(
+        document.contains(&new),
+        "the document names the new digest: {document}"
+    );
+    assert!(!document.contains(&old), "and not the old one: {document}");
+    assert_eq!(
+        rebuilt_chapter(fixture.dir.path(), true),
+        (Some(7.0), Some("hand".to_string())),
+        "a library rebuilt from the directory reads the hand-set chapter back"
+    );
+}
+
+/// An edit made in the hand document's file is the person's to settle (O44),
+/// so the stamp re-keys the file as it stands rather than rewriting it from
+/// the rows, and the edit survives.
+#[test]
+fn a_stamp_rekeys_a_hand_document_edited_on_disk_and_keeps_the_edit() {
+    let fixture = one_work();
+    let old = hand_chaptered(&fixture);
+    let edited = edit_document(&fixture, |doc| {
+        doc["title"] = serde_json::json!("Edited In The File");
+    });
+
+    let applied = stamp_all(&fixture);
+
+    let document = document_at_address(&fixture);
+    assert!(
+        document.contains("Edited In The File"),
+        "the edit made in the file survives the stamp: {document}"
+    );
+    assert!(
+        document.contains(&applied.members[0].1),
+        "and the document names the new digest: {document}"
+    );
+    assert!(!document.contains(&old), "and not the old one: {document}");
+    assert_eq!(
+        document,
+        edited.replace(&old, &applied.members[0].1),
+        "and nothing else in the file changed, its layout included"
+    );
+}
+
+/// A root that declines documents can still hold one, written before it was
+/// switched off, and a rebuilt library reads it back whatever the root says,
+/// so the stamp re-keys it there too.
+#[test]
+fn a_stamp_rekeys_a_hand_document_a_declining_root_still_holds_and_a_rebuild_keeps_its_chapter() {
+    let fixture = one_work();
+    let old = hand_chaptered(&fixture);
+    fixture
+        .conn()
+        .execute("UPDATE root SET keeps_documents = 0", [])
+        .expect("the root declines documents from now on");
+
+    let applied = stamp_all(&fixture);
+
+    assert!(
+        applied.document_rewritten,
+        "the stamp says it rewrote the document: {applied:?}"
+    );
+    let document = document_at_address(&fixture);
+    assert!(
+        document.contains(&applied.members[0].1),
+        "the document names the new digest: {document}"
+    );
+    assert!(!document.contains(&old), "and not the old one: {document}");
+    assert_eq!(
+        rebuilt_chapter(fixture.dir.path(), false),
+        (Some(7.0), Some("hand".to_string())),
+        "a library rebuilt from the directory reads the hand-set chapter back"
+    );
+}
+
+/// One scanned work of two chaptered archives in a root that keeps documents,
+/// with a hand title saved, so its document names both members by the
+/// chapters the rules read from their names.
+fn two_chapters() -> Fixture {
+    let dir = crate::tests::tempdir("stamp-chapters");
+    for name in ["Series - v01 - c1.cbz", "Series - v01 - c2.cbz"] {
+        crate::scan::tests::write_archive(&dir.path().join("Series").join(name), 2);
+    }
+    let library = crate::Library::open_in_memory().expect("an in-memory library opens");
+    let work_id = {
+        let conn = library.conn();
+        let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
+        conn.execute("UPDATE root SET keeps_documents = 1", [])
+            .expect("the root keeps documents");
+        crate::scan::scan_root(&conn, &root).expect("the scan");
+        crate::derive::derive(&conn).expect("the derive");
+        let (works, members): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM work), (SELECT count(*) FROM member)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("counts");
+        assert_eq!((works, members), (1, 2), "one work of two members");
+        let work_id: i64 = conn
+            .query_row("SELECT id FROM work", [], |r| r.get(0))
+            .expect("the work");
+        let mut doc = crate::librarydoc::of(&conn, work_id).expect("projects");
+        doc.title = Some("Hand-Set Title".to_string());
+        crate::librarydoc::apply(&conn, work_id, &doc).expect("applies the hand edit");
+        let saved = crate::hand::save(&conn, work_id).expect("saves the hand document");
+        assert!(
+            saved.persisted,
+            "the fixture's document is on disk: {saved:?}"
+        );
+        work_id
+    };
+    Fixture {
+        library,
+        dir,
+        work_id,
+    }
+}
+
+/// A stamp cut after renaming some archives has stamped those files whatever
+/// the rows say, and a rescan records their digests, so the document follows
+/// the files at once: the archives renamed are re-keyed and no other is.
+#[test]
+fn a_stamp_cut_partway_rekeys_the_hand_document_for_the_archives_it_renamed_alone() {
+    let fixture = two_chapters();
+    let first = fixture.archive("Series - v01 - c1.cbz");
+    let second = fixture.archive("Series - v01 - c2.cbz");
+    let (first_old, second_old) = (digest_of(&first), digest_of(&second));
+    // Where the second archive would be staged, so its rewrite fails after
+    // the first archive has been renamed.
+    std::fs::create_dir(super::staging_path(&second)).expect("a directory in the way");
+    let before = document_at_address(&fixture);
+    assert!(
+        before.contains(&first_old) && before.contains(&second_old),
+        "the document names both members to begin with: {before}"
+    );
+
+    let cut = {
+        let conn = fixture.conn();
+        let planned = plan(&conn, fixture.work_id).expect("plans");
+        assert_eq!(
+            planned.iter().map(|p| p.path.clone()).collect::<Vec<_>>(),
+            [first.clone(), second.clone()],
+            "both archives are planned, the first first"
+        );
+        apply(&conn, fixture.work_id, 1, &planned)
+    };
+
+    let cut = cut.expect_err("the second archive cannot be staged");
+    assert!(
+        cut.contains("1 of this work's archives were rewritten before this"),
+        "{cut}"
+    );
+    let first_new = digest_of(&first);
+    assert_ne!(first_new, first_old, "the first archive was stamped");
+    let document = document_at_address(&fixture);
+    assert!(
+        document.contains(&first_new) && !document.contains(&first_old),
+        "the archive it renamed is re-keyed: {document}"
+    );
+    assert!(
+        document.contains(&second_old),
+        "and the one it did not rename keeps its digest: {document}"
+    );
+}
+
+/// Every row a stamp reads is read before its first rename, so a read that
+/// fails for a later archive leaves every archive and the hand document as
+/// they were. A second member whose digest is not text stands in for any read
+/// failing: `plan` never reads the digest, so the plan still matches.
+#[test]
+fn a_read_that_fails_for_a_later_archive_fails_before_any_archive_is_renamed() {
+    let fixture = two_chapters();
+    let first = fixture.archive("Series - v01 - c1.cbz");
+    let second = fixture.archive("Series - v01 - c2.cbz");
+    let (first_old, second_old) = (digest_of(&first), digest_of(&second));
+    let before = document_at_address(&fixture);
+
+    let failed = {
+        let conn = fixture.conn();
+        let planned = plan(&conn, fixture.work_id).expect("plans");
+        assert_eq!(
+            planned.iter().map(|p| p.path.clone()).collect::<Vec<_>>(),
+            [first.clone(), second.clone()],
+            "both archives are planned, the first first"
+        );
+        conn.execute(
+            "UPDATE member SET sha256 = X'00' WHERE id = ?1",
+            [planned[1].member_id],
+        )
+        .expect("a digest that is not text");
+        apply(&conn, fixture.work_id, 1, &planned)
+    };
+
+    let failed = failed.expect_err("the second member's row cannot be read");
+    assert!(failed.starts_with("reading member "), "{failed}");
+    assert_eq!(
+        (digest_of(&first), digest_of(&second)),
+        (first_old, second_old),
+        "no archive was renamed: {failed}"
+    );
+    assert_eq!(
+        document_at_address(&fixture),
+        before,
+        "and the hand document is untouched"
+    );
+}
+
+/// O81: when a file already sits at the work's new address, `rename_from`
+/// leaves the document at the old one. The stamp re-keys it there, never
+/// writes over the file at the new address, and does not report the work's
+/// document rewritten, since the copy it re-keyed is not at the work's address.
+///
+/// The new address hashes the stamped archive's digest, and the stamp writes
+/// the current time into its document's entry at two-second resolution, so
+/// the test stamps a copy first to learn it. It retries only when it measured
+/// the two stamps fall either side of a tick.
+#[test]
+fn a_stamp_whose_new_address_is_taken_rekeys_the_document_where_it_stands_and_leaves_that_file() {
+    let tick = |at: std::time::SystemTime| {
+        at.duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs()
+            / 2
+    };
+    for _attempt in 0..5 {
+        let fixture = one_work();
+        let old = hand_chaptered(&fixture);
+        let archive = fixture.archive("Series - v01.cbz");
+        let (slug, edition_key) = addressed(&fixture);
+        let started = std::time::SystemTime::now();
+        let (document, key, taken, orphan) = {
+            let conn = fixture.conn();
+            let document = crate::hand::path_for(&conn, fixture.work_id)
+                .expect("resolves")
+                .expect("the root keeps documents");
+            let xml = crate::comicinfo::xml(
+                &crate::comicinfo::read(&conn, &slug, &edition_key, 2).expect("reads"),
+            );
+            let elsewhere = crate::tests::tempdir("stamp-copy");
+            let copy = elsewhere.path().join("copy.cbz");
+            std::fs::copy(&archive, &copy).expect("copies the archive");
+            let digest = super::rewrite_one(&copy, xml.as_bytes()).expect("stamps the copy");
+            let key = sha256_hex(format!("{digest}\n").as_bytes());
+            let taken = document.with_file_name(crate::hand::file_name(&key));
+            // A document left at that address by an earlier rekey, still
+            // naming this work's member by its digest before the stamp.
+            let mut orphan: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&document).expect("reads"))
+                    .expect("JSON");
+            orphan["title"] = serde_json::json!("The Orphan");
+            let orphan = orphan.to_string();
+            std::fs::write(&taken, &orphan).expect("a file at the new address");
+            (document, key, taken, orphan)
+        };
+
+        let applied = stamp_all(&fixture);
+        let finished = std::time::SystemTime::now();
+        let learnt = applied.content_key.as_deref() == Some(key.as_str());
+        if !learnt && tick(started) != tick(finished) {
+            continue;
+        }
+        assert!(
+            learnt,
+            "within one tick, the copy's stamp gives the work's new key: {applied:?}"
+        );
+
+        assert!(!applied.document_moved, "the rename was refused");
+        assert_eq!(
+            std::fs::read_to_string(&taken).expect("still there"),
+            orphan,
+            "the file at the new address is untouched"
+        );
+        let stranded = std::fs::read_to_string(&document).expect("left at the old address");
+        assert!(
+            stranded.contains(&applied.members[0].1) && !stranded.contains(&old),
+            "the work's own document is re-keyed where it stands: {stranded}"
+        );
+        assert!(
+            !applied.document_rewritten,
+            "and is not reported as the document at the work's address: {applied:?}"
+        );
+        return;
+    }
+    panic!("five attempts in a row straddled a two-second tick");
+}
+
+/// A stamp that fails after renaming its archives, here in the transaction
+/// that records their digests, has stamped those files whatever the rows say.
+/// The document follows the files as on a cut, so the rescan that records the
+/// digests carries a document that names them, and a rebuild keeps the chapter.
+#[test]
+fn a_stamp_whose_transaction_fails_after_the_renames_still_rekeys_the_hand_document() {
+    for (statement, trigger) in [
+        (
+            "recording the new digest",
+            "BEFORE UPDATE OF sha256 ON member",
+        ),
+        (
+            "recording the new content key",
+            "BEFORE UPDATE OF content_key ON work",
+        ),
+    ] {
+        let fixture = one_work();
+        let old = hand_chaptered(&fixture);
+        let archive = fixture.archive("Series - v01.cbz");
+
+        let failed = {
+            let conn = fixture.conn();
+            conn.execute_batch(&format!(
+                "CREATE TEMP TRIGGER fail_the_stamp {trigger}
+                 BEGIN SELECT RAISE(ABORT, 'the transaction fails'); END;"
+            ))
+            .expect("a trigger that fails the transaction");
+            let failed = apply(
+                &conn,
+                fixture.work_id,
+                1,
+                &plan(&conn, fixture.work_id).expect("plans"),
+            );
+            conn.execute_batch("DROP TRIGGER fail_the_stamp")
+                .expect("drops the trigger");
+            failed
+        };
+
+        let failed = failed.expect_err("the transaction fails");
+        assert!(
+            failed.contains(statement) && failed.contains("the transaction fails"),
+            "{failed}"
+        );
+        assert!(
+            failed.ends_with(
+                " — 1 of this work's archives were rewritten before this and their rows \
+                 are now stale; a rescan reconciles them"
+            ),
+            "and says the archive is stamped and its row is not ({statement}): {failed}"
+        );
+        let new = digest_of(&archive);
+        assert_ne!(new, old, "the archive was stamped");
+        let row: String = fixture
+            .conn()
+            .query_row("SELECT sha256 FROM member", [], |r| r.get(0))
+            .expect("the member's digest");
+        assert_eq!(row, old, "and the rows were rolled back");
+        let document = document_at_address(&fixture);
+        assert!(
+            document.contains(&new) && !document.contains(&old),
+            "the document follows the stamped file ({statement}): {document}"
+        );
+
+        {
+            let conn = fixture.conn();
+            let root = crate::scan::roots(&conn).expect("roots").remove(0);
+            crate::scan::scan_root(&conn, &root).expect("the rescan");
+            crate::derive::derive(&conn).expect("the derive");
+        }
+        let carried = document_at_address(&fixture);
+        assert!(
+            carried.contains(&new),
+            "the rescan carries it to the new key ({statement}): {carried}"
+        );
+        assert_eq!(
+            rebuilt_chapter(fixture.dir.path(), true),
+            (Some(7.0), Some("hand".to_string())),
+            "a library rebuilt from the directory keeps the chapter ({statement})"
+        );
+    }
+}
+
+/// An error after the commit comes before the document moves. The stamp is
+/// recorded, so the answer says so and names where the document stayed, and
+/// the next scan reports it there as an orphan, as the answer says. A root
+/// path that stops being text once the key moves stands in for any read
+/// failing after the commit.
+#[test]
+fn an_error_after_the_commit_says_the_stamp_is_recorded_and_where_the_document_stayed() {
+    let fixture = one_work();
+    hand_chaptered(&fixture);
+    let archive = fixture.archive("Series - v01.cbz");
+    let (old, root_path) = {
+        let conn = fixture.conn();
+        let old = crate::hand::path_for(&conn, fixture.work_id)
+            .expect("resolves")
+            .expect("the root keeps documents");
+        let root_path: String = conn
+            .query_row("SELECT path FROM root", [], |r| r.get(0))
+            .expect("the root's path");
+        (old, root_path)
+    };
+
+    let failed = {
+        let conn = fixture.conn();
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER fail_after_the_commit AFTER UPDATE OF content_key ON work
+             BEGIN UPDATE root SET path = X'00'; END;",
+        )
+        .expect("a trigger that spoils the root's path with the key");
+        let failed = apply(
+            &conn,
+            fixture.work_id,
+            1,
+            &plan(&conn, fixture.work_id).expect("plans"),
+        );
+        conn.execute_batch("DROP TRIGGER fail_after_the_commit")
+            .expect("drops the trigger");
+        conn.execute("UPDATE root SET path = ?1", [&root_path])
+            .expect("restores the root's path");
+        failed
+    };
+
+    let failed = failed.expect_err("the address cannot be read after the commit");
+    assert!(
+        failed.ends_with(&format!(
+            " — the stamp itself is recorded, but this work's hand document, if it has \
+             one, was not moved to its new key and stays at {}, where the next scan \
+             reports it as an orphan",
+            old.display()
+        )),
+        "{failed}"
+    );
+    let row: String = fixture
+        .conn()
+        .query_row("SELECT sha256 FROM member", [], |r| r.get(0))
+        .expect("the member's digest");
+    assert_eq!(row, digest_of(&archive), "the stamp is recorded");
+    assert!(old.is_file(), "the document stayed at {old:?}");
+
+    let report = {
+        let conn = fixture.conn();
+        let root = crate::scan::roots(&conn).expect("roots").remove(0);
+        crate::scan::scan_root(&conn, &root).expect("the rescan");
+        crate::derive::derive(&conn).expect("the derive")
+    };
+    assert!(
+        report.orphan_documents.iter().any(|o| o.path == old),
+        "the next scan reports it as an orphan: {:?}",
+        report.orphan_documents
+    );
+}
+
+/// A stamp of spoke-edition archives alone leaves the work's key, and so the
+/// hand document's address, where they were. The document there still keys
+/// the spoke member by its digest, so it is re-keyed in place and reported.
+#[test]
+fn a_stamp_of_a_spoke_edition_alone_rekeys_the_hand_document_where_it_stands() {
+    let hub = crate::tests::tempdir("stamp-hub");
+    crate::scan::tests::write_archive(&hub.path().join("Series").join("Series - v01.cbz"), 2);
+    let spoke = crate::tests::tempdir("stamp-spoke");
+    let spoke_archive = spoke.path().join("Series").join("Series - v01.cbz");
+    crate::scan::tests::write_archive(&spoke_archive, 3);
+    let library = crate::Library::open_in_memory().expect("an in-memory library opens");
+    let work_id = {
+        let conn = library.conn();
+        for (dir, edition) in [(hub.path(), Some("en")), (spoke.path(), None)] {
+            let root = crate::scan::add_root(&conn, dir).expect("adding the root");
+            crate::scan::update_root(
+                &conn,
+                root.id,
+                &crate::scan::RootPatch {
+                    edition_key: Some(edition.map(str::to_string)),
+                    ..Default::default()
+                },
+            )
+            .expect("sets the root's edition");
+        }
+        conn.execute("UPDATE root SET keeps_documents = 1", [])
+            .expect("the roots keep documents");
+        for root in crate::scan::roots(&conn).expect("roots") {
+            crate::scan::scan_root(&conn, &root).expect("the scan");
+        }
+        crate::derive::derive(&conn).expect("the derive");
+        let (work_id, hub_key): (i64, String) = conn
+            .query_row("SELECT id, hub FROM work", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .expect("one work of both editions");
+        assert_eq!(
+            hub_key, "en",
+            "the fixture: the first root's edition is the hub"
+        );
+        work_id
+    };
+    let fixture = Fixture {
+        library,
+        dir: hub,
+        work_id,
+    };
+    // Both archives stamped, so a later plan names only what changes after.
+    stamp_all(&fixture);
+    let old = {
+        let conn = fixture.conn();
+        let old: String = conn
+            .query_row(
+                "SELECT m.sha256 FROM member m JOIN edition e ON e.id = m.edition_id
+                  WHERE e.key = 'raw'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the spoke member's digest");
+        let mut doc = crate::librarydoc::of(&conn, work_id).expect("projects");
+        doc.members = vec![crate::librarydoc::MemberMeta {
+            sha256: old.clone(),
+            chapter: Some(7.0),
+            chapter_source: Some(crate::librarydoc::ChapterSource::Hand),
+        }];
+        crate::librarydoc::apply(&conn, work_id, &doc).expect("applies the hand edit");
+        let saved = crate::hand::save(&conn, work_id).expect("saves the hand document");
+        assert!(saved.persisted, "the document is on disk: {saved:?}");
+        // The spoke edition's ComicInfo alone now differs from its archive's.
+        conn.execute("UPDATE edition SET language = 'ja' WHERE key = 'raw'", [])
+            .expect("sets the spoke edition's language");
+        old
+    };
+
+    let applied = {
+        let conn = fixture.conn();
+        let planned = plan(&conn, work_id).expect("plans");
+        assert_eq!(
+            planned.iter().map(|p| p.path.clone()).collect::<Vec<_>>(),
+            std::slice::from_ref(&spoke_archive),
+            "only the spoke edition's archive is planned"
+        );
+        apply(&conn, work_id, 1, &planned).expect("applies")
+    };
+
+    assert_eq!(
+        applied.content_key, None,
+        "the hub held, and the key with it"
+    );
+    let new = digest_of(&spoke_archive);
+    assert_ne!(new, old, "the spoke archive was stamped");
+    let document = document_at_address(&fixture);
+    assert!(
+        document.contains(&new) && !document.contains(&old),
+        "the document at the work's address names the spoke member's new digest: {document}"
+    );
+    assert!(
+        applied.document_rewritten,
+        "and the stamp says it rewrote the work's document: {applied:?}"
+    );
+}
+
+/// The stamp could neither rewrite a newer taiyaku's hand document nor leave
+/// it naming the old digests, so it refuses before it touches any archive:
+/// `newer` is written at the work's address, in a root that keeps documents or
+/// declines them, and the refusal must be `sentence` after the file's path.
+fn a_stamp_over_a_newer_hand_document_is_refused(
+    keeps_documents: bool,
+    newer: &str,
+    sentence: &str,
+) {
+    let fixture = one_work();
+    let archive = fixture.archive("Series - v01.cbz");
+    let document = {
+        let conn = fixture.conn();
+        conn.execute(
+            "UPDATE root SET keeps_documents = ?1",
+            [i64::from(keeps_documents)],
+        )
+        .expect("sets whether the root keeps documents");
+        let path = crate::hand::path_for(&conn, fixture.work_id)
+            .expect("resolves")
+            .expect("the work has a root");
+        std::fs::create_dir_all(path.parent().expect("a directory")).expect("creates .taiyaku");
+        std::fs::write(&path, newer).expect("a newer taiyaku's document");
+        path
+    };
+    let before = digest_of(&archive);
+
+    let (refused, row) = {
+        let conn = fixture.conn();
+        let refused = apply(
+            &conn,
+            fixture.work_id,
+            1,
+            &plan(&conn, fixture.work_id).expect("plans"),
+        );
+        let row: String = conn
+            .query_row("SELECT sha256 FROM member", [], |r| r.get(0))
+            .expect("the member's digest");
+        (refused, row)
+    };
+
+    let refusal = refused.expect_err("a newer hand document refuses the stamp");
+    assert_eq!(
+        refusal,
+        format!("{}: {sentence}", document.display()),
+        "refuse_newer's sentence, naming the file"
+    );
+    assert_eq!(digest_of(&archive), before, "no archive's bytes changed");
+    assert_eq!(row, before, "and the member row still names them");
+    assert_eq!(
+        std::fs::read_to_string(&document).expect("still there"),
+        newer,
+        "and the document is as the newer taiyaku left it"
+    );
+}
+
+#[test]
+fn a_stamp_over_a_hand_document_a_newer_taiyaku_wrote_is_refused_before_any_archive_is_touched() {
+    a_stamp_over_a_newer_hand_document_is_refused(
+        true,
+        r#"{"taiyaku_library": 2, "from": "newer"}"#,
+        "this document declares taiyaku_library format version 2, and this build reads 1. \
+         Refusing to read it rather than dropping the fields it does not understand and \
+         writing them back out as version 1 — upgrade taiyaku instead",
+    );
+}
+
+/// A stamp re-keys an existing hand document in a root that declines
+/// documents too, so a newer one there would be left naming the old digests
+/// just the same.
+#[test]
+fn a_stamp_over_a_newer_hand_document_in_a_root_that_declines_documents_is_refused_too() {
+    a_stamp_over_a_newer_hand_document_is_refused(
+        false,
+        r#"{"taiyaku_library": 2, "from": "newer"}"#,
+        "this document declares taiyaku_library format version 2, and this build reads 1. \
+         Refusing to read it rather than dropping the fields it does not understand and \
+         writing them back out as version 1 — upgrade taiyaku instead",
+    );
+}
+
+/// A version past `u32` is newer than any build, and is named at the largest
+/// rather than read as an older one.
+#[test]
+fn a_stamp_over_a_hand_document_declaring_a_version_past_u32_is_refused_too() {
+    a_stamp_over_a_newer_hand_document_is_refused(
+        true,
+        r#"{"taiyaku_library": 4294967296, "from": "newer"}"#,
+        "this document declares taiyaku_library format version 4294967295, and this build \
+         reads 1. Refusing to read it rather than dropping the fields it does not understand \
+         and writing them back out as version 1 — upgrade taiyaku instead",
+    );
+}
+
+/// A root that declines documents keeps no hand document, even after a hand
+/// edit, so the stamp has none to bring in line: it succeeds and writes none.
+#[test]
+fn a_stamp_in_a_root_that_declines_documents_succeeds_and_writes_no_hand_document() {
+    let fixture = one_work();
+    {
+        let conn = fixture.conn();
+        let mut doc = crate::librarydoc::of(&conn, fixture.work_id).expect("projects");
+        doc.title = Some("Hand-Set Title".to_string());
+        crate::librarydoc::apply(&conn, fixture.work_id, &doc).expect("applies the hand edit");
+        let saved = crate::hand::save(&conn, fixture.work_id).expect("saves");
+        assert_eq!(
+            saved.keeps_documents,
+            Some(false),
+            "the fixture's root declines documents"
+        );
+    }
+
+    let conn = fixture.conn();
+    let applied = apply(
+        &conn,
+        fixture.work_id,
+        1,
+        &plan(&conn, fixture.work_id).expect("plans"),
+    )
+    .expect("a root that declines documents still stamps");
+
+    assert!(
+        !fixture.dir.path().join(".taiyaku").exists(),
+        "and no hand document was written"
+    );
+    assert!(!applied.document_rewritten, "nor said to be: {applied:?}");
+}
+
+/// The hand document at the work's address, after `edit` has rewritten its
+/// file as JSON text. Answers that text.
+fn edit_document(fixture: &Fixture, edit: impl FnOnce(&mut serde_json::Value)) -> String {
+    let conn = fixture.conn();
+    let path = crate::hand::path_for(&conn, fixture.work_id)
+        .expect("resolves")
+        .expect("the work has an address");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("reads"))
+            .expect("the saved document is JSON");
+    edit(&mut doc);
+    let text = doc.to_string();
+    std::fs::write(&path, &text).expect("an edit made in the file");
+    text
+}
+
+/// A document that names no member this stamp rewrote has nothing to re-key:
+/// it moves with the work's key and is otherwise left exactly as it was.
+#[test]
+fn a_hand_document_naming_no_stamped_member_is_left_as_it_is() {
+    let fixture = one_work();
+    {
+        let conn = fixture.conn();
+        conn.execute("UPDATE root SET keeps_documents = 1", [])
+            .expect("the root keeps documents");
+        let mut doc = crate::librarydoc::of(&conn, fixture.work_id).expect("projects");
+        doc.title = Some("Hand-Set Title".to_string());
+        crate::librarydoc::apply(&conn, fixture.work_id, &doc).expect("applies the hand edit");
+        crate::hand::save(&conn, fixture.work_id).expect("saves");
+    }
+    let before = document_at_address(&fixture);
+
+    let applied = stamp_all(&fixture);
+
+    assert!(applied.document_moved, "the document moved with the key");
+    assert_eq!(
+        document_at_address(&fixture),
+        before,
+        "and is otherwise as it was"
+    );
+    assert!(
+        !applied.document_rewritten,
+        "so it is not reported rewritten: {applied:?}"
+    );
+}
+
+/// A file at the address that is not a library document this build reads is
+/// the person's to fix, so the stamp leaves it as it is.
+#[test]
+fn a_hand_document_this_build_cannot_read_is_left_as_it_is() {
+    let fixture = one_work();
+    let old = hand_chaptered(&fixture);
+    let broken = edit_document(&fixture, |doc| doc["title"] = serde_json::json!(5));
+    assert!(broken.contains(&old), "it names the member's digest");
+
+    let applied = stamp_all(&fixture);
+
+    assert_eq!(
+        document_at_address(&fixture),
+        broken,
+        "the unreadable document is left as it is"
+    );
+    assert!(
+        !applied.document_rewritten,
+        "and is not reported rewritten: {applied:?}"
+    );
+}
+
+/// The re-key changes members' digests alone. The same digest quoted anywhere
+/// else in the file, here as a tag, is left as it was.
+#[test]
+fn a_digest_quoted_outside_the_members_is_not_rekeyed() {
+    let fixture = one_work();
+    let old = hand_chaptered(&fixture);
+    let tag = old.clone();
+    edit_document(&fixture, move |doc| doc["tags"] = serde_json::json!([tag]));
+
+    let applied = stamp_all(&fixture);
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&document_at_address(&fixture)).expect("JSON");
+    assert_eq!(
+        doc["members"][0]["sha256"],
+        serde_json::json!(applied.members[0].1),
+        "the member is re-keyed: {doc}"
+    );
+    assert_eq!(
+        doc["tags"],
+        serde_json::json!([old]),
+        "and the tag is not: {doc}"
+    );
+}
+
+/// A stamp is not an edit: a work nobody has edited has no hand document, and
+/// the stamp starts none, though `librarydoc::of` projects a chapter for it.
+#[test]
+fn a_stamp_writes_no_hand_document_for_a_work_nobody_has_edited() {
+    let fixture = one_work();
+    {
+        let conn = fixture.conn();
+        conn.execute("UPDATE root SET keeps_documents = 1", [])
+            .expect("the root keeps documents");
+        // What the `builtin-chapter` rule records for a chaptered filename.
+        conn.execute(
+            "UPDATE member SET chapter_declared = 3.0, chapter_source = 'filename'",
+            [],
+        )
+        .expect("a chapter the rules read");
+        assert!(
+            !crate::librarydoc::of(&conn, fixture.work_id)
+                .expect("projects")
+                .is_empty(),
+            "a save would have a document to write"
+        );
+    }
+
+    let conn = fixture.conn();
+    let applied = apply(
+        &conn,
+        fixture.work_id,
+        1,
+        &plan(&conn, fixture.work_id).expect("plans"),
+    )
+    .expect("applies");
+
+    assert!(
+        !fixture.dir.path().join(".taiyaku").exists(),
+        "the stamp started no hand document"
+    );
+    assert!(
+        !applied.document_rewritten,
+        "nor said it rewrote one: {applied:?}"
     );
 }
 

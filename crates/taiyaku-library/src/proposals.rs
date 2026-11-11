@@ -730,10 +730,10 @@ fn offered_rule(
     // whole claim is "this is the colour edition of that", silently merging the
     // pages is the wrong outcome and a reader sees it. The key is the suffix
     // that made the proposal an `edition-of` one in the first place — the part
-    // of the subject's own title after `"{target} - "` — slugified, so it reads
-    // the way `raise_edition_of`'s `reason` already does: `full-color-edition`
-    // for `Go-Toubun no Hanayome - Full Color Edition`. `same-series` sets no
-    // edition key: it is a claim about identity, not about a second edition.
+    // of the subject's own title after `"{target} - "` — slugified: the
+    // `Full Color Edition` that `raise_edition_of`'s `reason` quotes becomes
+    // `full-color-edition`. `same-series` sets no edition key: it is a claim
+    // about identity, not about a second edition.
     let (set_edition_key, set_kind) = if kind == KIND_EDITION_OF {
         // **A missing prefix relationship is refused, not silently
         // absorbed.** If the target was renamed between this proposal being
@@ -754,7 +754,7 @@ fn offered_rule(
         // with no letters or digits — `"X - ???"` — slugifies to `""`, and
         // `edition.key` is `TEXT NOT NULL`: SQLite takes an empty string
         // happily, and a reader would see an edition with no name at all.
-        let slug = slugify(suffix);
+        let slug = crate::import::slug_token(suffix);
         if slug.is_empty() {
             return Ok(Offer::Refused(format!(
                 "proposal {id}: the suffix \"{suffix}\" has no letters or digits to make an \
@@ -1305,29 +1305,6 @@ fn answers(conn: &Connection, reach: &Reach, other: &Proposal) -> Result<bool, S
     };
     let target_title = series_title(conn, target_id)?;
     Ok(reached.becomes.len() == 1 && reached.becomes.contains(&target_title))
-}
-
-/// A `set_edition_key`-safe token from `s`: lowercase, with every run of
-/// non-alphanumeric characters collapsed to one `-` and none leading or
-/// trailing. `"Full Color Edition"` becomes `"full-color-edition"`, the same
-/// string [`raise_edition_of`]'s own `reason` already quotes, so the rule an
-/// accept writes says what the proposal said.
-fn slugify(s: &str) -> String {
-    let mut out = String::new();
-    let mut last_was_dash = true; // suppresses a leading `-`
-    for c in s.chars() {
-        if c.is_alphanumeric() {
-            out.extend(c.to_lowercase());
-            last_was_dash = false;
-        } else if !last_was_dash {
-            out.push('-');
-            last_was_dash = true;
-        }
-    }
-    if out.ends_with('-') {
-        out.pop();
-    }
-    out
 }
 
 /// The `prefix` pattern [`accept`] would write for a subject whose entries

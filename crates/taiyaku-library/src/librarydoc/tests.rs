@@ -1884,3 +1884,31 @@ fn chosen_reports_whether_a_person_placed_this_work_on_this_shelf() {
          onto whatever shelf the files suggest and the placement is lost"
     );
 }
+
+/// The other side of the refusal below: the version this build writes still
+/// parses, so that refusal cannot be met by refusing everything.
+#[test]
+fn a_document_declaring_this_builds_version_parses() {
+    let json = format!(r#"{{"taiyaku_library":{VERSION},"updated":"2026-08-14T11:03:22Z"}}"#);
+    let parsed = LibraryDoc::from_json(&json).expect("this build's own version parses");
+    assert_eq!(parsed.taiyaku_library, VERSION);
+}
+
+/// A newer document is refused rather than read without the fields this
+/// build has no column for: `hand::save` rewrites the document from rows, so
+/// reading it would let those fields be dropped from the only copy (O264).
+#[test]
+fn a_document_from_a_newer_taiyaku_is_refused_in_the_sidecars_words() {
+    let newer = VERSION + 1;
+    let json = format!(r#"{{"taiyaku_library":{newer},"updated":"2026-08-14T11:03:22Z"}}"#);
+    let refusal = LibraryDoc::from_json(&json).expect_err("a newer document is not readable here");
+    let words = format!(
+        "this document declares taiyaku_library format version {newer}, and this build reads \
+         {VERSION}. Refusing to read it rather than dropping the fields it does not understand \
+         and writing them back out as version {VERSION} — upgrade taiyaku instead"
+    );
+    assert!(
+        refusal.contains(&words),
+        "the refusal is the sidecar's sentence with this document's key: {refusal}"
+    );
+}

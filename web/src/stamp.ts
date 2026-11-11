@@ -75,6 +75,16 @@ export interface Stamped {
    */
   document_moved: boolean
   /**
+   * Whether the work's hand document was re-keyed in place, so it names each
+   * member this stamp rewrote by its new digest.
+   *
+   * `false` where there is no such file, where it is not a library document
+   * the server reads, where it names no member this stamp rewrote, where the
+   * write failed, and where the rename was refused (O81): the copy then
+   * re-keyed is the one left at the old key, not the work's. See `hand::rekey`.
+   */
+  document_rewritten: boolean
+  /**
    * Whether the work's `taiyaku.json` was re-exported alongside the archives.
    *
    * `false` for a *scanned* work, which has no sidecar path — see `apply`'s
@@ -114,10 +124,11 @@ export const stampPlan = (slug: string): Promise<StampPlan> =>
 /**
  * Do it.
  *
- * A refusal arrives as a thrown `Error` carrying the server's own sentence: a
- * 409 is either the plan no longer matching the library or a library job
- * already running (the serve crate's `LibraryJob` names them), and both are
- * worth printing verbatim rather than translating.
+ * A refusal arrives as a thrown `Error` carrying the server's own sentence. A
+ * 409 is a library job already running (the serve crate's `LibraryJob` names
+ * them) or any error `taiyaku_library::stamp::apply` raises, such as the plan
+ * no longer matching the library, or a sidecar, sibling or hand document a
+ * newer taiyaku wrote. Each is worth printing verbatim rather than translating.
  */
 export async function performStamp(
   slug: string,

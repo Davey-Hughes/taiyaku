@@ -106,8 +106,8 @@ pub(crate) fn command(args: &[String]) -> Result<(), String> {
 /// # Errors
 ///
 /// Returns an error if a flag is unknown or malformed, if the database cannot
-/// be opened, if `VACUUM INTO` fails — which includes a backup of that name
-/// already existing — or if a pruned file cannot be removed.
+/// be opened, if a backup of that name already exists, if the backup cannot be
+/// written, or if a pruned file cannot be removed.
 fn backup(args: &[String]) -> Result<(), String> {
     reject_unknown_flags("library backup", args, &["--db", "--out", "--keep"])?;
     reject_positional_arguments(
@@ -1347,25 +1347,25 @@ fn export_targets(
                 }
                 // The third outcome, and the one a person has to be able to
                 // act on: a sibling document this library has never had the
-                // content of, so neither overwritten nor taken away. See
-                // `export::work`'s "What an export will not touch" for the
-                // three ways a file gets into that state and the one way out.
+                // content of, or one a newer taiyaku wrote, so neither
+                // overwritten nor taken away. See `export::work`'s "What an
+                // export will not touch" for the four shapes and the way out.
                 //
                 // **It cannot promise "a fresh one".** A document with no state
                 // behind it is not written at all — the rule `export::work`
                 // applies to all of them but `taiyaku.notes.json`,
                 // `taiyaku.library.json` included — and an empty database side
-                // is exactly the state that produces a `kept` in the first
-                // place. So moving the file aside can leave the reader with
-                // nothing, where "a fresh one" would promise a skeleton to fill
-                // in. What it can honestly say is what the export would put
+                // is a state that produces a `kept` in the first place. So
+                // moving the file aside can leave the reader with nothing,
+                // where "a fresh one" would promise a skeleton to fill in.
+                // What it can honestly say is what the export would put
                 // there, including when that is nothing.
                 for path in &exported.kept {
                     println!(
-                        "kept {} (this library has never read it, so it was not \
-                         overwritten; move it aside and export again to replace it with \
-                         what this library holds — which is no file at all where it \
-                         holds nothing)",
+                        "kept {} (this library has never read it, or a newer taiyaku \
+                         wrote it, so it was not overwritten; move it aside and export \
+                         again to replace it with what this library holds — which is no \
+                         file at all where it holds nothing)",
                         path.display()
                     );
                 }

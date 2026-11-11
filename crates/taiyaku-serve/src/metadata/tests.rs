@@ -187,6 +187,51 @@ async fn patching_a_title_writes_the_row_and_the_document() {
     );
 }
 
+/// An edit over a document a newer taiyaku wrote lands in the rows and leaves
+/// the document as it is, and the answer says why it was not written (O264).
+#[tokio::test]
+async fn patching_a_title_over_a_newer_document_leaves_it_and_says_why() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let slug = state.works.snapshot()[0].id.clone();
+    let path = the_hand_document_path(&state);
+    std::fs::create_dir_all(path.parent().expect("a directory")).expect("mkdir");
+    let newer = taiyaku_library::librarydoc::VERSION + 1;
+    let before = format!(
+        r#"{{"taiyaku_library": {newer}, "updated": "2026-11-10T09:00:00Z", "title": "Newer"}}"#
+    );
+    std::fs::write(&path, &before).expect("writing the newer document");
+
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/works/{slug}"),
+        &serde_json::json!({ "title": "Go-Toubun no Hanayome, volume 1" }),
+    )
+    .await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let body: serde_json::Value = serde_json::from_str(&text).expect("a JSON body");
+
+    assert_eq!(body["title"], "Go-Toubun no Hanayome, volume 1", "{body}");
+    assert_eq!(body["persisted"], false, "{body}");
+    let why = body["why"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`why` carries the reason: {body}"));
+    assert_eq!(why.len(), 1, "{body}");
+    assert!(
+        why[0]
+            .as_str()
+            .is_some_and(|why| why.contains("a newer taiyaku wrote this document")),
+        "{body}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the newer document is still there"),
+        before,
+        "the newer document's bytes must be as they were"
+    );
+}
+
 /// A save against a root that keeps no documents reports success and says so,
 /// so a client has something to key off other than the absence of a failure.
 /// `persisted: false` keeps meaning "a write was attempted and failed" rather

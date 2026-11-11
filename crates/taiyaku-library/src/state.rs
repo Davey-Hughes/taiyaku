@@ -169,9 +169,9 @@ struct NoteRow {
 
 /// Every note a reader holds on a work.
 ///
-/// `work` is filled from `work.slug` — the same shape `taiyaku-serve`'s own
-/// work id is slugified to (`import.rs`'s `unique_slug`) — since nothing in
-/// the `note` table carries a work label of its own.
+/// `work` is filled from `work.slug`, which is `taiyaku-serve`'s work id for
+/// a work with a store row, since nothing in the `note` table carries a work
+/// label of its own.
 ///
 /// # Errors
 ///

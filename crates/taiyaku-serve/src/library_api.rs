@@ -409,7 +409,13 @@ pub(crate) async fn cover(
         // hub). `target.edition` is one this caller may see (see
         // `browse::cover_work` and `CoverTarget::edition`).
         let CoverTarget { slug, edition, .. } = target;
-        let tile = format!("/api/works/{slug}/{edition}/pages/0/thumb");
+        // Each segment encoded as `cover_address` encodes it: a slug or a key
+        // can hold a letter outside ASCII (O262), which a header cannot carry.
+        let tile = format!(
+            "/api/works/{}/{}/pages/0/thumb",
+            uri_component(&slug),
+            uri_component(&edition),
+        );
         let location = match crate::routes::first_query_value(&query, "w")
             .and_then(|w| w.parse::<u32>().ok())
             .filter(|edge| crate::cover::COVER_LONG_EDGES.contains(edge))

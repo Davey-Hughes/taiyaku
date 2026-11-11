@@ -72,6 +72,16 @@ pub fn migrate(conn: &Connection) -> Result<(), String> {
     migrate_with(conn, &MIGRATIONS)
 }
 
+/// `(current, SCHEMA_VERSION)` when [`migrate`] would change a database that
+/// holds something, which the open backs up first (O263). `None` for a fresh
+/// one, one at this build's version, and a newer one, which `migrate` refuses
+/// before anything is written beside it.
+pub(crate) fn pending_migration(conn: &Connection) -> Result<Option<(u32, u32)>, String> {
+    ensure_meta(conn)?;
+    let current = version(conn)?;
+    Ok((0 < current && current < SCHEMA_VERSION).then_some((current, SCHEMA_VERSION)))
+}
+
 /// `migrate`'s whole body, over a caller-supplied migration list rather than
 /// the built-in one.
 ///
@@ -150,7 +160,7 @@ fn ensure_meta(conn: &Connection) -> Result<(), String> {
 /// Takes a `&Connection` rather than the `Library`'s own so it can be called
 /// with a `Transaction`'s deref inside [`apply_pending`]'s loop — the whole
 /// point of the second read, see there.
-fn version(conn: &Connection) -> Result<u32, String> {
+pub(crate) fn version(conn: &Connection) -> Result<u32, String> {
     match conn.query_row(
         "SELECT value FROM meta WHERE key = 'schema_version'",
         [],

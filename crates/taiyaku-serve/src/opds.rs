@@ -421,9 +421,8 @@ fn works_feed(
         let sidecar = work.sidecar();
         let title = escape(&sidecar.work.title);
         let id = escape(&work.id);
-        // `work.id` is slugified by construction (see `work_id`) and needs
-        // no encoding, but encoding it anyway costs nothing and does not
-        // depend on a guarantee made in another module.
+        // A slug keeps letters outside ASCII (O262), so the id is
+        // percent-encoded like every other segment.
         let href_id = escape(&percent_encode(&work.id));
         let count = editions.map_or(sidecar.editions.len(), HashSet::len);
         let _ = writeln!(
@@ -532,10 +531,8 @@ pub(crate) async fn work_feed(
     };
 
     let work_id = escape(&work.id);
-    // See the note in `works_feed`: `work.id` is already URL-safe by
-    // construction, but every other `href` in this feed needs encoding, so
-    // encoding this one too keeps the rule uniform rather than one route
-    // relying on a guarantee made in another module.
+    // A slug keeps letters outside ASCII (O262), so the id is percent-encoded
+    // like every other segment.
     let work_href = escape(&percent_encode(&work.id));
     let sidecar = view.sidecar();
     let title = escape(&sidecar.work.title);

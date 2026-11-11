@@ -26,7 +26,7 @@ pub use route::{Route, Via, invert, resolve, route};
 pub use sidecar::{
     Alignment, Anchor, ChapterAt, Corrected, Edition, Member, Merged, NotCorrected, Quality,
     RunEntry, Sidecar, SlotSpan, SolverInfo, Source, VERSION, Work, entries_from_runs,
-    rounded_avg_run,
+    refuse_newer, rounded_avg_run,
 };
 pub use slot::{Direction, Half, Slot, expand, is_spread, spread_flags};
 pub use solve::{

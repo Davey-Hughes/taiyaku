@@ -1245,6 +1245,20 @@ fn router_over_a_scanned_tree(
 fn router_over_a_written_tree(
     fixture: Fixture,
 ) -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    router_over_a_written_tree_with(fixture, |_| {})
+}
+
+/// [`router_over_a_written_tree`], with `before_scan` run on the library's
+/// connection after the root is added and before it is scanned: a rule written
+/// there is one the scan's derive already reads.
+///
+/// # Panics
+///
+/// As [`router_over_a_written_tree`].
+fn router_over_a_written_tree_with(
+    fixture: Fixture,
+    before_scan: impl FnOnce(&rusqlite::Connection),
+) -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
     let library = library();
     {
         let conn = library.conn();
@@ -1261,6 +1275,7 @@ fn router_over_a_written_tree(
             [root.id],
         )
         .expect("the fixture keeps documents");
+        before_scan(&conn);
         taiyaku_library::scan::scan_root(&conn, &root).expect("scans the tree");
         taiyaku_library::derive::derive(&conn).expect("derives the library");
     }
@@ -1699,12 +1714,18 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
 pub(crate) fn router_over_two_scanned_volumes_of_decodable_pages()
 -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
     let fixture = Fixture::new("two-volumes-decodable");
-    let title = "Go-Toubun no Hanayome";
+    write_two_volumes_of_decodable_pages(&fixture, "Go-Toubun no Hanayome", "");
+    router_over_a_written_tree(fixture)
+}
+
+/// Writes `title`'s `v01` (two pages) and `v02` (three) under `tree/`, each
+/// volume's directory named `{title} - {volume}{suffix}`.
+fn write_two_volumes_of_decodable_pages(fixture: &Fixture, title: &str, suffix: &str) {
     for (pages, volume) in (2_u8..).zip(["v01", "v02"]) {
         let dir = fixture
             .join("tree")
             .join(title)
-            .join(format!("{title} - {volume}"));
+            .join(format!("{title} - {volume}{suffix}"));
         std::fs::create_dir_all(&dir).expect("mkdir");
         for page in 0..pages {
             let colour = image::Rgb([pages, page, 200]);
@@ -1715,7 +1736,63 @@ pub(crate) fn router_over_two_scanned_volumes_of_decodable_pages()
             .expect("write");
         }
     }
-    router_over_a_written_tree(fixture)
+}
+
+/// [`router_over_two_scanned_volumes_of_decodable_pages`] under a title with a
+/// letter outside ASCII, and a rule keying every edition `édition`: each
+/// work's slug and its edition key hold a byte an address must percent-encode
+/// (O262).
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written, if the scan or the derive fails, or
+/// if the slugs, the keys or the one series are not the ones written here.
+/// Each means the fixture is broken, and a test over it could pass over
+/// addresses that are all ASCII.
+pub(crate) fn router_over_two_scanned_volumes_with_a_non_ascii_title()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let fixture = Fixture::new("two-volumes-non-ascii");
+    write_two_volumes_of_decodable_pages(&fixture, "Kabushikigaisha Magi-Lumière", " (2024)");
+    let (router, state, fixture) = router_over_a_written_tree_with(fixture, |conn| {
+        conn.execute(
+            "INSERT INTO rule (ordinal, kind, pattern, match_on, set_edition_key)
+             VALUES (99, 'prefix', '', 'path', 'édition')",
+            [],
+        )
+        .expect("writes the edition-key rule");
+    });
+    {
+        let conn = state.library.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT w.slug, group_concat(e.key, ','), w.series_id
+                   FROM work w JOIN edition e ON e.work_id = w.id
+                  GROUP BY w.id ORDER BY w.slug",
+            )
+            .expect("prepares the read");
+        let rows: Vec<(String, String, Option<i64>)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("reads the works")
+            .collect::<Result<_, _>>()
+            .expect("reads each work");
+        let named: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|(slug, keys, _)| (slug.as_str(), keys.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("kabushikigaisha-magi-lumière-v01-2024", "édition"),
+                ("kabushikigaisha-magi-lumière-v02-2024", "édition"),
+            ],
+            "each volume's slug keeps its `è`, and its one edition is keyed by the rule"
+        );
+        assert!(
+            rows[0].2.is_some() && rows[0].2 == rows[1].2,
+            "both volumes in one series: {rows:?}"
+        );
+    }
+    (router, state, fixture)
 }
 
 /// Two scanned volumes of one series, each rooted under its own directory —

@@ -40,7 +40,11 @@ ignore = [
     libsqlite3. The exposure is that library's, Debian bookworm's \
     libsqlite3-0 in the image, and it needs a crafted database and `-wal` \
     pair from a less trusted writer, where taiyaku opens only its own store, \
-    the file `--db` or the data directory names. The crate's fix is behind \
+    the file `--db` or the data directory names, and, read-only and only \
+    while a migration is pending, whatever regular file sits under the \
+    newest name of that migration's backup in the `backups` directory \
+    beside that store, normally the copy taiyaku wrote there, to read its \
+    version. The crate's fix is behind \
     rusqlite 0.41, which declares Rust 1.89 against the workspace's 1.88. \
     Revisit with O265 in docs/status.md.""" },
 ]

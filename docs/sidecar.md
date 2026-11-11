@@ -639,6 +639,23 @@ what changes is that a
 `taiyaku.json` on disk is now one of two copies, and knowing which is newer is
 the reader's to track.
 
+**A sibling document carries its own version, and is refused the same way.**
+`<stem>.library.json` declares `taiyaku_library`, `<stem>.truth.json`
+`taiyaku_truth` and `<stem>.regions.json` `taiyaku_regions`, and a build
+refuses one newer than it reads, in the words it refuses a newer `taiyaku`
+with. `<stem>.progress.json` declares `taiyaku_progress`, and a build reads it
+only at the version it writes, refusing any other in words of its own. An
+older taiyaku neither writes over nor removes a hand document a newer
+one wrote (`<root>/.taiyaku/<key>.library.json`, the same `taiyaku_library`
+format): a metadata edit still lands in its rows, and the edit's answer says
+the file was left as it is. `library export --in-place` keeps any of its
+documents that declares a version newer than this build writes, `taiyaku.json`
+included, and names it among the files it kept. And `taiyaku_library` is bumped
+for any new field, not only for one that would make an older reader wrong: an
+older taiyaku does not merely read that document, it rewrites it from its own
+rows and drops every field it has no column for, and the bump is what lets it
+see the document is newer than it reads.
+
 ## Previously open, now settled
 
 Both questions were tested against raws obtained for the purpose. Neither changed

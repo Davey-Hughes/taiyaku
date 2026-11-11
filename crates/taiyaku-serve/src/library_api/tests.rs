@@ -196,6 +196,48 @@ async fn a_series_cover_redirects_to_the_existing_thumbnail_route() {
     );
 }
 
+/// O262: a slug and an edition key outside ASCII reach the redirect's
+/// `Location` percent-encoded, so the header is ASCII and the thumbnail route
+/// answers the address it names. The volume is v01, the lowest one
+/// `browse::cover_work` falls back to.
+///
+/// Read with `to_str()` and compared whole: a header carrying a raw `è` fails
+/// `to_str()`, and one the response refused fails the status.
+#[tokio::test]
+async fn a_series_cover_redirect_encodes_a_slug_and_an_edition_key_outside_ascii() {
+    let (router, state, _fixture) =
+        test_support::router_over_two_scanned_volumes_with_a_non_ascii_title();
+    let series_id: i64 = {
+        let conn = state.library.conn();
+        conn.query_row("SELECT series_id FROM work LIMIT 1", [], |row| row.get(0))
+            .expect("reads the series")
+    };
+
+    let response = get(&router, &format!("/api/library/series/{series_id}/cover")).await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::TEMPORARY_REDIRECT
+    );
+    let location = response
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .expect("a Location header")
+        .to_str()
+        .expect("a Location of ASCII only, every other byte percent-encoded")
+        .to_owned();
+    assert_eq!(
+        location,
+        "/api/works/kabushikigaisha-magi-lumi%C3%A8re-v01-2024/%C3%A9dition/pages/0/thumb"
+    );
+
+    let thumb = get(&router, &location).await;
+    assert_eq!(
+        thumb.status(),
+        axum::http::StatusCode::OK,
+        "the thumbnail route answers the address the redirect names"
+    );
+}
+
 /// O133: a caller that says how large it will draw the cover is sent to the
 /// tile route at that size, which serves page 0 there — not to the page route,
 /// which refuses an account without `can_stream`. A `w` that is not one of the

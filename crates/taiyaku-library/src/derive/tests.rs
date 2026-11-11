@@ -1135,6 +1135,155 @@ fn a_hand_document_that_will_not_parse_is_reported_and_the_scan_goes_on() {
     );
 }
 
+/// A hand document from a newer taiyaku is reported as unreadable and not
+/// absorbed: absorbing it would let this build's `hand::save` later rewrite
+/// it from rows without the fields it has no column for (O264).
+#[test]
+fn a_hand_document_from_a_newer_taiyaku_is_reported_and_its_title_not_absorbed() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+
+    let work_id: i64 = conn
+        .query_row(
+            "SELECT w.id FROM work w JOIN series s ON w.series_id = s.id \
+             WHERE s.sort_title = 'Go-Toubun no Hanayome' AND w.volume = 1.0",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the volume 1 work");
+    let title = |conn: &Connection| -> String {
+        conn.query_row("SELECT title FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("reading the title")
+    };
+    let derived = title(&conn);
+    assert_ne!(
+        derived, "Hand title",
+        "the document's title must differ from the derived one, or absorbing it would not show"
+    );
+
+    let newer = crate::librarydoc::VERSION + 1;
+    let path = crate::hand::path_for(&conn, work_id)
+        .expect("resolving")
+        .expect("a scanned work has an address");
+    std::fs::create_dir_all(path.parent().expect("a directory")).expect("mkdir");
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"taiyaku_library": {newer}, "updated": "2026-11-10T09:00:00Z", "title": "Hand title"}}"#
+        ),
+    )
+    .expect("writing the newer document");
+
+    conn.execute("DELETE FROM migrated_document", [])
+        .expect("clearing the markers");
+
+    let report = derive::derive(&conn).expect("a newer document must not fail the derive");
+
+    assert_eq!(
+        report.unreadable_hand.len(),
+        1,
+        "{:?}",
+        report.unreadable_hand
+    );
+    assert!(
+        report.unreadable_hand[0].contains(&path.display().to_string()),
+        "the message must name the file: {:?}",
+        report.unreadable_hand
+    );
+    assert!(
+        report.unreadable_hand[0]
+            .contains(&format!("declares taiyaku_library format version {newer}")),
+        "the message must say the document is newer: {:?}",
+        report.unreadable_hand
+    );
+    assert_eq!(
+        title(&conn),
+        derived,
+        "the newer document's title must not have been absorbed"
+    );
+}
+
+/// A hand edit over a newer document leaves the marker as the read-back left
+/// it, so the next derive still reports the document (O264). The edit gives
+/// the rows a hand title, so `save` projects content and reaches its guard:
+/// an empty projection would record an unset marker anyway.
+#[test]
+fn a_hand_edit_over_a_newer_document_leaves_it_reported_at_the_next_derive() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    // `save` returns early, recording the marker, for a root that keeps no
+    // documents; the guard is on the other path.
+    conn.execute("UPDATE root SET keeps_documents = 1", [])
+        .expect("the root keeps documents");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+
+    let work_id: i64 = conn
+        .query_row(
+            "SELECT w.id FROM work w JOIN series s ON w.series_id = s.id \
+             WHERE s.sort_title = 'Go-Toubun no Hanayome' AND w.volume = 1.0",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the volume 1 work");
+    let newer = crate::librarydoc::VERSION + 1;
+    let path = crate::hand::path_for(&conn, work_id)
+        .expect("resolving")
+        .expect("a scanned work has an address");
+    std::fs::create_dir_all(path.parent().expect("a directory")).expect("mkdir");
+    std::fs::write(
+        &path,
+        format!(r#"{{"taiyaku_library": {newer}, "updated": "2026-11-10T09:00:00Z"}}"#),
+    )
+    .expect("writing the newer document");
+    conn.execute("DELETE FROM migrated_document", [])
+        .expect("clearing the markers");
+    let refused = derive::derive(&conn).expect("a newer document must not fail the derive");
+    assert_eq!(
+        refused.unreadable_hand.len(),
+        1,
+        "the read-back must refuse the document first: {:?}",
+        refused.unreadable_hand
+    );
+
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand title".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying the hand title");
+    let saved = crate::hand::save(&conn, work_id).expect("saving");
+    assert!(!saved.persisted, "the guard must have refused the write");
+
+    let report = derive::derive(&conn).expect("the next derive");
+
+    assert_eq!(
+        report.unreadable_hand.len(),
+        1,
+        "the document is still reported: {:?}",
+        report.unreadable_hand
+    );
+    assert!(
+        report.unreadable_hand[0].contains(&path.display().to_string()),
+        "{:?}",
+        report.unreadable_hand
+    );
+    let title: String = conn
+        .query_row("SELECT title FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("reading the title");
+    assert_eq!(
+        title, "Hand title",
+        "the edit stands in the rows although its document was left alone"
+    );
+}
+
 /// The apply-failure arm. `librarydoc::apply`'s own errors name a `work_id`
 /// and a `series_id`, never a file — unlike the parse failure above, this is
 /// the case whose message needed the path prepended by the read-back rather
@@ -1516,7 +1665,7 @@ fn a_member_directly_under_the_root_keeps_its_whole_name_as_the_title() {
         })
         .expect("work");
     assert_eq!(title, "Alone - v01");
-    assert_eq!(slug, "alone---v01");
+    assert_eq!(slug, "alone-v01");
 }
 
 #[test]

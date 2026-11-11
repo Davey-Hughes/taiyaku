@@ -122,3 +122,31 @@ fn an_unreadable_document_says_what_it_is() {
     let err = RegionDoc::from_json("{").expect_err("refuses");
     assert!(err.contains("regions"), "names the document: {err}");
 }
+
+/// The other side of the refusal below: the version this build writes still
+/// parses, so that refusal cannot be met by refusing everything.
+#[test]
+fn a_document_declaring_this_builds_version_parses() {
+    let json = format!(r#"{{"taiyaku_regions":{VERSION},"editions":{{}}}}"#);
+    let parsed = RegionDoc::from_json(&json).expect("this build's own version parses");
+    assert_eq!(parsed.taiyaku_regions, VERSION);
+}
+
+/// A newer document is refused rather than read without the fields this
+/// build has no name for, which anything writing it back would then drop
+/// (O264).
+#[test]
+fn a_document_from_a_newer_taiyaku_is_refused_in_the_sidecars_words() {
+    let newer = VERSION + 1;
+    let json = format!(r#"{{"taiyaku_regions":{newer},"editions":{{}}}}"#);
+    let refusal = RegionDoc::from_json(&json).expect_err("a newer document is not readable here");
+    let words = format!(
+        "this document declares taiyaku_regions format version {newer}, and this build reads \
+         {VERSION}. Refusing to read it rather than dropping the fields it does not understand \
+         and writing them back out as version {VERSION} — upgrade taiyaku instead"
+    );
+    assert!(
+        refusal.contains(&words),
+        "the refusal is the sidecar's sentence with this document's key: {refusal}"
+    );
+}

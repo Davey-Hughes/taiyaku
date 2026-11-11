@@ -322,9 +322,9 @@ impl Library {
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be opened — a missing parent
-    /// directory or a permission refusal, with the message naming the path —
-    /// or if applying the schema fails.
+    /// Returns an error if the file cannot be opened (a missing parent directory
+    /// or a permission refusal, naming the path), if the backup taken before a
+    /// migration fails, leaving it unmigrated, or if applying the schema fails.
     pub fn open(path: &Path) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -343,7 +343,17 @@ impl Library {
     }
 
     fn from_connection(mut conn: Connection, path: Option<PathBuf>) -> Result<Self, String> {
+        // Read before anything reads through `conn`: that first read makes a
+        // `-wal` afresh, dated now, which would count every open as a change.
+        let written = path.as_deref().and_then(backup::last_written);
         Self::configure(&mut conn)?;
+        if let Some(db) = &path
+            && let Some((current, target)) = schema::pending_migration(&conn)?
+            && !backup::stands_for(db, current, target, written)
+        {
+            let name = backup::name_before_migration(&conn, target)?;
+            backup::before_migration(&conn, db, &name)?;
+        }
         schema::migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),

@@ -128,6 +128,40 @@ async fn the_cover_url_addresses_page_zero_of_the_hub_edition() {
     assert_eq!(parsed[0]["cover"], "/api/works/w/raw/pages/0/thumb");
 }
 
+/// A slug and an edition key outside ASCII are percent-encoded in the cover
+/// URL, as `encodeURIComponent` would, so the address the thumbnail route is
+/// asked for is the one it names (O262).
+#[tokio::test]
+async fn the_cover_url_encodes_a_slug_and_an_edition_key_outside_ascii() {
+    let (router, _state, _fixture) =
+        crate::test_support::router_over_two_scanned_volumes_with_a_non_ascii_title();
+    let body =
+        crate::test_support::body_string(crate::test_support::get(&router, "/api/works").await)
+            .await;
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("json");
+    let first = parsed
+        .as_array()
+        .expect("an array")
+        .iter()
+        .find(|work| work["slug"] == "kabushikigaisha-magi-lumière-v01-2024")
+        .expect("the first volume is listed");
+    assert_eq!(
+        first["cover"],
+        "/api/works/kabushikigaisha-magi-lumi%C3%A8re-v01-2024/%C3%A9dition/pages/0/thumb"
+    );
+
+    let thumb = crate::test_support::get(
+        &router,
+        first["cover"].as_str().expect("the cover is a string"),
+    )
+    .await;
+    assert_eq!(
+        thumb.status(),
+        axum::http::StatusCode::OK,
+        "the thumbnail route answers the address the cover names"
+    );
+}
+
 /// A work with no library row at all, paired with an empty library
 /// (`test_support::state`), answers a slug and a title; only `series` and
 /// `volume` degrade, and to the same `null` a row nothing has scanned yet would
@@ -2762,6 +2796,83 @@ async fn a_correction_survives_the_reimport_a_restart_performs() {
     );
 }
 
+/// [`router_over_a_library_with_two_editions`]'s work with its `taiyaku.json`
+/// rewritten as a newer taiyaku would leave it: `taiyaku` at `declared` and a
+/// field this build has no name for. Answers the correction's status and body,
+/// the file's text afterwards, and the work's projected rows before and after.
+///
+/// [`router_over_a_library_with_two_editions`]: crate::test_support::router_over_a_library_with_two_editions
+async fn correct_over_a_newer_sidecar(
+    declared: u64,
+) -> (axum::http::StatusCode, String, String, String, String) {
+    let (router, state, work_id, _fixture) =
+        crate::test_support::router_over_a_library_with_two_editions();
+    let path = state.works.snapshot()[0].path.clone();
+    let mut newer: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the fixture's sidecar"))
+            .expect("the fixture's sidecar is JSON");
+    newer["taiyaku"] = serde_json::json!(declared);
+    newer["from_the_future"] = serde_json::json!(true);
+    std::fs::write(&path, newer.to_string()).expect("a newer taiyaku's sidecar");
+    let rows = || {
+        let conn = state.library.conn();
+        taiyaku_library::project::sidecar(&conn, work_id)
+            .expect("projecting the work")
+            .to_json()
+    };
+    let rows_before = rows();
+
+    let tag = etag_of(&router, "/api/works/w").await;
+    let (status, body) = correct_with_body(
+        &router,
+        "w",
+        &tag,
+        r#"{"from":"raw","to":"en","a":"2","b":"1"}"#,
+    )
+    .await;
+
+    let file = std::fs::read_to_string(&path).expect("the sidecar is still there");
+    (status, body, file, rows_before, rows())
+}
+
+/// **O264: the correction route is a writer of `taiyaku.json` too.** Writing
+/// a newer taiyaku's sidecar back from this build's projection would drop
+/// every field it has no name for and stamp it version 1, so the route refuses
+/// in the stamp's words before the file write, and so before the rows. Any
+/// account granted the work can call it, so the refusal names no server path.
+#[tokio::test]
+async fn a_correction_over_a_sidecar_a_newer_taiyaku_wrote_is_refused_and_changes_nothing() {
+    let (status, body, file, rows_before, rows_after) = correct_over_a_newer_sidecar(2).await;
+
+    assert_eq!(status, axum::http::StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body,
+        "this document declares taiyaku format version 2, and this build reads 1. \
+         Refusing to read it rather than dropping the fields it does not understand and \
+         writing them back out as version 1 — upgrade taiyaku instead",
+        "refuse_newer's sentence alone, with no server path in it"
+    );
+    let file: serde_json::Value = serde_json::from_str(&file).expect("the file is still JSON");
+    assert_eq!(
+        (&file["taiyaku"], &file["from_the_future"]),
+        (&serde_json::json!(2), &serde_json::json!(true)),
+        "the file is as the newer taiyaku left it, version and unknown field both"
+    );
+    assert_eq!(rows_after, rows_before, "and the rows are as they were");
+}
+
+/// A version past `u32` is newer than any build, not version 0.
+#[tokio::test]
+async fn a_correction_over_a_sidecar_declaring_a_version_past_u32_is_refused_too() {
+    let (status, body, file, _, _) = correct_over_a_newer_sidecar(4_294_967_296).await;
+
+    assert_eq!(status, axum::http::StatusCode::CONFLICT, "{body}");
+    assert!(
+        file.contains("4294967296"),
+        "the file still declares the version it was written with: {file}"
+    );
+}
+
 /// `Corrected::AlreadyTrue` — asserting a pairing the document already
 /// holds — must not touch the file at all: `patch_alignments` only calls
 /// `atomic::write` when `what != AlreadyTrue`. A write neither read nor
@@ -3700,6 +3811,44 @@ async fn a_malformed_truth_body_is_refused_in_this_servers_own_words() {
     assert!(
         message.contains("not a readable truth document"),
         "the refusal must be this server's own: {message}"
+    );
+}
+
+/// A labeller on a newer client sends a document this build would store
+/// without the fields it has no name for, so it is refused in the sidecar's
+/// words (O264).
+#[tokio::test]
+async fn a_truth_body_from_a_newer_taiyaku_is_refused_in_the_sidecars_words() {
+    let (state, _fixture) = crate::test_support::state_with_real_pages();
+    let router = build_router(state);
+    let tag = etag_of(&router, "/api/works/w/truth").await;
+    let newer = taiyaku_core::TRUTH_VERSION + 1;
+    let reads = taiyaku_core::TRUTH_VERSION;
+    let response = router
+        .oneshot(
+            Request::put("/api/works/w/truth")
+                .header("content-type", "application/json")
+                .header("if-match", tag)
+                .body(Body::from(format!(
+                    r#"{{"taiyaku_truth":{newer},"editions":{{}}}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let message = String::from_utf8_lossy(&body);
+    assert!(
+        message.contains(&format!(
+            "this document declares taiyaku_truth format version {newer}, and this build reads \
+             {reads}. Refusing to read it rather than dropping the fields it does not understand \
+             and writing them back out as version {reads} — upgrade taiyaku instead"
+        )),
+        "{message}"
     );
 }
 

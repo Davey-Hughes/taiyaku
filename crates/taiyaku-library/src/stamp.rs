@@ -9,6 +9,7 @@
 //! archive's existing document stays true across a database rebuild and across
 //! a hand-edit, neither of which a column survives. §1.3.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use rusqlite::Connection;
@@ -162,8 +163,17 @@ pub struct Applied {
     pub content_key: Option<String>,
     /// What [`crate::hand::rename_from`] answered.
     pub document_moved: bool,
-    /// Whether a sidecar was rewritten. `false` for a scanned work, which
-    /// has none — see [`apply`].
+    /// Whether this work's hand document was re-keyed in place, so it names
+    /// each member this stamp rewrote by its new digest (`hand::rekey`).
+    /// `false` where there is no such file, where it is not a library document
+    /// this build reads, where it names no member this stamp rewrote, where
+    /// the write failed, and where the rename was refused (O81): the copy then
+    /// re-keyed is the one left at the old key, not the work's.
+    pub document_rewritten: bool,
+    /// Whether the file at the work's `sidecar_path` was rewritten, taken
+    /// from what the export wrote. `false` for a scanned work, which has
+    /// none, and for a sidecar not named `<stem>.json`, such as
+    /// `taiyaku.sidecar`: the export writes `taiyaku.json` beside it instead.
     pub sidecar_rewritten: bool,
 }
 
@@ -189,21 +199,26 @@ pub struct Applied {
 /// `content_key` move "in one transaction, or the write does not happen". The
 /// database half does. A rename is not a SQLite statement.
 ///
-/// **The sidecar is rewritten only when there is one.** `export::work` fails
-/// when `work.sidecar_path` is NULL and no directory is given — its own
-/// documented behaviour — and a *scanned* work's is always NULL. Re-exporting
+/// **The sidecar is rewritten only when there is one, and a newer document
+/// beside it refuses the stamp first** (see Errors). `export::work` fails
+/// when `work.sidecar_path` is NULL and no directory is given, its own
+/// documented behaviour, and a *scanned* work's is always NULL. Re-exporting
 /// unconditionally would make the stamp fail on exactly the works the scanner
-/// produces, which is most of a real library; there is also nothing to bring
-/// back in line, because a work with no sidecar has no file recording the
-/// digest that just moved.
+/// produces, most of a real library. A scanned work's hand document, where it
+/// has one, records digests instead, and `hand::rekey` brings it in line.
 ///
 /// # Errors
 ///
-/// Returns an error if the plan no longer holds, if any archive cannot be
-/// rewritten, or if the transaction fails. **An error rewriting an archive
-/// after others have been renamed says how many**, because those files are
-/// stamped and their rows are not: the database is behind the disk until a
-/// rescan, and a message that did not say so would leave no trace of it.
+/// Returns an error if the plan no longer holds, if a document the export
+/// would write or remove, or the work's hand document, declares a version
+/// newer than this build writes (`export::refuse_newer_in_place` and
+/// `hand::refuse_newer`; no archive is touched then), if any archive cannot
+/// be rewritten, or if the transaction fails. **An error after archives have
+/// been renamed and before the transaction commits says how many**, because
+/// those files are stamped and their rows are not: the database is behind the
+/// disk until a rescan, and a message that did not say so would leave no trace
+/// of it. One from moving the hand document after the commit says the stamp
+/// is recorded and where the document stayed.
 pub fn apply(
     conn: &Connection,
     work_id: i64,
@@ -232,49 +247,155 @@ pub fn apply(
             members: Vec::new(),
             content_key: None,
             document_moved: false,
+            document_rewritten: false,
             sidecar_rewritten: false,
         });
     }
 
-    let (old_key, sidecar_path): (String, Option<String>) = conn
+    let (old_key, sidecar_path, slug): (String, Option<String>, String) = conn
         .query_row(
-            "SELECT content_key, sidecar_path FROM work WHERE id = ?1",
+            "SELECT content_key, sidecar_path, slug FROM work WHERE id = ?1",
             [work_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|e| format!("reading work {work_id}: {e}"))?;
+    // Before any archive is renamed, so a refusal leaves the work as it was.
+    crate::export::refuse_newer_in_place(conn, work_id)?;
+    crate::hand::refuse_newer(conn, work_id)?;
+    // Where the hand document is while the rows still name the old key.
+    let document_was = crate::hand::path_for(conn, work_id)?;
 
-    let mut written: Vec<(i64, String)> = Vec::new();
+    // Every row read before the first rename, so an archive's rewrite is the
+    // one step between two renames that can fail, and its error says how
+    // many archives were stamped before it.
+    let mut prepared: Vec<(&Planned, String, Vec<u8>)> = Vec::with_capacity(current.len());
     for item in &current {
-        let pages: u32 = conn
+        let (pages, old): (u32, String) = conn
             .query_row(
-                "SELECT pages FROM member WHERE id = ?1",
+                "SELECT pages, sha256 FROM member WHERE id = ?1",
                 [item.member_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|e| format!("reading member {}: {e}", item.member_id))?;
-        let slug: String = conn
-            .query_row("SELECT slug FROM work WHERE id = ?1", [work_id], |row| {
-                row.get(0)
-            })
-            .map_err(|e| format!("reading work {work_id}: {e}"))?;
         let info = crate::comicinfo::read(conn, &slug, &item.edition_key, pages)?;
-        let document = crate::comicinfo::xml(&info).into_bytes();
+        prepared.push((item, old, crate::comicinfo::xml(&info).into_bytes()));
+    }
 
-        let digest = rewrite_one(&item.path, &document).map_err(|e| {
-            format!(
-                "{e} — {} of this work's archives were rewritten before this and \
-                 their rows are now stale; a rescan reconciles them",
-                written.len()
-            )
-        })?;
+    let mut written: Vec<(i64, String)> = Vec::new();
+    // Each rewritten member's digest before and after, for the hand document.
+    let mut moved: BTreeMap<String, String> = BTreeMap::new();
+    for (item, old, document) in prepared {
+        let digest = match rewrite_one(&item.path, &document) {
+            Ok(digest) => digest,
+            Err(e) => {
+                // The archives renamed so far are stamped whatever the rows
+                // say, and a rescan records their digests, so the document
+                // follows the files now, where it was.
+                if let Some(at) = &document_was {
+                    crate::hand::rekey(at, &moved);
+                }
+                return Err(rows_behind(&e, written.len()));
+            }
+        };
+        moved.insert(old, digest.clone());
         written.push((item.member_id, digest));
     }
 
+    // Every error from here on comes after the renames, so the document
+    // follows the files as on a cut. `record` has not moved it then.
+    let (moved_key, document_moved, document_at) =
+        match record(conn, work_id, &old_key, &written, document_was.as_deref()) {
+            Ok(recorded) => recorded,
+            Err(e) => {
+                if let Some(at) = &document_was {
+                    crate::hand::rekey(at, &moved);
+                }
+                return Err(e);
+            }
+        };
+    let rekeyed = document_at.is_some_and(|at| crate::hand::rekey(&at, &moved));
+    // Only the document at the work's address counts: when the rename was
+    // refused (O81), the copy re-keyed is the one left at the old key, which
+    // the screen's line, naming the work's document, would misdescribe.
+    let document_rewritten = rekeyed && (document_moved || moved_key.is_none());
+    let sidecar_rewritten = rewrite_sidecar(conn, work_id, user_id, sidecar_path.as_deref())?;
+
+    Ok(Applied {
+        members: written,
+        content_key: moved_key,
+        document_moved,
+        document_rewritten,
+        sidecar_rewritten,
+    })
+}
+
+/// Record a stamp's digests and the work's key in one transaction, then move
+/// the hand document from `document_was` to the work's new address. Answers
+/// the moved key, whether the document moved, and where it is now. On an
+/// error the document has not moved: the transaction rolls back, and every
+/// step after the commit that can fail comes before the rename. An error up to
+/// the commit says the archives are stamped and their rows are not; one after
+/// it says the stamp is recorded and where the document stayed.
+fn record(
+    conn: &Connection,
+    work_id: i64,
+    old_key: &str,
+    written: &[(i64, String)],
+    document_was: Option<&std::path::Path>,
+) -> Result<(Option<String>, bool, Option<PathBuf>), String> {
+    let moved_key =
+        record_rows(conn, work_id, old_key, written).map_err(|e| rows_behind(&e, written.len()))?;
+
+    // These project the rows just committed, so they run after the commit.
+    let (Some(_), Some(old)) = (&moved_key, document_was) else {
+        return Ok((
+            moved_key,
+            false,
+            document_was.map(std::path::Path::to_path_buf),
+        ));
+    };
+    let (now_at, document_moved) = move_document(conn, work_id, old).map_err(|e| {
+        format!(
+            "{e} — the stamp itself is recorded, but this work's hand document, if it \
+             has one, was not moved to its new key and stays at {}, where the next scan \
+             reports it as an orphan",
+            old.display()
+        )
+    })?;
+    // A refused rename leaves the document at `old`, where it is re-keyed, so
+    // a file already at the new address is never written over (O81).
+    let document_at = if document_moved {
+        now_at
+    } else {
+        Some(old.to_path_buf())
+    };
+    Ok((moved_key, document_moved, document_at))
+}
+
+/// The work's address now, and whether [`crate::hand::rename_from`] moved the
+/// document from `old` to it. Every error here comes before the rename, which
+/// is what lets [`record`] say the document stayed at `old`.
+fn move_document(
+    conn: &Connection,
+    work_id: i64,
+    old: &std::path::Path,
+) -> Result<(Option<PathBuf>, bool), String> {
+    let now_at = crate::hand::path_for(conn, work_id)?;
+    Ok((now_at, crate::hand::rename_from(conn, work_id, old)?))
+}
+
+/// [`record`]'s transaction: each stamped member's new digest, and the work's
+/// key where the hub's digests moved it. Answers that moved key.
+fn record_rows(
+    conn: &Connection,
+    work_id: i64,
+    old_key: &str,
+    written: &[(i64, String)],
+) -> Result<Option<String>, String> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("starting the transaction for this stamp: {e}"))?;
-    for (member_id, digest) in &written {
+    for (member_id, digest) in written {
         tx.execute(
             "UPDATE member SET sha256 = ?1 WHERE id = ?2",
             rusqlite::params![digest, member_id],
@@ -286,12 +407,6 @@ pub fn apply(
     // `identity::content_key` alone and is not restated here.
     let new_key = crate::identity::content_key(&crate::project::sidecar(&tx, work_id)?)?;
     let moved_key = (new_key != old_key).then(|| new_key.clone());
-    // The document's address under the old key, read before the key moves:
-    // afterwards the rows name only the new one.
-    let moved_from = match &moved_key {
-        Some(_) => crate::hand::path_for(&tx, work_id)?,
-        None => None,
-    };
     if moved_key.is_some() {
         tx.execute(
             "UPDATE work SET content_key = ?1 WHERE id = ?2",
@@ -301,24 +416,35 @@ pub fn apply(
     }
     tx.commit()
         .map_err(|e| format!("committing this stamp: {e}"))?;
+    Ok(moved_key)
+}
 
-    // Both of these project the rows the transaction just committed, so they
-    // run after it rather than inside it.
-    let document_moved = match &moved_from {
-        Some(old) => crate::hand::rename_from(conn, work_id, old)?,
-        None => false,
+/// `e`, saying that `rewritten` of the work's archives are stamped and their
+/// rows are not: the database is behind the disk until a rescan, and a message
+/// that did not say so would leave no trace of it.
+fn rows_behind(e: &str, rewritten: usize) -> String {
+    format!(
+        "{e} — {rewritten} of this work's archives were rewritten before this and \
+         their rows are now stale; a rescan reconciles them"
+    )
+}
+
+/// Export an imported work's documents in place and answer whether the file
+/// at `sidecar_path` itself was written. The export keeps one a newer taiyaku
+/// wrote, and the screen tells the person their sidecar records the new
+/// digests only when this answers `true`. `None` exports nothing, for
+/// [`apply`]'s reason.
+fn rewrite_sidecar(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    sidecar_path: Option<&str>,
+) -> Result<bool, String> {
+    let Some(sidecar_path) = sidecar_path else {
+        return Ok(false);
     };
-    let sidecar_rewritten = sidecar_path.is_some();
-    if sidecar_rewritten {
-        crate::export::work(conn, work_id, user_id, None)?;
-    }
-
-    Ok(Applied {
-        members: written,
-        content_key: moved_key,
-        document_moved,
-        sidecar_rewritten,
-    })
+    let exported = crate::export::work(conn, work_id, user_id, None)?;
+    Ok(exported.written.contains(&PathBuf::from(sidecar_path)))
 }
 
 /// Rewrite one archive with `document` in place of any `ComicInfo.xml` it
@@ -440,16 +566,16 @@ fn rewrite_one(path: &std::path::Path, document: &[u8]) -> Result<String, String
     result
 }
 
-/// Where one archive is staged while it is being rewritten.
-///
-/// Beside the target and never in a temp directory, so the rename that
-/// follows is a rename rather than a cross-filesystem copy. The suffix is
-/// appended to the whole filename rather than replacing the extension, so
-/// `v01.cbz` stages as `v01.cbz.taiyaku-stamp` and two members of the same
-/// edition cannot collide on it the way `with_extension` would make
-/// `v01.cbz` and `v01.cbr` collide.
+/// Where one archive is staged while it is being rewritten: `v01.cbz` stages
+/// as `.v01.cbz.taiyaku-stamp`. Beside the target, so the rename that follows
+/// is a rename, not a cross-filesystem copy, and O104's syncs stand. A dot
+/// name, so both places the walk asks, `scan::measure_dir` and
+/// `Excluder::keeps_out` (`KeptOut::DotName`), skip a cut stamp's leftover
+/// (O185). The suffix follows the whole name, so `v01.cbz` and `v01.cbr`
+/// cannot collide on it the way `with_extension` would make them.
 fn staging_path(path: &std::path::Path) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
     name.push(".taiyaku-stamp");
     path.with_file_name(name)
 }

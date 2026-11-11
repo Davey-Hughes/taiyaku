@@ -240,6 +240,118 @@ fn a_hand_document_withdrawn_removes_the_file_it_left_behind() {
     );
 }
 
+/// A document a newer taiyaku wrote, at this work's address. Its title is one
+/// no test sets in the rows, so a write from the rows would change the bytes.
+fn a_newer_document_at_the_address(conn: &Connection, work_id: i64) -> (std::path::PathBuf, u32) {
+    let newer = crate::librarydoc::VERSION + 1;
+    let path = super::path_for(conn, work_id)
+        .expect("resolving")
+        .expect("a scanned work has an address");
+    std::fs::create_dir_all(path.parent().expect("a directory")).expect("mkdir");
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"taiyaku_library": {newer}, "updated": "2026-11-10T09:00:00Z", "title": "Newer"}}"#
+        ),
+    )
+    .expect("writing the newer document");
+    (path, newer)
+}
+
+/// Writing a newer document from rows would drop every field this build has
+/// no column for, so `save` leaves it as it is and says why (O264). The edit
+/// itself stands in the rows, as it does for a directory that cannot be
+/// written.
+#[test]
+fn saving_over_a_newer_document_leaves_it_as_it_is_and_says_so() {
+    let dir = crate::tests::tempdir("hand-save-newer");
+    let root = dir.path().to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
+    let (path, newer) = a_newer_document_at_the_address(&conn, work_id);
+    let before = std::fs::read_to_string(&path).expect("reading the newer document");
+
+    let mut doc = crate::librarydoc::of(&conn, work_id).expect("projecting");
+    doc.title = Some("Hand Set".to_string());
+    crate::librarydoc::apply(&conn, work_id, &doc).expect("applying");
+
+    let saved = super::save(&conn, work_id).expect("saving");
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("reading the document back"),
+        before,
+        "the newer document's bytes must be as they were"
+    );
+    assert!(!saved.persisted, "the edit did not reach the document");
+    assert_eq!(saved.path.as_deref(), Some(path.as_path()));
+    let version = crate::librarydoc::VERSION;
+    assert_eq!(
+        saved.why.as_deref(),
+        Some(
+            format!(
+                "{}: a newer taiyaku wrote this document (taiyaku_library {newer}; this build \
+                 writes {version}), so it was left as it is",
+                path.display()
+            )
+            .as_str()
+        ),
+    );
+    let title: String = conn
+        .query_row("SELECT title FROM work WHERE id = ?1", [work_id], |r| {
+            r.get(0)
+        })
+        .expect("reading the title");
+    assert_eq!(title, "Hand Set", "the rows hold the edit");
+    assert!(
+        !crate::migrate::absorbed(&conn, work_id, crate::migrate::LIBRARY)
+            .expect("reading the marker"),
+        "a guarded save records no marker, so the read-back goes on reporting \
+         the document"
+    );
+}
+
+/// [`saving_over_a_newer_document_leaves_it_as_it_is_and_says_so`], for rows
+/// that project empty: `save` would remove the file, which loses a newer
+/// document as surely as writing over it.
+#[test]
+fn an_empty_projection_does_not_remove_a_newer_document() {
+    let dir = crate::tests::tempdir("hand-save-newer-empty");
+    let root = dir.path().to_string_lossy().to_string();
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    let work_id = a_scanned_work_rooted_at_that_keeps_documents(&conn, &root);
+    let (path, _) = a_newer_document_at_the_address(&conn, work_id);
+    let before = std::fs::read_to_string(&path).expect("reading the newer document");
+    assert!(
+        crate::librarydoc::of(&conn, work_id)
+            .expect("projecting")
+            .is_empty(),
+        "the rows must project empty, or this reaches the write branch"
+    );
+
+    let saved = super::save(&conn, work_id).expect("saving");
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the newer document is still there"),
+        before,
+        "the newer document's bytes must be as they were"
+    );
+    assert!(!saved.persisted, "the rows did not reach the document");
+    assert!(
+        saved
+            .why
+            .as_deref()
+            .is_some_and(|why| why.contains("a newer taiyaku wrote this document")),
+        "{:?}",
+        saved.why
+    );
+    assert!(
+        crate::librarydoc::of(&conn, work_id)
+            .expect("projecting")
+            .is_empty(),
+        "the rows are still empty"
+    );
+}
+
 /// [`a_hand_document_withdrawn_removes_the_file_it_left_behind`]'s remove
 /// branch, but the removal itself fails for a reason that is not "nothing
 /// there" — mutating `save`'s `e.kind() == std::io::ErrorKind::NotFound`

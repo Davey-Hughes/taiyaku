@@ -391,6 +391,12 @@ describe('Backup', () => {
     expect(told).toContain('A sidecar export is not a backup')
     expect(told).toContain('taiyaku library backup')
     expect(told).toContain('--keep')
+    // O263: the server backs up by itself before a migration.
+    expect(told).toContain(
+      'Before each migration the server takes one of its own',
+    )
+    expect(told).toContain('--keep leaves those alone')
+    expect(told).not.toContain('only when asked')
   })
 
   it('heads itself Backup, the whole-database warning its line and Back up now its action, over Backups and How backups work', async () => {

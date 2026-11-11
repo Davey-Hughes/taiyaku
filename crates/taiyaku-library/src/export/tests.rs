@@ -405,6 +405,39 @@ fn a_dir_export_writes_over_its_own_output_rather_than_keeping_it() {
     );
 }
 
+/// The exemption covers the version too: a newer document under `--dir` is
+/// output the caller named a place for, so it is written over (O264).
+#[test]
+fn a_dir_export_writes_over_a_newer_document_in_its_destination() {
+    let dir = tempdir();
+    let out = tempdir();
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let id = a_work_with_notes_and_progress(&conn, &dir);
+    let first = work(&conn, id, THE_READER, Some(out.path())).expect("first export");
+    let sidecar_path = first.written[0].clone();
+    assert!(
+        sidecar_path.ends_with("taiyaku.json"),
+        "the sidecar is written first: {:?}",
+        first.written
+    );
+    let newer = format!(r#"{{"taiyaku": {}}}"#, taiyaku_core::VERSION + 1);
+    std::fs::write(&sidecar_path, &newer).expect("a newer taiyaku's sidecar there");
+
+    let second = work(&conn, id, THE_READER, Some(out.path())).expect("second export");
+
+    assert!(
+        second.kept.is_empty(),
+        "a --dir export keeps nothing, whatever version it finds: {:?}",
+        second.kept
+    );
+    assert_ne!(
+        std::fs::read_to_string(&sidecar_path).expect("reads"),
+        newer,
+        "a --dir export writes over its destination whatever version it holds"
+    );
+}
+
 /// Five documents, atomically, and nothing half-written if one fails.
 #[test]
 fn exporting_writes_five_documents_beside_the_sidecar() {
@@ -820,6 +853,113 @@ fn clearing_the_labelling_and_exporting_removes_the_stale_truth_document() {
     assert!(
         dir.path().join("taiyaku.progress.json").is_file(),
         "the progress document is untouched: its state is still Some"
+    );
+}
+
+/// An in-place export keeps a document a newer taiyaku wrote even where this
+/// library absorbed that document (O264). The markers are armed first, since an
+/// unabsorbed file is kept whatever its version. Files of each loop: the
+/// sidecar, `library.json` and `progress.json` would be written, `truth.json`
+/// removed.
+#[test]
+fn an_in_place_export_keeps_a_document_a_newer_taiyaku_wrote_even_one_it_absorbed() {
+    let dir = tempdir();
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let id = a_work_with_notes_and_progress(&conn, &dir);
+    migrate_siblings(&conn, &dir, id);
+    let sidecar_path = dir.path().join("taiyaku.json");
+    let library_path = dir.path().join("taiyaku.library.json");
+    let progress_path = dir.path().join("taiyaku.progress.json");
+    let truth_path = dir.path().join("taiyaku.truth.json");
+
+    let first = work(&conn, id, THE_READER, None).expect("first export");
+    assert!(
+        [&library_path, &progress_path, &truth_path]
+            .iter()
+            .all(|path| first.written.contains(*path)),
+        "the fixture must write all three documents: {:?}",
+        first.written
+    );
+    for document in [
+        crate::migrate::LIBRARY,
+        crate::migrate::PROGRESS,
+        crate::migrate::TRUTH,
+    ] {
+        assert!(
+            crate::migrate::absorbed(&conn, id, document).expect("reads the marker"),
+            "the first export must record `{document}` absorbed, or this test proves nothing"
+        );
+    }
+
+    crate::state::put_truth(
+        &conn,
+        id,
+        &TruthDoc {
+            taiyaku_truth: taiyaku_core::TRUTH_VERSION,
+            editions: std::collections::BTreeMap::new(),
+        },
+    )
+    .expect("the labeller clears every box");
+    assert!(
+        crate::state::truth(&conn, id).expect("reads").is_none(),
+        "no truth rows, so `truth.json` is in the removal loop"
+    );
+    let newer = [
+        (
+            &sidecar_path,
+            format!(
+                r#"{{"taiyaku": {}, "from": "newer"}}"#,
+                taiyaku_core::VERSION + 1
+            ),
+        ),
+        (
+            &library_path,
+            format!(
+                r#"{{"taiyaku_library": {}, "from": "newer"}}"#,
+                crate::librarydoc::VERSION + 1
+            ),
+        ),
+        (
+            &progress_path,
+            format!(
+                r#"{{"taiyaku_progress": {}, "from": "newer"}}"#,
+                crate::progressdoc::VERSION + 1
+            ),
+        ),
+        (
+            &truth_path,
+            format!(
+                r#"{{"taiyaku_truth": {}, "from": "newer"}}"#,
+                taiyaku_core::TRUTH_VERSION + 1
+            ),
+        ),
+    ];
+    for (path, text) in &newer {
+        std::fs::write(path, text).expect("a newer taiyaku writes its document");
+    }
+
+    let exported = work(&conn, id, THE_READER, None).expect("the export under test");
+
+    let changed: Vec<String> = newer
+        .iter()
+        .filter(|(path, text)| std::fs::read_to_string(path).ok().as_ref() != Some(text))
+        .map(|(path, _)| path.display().to_string())
+        .collect();
+    assert!(
+        changed.is_empty(),
+        "a newer taiyaku's documents must be exactly as it left them; changed: {changed:?}"
+    );
+    assert_eq!(
+        exported.kept,
+        vec![sidecar_path, library_path, progress_path, truth_path],
+        "all four named: the written group, then the stale one"
+    );
+    assert!(exported.removed.is_empty(), "{:?}", exported.removed);
+    assert_eq!(
+        exported.written,
+        vec![dir.path().join("taiyaku.notes.json")],
+        "the document no newer taiyaku wrote is still written"
     );
 }
 

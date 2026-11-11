@@ -193,6 +193,7 @@ pub(crate) async fn perform(
                 "rewritten": applied.members.len(),
                 "content_key": applied.content_key,
                 "document_moved": applied.document_moved,
+                "document_rewritten": applied.document_rewritten,
                 "sidecar_rewritten": applied.sidecar_rewritten,
             }))
         })

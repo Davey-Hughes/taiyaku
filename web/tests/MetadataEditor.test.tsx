@@ -518,6 +518,7 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
     rewritten: 2,
     content_key: '9f0e7bd3ac5e1a6f',
     document_moved: true,
+    document_rewritten: true,
     sidecar_rewritten: true,
   }
 
@@ -526,6 +527,7 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
     rewritten: 2,
     content_key: '9f0e7bd3ac5e1a6f',
     document_moved: false,
+    document_rewritten: false,
     sidecar_rewritten: false,
   }
 
@@ -534,6 +536,7 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
     rewritten: 1,
     content_key: null,
     document_moved: false,
+    document_rewritten: false,
     sidecar_rewritten: false,
   }
 
@@ -762,6 +765,16 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
 
     const without = await stampWith(SPOKE_PLAN, KEY_HELD)
     expect(without.querySelector('.stamped .sidecar')).toBeNull()
+  })
+
+  it('says when the hand document was rewritten alongside the archives, and nothing when it was not', async () => {
+    const withOne = await stampWith(PLAN, DONE)
+    expect(withOne.querySelector('.stamped .document')?.textContent).toBe(
+      "This work's <content_key>.library.json was rewritten too, so it records the new digests.",
+    )
+
+    const without = await stampWith(SPOKE_PLAN, KEY_HELD)
+    expect(without.querySelector('.stamped .document')).toBeNull()
   })
 
   it('surfaces a 409 from the stamp as an alert, and keeps the plan on screen', async () => {

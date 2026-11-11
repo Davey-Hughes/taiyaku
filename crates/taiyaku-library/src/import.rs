@@ -576,9 +576,12 @@ fn insert_work(
     Ok(conn.last_insert_rowid())
 }
 
-/// Slugify `title` the same shape `taiyaku-serve`'s `work_id` slugifies a
-/// filename — lowercased, non-alphanumerics to `-`, trimmed — with a numeric
-/// suffix appended until the result is unused.
+/// [`slugify`] `title`, with a numeric suffix appended until the result is
+/// unused: `t`, `t-2`, `t-3`.
+///
+/// `taiyaku-serve`'s `works::work_id` keeps its own ASCII rule, from a
+/// sidecar's filename, for a work with no store row, and the two need not
+/// agree.
 ///
 /// From the title rather than the filename: the sidecar beside every work in
 /// this corpus is `taiyaku.json`, so slugifying the filename would collide
@@ -603,18 +606,62 @@ fn unique_slug(conn: &Connection, title: &str) -> Result<String, String> {
     }
 }
 
+/// The archive extensions a title can still end in: `derive::title_of` keeps
+/// the file's extension, and a slug that ends in `-cbz` keeps it for good.
+const ARCHIVE_EXTENSIONS: [&str; 10] = [
+    ".cbz", ".cbr", ".cb7", ".cbt", ".zip", ".rar", ".7z", ".tar", ".pdf", ".epub",
+];
+
+/// A work's slug from its title: one trailing archive extension dropped,
+/// whatever its case, then [`slug_token`], then `work` when nothing is left.
+///
+/// The fallback lives here and not in [`slug_token`]: an empty slug would
+/// pass [`unique_slug`]'s collision check as a real one, while an edition key
+/// with nothing in it is refused rather than renamed.
 fn slugify(title: &str) -> String {
-    let lowered = title.to_lowercase();
-    let slug: String = lowered
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let trimmed = slug.trim_matches('-');
-    if trimmed.is_empty() {
+    let stem = ARCHIVE_EXTENSIONS
+        .iter()
+        .find_map(|ext| {
+            let start = title.len().checked_sub(ext.len())?;
+            // `get` rather than indexing: `start` can fall inside a
+            // multi-byte character, where an index panics.
+            let tail = title.get(start..)?;
+            tail.eq_ignore_ascii_case(ext).then(|| &title[..start])
+        })
+        .unwrap_or(title);
+    let token = slug_token(stem);
+    if token.is_empty() {
         "work".to_string()
     } else {
-        trimmed.to_string()
+        token
     }
+}
+
+/// A slug token from `s`: Unicode letters and digits, lowercased, with every
+/// run of other characters collapsed to one `-` and none leading or
+/// trailing. It may answer `""`; each caller decides what that means.
+///
+/// One rule for a work's slug ([`slugify`]) and an edition key (O262), so
+/// neither loses a letter outside ASCII. As an edition key, the suffix
+/// `"Full Color Edition"` that [`crate::proposals::raise_edition_of`]'s
+/// `reason` quotes becomes `"full-color-edition"`, so the key an accept writes
+/// names the edition the proposal named.
+pub(crate) fn slug_token(s: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_dash = true; // suppresses a leading `-`
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+            last_was_dash = false;
+        } else if !last_was_dash {
+            out.push('-');
+            last_was_dash = true;
+        }
+    }
+    if out.ends_with('-') {
+        out.pop();
+    }
+    out
 }
 
 /// Replace every edition, member and page flag under `work_id` with what

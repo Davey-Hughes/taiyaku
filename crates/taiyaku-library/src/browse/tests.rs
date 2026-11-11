@@ -278,7 +278,7 @@ fn only_with_no_dir_sees_nothing() {
         .collect::<rusqlite::Result<_>>()
         .expect("reads");
     let library_id: i64 = crate::test_support::library_of_root(&conn, en_id);
-    let slug = "series---v01";
+    let slug = "series-v01";
 
     let granted_nothing = Access::Only {
         roots: Vec::new(),
@@ -1491,7 +1491,7 @@ fn a_work_carries_the_verdict_and_paired_count_of_each_pair() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &Access::Every, 1, "series---v01")
+    let detail = work(&conn, &Access::Every, 1, "series-v01")
         .expect("reads the work")
         .expect("a work with that slug");
     assert_eq!(detail.alignments.len(), 1);
@@ -1512,7 +1512,7 @@ fn an_alignment_naming_a_hidden_edition_is_not_listed() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &Access::roots(vec![en_id]), 1, "series---v01")
+    let detail = work(&conn, &Access::roots(vec![en_id]), 1, "series-v01")
         .expect("reads the work")
         .expect("the work survives on its English edition");
     assert_eq!(detail.card.editions.len(), 1, "only the English edition");
@@ -1535,14 +1535,9 @@ fn a_grant_naming_both_sides_of_a_pair_returns_the_alignment() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(
-        &conn,
-        &Access::roots(vec![en_id, raw_id]),
-        1,
-        "series---v01",
-    )
-    .expect("reads the work")
-    .expect("the work survives on both editions");
+    let detail = work(&conn, &Access::roots(vec![en_id, raw_id]), 1, "series-v01")
+        .expect("reads the work")
+        .expect("the work survives on both editions");
     assert_eq!(
         detail.alignments.len(),
         1,
@@ -1566,7 +1561,7 @@ fn an_alignment_naming_a_hidden_edition_is_counted_by_neither_the_work_nor_the_g
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &Access::roots(vec![en_id]), 1, "series---v01")
+    let detail = work(&conn, &Access::roots(vec![en_id]), 1, "series-v01")
         .expect("reads the work")
         .expect("the work survives on its English edition");
     assert!(
@@ -1595,14 +1590,9 @@ fn an_alignment_wholly_inside_the_grant_is_counted_by_both() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(
-        &conn,
-        &Access::roots(vec![en_id, raw_id]),
-        1,
-        "series---v01",
-    )
-    .expect("reads the work")
-    .expect("the work survives on both editions");
+    let detail = work(&conn, &Access::roots(vec![en_id, raw_id]), 1, "series-v01")
+        .expect("reads the work")
+        .expect("the work survives on both editions");
     assert!(detail.card.aligned, "both sides are held");
     assert_eq!(detail.alignments.len(), 1, "and the list says the same");
 
@@ -1620,7 +1610,7 @@ fn access_every_counts_the_alignment_as_it_always_did() {
     align(&library, ids[0], "en", "raw");
 
     let conn = library.conn();
-    let detail = work(&conn, &Access::Every, 1, "series---v01")
+    let detail = work(&conn, &Access::Every, 1, "series-v01")
         .expect("reads the work")
         .expect("the work");
     assert!(detail.card.aligned, "unrestricted sees both sides");

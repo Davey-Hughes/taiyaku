@@ -30,8 +30,8 @@
  * **`persisted: false` is stated, not hidden, and it is not an alarm.**
  * `metadata.ts`'s own module doc is explicit that this answer is not a
  * failure — the edit is already safe from the next scan, and only the
- * `<stem>.library.json` beside the library did not land (a read-only root,
- * or a work with no on-disk address at all — every sidecar-imported work).
+ * `<stem>.library.json` beside the library did not land (a failed write, a
+ * work with no on-disk address, or a document a newer taiyaku wrote there).
  * So the note below renders as plain text, not `role="alert"`, which stays
  * reserved for the one path that really did lose the edit: a thrown
  * 409/404/403 from a hard failure.
@@ -257,10 +257,10 @@ export function MetadataEditor({
   // has no on-disk address at all (`hand::path_for` answers `None`, so
   // `hand::Saved::why` is `None` too, and `reasons()` defaults that to `[]`
   // rather than `undefined`). A non-empty array is the same outcome with a
-  // reason attached — a read-only root's own `io::Error`. The JSX below
-  // branches on all three: `unwritten !== undefined` decides whether the note
-  // renders at all, and `unwritten.length > 0` decides, independently,
-  // whether it renders a reason.
+  // reason attached — a failed write's own `io::Error`, or the newer-document
+  // reason. The JSX below branches on all three: `unwritten !== undefined`
+  // decides whether the note renders at all, and `unwritten.length > 0`
+  // decides, independently, whether it renders a reason.
   const [unwritten, setUnwritten] = useState<string[]>()
   const [failure, setFailure] = useState<string>()
 
@@ -851,6 +851,12 @@ export function MetadataEditor({
                     at the old key — nothing here can tell those apart. The next
                     scan reports a document left behind as an orphan, with the
                     title it holds.
+                  </p>
+                )}
+                {stamped.document_rewritten && (
+                  <p className="document">
+                    This work's &lt;content_key&gt;.library.json was rewritten
+                    too, so it records the new digests.
                   </p>
                 )}
                 {stamped.sidecar_rewritten && (

@@ -177,10 +177,10 @@ fn panicked(what: &str, why: &tokio::task::JoinError) -> Response {
 /// answer.
 ///
 /// **Three steps in this order, on every route here.** `apply` writes the
-/// rows; [`taiyaku_library::hand::save`] writes
-/// `<root>/.taiyaku/<key>.library.json` *and records the `LIBRARY` marker*;
-/// re-projecting is what the client is answered with, so it sees what the
-/// store actually holds rather than what it sent.
+/// rows; [`taiyaku_library::hand::save`] writes the hand document
+/// (`<root>/.taiyaku/<key>.library.json`) *and records the `LIBRARY` marker*,
+/// bar a newer one in a root that keeps documents; re-projecting is what the
+/// client is answered with, so it sees what the store holds, not what it sent.
 ///
 /// **`apply` is a parameter, not always [`librarydoc::apply`].**
 /// [`patch_series`]'s own per-work loop calls [`edit_series_member_raw`]
@@ -243,9 +243,9 @@ fn edit_series_member_raw(
 /// that one [`hand::Saved`] directly rather than through [`worst_case`]'s
 /// full fold. `persisted` is reported rather than enforced: refusing the edit
 /// because the document could not be written would make a library on
-/// read-only media, or a work with no address at all, uneditable. The row is
-/// written and the guard is armed either way — only durability is lost, and
-/// the client is told so.
+/// read-only media, or a work with no address at all, uneditable. The row, its
+/// `_hand` guard and, bar a newer document a root keeps, the `LIBRARY` marker
+/// are written either way: only durability is lost, and the client is told so.
 ///
 /// **`why` is a JSON array of nought or one element, the same shape
 /// [`merge_worst_case`] answers with for a route that can fan out to more than
@@ -253,17 +253,17 @@ fn edit_series_member_raw(
 /// but it is still an array, so a client need not special-case one route's
 /// `why` being a bare string against every other route's array.
 ///
-/// **Two different reasons answer `persisted: false`, and only one of them
-/// puts anything in that array.** A read-only root fails the write and
-/// `hand::save` names the path and the `io::Error`. A work imported from a
-/// sidecar — [`hand::path_for`] answers `None` for it, since its document
-/// already lives beside that sidecar rather than under a root's `.taiyaku` —
-/// answers `persisted: false` with an empty `why`: there is no address to
-/// have failed against, so there is nothing to name. A caller sees "not
-/// durable" either way, with a reason only in the first case, which is the
-/// exact outcome `why` exists to prevent. Whether the second case should mint
-/// a reason of its own — "no address: this work was not scanned" or similar —
-/// is a design question this comment raises rather than answers.
+/// **Three reasons answer `persisted: false`, and two put anything in that
+/// array.** A read-only root fails the write and `hand::save` names the path
+/// and the `io::Error`; a newer document is left as it is, and `hand::save`
+/// says so (O264). A work imported from a sidecar — [`hand::path_for`] answers
+/// `None` for it, since its document lives beside that sidecar — answers
+/// `persisted: false` with an empty `why`: there is no address to have failed
+/// against, so there is nothing to name. A caller sees "not durable" either
+/// way, with a reason only in the first two cases, which is the exact outcome
+/// `why` exists to prevent. Whether the last case should mint a reason of its
+/// own — "no address: this work was not scanned" or similar — is a design
+/// question this comment raises rather than answers.
 fn edit_work(
     conn: &rusqlite::Connection,
     work_id: i64,

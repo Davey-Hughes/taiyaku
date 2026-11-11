@@ -58,6 +58,56 @@ async fn a_backup_is_taken_listed_and_downloaded_whole() {
     );
 }
 
+/// A backup the open took before a migration is listed and downloaded by the
+/// same routes as one taken on request, its tag in its name and nothing more
+/// on the wire (O263).
+#[tokio::test]
+async fn a_backup_taken_before_a_migration_is_listed_and_downloaded() {
+    let (router, state, _fixture) = test_support::router_over_a_file_backed_library();
+    let db = state
+        .library
+        .path()
+        .expect("a file-backed library")
+        .to_path_buf();
+    let name = "library-20261110T120000Z-before-v19.db";
+    taiyaku_library::backup::take_named(
+        &state.library.conn(),
+        &taiyaku_library::backup::directory_for(&db),
+        name,
+    )
+    .expect("a backup under a migration's name");
+
+    let listed = get_json(&router, "/api/library/backups").await;
+    let backups = listed["backups"].as_array().expect("an array");
+    assert_eq!(backups.len(), 1, "{listed}");
+    assert_eq!(backups[0]["name"], name, "{listed}");
+    assert_eq!(backups[0]["taken"], "20261110T120000Z", "{listed}");
+    let mut keys: Vec<&str> = backups[0]
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["bytes", "name", "taken"], "{listed}");
+
+    let response = test_support::get(&router, &format!("/api/library/backups/{name}")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[axum::http::header::CONTENT_DISPOSITION],
+        format!("attachment; filename=\"{name}\"")
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("reads the body");
+    let on_disk = std::fs::read(taiyaku_library::backup::directory_for(&db).join(name))
+        .expect("the backup's bytes");
+    assert!(
+        !on_disk.is_empty() && bytes == on_disk,
+        "the download is the whole file"
+    );
+}
+
 /// **The download route resolves `{name}` against the listing and never joins
 /// a caller's string onto the directory.** A traversal attempt is therefore a
 /// 404 — "no such backup" — rather than something a path check has to catch.

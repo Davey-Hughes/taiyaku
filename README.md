@@ -204,11 +204,24 @@ taiyaku library user every-library alice
 # those, so it is not a backup and this is. SQLite's own `VACUUM INTO`, so the
 # server does not have to stop:
 taiyaku library backup                    # -> <db parent>/backups/library-<stamp>.db
-taiyaku library backup --keep 7           # ...and delete all but the seven newest
+taiyaku library backup --keep 7           # ...and delete all but the seven newest, leaving those taken before a migration
 #
 # there is no schedule inside the server. a cron entry runs this. `--out DIR`
 # writes somewhere else, and the settings screen will not list what lands
 # there — it can only compute the one directory beside the database.
+#
+# an open that migrates the database backs it up first, to
+# <db parent>/backups/library-<stamp>-before-v<N>.db, N being the version it
+# migrates to, and refuses to migrate if that backup fails. --keep never
+# deletes one of those; delete them by hand. a migration that fails is tried
+# again at the next open, which takes no new backup while the database file
+# and its -wal are unchanged since the newest -before-v<N> one and that one
+# opens at the database's version. unchanged is judged by the later of each
+# file's modification and change times, so a write or a chmod after the
+# backup makes the next open back up again, and so does a move where the
+# filesystem sets the change time on a rename. a copy cut off part way stays
+# there as a hidden .library-<stamp>-before-v<N>.db.partial, never listed or
+# pruned; delete it by hand.
 #
 # restore is out of band on purpose: stop the server, move the file, start it.
 
@@ -348,8 +361,8 @@ was removed.
 The backup tab takes one now, lists what exists with a download link each, and
 says the four things a button cannot: restore is out of band, a backup is the
 whole database — password hashes included — a sidecar export is not a backup,
-and the schedule is the cron entry above rather than anything inside the
-server.
+and the schedule is the cron entry above; the only backup the server takes by
+itself is the one before a migration.
 
 **Split editions** is the last tab, at `/config/split-editions`. It lists each
 edition that a library shows some of and not all of, which an account granted
@@ -630,8 +643,20 @@ can change under you. To freeze an image, pin its digest instead
 Rolling back across a database migration does not work by pinning alone: an
 older image refuses a database a newer taiyaku has written ("written by a newer
 taiyaku") and, under Docker, restarts in a loop. Go back across a migration by
-restoring a backup taken before it, so before merging a change that migrates
-(WUD redeploys on every merge), run `docker exec taiyaku taiyaku library backup`.
+restoring the backup the server took before it. An open that migrates first
+writes `backups/library-<stamp>-before-v<N>.db` beside the database, where `N`
+is the version it migrated to, and refuses to migrate if that backup fails. The
+file holds the database as it stood, so an image whose schema version is below
+`N`, and at least the version the file holds, can open it. `--keep` never
+deletes one; delete them by hand. A migration that fails also restarts the
+container in a loop, and each start tries it again; a start takes no new
+backup while the database file and its `-wal` are unchanged since the newest
+`-before-v<N>` backup and that backup opens at the database's version, so the
+loop does not fill the disk with copies of one database. Unchanged is judged
+by the later of each file's modification and change times: a write or a
+`chmod` after the backup makes the next start back up again, and so does a
+restore by `mv` where the filesystem sets the change time on a rename, since a
+move keeps the modification time.
 
 The label at the sidebar's foot names the build that is running: the first
 seven characters of its commit, the same seven CI tags the image with as

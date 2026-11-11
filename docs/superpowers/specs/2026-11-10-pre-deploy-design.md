@@ -87,8 +87,9 @@ parallel with lane 1.
 1. **The slug rule** (ruled 2026-11-10). Keep Unicode letters and digits,
    lowercased. Collapse each run of other characters to one `-`, trimmed at
    both ends. Drop a trailing archive extension first. Keep the `-2`, `-3`
-   suffixes. One rule makes work slugs and edition keys: `proposals::slugify`'s,
-   moved where both callers reach it.
+   suffixes. One rule makes work slugs and the edition key an edition-of
+   proposal's accept writes: `proposals::slugify`'s, moved where both callers
+   reach it.
 2. **The series-cover redirect encodes its `Location`** (ruled with 1).
 3. **A backup before every migration** (told to the owner). It is
    `library-<stamp>-before-v<N>.db` in the existing backups directory. It is
@@ -272,7 +273,7 @@ parallel with lane 1.
 ### Boundaries
 
 - No existing work is given a new slug, and no title changes.
-- No retention rule for any backup, and no restore route.
+- No retention rule for a backup taken before a migration, and no restore route.
 - `save` does not carry unknown keys across a rewrite; decision 7 covers it.
 - Part E's flush will need the newer-file guard too. It is not built here.
 
