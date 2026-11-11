@@ -82,8 +82,8 @@ again, so clearing `.taiyaku-cache/` throws away the expensive half too. It is
 the one rule that prints: a line on stderr naming the directory it settled on
 and the `--cache` flag that pins it, because a cache landing somewhere
 surprising in silence is the defect the move exists to remove. See
-`status.md`'s note on the on-disk caches for what the server's does and does
-not do (unbounded, never pruned).
+`status.md`'s note on the on-disk caches, O11, for what the server's does and
+does not do.
 
 `lookup` exists to prove the format carries what was solved: it reads the
 document with no archives present and no solving, and its answers match what

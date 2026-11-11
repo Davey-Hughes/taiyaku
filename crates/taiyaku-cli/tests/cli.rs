@@ -197,6 +197,21 @@ fn the_usage_advertises_serve_cache() {
 }
 
 #[test]
+fn the_usage_advertises_serve_cache_max() {
+    let run = taiyaku().output().expect("the binary runs");
+
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let serve_line = stdout
+        .lines()
+        .find(|l| l.contains("taiyaku serve"))
+        .expect("the usage lists serve");
+    assert!(
+        serve_line.contains("[--cache-max SIZE]"),
+        "serve's usage line advertises the flag: {serve_line}"
+    );
+}
+
+#[test]
 fn the_usage_advertises_serve_dirs() {
     let run = taiyaku().output().expect("the binary runs");
 
@@ -1746,6 +1761,30 @@ fn serve_says_which_dirs_it_cannot_browse() {
     );
 }
 
+/// Only a server started with no `taiyaku.json` sweeps its cache, so
+/// `--cache-max` beside sidecar paths says, before `listening`, that it has no
+/// effect. A server over the whole library is swept and says nothing, and
+/// neither does `TAIYAKU_CACHE_MAX`, which is not typed for this start.
+#[cfg(unix)]
+#[test]
+fn serve_says_cache_max_has_no_effect_with_sidecar_paths() {
+    let notice = "taiyaku: --cache-max has no effect with taiyaku.json paths; nothing is swept";
+    let said = |serving: &Serving| serving.seen.iter().filter(|l| *l == notice).count();
+
+    let paths = serve_listening_with("cache-max-paths", true, false, &["--cache-max", "1G"], &[]);
+    assert_eq!(said(&paths), 1, "{:?}", paths.seen);
+    let whole = serve_listening_with("cache-max-whole", true, true, &["--cache-max", "1G"], &[]);
+    assert_eq!(said(&whole), 0, "a swept server: {:?}", whole.seen);
+    let variable = serve_listening_with(
+        "cache-max-variable",
+        true,
+        false,
+        &[],
+        &[("TAIYAKU_CACHE_MAX", "1G")],
+    );
+    assert_eq!(said(&variable), 0, "the variable: {:?}", variable.seen);
+}
+
 /// A spawned `taiyaku serve`, killed and reaped when it goes out of scope.
 ///
 /// A test that panics between the spawn and its own cleanup (a `kill` that did
@@ -1814,6 +1853,19 @@ fn serve_listening(label: &str, keep_reading: bool) -> Serving {
 /// library moves.
 #[cfg(unix)]
 fn serve_listening_over(label: &str, keep_reading: bool, whole_library: bool) -> Serving {
+    serve_listening_with(label, keep_reading, whole_library, &[], &[])
+}
+
+/// [`serve_listening_over`], with `extra` flags after the others and `env`
+/// set on the child's environment, never this process's.
+#[cfg(unix)]
+fn serve_listening_with(
+    label: &str,
+    keep_reading: bool,
+    whole_library: bool,
+    extra: &[&str],
+    env: &[(&str, &str)],
+) -> Serving {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
     use std::time::{Duration, Instant};
@@ -1839,9 +1891,11 @@ fn serve_listening_over(label: &str, keep_reading: bool, whole_library: bool) ->
         "--addr",
         &addr,
     ]);
+    args.extend_from_slice(extra);
     let mut child = ServeChild(
         taiyaku()
             .args(&args)
+            .envs(env.iter().copied())
             .stderr(Stdio::piped())
             .spawn()
             .expect("the binary runs"),

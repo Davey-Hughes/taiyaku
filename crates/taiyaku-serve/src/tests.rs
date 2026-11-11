@@ -701,3 +701,70 @@ async fn serve_keeps_a_live_library_current_without_a_request_naming_the_work() 
     serving.abort();
     assert!(listed, "`/api/works` never listed {slug}");
 }
+
+/// **`serve` sweeps a live library's cache on its own** (O11): a cover no
+/// member holds goes without any request, and so does the member's own cover,
+/// which is over `cache_max` alone and goes only if the cap reaches the sweep.
+/// Of two staging files, the one dated an hour before the start goes and the
+/// one dated an hour ahead stays, so the cut-off is taken at the start.
+#[tokio::test]
+async fn serve_sweeps_a_live_library_s_cache_once_it_is_listening() {
+    let fixture = crate::test_support::Fixture::new("serve-sweeps");
+    let library = crate::test_support::scanned_file_backed_library(&fixture);
+    let works = crate::Works::library(&library).expect("projects the scanned works");
+    let digest: String = library
+        .conn()
+        .query_row("SELECT sha256 FROM member", [], |row| row.get(0))
+        .expect("reads the one member's digest");
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = probe.local_addr().unwrap().to_string();
+    drop(probe);
+    let cache = fixture.path().join("cache");
+    let covers = cache.join("covers");
+    let unheld = crate::cover::cache_path(&covers, &"0123456789abcdef".repeat(4));
+    let held = crate::cover::cache_path(&covers, &digest);
+    std::fs::create_dir_all(&covers).expect("makes the covers directory");
+    std::fs::write(&unheld, b"x").expect("plants an unheld cover");
+    std::fs::write(&held, [0; 100]).expect("plants the member's cover");
+    let (leftover, young) = (
+        taiyaku_read::atomic::temp_path(&held, "jpg"),
+        taiyaku_read::atomic::temp_path(&held, "jpg"),
+    );
+    let (now, hour) = (
+        std::time::SystemTime::now(),
+        std::time::Duration::from_secs(3600),
+    );
+    for (staging, modified) in [(&leftover, now - hour), (&young, now + hour)] {
+        std::fs::write(staging, b"x").expect("plants a staging file");
+        std::fs::File::options()
+            .write(true)
+            .open(staging)
+            .and_then(|file| file.set_modified(modified))
+            .expect("dates a staging file");
+    }
+
+    let serving = tokio::spawn(async move {
+        crate::serve(
+            library,
+            works,
+            crate::ServeOptions {
+                addr,
+                cache: Some(cache),
+                cache_max: 99,
+                ..crate::ServeOptions::default()
+            },
+        )
+        .await
+    });
+    for _ in 0..250 {
+        if serving.is_finished() || !(unheld.exists() || held.exists() || leftover.exists()) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    serving.abort();
+    assert!(!unheld.exists(), "{} was never swept", unheld.display());
+    assert!(!held.exists(), "{} was never evicted", held.display());
+    assert!(!leftover.exists(), "{} was never swept", leftover.display());
+    assert!(young.exists(), "{} was swept", young.display());
+}

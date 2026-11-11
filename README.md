@@ -488,7 +488,7 @@ on 8484 and runs as uid 99, gid 100 (Unraid's `nobody:users`). It needs three ma
 | Container | What | Back it up? |
 | --- | --- | --- |
 | `/config` | `taiyaku/library.db` and `taiyaku/backups/`: accounts, reading positions, notes, corrections | yes — it is the only copy |
-| `/cache` | covers, tiles and reading-size pages | no — all of it regenerates |
+| `/cache` | covers, tiles and reading-size pages, swept daily to a 10 GiB cap by default | no — all of it regenerates |
 | `/media` | the share your libraries' directories are in | it is your library |
 
 A compose file in the shape this repository is meant to be deployed with:
@@ -518,6 +518,24 @@ start, because a directory Docker creates for you is `root:root`. A root-owned
 mkdir -p /mnt/user/appdata/taiyaku/config /mnt/user/appdata/taiyaku-cache
 chown 99:100 /mnt/user/appdata/taiyaku/config /mnt/user/appdata/taiyaku-cache
 ```
+
+The server looks after `/cache` itself. Once it is listening, and every 24 hours
+after that, it deletes what nothing will read again: the renderings of files the
+library no longer holds, and any half-written file a crash left. Then, while the
+cache is over its cap, it deletes the renderings least recently used first; a
+hit records its use at most once a day. The cap is 10 GiB. `TAIYAKU_CACHE_MAX`,
+or `--cache-max`, which wins over it, sets another: a byte count, optionally
+followed by `K`, `M`, `G` or `T` (powers of 1024), or `0` for no cap. The cap
+holds at each sweep, so between two sweeps the cache can grow past it by what a
+day's reading writes. Each sweep prints one line saying what it deleted and what
+is left, or why it could not sweep.
+
+Each library database needs a cache root of its own. Every server started
+without `--cache` uses the default, `$XDG_CACHE_HOME/taiyaku`, and every one
+started with no `taiyaku.json` sweeps it, deleting the renderings of files its
+own database does not hold. So when servers over different databases share the
+default, each one that sweeps deletes the others' renderings; nothing is lost
+but the work of making them again.
 
 A root with `keeps_documents` turned on (it is off by default) writes hand
 corrections beside it, in `.taiyaku/`, and for that its directory must be

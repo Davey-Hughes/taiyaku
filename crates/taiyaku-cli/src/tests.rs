@@ -2503,7 +2503,7 @@ fn serve_refuses_an_unknown_flag() {
     assert_eq!(
         err,
         "serve has no flag `--bogus`; its flags are --addr, --allow-web-setup, --cache, \
-             --db, --dirs, --insecure-cookies, --log-requests, --refresh-stump, \
+             --cache-max, --db, --dirs, --insecure-cookies, --log-requests, --refresh-stump, \
              --secure-cookies, --stump-key, --stump-url, --trusted-proxy, --web"
     );
 }
@@ -2523,6 +2523,19 @@ fn serve_refuses_a_stump_key_with_no_url() {
     assert_eq!(
         err,
         "a stump key was given with no --stump-url or TAIYAKU_STUMP_URL"
+    );
+}
+
+/// A cap that is not a size stops `serve` with its own refusal. The sidecar
+/// is there so that a `serve` which took the value went on to refuse that
+/// missing file instead of opening the default library and serving.
+#[test]
+fn serve_refuses_a_cache_cap_that_is_not_a_size() {
+    let err = serve(&argv(&["a.json", "--cache-max", "12Q"])).unwrap_err();
+    assert_eq!(
+        err,
+        "--cache-max `12Q` is not a size: give a byte count, optionally followed by \
+         K, M, G or T, or 0 for no cap"
     );
 }
 
@@ -3132,6 +3145,104 @@ fn serve_options_carries_the_dirs_from_the_flag_or_the_variable() {
     );
     assert_eq!(carried.addr, "0.0.0.0:9");
     assert_eq!(carried.auth.trusted_proxies.len(), 1);
+}
+
+/// A cache cap is a byte count with an optional binary unit in either case,
+/// and nothing else: no space, fraction, sign or `B`, and no count whose bytes
+/// overflow `u64`.
+#[test]
+fn cache_size_is_a_byte_count_with_an_optional_binary_unit() {
+    assert_eq!(super::cache_size("0"), Some(0));
+    assert_eq!(super::cache_size("512"), Some(512));
+    assert_eq!(super::cache_size("1K"), Some(1024));
+    assert_eq!(super::cache_size("1k"), Some(1024));
+    assert_eq!(super::cache_size("3m"), Some(3_145_728));
+    assert_eq!(super::cache_size("5G"), Some(5_368_709_120));
+    assert_eq!(super::cache_size("2t"), Some(2_199_023_255_552));
+    assert_eq!(
+        super::cache_size("16777215T"),
+        Some(18_446_742_974_197_923_840),
+        "the largest count of T that fits"
+    );
+    for refused in [
+        "",
+        "G",
+        "5GB",
+        "5 G",
+        "1.5G",
+        "-1",
+        "+1",
+        "5Q",
+        "16777216T",
+        "18446744073709551616",
+    ] {
+        assert_eq!(super::cache_size(refused), None, "{refused:?}");
+    }
+}
+
+/// The cap reaches `ServeOptions` from `--cache-max`, or else from
+/// `TAIYAKU_CACHE_MAX`, which is not read at all beside the flag, or else is
+/// 10 GiB; and 0 is passed through as no cap.
+#[test]
+fn serve_options_carries_the_cache_cap_from_the_flag_or_the_variable() {
+    let cap = |args: &[&str], pairs: &[(&str, &str)]| {
+        super::serve_options(&argv(args), &an_environment(pairs))
+            .expect("options")
+            .cache_max
+    };
+
+    assert_eq!(cap(&["--cache-max", "5G"], &[]), 5_368_709_120);
+    assert_eq!(cap(&[], &[("TAIYAKU_CACHE_MAX", "3M")]), 3_145_728);
+    assert_eq!(
+        cap(&["--cache-max", "5G"], &[("TAIYAKU_CACHE_MAX", "3M")]),
+        5_368_709_120,
+        "the flag wins"
+    );
+    assert_eq!(
+        cap(&["--cache-max", "5G"], &[("TAIYAKU_CACHE_MAX", "3Q")]),
+        5_368_709_120,
+        "the variable beside the flag is not read"
+    );
+    assert_eq!(cap(&[], &[]), 10_737_418_240, "10 GiB by default");
+    assert_eq!(cap(&["--cache-max", "0"], &[]), 0);
+}
+
+/// A cap that is not a size is refused, from the flag or the variable, rather
+/// than served under the default.
+#[test]
+fn serve_options_refuses_a_cache_cap_that_is_not_a_size() {
+    let refusal = |args: &[&str], pairs: &[(&str, &str)]| {
+        super::serve_options(&argv(args), &an_environment(pairs))
+            .err()
+            .unwrap_or_else(|| panic!("serve {args:?} with {pairs:?} should have refused"))
+    };
+
+    assert_eq!(
+        refusal(&["--cache-max", "5GB"], &[]),
+        "--cache-max `5GB` is not a size: give a byte count, optionally followed by \
+         K, M, G or T, or 0 for no cap"
+    );
+    assert_eq!(
+        refusal(&["--cache-max", "5GB"], &[("TAIYAKU_CACHE_MAX", "3M")]),
+        "--cache-max `5GB` is not a size: give a byte count, optionally followed by \
+         K, M, G or T, or 0 for no cap",
+        "a good variable does not stand in for a bad flag"
+    );
+    assert_eq!(
+        refusal(&[], &[("TAIYAKU_CACHE_MAX", "1.5G")]),
+        "TAIYAKU_CACHE_MAX `1.5G` is not a size: give a byte count, optionally followed by \
+         K, M, G or T, or 0 for no cap"
+    );
+    assert_eq!(
+        refusal(&[], &[("TAIYAKU_CACHE_MAX", "")]),
+        "TAIYAKU_CACHE_MAX `` is not a size: give a byte count, optionally followed by \
+         K, M, G or T, or 0 for no cap",
+        "set and empty is not unset"
+    );
+    assert_eq!(
+        refusal(&["--cache-max"], &[]),
+        "--cache-max needs a size, and nothing followed it"
+    );
 }
 
 /// `TAIYAKU_FOLDERS` has no alias, and a setting that had an effect must not

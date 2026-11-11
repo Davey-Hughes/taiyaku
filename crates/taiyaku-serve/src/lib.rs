@@ -9,6 +9,7 @@ mod alignments;
 mod auth;
 mod backup_api;
 mod cache_root;
+mod cache_sweep;
 mod cbz;
 mod composite;
 /// Spec C4 §6's rule-editor routes: the admin-only CRUD, preview and import
@@ -382,6 +383,10 @@ pub struct ServeOptions {
     pub web: Option<std::path::PathBuf>,
     /// `--dirs`: what the directory browser may list beneath.
     pub dirs: Vec<std::path::PathBuf>,
+    /// The cache cap in bytes, 0 for no cap. It holds at each sweep, which
+    /// deletes the least recently used renderings until the cache is at or
+    /// under it; between sweeps the cache may grow past it.
+    pub cache_max: u64,
 }
 
 /// Says, line by line to `say`, why each directory the server was started with
@@ -434,6 +439,7 @@ pub async fn serve(
         auth,
         web,
         dirs,
+        cache_max,
     } = options;
     let addr = addr.as_str();
     // Opened before anything else so a bad `--log-requests` path is a
@@ -624,6 +630,7 @@ pub async fn serve(
     if state.works.is_live() {
         registry::spawn_refresher(Arc::clone(&state), registry::REFRESH_EVERY);
     }
+    cache_sweep::spawn(&state, cache_max);
     // Named the same way the bind failure is. Both are reported by a process
     // that may be serving several addresses over its life and prints nothing
     // else about them; "Address already in use" without one is a message that

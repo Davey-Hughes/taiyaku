@@ -59,6 +59,9 @@ zip = "9.1.3"
 # `trace` for the Libraries list's snapshot test, which commits a removal from a
 # second connection at the first row the list reads.
 rusqlite = { version = "0.38", features = ["hooks", "trace"] }
+# `test-util` for the cache sweep's schedule test: a paused clock runs through
+# a day's wait without taking it.
+tokio = { version = "1", features = ["test-util"] }
 
 [lints]
 workspace = true

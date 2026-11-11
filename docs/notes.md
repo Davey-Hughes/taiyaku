@@ -4049,6 +4049,10 @@ for a book added after a work first resolved; that remains a deliberate
 tradeoff, recorded as Risk 5 in the design, and `--refresh-stump` remains the
 way to act on it.
 
+*Since 2026-11-10 a server started with no sidecar paths sweeps the cover and
+page caches and, by default, caps them (`cache_sweep`), and O11 is narrowed to
+its Stump half; see its entry in `docs/status.md`.*
+
 ## O8, measured three ways: the third one is why it was worth fixing
 
 O8 — Stump resolution running to completion before the listener binds — had
@@ -4249,6 +4253,10 @@ covers — archives replaced routinely enough for the per-file cost to
 accumulate — now applies at the tile count's larger constant factor, and a
 library holding many editions' worth of warm filmstrips at once is the case
 this single run cannot speak to, since only one edition was fetched here.
+
+*Since 2026-11-10 a server started with no sidecar paths sweeps the cover and
+page caches and, by default, caps them (`cache_sweep`), and O11 is narrowed to
+its Stump half; see its entry in `docs/status.md`.*
 
 ## M5a, measured directly: the reader's own evidence, not the scratch ledger's
 
@@ -22383,6 +22391,8 @@ growing as area to the 0.85 — holds up: solved from these measured ratios,
 bytes here grow as edge^1.72–1.74, i.e. area^0.86–0.87, close to what was
 assumed. It is the absolute prediction that undershot, not the shape of the
 curve. **O11's row needs the ratios measured above, not §8's guess.**
+*O11's row stopped carrying this edition's sizes when it narrowed to its Stump
+half on 2026-11-10; O134's row carries them, with the ratios.*
 
 The cold-pass wall-clock is a sequential loop of separate `curl` invocations
 (one TCP connection per request) against this workstation, not the NAS; it is

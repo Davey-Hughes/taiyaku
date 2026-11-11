@@ -360,20 +360,48 @@ pub fn cached_or_generated_page<P: AsRef<[u8]>>(
 /// request is a real hit.
 ///
 /// Every file in these caches came out of `encode_jpeg`, which always starts
-/// with the SOI marker and ends with EOI. So "starts `FF D8 FF`, ends
-/// `FF D9`" rejects nothing this module wrote. What it rejects is an empty
-/// file, a zero-filled one, and one cut short: the shapes a copy that was cut
-/// off leaves.
+/// with SOI and ends with EOI, so the check rejects only the shapes a copy cut
+/// off leaves: an empty file, a zero-filled one, and one cut short.
 ///
 /// A marker check rather than a decode, because the hit is the cheap path.
 /// It runs outside `GENERATION_LIMIT` so that a warm grid stays fully
 /// parallel, and a decode here would cost a warm request about as much as a
 /// cold one. The bytes are already in memory, so checking five of them adds
-/// nothing. **Damage between the two markers is not caught.** Catching it
-/// would take that decode.
+/// nothing. **Damage between the markers is not caught**: that takes a decode.
+///
+/// **A hit records its use (O11)** in the mtime the cache sweep evicts by: the
+/// atime moves or not by how the cache is mounted. The touch follows the
+/// decided hit and drops its result, so it can never turn a hit into a miss.
 fn cached(path: &Path) -> Option<Vec<u8>> {
     let found = std::fs::read(path).ok()?;
-    (found.starts_with(b"\xff\xd8\xff") && found.ends_with(b"\xff\xd9")).then_some(found)
+    if !(found.starts_with(b"\xff\xd8\xff") && found.ends_with(b"\xff\xd9")) {
+        return None;
+    }
+    let _ = record_use(path);
+    Some(found)
+}
+
+/// How stale a rendering's recorded use may grow before a hit sets it to now.
+///
+/// A day, so a warm read becomes a write at most once a day per file; the
+/// sweep then sees a use up to a day late.
+const USE_REFRESH_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Sets `path`'s mtime to now when it is more than [`USE_REFRESH_AFTER`] old.
+/// An mtime ahead of now, as a clock set back leaves, is young.
+fn record_use(path: &Path) -> std::io::Result<()> {
+    let now = std::time::SystemTime::now();
+    let modified = std::fs::metadata(path)?.modified()?;
+    if now
+        .duration_since(modified)
+        .is_ok_and(|age| age > USE_REFRESH_AFTER)
+    {
+        std::fs::File::options()
+            .write(true)
+            .open(path)?
+            .set_modified(now)?;
+    }
+    Ok(())
 }
 
 /// How many generations may decode at once: a cover or a tile, fetching its

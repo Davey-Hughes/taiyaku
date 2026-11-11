@@ -177,7 +177,7 @@ fn print_usage() {
     println!(
         "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--db PATH] \
          [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump] \
-         [--cache DIR] [--trusted-proxy CIDR]... [--secure-cookies] \
+         [--cache DIR] [--cache-max SIZE] [--trusted-proxy CIDR]... [--secure-cookies] \
          [--insecure-cookies] [--allow-web-setup] [--web DIR] [--dirs DIR]..."
     );
     println!("       taiyaku library import <taiyaku.json> [--db PATH]");
@@ -1218,6 +1218,7 @@ fn serve(args: &[String]) -> Result<(), String> {
             "--addr",
             "--allow-web-setup",
             "--cache",
+            "--cache-max",
             "--db",
             "--dirs",
             "--insecure-cookies",
@@ -1280,6 +1281,14 @@ fn serve(args: &[String]) -> Result<(), String> {
             sidecar.editions.len(),
             sidecar.work.title
         );
+    }
+    // Not silent, the rule `--refresh-stump`'s notice keeps: only a live
+    // registry is swept (`cache_sweep::spawn`), so a cap typed beside sidecar
+    // paths would be believed to hold. After `serve_options`, so a value that
+    // is not a size is still refused. The variable gets no notice: it is set
+    // where the server is configured, not typed for this start.
+    if flag_present(args, "--cache-max") && !works.is_live() {
+        eprintln!("taiyaku: --cache-max has no effect with taiyaku.json paths; nothing is swept");
     }
     let runtime = tokio::runtime::Runtime::new().map_err(|e| format!("{e}"))?;
     let outcome = runtime.block_on(taiyaku_serve::serve(Arc::new(db_library), works, options));
@@ -1348,6 +1357,28 @@ fn serve_options(
     // Naming the covers directory instead would put the tiles in a sibling of
     // whatever was typed rather than inside it.
     let cache = option_value(args, "--cache", "a directory")?.map(PathBuf::from);
+    // The flag wins, and the variable is not read beside it, the precedence
+    // `--stump-url` holds over `TAIYAKU_STUMP_URL`: a flag is typed for this
+    // start, over a variable set where the server is configured. A value that
+    // is not a size refuses to start rather than falling back to the default,
+    // which would serve under a cap nobody set while the one meant for it was
+    // silently dropped. A variable that is not UTF-8 reads as unset, like every
+    // variable these options read.
+    let not_a_size = |source: &str, value: &str| {
+        format!(
+            "{source} `{value}` is not a size: give a byte count, optionally followed by \
+             K, M, G or T, or 0 for no cap"
+        )
+    };
+    let cache_max = match option_value(args, "--cache-max", "a size")? {
+        Some(value) => cache_size(value).ok_or_else(|| not_a_size("--cache-max", value))?,
+        None => match environment("TAIYAKU_CACHE_MAX") {
+            Some(value) => {
+                cache_size(&value).ok_or_else(|| not_a_size("TAIYAKU_CACHE_MAX", &value))?
+            }
+            None => DEFAULT_CACHE_MAX,
+        },
+    };
     // Throws away every work's remembered Stump resolutions before this start
     // resolves them again. The escape hatch for a book added to Stump after a
     // work first resolved, which nothing here notices on its own.
@@ -1364,7 +1395,36 @@ fn serve_options(
         auth,
         web,
         dirs,
+        cache_max,
     })
+}
+
+/// The cache's cap when neither `--cache-max` nor `TAIYAKU_CACHE_MAX` sets
+/// one: 10 GiB (spec §6).
+const DEFAULT_CACHE_MAX: u64 = 10 * 1024 * 1024 * 1024;
+
+/// A size as `--cache-max` and `TAIYAKU_CACHE_MAX` take it: ASCII digits,
+/// then optionally `K`, `M`, `G` or `T` in either case, as powers of 1024.
+/// `None` for anything else, and for a count whose bytes overflow `u64`.
+///
+/// The digits are checked by hand because `u64::from_str` takes a leading `+`.
+fn cache_size(text: &str) -> Option<u64> {
+    let shift = match text.as_bytes().last()?.to_ascii_uppercase() {
+        b'K' => 10,
+        b'M' => 20,
+        b'G' => 30,
+        b'T' => 40,
+        _ => 0,
+    };
+    let digits = if shift == 0 {
+        text
+    } else {
+        &text[..text.len() - 1]
+    };
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u64>().ok()?.checked_mul(1 << shift)
 }
 
 /// `--dirs DIR`, repeatable, or `TAIYAKU_DIRS`: the directories the

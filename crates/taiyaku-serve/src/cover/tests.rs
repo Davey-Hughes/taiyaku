@@ -192,6 +192,75 @@ fn a_cache_hit_reads_back_the_same_bytes_without_regenerating() {
     );
 }
 
+/// A whole JPEG at a cover's cache path in `dir`, last modified at `used`.
+fn cached_cover_used(dir: &Path, used: std::time::SystemTime) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = cache_path(dir, "deadbeef");
+    std::fs::write(&path, thumbnail(&real_page_bytes()).unwrap()).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .and_then(|file| file.set_modified(used))
+        .unwrap();
+    path
+}
+
+fn modified(path: &Path) -> std::time::SystemTime {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .unwrap()
+}
+
+/// A read through the cache whose `page` panics, so it can only be a hit.
+fn hit(dir: &Path) {
+    cached_or_generated(dir, "deadbeef", || {
+        panic!("a cache hit must not regenerate")
+    })
+    .expect("a hit answers");
+}
+
+#[test]
+fn a_hit_on_a_rendering_last_used_over_a_day_ago_marks_it_used_now() {
+    let scratch = crate::test_support::Fixture::new("cover-touch-stale");
+    let dir = scratch.join("covers");
+    let a_day_and_a_minute = std::time::Duration::from_secs(24 * 60 * 60 + 60);
+    let path = cached_cover_used(&dir, std::time::SystemTime::now() - a_day_and_a_minute);
+
+    let before = std::time::SystemTime::now();
+    hit(&dir);
+    let after = std::time::SystemTime::now();
+
+    let used = modified(&path);
+    assert!(
+        before <= used && used <= after,
+        "the mtime {used:?} is not between {before:?} and {after:?}"
+    );
+}
+
+/// A minute under a day ago is within a day, and an mtime ahead of now, as a
+/// clock set back leaves, counts as young.
+#[test]
+fn a_hit_on_a_rendering_used_within_a_day_or_dated_ahead_keeps_its_mtime() {
+    let (minute, day) = (
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(24 * 60 * 60),
+    );
+    let now = std::time::SystemTime::now();
+    for (label, used) in [
+        ("a minute under a day ago", now - day + minute),
+        ("a day ahead", now + day),
+    ] {
+        let scratch = crate::test_support::Fixture::new("cover-touch-young");
+        let dir = scratch.join("covers");
+        let path = cached_cover_used(&dir, used);
+        let had = modified(&path);
+
+        hit(&dir);
+
+        assert_eq!(modified(&path), had, "a cover last used {label}");
+    }
+}
+
 /// `cached_or_generated`'s doc promises a read-only cache directory degrades
 /// the feed rather than breaking it. Pointed at a path that cannot be created —
 /// here, a directory nested under an existing plain file — because
