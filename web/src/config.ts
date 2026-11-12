@@ -14,7 +14,7 @@
  *
  * **`regimeFacts` is a pure function over a `Root`**, for the reason
  * `library.ts` keeps its chip and sort helpers rather than inlining them: the
- * part worth testing is the three facts, not the `<dl>` they land in.
+ * part worth testing is the facts, not the `<dl>` they land in.
  */
 import { getJson, sendJson } from './api'
 import { NEW_ACCOUNT, NEW_LIBRARY } from './configAddress'
@@ -83,13 +83,26 @@ export interface Root {
    * and `measure_dir` consults it before descending: O92.
    */
   exclude_globs: string | null
+  /** `null` for Automatic, `0` for Off, otherwise Every's interval. */
   scan_interval_secs: number | null
   /** Whether `<root>/.taiyaku/` is kept — migration 012, off by default. */
   keeps_documents: boolean
   /** `null` until this root has been scanned once. */
   last_scan_at: string | null
-  /** `ok`, `refused`, or a failure — `null` alongside `last_scan_at`. */
+  /**
+   * `ok`, `refused` or `failed`; `waiting` from the server's scan while
+   * another job holds the job lock or another derive the lease (O51),
+   * `deriving` until its derive ends, and `interrupted` where a restart found
+   * either (O186) — `null` alongside `last_scan_at`.
+   */
   last_scan_status: string | null
+  /**
+   * `last_scan_at` plus the interval the scheduler scans it at: `null` for
+   * Off, and for a directory the scheduler takes at its next tick, one never
+   * scanned or scanned at a time it cannot read. `scan_interval_secs` tells
+   * the two apart.
+   */
+  next_scan_at: string | null
 }
 
 /**
@@ -111,13 +124,14 @@ export interface Probe {
  * route answers one.
  *
  * **A link runs no probe**, so `watching` and `interval_secs` are `null` for
- * a directory another library already held: the probe would write the scan
- * interval, a setting the libraries that hold it share.
+ * a directory another library already held: the probe writes a file into the
+ * directory, and the directory was probed when it was first added.
  */
 export interface Added {
   root: Root
   watching: boolean | null
   watch_reason: string | null
+  /** The interval the probe implies, reported and not stored. */
   interval_secs: number | null
   /** The libraries, by name, that held it before this add: none for a new one. */
   also_in: string[]
@@ -405,16 +419,49 @@ export const POLL_MISSES_ALLOWED = 3
 // --- pure helpers ---------------------------------------------------------
 
 /**
- * A scan interval in the coarsest unit that does not lie about it.
- *
- * Rounds *down* rather than showing a fraction: 90 minutes reads `1h`, not
- * `1.5h`. The interval is an operational fact somebody set, and a fractional
- * hour reads as a measurement it is not.
+ * A scan interval in the units the Scan schedule's control counts it in:
+ * hours where it is a whole number of them, and minutes otherwise, so that
+ * 90 minutes reads `90m` where it was set as 90 minutes. Minutes round down,
+ * as the control draws them, and an interval under a minute, which only an
+ * old store holds, reads in seconds.
  */
 export function humanInterval(secs: number): string {
-  if (secs >= 3600) return `${Math.floor(secs / 3600)}h`
+  if (secs >= 3600 && secs % 3600 === 0) return `${secs / 3600}h`
   if (secs >= 60) return `${Math.floor(secs / 60)}m`
   return `${secs}s`
+}
+
+/**
+ * Whether a stored interval is Off: the scheduler reads 0 or less so
+ * (`schedule::every`), and a page that drew a negative one as an interval would
+ * promise a scan that never comes.
+ */
+const isOff = (secs: number | null) => secs !== null && secs <= 0
+
+/**
+ * How often a directory is scanned, in the words its facts and the library
+ * page's Scan every column share: `automatic`, `off`, or the interval as it is
+ * stored, even one under the minimum, which `nextScan` shows the scheduler
+ * reading as the minimum.
+ */
+export function scanEvery(root: Pick<Root, 'scan_interval_secs'>): string {
+  if (root.scan_interval_secs === null) return 'automatic'
+  if (isOff(root.scan_interval_secs)) return 'off'
+  return humanInterval(root.scan_interval_secs)
+}
+
+/**
+ * When a directory is next scanned: `off`, `due` where the server sends no
+ * time for a directory it scans, or the time.
+ *
+ * **Off is read from the interval**, as the server sends `null` for Off and
+ * for due alike.
+ */
+export function nextScan(
+  root: Pick<Root, 'scan_interval_secs' | 'next_scan_at'>,
+): string {
+  if (isOff(root.scan_interval_secs)) return 'off'
+  return root.next_scan_at === null ? 'due' : inUtc(root.next_scan_at)
 }
 
 /**
@@ -431,22 +478,22 @@ export function lastScan(
 }
 
 /**
- * C4 §3's regime facts, assembled from what this client actually knows —
- * watch, interval, last scan — each paired with what it is a fact *about*.
+ * C4 §3's regime facts, from what this client knows — watch, interval, and
+ * last and next scan, in Part C §4.3's order — each beside what it is *about*.
  *
  * The spec's own example reads
  * `watching 156 directories · scanning every 24h · last scan 2h ago, 0 changes`.
  * Two of those figures are not available here: the directory count and the
  * change count both belong to a scan report, not to a `root` row, so this
- * draws the three facts the row does carry and `ScanReport` draws the rest.
+ * draws the facts the row does carry and `ScanReport` draws the rest.
  *
- * **A sentence was the wrong shape for them.** Joining the three with `·`
- * put four `·`-separated pieces on one line — the third fact appending its
- * own outcome — and a bare value does not say what it is:
+ * **A sentence is the wrong shape for them.** Joined with `·`, they would put
+ * one more `·`-separated piece on the line than there are facts — the last
+ * scan appending its own outcome — and a bare value does not say what it is:
  * `unknown — probed when a directory is added` is only legible beside the word
- * `watch`, and `never` beside `last scan`. Nothing here is ever absent; each
- * arm has a fallback, which is why labels rather than omission are what make
- * a missing fact readable (spec §11.6).
+ * `watch`, `never` beside `last scan`, and `due` beside `next scan`. Nothing
+ * here is ever absent; each arm has a fallback, which is why labels rather
+ * than omission are what make a missing fact readable (spec §11.6).
  *
  * **`probe` is optional and its absence is stated, not defaulted.** Only
  * the two routes that add a directory run the probe, so a directory loaded from
@@ -466,11 +513,6 @@ export function regimeFacts(
           ? 'probe failed'
           : `probe failed: ${probe.watch_reason}`
 
-  const interval =
-    root.scan_interval_secs === null
-      ? 'not set'
-      : humanInterval(root.scan_interval_secs)
-
   const last =
     root.last_scan_at === null
       ? 'never'
@@ -478,8 +520,9 @@ export function regimeFacts(
 
   return [
     { label: 'watch', value: watch },
-    { label: 'scan every', value: interval },
+    { label: 'scan every', value: scanEvery(root) },
     { label: 'last scan', value: last },
+    { label: 'next scan', value: nextScan(root) },
   ]
 }
 

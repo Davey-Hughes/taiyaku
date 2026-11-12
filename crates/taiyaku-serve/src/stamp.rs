@@ -180,22 +180,34 @@ pub(crate) async fn perform(
             // A second connection for the same reason the `GET` takes one, and
             // more so: this one copies and renames every planned archive.
             let conn = state.library.working().map_err(NoAnswer::Failed)?;
-            let work_id = crate::metadata::work_by_slug(&conn, &principal.access, &slug)?;
-            let expected: Vec<taiyaku_library::stamp::Planned> = confirmation
-                .archives
-                .iter()
-                .map(taiyaku_library::stamp::Planned::from)
-                .collect();
-            let applied =
-                taiyaku_library::stamp::apply(&conn, work_id, principal.user_id, &expected)
-                    .map_err(NoAnswer::Refused)?;
-            Ok(serde_json::json!({
-                "rewritten": applied.members.len(),
-                "content_key": applied.content_key,
-                "document_moved": applied.document_moved,
-                "document_rewritten": applied.document_rewritten,
-                "sidecar_rewritten": applied.sidecar_rewritten,
-            }))
+            // As the job lock, for a derive another process runs (O51).
+            let Some(lease) = state
+                .library
+                .derive_lease(taiyaku_library::lease::Wait::No)
+                .map_err(NoAnswer::Failed)?
+            else {
+                return Err(NoAnswer::Refused(crate::library_job::waits_for_the_job(
+                    "stamp again",
+                )));
+            };
+            lease.holding(|| {
+                let work_id = crate::metadata::work_by_slug(&conn, &principal.access, &slug)?;
+                let expected: Vec<taiyaku_library::stamp::Planned> = confirmation
+                    .archives
+                    .iter()
+                    .map(taiyaku_library::stamp::Planned::from)
+                    .collect();
+                let applied =
+                    taiyaku_library::stamp::apply(&conn, work_id, principal.user_id, &expected)
+                        .map_err(NoAnswer::Refused)?;
+                Ok(serde_json::json!({
+                    "rewritten": applied.members.len(),
+                    "content_key": applied.content_key,
+                    "document_moved": applied.document_moved,
+                    "document_rewritten": applied.document_rewritten,
+                    "sidecar_rewritten": applied.sidecar_rewritten,
+                }))
+            })
         })
         .await,
     )

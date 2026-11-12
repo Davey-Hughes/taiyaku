@@ -83,7 +83,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use rusqlite::OptionalExtension;
-use taiyaku_library::{derive, hand, preview, rules, scan};
+use taiyaku_library::{derive, hand, preview, rules, scan, schedule};
 
 use crate::{ServeState, auth::Principal};
 
@@ -930,17 +930,30 @@ pub(crate) async fn preview_rules(
 
     let preview = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(NoAnswer::Failed)?;
-        check_proposed_roots(&working, &proposed)?;
-        let (impact, rows) =
-            preview::preview_with_rows(&working, &proposed, selected, MATCHED_FILES_LIMIT)
-                .map_err(NoAnswer::Unusable)?;
-        let overrides = preview::overrides(&working, &proposed).map_err(NoAnswer::Failed)?;
-        Ok::<_, NoAnswer>(serde_json::json!({
-            "impact": impact_json(&impact),
-            "rows": rows.rows.iter().map(row_json).collect::<Vec<_>>(),
-            "rows_truncated": rows.truncated,
-            "overrides": overrides.iter().map(override_json).collect::<Vec<_>>(),
-        }))
+        // A preview derives the whole library and rolls it back, so it would
+        // interleave with another derive as a scan's would (O51).
+        let Some(lease) = state
+            .library
+            .derive_lease(taiyaku_library::lease::Wait::No)
+            .map_err(NoAnswer::Failed)?
+        else {
+            return Err(NoAnswer::Busy(crate::library_job::waits_for_the_job(
+                "preview again",
+            )));
+        };
+        lease.holding(|| {
+            check_proposed_roots(&working, &proposed)?;
+            let (impact, rows) =
+                preview::preview_with_rows(&working, &proposed, selected, MATCHED_FILES_LIMIT)
+                    .map_err(NoAnswer::Unusable)?;
+            let overrides = preview::overrides(&working, &proposed).map_err(NoAnswer::Failed)?;
+            Ok::<_, NoAnswer>(serde_json::json!({
+                "impact": impact_json(&impact),
+                "rows": rows.rows.iter().map(row_json).collect::<Vec<_>>(),
+                "rows_truncated": rows.truncated,
+                "overrides": overrides.iter().map(override_json).collect::<Vec<_>>(),
+            }))
+        })
     })
     .await;
 
@@ -1035,15 +1048,28 @@ pub(crate) async fn save_rules(
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
         let working = state.library.working().map_err(NoAnswer::Failed)?;
-        check_proposed_roots(&working, &proposed)?;
-        let applied = preview::apply(&working, &proposed).map_err(NoAnswer::Unusable)?;
-        Ok::<_, NoAnswer>(serde_json::json!({
-            "impact": impact_json(&applied.impact),
-            "rules": applied.rules.iter().map(rule_json).collect::<Vec<_>>(),
-            "reopened_proposals": applied.reopened_proposals,
-            "complaints": applied.complaints,
-            "derive": derive_report_json(&applied.derive_report),
-        }))
+        // The job lock is this process's; the lease also covers a derive
+        // another process runs (O51).
+        let Some(lease) = state
+            .library
+            .derive_lease(taiyaku_library::lease::Wait::No)
+            .map_err(NoAnswer::Failed)?
+        else {
+            return Err(NoAnswer::Busy(crate::library_job::waits_for_the_job(
+                "save again",
+            )));
+        };
+        lease.holding(|| {
+            check_proposed_roots(&working, &proposed)?;
+            let applied = preview::apply(&working, &proposed).map_err(NoAnswer::Unusable)?;
+            Ok::<_, NoAnswer>(serde_json::json!({
+                "impact": impact_json(&applied.impact),
+                "rules": applied.rules.iter().map(rule_json).collect::<Vec<_>>(),
+                "reopened_proposals": applied.reopened_proposals,
+                "complaints": applied.complaints,
+                "derive": derive_report_json(&applied.derive_report),
+            }))
+        })
     })
     .await;
 
@@ -1190,14 +1216,14 @@ pub(crate) fn admin_panicked(what: &str, why: &tokio::task::JoinError) -> Respon
 /// One `root` row, as [`list_roots`] sends it and `libraries_api` sends the
 /// directories of a library.
 ///
-/// **`last_scan_at`/`last_scan_status` are read separately from [`scan::Root`],
-/// not carried on it** — that type has neither column. Passed in here instead,
-/// straight off the `root` row, so the shape a caller reads is complete — the
-/// key is always present, whether or not this particular root has ever been
-/// scanned. Both columns are written by [`scan::scan_root`] (its own doc
-/// comment), so a root this process or an earlier one has scanned carries a
-/// real timestamp and status here; one that has not yet still reads `null` for
-/// both. C4 §3's regime line needs the columns present, not populated.
+/// **The scan columns are passed in**, as [`scan::Root`] has neither, so every
+/// key is present, `null` for a root never scanned: C4 §3's regime line needs
+/// them present, not populated. **`next_scan_at` is computed from them**
+/// ([`schedule::next_scan_at`]), as [`added_json`] has no connection to ask
+/// SQLite's `datetime()` for the arithmetic. It is `null` for Off, and for a
+/// root never scanned or whose `last_scan_at` does not read as
+/// `YYYY-MM-DD HH:MM:SS`, both of which are due; `scan_interval_secs` tells Off
+/// from the other two.
 pub(crate) fn root_json(
     root: &scan::Root,
     last_scan_at: Option<&str>,
@@ -1214,6 +1240,7 @@ pub(crate) fn root_json(
         "keeps_documents": root.keeps_documents,
         "last_scan_at": last_scan_at,
         "last_scan_status": last_scan_status,
+        "next_scan_at": schedule::next_scan_at(last_scan_at, root.scan_interval_secs),
     })
 }
 
@@ -1273,12 +1300,26 @@ fn root_patch_from_json(body: &serde_json::Value) -> Result<scan::RootPatch, Str
     if let Some(Some(patterns)) = &exclude_globs {
         scan::check_exclude_globs(patterns)?;
     }
+    // Null is Automatic and 0 is Off. Every has a floor because each scan
+    // holds the job lock through a whole-store derive (spec §4, Decision 3).
+    let scan_interval_secs = patch_nullable_i64(body, "scan_interval_secs", "directory")?;
+    if let Some(Some(secs)) = scan_interval_secs
+        && secs != 0
+        && secs < schedule::MIN_INTERVAL_SECS
+    {
+        return Err(format!(
+            "the directory's `scan_interval_secs` must be null (automatic), 0 (off) or at least \
+             {} ({} minutes)",
+            schedule::MIN_INTERVAL_SECS,
+            schedule::MIN_INTERVAL_SECS / 60
+        ));
+    }
     Ok(scan::RootPatch {
         edition_key: patch_nullable_text(body, "edition_key", "directory")?,
         default_kind: patch_nullable_text(body, "default_kind", "directory")?,
         default_language: patch_nullable_text(body, "default_language", "directory")?,
         exclude_globs,
-        scan_interval_secs: patch_nullable_i64(body, "scan_interval_secs", "directory")?,
+        scan_interval_secs,
         keeps_documents: patch_bool(body, "keeps_documents", "directory")?,
     })
 }
@@ -1700,6 +1741,7 @@ pub(crate) async fn scan_status(
             )
         })
     };
+    let waiting = crate::scan_jobs::waiting_for_a_lock(&state);
 
     let lookup_state = Arc::clone(&state);
     let found = tokio::task::spawn_blocking(move || {
@@ -1733,7 +1775,7 @@ pub(crate) async fn scan_status(
             "elapsed_secs": elapsed.as_secs_f64(),
             "report": report,
             "last_scan_at": last_scan_at,
-            "last_scan_status": last_scan_status,
+            "last_scan_status": crate::scan_jobs::status_sent(&waiting, id, last_scan_status),
         }))
         .into_response(),
         None => Json(serde_json::json!({
@@ -1753,12 +1795,15 @@ pub(crate) async fn scan_status(
 pub(crate) type RootWithScan = (scan::Root, Option<String>, Option<String>);
 
 /// Every root with the two scan columns [`scan::Root`] does not carry, in
-/// [`scan::roots`]'s order: the root, `last_scan_at`, `last_scan_status`.
+/// [`scan::roots`]'s order: the root, `last_scan_at`, and `last_scan_status` as
+/// a page is sent it, `waiting` for each directory in `waiting`
+/// ([`crate::scan_jobs::status_sent`]).
 ///
 /// `scan::Root` carries neither column — see [`root_json`]'s own doc comment —
 /// so they are read here, in one extra query rather than one per root.
 pub(crate) fn roots_with_last_scan(
     conn: &rusqlite::Connection,
+    waiting: &std::collections::HashSet<i64>,
 ) -> Result<Vec<RootWithScan>, String> {
     let roots = scan::roots(conn)?;
     let mut stmt = conn
@@ -1773,6 +1818,7 @@ pub(crate) fn roots_with_last_scan(
         .into_iter()
         .map(|root| {
             let (at, status) = meta.remove(&root.id).unwrap_or_default();
+            let status = crate::scan_jobs::status_sent(waiting, root.id, status);
             (root, at, status)
         })
         .collect())
@@ -1789,8 +1835,9 @@ pub(crate) async fn list_roots(
         return refusal;
     }
     let built = tokio::task::spawn_blocking(move || {
+        let waiting = crate::scan_jobs::waiting_for_a_lock(&state);
         let conn = state.library.conn();
-        let roots = roots_with_last_scan(&conn).map_err(AdminAnswer::Failed)?;
+        let roots = roots_with_last_scan(&conn, &waiting).map_err(AdminAnswer::Failed)?;
         Ok::<_, AdminAnswer>(serde_json::json!({
             "roots": roots
                 .iter()
@@ -1958,11 +2005,24 @@ pub(crate) async fn delete_root(
                 "the directory",
             )));
         }
-        if dry_run {
-            scan::removal_cost(&working, id).map_err(AdminAnswer::Failed)
-        } else {
-            scan::remove_root(&working, id).map_err(AdminAnswer::Failed)
-        }
+        // Held through the removal's derive and the derive after its commit
+        // (O51).
+        let Some(lease) = state
+            .library
+            .derive_lease(taiyaku_library::lease::Wait::No)
+            .map_err(AdminAnswer::Failed)?
+        else {
+            return Err(AdminAnswer::Refused(crate::library_job::waits_for_the_job(
+                "remove the directory",
+            )));
+        };
+        lease.holding(|| {
+            if dry_run {
+                scan::removal_cost(&working, id).map_err(AdminAnswer::Failed)
+            } else {
+                scan::remove_root(&working, id).map_err(AdminAnswer::Failed)
+            }
+        })
     })
     .await;
 

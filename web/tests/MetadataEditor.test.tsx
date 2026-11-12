@@ -1,7 +1,10 @@
 import { act } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as derive from '../src/libraries'
 import { MetadataEditor } from '../src/MetadataEditor'
 import * as stamp from '../src/stamp'
+import { holdOf } from './support/held'
+import { tick } from './support/libraries'
 import { mount } from './support/mount'
 
 // `AcceptForm.test.tsx`'s shape, for the reason its own comment gives.
@@ -12,6 +15,10 @@ vi.mock('../src/stamp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/stamp')>()),
   stampPlan: vi.fn(),
   performStamp: vi.fn(),
+}))
+vi.mock('../src/libraries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/libraries')>()),
+  deriveStatus: vi.fn(),
 }))
 
 /**
@@ -346,6 +353,11 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
   beforeEach(() => {
     vi.mocked(stamp.stampPlan).mockReset()
     vi.mocked(stamp.performStamp).mockReset()
+    vi.mocked(derive.deriveStatus).mockReset()
+    vi.mocked(derive.deriveStatus).mockResolvedValue({
+      derive_running: false,
+      job_held: false,
+    })
   })
 
   it('has no section at all for an account without can_stamp', () => {
@@ -1603,5 +1615,137 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
       '9f0e7bd3ac5e1a6f',
     )
     expect(stampButton(host)).toBeNull()
+  })
+
+  describe('held while a derive or the job lock holds (O51)', () => {
+    const JOB_WAITS = 'Waits for a scan or another library job to finish.'
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    /** What the confirm's `aria-describedby` names, or nothing. */
+    const stampWaits = (host: HTMLElement) =>
+      document.getElementById(
+        stampButton(host)?.getAttribute('aria-describedby') ?? '',
+      )?.textContent
+
+    it.each([
+      { holder: 'a derive', status: { derive_running: true, job_held: false } },
+      {
+        holder: 'the job lock',
+        status: { derive_running: false, job_held: true },
+      },
+    ])(
+      'holds the confirm while $holder holds, says why, sends nothing for a press, and frees it once a poll finds neither',
+      async ({ status }) => {
+        vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
+        vi.mocked(stamp.performStamp).mockResolvedValue({
+          rewritten: 2,
+          content_key: null,
+          document_moved: false,
+          document_rewritten: false,
+          sidecar_rewritten: false,
+        })
+        vi.mocked(derive.deriveStatus).mockResolvedValue(status)
+        const host = mount(
+          <MetadataEditor slug="w" title="t" onPatch={noop} canStamp />,
+        )
+        expect(derive.deriveStatus).not.toHaveBeenCalled()
+        await click(planButton(host)!)
+        await drain()
+        expect(derive.deriveStatus).toHaveBeenCalledTimes(1)
+        expect(holdOf(stampButton(host)!)).toBe('held')
+        expect(stampWaits(host)).toBe(JOB_WAITS)
+        await click(stampButton(host)!)
+        expect(stamp.performStamp).not.toHaveBeenCalled()
+
+        vi.mocked(derive.deriveStatus).mockResolvedValue({
+          derive_running: false,
+          job_held: false,
+        })
+        await tick()
+        await drain()
+        expect(derive.deriveStatus).toHaveBeenCalledTimes(2)
+        expect(holdOf(stampButton(host)!)).toBe('free')
+        expect(stampWaits(host)).toBeUndefined()
+        await click(stampButton(host)!)
+        expect(stamp.performStamp).toHaveBeenCalledTimes(1)
+      },
+    )
+
+    it('holds nothing for its own stamp, found by the read sent as its plan could first be confirmed, and holds the confirm from the read after the stamp failed', async () => {
+      vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
+      let fail!: (why: Error) => void
+      vi.mocked(stamp.performStamp).mockReturnValueOnce(
+        new Promise<stamp.Stamped>((_, reject) => {
+          fail = reject
+        }),
+      )
+      const first = deferred<derive.DeriveStatus>()
+      vi.mocked(derive.deriveStatus).mockReturnValueOnce(first.promise)
+      const host = mount(
+        <MetadataEditor slug="w" title="t" onPatch={noop} canStamp />,
+      )
+      await click(planButton(host)!)
+      await drain()
+      expect(derive.deriveStatus).toHaveBeenCalledTimes(1)
+      await click(stampButton(host)!)
+      expect(stamp.performStamp).toHaveBeenCalledTimes(1)
+
+      // The server counts the stamp's own job lock and lease.
+      first.settle({ derive_running: true, job_held: true })
+      await drain()
+      await act(async () => {
+        fail(
+          new Error(
+            '/api/library/works/w/stamp-comicinfo: 500 the archive could not be written',
+          ),
+        )
+      })
+      await drain()
+      expect(holdOf(stampButton(host)!)).toBe('free')
+      expect(stampWaits(host)).toBeUndefined()
+
+      // Sent with nothing of the page's out, this read's job is another's.
+      vi.mocked(derive.deriveStatus).mockResolvedValue({
+        derive_running: false,
+        job_held: true,
+      })
+      await tick()
+      await drain()
+      expect(derive.deriveStatus).toHaveBeenCalledTimes(2)
+      expect(holdOf(stampButton(host)!)).toBe('held')
+      expect(stampWaits(host)).toBe(JOB_WAITS)
+    })
+
+    it('reads the status again when a stamp is refused for a hold, and holds the confirm from that read, saying why', async () => {
+      vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
+      vi.mocked(stamp.performStamp).mockRejectedValue(
+        new Error(
+          '/api/library/works/w/stamp-comicinfo: 409 a scan or another library job is running; stamp again once it has finished',
+        ),
+      )
+      const host = mount(
+        <MetadataEditor slug="w" title="t" onPatch={noop} canStamp />,
+      )
+      await click(planButton(host)!)
+      await drain()
+      expect(derive.deriveStatus).toHaveBeenCalledTimes(1)
+      expect(holdOf(stampButton(host)!)).toBe('free')
+
+      vi.mocked(derive.deriveStatus).mockResolvedValue({
+        derive_running: false,
+        job_held: true,
+      })
+      await click(stampButton(host)!)
+      await drain()
+      expect(stamp.performStamp).toHaveBeenCalledTimes(1)
+      expect(derive.deriveStatus).toHaveBeenCalledTimes(2)
+      expect(holdOf(stampButton(host)!)).toBe('held')
+      expect(stampWaits(host)).toBe(JOB_WAITS)
+    })
   })
 })

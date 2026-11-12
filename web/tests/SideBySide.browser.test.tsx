@@ -630,6 +630,7 @@ const AT_A_PHONE: Array<{
           library_id: id,
           held_removals: [],
           moves_held: false,
+          derive_running: false,
           scans: [],
           running: scanning,
           elapsed_secs: scanning ? 1 : null,

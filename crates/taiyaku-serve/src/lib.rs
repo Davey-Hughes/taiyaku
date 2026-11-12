@@ -48,6 +48,7 @@ mod registry;
 mod reqlog;
 mod routes;
 mod scan_jobs;
+mod scheduler;
 pub mod session;
 mod source;
 mod stamp;
@@ -118,9 +119,9 @@ pub struct ServeState {
     /// Spec A2 §6 and §5. Small because §11 puts TLS in a reverse proxy, so
     /// none of that is here.
     pub auth: crate::session::AuthConfig,
-    /// Every root scan currently running or just finished, by root id: the
-    /// registry for `POST`/`GET /api/library/roots/{id}/scan`, and for a
-    /// library's scan, which holds an entry for each directory it walks at once.
+    /// Every root scan running or just finished, by root id: the registry for
+    /// `POST`/`GET /api/library/roots/{id}/scan`, a library's scan (an entry
+    /// for each directory it walks) and the scheduler's (each one a tick takes).
     ///
     /// **In-process only, and deliberately.** Nothing here survives a
     /// restart: a process that died mid-scan left no lock behind, and the
@@ -171,12 +172,12 @@ pub struct ServeState {
     ///
     /// **A save does not wait on this lock; it answers `409` at once if
     /// anything already holds it** ([`LibraryJob`] names the jobs that take
-    /// it) — `config_api::NoAnswer::Busy`, the same spirit as the `409`
-    /// [`Self::scans`] already answers for a second scan of one root: a
-    /// caller learns why its save did not land rather than the request simply
-    /// taking as long as whatever else is running. A scan blocks instead: it
-    /// already runs unwatched in the background, and `scan_status` is where a
-    /// caller learns how long that took either way.
+    /// it), as [`Self::scans`] answers a second scan of one root: a caller
+    /// learns why its save did not land rather than waiting on whatever runs.
+    /// A scan blocks instead: it already runs unwatched in the background.
+    /// **This lock is one process's.** Across processes the derive lease
+    /// (`taiyaku_library::lease`) serialises whole-store derives: a scan waits
+    /// for it and a save or a stamp tries it once, as each does this lock (O51).
     pub library_job: Arc<LibraryJob>,
     /// The directories `GET /api/library/dirs` may list beneath:
     /// `--dirs`, or `TAIYAKU_DIRS`. Empty lists nothing.
@@ -220,6 +221,13 @@ pub struct ScanProgress {
     /// others. `None` for a shared directory's scan named by no page, and for
     /// a slot no request reserved.
     pub library: Option<i64>,
+    /// Whether this scan waits (O51): to start, for the job lock another job
+    /// holds, set on every directory reserved; or to derive, for the derive
+    /// lease another derive holds, set on the directories whose walks recorded
+    /// something. Their status reads `waiting` from this as well as the store
+    /// ([`scan_jobs::status_sent`]): a holder in this process may hold the
+    /// store's write lock for its whole derive, and the store's word with it.
+    pub waiting: bool,
 }
 
 impl ServeState {
@@ -598,6 +606,10 @@ pub async fn serve(
         Ok(swept) => eprintln!("swept {swept} lapsed login-attempt window(s)"),
         Err(complaint) => eprintln!("could not sweep lapsed login attempts: {complaint}"),
     }
+    // O186, before the bind: only this server writes `deriving` and `waiting`,
+    // and none of its own scans has begun, so each one now is a scan that a
+    // stop, a panic or a refused write (O272) left without its last word.
+    scheduler::interrupt_cut_derives(&state.library);
     // Before the bind, so the `listening` line below is never printed while a
     // signal would still kill the process outright.
     let stop = shutdown_signal();
@@ -625,10 +637,12 @@ pub async fn serve(
             });
         });
     }
-    // A live registry reads the library again whenever its structure moves.
-    // A fixed one, `serve` handed sidecar paths, never does.
+    // A live registry reads the library again whenever its structure moves,
+    // and scans each directory on its schedule. A fixed one, `serve` handed
+    // sidecar paths, does neither.
     if state.works.is_live() {
         registry::spawn_refresher(Arc::clone(&state), registry::REFRESH_EVERY);
+        scheduler::spawn(Arc::clone(&state), scheduler::TICK);
     }
     cache_sweep::spawn(&state, cache_max);
     // Named the same way the bind failure is. Both are reported by a process

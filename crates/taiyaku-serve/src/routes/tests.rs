@@ -6216,6 +6216,7 @@ async fn a_position_read_leaves_out_an_edition_outside_the_grant() {
                 slot: 1,
             },
             &found.sidecar(),
+            taiyaku_library::state::Arrival::next(),
         )
         .expect("stores a position");
     };
@@ -6538,6 +6539,7 @@ async fn a_position_on_an_edition_the_work_no_longer_has_is_sent_only_to_an_acco
                 slot: 0,
             },
             &found.sidecar(),
+            taiyaku_library::state::Arrival::next(),
         )
         .expect("stores a position");
     }
@@ -8343,6 +8345,7 @@ mod narrowing {
                 slot,
             },
             &the_sidecar(merged),
+            taiyaku_library::state::Arrival::next(),
         )
         .expect("stores a position");
     }
@@ -8459,6 +8462,101 @@ mod narrowing {
                 .as_str()
             ),
             "checked against the six pages Manga sees"
+        );
+    }
+
+    /// A stored row's slot, and the digest, occurrence and page it is
+    /// anchored to.
+    type Anchored = (u32, Option<String>, Option<u32>, Option<u32>);
+
+    /// `reader`'s rows in `table` as stored, by slot.
+    fn anchored(
+        merged: &EditionMergedFromTwoLibraries,
+        table: &str,
+        reader: Reader,
+    ) -> Vec<Anchored> {
+        merged
+            .state
+            .library
+            .conn()
+            .prepare(&format!(
+                "SELECT slot, at_sha256, at_nth, at_page FROM {table}
+                  WHERE user_id = ?1 ORDER BY slot"
+            ))
+            .and_then(|mut stmt| {
+                stmt.query_map([merged.user_id(reader)], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?
+                .collect()
+            })
+            .expect("reads the anchored rows")
+    }
+
+    /// O272 under a narrowed view: over a store in a file, Kids alone's
+    /// position and note are written on the save's own connection in the full
+    /// numbering, anchored to the part2 pages Kids read them on (O244), and
+    /// the notes write is answered with what the next read sends.
+    #[tokio::test]
+    async fn kids_alones_saves_to_a_store_in_a_file_are_anchored_to_the_pages_it_read() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries_in_a_file();
+        assert!(
+            merged.state.library.path().is_some(),
+            "the fixture: a store in a file, so a save has a connection of its own"
+        );
+        the_administrators_document(&merged).await;
+        let part2: String = merged
+            .state
+            .library
+            .conn()
+            .query_row(
+                "SELECT sha256 FROM member WHERE path LIKE '%part2.cbz'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("part2's digest");
+
+        let (status, _, body) = put(
+            &merged,
+            Reader::KidsOnly,
+            &progress_uri(&merged),
+            None,
+            r#"{"edition":"raw","slot":1}"#.to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let uri = notes_uri(&merged);
+        let (_, tag, _) = fetched(&merged, Reader::KidsOnly, &uri, None).await;
+        let notes = crate::notes::Notes {
+            taiyaku_notes: taiyaku_library::NOTES_VERSION,
+            work: merged.slug.clone(),
+            notes: vec![note("k", "raw", 2)],
+        };
+        let (status, answered_tag, answered) = put(
+            &merged,
+            Reader::KidsOnly,
+            &uri,
+            tag.as_deref(),
+            serde_json::to_string(&notes).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+
+        assert_eq!(
+            anchored(&merged, "progress", Reader::KidsOnly),
+            [(3, Some(part2.clone()), Some(0), Some(1))],
+            "Kids' slot 1 is full slot 3, part2's page 1"
+        );
+        assert_eq!(
+            anchored(&merged, "note", Reader::KidsOnly),
+            [(4, Some(part2), Some(0), Some(2))],
+            "Kids' slot 2 is full slot 4, part2's page 2"
+        );
+        let (_, next_tag, next) = fetched(&merged, Reader::KidsOnly, &uri, None).await;
+        assert!(answered_tag.is_some(), "a notes write carries a tag");
+        assert_eq!(
+            (answered_tag, answered),
+            (next_tag, next),
+            "the answer and its ETag are the next read's"
         );
     }
 
@@ -8947,5 +9045,410 @@ mod narrowing {
             assert_eq!(answered, format!("no work `{}`", merged.slug), "{body}");
         }
         assert_eq!(the_sidecar(&merged).alignments, before, "nothing corrected");
+    }
+}
+
+/// O272: a reader's save waiting for the store's write lock, which a scan's
+/// derive holds work by work, stalls only itself. Each test sends its saves
+/// while another connection holds `BEGIN IMMEDIATE`.
+mod a_save_waiting_for_the_write_lock {
+    use super::*;
+    use axum::http::Method;
+    use std::time::{Duration, Instant};
+
+    /// Well under the store's busy timeout (5 s), which a read queued behind
+    /// the waiting save would take.
+    const NO_WAIT: Duration = Duration::from_secs(1);
+
+    /// Long enough for a save to pass the guard and reach its write.
+    const IN_FLIGHT: Duration = Duration::from_millis(500);
+
+    /// About one busy timeout (5 s): a save that waited for the lock alone,
+    /// not the 10 s of one that waited out another save's timeout first.
+    const ITS_OWN_WAIT: std::ops::Range<Duration> = Duration::from_secs(4)..Duration::from_secs(7);
+
+    /// Another connection to the store, holding its write lock until it rolls
+    /// back or drops.
+    fn the_lock_held(state: &crate::ServeState) -> rusqlite::Connection {
+        let holder = rusqlite::Connection::open(state.library.path().expect("a store in a file"))
+            .expect("another connection");
+        holder
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("takes the write lock");
+        holder
+    }
+
+    /// `request`'s status and body, and how long it took to answer.
+    async fn timed(router: Router, request: Request<Body>) -> (StatusCode, String, Duration) {
+        let started = Instant::now();
+        let response = router.oneshot(request).await.expect("answers");
+        let status = response.status();
+        let body = crate::test_support::body_string(response).await;
+        (status, body, started.elapsed())
+    }
+
+    struct Waited {
+        read: StatusCode,
+        took: Duration,
+        /// Whether the save was still out when the read was answered. A save
+        /// that had already finished leaves the read proving nothing.
+        waiting: bool,
+        saved: StatusCode,
+        body: String,
+    }
+
+    /// Sends `save` while another connection holds the write lock, then a
+    /// `GET /api/works` once the save is in flight, timed; then lets the lock
+    /// go and waits for the save's answer.
+    async fn a_read_while(
+        state: &crate::ServeState,
+        router: &Router,
+        save: Request<Body>,
+    ) -> Waited {
+        let holder = the_lock_held(state);
+        let saving = tokio::spawn(router.clone().oneshot(save));
+        tokio::time::sleep(IN_FLIGHT).await;
+
+        let started = Instant::now();
+        let read = router
+            .clone()
+            .oneshot(
+                Request::get("/api/works")
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await
+            .expect("answers")
+            .status();
+        let took = started.elapsed();
+        let waiting = !saving.is_finished();
+        holder.execute_batch("ROLLBACK").expect("releases the lock");
+
+        let saved = saving.await.expect("the save ran").expect("answers");
+        let status = saved.status();
+        let body = crate::test_support::body_string(saved).await;
+        Waited {
+            read,
+            took,
+            waiting,
+            saved: status,
+            body,
+        }
+    }
+
+    fn sent(method: Method, uri: String, tag: Option<String>, body: String) -> Request<Body> {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json");
+        let request = match tag {
+            Some(tag) => request.header(header::IF_MATCH, tag),
+            None => request,
+        };
+        request.body(Body::from(body)).expect("a request")
+    }
+
+    /// `uri`'s `ETag` and body, read before the lock is taken.
+    async fn read(router: &Router, uri: &str) -> (String, String) {
+        let response = crate::test_support::get(router, uri).await;
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let tag = response.headers()[header::ETAG]
+            .to_str()
+            .expect("an ETag is text")
+            .to_owned();
+        (tag, crate::test_support::body_string(response).await)
+    }
+
+    /// The read answered quickly while the save waited, and the save landed
+    /// with `saved` once the lock was free.
+    fn quick(waited: &Waited, saved: StatusCode) {
+        assert!(waited.took < NO_WAIT, "the read took {:?}", waited.took);
+        assert!(
+            waited.waiting,
+            "the save had its answer before the read: {} {}",
+            waited.saved, waited.body
+        );
+        assert_eq!(
+            (waited.read, waited.saved),
+            (StatusCode::OK, saved),
+            "(the read, the save): {}",
+            waited.body
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_is_answered_while_a_progress_save_waits() {
+        let (router, state, _fixture, slug) =
+            crate::test_support::router_over_a_live_library_with_an_edge();
+        let save = sent(
+            Method::PUT,
+            format!("/api/works/{slug}/progress"),
+            None,
+            r#"{"edition":"raw","slot":1}"#.to_string(),
+        );
+
+        let waited = a_read_while(&state, &router, save).await;
+
+        quick(&waited, StatusCode::NO_CONTENT);
+        // Read back on the shared connection, which sees the save's commit.
+        let response =
+            crate::test_support::get(&router, &format!("/api/works/{slug}/progress")).await;
+        let positions = crate::test_support::body_string(response).await;
+        assert!(positions.contains(r#""slot":1"#), "{positions}");
+    }
+
+    #[tokio::test]
+    async fn a_read_is_answered_while_a_notes_save_waits() {
+        let (router, state, _fixture, slug) =
+            crate::test_support::router_over_a_live_library_with_an_edge();
+        let uri = format!("/api/works/{slug}/notes");
+        let (tag, notes) = read(&router, &uri).await;
+
+        let waited = a_read_while(&state, &router, sent(Method::PUT, uri, Some(tag), notes)).await;
+
+        quick(&waited, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_read_is_answered_while_a_truth_save_waits() {
+        let (router, state, _fixture, slug) =
+            crate::test_support::router_over_a_live_library_with_an_edge();
+        let uri = format!("/api/works/{slug}/truth");
+        let (tag, truth) = read(&router, &uri).await;
+
+        let waited = a_read_while(&state, &router, sent(Method::PUT, uri, Some(tag), truth)).await;
+
+        quick(&waited, StatusCode::OK);
+    }
+
+    /// A correction holds its work's document while it writes, and
+    /// `list_works` reads every work's document on the shared connection, so
+    /// the correction must not wait for the lock with the document held.
+    #[tokio::test]
+    async fn a_read_is_answered_while_a_correction_waits() {
+        let (router, state, _fixture, slug) =
+            crate::test_support::router_over_a_live_library_with_an_edge();
+        let uri = format!("/api/works/{slug}");
+        let (tag, _) = read(&router, &uri).await;
+        let save = sent(
+            Method::PATCH,
+            format!("{uri}/alignments"),
+            Some(tag.clone()),
+            r#"{"from":"raw","to":"en","a":"2","b":"1"}"#.to_string(),
+        );
+
+        let waited = a_read_while(&state, &router, save).await;
+
+        quick(&waited, StatusCode::OK);
+        assert_ne!(read(&router, &uri).await.0, tag, "nothing was corrected");
+    }
+
+    /// Two saves waiting at once each wait for the lock alone, so each fails
+    /// after its own busy timeout, and a read sent at any point meanwhile is
+    /// answered at once. The one test here that waits a busy timeout out.
+    #[tokio::test]
+    async fn two_waiting_saves_each_wait_only_for_the_lock() {
+        let (router, state, _fixture, slug) =
+            crate::test_support::router_over_a_live_library_with_an_edge();
+        let put = |slot: u32| {
+            sent(
+                Method::PUT,
+                format!("/api/works/{slug}/progress"),
+                None,
+                format!(r#"{{"edition":"raw","slot":{slot}}}"#),
+            )
+        };
+        let holder = the_lock_held(&state);
+        let first = tokio::spawn(timed(router.clone(), put(0)));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let second = tokio::spawn(timed(router.clone(), put(1)));
+
+        let mut slowest = Duration::ZERO;
+        while !(first.is_finished() && second.is_finished()) {
+            tokio::time::sleep(IN_FLIGHT).await;
+            let works = Request::get("/api/works")
+                .body(Body::empty())
+                .expect("a request");
+            let (status, _, took) = timed(router.clone(), works).await;
+            assert_eq!(status, StatusCode::OK, "a read while the saves wait");
+            slowest = slowest.max(took);
+        }
+        holder.execute_batch("ROLLBACK").expect("releases the lock");
+
+        for (which, save) in [("first", first), ("second", second)] {
+            let (status, body, took) = save.await.expect("the save ran");
+            assert!(
+                ITS_OWN_WAIT.contains(&took),
+                "the {which} save answered after {took:?}: {status} {body}"
+            );
+            assert_eq!(
+                status,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the {which} save"
+            );
+            assert!(
+                body.ends_with("database is locked"),
+                "the {which} save: {body}"
+            );
+        }
+        assert!(slowest < NO_WAIT, "the slowest read took {slowest:?}");
+    }
+
+    /// A stale `If-Match` is refused before the correction waits for the lock.
+    #[tokio::test]
+    async fn a_stale_correction_is_refused_without_waiting_for_the_lock() {
+        let (router, state, _fixture, slug) =
+            crate::test_support::router_over_a_live_library_with_an_edge();
+        let holder = the_lock_held(&state);
+
+        let stale = sent(
+            Method::PATCH,
+            format!("/api/works/{slug}/alignments"),
+            Some(r#""not this work's tag""#.to_string()),
+            r#"{"from":"raw","to":"en","a":"2","b":"1"}"#.to_string(),
+        );
+        let (status, body, took) = timed(router.clone(), stale).await;
+        holder.execute_batch("ROLLBACK").expect("releases the lock");
+
+        assert!(took < NO_WAIT, "the refusal took {took:?}: {status} {body}");
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{body}");
+        assert!(
+            body.starts_with("this work has changed since you read it; its ETag is now "),
+            "{body}"
+        );
+    }
+
+    /// Two corrections sent with one tag, both waiting for the lock: the one
+    /// that gets it first lands, and the other is refused by the tag it is
+    /// checked against once it holds the lock, not let through by the check
+    /// it passed before.
+    #[tokio::test]
+    async fn of_two_corrections_from_one_tag_the_second_to_the_lock_is_refused() {
+        let (router, state, _fixture, slug) =
+            crate::test_support::router_over_a_live_library_with_an_edge();
+        let uri = format!("/api/works/{slug}");
+        let (tag, _) = read(&router, &uri).await;
+        let correction = || {
+            sent(
+                Method::PATCH,
+                format!("{uri}/alignments"),
+                Some(tag.clone()),
+                r#"{"from":"raw","to":"en","a":"2","b":"1"}"#.to_string(),
+            )
+        };
+        let holder = the_lock_held(&state);
+        let first = tokio::spawn(timed(router.clone(), correction()));
+        let second = tokio::spawn(timed(router.clone(), correction()));
+        tokio::time::sleep(IN_FLIGHT).await;
+        let waiting = !(first.is_finished() || second.is_finished());
+        holder.execute_batch("ROLLBACK").expect("releases the lock");
+
+        let mut answered = Vec::new();
+        for save in [first, second] {
+            let (status, body, _) = save.await.expect("the correction ran");
+            answered.push((status, body));
+        }
+        assert!(
+            waiting,
+            "a correction had its answer before the lock went: {answered:?}"
+        );
+        answered.sort_by_key(|(status, _)| *status);
+        let statuses: Vec<StatusCode> = answered.iter().map(|(status, _)| *status).collect();
+        assert_eq!(
+            statuses,
+            [StatusCode::OK, StatusCode::PRECONDITION_FAILED],
+            "{answered:?}"
+        );
+    }
+
+    /// Between two of one reader's saves, longer than SQLite's busy handler
+    /// takes to back off to its longest sleep.
+    const APART: Duration = Duration::from_millis(300);
+
+    /// From the last save to the lock's release: short enough that the last
+    /// save is still in the busy handler's short sleeps and so polls first.
+    const RELEASED_AFTER: Duration = Duration::from_millis(30);
+
+    /// Sends a progress save on `raw` for each of `slots`, [`APART`], while
+    /// another connection holds the write lock, lets the lock go
+    /// [`RELEASED_AFTER`] the last, and answers each save's status, and the
+    /// positions stored then as `(edition, slot)`.
+    async fn saved_in_turn(
+        state: &crate::ServeState,
+        router: &Router,
+        slug: &str,
+        slots: &[u32],
+    ) -> (Vec<StatusCode>, Vec<(String, u64)>) {
+        let holder = the_lock_held(state);
+        let mut saves = Vec::new();
+        for (sent_before, slot) in slots.iter().enumerate() {
+            if sent_before > 0 {
+                tokio::time::sleep(APART).await;
+            }
+            let save = sent(
+                Method::PUT,
+                format!("/api/works/{slug}/progress"),
+                None,
+                format!(r#"{{"edition":"raw","slot":{slot}}}"#),
+            );
+            saves.push(tokio::spawn(timed(router.clone(), save)));
+        }
+        tokio::time::sleep(RELEASED_AFTER).await;
+        let waiting = saves.iter().all(|save| !save.is_finished());
+        holder.execute_batch("ROLLBACK").expect("releases the lock");
+
+        let mut answered = Vec::new();
+        for save in saves {
+            let (status, body, _) = save.await.expect("the save ran");
+            answered.push((status, body));
+        }
+        assert!(
+            waiting,
+            "a save had its answer before the lock went: {answered:?}"
+        );
+        let statuses = answered.into_iter().map(|(status, _)| status).collect();
+        let response =
+            crate::test_support::get(router, &format!("/api/works/{slug}/progress")).await;
+        let body = crate::test_support::body_string(response).await;
+        let held: serde_json::Value = serde_json::from_str(&body).expect("positions");
+        let positions = held["positions"]
+            .as_array()
+            .expect("a list of positions")
+            .iter()
+            .map(|position| {
+                (
+                    position["edition"].as_str().expect("an edition").to_owned(),
+                    position["slot"].as_u64().expect("a slot"),
+                )
+            })
+            .collect();
+        (statuses, positions)
+    }
+
+    /// One reader's two saves, both waiting for the lock: the one that arrived
+    /// later is the position stored, whichever of the two takes the freed
+    /// lock first.
+    #[tokio::test]
+    async fn of_one_readers_two_waiting_saves_the_later_arrival_is_stored() {
+        let (router, state, _fixture, slug) =
+            crate::test_support::router_over_a_live_library_with_an_edge();
+
+        let (statuses, positions) = saved_in_turn(&state, &router, &slug, &[0, 1]).await;
+
+        assert_eq!(statuses, [StatusCode::NO_CONTENT; 2]);
+        assert_eq!(positions, [("raw".to_string(), 1)], "the stored position");
+    }
+
+    /// Three of one reader's saves queued behind the lock in turn end at the
+    /// last one's slot.
+    #[tokio::test]
+    async fn three_waiting_saves_end_at_the_last_ones_slot() {
+        let (router, state, _fixture, slug) =
+            crate::test_support::router_over_a_live_library_with_an_edge();
+
+        let (statuses, positions) = saved_in_turn(&state, &router, &slug, &[0, 1, 2]).await;
+
+        assert_eq!(statuses, [StatusCode::NO_CONTENT; 3]);
+        assert_eq!(positions, [("raw".to_string(), 2)], "the stored position");
     }
 }

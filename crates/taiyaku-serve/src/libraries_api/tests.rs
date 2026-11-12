@@ -208,6 +208,11 @@ async fn removing_a_library_refuses_a_reader() {
 }
 
 #[tokio::test]
+async fn reading_whether_a_derive_runs_refuses_a_reader() {
+    a_reader_is_refused(Method::GET, "/api/library/derive").await;
+}
+
+#[tokio::test]
 async fn rehearsing_a_removal_refuses_a_reader() {
     a_reader_is_refused(Method::DELETE, "/api/library/libraries/1?dry_run=true").await;
 }
@@ -383,6 +388,7 @@ async fn the_list_gives_each_library_its_own_dirs_works_and_books() {
                 "last_scan_status",
                 "libraries",
                 "nested",
+                "next_scan_at",
                 "path",
                 "scan_interval_secs",
             ],
@@ -862,6 +868,7 @@ async fn a_librarys_dry_run_counts_and_removes_nothing_and_the_removal_removes()
         state.scans.lock().unwrap().insert(
             slot,
             crate::ScanProgress {
+                waiting: false,
                 started: std::time::Instant::now(),
                 done: true,
                 report: Some(serde_json::json!({})),
@@ -1195,6 +1202,7 @@ fn a_scan_running_on(state: &crate::ServeState, dir: i64) {
     state.scans.lock().unwrap().insert(
         dir,
         crate::ScanProgress {
+            waiting: false,
             started: std::time::Instant::now(),
             done: false,
             report: None,
@@ -1282,6 +1290,7 @@ async fn scan_now_walks_each_dir_and_derives_once() {
             ],
             "held_removals": [],
             "moves_held": false,
+            "derive_running": false,
             "scans": [],
         })
     );
@@ -1340,6 +1349,7 @@ async fn while_a_librarys_scan_runs_its_dirs_answer_as_scanning() {
     assert_eq!(
         keys_of(&running),
         vec![
+            "derive_running",
             "dirs",
             "elapsed_secs",
             "held_removals",
@@ -1718,10 +1728,15 @@ async fn a_panicking_scan_leaves_no_dir_running() {
     assert_eq!(get_json(&router, &the_scan_of(id)).await["running"], true);
     // The job dies holding the job lock, which poisons it: the scans after it
     // must go on regardless.
-    crate::scan_jobs::spawn_job(std::sync::Arc::clone(&state), roots, started, |state, _| {
-        let _job = state.library_job.lock().expect("the job lock is free");
-        panic!("a walk went wrong")
-    });
+    crate::scan_jobs::spawn_job(
+        std::sync::Arc::clone(&state),
+        roots,
+        started,
+        |state, _, _| {
+            let _job = state.library_job.lock().expect("the job lock is free");
+            panic!("a walk went wrong")
+        },
+    );
     let ended = until_the_library_scan_ends(&router, id).await;
     assert!(
         state.library_job.is_poisoned(),
@@ -1778,6 +1793,7 @@ async fn a_library_never_scanned_is_not_running() {
             "dirs": [{ "root_id": dir, "running": false }],
             "held_removals": [],
             "moves_held": false,
+            "derive_running": false,
             "scans": [],
         })
     );
@@ -2133,9 +2149,10 @@ async fn a_job_answering_too_few_reports_releases_every_dir() {
     let started = std::time::Instant::now();
     crate::scan_jobs::reserve(&state, &roots, started, Some(id)).expect("reserves");
 
-    let job = crate::scan_jobs::spawn_job(std::sync::Arc::clone(&state), roots, started, |_, _| {
-        Ok(vec![serde_json::json!({ "scan": "the first's" })])
-    });
+    let job =
+        crate::scan_jobs::spawn_job(std::sync::Arc::clone(&state), roots, started, |_, _, _| {
+            Ok(vec![serde_json::json!({ "scan": "the first's" })])
+        });
     the_job_ends(job).await;
 
     let status = get_json(&router, &the_scan_of(id)).await;
@@ -4632,6 +4649,7 @@ async fn removing_a_library_leaves_a_shared_dir_to_the_other_library_with_its_sc
         state.scans.lock().unwrap().insert(
             slot["id"].as_i64().expect("an id"),
             crate::ScanProgress {
+                waiting: false,
                 started: std::time::Instant::now(),
                 done: true,
                 report: Some(report.clone()),
@@ -5235,7 +5253,7 @@ fn the_libraries_list_reads_its_links_and_names_from_one_snapshot() {
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW,
         Some(removing_a_library_at_the_first_row),
     );
-    let listed = super::libraries_json(&conn);
+    let listed = super::libraries_json(&conn, &std::collections::HashSet::new());
     conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
 
     assert!(
@@ -5248,7 +5266,10 @@ fn the_libraries_list_reads_its_links_and_names_from_one_snapshot() {
         "the state before the removal"
     );
     assert_eq!(
-        names(super::libraries_json(&conn).expect("the list answers")),
+        names(
+            super::libraries_json(&conn, &std::collections::HashSet::new())
+                .expect("the list answers")
+        ),
         ["Manga"],
         "and Kids is gone after it"
     );
@@ -5327,7 +5348,7 @@ fn a_library_removed_before_its_answer_is_drawn_is_refused_not_failed() {
     let made = taiyaku_library::scan::create_library(&conn, "Kids", &[m]).expect("makes Kids");
     taiyaku_library::scan::remove_library(&conn, made.library_id).expect("removes Kids");
 
-    match super::created_json(&conn, &made) {
+    match super::created_json(&conn, &made, &std::collections::HashSet::new()) {
         Err(super::AdminAnswer::Refused(why)) => assert_eq!(
             why,
             "another request removed Kids before it could be listed"
@@ -5356,6 +5377,7 @@ async fn a_dir_unlinked_while_its_library_is_removed_keeps_its_scan_report() {
         state.scans.lock().unwrap().insert(
             slot,
             crate::ScanProgress {
+                waiting: false,
                 started: std::time::Instant::now(),
                 done: true,
                 report: Some(report.clone()),
@@ -5411,5 +5433,218 @@ async fn a_dir_unlinked_while_its_library_is_removed_keeps_its_scan_report() {
     assert!(
         scans.get(&own_id).is_none(),
         "the removed directory's slot is cleared"
+    );
+}
+
+/// O51: a library's removal derives, so even its dry run refuses while another
+/// derive runs, and answers once it ends.
+#[tokio::test]
+async fn a_library_removal_refuses_while_another_derive_holds_the_lease() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots_on_disk();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let id = the_library(&listed, "root-a")["id"]
+        .as_i64()
+        .expect("an id");
+    let path = format!("/api/library/libraries/{id}?dry_run=true");
+    let elsewhere = test_support::the_store_elsewhere(&state);
+    let held = test_support::holding_the_lease(&elsewhere);
+
+    let response = send_json(&router, Method::DELETE, &path, &serde_json::json!({})).await;
+    let status = response.status();
+    let refused = test_support::body_string(response).await;
+    assert_eq!(
+        (
+            status,
+            serde_json::from_str::<serde_json::Value>(&refused).ok()
+        ),
+        (
+            StatusCode::CONFLICT,
+            Some(serde_json::json!({
+                "error": "a scan or another library job is running; remove the library once it \
+                          has finished"
+            }))
+        ),
+        "{refused}"
+    );
+
+    drop(held);
+    let response = send_json(&router, Method::DELETE, &path, &serde_json::json!({})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// O51: a library's status says a derive runs while any derive holds the
+/// lease, another process's among them, so its pages hold what the lease
+/// refuses; the job lock is not what it reads.
+#[tokio::test]
+async fn a_librarys_status_says_a_derive_runs_while_the_lease_is_held() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots_on_disk();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let id = the_library(&listed, "root-a")["id"]
+        .as_i64()
+        .expect("an id");
+    let running = |status: &serde_json::Value| status["derive_running"].clone();
+    let elsewhere = test_support::the_store_elsewhere(&state);
+
+    let held = test_support::holding_the_lease(&elsewhere);
+    let during = get_json(&router, &the_scan_of(id)).await;
+    drop(held);
+    let after = get_json(&router, &the_scan_of(id)).await;
+
+    assert_eq!(
+        (running(&during), running(&after)),
+        (serde_json::json!(true), serde_json::json!(false)),
+        "{during} {after}"
+    );
+}
+
+/// O51: `GET /api/library/derive` says apart whether the lease or the job
+/// lock is held, for the pages that read no library's status.
+#[tokio::test]
+async fn the_derive_status_says_apart_the_lease_and_the_job_lock() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots_on_disk();
+    let elsewhere = test_support::the_store_elsewhere(&state);
+
+    let free = get_json(&router, "/api/library/derive").await;
+    let held = test_support::holding_the_lease(&elsewhere);
+    let leased = get_json(&router, "/api/library/derive").await;
+    drop(held);
+    let job = holding_the_job(&state);
+    let locked = get_json(&router, "/api/library/derive").await;
+    drop(job);
+
+    assert_eq!(
+        [free, leased, locked],
+        [
+            serde_json::json!({ "derive_running": false, "job_held": false }),
+            serde_json::json!({ "derive_running": true, "job_held": false }),
+            serde_json::json!({ "derive_running": false, "job_held": true }),
+        ]
+    );
+}
+
+/// O51: a job's word that it waits lands on its own reservations, where the
+/// directory's scan status reads it.
+#[tokio::test]
+async fn a_jobs_word_that_it_waits_lands_on_its_reservations() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots_on_disk();
+    let roots = taiyaku_library::scan::roots(&state.library.conn()).expect("the directories");
+    let started = std::time::Instant::now();
+    crate::scan_jobs::reserve(&state, &roots, started, None).expect("reserves");
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (said, heard) = std::sync::mpsc::channel::<()>();
+
+    let job = crate::scan_jobs::spawn_job(
+        std::sync::Arc::clone(&state),
+        roots.clone(),
+        started,
+        move |_, roots, waiting| {
+            waiting(roots, true);
+            said.send(()).expect("the test is listening");
+            let _ = released.recv();
+            Ok(roots.iter().map(|_| serde_json::json!({})).collect())
+        },
+    );
+    heard.recv().expect("the job said it waits");
+    let read = get_json(&router, &format!("/api/library/roots/{}/scan", roots[0].id)).await;
+    release.send(()).expect("releases the job");
+    job.await.expect("the job ends");
+
+    assert_eq!(read["last_scan_status"], "waiting", "{read}");
+}
+
+/// O51: both lists of directories read `waiting` where the directory's scan
+/// waits for the job lock or the derive lease, as its scan status does, and
+/// the store's word for a directory whose scan does not: a holder in this
+/// process may hold the store's write lock, and the store's word with it,
+/// for its whole derive.
+#[tokio::test]
+async fn both_lists_read_waiting_where_a_directorys_scan_waits_and_only_there() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots_on_disk();
+    let roots = taiyaku_library::scan::roots(&state.library.conn()).expect("the directories");
+    let (waits, free) = (roots[0].id, roots[1].id);
+    let started = std::time::Instant::now();
+    let reserved = std::slice::from_ref(&roots[0]);
+    crate::scan_jobs::reserve(&state, reserved, started, None).expect("reserves");
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (said, heard) = std::sync::mpsc::channel::<()>();
+
+    let job = crate::scan_jobs::spawn_job(
+        std::sync::Arc::clone(&state),
+        reserved.to_vec(),
+        started,
+        move |_, roots, waiting| {
+            waiting(roots, true);
+            said.send(()).expect("the test is listening");
+            let _ = released.recv();
+            Ok(roots.iter().map(|_| serde_json::json!({})).collect())
+        },
+    );
+    heard.recv().expect("the job said it waits");
+    let listed = get_json(&router, "/api/library/roots").await;
+    let libraries = get_json(&router, "/api/library/libraries").await;
+    release.send(()).expect("releases the job");
+    job.await.expect("the job ends");
+
+    let in_roots = |id: i64| {
+        listed["roots"]
+            .as_array()
+            .expect("a list of directories")
+            .iter()
+            .find(|root| root["id"] == id)
+            .map(|root| root["last_scan_status"].clone())
+    };
+    let in_libraries = |id: i64| {
+        libraries["libraries"]
+            .as_array()
+            .expect("a list of libraries")
+            .iter()
+            .flat_map(|library| library["dirs"].as_array().expect("its directories"))
+            .find(|dir| dir["id"] == id)
+            .map(|dir| dir["last_scan_status"].clone())
+    };
+    assert_eq!(
+        [in_roots(waits), in_roots(free)],
+        [Some("waiting".into()), Some("ok".into())],
+        "{listed}"
+    );
+    assert_eq!(
+        [in_libraries(waits), in_libraries(free)],
+        [Some("waiting".into()), Some("ok".into())],
+        "{libraries}"
+    );
+}
+
+/// A Scan library accepted while the job lock is held has not started: every
+/// directory it will walk reads `waiting`, in its own status and both lists,
+/// until it runs, then `ok`.
+#[tokio::test]
+async fn a_library_scan_queued_behind_the_job_lock_reads_waiting_on_each_directory() {
+    let n = test_support::router_over_a_library_nested_in_another();
+    let held = holding_the_job(&n.state);
+    let (status, started) = answered(
+        &n.admin,
+        Method::POST,
+        &the_scan_of(n.manga),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let queued = [
+        test_support::last_scan_words(&n.admin, n.m).await,
+        test_support::last_scan_words(&n.admin, n.m_kids).await,
+    ];
+    drop(held);
+    until_the_library_scan_ends(&n.admin, n.manga).await;
+    let after = [
+        test_support::last_scan_words(&n.admin, n.m).await,
+        test_support::last_scan_words(&n.admin, n.m_kids).await,
+    ];
+
+    let waiting = test_support::every_page_reads(true, "waiting");
+    let ok = test_support::every_page_reads(false, "ok");
+    assert_eq!(
+        [queued, after],
+        [[waiting.clone(), waiting], [ok.clone(), ok]],
+        "(queued, after) for (m, m/kids)"
     );
 }

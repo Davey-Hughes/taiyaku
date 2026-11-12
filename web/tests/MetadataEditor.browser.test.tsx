@@ -1,9 +1,28 @@
-import { describe, expect, it } from 'vitest'
+import { act } from 'react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { userEvent } from 'vitest/browser'
 // Required, the same reason every other file in this project gives: the
 // rules under test live in `admin.css`, which reaches the app through
 // `index.css`. Without this the boxes below measure browser defaults.
 import '../src/index.css'
+import { SCAN_POLL_MS } from '../src/config'
+import * as derive from '../src/libraries'
+import { MetadataEditor } from '../src/MetadataEditor'
+import * as stamp from '../src/stamp'
+import { settleUntil } from './support/async'
+import { pressOn } from './support/callout'
+import { holdOf } from './support/held'
 import { mount } from './support/mount'
+
+vi.mock('../src/stamp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/stamp')>()),
+  stampPlan: vi.fn(),
+  performStamp: vi.fn(),
+}))
+vi.mock('../src/libraries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/libraries')>()),
+  deriveStatus: vi.fn(),
+}))
 
 /**
  * `MetadataEditor.tsx`'s title field renders `<label className="field title">`
@@ -49,5 +68,64 @@ describe('the Series page’s title field, after the Rules screen hoisted .field
     expect(getComputedStyle(hoisted).fontSize).toBe(
       getComputedStyle(untouched).fontSize,
     )
+  })
+})
+
+describe('Write ComicInfo.xml’s confirm, held in a real browser (O51)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(stamp.stampPlan).mockResolvedValue({
+      archives: [
+        { member_id: 7, edition_key: 'e1', path: '/lib/v01.cbz', bytes: 1024 },
+      ],
+      total_bytes: 1024,
+      skipped_formats: [],
+    })
+    vi.mocked(stamp.performStamp).mockResolvedValue({
+      rewritten: 1,
+      content_key: null,
+      document_moved: false,
+      document_rewritten: false,
+      sidecar_rewritten: false,
+    })
+  })
+
+  it('sends nothing for a real mouse press while the job lock holds, and stamps once a poll finds it free', async () => {
+    vi.mocked(derive.deriveStatus)
+      .mockResolvedValueOnce({ derive_running: false, job_held: true })
+      .mockResolvedValue({ derive_running: false, job_held: false })
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <MetadataEditor
+          slug="w"
+          title="t"
+          onPatch={vi.fn().mockResolvedValue({ title: 't', persisted: true })}
+          canStamp
+        />,
+      )
+    })
+    if (host === undefined) throw new Error('nothing mounted')
+    const ask = host.querySelector("button[name='plan-stamp']") as HTMLElement
+    await act(async () => {
+      await userEvent.click(ask)
+    })
+    const confirm = () =>
+      host?.querySelector("button[name='confirm-stamp']") as HTMLButtonElement
+    await settleUntil(
+      'the confirm, held',
+      () => holdOf(confirm()) === 'held',
+      1000,
+    )
+    await pressOn(confirm())
+    expect(stamp.performStamp).not.toHaveBeenCalled()
+
+    await settleUntil(
+      'the confirm, free',
+      () => holdOf(confirm()) === 'free',
+      SCAN_POLL_MS * 3,
+    )
+    await pressOn(confirm())
+    expect(stamp.performStamp).toHaveBeenCalledTimes(1)
   })
 })

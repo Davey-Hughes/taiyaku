@@ -414,7 +414,7 @@ pub fn store(
     notes: &Notes,
     numbered: &Sidecar,
 ) -> Result<(), String> {
-    let conn = library.conn();
+    let conn = library.saving()?;
     let work_id = works::row_id_for_write(&conn, work)?;
     taiyaku_library::state::put_notes_in(
         &conn,

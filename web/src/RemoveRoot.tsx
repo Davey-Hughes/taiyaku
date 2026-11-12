@@ -44,6 +44,7 @@ import {
   type Root,
   statusOf,
 } from './config'
+import { type OwnRequests, ownRequests } from './deriveHold'
 import { namesOf, noLibrarySentence } from './libraries'
 import { DeriveSection } from './ScanReport'
 import { HeldButton } from './HeldButton'
@@ -54,6 +55,9 @@ import { count } from './count'
 
 /** The confirm's words while the removal is out. */
 const REMOVING = 'Removing…'
+
+/** Counts for a dialog no page reads the status beside. */
+const UNREAD = ownRequests()
 
 export interface RemoveRootProps {
   root: Root
@@ -70,6 +74,8 @@ export interface RemoveRootProps {
    * refusal: the person closes it then.
    */
   held?: boolean
+  /** The page's own requests that take the lease, the dry run and DELETE among them. */
+  own?: OwnRequests
   onCancel: () => void
   /**
    * Called once the directory is actually gone, with what the removal actually
@@ -106,6 +112,7 @@ export function RemoveRoot({
   root,
   holders = [],
   held = false,
+  own = UNREAD,
   onCancel,
   onRemoved,
   onRefused,
@@ -152,7 +159,8 @@ export function RemoveRoot({
 
   useEffect(() => {
     let cancelled = false
-    removalCost(root.id)
+    own
+      .track(removalCost(root.id))
       .then((answer) => {
         if (cancelled) return
         setCost(answer)
@@ -166,7 +174,7 @@ export function RemoveRoot({
     return () => {
       cancelled = true
     }
-  }, [root.id])
+  }, [root.id, own])
 
   const emptied = cost?.removed.libraries_removed ?? []
 
@@ -175,7 +183,8 @@ export function RemoveRoot({
     inFlight.current = true
     setRemoving(true)
     setFailure(undefined)
-    removeRoot(root.id)
+    own
+      .track(removeRoot(root.id))
       .then((answer) => onRemoved(answer))
       .catch((err: unknown) => {
         inFlight.current = false

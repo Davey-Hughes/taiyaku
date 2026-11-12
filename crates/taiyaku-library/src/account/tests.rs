@@ -2304,3 +2304,142 @@ fn every_resolver_reports_can_stamp() {
     let listed = list(&conn).expect("reads");
     assert!(listed[0].0.can_stamp, "list");
 }
+
+/// O266: the lookup itself refuses an expired session, so one is refused even
+/// where its sweep cannot run, as when another connection holds the store's
+/// write lock.
+#[test]
+fn an_expired_session_is_refused_where_its_sweep_cannot_run() {
+    let dir = crate::tests::tempdir("account-expired-locked");
+    let path = dir.join("library.db");
+    let library = Library::open(&path).expect("creates the store");
+    let conn = library.conn();
+    let token = credential::mint_token();
+    conn.execute(
+        "INSERT INTO session (token_sha256, user_id, expires)
+         VALUES (?1, 1, datetime('now', '-1 hour'))",
+        [credential::token_sha256(&token)],
+    )
+    .expect("inserts");
+    // So the sweep fails at once, not after the store's busy timeout.
+    conn.busy_timeout(std::time::Duration::ZERO)
+        .expect("sets the timeout");
+    let holder = rusqlite::Connection::open(&path).expect("another connection");
+    holder
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("takes the write lock");
+
+    let found = session_owner(&conn, &token).map(|found| found.map(|account| account.id));
+    holder.execute_batch("ROLLBACK").expect("releases the lock");
+    let left: i64 = conn
+        .query_row("SELECT COUNT(*) FROM session", [], |row| row.get(0))
+        .expect("counts");
+
+    assert_eq!(
+        (found, left),
+        (Ok(None), 1),
+        "(the lookup, the sessions left): refused, and the sweep did not run"
+    );
+}
+
+/// O272: forgetting the failures of a pair that has none writes nothing, so a
+/// plain `Authorization: Basic` request takes no write lock. Here it is
+/// answered while another connection holds that lock, which a `DELETE` takes
+/// even where it matches nothing. The address's own failure, which a success
+/// never forgets, is not the pair's.
+#[test]
+fn clearing_a_pair_with_no_failures_writes_nothing() {
+    let dir = crate::tests::tempdir("account-clear-nothing");
+    let path = dir.join("library.db");
+    let library = Library::open(&path).expect("creates the store");
+    let conn = library.conn();
+    let key = attempt_key("203.0.113.9", "alice");
+    note_failure(&conn, &address_key("203.0.113.9")).expect("records the address's failure");
+    // So a write fails at once, not after the store's busy timeout.
+    conn.busy_timeout(std::time::Duration::ZERO)
+        .expect("sets the timeout");
+    let holder = rusqlite::Connection::open(&path).expect("another connection");
+    holder
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("takes the write lock");
+
+    let cleared = clear_failures(&conn, &key);
+    holder.execute_batch("ROLLBACK").expect("releases the lock");
+
+    assert_eq!(cleared, Ok(()));
+}
+
+/// O272: with the write lock free, looking up a live session still slides it:
+/// `last_seen` to now and `expires` a whole lifetime on.
+#[test]
+fn looking_up_a_live_session_slides_it() {
+    let library = library();
+    let conn = library.conn();
+    let token = credential::mint_token();
+    conn.execute(
+        "INSERT INTO session (token_sha256, user_id, expires, last_seen)
+         VALUES (?1, 1, datetime('now', '+1 day'), '2000-01-01 00:00:00')",
+        [credential::token_sha256(&token)],
+    )
+    .expect("inserts");
+    let now: String = conn
+        .query_row("SELECT datetime('now')", [], |row| row.get(0))
+        .expect("reads the clock");
+
+    session_owner(&conn, &token)
+        .expect("reads")
+        .expect("resolves");
+    let (last_seen, slid): (String, bool) = conn
+        .query_row(
+            "SELECT last_seen, expires > datetime('now', ?1) FROM session",
+            [format!("+{} days", SESSION_DAYS - 1)],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("reads the session");
+
+    assert!(
+        last_seen >= now && slid,
+        "(last_seen, expires slid): ({last_seen}, {slid}), the clock read {now} first"
+    );
+}
+
+/// O272: a lookup whose slide the write lock refused leaves the shared
+/// connection waiting for that lock as before, so the next write on it waits
+/// for a holder that lets go rather than failing at once.
+#[test]
+fn a_refused_slide_leaves_the_connection_waiting_for_the_lock_as_before() {
+    let dir = crate::tests::tempdir("account-slide-restores");
+    let path = dir.join("library.db");
+    let library = Library::open(&path).expect("creates the store");
+    let conn = library.conn();
+    let token = credential::mint_token();
+    open_session(&conn, 1, &token, None, None).expect("opens a session");
+    let holder = rusqlite::Connection::open(&path).expect("another connection");
+    holder
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("takes the write lock");
+
+    session_owner(&conn, &token)
+        .expect("reads")
+        .expect("resolves");
+    let timeout: i64 = conn
+        .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+        .expect("reads the busy timeout");
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        holder.execute_batch("ROLLBACK").expect("releases the lock");
+    });
+    let later = conn
+        .execute("UPDATE session SET user_agent = 'later'", [])
+        .map_err(|e| e.to_string());
+    release.join().expect("the thread that releases the lock");
+
+    assert_eq!(
+        (timeout, later),
+        (
+            i64::try_from(crate::BUSY_TIMEOUT.as_millis()).expect("fits"),
+            Ok(1)
+        ),
+        "(the busy timeout in ms, a write while the lock is held for 300 ms more)"
+    );
+}

@@ -2486,6 +2486,21 @@ fn insert_proposal(
     score: f64,
     reason: &str,
 ) -> Result<usize, String> {
+    // **A held proposal with nothing to refresh is left alone — O272.** Both
+    // statements below take the write lock even where they change nothing,
+    // and a derive raises every proposal its facts support on every pass.
+    let stale: Option<bool> = conn
+        .query_row(
+            "SELECT state = ?4 AND (score IS NOT ?5 OR reason IS NOT ?6) FROM proposal
+              WHERE kind = ?1 AND subject_id = ?2 AND ifnull(target_id, -1) = ifnull(?3, -1)",
+            rusqlite::params![kind, subject_id, target_id, STATE_OPEN, score, reason],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("reading a {kind} proposal for series {subject_id}: {e}"))?;
+    if stale == Some(false) {
+        return Ok(0);
+    }
     let newly_open = conn
         .execute(
             "INSERT OR IGNORE INTO proposal (kind, subject_id, target_id, score, reason) \
@@ -2790,11 +2805,15 @@ pub(crate) fn reopen_orphaned_accepts(conn: &Connection) -> Result<Vec<i64>, Str
         .map_err(|e| format!("looking up accepted proposals whose rule has gone: {e}"))?
         .collect::<Result<_, _>>()
         .map_err(|e| format!("reading accepted proposals whose rule has gone: {e}"))?;
-    conn.execute(
-        "UPDATE proposal SET state = ?1 WHERE state = ?2 AND created_rule_id IS NULL",
-        rusqlite::params![STATE_OPEN, STATE_ACCEPTED],
-    )
-    .map_err(|e| format!("reopening accepted proposals whose rule has gone: {e}"))?;
+    // Only where one was found: the statement takes the write lock even where
+    // it reopens nothing, and a derive asks on every pass (O272).
+    if !reopened.is_empty() {
+        conn.execute(
+            "UPDATE proposal SET state = ?1 WHERE state = ?2 AND created_rule_id IS NULL",
+            rusqlite::params![STATE_OPEN, STATE_ACCEPTED],
+        )
+        .map_err(|e| format!("reopening accepted proposals whose rule has gone: {e}"))?;
+    }
     Ok(reopened)
 }
 

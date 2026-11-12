@@ -172,7 +172,7 @@ describe('DirPage', () => {
       [...header.querySelectorAll('.page-description .regime > div')].map(
         (fact) => fact.querySelector('dt')?.textContent,
       ),
-    ).toEqual(['watch', 'scan every', 'last scan'])
+    ).toEqual(['watch', 'scan every', 'last scan', 'next scan'])
     // Remove… is the removal box's, not the header's.
     expect(
       [...header.querySelectorAll('.page-actions button')].map(
@@ -237,7 +237,7 @@ describe('DirPage', () => {
         (label) => label.textContent,
       ),
     ).toEqual([
-      'Scan interval',
+      'Scan schedule',
       'Exclude globs',
       'Keeps documents under .taiyaku/',
       'Edition key',
@@ -1055,6 +1055,205 @@ describe('DirPage, why a held button is held (O250)', () => {
   })
 })
 
+describe('DirPage, a derive holding the lease (O51)', () => {
+  /** The help of the Removal row Remove this directory. */
+  const removalHelp = (host: HTMLElement) =>
+    helpOf(row(section(host, 'Removal'), 'Remove this directory'))?.textContent
+
+  it('holds Remove… alone while a derive holds the lease, says why, and frees it once a poll finds the lease free', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      derive_running: true,
+    })
+    const { host } = await shown()
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'held'])
+    expect(removalHelp(host)).toBe(
+      'Waits for a scan or another library job to finish.',
+    )
+    await press(control(host, 'Remove…'))
+    expect(config.removalCost).not.toHaveBeenCalled()
+
+    // Polled while the derive holds it.
+    await tick()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'held'])
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+    await tick()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
+    expect(removalHelp(host)).toBe('Asks first, with what it would take.')
+    await tick()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
+  })
+
+  it('says the scan around or inside it, the more specific, where that and a derive both hold Remove…, and the derive’s words once only it does', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      held_removals: [2],
+      derive_running: true,
+    })
+    const { host } = await shown()
+    expect(holdOf(control(host, 'Remove…'))).toBe('held')
+    expect(removalHelp(host)).toBe(
+      'Waits for a scan of a directory around or inside this one.',
+    )
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      derive_running: true,
+    })
+    await tick()
+    expect(holdOf(control(host, 'Remove…'))).toBe('held')
+    expect(removalHelp(host)).toBe(
+      'Waits for a scan or another library job to finish.',
+    )
+  })
+
+  it('keeps Remove this directory’s words of today while its own scan holds it beside a derive', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...scanningIn(manga(), 2),
+      derive_running: true,
+    })
+    ownRunning(2)
+    const { host } = await shown()
+    expect(holdOf(control(host, 'Remove…'))).toBe('held')
+    expect(removalHelp(host)).toBe('Asks first, with what it would take.')
+  })
+
+  it('keeps its removal dialog open when a poll sent while its dry run is out finds a derive, which may be that dry run, and closes it for a derive a poll finds once the dry run has answered', async () => {
+    // The job lock keeps the page polling, and holds nothing of Remove….
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+    })
+    const { host } = await shown()
+    expect(holdOf(control(host, 'Remove…'))).toBe('free')
+    const dryRun = deferred<config.RemovalAnswer>()
+    vi.mocked(config.removalCost).mockReturnValueOnce(dryRun.promise)
+    await press(control(host, 'Remove…'))
+    expect(config.removalCost).toHaveBeenCalledTimes(1)
+
+    // The server counts the dry run's own lease as a derive.
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+      derive_running: true,
+    })
+    await tick()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('.remove-root')).not.toBeNull()
+    expect(removalHelp(host)).toBe('Asks first, with what it would take.')
+
+    await flush(() => dryRun.resolve(counted(5)))
+    expect(host.querySelector('.remove-root .counts')?.textContent).toContain(
+      '5 works',
+    )
+
+    // Sent with nothing of the page's out, this read's derive is another's,
+    // and the counts are from before it.
+    await tick()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
+    expect(host.querySelector('.remove-root')).toBeNull()
+    expect(removalHelp(host)).toBe(
+      'Waits for a scan or another library job to finish.',
+    )
+    expect(config.removalCost).toHaveBeenCalledTimes(1)
+    expect(config.removeRoot).not.toHaveBeenCalled()
+  })
+
+  it('keeps its removal dialog open through every poll that finds a derive while its dry run is out, 31 s of them, and draws the dry run’s answer', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+    })
+    const { host } = await shown()
+    const dryRun = deferred<config.RemovalAnswer>()
+    vi.mocked(config.removalCost).mockReturnValueOnce(dryRun.promise)
+    await press(control(host, 'Remove…'))
+    expect(config.removalCost).toHaveBeenCalledTimes(1)
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+      derive_running: true,
+    })
+    for (let second = 1; second <= 31; second += 1) await tick()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(32)
+    expect(host.querySelector('.remove-root')).not.toBeNull()
+    expect(removalHelp(host)).toBe('Asks first, with what it would take.')
+
+    await flush(() => dryRun.resolve(counted(5)))
+    expect(host.querySelector('.remove-root .counts')?.textContent).toContain(
+      '5 works',
+    )
+  })
+
+  it('draws the hold of a scan around it that a poll sent while its dry run is out finds beside a derive, which the dry run cannot be, and still holds nothing for the derive', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+    })
+    const { host } = await shown()
+    const dryRun = deferred<config.RemovalAnswer>()
+    vi.mocked(config.removalCost).mockReturnValueOnce(dryRun.promise)
+    await press(control(host, 'Remove…'))
+    expect(config.removalCost).toHaveBeenCalledTimes(1)
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+      derive_running: true,
+      held_removals: [2],
+    })
+    await tick()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('.remove-root')).toBeNull()
+    expect(holdOf(control(host, 'Remove…'))).toBe('held')
+    expect(removalHelp(host)).toBe(
+      'Waits for a scan of a directory around or inside this one.',
+    )
+
+    // The scan around it ends with the dry run still out, whose lease the
+    // derive this read finds may be.
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+      derive_running: true,
+    })
+    await tick()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
+    expect(removalHelp(host)).toBe('Asks first, with what it would take.')
+    expect(holdOf(control(host, 'Remove…'))).toBe('free')
+  })
+
+  it('keeps Remove this directory’s words of today when a poll sent while its DELETE is out finds a derive, which may be that DELETE', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+    })
+    vi.mocked(config.removalCost).mockResolvedValue(counted(5))
+    const { host, onRemoved } = await shown()
+    await press(control(host, 'Remove…'))
+    const del = deferred<config.RemovalAnswer>()
+    vi.mocked(config.removeRoot).mockReturnValueOnce(del.promise)
+    await press(host.querySelector('.remove-root .confirm') as Element)
+    expect(config.removeRoot).toHaveBeenCalledWith(2)
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+      derive_running: true,
+    })
+    await tick()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
+    expect(removalHelp(host)).toBe('Asks first, with what it would take.')
+
+    await flush(() => del.resolve({ ...counted(5), dry_run: false }))
+    expect(onRemoved).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('DirPage, the directories around and inside it', () => {
   it('names every library holding a directory around or inside it, and says "their" of two', async () => {
     const library = manga({ name: 'Teens' })
@@ -1551,7 +1750,15 @@ describe('DirPage, scans and removals across its library exclude each other', ()
 
   it('does not hold the directory’s settings for a sibling’s scan', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
-    const { host } = await shown()
+    // Scanned every 15 minutes, so Every's count is drawn in minutes.
+    const { host } = await shown({
+      library: manga({
+        dirs: [
+          dir(1, '/media/Manga/Volumes'),
+          { ...dir(2, '/media/Manga/Chapters'), scan_interval_secs: 900 },
+        ],
+      }),
+    })
     expect(holdOf(control(host, 'Move…'))).toBe('held')
 
     const keepsDocuments = host.querySelector(
@@ -1561,20 +1768,28 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     await press(keepsDocuments)
     expect(config.patchRoot).toHaveBeenCalledWith(2, { keeps_documents: true })
 
-    // The text boxes and the interval box send on blur, too.
-    for (const name of [
-      'edition_key',
-      'default_kind',
-      'default_language',
-      'exclude_globs',
-      'scan_interval_secs',
-    ]) {
-      const box = host.querySelector(`[name="${name}"]`) as HTMLInputElement
-      expect(box.disabled, name).toBe(false)
+    // The text boxes and Every's count send on blur, too, and the Scan
+    // schedule's radios and Every's unit on a choice.
+    const controls = [
+      ...host.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+        '[name="scan_schedule-2"], [name="scan_every"], [name="scan_every_unit"]',
+      ),
+      ...[
+        'edition_key',
+        'default_kind',
+        'default_language',
+        'exclude_globs',
+      ].map(
+        (name) => host.querySelector(`[name="${name}"]`) as HTMLInputElement,
+      ),
+    ]
+    expect(controls).toHaveLength(9)
+    for (const control of controls) {
+      expect(control.disabled, control.name).toBe(false)
     }
     await editBox(host.querySelector('input[name="edition_key"]'), 'weekly')
     expect(config.patchRoot).toHaveBeenCalledWith(2, { edition_key: 'weekly' })
-    await editBox(host.querySelector('input[name="scan_interval_secs"]'), '600')
+    await editBox(host.querySelector('input[name="scan_every"]'), '10')
     expect(config.patchRoot).toHaveBeenCalledWith(2, {
       scan_interval_secs: 600,
     })
@@ -1783,6 +1998,33 @@ describe('DirPage, another directory’s scan and the Library views', () => {
     expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
     expect(grid.stale()).toBe(true)
     expect(grid.sent()).toBe(1)
+  })
+
+  it('marks them stale when a poll sent while its dry run is out finds the sibling’s scan over beside a derive, which may be that dry run', async () => {
+    const grid = await keptGrid()
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
+    const { host } = await shown()
+    expect(actionsHeld(host)).toEqual(['free', 'held', 'free'])
+    const dryRun = deferred<config.RemovalAnswer>()
+    vi.mocked(config.removalCost).mockReturnValueOnce(dryRun.promise)
+    await press(control(host, 'Remove…'))
+    expect(config.removalCost).toHaveBeenCalledTimes(1)
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      derive_running: true,
+    })
+    await tick()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
+    expect(grid.stale()).toBe(true)
+
+    // Nothing else holds, and the derive is read again a poll later: sent
+    // once the dry run has answered, that read's derive is another's.
+    await flush(() => dryRun.resolve(counted(5)))
+    await tick()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
+    expect(host.querySelector('.remove-root')).toBeNull()
+    expect(holdOf(control(host, 'Remove…'))).toBe('held')
   })
 
   it('marks none of them stale when its first read finds no other directory scanning', async () => {

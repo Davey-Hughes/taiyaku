@@ -1546,6 +1546,68 @@ async fn the_root_list_carries_the_interval_and_the_last_scan() {
     assert!(first["keeps_documents"].is_boolean(), "{json}");
 }
 
+/// `next_scan_at` is the last scan plus the interval the directory is scanned
+/// at: Automatic's for a stored null, nothing for Off, and nothing for a
+/// directory never scanned, which the page draws as due. Read by `get`, so a
+/// key not sent is not taken for a sent `null`.
+#[tokio::test]
+async fn the_root_list_says_when_each_directory_is_scanned_next() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let (first, second): (i64, i64) = state
+        .library
+        .conn()
+        .query_row("SELECT MIN(id), MAX(id) FROM root", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .expect("reads the two roots");
+    state
+        .library
+        .conn()
+        .execute_batch(&format!(
+            "UPDATE root SET scan_interval_secs = NULL, last_scan_at = '2026-11-10 12:00:00' \
+             WHERE id = {first};
+             UPDATE root SET last_scan_at = NULL WHERE id = {second};"
+        ))
+        .expect("puts the scans in place");
+
+    let next_of = |json: &serde_json::Value, id: i64| -> Option<serde_json::Value> {
+        json["roots"]
+            .as_array()
+            .expect("a roots array")
+            .iter()
+            .find(|root| root["id"] == id)
+            .expect("the root is listed")
+            .get("next_scan_at")
+            .cloned()
+    };
+    let json = get_json(&router, "/api/library/roots").await;
+    assert_eq!(
+        next_of(&json, first),
+        Some(serde_json::json!("2026-11-10 12:15:00")),
+        "Automatic, 15 minutes after the last scan: {json}"
+    );
+    assert_eq!(
+        next_of(&json, second),
+        Some(serde_json::Value::Null),
+        "never scanned: {json}"
+    );
+
+    state
+        .library
+        .conn()
+        .execute(
+            "UPDATE root SET scan_interval_secs = 0 WHERE id = ?1",
+            [first],
+        )
+        .expect("turns the first off");
+    let json = get_json(&router, "/api/library/roots").await;
+    assert_eq!(
+        next_of(&json, first),
+        Some(serde_json::Value::Null),
+        "Off: {json}"
+    );
+}
+
 /// The list carries `exclude_globs`, so the box the roots screen draws for
 /// it can start at what the row actually holds.
 ///
@@ -2130,13 +2192,13 @@ async fn a_roots_patch_leaves_scan_interval_secs_alone_when_omitted_but_clears_i
         &router,
         Method::PATCH,
         &format!("/api/library/roots/{root_id}"),
-        &one_field_patch("scan_interval_secs", serde_json::json!(120)),
+        &one_field_patch("scan_interval_secs", serde_json::json!(600)),
     )
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(
         root_int_column(&state, root_id, "scan_interval_secs"),
-        Some(120)
+        Some(600)
     );
 
     // A patch that never names `scan_interval_secs` must leave it alone.
@@ -2150,7 +2212,7 @@ async fn a_roots_patch_leaves_scan_interval_secs_alone_when_omitted_but_clears_i
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(
         root_int_column(&state, root_id, "scan_interval_secs"),
-        Some(120),
+        Some(600),
         "omitting the key must leave the column alone"
     );
 
@@ -2168,6 +2230,79 @@ async fn a_roots_patch_leaves_scan_interval_secs_alone_when_omitted_but_clears_i
         None,
         "an explicit `null` must clear the column"
     );
+}
+
+/// Every is at least 5 minutes: a shorter interval would keep the job lock
+/// held through a derive for most of the time (spec §4, Decision 3). A value
+/// below 0 is no setting at all. Neither is stored.
+#[tokio::test]
+async fn a_roots_patch_refuses_an_interval_under_five_minutes_and_one_below_zero() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let root_id = only_root_id(&state);
+    state
+        .library
+        .conn()
+        .execute(
+            "UPDATE root SET scan_interval_secs = 600 WHERE id = ?1",
+            [root_id],
+        )
+        .expect("sets the interval");
+
+    for refused in [299, -1] {
+        let response = send_json(
+            &router,
+            Method::PATCH,
+            &format!("/api/library/roots/{root_id}"),
+            &one_field_patch("scan_interval_secs", serde_json::json!(refused)),
+        )
+        .await;
+        let status = response.status();
+        let text = test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}: {text}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).expect("a JSON body"),
+            serde_json::json!({
+                "error": "the directory's `scan_interval_secs` must be null (automatic), 0 (off) \
+                          or at least 300 (5 minutes)"
+            }),
+            "{refused}"
+        );
+        assert_eq!(
+            root_int_column(&state, root_id, "scan_interval_secs"),
+            Some(600),
+            "{refused} must leave the column as it was"
+        );
+    }
+}
+
+/// The three settings the minimum leaves: Every at exactly the minimum, Off
+/// (0) and Automatic (null).
+#[tokio::test]
+async fn a_roots_patch_stores_off_automatic_and_five_minutes() {
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let root_id = only_root_id(&state);
+
+    for (sent, stored) in [
+        (serde_json::json!(300), Some(300)),
+        (serde_json::json!(0), Some(0)),
+        (serde_json::Value::Null, None),
+    ] {
+        let response = send_json(
+            &router,
+            Method::PATCH,
+            &format!("/api/library/roots/{root_id}"),
+            &one_field_patch("scan_interval_secs", sent.clone()),
+        )
+        .await;
+        let status = response.status();
+        let text = test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{sent}: {text}");
+        assert_eq!(
+            root_int_column(&state, root_id, "scan_interval_secs"),
+            stored,
+            "{sent}"
+        );
+    }
 }
 
 // --- scan control ---------------------------------------------------------
@@ -2241,6 +2376,7 @@ async fn a_derive_failure_after_a_successful_scan_corrects_last_scan_status() {
         std::slice::from_ref(&root),
         crate::scan_jobs::Reread::Dir,
         &job,
+        &|_, _| {},
     );
     let why = outcome.expect_err("the derive must actually fail, or this test proves nothing");
     assert!(
@@ -2570,6 +2706,7 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
     state.scans.lock().unwrap().insert(
         root_id,
         crate::ScanProgress {
+            waiting: false,
             started: std::time::Instant::now(),
             done: false,
             report: None,
@@ -2615,6 +2752,7 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
     state.scans.lock().unwrap().insert(
         root_id,
         crate::ScanProgress {
+            waiting: false,
             started: std::time::Instant::now(),
             done: true,
             report: Some(serde_json::json!({})),
@@ -3020,6 +3158,7 @@ async fn a_scan_does_not_wait_on_the_shared_connections_mutex() {
         std::slice::from_ref(&root),
         crate::scan_jobs::Reread::Dir,
         &job,
+        &|_, _| {},
     );
     let elapsed = started.elapsed();
 
@@ -3060,6 +3199,7 @@ async fn a_second_roots_scan_is_not_blocked_by_the_first_roots_own_scan() {
     state.scans.lock().unwrap().insert(
         root_a,
         crate::ScanProgress {
+            waiting: false,
             started: std::time::Instant::now(),
             done: false,
             report: None,
@@ -3158,6 +3298,7 @@ async fn deleting_a_root_clears_its_stale_scan_registry_entry() {
     state.scans.lock().unwrap().insert(
         root_id,
         crate::ScanProgress {
+            waiting: false,
             started: std::time::Instant::now(),
             done: true,
             report: Some(serde_json::json!({ "note": "the deleted root's own report" })),
@@ -3228,6 +3369,7 @@ async fn a_dry_run_delete_leaves_the_scan_registry_entry_alone() {
     state.scans.lock().unwrap().insert(
         root_id,
         crate::ScanProgress {
+            waiting: false,
             started: std::time::Instant::now(),
             done: true,
             report: Some(serde_json::json!({ "note": "a live, finished report" })),
@@ -3305,6 +3447,7 @@ async fn scan_status_carries_both_database_columns_even_with_a_registry_entry() 
     state.scans.lock().unwrap().insert(
         root_id,
         crate::ScanProgress {
+            waiting: false,
             started: std::time::Instant::now() - std::time::Duration::from_millis(500),
             done: false,
             report: None,
@@ -3844,6 +3987,7 @@ async fn a_dir_is_not_removed_while_a_scan_of_it_is_reserved() {
     state.scans.lock().unwrap().insert(
         root_id,
         crate::ScanProgress {
+            waiting: false,
             started,
             done: false,
             report: None,
@@ -3912,6 +4056,7 @@ async fn a_dirs_scan_walks_nothing_when_its_dir_changed_while_it_waited() {
     state.scans.lock().unwrap().insert(
         asked.id,
         crate::ScanProgress {
+            waiting: false,
             started,
             done: false,
             report: None,
@@ -3980,6 +4125,7 @@ async fn a_dirs_scan_lands_only_on_its_own_reservation() {
     state.scans.lock().unwrap().insert(
         root.id,
         crate::ScanProgress {
+            waiting: false,
             started: theirs,
             done: false,
             report: None,
@@ -4101,6 +4247,7 @@ async fn a_dir_is_not_removed_while_a_scan_around_or_inside_it_is_reserved() {
         n.state.scans.lock().unwrap().insert(
             scanning,
             crate::ScanProgress {
+                waiting: false,
                 started: std::time::Instant::now(),
                 done: false,
                 report: None,
@@ -4600,4 +4747,89 @@ async fn a_dir_scan_for_a_library_that_does_not_hold_it_is_refused() {
             "{query} reserved a slot"
         );
     }
+}
+
+/// O51: a save refuses while another process derives, as it refuses while the
+/// job lock is held, and lands once the derive ends.
+#[tokio::test]
+async fn a_save_refuses_while_another_derive_holds_the_lease() {
+    let (router, state, _fixture) = test_support::router_over_a_scanned_cbz();
+    let existing = get_json(&router, "/api/library/rules").await["rules"].clone();
+    let body = serde_json::json!({ "rules": existing });
+    let elsewhere = test_support::the_store_elsewhere(&state);
+    let held = test_support::holding_the_lease(&elsewhere);
+
+    let response = send_json(&router, Method::PUT, "/api/library/rules", &body).await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (
+            StatusCode::CONFLICT,
+            "a scan or another library job is running; save again once it has finished"
+        )
+    );
+
+    drop(held);
+    let response = send_json(&router, Method::PUT, "/api/library/rules", &body).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// O51: a preview derives the whole library, so it refuses while another
+/// derive runs, and previews once it ends.
+#[tokio::test]
+async fn a_preview_refuses_while_another_derive_holds_the_lease() {
+    let (router, state, _fixture) = test_support::router_over_a_scanned_cbz();
+    let existing = get_json(&router, "/api/library/rules").await["rules"].clone();
+    let body = serde_json::json!({ "rules": existing });
+    let elsewhere = test_support::the_store_elsewhere(&state);
+    let held = test_support::holding_the_lease(&elsewhere);
+
+    let response = send_json(&router, Method::POST, "/api/library/rules/preview", &body).await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (
+            StatusCode::CONFLICT,
+            "a scan or another library job is running; preview again once it has finished"
+        )
+    );
+
+    drop(held);
+    let response = send_json(&router, Method::POST, "/api/library/rules/preview", &body).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// O51: a directory's removal derives, so even its dry run refuses while
+/// another derive runs, and answers once it ends.
+#[tokio::test]
+async fn a_directory_removal_refuses_while_another_derive_holds_the_lease() {
+    let (router, state, _fixture) = test_support::router_over_a_scanned_cbz();
+    let id = taiyaku_library::scan::roots(&state.library.conn()).expect("the directories")[0].id;
+    let path = format!("/api/library/roots/{id}?dry_run=true");
+    let elsewhere = test_support::the_store_elsewhere(&state);
+    let held = test_support::holding_the_lease(&elsewhere);
+
+    let response = send_json(&router, Method::DELETE, &path, &serde_json::json!({})).await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(
+        (
+            status,
+            serde_json::from_str::<serde_json::Value>(&text).ok()
+        ),
+        (
+            StatusCode::CONFLICT,
+            Some(serde_json::json!({
+                "error": "a scan or another library job is running; remove the directory once it \
+                          has finished"
+            }))
+        ),
+        "{text}"
+    );
+
+    drop(held);
+    let response = send_json(&router, Method::DELETE, &path, &serde_json::json!({})).await;
+    assert_eq!(response.status(), StatusCode::OK);
 }

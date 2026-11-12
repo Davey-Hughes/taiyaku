@@ -469,6 +469,7 @@ beforeEach(() => {
       library_id: id,
       held_removals: [],
       moves_held: false,
+      derive_running: false,
       scans: [],
       running: false,
       elapsed_secs: null,
@@ -1303,9 +1304,10 @@ describe('Libraries, the pages', () => {
   ])(
     'saves the directory settings typed and not yet left when the directory’s page goes by $by',
     async ({ leave, to }) => {
-      vi.mocked(api.listLibraries).mockResolvedValue({
-        libraries: [library(1, 'Manga', ['/media/Manga'])],
-      })
+      const manga = library(1, 'Manga', ['/media/Manga'])
+      // Scanned every 15 minutes, so Every's count is drawn in minutes.
+      manga.dirs[0].scan_interval_secs = 900
+      vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [manga] })
       vi.mocked(config.patchRoot).mockResolvedValue(undefined)
       const host = await at('/config/libraries/Manga')
       await follow(host, '/media/Manga')
@@ -1316,10 +1318,8 @@ describe('Libraries, the pages', () => {
         'ja',
       )
       await typeInto(
-        host.querySelector(
-          'input[name="scan_interval_secs"]',
-        ) as HTMLInputElement,
-        '600',
+        host.querySelector('input[name="scan_every"]') as HTMLInputElement,
+        '10',
       )
       expect(config.patchRoot).not.toHaveBeenCalled()
 
@@ -3002,6 +3002,7 @@ describe('Libraries, a library’s removal', () => {
         library_id: id,
         held_removals: [],
         moves_held: false,
+        derive_running: false,
         scans: [],
         running: id === 2,
         elapsed_secs: 1,
@@ -3032,6 +3033,7 @@ describe('Libraries, a library’s removal', () => {
             library_id: id,
             held_removals: [],
             moves_held: false,
+            derive_running: false,
             scans: [],
             running: true,
             elapsed_secs: 1,

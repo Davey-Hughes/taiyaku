@@ -409,3 +409,35 @@ async fn a_stamp_refuses_while_another_library_job_holds_the_lock() {
     let after = send_json(&router, Method::POST, &path, &planned).await;
     assert_eq!(after.status(), StatusCode::OK);
 }
+
+/// O51: a stamp refuses while another process derives, as it refuses while the
+/// job lock is held, and lands once the derive ends.
+#[tokio::test]
+async fn a_stamp_refuses_while_another_derive_holds_the_lease() {
+    let (router, state, _fixture) = test_support::router_over_a_scanned_cbz();
+    grant_can_stamp(&state);
+    let slug = a_slug(&state);
+    let path = format!("/api/library/works/{slug}/stamp-comicinfo");
+    let planned = get_json(&router, &path).await;
+    assert!(
+        !planned["archives"].as_array().expect("an array").is_empty(),
+        "the fixture has something to stamp, so a 409 here is the lease: {planned}"
+    );
+    let elsewhere = test_support::the_store_elsewhere(&state);
+    let held = test_support::holding_the_lease(&elsewhere);
+
+    let response = send_json(&router, Method::POST, &path, &planned).await;
+    let status = response.status();
+    let text = test_support::body_string(response).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (
+            StatusCode::CONFLICT,
+            "a scan or another library job is running; stamp again once it has finished"
+        )
+    );
+
+    drop(held);
+    let after = send_json(&router, Method::POST, &path, &planned).await;
+    assert_eq!(after.status(), StatusCode::OK);
+}

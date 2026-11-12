@@ -2075,7 +2075,10 @@ describe('Users, a write refused once its page has gone', () => {
   const locked = () =>
     new Error('/api/library/users: 500 {"error":"the store is locked"}')
 
-  /** Chooses `value` in `select`, as a person would. */
+  /**
+   * Chooses `value` in `select` by its value setter and a `change` event,
+   * which moves no focus.
+   */
   async function choose(select: HTMLSelectElement, value: string) {
     await act(async () => {
       Object.getOwnPropertyDescriptor(

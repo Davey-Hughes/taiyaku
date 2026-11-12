@@ -77,7 +77,7 @@ pub fn load(library: &Library, work: &Work) -> Result<Option<TruthDoc>, String> 
 ///
 /// Returns an error if SQLite fails.
 pub fn store(library: &Library, work: &Work, doc: &TruthDoc) -> Result<(), String> {
-    let conn = library.conn();
+    let conn = library.saving()?;
     let work_id = works::row_id_for_write(&conn, work)?;
     taiyaku_library::state::put_truth(&conn, work_id, doc)
 }

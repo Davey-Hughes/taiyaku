@@ -427,12 +427,35 @@ fn scan(args: &[String]) -> Result<(), String> {
     }
 
     if !no_derive {
+        // Another derive of this store, the server's scan or another `library
+        // scan`, would interleave with this one work by work (O51), so this
+        // waits for it. No timeout: the other derive always ends, and the line
+        // says what is waited for.
+        let mut said = false;
+        let mut waiting = |_: std::time::Duration| {
+            if !said {
+                said = true;
+                eprintln!(
+                    "taiyaku: waiting for another derive of this library (the server's scan, \
+                     or another `library scan`) to finish"
+                );
+            }
+        };
+        let lease = loop {
+            if let Some(lease) = library
+                .derive_lease(taiyaku_library::lease::Wait::Yes(&mut waiting))
+                .map_err(|e| format!("deriving: {e}"))?
+            {
+                break lease;
+            }
+        };
         let conn = library.conn();
         // One raiser, like one writer: `derive` already calls
         // `proposals::raise` once, at the end of its own pass, and returns
         // the count it opened.
-        let derived =
-            taiyaku_library::derive::derive(&conn).map_err(|e| format!("deriving: {e}"))?;
+        let derived = lease
+            .holding(|| taiyaku_library::derive::derive(&conn))
+            .map_err(|e| format!("deriving: {e}"))?;
         println!("{}", derive_summary(&derived, derived.raised));
     }
 

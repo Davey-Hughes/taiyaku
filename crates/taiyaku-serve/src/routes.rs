@@ -1511,6 +1511,10 @@ async fn put_progress(
     AxPath(id): AxPath<String>,
     axum::Json(progress): axum::Json<crate::Progress>,
 ) -> Response {
+    // Before anything this handler awaits, so that one reader's saves are
+    // ordered as they reached it, after the auth layer and the body's read,
+    // not as they reach the lock (O272).
+    let arrival = taiyaku_library::state::Arrival::next();
     let user_id = match reader(&extensions) {
         Ok(id) => id,
         Err(missing) => return missing.into_response(),
@@ -1564,8 +1568,15 @@ async fn put_progress(
                 ))
             })?;
         let progress = crate::Progress { slot, ..progress };
-        crate::progress::store(&state.library, &found, user_id, &progress, view.full())
-            .map_err(NoProgress::Failed)
+        crate::progress::store(
+            &state.library,
+            &found,
+            user_id,
+            &progress,
+            view.full(),
+            arrival,
+        )
+        .map_err(NoProgress::Failed)
     })
     .await;
 
@@ -1811,22 +1822,15 @@ async fn patch_alignments(
     // reasoning about the async worker applies to it unchanged.
     let written = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id).map_err(not_found)?;
-        // **The library's connection before the work's document, never the
-        // other way round.** `list_works` holds this mutex across a
-        // `work.sidecar()` read, so a thread that took the sidecar's write
-        // lock first and reached for the mutex second would deadlock against
-        // it — and the `spawn_blocking` pool is where both of them run. It is
-        // held across the file write below, which is the cost of that order:
-        // one correction — a person dragging a filmstrip tile — briefly
-        // blocks the other library readers.
-        let conn = state.library.conn();
         // The view of a document, as this caller is sent it: `If-Match` names
         // the tag `get_sidecar` sent it, which is over its view.
         let seen = |sidecar: &Arc<taiyaku_core::Sidecar>| {
             crate::view::View::build(Arc::clone(sidecar), flags.as_ref())
                 .ok_or_else(|| not_found(format!("no work `{id}`")))
         };
-        found.update(|current| {
+        // Whether this caller may correct `current` as asked, which the
+        // document alone decides.
+        let admitted = |current: &Arc<taiyaku_core::Sidecar>| -> Result<(), Response> {
             let view = seen(current)?;
             // A narrowed edition's runs are in a numbering this caller is not
             // sent, which is why its document leaves them out (spec §3.8). A
@@ -1873,7 +1877,32 @@ async fn patch_alignments(
                 }
                 Some(true) => {}
             }
-
+            Ok(())
+        };
+        // Asked before the wait for the store's write lock, so a refusal never
+        // waits out another connection's write, and again under it, where it
+        // counts: the document can move while this correction waits.
+        admitted(&found.sidecar())?;
+        // **The save's connection, then the store's write lock, then the
+        // work's document, never the other way round.** In memory the save's
+        // connection is the shared one, which `list_works` holds across a
+        // `work.sidecar()` read, so taking it after the document would
+        // deadlock. And waiting for a derive's write lock with the document
+        // held would stall every `list_works`, and the shared connection with
+        // it (O272).
+        let conn = state
+            .library
+            .saving()
+            .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
+        let held = conn.unchecked_transaction().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("starting a correction: {e}"),
+            )
+                .into_response()
+        })?;
+        found.update(|current| {
+            admitted(current)?;
             let mut next = (**current).clone();
             let what = next
                 .correct(
@@ -1967,8 +1996,15 @@ async fn patch_alignments(
                     taiyaku_read::atomic::write(&found.path, json.as_bytes(), "json")
                         .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
                 }
-                crate::alignments::store(&conn, &found, &next)
+                crate::alignments::store(&held, &found, &next)
                     .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
+                held.commit().map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("committing the correction: {e}"),
+                    )
+                        .into_response()
+                })?;
             }
             // `json` above stays the full document that was stored; the
             // answer and its tag are this caller's view of it.
@@ -2235,6 +2271,10 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             "/api/library/libraries/{id}/scan",
             axum::routing::get(crate::libraries_api::library_scan_status)
                 .post(crate::libraries_api::start_library_scan),
+        ),
+        (
+            "/api/library/derive",
+            get(crate::libraries_api::derive_status),
         ),
         (
             "/api/library/split-editions",
@@ -2686,6 +2726,13 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
             },
         ),
         (
+            "/api/library/derive",
+            GrantIndependent {
+                reason: "reports whether a derive of the whole store or the \
+                          job lock is held, naming no work",
+            },
+        ),
+        (
             "/api/library/split-editions",
             GrantIndependent {
                 reason: "admin-only; lists every library's share of each \
@@ -2882,6 +2929,7 @@ pub(crate) fn narrowing_postures() -> Vec<(&'static str, NarrowingPosture)> {
         ("/api/library/libraries/{id}/dirs", ADMIN),
         ("/api/library/libraries/{id}/dirs/{dir}", ADMIN),
         ("/api/library/libraries/{id}/scan", ADMIN),
+        ("/api/library/derive", ADMIN),
         ("/api/library/split-editions", ADMIN),
         ("/api/library/dirs", ADMIN),
         ("/api/library/users", ADMIN),

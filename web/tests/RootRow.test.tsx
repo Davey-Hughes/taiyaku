@@ -39,6 +39,7 @@ const root = (over: Partial<config.Root> = {}): config.Root => ({
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  next_scan_at: null,
   ...over,
 })
 
@@ -220,6 +221,7 @@ describe('RootRow', () => {
       ['watch', 'unknown — probed when a directory is added'],
       ['scan every', '24h'],
       ['last scan', 'never'],
+      ['next scan', 'due'],
     ])
   })
 
@@ -413,6 +415,63 @@ describe('RootRow', () => {
     // that Remove… did nothing.
     expect(config.removalCost).not.toHaveBeenCalled()
     expect(host.querySelector('.remove-root')).toBeNull()
+  })
+
+  it('says after Scanning… that its scan waits while its status reads waiting, and nothing more once it reads deriving (O51)', async () => {
+    const scanning = (elapsed_secs: number, last_scan_status: string) => ({
+      root_id: 3,
+      running: true,
+      elapsed_secs,
+      report: null,
+      last_scan_at: '2026-11-10 12:00:00',
+      last_scan_status,
+    })
+    vi.mocked(config.scanStatus).mockResolvedValue(scanning(12, 'waiting'))
+    const host = await settle()
+    expect(host.querySelector('.scanning')?.textContent).toBe(
+      'Scanning… 12s · waiting',
+    )
+
+    vi.mocked(config.scanStatus).mockResolvedValue(scanning(13, 'deriving'))
+    await act(async () => {
+      vi.advanceTimersByTime(config.SCAN_POLL_MS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 13s')
+  })
+
+  it('says no waiting after Scanning… for a scan pressed once the watch of a waiting one was given up (O51)', async () => {
+    vi.mocked(config.scanStatus).mockResolvedValueOnce({
+      root_id: 3,
+      running: true,
+      elapsed_secs: 12,
+      report: null,
+      last_scan_at: '2026-11-10 12:00:00',
+      last_scan_status: 'waiting',
+    })
+    const host = await settle()
+    expect(host.querySelector('.scanning')?.textContent).toBe(
+      'Scanning… 12s · waiting',
+    )
+    vi.mocked(config.scanStatus).mockRejectedValue(
+      new Error('/api/library/roots/3/scan: 500 the store is locked'),
+    )
+    for (const _ of [1, 2, 3]) {
+      await act(async () => {
+        vi.advanceTimersByTime(config.SCAN_POLL_MS)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+    }
+    expect(host.querySelector('.scanning')).toBeNull()
+
+    await act(async () => {
+      press(host, 'Scan directory').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning…')
   })
 
   describe('Move…', () => {
@@ -986,27 +1045,6 @@ describe('RootRow', () => {
     expect(config.patchRoot).toHaveBeenCalledWith(3, { keeps_documents: true })
   })
 
-  it('clears the interval to null and sets it as a number', async () => {
-    const host = await settle()
-    await edit(host, 'scan_interval_secs', '900')
-    expect(config.patchRoot).toHaveBeenCalledWith(3, {
-      scan_interval_secs: 900,
-    })
-
-    vi.clearAllMocks()
-    vi.mocked(config.patchRoot).mockResolvedValue(undefined)
-    await edit(host, 'scan_interval_secs', '')
-    expect(config.patchRoot).toHaveBeenCalledWith(3, {
-      scan_interval_secs: null,
-    })
-  })
-
-  it('sends nothing when the interval is blurred unchanged', async () => {
-    const host = await settle()
-    await edit(host, 'scan_interval_secs', '86400')
-    expect(config.patchRoot).not.toHaveBeenCalled()
-  })
-
   it('keeps watching a scan through a single failed poll', async () => {
     // A `.catch` that did `setRunning(false)` would let one blip — a proxy
     // 502, a `SQLITE_BUSY` while the scan's own writes hold the file — tear
@@ -1231,7 +1269,7 @@ describe('RootRow', () => {
     // The regime line stays in the header beside it.
     expect(
       host.querySelectorAll('.page-header .page-description .regime > div'),
-    ).toHaveLength(3)
+    ).toHaveLength(4)
   })
 
   it('opens the removal dialog and closes it again without removing', async () => {
@@ -1427,41 +1465,6 @@ describe('RootRow', () => {
     expect(vi.mocked(config.startScan).mock.calls).toHaveLength(1)
   })
 
-  it('refuses an unparseable interval rather than clearing the column', async () => {
-    // For `<input type=number>` a browser reports an unparseable entry as
-    // `value === ''`, so `12e` blurred would send `{scan_interval_secs: null}`
-    // and wipe an interval nobody meant to touch.
-    const host = await settle()
-    const box = host.querySelector(
-      'input[name="scan_interval_secs"]',
-    ) as HTMLInputElement
-    Object.defineProperty(box, 'validity', {
-      configurable: true,
-      value: { badInput: true },
-    })
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        'value',
-      )?.set
-      setter?.call(box, '')
-      box.dispatchEvent(new Event('input', { bubbles: true }))
-      box.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
-      await Promise.resolve()
-    })
-    expect(config.patchRoot).not.toHaveBeenCalled()
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'whole number',
-    )
-  })
-
-  it('refuses to store an interval of zero or less', async () => {
-    const host = await settle()
-    await edit(host, 'scan_interval_secs', '0')
-    expect(config.patchRoot).not.toHaveBeenCalled()
-    expect(host.querySelector('[role="alert"]')).not.toBeNull()
-  })
-
   it('keeps a scan warning when an unrelated field is saved', async () => {
     // **The single-slot defect `Libraries.tsx` also avoids, by keeping its
     // list failure and its create refusal apart.** A scan interrupted by a
@@ -1591,7 +1594,7 @@ describe('RootRow', () => {
       'default_kind',
       'default_language',
       'exclude_globs',
-      'scan_interval_secs',
+      'scan_every',
     ]) {
       await tabThrough(host, name)
     }
@@ -1760,7 +1763,7 @@ describe('RootRow', () => {
         r.querySelector('input, textarea')?.getAttribute('name'),
       ])
     expect(rowsOf('How it is scanned')).toEqual([
-      ['Scan interval', 'scan_interval_secs'],
+      ['Scan schedule', 'scan_schedule-3'],
       ['Exclude globs', 'exclude_globs'],
       ['Keeps documents under .taiyaku/', 'keeps_documents'],
     ])
@@ -1848,16 +1851,16 @@ describe('RootRow', () => {
     ]
       .map((label) => ({ written: label.textContent, control: label.control }))
       .filter(({ control }) => control?.hasAttribute('aria-label'))
-    // The scan interval and the four text columns, named: a loop over
-    // nothing passes. Two names say more than their row's label, the unit
-    // and the syntax, and each starts with the label's words as written.
+    // The four text columns, named: a loop over nothing passes. The Scan
+    // schedule's label names its radio group, which no control's label
+    // does. One name says more than its row's label, the syntax, and each
+    // starts with the label's words as written.
     expect(
       labelled.map(({ written, control }) => [
         written,
         control?.getAttribute('aria-label'),
       ]),
     ).toEqual([
-      ['Scan interval', 'Scan interval (seconds)'],
       ['Exclude globs', 'Exclude globs (one gitignore pattern per line)'],
       ['Edition key', 'Edition key'],
       ['Default kind', 'Default kind'],
@@ -1869,6 +1872,712 @@ describe('RootRow', () => {
         written ?? '',
       ).toBe(true)
     }
+  })
+})
+
+/** The Scan schedule's three radios, in the order drawn. */
+const scheduleRadios = (host: HTMLElement) => [
+  ...host.querySelectorAll<HTMLInputElement>(
+    'input[type="radio"][name^="scan_schedule-"]',
+  ),
+]
+
+/** The words of the Scan schedule's radio that is checked. */
+const chosen = (host: HTMLElement) =>
+  scheduleRadios(host)
+    .find((radio) => radio.checked)
+    ?.closest('label')?.textContent
+
+/** Every's count, drawn only while Every is chosen. */
+const everyBox = (host: HTMLElement) =>
+  host.querySelector<HTMLInputElement>('input[name="scan_every"]')
+
+/** Every's unit, drawn only while Every is chosen. */
+const everyUnit = (host: HTMLElement) =>
+  host.querySelector<HTMLSelectElement>('select[name="scan_every_unit"]')
+
+/**
+ * Click the Scan schedule's radio labelled `words` with `HTMLElement.click()`,
+ * which moves no focus, so a box being typed in is not left first as a
+ * mouse's click would leave it.
+ */
+async function choose(host: HTMLElement, words: string) {
+  const radio = scheduleRadios(host).find(
+    (one) => one.closest('label')?.textContent === words,
+  )
+  if (!radio) throw new Error(`no radio labelled ${words}`)
+  await act(async () => {
+    radio.click()
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
+/** Pick Every's unit from its list, touching nothing else. */
+async function pickUnit(host: HTMLElement, unit: 'minutes' | 'hours') {
+  const select = everyUnit(host)
+  if (!select) throw new Error('no unit drawn')
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLSelectElement.prototype,
+      'value',
+    )?.set?.call(select, unit)
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
+/** The row read again, its interval `scan_interval_secs`, as its page does. */
+async function readAgain(scan_interval_secs: number | null) {
+  await act(async () => {
+    rerender(
+      <RootRow
+        root={root({ scan_interval_secs })}
+        probe={undefined}
+        onChanged={vi.fn()}
+      />,
+    )
+    await Promise.resolve()
+  })
+}
+
+/** The Scan schedule as drawn: its choice, and Every's count and unit. */
+const scheduleOf = (host: HTMLElement) => [
+  chosen(host),
+  everyBox(host)?.value,
+  everyUnit(host)?.value,
+]
+
+/** Make Every's box report an entry it cannot read, as `12e` is. */
+function unreadable(host: HTMLElement) {
+  const box = everyBox(host)
+  if (!box) throw new Error('no box drawn')
+  Object.defineProperty(box, 'validity', {
+    configurable: true,
+    value: { badInput: true },
+  })
+}
+
+/** The row's alert, where it says something. */
+const alertOf = (host: HTMLElement) =>
+  host.querySelector('[role="alert"]')?.textContent
+
+/** The sentence a count the page will not send gets, written out. */
+const UNDER_MINIMUM =
+  'Every has to be a whole number of minutes or hours, at least 5 minutes.'
+
+describe('RootRow, the Scan schedule', () => {
+  it('draws a row of three radios, Every’s count and its unit after Every’s label, named and helped as written', async () => {
+    const host = await settle()
+    const schedule = row(section(host, 'How it is scanned'), 'Scan schedule')
+    const help = helpOf(schedule)
+    expect(help?.textContent).toBe(
+      'Every is at least 5 minutes. With Off, the server scans it only when Scan directory or Scan library is pressed.',
+    )
+    expect(schedule.querySelector('[role="radiogroup"]')).not.toBeNull()
+    expect(
+      scheduleRadios(host).map((radio) => [
+        radio.closest('label')?.textContent,
+        radio.name,
+      ]),
+    ).toEqual([
+      ['Automatic', 'scan_schedule-3'],
+      ['Every', 'scan_schedule-3'],
+      ['Off', 'scan_schedule-3'],
+    ])
+
+    const box = everyBox(host)
+    const unit = everyUnit(host)
+    if (!box || !unit || !help) throw new Error('no box, unit or help drawn')
+    expect(
+      ['type', 'min', 'step', 'aria-label', 'aria-describedby'].map((name) =>
+        box.getAttribute(name),
+      ),
+    ).toEqual(['number', '1', '1', 'Scan every', help.id])
+    expect(
+      ['aria-label', 'aria-describedby'].map((name) => unit.getAttribute(name)),
+    ).toEqual(['Scan every unit', help.id])
+    expect([...unit.options].map((one) => one.textContent)).toEqual([
+      'minutes',
+      'hours',
+    ])
+    // After Every's label and outside it, then Off's: a control inside a
+    // label is that label's too.
+    const [, every, off] = scheduleRadios(host).map(
+      (radio) => radio.closest('label') as HTMLLabelElement,
+    )
+    expect(box.closest('label')).toBeNull()
+    expect(unit.closest('label')).toBeNull()
+    const order = [every, box, unit, off]
+    for (let i = 1; i < order.length; i++) {
+      expect(
+        order[i - 1].compareDocumentPosition(order[i]) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+        String(i),
+      ).toBeTruthy()
+    }
+  })
+
+  it('draws the stored value as its choice, a count in hours where it is whole hours and in minutes rounded down otherwise, and sends nothing', async () => {
+    const drawn = async (scan_interval_secs: number | null) => {
+      const host = await settle({ scan_interval_secs })
+      return [chosen(host), everyBox(host)?.value, everyUnit(host)?.value]
+    }
+    expect(await drawn(null)).toEqual(['Automatic', undefined, undefined])
+    expect(await drawn(0)).toEqual(['Off', undefined, undefined])
+    expect(await drawn(-60)).toEqual(['Off', undefined, undefined])
+    expect(await drawn(86400)).toEqual(['Every', '24', 'hours'])
+    expect(await drawn(900)).toEqual(['Every', '15', 'minutes'])
+    expect(await drawn(5400)).toEqual(['Every', '90', 'minutes'])
+    expect(await drawn(330)).toEqual(['Every', '5', 'minutes'])
+    expect(config.patchRoot).not.toHaveBeenCalled()
+  })
+
+  it('saves Off as 0 and Automatic as null at once, and draws no count for either', async () => {
+    const host = await settle()
+    await choose(host, 'Off')
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+    ])
+    expect(chosen(host)).toBe('Off')
+    expect(everyBox(host)).toBeNull()
+
+    await choose(host, 'Automatic')
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+      [3, { scan_interval_secs: null }],
+    ])
+    expect(chosen(host)).toBe('Automatic')
+    expect(everyBox(host)).toBeNull()
+  })
+
+  it('saves 24 hours at once for choosing Every with no interval kept, and draws it in hours, from Automatic and from Off', async () => {
+    // A directory each, so that each row's radios are a group of their own.
+    for (const [id, scan_interval_secs] of [
+      [3, null],
+      [4, 0],
+      [5, -3600],
+    ] as const) {
+      const host = await settle({ id, scan_interval_secs })
+      await choose(host, 'Every')
+      expect(scheduleOf(host), String(scan_interval_secs)).toEqual([
+        'Every',
+        '24',
+        'hours',
+      ])
+    }
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 86400 }],
+      [4, { scan_interval_secs: 86400 }],
+      [5, { scan_interval_secs: 86400 }],
+    ])
+  })
+
+  it('sends Every as seconds when its box is left, in minutes, and in hours when its unit is changed', async () => {
+    const host = await settle({ scan_interval_secs: 900 })
+    await edit(host, 'scan_every', '20')
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 1200 }],
+    ])
+
+    vi.mocked(config.patchRoot).mockClear()
+    await typeAndStay(host, 'scan_every', '2')
+    await pickUnit(host, 'hours')
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 7200 }],
+    ])
+  })
+
+  it('sends nothing for a count under 5 minutes, not whole or unreadable, says why, and sends 5 minutes', async () => {
+    const refused = async (
+      entry: string,
+      over: Partial<config.Root> = { scan_interval_secs: 900 },
+      then?: (host: HTMLElement) => void,
+    ) => {
+      vi.mocked(config.patchRoot).mockClear()
+      const host = await settle(over)
+      then?.(host)
+      await edit(host, 'scan_every', entry)
+      return [vi.mocked(config.patchRoot).mock.calls.length, alertOf(host)]
+    }
+    for (const entry of ['4', '0', '-5', '1.5']) {
+      expect(await refused(entry), entry).toEqual([0, UNDER_MINIMUM])
+    }
+    // A count of hours that is not whole is refused, though it is whole
+    // seconds.
+    expect(await refused('1.5', { scan_interval_secs: 86400 })).toEqual([
+      0,
+      UNDER_MINIMUM,
+    ])
+    expect(await refused('', {}, unreadable)).toEqual([0, UNDER_MINIMUM])
+
+    vi.mocked(config.patchRoot).mockClear()
+    const host = await settle({ scan_interval_secs: 900 })
+    await edit(host, 'scan_every', '4')
+    expect(alertOf(host)).toBe(UNDER_MINIMUM)
+    await edit(host, 'scan_every', '5')
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 300 }],
+    ])
+    expect(alertOf(host)).toBeUndefined()
+  })
+
+  it('sends nothing and says nothing for an emptied box, nor for one typed back to the stored value', async () => {
+    const emptied = await settle({ id: 4, scan_interval_secs: 900 })
+    await retype(emptied, 'scan_every', '7', '')
+    // `retype`, not `edit`: see its doc comment.
+    const stored = await settle({ scan_interval_secs: 900 })
+    await retype(stored, 'scan_every', '150', '15')
+    expect(config.patchRoot).not.toHaveBeenCalled()
+    expect(alertOf(emptied)).toBeUndefined()
+    expect(alertOf(stored)).toBeUndefined()
+  })
+
+  it('sends nothing and says nothing for a box tabbed through untouched, though its count is the stored value rounded down', async () => {
+    // 330 seconds is drawn as 5 minutes, and 90 as 1, so only what was
+    // typed can tell a send from a tab through.
+    const five = await settle({ scan_interval_secs: 330 })
+    await tabThrough(five, 'scan_every')
+    const one = await settle({ scan_interval_secs: 90 })
+    await tabThrough(one, 'scan_every')
+    expect(config.patchRoot).not.toHaveBeenCalled()
+    expect(alertOf(five)).toBeUndefined()
+    expect(alertOf(one)).toBeUndefined()
+  })
+
+  it('draws the server’s refusal in its own words', async () => {
+    vi.mocked(config.patchRoot).mockRejectedValue(
+      new Error(
+        '/api/library/roots/3: 400 {"error":"the directory’s scan interval is refused here"}',
+      ),
+    )
+    const host = await settle({ scan_interval_secs: 900 })
+    await edit(host, 'scan_every', '10')
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 600 }],
+    ])
+    expect(alertOf(host)).toBe('the directory’s scan interval is refused here')
+  })
+
+  it('goes back to the stored choice when Off or Automatic is refused, and draws the server’s words', async () => {
+    vi.mocked(config.patchRoot).mockRejectedValue(
+      new Error('/api/library/roots/3: 500 {"error":"the store is locked"}'),
+    )
+    const every = await settle()
+    await choose(every, 'Off')
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+    ])
+    expect(chosen(every)).toBe('Every')
+    expect(everyBox(every)?.value).toBe('24')
+    expect(alertOf(every)).toBe('the store is locked')
+
+    const off = await settle({ scan_interval_secs: 0 })
+    await choose(off, 'Automatic')
+    expect(chosen(off)).toBe('Off')
+  })
+
+  it('sends a choice once the one before it is answered, and keeps it when that one is refused', async () => {
+    const first = deferred<undefined>()
+    const second = deferred<undefined>()
+    // In the order sent: Off, Default language, then Automatic.
+    vi.mocked(config.patchRoot)
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(second.promise)
+    const host = await settle()
+    await choose(host, 'Off')
+    await choose(host, 'Automatic')
+    // Another setting's write is another column's, and does not wait.
+    await edit(host, 'default_language', 'ja')
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+      [3, { default_language: 'ja' }],
+    ])
+
+    await flush(() =>
+      first.reject(
+        new Error('/api/library/roots/3: 500 {"error":"the store is locked"}'),
+      ),
+    )
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls.slice(2)).toEqual([
+      [3, { scan_interval_secs: null }],
+    ])
+    expect(alertOf(host)).toBe('the store is locked')
+    expect(chosen(host)).toBe('Automatic')
+
+    await flush(() => second.resolve(undefined))
+    expect(alertOf(host)).toBeUndefined()
+    expect(chosen(host)).toBe('Automatic')
+  })
+
+  it('names its radios for its directory, so that two rows in one page keep their own choices', async () => {
+    const every = await settle()
+    const off = await settle({ id: 4, scan_interval_secs: 0 })
+    expect([chosen(every), chosen(off)]).toEqual(['Every', 'Off'])
+  })
+
+  it('saves the stored interval again at once, its count refilled, when Every is chosen after this row’s Off, read back or not', async () => {
+    const sent = await settle()
+    await choose(sent, 'Off')
+    await choose(sent, 'Every')
+    await flush()
+    expect(scheduleOf(sent)).toEqual(['Every', '24', 'hours'])
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+      [3, { scan_interval_secs: 86400 }],
+    ])
+    await unmountRow()
+    vi.mocked(config.patchRoot).mockClear()
+    const readBack = await settle({ scan_interval_secs: 420 })
+    await choose(readBack, 'Off')
+    await readAgain(0)
+    await choose(readBack, 'Every')
+    await flush()
+    expect(scheduleOf(readBack)).toEqual(['Every', '7', 'minutes'])
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+      [3, { scan_interval_secs: 420 }],
+    ])
+  })
+
+  it('saves again the count it last sent, typed or by its unit, or the interval a read brings from elsewhere, when Every is chosen again', async () => {
+    const host = await settle({ scan_interval_secs: 900 })
+    await edit(host, 'scan_every', '10')
+    await choose(host, 'Off')
+    await choose(host, 'Every')
+    await flush()
+    expect(scheduleOf(host)).toEqual(['Every', '10', 'minutes'])
+
+    await typeAndStay(host, 'scan_every', '3')
+    await pickUnit(host, 'hours')
+    await choose(host, 'Automatic')
+    await choose(host, 'Every')
+    await flush()
+    expect(scheduleOf(host)).toEqual(['Every', '3', 'hours'])
+
+    await readAgain(5400)
+    await choose(host, 'Off')
+    await choose(host, 'Every')
+    await flush()
+    expect(scheduleOf(host)).toEqual(['Every', '90', 'minutes'])
+    expect(
+      vi
+        .mocked(config.patchRoot)
+        .mock.calls.map(([, patch]) => patch.scan_interval_secs),
+    ).toEqual([600, 0, 600, 10800, null, 10800, 0, 5400])
+  })
+
+  it('goes back to Off when Every’s refilled interval is refused, and draws the server’s words', async () => {
+    vi.mocked(config.patchRoot)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(
+        new Error('/api/library/roots/3: 500 {"error":"the store is locked"}'),
+      )
+    const host = await settle()
+    await choose(host, 'Off')
+    await choose(host, 'Every')
+    await flush()
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+      [3, { scan_interval_secs: 86400 }],
+    ])
+    expect(scheduleOf(host)).toEqual(['Off', undefined, undefined])
+    expect(alertOf(host)).toBe('the store is locked')
+  })
+
+  it('saves again the interval stored, not a count refused, when Every is chosen after Off', async () => {
+    vi.mocked(config.patchRoot).mockRejectedValueOnce(
+      new Error('/api/library/roots/3: 500 {"error":"the store is locked"}'),
+    )
+    const host = await settle()
+    await edit(host, 'scan_every', '12')
+    await flush()
+    expect(alertOf(host)).toBe('the store is locked')
+    await choose(host, 'Off')
+    await choose(host, 'Every')
+    await flush()
+    expect(scheduleOf(host)).toEqual(['Every', '24', 'hours'])
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 43200 }],
+      [3, { scan_interval_secs: 0 }],
+      [3, { scan_interval_secs: 86400 }],
+    ])
+  })
+
+  it('sends nothing as the row goes for a count typed while Every’s refill is out, once that is refused, and draws Off again', async () => {
+    const refill = deferred<undefined>()
+    vi.mocked(config.patchRoot)
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(refill.promise)
+    const host = await settle({ scan_interval_secs: 420 })
+    await choose(host, 'Off')
+    await flush()
+    await choose(host, 'Every')
+    await typeAndStay(host, 'scan_every', '12')
+    await flush(() =>
+      refill.reject(
+        new Error('/api/library/roots/3: 500 {"error":"the store is locked"}'),
+      ),
+    )
+    await flush()
+    expect(scheduleOf(host)).toEqual(['Off', undefined, undefined])
+    await unmountRow()
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+      [3, { scan_interval_secs: 420 }],
+    ])
+  })
+
+  it('sends nothing as the row goes for a count typed while Every’s 24 hours is out, once that is refused, and draws Automatic again', async () => {
+    const LOCKED = new Error(
+      '/api/library/roots/3: 500 {"error":"the store is locked"}',
+    )
+    const day = deferred<undefined>()
+    vi.mocked(config.patchRoot).mockReturnValueOnce(day.promise)
+    const automatic = await settle({ scan_interval_secs: null })
+    await choose(automatic, 'Every')
+    await typeAndStay(automatic, 'scan_every', '12')
+    await flush(() => day.reject(LOCKED))
+    await flush()
+    expect(scheduleOf(automatic)).toEqual(['Automatic', undefined, undefined])
+    await unmountRow()
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 86400 }],
+    ])
+  })
+
+  it('goes back to Automatic when its 24 hours and a count left after it are both refused, and keeps a refused count where the store holds Every', async () => {
+    const LOCKED = new Error(
+      '/api/library/roots/3: 500 {"error":"the store is locked"}',
+    )
+    const day = deferred<undefined>()
+    vi.mocked(config.patchRoot)
+      .mockReturnValueOnce(day.promise)
+      .mockRejectedValueOnce(LOCKED)
+    const host = await settle({ scan_interval_secs: null })
+    await choose(host, 'Every')
+    await edit(host, 'scan_every', '3')
+    await flush(() => day.reject(LOCKED))
+    await flush()
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 86400 }],
+      [3, { scan_interval_secs: 10800 }],
+    ])
+    expect(scheduleOf(host)).toEqual(['Automatic', undefined, undefined])
+    expect(alertOf(host)).toBe('the store is locked')
+    await unmountRow()
+
+    vi.mocked(config.patchRoot).mockClear()
+    vi.mocked(config.patchRoot).mockRejectedValueOnce(LOCKED)
+    const every = await settle({ scan_interval_secs: 900 })
+    await edit(every, 'scan_every', '10')
+    await flush()
+    expect(scheduleOf(every)).toEqual(['Every', '10', 'minutes'])
+    expect(alertOf(every)).toBe('the store is locked')
+  })
+
+  it('sends nothing as the row goes for a count typed after the 24 hours is refused, once the count before it is refused too', async () => {
+    const LOCKED = new Error(
+      '/api/library/roots/3: 500 {"error":"the store is locked"}',
+    )
+    const day = deferred<undefined>()
+    const count = deferred<undefined>()
+    vi.mocked(config.patchRoot)
+      .mockReturnValueOnce(day.promise)
+      .mockReturnValueOnce(count.promise)
+    const host = await settle({ scan_interval_secs: null })
+    await choose(host, 'Every')
+    await edit(host, 'scan_every', '3')
+    await flush(() => day.reject(LOCKED))
+    await flush()
+    expect(scheduleOf(host)).toEqual(['Every', '3', 'hours'])
+    await typeAndStay(host, 'scan_every', '5')
+    await flush(() => count.reject(LOCKED))
+    await flush()
+    expect(scheduleOf(host)).toEqual(['Automatic', undefined, undefined])
+    await unmountRow()
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 86400 }],
+      [3, { scan_interval_secs: 10800 }],
+    ])
+  })
+
+  it('saves again the last interval the store took when Every is chosen after counts refused, one or two in turn, or after its refill is refused', async () => {
+    const LOCKED = new Error(
+      '/api/library/roots/3: 500 {"error":"the store is locked"}',
+    )
+    const intervals = () =>
+      vi
+        .mocked(config.patchRoot)
+        .mock.calls.map(([, patch]) => patch.scan_interval_secs)
+    const first = deferred<undefined>()
+    vi.mocked(config.patchRoot)
+      .mockReturnValueOnce(first.promise)
+      .mockRejectedValueOnce(LOCKED)
+    const both = await settle({ scan_interval_secs: 900 })
+    await edit(both, 'scan_every', '10')
+    await edit(both, 'scan_every', '20')
+    await flush(() => first.reject(LOCKED))
+    await flush()
+    await choose(both, 'Off')
+    await flush()
+    await choose(both, 'Every')
+    await flush()
+    expect(intervals()).toEqual([600, 1200, 0, 900])
+    expect(scheduleOf(both)).toEqual(['Every', '15', 'minutes'])
+    await unmountRow()
+
+    vi.mocked(config.patchRoot).mockClear()
+    vi.mocked(config.patchRoot)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(LOCKED)
+    const second = await settle({ scan_interval_secs: 900 })
+    await edit(second, 'scan_every', '10')
+    await flush()
+    await edit(second, 'scan_every', '20')
+    await flush()
+    await choose(second, 'Off')
+    await flush()
+    await choose(second, 'Every')
+    await flush()
+    expect(intervals()).toEqual([600, 1200, 0, 600])
+    expect(scheduleOf(second)).toEqual(['Every', '10', 'minutes'])
+    await unmountRow()
+
+    // Off taken, then Every's refill refused: Off is not an interval kept.
+    vi.mocked(config.patchRoot).mockClear()
+    vi.mocked(config.patchRoot)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(LOCKED)
+    const refill = await settle({ scan_interval_secs: 900 })
+    await choose(refill, 'Off')
+    await flush()
+    await choose(refill, 'Every')
+    await flush()
+    await flush()
+    expect(scheduleOf(refill)).toEqual(['Off', undefined, undefined])
+    await choose(refill, 'Every')
+    await flush()
+    expect(intervals()).toEqual([0, 900, 900])
+    expect(scheduleOf(refill)).toEqual(['Every', '15', 'minutes'])
+  })
+
+  it('saves 5 minutes when Every is chosen after Off where the store held less, as the scheduler reads it', async () => {
+    const host = await settle({ scan_interval_secs: 60 })
+    expect(scheduleOf(host)).toEqual(['Every', '1', 'minutes'])
+    await choose(host, 'Off')
+    await flush()
+    await choose(host, 'Every')
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+      [3, { scan_interval_secs: 300 }],
+    ])
+    expect(scheduleOf(host)).toEqual(['Every', '5', 'minutes'])
+  })
+
+  it('takes the stored choice when the row changes underneath', async () => {
+    const host = await settle()
+    await readAgain(0)
+    expect(chosen(host)).toBe('Off')
+    expect(config.patchRoot).not.toHaveBeenCalled()
+  })
+
+  it('keeps Every and a count typed since when the row is read again with this row’s own Off', async () => {
+    const off = deferred<undefined>()
+    vi.mocked(config.patchRoot).mockReturnValueOnce(off.promise)
+    const host = await settle({ scan_interval_secs: null })
+    await choose(host, 'Off')
+    await choose(host, 'Every')
+    await typeAndStay(host, 'scan_every', '12')
+    await flush(() => off.resolve(undefined))
+    await readAgain(0)
+    expect(scheduleOf(host)).toEqual(['Every', '12', 'hours'])
+    // Still typed in, so sent as the row goes.
+    await unmountRow()
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+      [3, { scan_interval_secs: 86400 }],
+      [3, { scan_interval_secs: 43200 }],
+    ])
+  })
+
+  it('draws no count over Off when a read brings back the count this row wrote before it', async () => {
+    // A press on Off leaves the box first, so the count and Off go in turn,
+    // and the page reads the row after each answer: the first read can
+    // bring back the count while Off is still on its way.
+    const host = await settle()
+    await edit(host, 'scan_every', '12')
+    await choose(host, 'Off')
+    await readAgain(43200)
+    expect(scheduleOf(host)).toEqual(['Off', undefined, undefined])
+    await readAgain(0)
+    expect(scheduleOf(host)).toEqual(['Off', undefined, undefined])
+  })
+
+  it('goes back to the count this row wrote when Off after it is refused, and keeps it when that count is read back', async () => {
+    vi.mocked(config.patchRoot)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(
+        new Error('/api/library/roots/3: 500 {"error":"the store is locked"}'),
+      )
+    const host = await settle()
+    await edit(host, 'scan_every', '12')
+    await choose(host, 'Off')
+    await flush()
+    expect(scheduleOf(host)).toEqual(['Every', '12', 'hours'])
+    expect(alertOf(host)).toBe('the store is locked')
+    await readAgain(43200)
+    expect(scheduleOf(host)).toEqual(['Every', '12', 'hours'])
+  })
+
+  it('takes a change from elsewhere over a write of its own still out, and then the store’s word for that write', async () => {
+    const off = deferred<undefined>()
+    vi.mocked(config.patchRoot).mockReturnValueOnce(off.promise)
+    const host = await settle()
+    await choose(host, 'Off')
+    await readAgain(900)
+    expect(scheduleOf(host)).toEqual(['Every', '15', 'minutes'])
+    await flush(() => off.resolve(undefined))
+    await readAgain(0)
+    expect(scheduleOf(host)).toEqual(['Off', undefined, undefined])
+  })
+
+  it('sends a count that equals the row as last read when this row has written another since', async () => {
+    // The row still says 24 hours until 12 is read back; the store holds 12.
+    const host = await settle()
+    await edit(host, 'scan_every', '12')
+    await flush()
+    await edit(host, 'scan_every', '24')
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 43200 }],
+      [3, { scan_interval_secs: 86400 }],
+    ])
+  })
+
+  it('names the unit to agree with the count: one minute, one hour, and more in the plural', async () => {
+    const words = (host: HTMLElement) =>
+      [...(everyUnit(host)?.options ?? [])].map((one) => one.textContent)
+    const hour = await settle({ scan_interval_secs: 3600 })
+    expect(words(hour)).toEqual(['minute', 'hour'])
+    await typeAndStay(hour, 'scan_every', '2')
+    expect(words(hour)).toEqual(['minutes', 'hours'])
+    await typeAndStay(hour, 'scan_every', '1')
+    expect(words(hour)).toEqual(['minute', 'hour'])
+    await typeAndStay(hour, 'scan_every', '')
+    expect(words(hour)).toEqual(['minutes', 'hours'])
+    await readAgain(60)
+    expect(words(hour)).toEqual(['minute', 'hour'])
+    expect(everyUnit(hour)?.value).toBe('minutes')
   })
 })
 
@@ -1959,7 +2668,7 @@ describe('RootRow, a directory another library holds too', () => {
       'Remove from Manga…': 'held',
       'Remove…': 'free',
     })
-    await redrawn({ removalHeld: true })
+    await redrawn({ removalHeld: 'around' })
     expect(holds(host)).toEqual({
       'Scan directory': 'free',
       'Move…': 'free',
@@ -2054,7 +2763,7 @@ describe('RootRow, a directory another library holds too', () => {
   it('keeps its dialog through a hold of the removal alone', async () => {
     const host = await mounted()
     await clicked(unlink(host))
-    await redrawn({ removalHeld: true })
+    await redrawn({ removalHeld: 'around' })
     expect(host.querySelector('.unlink-root')).not.toBeNull()
   })
 
@@ -2684,37 +3393,127 @@ async function unmountRow() {
 describe('RootRow, an edit still in its box when the row goes', () => {
   it('sends each box typed in and not left, emptied as null, and asks for the list again', async () => {
     const onChanged = vi.fn()
-    const host = await settle({}, onChanged)
+    const host = await settle({ scan_interval_secs: 900 }, onChanged)
     await typeAndStay(host, 'default_language', 'ja')
     await typeAndStay(host, 'edition_key', '')
-    await typeAndStay(host, 'scan_interval_secs', '900')
+    await typeAndStay(host, 'scan_every', '10')
     expect(config.patchRoot).not.toHaveBeenCalled()
 
     await unmountRow()
     expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
       [3, { default_language: 'ja' }],
       [3, { edition_key: null }],
-      [3, { scan_interval_secs: 900 }],
+      [3, { scan_interval_secs: 600 }],
     ])
     expect(onChanged).toHaveBeenCalledTimes(3)
   })
 
-  it('sends an emptied interval as null', async () => {
-    const host = await settle()
-    await typeAndStay(host, 'scan_interval_secs', '')
+  it('sends Every’s count in the unit drawn, hours as hours, and a count typed after choosing Every in the hours it saved', async () => {
+    const hours = await settle()
+    await typeAndStay(hours, 'scan_every', '2')
     await unmountRow()
-    expect(config.patchRoot).toHaveBeenCalledWith(3, {
-      scan_interval_secs: null,
-    })
+    const chosenNow = await settle({ scan_interval_secs: null })
+    await choose(chosenNow, 'Every')
+    await typeAndStay(chosenNow, 'scan_every', '10')
+    await unmountRow()
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 7200 }],
+      [3, { scan_interval_secs: 86400 }],
+      [3, { scan_interval_secs: 36000 }],
+    ])
+  })
+
+  it('sends nothing for Every’s box emptied', async () => {
+    const host = await settle({ scan_interval_secs: 900 })
+    await typeAndStay(host, 'scan_every', '')
+    await unmountRow()
+    expect(config.patchRoot).not.toHaveBeenCalled()
   })
 
   it('sends an edit once when its box was left before the row went', async () => {
-    const host = await settle()
+    const host = await settle({ scan_interval_secs: 900 })
     await edit(host, 'default_language', 'ja')
-    await edit(host, 'scan_interval_secs', '900')
+    await edit(host, 'scan_every', '10')
     expect(config.patchRoot).toHaveBeenCalledTimes(2)
     await unmountRow()
     expect(config.patchRoot).toHaveBeenCalledTimes(2)
+  })
+
+  it('sends a count once when its unit was changed before the row went', async () => {
+    const host = await settle({ scan_interval_secs: 900 })
+    await typeAndStay(host, 'scan_every', '10')
+    await pickUnit(host, 'hours')
+    expect(config.patchRoot).toHaveBeenCalledTimes(1)
+    await unmountRow()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 36000 }],
+    ])
+  })
+
+  it('sends no count typed in before Off was chosen by a click that left the box focused', async () => {
+    // A mouse leaves the box before its click lands, which sends the count
+    // first (`Config.browser.test.tsx`). `HTMLElement.click()` moves no
+    // focus, so the count is still typed in when Off is chosen.
+    const host = await settle({ scan_interval_secs: 900 })
+    await typeAndStay(host, 'scan_every', '10')
+    await choose(host, 'Off')
+    await unmountRow()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+    ])
+  })
+
+  it('sends a count typed after Off as the row goes only once Off is answered', async () => {
+    const off = deferred<undefined>()
+    vi.mocked(config.patchRoot).mockReturnValueOnce(off.promise)
+    const host = await settle({ scan_interval_secs: null })
+    await choose(host, 'Off')
+    await choose(host, 'Every')
+    await typeAndStay(host, 'scan_every', '12')
+    await unmountRow()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+    ])
+    await flush(() => off.resolve(undefined))
+    await flush()
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 0 }],
+      [3, { scan_interval_secs: 86400 }],
+      [3, { scan_interval_secs: 43200 }],
+    ])
+  })
+
+  it('sends no count typed in a box the row has since drawn afresh or taken away', async () => {
+    // A row read again with another interval, from elsewhere, draws a new
+    // box, in its own unit, over the count typed; and a row read again as
+    // Off draws none.
+    const again = (scan_interval_secs: number) =>
+      act(async () => {
+        rerender(
+          <RootRow
+            root={root({ scan_interval_secs })}
+            probe={undefined}
+            onChanged={vi.fn()}
+          />,
+        )
+        await Promise.resolve()
+      })
+    const redrawn = await settle({ scan_interval_secs: 900 })
+    await typeAndStay(redrawn, 'scan_every', '30')
+    await again(7200)
+    expect([everyBox(redrawn)?.value, everyUnit(redrawn)?.value]).toEqual([
+      '2',
+      'hours',
+    ])
+    await unmountRow()
+    const taken = await settle({ scan_interval_secs: 900 })
+    await typeAndStay(taken, 'scan_every', '30')
+    await again(0)
+    expect(everyBox(taken)).toBeNull()
+    await unmountRow()
+    expect(config.patchRoot).not.toHaveBeenCalled()
   })
 
   it('sends nothing for a box focused again and not typed in, though it holds a refused edit', async () => {
@@ -2735,8 +3534,8 @@ describe('RootRow, an edit still in its box when the row goes', () => {
     const host = await settle()
     await typeAndStay(host, 'edition_key', 'enx')
     await typeAndStay(host, 'edition_key', 'en')
-    await typeAndStay(host, 'scan_interval_secs', '900')
-    await typeAndStay(host, 'scan_interval_secs', '86400')
+    await typeAndStay(host, 'scan_every', '10')
+    await typeAndStay(host, 'scan_every', '24')
     await unmountRow()
     expect(config.patchRoot).not.toHaveBeenCalled()
   })
@@ -2754,23 +3553,17 @@ describe('RootRow, an edit still in its box when the row goes', () => {
     expect(config.patchRoot).not.toHaveBeenCalled()
   })
 
-  it('sends no interval that is not a whole number of seconds, at least one', async () => {
-    const host = await settle()
-    await typeAndStay(host, 'scan_interval_secs', '0')
+  it('sends no count under 5 minutes', async () => {
+    const host = await settle({ scan_interval_secs: 900 })
+    await typeAndStay(host, 'scan_every', '4')
     await unmountRow()
     expect(config.patchRoot).not.toHaveBeenCalled()
   })
 
-  it('sends no interval the box could not read', async () => {
-    const host = await settle()
-    const box = host.querySelector(
-      'input[name="scan_interval_secs"]',
-    ) as HTMLInputElement
-    Object.defineProperty(box, 'validity', {
-      configurable: true,
-      value: { badInput: true },
-    })
-    await typeAndStay(host, 'scan_interval_secs', '')
+  it('sends no count the box could not read', async () => {
+    const host = await settle({ scan_interval_secs: 900 })
+    unreadable(host)
+    await typeAndStay(host, 'scan_every', '')
     await unmountRow()
     expect(config.patchRoot).not.toHaveBeenCalled()
   })
@@ -2929,15 +3722,13 @@ describe('RootRow, an edit still in its box when the row goes', () => {
       await Promise.resolve()
     })
     await typeAndStay(host as HTMLElement, 'default_language', 'ja')
-    await typeAndStay(host as HTMLElement, 'scan_interval_secs', '900')
+    await typeAndStay(host as HTMLElement, 'scan_every', '10')
     await unmountRow()
     expect(config.patchRoot).toHaveBeenCalledTimes(2)
     expect(onChanged).not.toHaveBeenCalled()
     expect(onLateRefusal.mock.calls).toEqual([
       ['Default language for /srv/manga was not saved (the store is locked).'],
-      [
-        'Scan interval (seconds) for /srv/manga was not saved (the store is locked).',
-      ],
+      ['Scan schedule for /srv/manga was not saved (the store is locked).'],
     ])
   })
 })

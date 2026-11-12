@@ -31,7 +31,7 @@
 //! [`taiyaku_library::Library::working`], for the reasons `config_api`'s own
 //! doc gives.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -121,13 +121,17 @@ fn roots_if_held(conn: &rusqlite::Connection, id: i64) -> Result<Vec<scan::Root>
 /// EPUB and PDF entries its scans recorded, and each directory in
 /// [`root_json`]'s shape, oldest first, with `libraries`, every library holding
 /// it as `{id, name}`, ascending by id, this one too, and [`nesting_json`]'s
-/// two keys.
-fn libraries_json(conn: &rusqlite::Connection) -> Result<Vec<serde_json::Value>, String> {
+/// two keys. A directory among `waiting` reads `waiting`
+/// ([`roots_with_last_scan`]).
+fn libraries_json(
+    conn: &rusqlite::Connection,
+    waiting: &HashSet<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
     // One snapshot for the links and the names: a library removed between
     // the two reads would leave a directory linked to a library with no name.
     let _snapshot = taiyaku_library::one_snapshot(conn)
         .map_err(|e| format!("starting a read of the libraries: {e}"))?;
-    let roots = roots_with_last_scan(conn)?;
+    let roots = roots_with_last_scan(conn, waiting)?;
     let every = libraries::list(conn)?;
     let names: HashMap<i64, &str> = every
         .iter()
@@ -267,8 +271,9 @@ pub(crate) async fn list_libraries(
         return refusal;
     }
     let built = tokio::task::spawn_blocking(move || {
+        let waiting = crate::scan_jobs::waiting_for_a_lock(&state);
         let conn = state.library.conn();
-        libraries_json(&conn).map_err(AdminAnswer::Failed)
+        libraries_json(&conn, &waiting).map_err(AdminAnswer::Failed)
     })
     .await;
 
@@ -344,7 +349,8 @@ pub(crate) async fn create_library(
     let created = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(AdminAnswer::Failed)?;
         let made = scan::create_library(&working, &name, &dirs).map_err(added_error)?;
-        created_json(&working, &made)
+        let waiting = crate::scan_jobs::waiting_for_a_lock(&state);
+        created_json(&working, &made, &waiting)
     })
     .await;
 
@@ -356,12 +362,14 @@ pub(crate) async fn create_library(
 }
 
 /// [`create_library`]'s answer for the library `made`: its entry as the list
-/// draws it, and each directory's add.
+/// draws it, `waiting` as [`libraries_json`] takes it, and each directory's
+/// add.
 fn created_json(
     working: &rusqlite::Connection,
     made: &scan::Created,
+    waiting: &HashSet<i64>,
 ) -> Result<serde_json::Value, AdminAnswer> {
-    let library = libraries_json(working)
+    let library = libraries_json(working, waiting)
         .map_err(AdminAnswer::Failed)?
         .into_iter()
         .find(|library| library["id"] == made.library_id)
@@ -530,13 +538,26 @@ pub(crate) async fn delete_library(
                 "the library",
             )));
         }
-        let (removal, derived) = if dry_run {
-            scan::library_removal_cost(&working, id)
-        } else {
-            scan::remove_library(&working, id)
-        }
-        .map_err(AdminAnswer::Failed)?;
-        Ok((removal, derived))
+        // Held through the removal's derive and the derive after its commit
+        // (O51).
+        let Some(lease) = state
+            .library
+            .derive_lease(taiyaku_library::lease::Wait::No)
+            .map_err(AdminAnswer::Failed)?
+        else {
+            return Err(AdminAnswer::Refused(crate::library_job::waits_for_the_job(
+                "remove the library",
+            )));
+        };
+        lease.holding(|| {
+            let (removal, derived) = if dry_run {
+                scan::library_removal_cost(&working, id)
+            } else {
+                scan::remove_library(&working, id)
+            }
+            .map_err(AdminAnswer::Failed)?;
+            Ok((removal, derived))
+        })
     })
     .await;
 
@@ -647,10 +668,10 @@ pub(crate) async fn start_library_scan(
 /// scan of the library walks is running, and which; a directory's report is
 /// read from its own status route. `held_removals` names each of the
 /// library's own directories whose removal waits for a scan around or inside
-/// it ([`scan::removal_touches`]), and `moves_held` says a move would wait for
-/// the job lock ([`crate::LibraryJob::is_held`]), so a page holds what would be
-/// refused. `scans` groups the running directories by the library that
-/// reserved them while it still reaches them, by id and name; else `null`.
+/// it ([`scan::removal_touches`]); `moves_held` says a move would wait for the
+/// job lock, and `derive_running` that a derive holds the derive lease (O51),
+/// so a page holds what would be refused. `scans` groups the running directories
+/// by the library that reserved them while it reaches them, by id and name; else `null`.
 pub(crate) async fn library_scan_status(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -669,6 +690,33 @@ pub(crate) async fn library_scan_status(
         Ok(Ok(body)) => Json(body).into_response(),
         Ok(Err(answer)) => answer.into_response(),
         Err(why) => AdminAnswer::Failed(format!("reading a library's scan status panicked: {why}"))
+            .into_response(),
+    }
+}
+
+/// `GET /api/library/derive`: whether a derive holds the derive lease
+/// (`derive_running`), in this process or another, and whether the job lock
+/// is held (`job_held`), so a page that reads no library's scan status holds
+/// what the lease or the lock would refuse (O51).
+pub(crate) async fn derive_status(
+    State(state): State<Arc<ServeState>>,
+    Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
+) -> Response {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
+        return refusal;
+    }
+    // The probe opens the lock file, which is blocking I/O.
+    let built = tokio::task::spawn_blocking(move || {
+        serde_json::json!({
+            "derive_running": state.library.derive_running(),
+            "job_held": state.library_job.is_held(),
+        })
+    })
+    .await;
+    match built {
+        Ok(body) => Json(body).into_response(),
+        Err(why) => AdminAnswer::Failed(format!("reading whether a derive runs panicked: {why}"))
             .into_response(),
     }
 }
@@ -740,12 +788,17 @@ fn scan_status_json(state: &ServeState, id: i64) -> Result<serde_json::Value, Ad
         })
         .collect();
     // Only the libraries that asked for a running scan are named, usually one.
+    // The shared connection is let go before the lease's probe below, which
+    // opens and locks a file every other request would wait behind.
     let mut names: HashMap<i64, String> = HashMap::new();
-    let conn = state.library.conn();
-    let named: std::collections::BTreeSet<i64> = asked.iter().filter_map(|(_, by)| *by).collect();
-    for by in named {
-        if let Some(name) = libraries::name_of(&conn, by).map_err(AdminAnswer::Failed)? {
-            names.insert(by, name);
+    {
+        let conn = state.library.conn();
+        let named: std::collections::BTreeSet<i64> =
+            asked.iter().filter_map(|(_, by)| *by).collect();
+        for by in named {
+            if let Some(name) = libraries::name_of(&conn, by).map_err(AdminAnswer::Failed)? {
+                names.insert(by, name);
+            }
         }
     }
     // A library removed since `all` was read has no name. Its directories join
@@ -773,6 +826,7 @@ fn scan_status_json(state: &ServeState, id: i64) -> Result<serde_json::Value, Ad
             .collect::<Vec<_>>(),
         "held_removals": held_removals,
         "moves_held": state.library_job.is_held(),
+        "derive_running": state.library.derive_running(),
         "scans": scans
             .iter()
             .map(|(by, root_ids)| serde_json::json!({

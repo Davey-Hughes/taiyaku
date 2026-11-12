@@ -126,6 +126,7 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/libraries/{id}/dirs",
         "/api/library/libraries/{id}/dirs/{dir}",
         "/api/library/libraries/{id}/scan",
+        "/api/library/derive",
         "/api/library/split-editions",
         "/api/library/dirs",
         // Spec C4 §4's user administration — admin-gated *inside* each
@@ -1712,7 +1713,7 @@ async fn every_route_declares_its_grant_posture() {
     );
     assert_eq!(
         table.len() - driven,
-        39,
+        40,
         "the remaining guarded routes must be GrantIndependent — \
          see the `driven` assertion just above, which this one is the other \
          half of. A new admin-only route is GrantIndependent: it changes who \
@@ -2787,6 +2788,7 @@ async fn every_route_declares_its_grant_posture() {
                     slot: 1,
                 },
                 &split_work.sidecar(),
+                taiyaku_library::state::Arrival::next(),
             )
             .expect("stores a position");
         }
@@ -3059,7 +3061,7 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
     );
     assert_eq!(
         counted(|p| matches!(p, NarrowingPosture::NoPages { .. })),
-        39,
+        40,
         "the NoPages routes, declared and not driven: a route moved here from a driven posture \
          moves this count and one above, and a new route that reads no pages moves this alone"
     );
@@ -3944,6 +3946,7 @@ const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
     "/api/library/libraries/{id}/dirs",
     "/api/library/libraries/{id}/dirs/{dir}",
     "/api/library/libraries/{id}/scan",
+    "/api/library/derive",
     "/api/library/split-editions",
     "/api/library/dirs",
     "/api/library/proposals",

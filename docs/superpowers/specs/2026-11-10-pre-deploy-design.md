@@ -668,7 +668,7 @@ pre-flight settled; everything else is Part C's.
    O253's ruling of 2026-11-09, which names `failed` and `refused`).
 8. **An Off directory is not in the startup scan** (the spec's own call). Off
    means no scan the owner did not ask for. An `interrupted` status on it stays
-   until Scan is pressed.
+   until it is next scanned.
 9. **A batch goes on past a directory it cannot walk** (the spec's own call),
    as the CLI's `library scan` does. One unreachable directory does not hold
    back the others, or the derive.

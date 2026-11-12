@@ -1,7 +1,21 @@
+import type { ReactNode } from 'react'
 import { describe, expect, it } from 'vitest'
 import { Row, Section } from '../../src/settingsLayout'
 import { mount } from './mount'
 import { expectRowsWired, helpOf, row, section } from './settingsRows'
+
+/**
+ * The faults `expectRowsWired` names under `host`, one a line, or none: the
+ * whole list, so a case also fails on a fault it did not expect.
+ */
+function faultsOf(host: HTMLElement): string[] {
+  try {
+    expectRowsWired(host)
+  } catch (err) {
+    return (err as Error).message.split('\n').slice(1)
+  }
+  return []
+}
 
 describe('expectRowsWired', () => {
   it('passes on rows whose controls their labels label and their help describes', () => {
@@ -228,7 +242,7 @@ describe('expectRowsWired', () => {
       )
     })
 
-    it('throws, naming the row, on a text box in a group’s box, since only its radios keep labels of their own', () => {
+    it('throws, naming the row, on a text box in a group’s box with no name of its own', () => {
       const host = mount(
         <Section title="Libraries">
           <Row label="Sees" group="radiogroup">
@@ -240,9 +254,107 @@ describe('expectRowsWired', () => {
           </Row>
         </Section>,
       )
-      expect(() => expectRowsWired(host)).toThrow(
-        'the row "Sees": its input "note" is not labelled by the row\'s label',
+      expect(faultsOf(host)).toEqual([
+        'the row "Sees": its input "note" has no aria-label of its own',
+      ])
+    })
+
+    /**
+     * A group row holding `controls` after a radio's label, as Scan schedule
+     * draws Every's count and its unit. Each control in the group that is
+     * not a radio is pointed at the row's help once it is drawn, the help's
+     * id being `Row`'s, unless `described` is false.
+     */
+    const counted = (controls: ReactNode, described = true) => {
+      const host = mount(
+        <Section title="Scanning">
+          <p id="other-words">How often</p>
+          <Row
+            label="Scan schedule"
+            help="Every is at least 5 minutes."
+            group="radiogroup"
+          >
+            <label>
+              <input type="radio" name="schedule" value="every" />
+              <span>Every</span>
+            </label>
+            {controls}
+          </Row>
+        </Section>,
       )
+      const help = helpOf(row(host, 'Scan schedule'))
+      if (help === null) throw new Error('no help')
+      if (described) {
+        for (const control of host.querySelectorAll(
+          '[role="radiogroup"] :is(input:not([type="radio"]), select)',
+        )) {
+          control.setAttribute('aria-describedby', help.id)
+        }
+      }
+      return host
+    }
+
+    it('passes on a box and a select in a group’s box, each named by an aria-label of its own and described by the row’s help', () => {
+      const host = counted(
+        <>
+          <input type="number" name="every" aria-label="Scan every" />
+          <select name="unit" aria-label="Scan every unit">
+            <option>minutes</option>
+          </select>
+        </>,
+      )
+      expect(faultsOf(host)).toEqual([])
+    })
+
+    it('throws, naming the row, on a control in a group’s box named only by what kind of control it is', () => {
+      const host = counted(
+        <>
+          <input type="number" name="every" aria-label="Number" />
+          <select name="unit" aria-label=" select ">
+            <option>minutes</option>
+          </select>
+        </>,
+      )
+      expect(faultsOf(host)).toEqual([
+        'the row "Scan schedule": its input "every" is named "Number", which says what it is and not what it sets',
+        'the row "Scan schedule": its select "unit" is named " select ", which says what it is and not what it sets',
+      ])
+    })
+
+    it('throws, naming the row, on a control in a group’s box that a label of its own names', () => {
+      const host = counted(
+        <label>
+          <input type="number" name="every" aria-label="Scan every" />
+          <span>minutes</span>
+        </label>,
+      )
+      expect(faultsOf(host)).toEqual([
+        'the row "Scan schedule": its input "every" has a <label> of its own',
+      ])
+    })
+
+    it('throws, naming the row, on a control in a group’s box named by an aria-labelledby', () => {
+      const host = counted(
+        <input
+          type="number"
+          name="every"
+          aria-label="Scan every"
+          aria-labelledby="other-words"
+        />,
+      )
+      expect(faultsOf(host)).toEqual([
+        'the row "Scan schedule": its input "every" is named by its aria-labelledby, not an aria-label of its own',
+      ])
+    })
+
+    it('throws, naming the row, on a control in a group’s box its row’s help does not describe', () => {
+      const host = counted(
+        <input type="number" name="every" aria-label="Scan every" />,
+        false,
+      )
+      expect(faultsOf(host)).toEqual([
+        'the row "Scan schedule": its input "every" is not described by the row\'s help',
+      ])
     })
 
     it('throws, naming the row, on a group described by something other than its row’s help', () => {

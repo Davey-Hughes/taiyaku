@@ -52,6 +52,37 @@ export function helpOf(settingsRow: Element): HTMLElement | null {
   return settingsRow.querySelector<HTMLElement>(HELP)
 }
 
+/** Words that say only what kind of control a control is. */
+const KINDS = new Set([
+  'box',
+  'combobox',
+  'field',
+  'input',
+  'list',
+  'number',
+  'select',
+  'spinbutton',
+  'text',
+  'textarea',
+  'textbox',
+])
+
+/**
+ * Whether `name` says only what kind of control `control` is, its type, its
+ * tag or one of `KINDS`, and so nothing of what it sets.
+ */
+function kindOnly(
+  control: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
+  name: string,
+): boolean {
+  const said = name.trim().toLowerCase()
+  return (
+    KINDS.has(said) ||
+    said === control.type ||
+    said === control.tagName.toLowerCase()
+  )
+}
+
 /** The ids an `aria-labelledby` or `aria-describedby` names. */
 function ids(element: Element, attribute: string): string[] {
   return element.getAttribute(attribute)?.split(/\s+/) ?? []
@@ -70,7 +101,7 @@ function ids(element: Element, attribute: string): string[] {
  * is held to the same two things through the group: the group's
  * `aria-labelledby` names the row's label and nothing else, and the help
  * describes it. The radios inside keep their own labels, which no rule here
- * reads; any other control in the group's box is held as a row's control is.
+ * reads; any other control in the group's box has rules of its own below.
  *
  * A row holding no form control, a session or a key with its Revoke, is
  * passed over. Every fault is named, by its row's label, in the one throw.
@@ -118,15 +149,39 @@ export function expectRowsWired(root: HTMLElement): void {
         control.name === '' ? '' : ` "${control.name}"`
       }`
       const labels = [...(control.labels ?? [])]
-      if (!labels.some((l) => l === label)) {
-        faults.push(`${name}: ${which} is not labelled by the row's label`)
-      } else if (labels.length > 1) {
-        faults.push(`${name}: ${which} has a label besides the row's`)
-      }
-      if (control.hasAttribute('aria-labelledby')) {
-        faults.push(
-          `${name}: ${which} is named by its aria-labelledby, not the row's label`,
-        )
+      if (groups.some((group) => group.contains(control))) {
+        // As Every's count is in the Scan schedule's: the row's label names
+        // the group, so it names the control by an `aria-label` that says
+        // what it sets, with no `<label>`, which would tie a radio's words
+        // to it, and no `aria-labelledby`, which would outrank it. The help
+        // describes it as it describes a row's control.
+        const own = control.getAttribute('aria-label')
+        if (own === null || own.trim() === '') {
+          faults.push(`${name}: ${which} has no aria-label of its own`)
+        } else if (kindOnly(control, own)) {
+          faults.push(
+            `${name}: ${which} is named "${own}", which says what it is and not what it sets`,
+          )
+        }
+        if (labels.length > 0) {
+          faults.push(`${name}: ${which} has a <label> of its own`)
+        }
+        if (control.hasAttribute('aria-labelledby')) {
+          faults.push(
+            `${name}: ${which} is named by its aria-labelledby, not an aria-label of its own`,
+          )
+        }
+      } else {
+        if (!labels.some((l) => l === label)) {
+          faults.push(`${name}: ${which} is not labelled by the row's label`)
+        } else if (labels.length > 1) {
+          faults.push(`${name}: ${which} has a label besides the row's`)
+        }
+        if (control.hasAttribute('aria-labelledby')) {
+          faults.push(
+            `${name}: ${which} is named by its aria-labelledby, not the row's label`,
+          )
+        }
       }
       if (
         help !== null &&

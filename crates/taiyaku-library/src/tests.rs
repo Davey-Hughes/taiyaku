@@ -1647,6 +1647,49 @@ fn an_in_memory_library_works_on_the_connection_it_already_has() {
         .expect("the working connection writes");
 }
 
+/// A save writes on a connection of its own, set up by `configure` (O272):
+/// foreign keys, recursive triggers, the grant's `walk_reaches`, and a
+/// transaction that takes the write lock at its `BEGIN`. None of the four is
+/// SQLite's default.
+#[test]
+fn a_save_writes_on_a_configured_connection_of_its_own() {
+    let dir = tempdir("library-saving");
+    let library = Library::open(&dir.path().join("library.db")).expect("opens");
+
+    let saving = library.saving().expect("a connection for the save");
+    assert!(
+        matches!(saving, Working::Owned(_)),
+        "a file-backed library's save shares no connection"
+    );
+    for pragma in ["foreign_keys", "recursive_triggers"] {
+        let on: i64 = saving
+            .query_row(&format!("PRAGMA {pragma}"), [], |row| row.get(0))
+            .expect("the pragma answers");
+        assert_eq!(on, 1, "`{pragma}` on the save's connection");
+    }
+    let reaches = |patterns: Option<&str>| -> bool {
+        saving
+            .query_row(
+                "SELECT walk_reaches('/d', ?1, '/d/v01.cbz')",
+                [patterns],
+                |row| row.get(0),
+            )
+            .expect("`walk_reaches` on the save's connection")
+    };
+    assert!(reaches(None), "a walk with no patterns reaches the file");
+    assert!(!reaches(Some("*.cbz")), "a walk excluding it does not");
+    let held = saving.unchecked_transaction().expect("begins");
+    let other = rusqlite::Connection::open(library.path().expect("a file")).expect("opens");
+    other
+        .busy_timeout(std::time::Duration::ZERO)
+        .expect("sets no wait");
+    let refused = other
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect_err("the save's BEGIN holds the write lock");
+    assert!(is_busy(&refused), "{refused}");
+    drop(held);
+}
+
 /// A relative path reaches [`Library::open`] only through `taiyaku-cli`'s
 /// `--db` flag, which — unlike its own `$XDG_DATA_HOME`/`$HOME` fallbacks —
 /// does no absolute-path check. If `open` stored the relative path verbatim,

@@ -677,8 +677,8 @@ fn resolve(state: &ServeState, offered: &Offered) -> Resolved {
 /// verify on it would be paid again on every page of a volume.
 ///
 /// **And the password path does not hold the library's mutex across argon2.**
-/// `Library::conn()` hands out a `MutexGuard` over the one connection this
-/// process has (O42, O52), so verifying inside its scope would serialise every
+/// `Library::conn()` hands out a `MutexGuard` over the shared connection
+/// (O42, O52), so verifying inside its scope would serialise every
 /// other request in the server behind every login's hashing. The hash is
 /// read, the guard dropped, the verify done, and the connection taken again
 /// afterwards — short holds rather than one long one.
@@ -808,8 +808,10 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
     let conn = state.library.conn();
     // Getting it right forgets the mistakes before it — the pair only, so one
     // correct credential from a shared address cannot reset a guesser's wide
-    // budget. See the same split in `session::login`.
-    let _ = account::clear_failures(&conn, &key);
+    // budget. See the same split in `session::login`. Never waited for
+    // (O272), as every Basic request whose password verifies comes here: a clear
+    // the write lock refuses leaves the failures for the next success to forget.
+    let _ = taiyaku_library::without_waiting(&conn, |conn| account::clear_failures(conn, &key));
     let Ok(access) = account::access_for(&conn, found.id) else {
         return Resolved::No;
     };

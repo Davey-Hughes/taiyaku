@@ -125,6 +125,7 @@ const root: librariesApi.LibraryDir = {
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  next_scan_at: null,
   libraries: [{ id: 1, name: 'Manga' }],
   nested: [],
   inside: [],
@@ -467,18 +468,24 @@ describe('the name Chromium gives a control under a field label — O175', () =>
     const host = await shown(
       <RootRow root={root} probe={undefined} onChanged={() => {}} />,
     )
+    // Scan schedule's label names its radio group, which no `for` reaches.
     expect(rowWords(host)).toEqual([
-      'Scan interval',
       'Exclude globs',
       'Keeps documents under .taiyaku/',
       'Edition key',
       'Default kind',
       'Default language',
     ])
-    expect(await rowControls()).toEqual([
-      // Two `aria-label`s say more than their row's label, the unit and the
-      // syntax, after its words.
-      ['spinbutton', 'Scan interval (seconds)'],
+    expect(await named([...ROW_CONTROLS, 'radiogroup', 'radio'])).toEqual([
+      ['radiogroup', 'Scan schedule'],
+      ['radio', 'Automatic'],
+      ['radio', 'Every'],
+      // Every's count and its unit, each named by its own `aria-label`.
+      ['spinbutton', 'Scan every'],
+      ['combobox', 'Scan every unit'],
+      ['radio', 'Off'],
+      // One `aria-label` says more than its row's label, the syntax, after
+      // its words.
       ['textbox', 'Exclude globs (one gitignore pattern per line)'],
       ['checkbox', 'Keeps documents under .taiyaku/'],
       ['textbox', 'Edition key'],
@@ -618,6 +625,7 @@ function answerPages() {
     library_id: 1,
     held_removals: [],
     moves_held: false,
+    derive_running: false,
     scans: [],
     running: false,
     elapsed_secs: null,
@@ -866,6 +874,7 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
       library_id: 1,
       held_removals: [],
       moves_held: false,
+      derive_running: false,
       scans: [],
       running: false,
       elapsed_secs: null,
@@ -900,6 +909,7 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
       library_id: 1,
       held_removals: [],
       moves_held: false,
+      derive_running: false,
       scans: [],
       running: false,
       elapsed_secs: null,

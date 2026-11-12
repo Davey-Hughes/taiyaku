@@ -40,11 +40,15 @@
  * renders the server's own 403 sentence, exactly as `/proposals` does. A
  * client that *decides* who may administer is the shape O93 closed.
  *
- * **A sequence number on the preview, because responses need not arrive in
- * order.** Several commits can be in flight — a blur that starts a preview,
- * then a click on another rule before it lands — and without this an earlier
- * response arriving later would write a stale impact under a Save button that
- * states a number from it.
+ * **One preview out at a time, and the newest list wins.** The server's
+ * preview takes the derive lease without waiting for it (O51), so a second
+ * sent while the first is out would be refused for the page's own lease. A
+ * gesture made while one is out — a blur that starts a preview, then a click
+ * on another rule before it lands — queues its list, which is sent as that
+ * one settles and before its answer is read. The one out describes an older
+ * list, so the sequence number the queued one takes drops its answer and its
+ * failure, as the number drops one a derive's hold made stale: drawn, its
+ * impact would stand under a Save button that states a number from it.
  *
  * **A successful save re-previews the list it just saved, and Save stays held
  * until that lands.** `save` does not touch `preview`, so without this the
@@ -127,6 +131,19 @@
  * `.catch` too. Picking a file that is not JSON is the most ordinary way to
  * reach it, and the O97 test that drives one is what keeps it caught.
  *
+ * **While a derive holds the lease, no preview is sent, and Save is held while
+ * a derive or the job lock holds** (O51), as the server refuses each then
+ * (`useDeriveHold`). The hold's sentence is drawn in the preview's place and
+ * beside Save. The preview on screen describes the library as it was before
+ * the derive, so it is dropped as the hold comes on, and the list on screen
+ * is previewed once the hold ends. A refusal of a preview or a save for a
+ * hold reads the status again, so that the hold is drawn from that read;
+ * a refused preview is sent again once a read finds no derive holding.
+ * Each preview and save takes the lease itself, so a read that overlaps one
+ * draws no hold from the derive it finds, and a later read that overlaps
+ * none does (`OwnRequests`): drawn from it, the hold would drop the preview
+ * it found.
+ *
  * **`selected` in `save`'s closure is not stale, and that is a property of the
  * guards rather than of this file.** Were it to change mid-save, the follow-up
  * preview's `rows` would be scoped to the rule that *was* open while the form
@@ -136,10 +153,11 @@
  * hide the invariant rather than state it. A new surface that sets `selected`
  * without a guard reopens the defect without touching `save`.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
-import type { Root } from './config'
+import { type Root, statusOf } from './config'
 import type { Inbox } from './curation'
+import { JOB_WAITS, useDeriveHold, useOwnRequests } from './deriveHold'
 import { HeldButton } from './HeldButton'
 import { useDrawnWait } from './hooks'
 import {
@@ -168,7 +186,7 @@ import {
   saveRules,
   toDocument,
 } from './rules'
-import { reasonOf } from './message'
+import { messageOf, reasonOf } from './message'
 import { usePage } from './usePage'
 import { WaitWords } from './WaitWords'
 
@@ -323,8 +341,12 @@ export function RuleEditor() {
   const [saved, setSaved] = useState<Saved | undefined>()
   /** The preview whose impact `saved` is compared against. */
   const predicted = useRef<Preview | undefined>(undefined)
-  /** The newest `previewRules` call — see this file's own doc comment. */
+  /** The newest preview sent — see this file's own doc comment. */
   const latest = useRef(0)
+  /** One of this page's previews is out. */
+  const previewOut = useRef(false)
+  /** The list a gesture made while a preview was out, sent as it settles. */
+  const queued = useRef<{ rules: Rule[]; open: number | undefined }>(undefined)
   /** The synchronous gate — read before either writer starts. */
   const writer = useRef<Writer>(undefined)
   /** The same fact, for the render. */
@@ -356,13 +378,34 @@ export function RuleEditor() {
       setTaken({ rules: listed, open })
     }
   }
+  /** The previews and saves sent from here, each of which takes the lease. */
+  const own = useOwnRequests()
+  const hold = useDeriveHold(true, own)
+  const { askAgain } = hold
+  /** A derive holds the lease, for which the server refuses a preview. */
+  const previewHeld = hold.derive
+  /** `previewHeld` as last drawn, for a gesture's preview to read. */
+  const previewHeldNow = useRef(previewHeld)
+  previewHeldNow.current = previewHeld
+  /** A derive or the job lock holds, for which the server refuses a save. */
+  const jobHeld = hold.derive || hold.job
+  /**
+   * A preview the list on screen is owed: one a hold kept back or the
+   * server refused, sent once a read finds no derive holding.
+   */
+  const owed = useRef(false)
+  const rulesNow = useRef(rules)
+  rulesNow.current = rules
+  const selectedNow = useRef(selected)
+  selectedNow.current = selected
+  const saveWaitsId = useId()
   /**
    * Save is held: a write is out, a preview is out (see this file's own top
-   * comment), or no preview stands to compare the save against. `save`
-   * turns a press down on this from the send; the button is drawn held
-   * from `saveHeldDrawn`.
+   * comment), no preview stands to compare the save against, or a derive or
+   * the job lock holds. `save` turns a press down on this from the send; the
+   * button is drawn held from `saveHeldDrawn`.
    */
-  const saveHeld = frozen || busy || preview === undefined
+  const saveHeld = frozen || busy || preview === undefined || jobHeld
   /**
    * A write or a preview, once it has lasted long enough to be drawn. One
    * wait and not two, because a save's answer starts the preview of what it
@@ -375,7 +418,7 @@ export function RuleEditor() {
    * on the first draw, before the first preview has landed, and after a
    * preview has failed.
    */
-  const saveHeldDrawn = waitDrawn || preview === undefined
+  const saveHeldDrawn = waitDrawn || preview === undefined || jobHeld
   /** A write, once it has lasted: Import's held look, and each one's words. */
   const frozenDrawn = useDrawnWait(frozen)
   /** A preview, once it has lasted: "Previewing…". */
@@ -398,35 +441,85 @@ export function RuleEditor() {
   /** The hidden file input the Import button triggers. */
   const fileInput = useRef<HTMLInputElement>(null)
 
-  const runPreview = useCallback((next: Rule[], open: number | undefined) => {
-    const seq = ++latest.current
-    setBusy(true)
-    previewRules(next, open)
-      .then((body) => {
-        if (seq !== latest.current) return
-        setPreview(body)
-        predicted.current = body
-        setBusy(false)
-        setFailure(undefined)
-      })
-      .catch((err: unknown) => {
-        if (seq !== latest.current) return
-        setBusy(false)
-        setFailure(`The rules were not previewed: ${reasonOf(err)}`)
-        // A failed preview describes nothing — leaving the last *successful*
-        // preview in place would leave Save free and stating a number
-        // computed for a rule list that is no longer the one on screen.
-        // `preview === undefined` is what `saveHeld` already reads, so
-        // invalidating both here is enough to hold Save without a second
-        // condition to keep in sync.
-        setPreview(undefined)
-        predicted.current = undefined
-      })
-  }, [])
+  const runPreview = useCallback(
+    (next: Rule[], open: number | undefined) => {
+      if (previewHeldNow.current) {
+        owed.current = true
+        return
+      }
+      // This one previews the list on screen, which is all that was owed.
+      owed.current = false
+      if (previewOut.current) {
+        queued.current = { rules: next, open }
+        setBusy(true)
+        return
+      }
+      const seq = ++latest.current
+      previewOut.current = true
+      setBusy(true)
+      const settled = () => {
+        previewOut.current = false
+        const after = queued.current
+        queued.current = undefined
+        if (after !== undefined) runPreview(after.rules, after.open)
+      }
+      own
+        .track(previewRules(next, open))
+        .then((body) => {
+          settled()
+          if (seq !== latest.current) return
+          setPreview(body)
+          predicted.current = body
+          setBusy(false)
+          setFailure(undefined)
+        })
+        .catch((err: unknown) => {
+          settled()
+          if (seq !== latest.current) return
+          setBusy(false)
+          if (statusOf(messageOf(err)) === 409) {
+            owed.current = true
+            askAgain()
+          } else {
+            setFailure(`The rules were not previewed: ${reasonOf(err)}`)
+          }
+          // A failed preview describes nothing — leaving the last *successful*
+          // preview in place would leave Save free and stating a number
+          // computed for a rule list that is no longer the one on screen.
+          // `preview === undefined` is what `saveHeld` already reads, so
+          // invalidating both here is enough to hold Save without a second
+          // condition to keep in sync.
+          setPreview(undefined)
+          predicted.current = undefined
+        })
+    },
+    [askAgain, own],
+  )
 
   useEffect(() => {
     if (taken !== undefined) runPreview(taken.rules, taken.open)
   }, [taken, runPreview])
+
+  /** Whether the last read held the preview, as this effect last saw it. */
+  const previewWasHeld = useRef(false)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `hold.reads` is a trigger: a read that finds no derive sends what a refusal owed.
+  useEffect(() => {
+    const was = previewWasHeld.current
+    previewWasHeld.current = previewHeld
+    if (previewHeld) {
+      if (was) return
+      // The derive changes what any preview on screen or out describes.
+      latest.current += 1
+      setBusy(false)
+      setPreview(undefined)
+      predicted.current = undefined
+      owed.current = true
+      return
+    }
+    if (!owed.current) return
+    owed.current = false
+    runPreview(rulesNow.current, selectedNow.current)
+  }, [previewHeld, hold.reads, runPreview])
 
   /** Every editor gesture lands here: set the rules, then preview once. */
   const commit = (next: Rule[], open: number | undefined) => {
@@ -476,7 +569,8 @@ export function RuleEditor() {
     setSaveMismatch(undefined)
     setHeldNotice(undefined)
     const made = predicted.current
-    saveRules(rules)
+    own
+      .track(saveRules(rules))
       .then((answer) => {
         writer.current = undefined
         setWriting(undefined)
@@ -541,6 +635,8 @@ export function RuleEditor() {
       .catch((err: unknown) => {
         writer.current = undefined
         setWriting(undefined)
+        // A refusal for a hold no read here has seen: read it, so it is drawn.
+        if (statusOf(messageOf(err)) === 409) askAgain()
         const pending = held.current
         held.current = undefined
         if (pending === undefined) {
@@ -731,6 +827,7 @@ export function RuleEditor() {
         <p role="alert">{`The rules were not loaded: ${reasonOf(unread)}`}</p>
       )}
       {failure !== undefined && <p role="alert">{failure}</p>}
+      {hold.failure !== undefined && <p role="alert">{hold.failure}</p>}
       {saveMismatch !== undefined && (
         <p role="alert" className="save-mismatch">
           {saveMismatch}
@@ -884,6 +981,7 @@ export function RuleEditor() {
               selected={selected}
               busy={busy}
               frozen={frozen}
+              held={previewHeld ? JOB_WAITS : undefined}
               onReorder={(from, to) => {
                 const next = renumber(moved(rules, from, to))
                 commit(next, selected === from ? to : selected)
@@ -944,6 +1042,7 @@ export function RuleEditor() {
               className="save keeps-wait-width"
               held={saveHeldDrawn}
               onClick={save}
+              aria-describedby={jobHeld && !frozen ? saveWaitsId : undefined}
             >
               <WaitWords
                 drawn={saving && frozenDrawn}
@@ -951,6 +1050,11 @@ export function RuleEditor() {
                 wait="Saving…"
               />
             </HeldButton>
+            {jobHeld && !frozen && (
+              <p id={saveWaitsId} className="save-waits">
+                {JOB_WAITS}
+              </p>
+            )}
 
             <div className="import">
               <HeldButton

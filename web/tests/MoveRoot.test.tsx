@@ -33,6 +33,7 @@ const root: config.Root = {
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  next_scan_at: null,
 }
 
 const answer = (

@@ -82,9 +82,16 @@ import {
 } from './config'
 import { dirPath } from './configAddress'
 import { focusLeaves } from './focusLeaves'
+import { JOB_WAITS, type OwnRequests } from './deriveHold'
 import { HeldButton } from './HeldButton'
 import { useDrawn } from './hooks'
-import { type MoveAnswer, namesOf, type UnlinkAnswer } from './libraries'
+import { JOINING_DOT } from './joiningDot'
+import {
+  type MoveAnswer,
+  namesOf,
+  type RemovalHold,
+  type UnlinkAnswer,
+} from './libraries'
 import { MoveRoot, type NamedLibrary } from './MoveRoot'
 import { invalidate } from './reads'
 import { Refusal } from './Refusal'
@@ -142,12 +149,18 @@ export interface RootRowProps {
    */
   held?: boolean
   /**
-   * A scan of a directory around or inside this one is reserved, for which
-   * the server refuses this one's removal: Remove… is drawn held and an open
-   * removal dialog is closed unless it draws a refusal. What the scan does
-   * to a move is `moveHeld`'s.
+   * Why the server refuses this one's removal: a scan of a directory around
+   * or inside it is reserved, or a derive holds the lease (O51). Remove… is
+   * drawn held, its help says which, and an open removal dialog is closed
+   * unless it draws a refusal. What the scan does to a move is `moveHeld`'s.
    */
-  removalHeld?: boolean
+  removalHeld?: RemovalHold
+  /**
+   * The page's own requests that take the derive lease, which the removal's
+   * dry run and DELETE are counted among, so that a read of the status the
+   * page sends while either is out is not taken for another derive.
+   */
+  ownRequests?: OwnRequests
   /**
    * The server refuses every move of this directory: its job lock is held, or
    * a scan of another of the library's directories is reserved. Move… is
@@ -316,11 +329,6 @@ const TEXT_FIELDS: TextField[] = [
   },
 ]
 
-/** The one sentence a bad scan interval gets, in both of its shapes. */
-const BAD_INTERVAL =
-  'A scan interval has to be a whole number of seconds, at least one. ' +
-  'Leave it empty to set no interval at all.'
-
 /**
  * What a text box holding `value` asks of `row`: nothing where the row
  * already holds it, and `null` for an emptied box.
@@ -335,36 +343,151 @@ function textPatch(
 }
 
 /**
- * What the interval box asks of `row`: nothing where the row already holds
- * it, `null` for an emptied box, and `BAD_INTERVAL` for an entry that is not
- * a whole number of seconds, at least one.
+ * The least Every may be, in seconds. The server refuses less with a 400
+ * (`taiyaku_library::schedule::MIN_INTERVAL_SECS`), and a page holds back
+ * only what the server refuses (overlapping-libraries decision 22), so the
+ * two have to agree.
  */
-function intervalPatch(
-  row: Root,
-  box: HTMLInputElement,
-): RootPatch | typeof BAD_INTERVAL | undefined {
-  // `<input type=number>` reads an unparseable entry such as `12e` as `''`,
-  // the same as an emptied box, and an emptied box clears the column.
-  // `badInput` is the only thing that tells them apart.
-  if (box.validity.badInput) return BAD_INTERVAL
-  const next = box.value === '' ? null : Number(box.value)
-  if (next === row.scan_interval_secs) return undefined
-  if (next !== null && (!Number.isInteger(next) || next < 1)) {
-    return BAD_INTERVAL
-  }
-  return { scan_interval_secs: next }
+const MIN_EVERY_SECS = 300
+
+/**
+ * What choosing Every saves where no interval is kept for it: a day, drawn
+ * as 24 hours for the admin to change. Saved at once, as every choice is, so
+ * that the radio never reads Every while the store holds another choice.
+ */
+const DEFAULT_EVERY_SECS = 86400
+
+/** Seconds in each of Every's units. */
+const UNIT_SECS = { minutes: 60, hours: 3600 } as const
+type Unit = keyof typeof UNIT_SECS
+
+/** The Scan schedule's choices, as its radios' values. */
+type Choice = 'automatic' | 'every' | 'off'
+
+/** The Scan schedule's label, which names its refusals once the row has gone. */
+const SCHEDULE = 'Scan schedule'
+
+/** Every's count box, by its name, which is its key in `edited`. */
+const EVERY_BOX = 'scan_every'
+
+/** The one sentence a count the page will not send gets. */
+const BAD_EVERY = `Every has to be a whole number of minutes or hours, at least ${MIN_EVERY_SECS / 60} minutes.`
+
+/**
+ * The choice a stored interval is drawn as: null Automatic, 0 or less Off,
+ * as the scheduler reads them (`schedule::every`), and any other value
+ * Every, one under the minimum included, as it is stored.
+ */
+function choiceOf(stored: number | null): Choice {
+  if (stored === null) return 'automatic'
+  return stored <= 0 ? 'off' : 'every'
 }
 
-/** What a box left holding its entry asks of `row`, refusals sending nothing. */
+/**
+ * The unit Every's count is drawn in: hours where the stored interval is a
+ * whole number of them, and minutes otherwise, as for a schedule that is
+ * not Every, whose count starts empty.
+ */
+function unitOf(stored: number | null): Unit {
+  return stored !== null && stored > 0 && stored % UNIT_SECS.hours === 0
+    ? 'hours'
+    : 'minutes'
+}
+
+/** Every's count as drawn: the stored interval in its unit, rounded down. */
+function countOf(stored: number | null): string {
+  if (choiceOf(stored) !== 'every') return ''
+  return String(Math.floor((stored as number) / UNIT_SECS[unitOf(stored)]))
+}
+
+/**
+ * The seconds Every's count asks for in `unit`: nothing for an empty box, or
+ * for one at `stored` where that is at least the minimum, and `BAD_EVERY` for
+ * an entry that is not a whole number, that the box cannot read, or that is
+ * under the minimum.
+ */
+function everySecs(
+  stored: number | null,
+  box: HTMLInputElement,
+  unit: Unit,
+): number | typeof BAD_EVERY | undefined {
+  // `<input type=number>` reads an unparseable entry such as `12e` as `''`,
+  // the same as an emptied box, which sends nothing. `badInput` is the only
+  // thing that tells them apart.
+  if (box.validity.badInput) return BAD_EVERY
+  if (box.value === '') return undefined
+  const count = Number(box.value)
+  const secs = count * UNIT_SECS[unit]
+  if (!Number.isInteger(count) || secs < MIN_EVERY_SECS) return BAD_EVERY
+  if (secs === stored) return undefined
+  return secs
+}
+
+/**
+ * What a box left holding its entry asks of `row`, refusals sending nothing.
+ * `unit` is Every's unit as last drawn, and `stored` the interval as the row
+ * knows it (`knownInterval`), for its count.
+ */
 function leftPatch(
   row: Root,
   box: HTMLInputElement | HTMLTextAreaElement,
+  unit: Unit,
+  stored: number | null,
 ): RootPatch | undefined {
   const field = TEXT_FIELDS.find((one) => one.name === box.name)
   if (field !== undefined) return textPatch(field, row, box.value)
-  const patch = intervalPatch(row, box as HTMLInputElement)
-  return typeof patch === 'string' ? undefined : patch
+  const secs = everySecs(stored, box as HTMLInputElement, unit)
+  return typeof secs === 'number' ? { scan_interval_secs: secs } : undefined
 }
+
+/** A Scan schedule write a row has sent, by the interval it sent. */
+type SentSchedule = { secs: number | null }
+
+/**
+ * The interval as a row knows it: its own latest write that no read of the
+ * row has brought back yet, or the row's.
+ */
+function knownInterval(
+  sent: readonly SentSchedule[],
+  row: Root,
+): number | null {
+  const last = sent.at(-1)
+  return last === undefined ? row.scan_interval_secs : last.secs
+}
+
+/**
+ * Write `patch` to directory `id`. A write of its scan interval waits for
+ * each one before it in `writes` to be answered, and joins them.
+ */
+function writeRoot(
+  writes: { current: Promise<void> | null },
+  id: number,
+  patch: RootPatch,
+): Promise<void> {
+  const write = () => patchRoot(id, patch)
+  if (!('scan_interval_secs' in patch)) return write()
+  // With none waiting it goes at once, as every other write does.
+  const sent = writes.current === null ? write() : writes.current.then(write)
+  const answered = sent.then(
+    () => undefined,
+    () => undefined,
+  )
+  writes.current = answered
+  void answered.then(() => {
+    if (writes.current === answered) writes.current = null
+  })
+  return sent
+}
+
+/**
+ * The setting a box left holding its entry is named for in a refusal: its
+ * own label, and the Scan schedule for Every's count, whose `aria-label`
+ * names the count alone.
+ */
+const leftLabel = (box: HTMLInputElement | HTMLTextAreaElement) =>
+  box.name === EVERY_BOX
+    ? SCHEDULE
+    : (box.getAttribute('aria-label') ?? box.name)
 
 export function RootRow({
   root,
@@ -376,7 +499,8 @@ export function RootRow({
   library,
   libraries = [],
   held = false,
-  removalHeld = false,
+  removalHeld,
+  ownRequests,
   moveHeld = false,
   moveTo,
   onRemoved,
@@ -417,6 +541,8 @@ export function RootRow({
   watchesScan.current = running
   const [starting, setStarting] = useState(false)
   const [elapsed, setElapsed] = useState<number | undefined>()
+  /** The scan watched waits for the job lock or another derive's lease (O51). */
+  const [waiting, setWaiting] = useState(false)
   const [report, setReport] = useState<ScanOutcome | null>(null)
   const heading = useRef<HTMLHeadingElement>(null)
   /** Which of the facts under the title end a line. */
@@ -479,9 +605,8 @@ export function RootRow({
     if (at === null || at === document.body) unlinkButton.current?.focus()
   }, [unlinking])
   /**
-   * Each box the admin has typed in since focusing it, by its name. The
-   * interval box is in it too, for the row's going; its blur compares the
-   * entry with the row instead.
+   * Each box the admin has typed in since focusing it, by its name, Every's
+   * count among them.
    *
    * **A write happens because somebody edited a box, never because its value
    * differs from something.** Deciding it by comparison would go wrong in
@@ -499,6 +624,16 @@ export function RootRow({
   const latest = useRef(root)
   latest.current = root
   /**
+   * The Scan schedule's writes not yet answered, each sent once the one
+   * before it is (`writeRoot`).
+   *
+   * **In turn, so that the choice made last is the one stored.** A press on
+   * Automatic or Off leaves Every's box first, which sends its count, and
+   * the choice then goes as a second write of the same column; sent
+   * together, the server may store them in either order.
+   */
+  const intervalWrites = useRef<Promise<void> | null>(null)
+  /**
    * The checkbox's own value, because it has to be able to go back.
    *
    * **Controlled, where the four text boxes are not.** An uncontrolled
@@ -509,6 +644,63 @@ export function RootRow({
    * keeps the admin's typed text as a retry target; a tick reads as settled.
    */
   const [keepsDocuments, setKeepsDocuments] = useState(root.keeps_documents)
+  /**
+   * The Scan schedule's choice and Every's unit.
+   *
+   * **State, not the row's value read afresh**, because a choice is drawn
+   * as it is sent, before the row holds it, and a count as it is typed.
+   * They follow the row's changes from elsewhere (`sentSchedules`), and a
+   * refused choice goes back to `knownInterval`. A refused count and unit
+   * stay where the store holds Every: a typed entry kept for a retry, as a
+   * text box's is, whose unit cannot go back alone without the two saying
+   * another interval.
+   */
+  const [choice, setChoice] = useState(() => choiceOf(root.scan_interval_secs))
+  const [unit, setUnit] = useState(() => unitOf(root.scan_interval_secs))
+  /**
+   * Every's count as its box holds it, which the unit's words agree with.
+   * The box is not controlled by it: it starts the box, which is drawn
+   * afresh, by `boxDraw`, whenever the schedule is drawn from the row.
+   */
+  const [count, setCount] = useState(() => countOf(root.scan_interval_secs))
+  const [boxDraw, setBoxDraw] = useState(0)
+  /** The choice and unit as last drawn, for an answer or a going that comes after. */
+  const choiceNow = useRef(choice)
+  choiceNow.current = choice
+  const unitNow = useRef(unit)
+  unitNow.current = unit
+  /** Every's count box, which its unit's change sends. */
+  const everyBox = useRef<HTMLInputElement>(null)
+  /** The schedule as the row draws `stored`, Every's count in a box afresh. */
+  const drawSchedule = useCallback((stored: number | null) => {
+    setChoice(choiceOf(stored))
+    setUnit(unitOf(stored))
+    setCount(countOf(stored))
+    setBoxDraw((n) => n + 1)
+  }, [])
+  /**
+   * This row's Scan schedule writes that no read of the row has brought
+   * back, oldest first; a refused one leaves at its refusal.
+   *
+   * **A read that brings one back is this row's own write coming home**,
+   * not a change from elsewhere, so the schedule is not drawn from it: the
+   * choice on the page is that write's, or one made since, such as Every
+   * with a count typed and not yet sent, which drawing Off over it would
+   * drop.
+   */
+  const sentSchedules = useRef<SentSchedule[]>([])
+  /**
+   * The last Every interval the row has read or this row has sent, kept
+   * while another choice is drawn, so that choosing Every again saves it
+   * again at once. Arrow keys save each radio they land on, so an Every
+   * drawn empty and unsent would read Every while the store holds the
+   * choice passed through. One under the minimum is kept as the minimum,
+   * which the scheduler scans it at (`schedule::every`): the server
+   * refuses less.
+   */
+  const everyKept = useRef<number | undefined>(undefined)
+  /** The last Every interval the store took, read or answered, as kept. */
+  const everyStored = useRef<number | undefined>(undefined)
 
   // **Follow the row when it changes underneath.** The state is seeded once,
   // so a value changed from anywhere but this row — another admin, another
@@ -519,6 +711,27 @@ export function RootRow({
   useEffect(() => {
     setKeepsDocuments(root.keeps_documents)
   }, [root.keeps_documents])
+  // The same for the Scan schedule, unless the read brings back this row's
+  // own write (`sentSchedules`), which also settles each written before it.
+  // Every's count is drawn afresh with it, so that the count and its unit
+  // always say one interval. A count typed in the box this replaces or
+  // takes away is no longer on the page, so it is not sent as the row goes.
+  useEffect(() => {
+    const stored = root.scan_interval_secs
+    if (choiceOf(stored) === 'every') {
+      everyStored.current = Math.max(stored as number, MIN_EVERY_SECS)
+      everyKept.current = everyStored.current
+    }
+    const sent = sentSchedules.current
+    const back = sent.findLastIndex((one) => one.secs === stored)
+    if (back >= 0) {
+      sent.splice(0, back + 1)
+      return
+    }
+    sent.length = 0
+    drawSchedule(stored)
+    edited.current.delete(EVERY_BOX)
+  }, [root.scan_interval_secs, drawSchedule])
 
   // `onChanged` is called from inside the poll's interval callback, so it is
   // held in a ref rather than named as a dependency: a parent handing over a
@@ -563,10 +776,20 @@ export function RootRow({
    */
   const misses = useRef(0)
 
-  /** `label` names the setting in a refusal that comes once the row has gone. */
-  const savePatch = (patch: RootPatch, label: string) => {
-    patchRoot(root.id, patch)
+  /**
+   * `label` names the setting in a refusal that comes once the row has gone,
+   * `refused` puts back a control that drew the refused value, and `saved`
+   * hears that the store took it.
+   */
+  const savePatch = (
+    patch: RootPatch,
+    label: string,
+    refused?: () => void,
+    saved?: () => void,
+  ) => {
+    writeRoot(intervalWrites, root.id, patch)
       .then(() => {
+        saved?.()
         setFailure(undefined)
         // The roots list carries a directory's settings, so the one Rules
         // keeps is out of date.
@@ -574,6 +797,7 @@ export function RootRow({
         onChanged()
       })
       .catch((err: unknown) => {
+        refused?.()
         const sentence = sentenceOf(err)
         if (drawn.current) setFailure(sentence)
         else
@@ -594,8 +818,13 @@ export function RootRow({
       running: boolean
       elapsed_secs?: number
       report: ScanOutcome | null
+      last_scan_status: string | null
     }) => {
       setElapsed(status.elapsed_secs)
+      // Only the server's own scan writes `waiting`, and a start rewrites one
+      // a stop left, so a running scan's status reads it while the scan waits,
+      // and past its wait only where the store refused the write that ended it.
+      setWaiting(status.running && status.last_scan_status === 'waiting')
       if (status.running) {
         setRunning(true)
         return
@@ -644,10 +873,15 @@ export function RootRow({
     return () => {
       const row = latest.current
       for (const box of typed.values()) {
-        const patch = leftPatch(row, box)
+        const patch = leftPatch(
+          row,
+          box,
+          unitNow.current,
+          knownInterval(sentSchedules.current, row),
+        )
         if (patch === undefined) continue
-        const label = box.getAttribute('aria-label') ?? box.name
-        patchRoot(row.id, patch).then(
+        const label = leftLabel(box)
+        writeRoot(intervalWrites, row.id, patch).then(
           () => {
             void invalidate(ROOTS)
             changed.current()
@@ -672,6 +906,7 @@ export function RootRow({
     setScanNotice(undefined)
     setReport(null)
     setElapsed(undefined)
+    setWaiting(false)
     misses.current = 0
   }, [])
 
@@ -838,7 +1073,7 @@ export function RootRow({
    * Not while this directory's own scan is drawn, whose "Scanning…" says it.
    */
   const moveWaits = moveHeld && !running
-  const removalWaits = removalHeld && !running
+  const removalWaits = running ? undefined : removalHeld
   /** The Move… line's, which describes Move… while it is drawn. */
   const moveWaitsId = useId()
   const wasUnlinkHeld = useRef(unlinkHeld)
@@ -878,6 +1113,92 @@ export function RootRow({
   const pressed = (then: () => void) => () => {
     setUnlinkRefusal(undefined)
     then()
+  }
+
+  /**
+   * Choose a schedule, saved at once: Automatic, Off, and Every at the
+   * interval kept for it, or `DEFAULT_EVERY_SECS` where none is kept.
+   */
+  const chooseSchedule = (next: Choice) => {
+    const secs =
+      next === 'every'
+        ? (everyKept.current ?? DEFAULT_EVERY_SECS)
+        : next === 'off'
+          ? 0
+          : null
+    if (next === 'every') {
+      // In its unit, so that the count the box starts with and the unit
+      // beside it say the same interval.
+      setUnit(unitOf(secs))
+      setCount(countOf(secs))
+    }
+    // A count typed in and not left goes with Every's box: sent as the row
+    // goes, it would undo this choice.
+    edited.current.delete(EVERY_BOX)
+    setChoice(next)
+    saveSchedule(secs, () => {
+      // A radio left on a refused choice says the store holds what it does
+      // not, and a press on it sends nothing, since a checked radio fires no
+      // change; so it goes back, as the checkbox does. Not over a choice
+      // made since, which has its own answer coming. A count typed in the box
+      // this takes away goes with it, as a read's does.
+      if (choiceNow.current === next) {
+        edited.current.delete(EVERY_BOX)
+        drawSchedule(knownInterval(sentSchedules.current, latest.current))
+      }
+    })
+  }
+
+  /**
+   * Save the Scan schedule as `secs`, as a write a read may bring back
+   * (`sentSchedules`); `refused` runs once a refused one has left it.
+   */
+  const saveSchedule = (secs: number | null, refused?: () => void) => {
+    const write = { secs }
+    sentSchedules.current.push(write)
+    // Kept as it is sent, for a choice of Every before it is answered; a
+    // refused one was never stored, so the last the store took is kept, not
+    // the one kept when this was sent, which may have been refused too.
+    const every = choiceOf(secs) === 'every'
+    if (every) everyKept.current = secs as number
+    savePatch(
+      { scan_interval_secs: secs },
+      SCHEDULE,
+      () => {
+        const sent = sentSchedules.current
+        const at = sent.indexOf(write)
+        if (at >= 0) sent.splice(at, 1)
+        if (everyKept.current === secs) everyKept.current = everyStored.current
+        refused?.()
+      },
+      () => {
+        if (every) everyStored.current = secs as number
+      },
+    )
+  }
+
+  /** Send Every's count in `inUnit`, or say why it is not sent. */
+  const sendEvery = (box: HTMLInputElement, inUnit: Unit) => {
+    const secs = everySecs(
+      knownInterval(sentSchedules.current, root),
+      box,
+      inUnit,
+    )
+    if (typeof secs === 'string') {
+      setFailure(secs)
+      return
+    }
+    if (secs === undefined) return
+    setFailure(undefined)
+    saveSchedule(secs, () => {
+      // Kept for a retry only where the store holds Every: otherwise the
+      // radio would read Every against the choice the store holds.
+      const known = knownInterval(sentSchedules.current, latest.current)
+      if (choiceOf(known) !== 'every') {
+        edited.current.delete(EVERY_BOX)
+        drawSchedule(known)
+      }
+    })
   }
 
   const textRow = (field: TextField) => (
@@ -995,6 +1316,7 @@ export function RootRow({
       {running && (
         <p className="scanning">
           Scanning…{elapsed === undefined ? '' : ` ${Math.round(elapsed)}s`}
+          {waiting && `${JOINING_DOT}waiting`}
         </p>
       )}
       {moveWaits && moveTo !== undefined && library !== undefined && (
@@ -1039,34 +1361,100 @@ export function RootRow({
 
       <Section title="How it is scanned">
         <Row
-          label="Scan interval"
-          help="Whole seconds, at least one. Empty sets no interval."
+          label={SCHEDULE}
+          help={`Every is at least ${MIN_EVERY_SECS / 60} minutes. With Off, the server scans it only when Scan directory or Scan library is pressed.`}
+          group="radiogroup"
         >
           {(ids) => (
-            <input
-              type="number"
-              id={ids.control}
-              name="scan_interval_secs"
-              aria-label="Scan interval (seconds)"
-              aria-describedby={ids.help}
-              min="1"
-              step="1"
-              defaultValue={root.scan_interval_secs ?? ''}
-              onChange={(e) => {
-                edited.current.set('scan_interval_secs', e.target)
-              }}
-              onBlur={(e) => {
-                edited.current.delete('scan_interval_secs')
-                const patch = intervalPatch(root, e.target)
-                if (typeof patch === 'string') {
-                  setFailure(patch)
-                  return
-                }
-                if (patch === undefined) return
-                setFailure(undefined)
-                savePatch(patch, 'Scan interval (seconds)')
-              }}
-            />
+            <div className="settings-choices">
+              <label>
+                <input
+                  type="radio"
+                  name={`scan_schedule-${root.id}`}
+                  value="automatic"
+                  checked={choice === 'automatic'}
+                  onChange={() => chooseSchedule('automatic')}
+                />
+                <span>Automatic</span>
+              </label>
+              {/* The count and its unit follow Every's label and are not in
+                  it: a control inside a label is that label's too. */}
+              <div className="scan-every">
+                <label>
+                  <input
+                    type="radio"
+                    name={`scan_schedule-${root.id}`}
+                    value="every"
+                    checked={choice === 'every'}
+                    onChange={() => chooseSchedule('every')}
+                  />
+                  <span>Every</span>
+                </label>
+                {choice === 'every' && (
+                  <>
+                    <input
+                      key={boxDraw}
+                      ref={everyBox}
+                      type="number"
+                      name={EVERY_BOX}
+                      aria-label="Scan every"
+                      aria-describedby={ids.help}
+                      min="1"
+                      step="1"
+                      defaultValue={count}
+                      onFocus={() => {
+                        edited.current.delete(EVERY_BOX)
+                      }}
+                      onChange={(e) => {
+                        edited.current.set(EVERY_BOX, e.target)
+                        setCount(e.target.value)
+                      }}
+                      onBlur={(e) => {
+                        // Nothing typed since this box was focused: nothing
+                        // to send, though its count may be the stored
+                        // interval rounded down and so not equal to it.
+                        if (!edited.current.has(EVERY_BOX)) return
+                        edited.current.delete(EVERY_BOX)
+                        sendEvery(e.target, unit)
+                      }}
+                    />
+                    <select
+                      name="scan_every_unit"
+                      aria-label="Scan every unit"
+                      aria-describedby={ids.help}
+                      value={unit}
+                      onChange={(e) => {
+                        const next = e.target.value as Unit
+                        setUnit(next)
+                        // Sent with its unit now, so not again as the row
+                        // goes.
+                        edited.current.delete(EVERY_BOX)
+                        if (everyBox.current !== null) {
+                          sendEvery(everyBox.current, next)
+                        }
+                      }}
+                    >
+                      <option value="minutes">
+                        {Number(count) === 1 ? 'minute' : 'minutes'}
+                      </option>
+                      <option value="hours">
+                        {Number(count) === 1 ? 'hour' : 'hours'}
+                      </option>
+                    </select>
+                  </>
+                )}
+              </div>
+              <label>
+                <input
+                  type="radio"
+                  name={`scan_schedule-${root.id}`}
+                  value="off"
+                  checked={choice === 'off'}
+                  onChange={() => chooseSchedule('off')}
+                />
+                <span>Off</span>
+              </label>
+            </div>
           )}
         </Row>
         {TEXT_FIELDS.filter((field) => field.group === 'scan').map(textRow)}
@@ -1127,7 +1515,7 @@ export function RootRow({
                 label={`Remove from ${library.name}`}
                 help={
                   moveWaits
-                    ? 'Waits for a scan or another library job to finish.'
+                    ? JOB_WAITS
                     : `${namesOf(alsoIn.map((one) => one.name))} ${alsoIn.length === 1 ? 'keeps' : 'keep'} it; nothing is deleted.`
                 }
                 action
@@ -1161,11 +1549,13 @@ export function RootRow({
           <Row
             label="Remove this directory"
             help={
-              removalWaits
+              removalWaits === 'around'
                 ? 'Waits for a scan of a directory around or inside this one.'
-                : alsoIn.length > 0
-                  ? 'From every library that holds it, with what it would take.'
-                  : 'Asks first, with what it would take.'
+                : removalWaits === 'derive'
+                  ? JOB_WAITS
+                  : alsoIn.length > 0
+                    ? 'From every library that holds it, with what it would take.'
+                    : 'Asks first, with what it would take.'
             }
             action
           >
@@ -1174,7 +1564,7 @@ export function RootRow({
                 ref={removeButton}
                 type="button"
                 onClick={pressed(() => setConfirming(true))}
-                held={scanning || removalHeld || confirming}
+                held={scanning || removalHeld !== undefined || confirming}
                 disabled={starting || moving || unlinking}
                 aria-describedby={ids.help}
               >
@@ -1234,7 +1624,8 @@ export function RootRow({
             holders={
               alsoIn.length > 0 ? libraries.map((one) => one.name) : undefined
             }
-            held={scanning || removalHeld}
+            held={scanning || removalHeld !== undefined}
+            own={ownRequests}
             onCancel={() => {
               backToRemove.current = true
               setConfirming(false)

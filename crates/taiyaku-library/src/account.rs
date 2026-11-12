@@ -104,11 +104,14 @@ pub fn by_api_key(conn: &Connection, secret: &str) -> Result<Option<Account>, St
         // screen missing one `last_used` is a smaller problem than a page that
         // did not load. An account screen where every row says nothing at all,
         // though, is unusable for deciding which key to revoke — which is why
-        // it is recorded and not skipped.
-        let _ = conn.execute(
-            "UPDATE api_key SET last_used = datetime('now') WHERE secret_sha256 = ?1",
-            params![hashed],
-        );
+        // it is recorded and not skipped. Never waited for (O272): an OPDS
+        // client using a key sends it with every page.
+        let _ = crate::without_waiting(conn, |conn| {
+            conn.execute(
+                "UPDATE api_key SET last_used = datetime('now') WHERE secret_sha256 = ?1",
+                params![hashed],
+            )
+        });
     }
     Ok(found)
 }
@@ -460,41 +463,49 @@ pub fn open_session(
 ///
 /// Lazily, per §4, with [`sweep_expired_sessions`] as the other half. Neither is
 /// enough alone: a server that runs for a month never sweeps at startup, and a
-/// row nobody presents is never looked up.
+/// row nobody presents is never looked up. **Only the read can fail it**
+/// (O266): it refuses an expired row itself.
 ///
 /// # Errors
 ///
 /// Returns an error if the query fails.
 pub fn session_owner(conn: &Connection, token: &str) -> Result<Option<Account>, String> {
     let hashed = credential::token_sha256(token);
-    conn.execute(
-        "DELETE FROM session WHERE token_sha256 = ?1 AND expires <= datetime('now')",
-        params![hashed],
-    )
-    .map_err(|e| format!("sweeping an expired session: {e}"))?;
-
     let found = conn
         .query_row(
             "SELECT u.id, u.name, u.role, u.can_download, u.can_stream, u.can_stamp
                FROM session s
                JOIN user u ON u.id = s.user_id
-              WHERE s.token_sha256 = ?1",
+              WHERE s.token_sha256 = ?1 AND s.expires > datetime('now')",
             params![hashed],
             account_from_row,
         )
         .optional()
         .map_err(|e| format!("resolving a session: {e}"))?;
 
+    // Both writes are best effort, and neither waits for the store's write
+    // lock (O272): a failed one would sign the reader out (O266), and a
+    // waiting one would hold the server's one connection while a derive
+    // writes.
     if found.is_some() {
-        // Best effort, like `by_api_key`'s touch: a failed slide must not fail
-        // the request it was recording, and the credential was already valid.
-        let _ = conn.execute(
-            "UPDATE session
-                SET last_seen = datetime('now'),
-                    expires   = datetime('now', ?2)
-              WHERE token_sha256 = ?1",
-            params![hashed, format!("+{SESSION_DAYS} days")],
-        );
+        let _ = crate::without_waiting(conn, |conn| {
+            conn.execute(
+                "UPDATE session
+                    SET last_seen = datetime('now'),
+                        expires   = datetime('now', ?2)
+                  WHERE token_sha256 = ?1",
+                params![hashed, format!("+{SESSION_DAYS} days")],
+            )
+        });
+    } else {
+        // Only where nothing was found, as a row the read found is not
+        // expired: a live session then tries one write, not two.
+        let _ = crate::without_waiting(conn, |conn| {
+            conn.execute(
+                "DELETE FROM session WHERE token_sha256 = ?1 AND expires <= datetime('now')",
+                params![hashed],
+            )
+        });
     }
     Ok(found)
 }
@@ -706,13 +717,27 @@ fn spent(conn: &Connection, key: &str, ceiling: i64) -> Result<bool, String> {
 /// Forget this pair's failures. Called on every success, so a person who
 /// mistyped twice and then got it right starts clean.
 ///
+/// **Read first, and deleted only where there is a row (O272).** A `DELETE`
+/// takes the store's write lock even where it matches nothing, and every
+/// request a password authenticates through `Authorization: Basic` comes
+/// here, nearly always with nothing to forget.
+///
 /// # Errors
 ///
-/// Returns an error if the delete fails.
+/// Returns an error if the read or the delete fails.
 pub fn clear_failures(conn: &Connection, key: &str) -> Result<(), String> {
-    conn.execute("DELETE FROM login_attempt WHERE key = ?1", params![key])
-        .map(|_| ())
-        .map_err(|e| format!("clearing failed attempts: {e}"))
+    let any: bool = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM login_attempt WHERE key = ?1)",
+            params![key],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("reading failed attempts: {e}"))?;
+    if any {
+        conn.execute("DELETE FROM login_attempt WHERE key = ?1", params![key])
+            .map_err(|e| format!("clearing failed attempts: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Give an account a password and a name, **by promoting the row spec A seeded

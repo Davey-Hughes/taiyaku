@@ -10,10 +10,13 @@ import * as backupApi from '../src/backup'
 import * as config from '../src/config'
 import { Config } from '../src/Config'
 import * as curation from '../src/curation'
+import * as derive from '../src/libraries'
 import { WAIT_DRAWN_AFTER_MS } from '../src/hooks'
 import { RuleEditor } from '../src/RuleEditor'
 import * as rulesApi from '../src/rules'
-import { deferred } from './support/async'
+import { deferred, settleUntil } from './support/async'
+import { pressOn } from './support/callout'
+import { tokenColour } from './support/colour'
 import { emptyDerive } from './support/derive'
 import { expectDisclosure } from './support/disclosure'
 import { holdOf } from './support/held'
@@ -22,6 +25,7 @@ import { lengthOf } from './support/length'
 import { mount, rerender } from './support/mount'
 import { coarseRulesOn } from './support/pointer'
 import { rootFontAt } from './support/rootFont'
+import { watchDrawn } from './support/wait'
 
 /**
  * The report a save's re-derive draws on the Rules screen. `ScanReport`'s
@@ -47,6 +51,10 @@ vi.mock('../src/curation', async (importOriginal) => ({
 vi.mock('../src/backup', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/backup')>()),
   listBackups: vi.fn(),
+}))
+vi.mock('../src/libraries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/libraries')>()),
+  deriveStatus: vi.fn(),
 }))
 
 const rule: rulesApi.Rule = {
@@ -86,6 +94,10 @@ beforeEach(() => {
     counts: {},
   })
   vi.mocked(backupApi.listBackups).mockResolvedValue({ backups: [] })
+  vi.mocked(derive.deriveStatus).mockResolvedValue({
+    derive_running: false,
+    job_held: false,
+  })
   vi.mocked(rulesApi.previewRules).mockResolvedValue({
     impact,
     rows: [],
@@ -559,6 +571,7 @@ describe('the Rules screen’s width', () => {
           keeps_documents: false,
           last_scan_at: null,
           last_scan_status: null,
+          next_scan_at: null,
         },
       ],
     })
@@ -1267,6 +1280,63 @@ describe('the Rules screen’s held controls, in a real browser', () => {
   const saveButton = (host: HTMLElement) =>
     host.querySelector('button.save') as HTMLButtonElement
 
+  it('keeps focus on Save when a derive’s hold comes on while it has focus, says why beside it, and sends nothing for Enter or a real mouse press; focus stays as the hold ends (O51)', async () => {
+    const first = deferred<derive.DeriveStatus>()
+    vi.mocked(derive.deriveStatus)
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({ derive_running: true, job_held: false })
+    const host = await rulesScreen()
+    const save = saveButton(host)
+    expect(holdOf(save)).toBe('free')
+    await focusFirst(host, save)
+
+    // The first read was out as the first preview was sent, so the derive it
+    // finds may be that preview: it holds nothing, and the read after it,
+    // sent with nothing of the page's out, brings the hold.
+    await act(async () => {
+      first.resolve({ derive_running: true, job_held: false })
+    })
+    await settle()
+    expect(holdOf(save)).toBe('free')
+    await settleUntil('Save, held', () => holdOf(save) === 'held', 3000)
+    expect(document.activeElement).toBe(save)
+    expect(holdOf(save)).toBe('held')
+    expect(
+      document.getElementById(save.getAttribute('aria-describedby') ?? '')
+        ?.textContent,
+    ).toBe('Waits for a scan or another library job to finish.')
+    await keys('{Enter}')
+    await pressOn(save)
+    expect(rulesApi.saveRules).not.toHaveBeenCalled()
+
+    // The poll finds the lease free, and the list on screen is previewed.
+    await settleUntil('Save, free', () => holdOf(save) === 'free', 3000)
+    expect(document.activeElement).toBe(save)
+    await pressOn(save)
+    expect(rulesApi.saveRules).toHaveBeenCalledTimes(1)
+  })
+
+  it('draws why Save is held in the muted colour, as the stamp’s and the directory page’s why-lines are (O51)', async () => {
+    vi.mocked(derive.deriveStatus).mockResolvedValue({
+      derive_running: false,
+      job_held: true,
+    })
+    const host = await rulesScreen()
+    const save = saveButton(host)
+    await settleUntil('Save, held', () => holdOf(save) === 'held', 3000)
+    const why = document.getElementById(
+      save.getAttribute('aria-describedby') ?? '',
+    ) as HTMLElement
+    expect(why.textContent).toBe(
+      'Waits for a scan or another library job to finish.',
+    )
+    const around = why.parentElement as Element
+    expect(tokenColour(around, '--muted')).not.toBe(
+      tokenColour(around, '--text'),
+    )
+    expect(getComputedStyle(why).color).toBe(tokenColour(around, '--muted'))
+  })
+
   it('keeps focus on Save, pressed with Enter, through the save’s drawn wait and the preview that follows it; Enter on it sends nothing while it is held', async () => {
     const sent = deferred<rulesApi.Saved>()
     vi.mocked(rulesApi.saveRules).mockReturnValue(sent.promise)
@@ -1501,6 +1571,146 @@ describe('the Rules screen’s held controls, in a real browser', () => {
     })
     expect(document.activeElement).toBe(edit)
     expect(holdOf(edit)).toBe('free')
+  })
+})
+
+/**
+ * The server's preview takes the derive lease without waiting for it, and
+ * holds it for its whole derive, so a second preview sent while the page's
+ * first is out is refused for the first's lease (O51). The server here does
+ * the same: it refuses a preview while one is out, and its status says a
+ * derive runs while one is. Gestures are real clicks, made as the app runs,
+ * outside `act`.
+ */
+describe('the Rules screen’s previews, one at a time (O51)', () => {
+  const second: rulesApi.Rule = {
+    ...rule,
+    id: 2,
+    ordinal: 2,
+    pattern: 'Colour/.*',
+  }
+  const previewed = (works_rehomed: number): rulesApi.Preview => ({
+    impact: { ...impact, works_rehomed },
+    rows: [],
+    rows_truncated: false,
+    overrides: [],
+  })
+
+  /** Waits, without `act`, until `drawn` holds. */
+  async function until(what: string, drawn: () => boolean, within = 2000) {
+    const end = performance.now() + within
+    while (!drawn()) {
+      if (performance.now() > end) {
+        throw new Error(`${what}: not drawn within ${within} ms`)
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  }
+
+  it('sends a second gesture’s list once the first’s preview lands, not beside it: nothing refused, the newest list’s preview drawn', async () => {
+    vi.mocked(rulesApi.listRules).mockResolvedValue({
+      rules: [rule, second],
+      complaints: [],
+    })
+    /** Each preview the server took, with its answer held open. */
+    const taken: { rules: rulesApi.Rule[]; answer: (works: number) => void }[] =
+      []
+    /** Each preview the server refused for the lease another held. */
+    const refused: rulesApi.Rule[][] = []
+    let out = 0
+    vi.mocked(rulesApi.previewRules).mockImplementation((rules) => {
+      if (out > 0) {
+        refused.push(rules)
+        return Promise.reject(
+          new Error(
+            '/api/library/rules/preview: 409 {"error":"a scan or another library job is running; preview again once it has finished"}',
+          ),
+        )
+      }
+      out += 1
+      const answer = deferred<rulesApi.Preview>()
+      taken.push({
+        rules,
+        answer: (works) => answer.resolve(previewed(works)),
+      })
+      return answer.promise.finally(() => {
+        out -= 1
+      })
+    })
+    vi.mocked(derive.deriveStatus).mockImplementation(async () => ({
+      derive_running: out > 0,
+      job_held: false,
+    }))
+
+    await page.viewport(1280, 800)
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <div className="library">
+          <main>
+            <div className="config">
+              <RuleEditor />
+            </div>
+          </main>
+        </div>,
+      )
+    })
+    if (host === undefined) throw new Error('nothing mounted')
+    const shown = host
+    const save = () => shown.querySelector('button.save') as HTMLElement
+    const pane = () =>
+      shown.querySelector('.preview [role="tabpanel"]')?.textContent ?? ''
+    const boxes = () =>
+      shown.querySelectorAll<HTMLInputElement>(
+        '.rule-row input[type="checkbox"]',
+      )
+
+    globalThis.IS_REACT_ACT_ENVIRONMENT = false
+    try {
+      await until('the first preview, sent', () => taken.length === 1)
+      taken[0].answer(71)
+      await until('the first preview, drawn', () =>
+        save().textContent?.includes('71'),
+      )
+      const panes = watchDrawn(pane)
+
+      await userEvent.click(boxes()[0])
+      await until('a preview of rule 1 off', () => taken.length === 2)
+      // Two more while it is out: rule 2 off, then rule 1 on again.
+      await userEvent.click(boxes()[1])
+      await userEvent.click(boxes()[0])
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      expect(refused).toEqual([])
+      expect(taken.length).toBe(2)
+
+      taken[1].answer(50)
+      await until('a preview of the newest list', () => taken.length === 3)
+      expect(taken[2].rules.map((one) => one.enabled)).toEqual([true, false])
+      expect(save().textContent).not.toContain('50')
+      await until('Save, held', () => holdOf(save()) === 'held')
+
+      taken[2].answer(12)
+      await until('the newest list’s preview, drawn', () =>
+        save().textContent?.includes('12'),
+      )
+      expect(holdOf(save())).toBe('free')
+      panes.stop()
+      expect(refused).toEqual([])
+      expect(taken.length).toBe(3)
+      expect(
+        [...panes.seen].filter((one) => one.startsWith('No preview')),
+      ).toEqual([])
+      expect(
+        [...panes.seen].filter((one) => one.startsWith('Waits for')),
+      ).toEqual([])
+      expect(
+        [...shown.querySelectorAll('[role="alert"]')].map(
+          (one) => one.textContent,
+        ),
+      ).toEqual([])
+    } finally {
+      globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    }
   })
 })
 

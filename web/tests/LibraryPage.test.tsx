@@ -6,6 +6,8 @@ import { NO_ADDRESS } from '../src/configAddress'
 import { WAIT_DRAWN_AFTER_MS } from '../src/hooks'
 import * as api from '../src/libraries'
 import { LibraryPage } from '../src/LibraryPage'
+import { libraryScan } from '../src/pageReads'
+import { readNow } from '../src/reads'
 import { deferred, flush, land } from './support/async'
 import { emptyDerive } from './support/derive'
 import { press, submit, typeInto } from './support/input'
@@ -1057,6 +1059,9 @@ describe('LibraryPage, a library and its directories', () => {
             last_scan_at: '2026-10-01 10:00:00',
             last_scan_status: 'failed',
           },
+          { ...dir(5, '/media/Manga/Oneshots'), scan_interval_secs: 0 },
+          { ...dir(6, '/media/Manga/Doujin'), scan_interval_secs: 5400 },
+          { ...dir(7, '/media/Manga/Artbooks'), scan_interval_secs: 9000 },
         ],
       }),
     )
@@ -1088,10 +1093,22 @@ describe('LibraryPage, a library and its directories', () => {
         links: [['/media/Manga/Chapters', '/config/libraries/Manga/dirs/4']],
         cells: [
           '/media/Manga/Chapters',
-          'not set',
+          'automatic',
           '2026-10-01 10:00:00 UTC\u00a0·\u00a0failed',
           '',
         ],
+      },
+      {
+        links: [['/media/Manga/Oneshots', '/config/libraries/Manga/dirs/5']],
+        cells: ['/media/Manga/Oneshots', 'off', 'Never', ''],
+      },
+      {
+        links: [['/media/Manga/Doujin', '/config/libraries/Manga/dirs/6']],
+        cells: ['/media/Manga/Doujin', '90m', 'Never', ''],
+      },
+      {
+        links: [['/media/Manga/Artbooks', '/config/libraries/Manga/dirs/7']],
+        cells: ['/media/Manga/Artbooks', '150m', 'Never', ''],
       },
     ])
   })
@@ -1541,6 +1558,7 @@ const walking = (...ids: number[]): api.LibraryScanStatus => {
     library_id: 7,
     held_removals: [],
     moves_held: false,
+    derive_running: false,
     // Manga's scan holds its own directories; Kids' own scan holds 5 alone.
     scans: [
       ...(own.length > 0
@@ -2832,6 +2850,135 @@ describe('LibraryPage, its removal refused (O252)', () => {
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(8)
     expect(holdOf(button(host, 'remove-library'))).toBe('free')
     expect(described(host)).toBe('Asks first, with what it would take.')
+  })
+})
+
+describe('LibraryPage, a derive holding the lease (O51)', () => {
+  const JOB_WAITS = 'Waits for a scan or another library job to finish.'
+  const AROUND =
+    "Waits for a scan of a directory around or inside one of Manga's directories."
+  const TODAY = 'Asks first, with what it would take.'
+  const deriving = { ...idle(7), derive_running: true }
+  const LOCKED = new Error(
+    '/api/library/libraries/7/scan: 500 the store is locked',
+  )
+
+  /** What Remove…'s `aria-describedby` names, read through the id. */
+  const described = (host: HTMLElement) => {
+    const named = document.getElementById(
+      button(host, 'remove-library').getAttribute('aria-describedby') ?? '',
+    )
+    expect(named).toBe(
+      helpOf(row(section(host, 'Removal'), 'Remove this library')),
+    )
+    return named?.textContent
+  }
+
+  it('holds Remove… alone while its first read says a derive holds the lease, says why, and polls until a read finds it free', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(deriving)
+    const { host } = await shown()
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    expect(holdOf(button(host, 'scan-library'))).toBe('free')
+    expect(described(host)).toBe(JOB_WAITS)
+
+    await tick()
+    await flush()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+    await tick()
+    await flush()
+    expect(holdOf(button(host, 'remove-library'))).toBe('free')
+    expect(described(host)).toBe(TODAY)
+  })
+
+  it('says the scan around one of its directories, the more specific, where that and a derive both hold Remove…', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...deriving,
+      held_removals: [1],
+    })
+    const { host } = await shown()
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    expect(described(host)).toBe(AROUND)
+  })
+
+  it('holds Remove… and says why when the poll of its own scan finds the scan over and a derive holding the lease, from the answer the store takes', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
+    const { host } = await shown()
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    expect(described(host)).toBe(TODAY)
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(deriving)
+    await tick()
+    await flush()
+    expect(holdOf(button(host, 'scan-library'))).toBe('free')
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    expect(described(host)).toBe(JOB_WAITS)
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
+    await tick()
+    await flush()
+    expect(holdOf(button(host, 'remove-library'))).toBe('free')
+    expect(described(host)).toBe(TODAY)
+  })
+
+  it('holds Remove… from no answer the store dropped: a poll’s read answered after a newer read of the status that finds nothing holding', async () => {
+    vi.mocked(api.startLibraryScan).mockResolvedValue(started)
+    const { host } = await shown()
+    await press(button(host, 'scan-library'))
+    await land()
+    const polled = deferred<api.LibraryScanStatus>()
+    vi.mocked(api.libraryScanStatus).mockReturnValueOnce(polled.promise)
+    await tick()
+    const sent = vi.mocked(api.libraryScanStatus).mock.calls.length
+
+    // A newer read of the same status, sent after the poll's, answers first:
+    // the scan is over and nothing holds.
+    await act(async () => {
+      await readNow(libraryScan(7))
+    })
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(sent + 1)
+    // The poll's read, overtaken, says a derive holds.
+    await flush(() => polled.resolve(deriving))
+    await land()
+    expect(holdOf(button(host, 'scan-library'))).toBe('free')
+    expect(holdOf(button(host, 'remove-library'))).toBe('free')
+    expect(described(host)).toBe(TODAY)
+
+    // The reads after say what the newer one said.
+    await tick()
+    await land()
+    expect(holdOf(button(host, 'remove-library'))).toBe('free')
+  })
+
+  it('draws the derive’s hold again when its dry run is refused for it after the page gave it up, and the status read again says it in the words it last read', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValueOnce(deriving)
+    vi.mocked(api.libraryRemovalCost).mockRejectedValue(
+      new Error(
+        '/api/library/libraries/7?dry_run=true: 409 {"error":"a scan or another library job is running; remove the library once it has finished"}',
+      ),
+    )
+    const { host } = await shown()
+    vi.mocked(api.libraryScanStatus).mockRejectedValue(LOCKED)
+    for (const _ of [1, 2, 3]) {
+      await tick()
+      await flush()
+    }
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(4)
+    expect(holdOf(button(host, 'remove-library'))).toBe('free')
+
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(deriving)
+    await press(button(host, 'remove-library'))
+    await land()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(5)
+    await press(
+      [...host.querySelectorAll('.remove-library button')].find(
+        (b) => b.textContent === 'Cancel',
+      ) as Element,
+    )
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    expect(described(host)).toBe(JOB_WAITS)
   })
 })
 

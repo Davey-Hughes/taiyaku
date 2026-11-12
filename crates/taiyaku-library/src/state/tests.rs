@@ -511,6 +511,146 @@ fn put_progress_leaves_completed_at_and_read_count_alone() {
     assert_eq!(read_count, 2, "and so must the number of times it was read");
 }
 
+/// `slot` on `raw-mono`, put in the order its save arrived in.
+fn put_in_order(
+    conn: &Connection,
+    order: &ProgressOrder,
+    arrival: Arrival,
+    (user_id, work_id): (i64, i64),
+    slot: u32,
+) -> Result<Landed, String> {
+    let progress = Progress {
+        edition: "raw-mono".into(),
+        slot,
+    };
+    put_progress_in_order(
+        conn,
+        order,
+        arrival,
+        work_id,
+        user_id,
+        &progress,
+        Numbering::Store,
+    )
+}
+
+/// The slot held on `raw-mono`, if any.
+fn held_slot(conn: &Connection, (user_id, work_id): (i64, i64)) -> Option<u32> {
+    let held = progress(conn, work_id, user_id).expect("reading back");
+    held.iter()
+        .find(|position| position.edition == "raw-mono")
+        .map(|position| position.slot)
+}
+
+/// Three of one reader's saves on one work end at the last arrival's slot,
+/// in each order they could take the write lock in, and each that lands
+/// after a later arrival writes nothing.
+#[test]
+fn three_saves_end_at_the_last_arrivals_slot_in_every_landing_order() {
+    use Landed::{Superseded as S, Written as W};
+    for (landing, landed) in [
+        ([0, 1, 2], [W, W, W]),
+        ([0, 2, 1], [W, W, S]),
+        ([1, 0, 2], [W, S, W]),
+        ([1, 2, 0], [W, W, S]),
+        ([2, 0, 1], [W, S, S]),
+        ([2, 1, 0], [W, S, S]),
+    ] {
+        let library = Library::open_in_memory().expect("library");
+        let conn = library.conn();
+        let key = (1, a_work(&conn));
+        let arrivals = [Arrival::next(), Arrival::next(), Arrival::next()];
+
+        let outcomes: Vec<Landed> = landing
+            .iter()
+            .map(|&which| {
+                put_in_order(
+                    &conn,
+                    library.progress_order(),
+                    arrivals[which],
+                    key,
+                    [10, 11, 12][which],
+                )
+                .expect("writes")
+            })
+            .collect();
+
+        assert_eq!(outcomes, landed, "landing in the order {landing:?}");
+        assert_eq!(
+            held_slot(&conn, key),
+            Some(12),
+            "landing in the order {landing:?}"
+        );
+    }
+}
+
+/// A save on another work, or by another reader, never supersedes one that
+/// arrived before it: each lands, newest arrival first.
+#[test]
+fn saves_on_other_works_or_by_other_readers_never_supersede_each_other() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let first = a_work(&conn);
+    let json = r#"{"taiyaku":1,"work":{"title":"U","reading":"rtl"},
+        "editions":{"raw-mono":{"label":"R","members":[
+          {"path":"raw/u01.cbz","sha256":"feedface","pages":300}]}},
+        "hub":"raw-mono","alignments":[]}"#;
+    let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+    let second = crate::import::sidecar(&conn, &doc, Path::new("/y/taiyaku.json")).expect("import");
+    conn.execute(
+        "INSERT INTO user (id, name, password_hash, role) VALUES (2, 'second', '!', 'admin')",
+        [],
+    )
+    .expect("second user");
+    let keys = [(1, first), (1, second), (2, first)];
+    let arrivals = [Arrival::next(), Arrival::next(), Arrival::next()];
+
+    for which in [2, 1, 0] {
+        let landed = put_in_order(
+            &conn,
+            library.progress_order(),
+            arrivals[which],
+            keys[which],
+            [3, 4, 5][which],
+        )
+        .expect("writes");
+        assert_eq!(landed, Landed::Written, "{:?}", keys[which]);
+    }
+
+    let held: Vec<Option<u32>> = keys.iter().map(|&key| held_slot(&conn, key)).collect();
+    assert_eq!(held, [Some(3), Some(4), Some(5)]);
+}
+
+/// A save whose commit fails leaves no mark, so an older save that lands
+/// after it is still written.
+#[test]
+fn an_older_save_lands_after_a_later_one_failed_to_commit() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let key = (1, a_work(&conn));
+    // A row naming no work, checked only at COMMIT, written by slot 99 alone.
+    conn.execute_batch(
+        "CREATE TABLE refused_at_commit (
+           work_id INTEGER REFERENCES work(id) DEFERRABLE INITIALLY DEFERRED);
+         CREATE TRIGGER refuse_slot_99 AFTER INSERT ON progress WHEN NEW.slot = 99
+         BEGIN INSERT INTO refused_at_commit VALUES (-1); END;",
+    )
+    .expect("a commit that fails for slot 99");
+    let (older, later) = (Arrival::next(), Arrival::next());
+
+    let failed = put_in_order(&conn, library.progress_order(), later, key, 99);
+    let landed = put_in_order(&conn, library.progress_order(), older, key, 4);
+
+    let why = failed.expect_err("the later save's commit fails");
+    assert!(
+        why.starts_with("committing progress for work ")
+            && why.ends_with("FOREIGN KEY constraint failed"),
+        "{why}"
+    );
+    assert_eq!(landed, Ok(Landed::Written), "the older save");
+    assert_eq!(held_slot(&conn, key), Some(4));
+}
+
 #[test]
 fn truth_is_none_when_nothing_recorded() {
     let library = Library::open_in_memory().expect("library");

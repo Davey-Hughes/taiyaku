@@ -36,7 +36,7 @@ pub struct Probe {
 const WATCHED_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Short where it does not, because then it is the only mechanism.
-const UNWATCHED_INTERVAL: Duration = Duration::from_secs(15 * 60);
+pub(crate) const UNWATCHED_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 /// Ask by experiment whether `root` can be watched, rather than guessing from
 /// its filesystem type.

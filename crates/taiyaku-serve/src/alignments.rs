@@ -23,7 +23,8 @@
 //! `work.sidecar()` read — and two threads in opposite orders is a deadlock,
 //! not a race that shows up under load. The connection is therefore taken
 //! *before* the update and passed in, which makes the order library-then-work
-//! everywhere.
+//! everywhere. It is [`taiyaku_library::Library::saving`]'s, with a transaction
+//! already open, so the store's write lock is held before the work's (O272).
 
 use rusqlite::Connection;
 use taiyaku_core::Sidecar;

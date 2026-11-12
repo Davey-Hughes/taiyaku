@@ -540,8 +540,13 @@ but the work of making them again.
 A root with `keeps_documents` turned on (it is off by default) writes hand
 corrections beside it, in `.taiyaku/`, and for that its directory must be
 writable by 99:100; when it is not, they stay in the database and the save
-answers `persisted: false`. (Nothing schedules scans yet; a later change adds
-that.)
+answers `persisted: false`. The server scans each directory when it starts,
+unless its schedule is Off, and again on its schedule, which the directory's
+page sets: Automatic, every 15 minutes; Every, at least 5 minutes; or Off, only
+when Scan directory or Scan library is pressed. A choice is saved at once.
+Every saves the last Every interval the page has read or saved, at least 5
+minutes, or 24 hours where there is none, and the count and unit beside it
+change that.
 
 Give the first account a password from the host:
 
@@ -578,6 +583,17 @@ The same from the host, for a script:
 ```sh
 docker exec taiyaku taiyaku library scan --add /media/Manga/Volumes --library Manga
 ```
+
+A scan from the host and the server's own scan derive one at a time: whichever
+comes second waits for the other, and while the server's waits, its directory
+reads `waiting`, unless it scanned empty while the store held entries for it:
+that scan was refused, and the directory reads `refused`. Inside the server,
+scans and the other library jobs run one at a time, so a scan pressed or
+scheduled while one runs reads `waiting` until its turn, then what its last
+scan left until its walk records. The command must run
+on the same host as the store, inside the server's container with
+`docker exec` or on the NAS itself: the store is a SQLite database in WAL
+mode, which cannot be shared across hosts.
 
 `--library` names the library the directory is filed under, and creates it.
 A name is read without its surrounding white space and without regard to ASCII

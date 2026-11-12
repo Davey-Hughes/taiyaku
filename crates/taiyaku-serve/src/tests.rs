@@ -443,6 +443,168 @@ async fn serve_binds_the_address_and_answers_on_it() {
     );
 }
 
+/// O186: a scan an earlier process cut during its derive reads `interrupted`
+/// by the time `serve` answers, and a finished one keeps its status.
+///
+/// The registry is fixed, so this `serve` starts no scan of its own.
+/// `multi_thread` and the poll are `serve_binds_the_address_and_answers_on_it`'s,
+/// for its reasons.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_marks_a_scan_cut_during_its_derive_interrupted_before_it_listens() {
+    let tmp = crate::test_support::Fixture::new("serve-interrupted");
+    let works = vec![crate::test_support::work(&tmp)];
+    let library = crate::test_support::library();
+    let (cut, done) = {
+        let conn = library.conn();
+        let add = |name: &str, status: &str| {
+            let dir = tmp.join(name);
+            std::fs::create_dir_all(&dir).expect("makes the directory");
+            let root = taiyaku_library::scan::add_root(&conn, &dir).expect("adds the directory");
+            conn.execute(
+                "UPDATE root SET last_scan_status = ?2 WHERE id = ?1",
+                rusqlite::params![root.id, status],
+            )
+            .expect("sets the status");
+            root.id
+        };
+        (add("cut", "deriving"), add("done", "ok"))
+    };
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = probe.local_addr().unwrap().to_string();
+    drop(probe);
+    let cache = tmp.join("cache");
+
+    let serving = tokio::spawn({
+        let addr = addr.clone();
+        let library = std::sync::Arc::clone(&library);
+        async move {
+            crate::serve(
+                library,
+                crate::Works::fixed(works),
+                crate::ServeOptions {
+                    addr,
+                    cache: Some(cache),
+                    ..crate::ServeOptions::default()
+                },
+            )
+            .await
+        }
+    });
+
+    let url = format!("http://{addr}/api/works");
+    let mut answered = false;
+    for _ in 0..100 {
+        if serving.is_finished() {
+            break;
+        }
+        if ureq::get(&url)
+            .header(
+                "authorization",
+                crate::test_support::fixture_authorization(),
+            )
+            .call()
+            .is_ok()
+        {
+            answered = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    serving.abort();
+    assert!(answered, "serve must bind the address and answer on it");
+
+    let conn = library.conn();
+    let status = |id: i64| -> Option<String> {
+        conn.query_row(
+            "SELECT last_scan_status FROM root WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .expect("reads the status")
+    };
+    assert_eq!(
+        (status(cut), status(done)),
+        (Some("interrupted".to_string()), Some("ok".to_string()))
+    );
+}
+
+/// Spec §4: a live `serve` scans every directory that is not Off once it
+/// listens, with no press and before any is due.
+///
+/// In memory, so the startup job holds the one connection from its first walk
+/// to its derive, and a poll never reads a status between them. `multi_thread`
+/// for the reason `serve_binds_the_address_and_answers_on_it` gives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_scans_each_directory_but_an_off_one_once_it_listens() {
+    let tmp = crate::test_support::Fixture::new("serve-startup-scan");
+    let library = crate::test_support::library();
+    let (a, b) = {
+        let conn = library.conn();
+        let add = |name: &str, series: &str| {
+            let dir = tmp.join(name);
+            crate::test_support::write_pages(&dir.join(series).join(format!("{series} - v01")), 2);
+            taiyaku_library::scan::add_root(&conn, &dir)
+                .expect("adds the directory")
+                .id
+        };
+        let (a, b) = (add("a", "Alpha"), add("b", "Beta"));
+        conn.execute("UPDATE root SET scan_interval_secs = 0 WHERE id = ?1", [b])
+            .expect("sets b to Off");
+        (a, b)
+    };
+    let works = crate::Works::library(&library).expect("projects the empty library");
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = probe.local_addr().unwrap().to_string();
+    drop(probe);
+    let cache = tmp.join("cache");
+
+    let serving = tokio::spawn({
+        let library = std::sync::Arc::clone(&library);
+        async move {
+            crate::serve(
+                library,
+                works,
+                crate::ServeOptions {
+                    addr,
+                    cache: Some(cache),
+                    ..crate::ServeOptions::default()
+                },
+            )
+            .await
+        }
+    });
+
+    let status = |id: i64| -> Option<String> {
+        library
+            .conn()
+            .query_row(
+                "SELECT last_scan_status FROM root WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .expect("reads the status")
+    };
+    let mut scanned = false;
+    for _ in 0..500 {
+        if serving.is_finished() {
+            break;
+        }
+        if status(a).as_deref() == Some("ok") {
+            scanned = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    serving.abort();
+    assert!(
+        scanned,
+        "serve never scanned a, which is not Off, within ten seconds"
+    );
+    assert_eq!(status(b), None, "b is Off, so serve never scanned it");
+}
+
 /// `serve` hands `ServeOptions::web` on to the router, which the router's own
 /// tests cannot see: they call `build_router_serving` with a directory
 /// themselves. Through a socket, a deep link answers the app's `index.html`.

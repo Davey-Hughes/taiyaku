@@ -18,7 +18,7 @@ import { DirPicker } from '../src/DirPicker'
 import * as usersApi from '../src/users'
 import { DeriveSection, ScanReport } from '../src/ScanReport'
 import { Row, Section } from '../src/settingsLayout'
-import { deferred, flush } from './support/async'
+import { deferred, flush, settleUntil } from './support/async'
 import { holdOf } from './support/held'
 import {
   type Channels,
@@ -131,6 +131,7 @@ const root = (
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  next_scan_at: null,
   libraries: [{ id: 1, name: 'Manga' }],
   nested: [],
   inside: [],
@@ -334,6 +335,7 @@ beforeEach(() => {
     library_id: 1,
     held_removals: [],
     moves_held: false,
+    derive_running: false,
     scans: [],
     running: false,
     elapsed_secs: null,
@@ -573,6 +575,290 @@ describe('the Libraries screen, with real keys and a real pointer', () => {
       })
     },
   )
+
+  it('stores Off when a count is typed into Every’s box and Off is clicked, though the count’s write is answered late', async () => {
+    // A press on Off leaves Every's box first, which sends its count, and
+    // Off then goes as a second write of the same column. This server
+    // stores a write as it answers it, and answers the count's late, so
+    // writes sent together would store the count over Off.
+    await page.viewport(1280, 844)
+    let stored: number | null = 86400
+    const writes: (number | null | undefined)[] = []
+    let answered = 0
+    vi.mocked(config.patchRoot).mockImplementation((_, patch) => {
+      writes.push(patch.scan_interval_secs)
+      const after = writes.length === 1 ? 200 : 0
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          stored = patch.scan_interval_secs ?? null
+          answered++
+          resolve(undefined)
+        }, after)
+      })
+    })
+    vi.mocked(librariesApi.listLibraries).mockImplementation(async () =>
+      holding(root({ scan_interval_secs: stored })),
+    )
+    const host = await opened(DIR)
+    const radio = (value: string) =>
+      host.querySelector(
+        `input[name="scan_schedule-3"][value="${value}"]`,
+      ) as HTMLInputElement
+    const box = host.querySelector(
+      'input[name="scan_every"]',
+    ) as HTMLInputElement
+    expect(box.value).toBe('24')
+
+    await userEvent.fill(box, '12')
+    await userEvent.click(radio('off'))
+    await settleUntil('both writes answered', () => answered === 2, 2000)
+    // The page reads the directory after each answer. The count's read brings
+    // back this row's own write (`sentSchedules`), which draws nothing over
+    // Off, and Off's read brings back Off.
+    await settleUntil(
+      'Off drawn and stored',
+      () => radio('off').checked && stored === 0,
+      2000,
+    )
+    expect(writes).toEqual([43200, 0])
+    expect(stored).toBe(0)
+    expect(radio('off').checked).toBe(true)
+    expect(host.querySelector('input[name="scan_every"]')).toBeNull()
+  })
+
+  describe('the Scan schedule’s radios, with real keys and a real pointer', () => {
+    /** The facts' "scan every" for each interval the store holds here. */
+    const WORDS = new Map<number | null, string>([
+      [420, '7m'],
+      [0, 'off'],
+      [null, 'automatic'],
+      [86400, '24h'],
+      [1440, '24m'],
+      [300, '5m'],
+    ])
+
+    /**
+     * The directory's page over a store that holds `from` and keeps each
+     * write as it answers it, `late` ms after the first and at once after
+     * the rest, with focus on `focus`'s radio.
+     */
+    async function scheduled({
+      late = 0,
+      from = 420 as number | null,
+      focus = 'every',
+    } = {}) {
+      await page.viewport(1280, 844)
+      const store = {
+        stored: from,
+        writes: [] as (number | null | undefined)[],
+        answered: 0,
+      }
+      vi.mocked(config.patchRoot).mockImplementation((_, patch) => {
+        store.writes.push(patch.scan_interval_secs)
+        const after = store.writes.length === 1 ? late : 0
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            store.stored = patch.scan_interval_secs ?? null
+            store.answered++
+            resolve(undefined)
+          }, after)
+        })
+      })
+      vi.mocked(librariesApi.listLibraries).mockImplementation(async () =>
+        holding(root({ scan_interval_secs: store.stored })),
+      )
+      const host = await opened(DIR)
+      const radio = (value: string) =>
+        host.querySelector(
+          `input[name="scan_schedule-3"][value="${value}"]`,
+        ) as HTMLInputElement
+      const fact = () =>
+        [...host.querySelectorAll('.regime > div')]
+          .find((one) => one.querySelector('dt')?.textContent === 'scan every')
+          ?.querySelector('dd')?.textContent
+      /** The radio checked, Every's count and unit, and the facts' word. */
+      const drawn = () => [
+        (
+          host.querySelector(
+            'input[name="scan_schedule-3"]:checked',
+          ) as HTMLInputElement | null
+        )?.value,
+        host.querySelector<HTMLInputElement>('input[name="scan_every"]')?.value,
+        host.querySelector<HTMLSelectElement>('select[name="scan_every_unit"]')
+          ?.value,
+        fact(),
+      ]
+      /**
+       * Until the keys have landed on `value`'s radio, every write is
+       * answered and the facts read what is stored.
+       */
+      const landed = (what: string, value: string) =>
+        settleUntil(
+          what,
+          () =>
+            radio(value).checked &&
+            store.answered === store.writes.length &&
+            fact() === WORDS.get(store.stored),
+          2000,
+        )
+      expect([radio(focus).checked, fact()]).toEqual([true, WORDS.get(from)])
+      // A real click on words that take no focus gives the test's frame
+      // focus, so that the keys pressed next reach the page.
+      await userEvent.click(host.querySelector('.regime dt') as HTMLElement)
+      await act(async () => radio(focus).focus())
+      expect(document.activeElement).toBe(radio(focus))
+      return { host, store, radio, drawn, landed }
+    }
+
+    it('saves Off at ArrowDown, then Every 7 minutes again at ArrowUp, its count refilled, the facts the store’s after each', async () => {
+      const { store, radio, drawn, landed } = await scheduled()
+      expect(drawn()).toEqual(['every', '7', 'minutes', '7m'])
+
+      await userEvent.keyboard('{ArrowDown}')
+      await landed('Off answered and read', 'off')
+      expect(store.writes).toEqual([0])
+      expect(store.stored).toBe(0)
+      expect(drawn()).toEqual(['off', undefined, undefined, 'off'])
+
+      await userEvent.keyboard('{ArrowUp}')
+      await landed('Every answered and read', 'every')
+      expect(store.writes).toEqual([0, 420])
+      expect(store.stored).toBe(420)
+      expect(drawn()).toEqual(['every', '7', 'minutes', '7m'])
+      expect(document.activeElement).toBe(radio('every'))
+    })
+
+    it('stores Every 7 minutes after ArrowDown and ArrowUp pressed with no wait, though Off’s write is answered late', async () => {
+      // Sent together, Every's write would be stored first and Off's over it.
+      const { store, drawn, landed } = await scheduled({ late: 200 })
+
+      await userEvent.keyboard('{ArrowDown}{ArrowUp}')
+      await landed('both answered and read', 'every')
+      expect(store.writes).toEqual([0, 420])
+      expect(store.stored).toBe(420)
+      expect(drawn()).toEqual(['every', '7', 'minutes', '7m'])
+    })
+
+    it('saves Every 24 hours at ArrowDown from Automatic with no interval kept, and again at ArrowUp back from Off', async () => {
+      const { store, radio, drawn, landed } = await scheduled({
+        from: null,
+        focus: 'automatic',
+      })
+
+      await userEvent.keyboard('{ArrowDown}')
+      await landed('Every answered and read', 'every')
+      expect(store.writes).toEqual([86400])
+      expect(store.stored).toBe(86400)
+      expect(drawn()).toEqual(['every', '24', 'hours', '24h'])
+
+      await userEvent.keyboard('{ArrowDown}')
+      await landed('Off answered and read', 'off')
+      expect(drawn()).toEqual(['off', undefined, undefined, 'off'])
+      await userEvent.keyboard('{ArrowUp}')
+      await landed('Every answered and read again', 'every')
+      expect(store.writes).toEqual([86400, 0, 86400])
+      expect(store.stored).toBe(86400)
+      expect(drawn()).toEqual(['every', '24', 'hours', '24h'])
+      expect(document.activeElement).toBe(radio('every'))
+    })
+
+    it('sends nothing for 12 typed into Every’s box while its 24 hours is out, once that is refused, nor as the page goes, and draws Automatic again', async () => {
+      await page.viewport(1280, 844)
+      let stored: number | null = null
+      const writes: (number | null | undefined)[] = []
+      const day = deferred<undefined>()
+      vi.mocked(config.patchRoot).mockImplementation((_, patch) => {
+        writes.push(patch.scan_interval_secs)
+        if (writes.length === 1) return day.promise
+        stored = patch.scan_interval_secs ?? null
+        return Promise.resolve(undefined)
+      })
+      vi.mocked(librariesApi.listLibraries).mockImplementation(async () =>
+        holding(root({ scan_interval_secs: stored })),
+      )
+      const host = await opened(DIR)
+      const radio = (value: string) =>
+        host.querySelector(
+          `input[name="scan_schedule-3"][value="${value}"]`,
+        ) as HTMLInputElement
+      const box = () =>
+        host.querySelector<HTMLInputElement>('input[name="scan_every"]')
+
+      await userEvent.click(radio('every'))
+      await settleUntil('the box drawn', () => box() !== null, 2000)
+      await userEvent.fill(box() as HTMLInputElement, '12')
+      expect(document.activeElement).toBe(box())
+      await act(async () =>
+        day.reject(
+          new Error(
+            '/api/library/roots/3: 500 {"error":"the store is locked"}',
+          ),
+        ),
+      )
+      await settleUntil(
+        'Automatic drawn again',
+        () => radio('automatic').checked && box() === null,
+        2000,
+      )
+      // Chromium blurs the box as React's commit takes it away, and React
+      // hands that blur to no handler; a write sent from it would be out by
+      // now.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200))
+      })
+      expect(writes).toEqual([86400])
+      expect(radio('automatic').checked).toBe(true)
+
+      await act(async () => rerender(<div />))
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      })
+      expect(writes).toEqual([86400])
+      expect(stored).toBeNull()
+    })
+
+    it('saves Every 24 hours at a click from Automatic, then its count in minutes at a change of unit, refuses 4 minutes in its sentence and sends nothing, and saves 5 minutes as 300', async () => {
+      const { host, store, radio, drawn, landed } = await scheduled({
+        from: null,
+        focus: 'automatic',
+      })
+      const box = () =>
+        host.querySelector('input[name="scan_every"]') as HTMLInputElement
+      const alerts = () =>
+        [...host.querySelectorAll('[role="alert"]')].map(
+          (one) => one.textContent,
+        )
+
+      await userEvent.click(radio('every'))
+      await landed('Every answered and read', 'every')
+      expect(store.writes).toEqual([86400])
+      expect(drawn()).toEqual(['every', '24', 'hours', '24h'])
+
+      await userEvent.selectOptions(
+        host.querySelector('select[name="scan_every_unit"]') as HTMLElement,
+        'minutes',
+      )
+      await landed('minutes answered and read', 'every')
+      expect(store.writes).toEqual([86400, 1440])
+      expect(drawn()).toEqual(['every', '24', 'minutes', '24m'])
+
+      await userEvent.fill(box(), '4')
+      await userEvent.keyboard('{Tab}')
+      await settleUntil('the refusal drawn', () => alerts().length > 0, 2000)
+      expect(alerts()).toEqual([
+        'Every has to be a whole number of minutes or hours, at least 5 minutes.',
+      ])
+      expect(store.writes).toEqual([86400, 1440])
+
+      await userEvent.fill(box(), '5')
+      await userEvent.keyboard('{Tab}')
+      await landed('5 minutes answered and read', 'every')
+      expect(store.writes).toEqual([86400, 1440, 300])
+      expect(store.stored).toBe(300)
+      expect(drawn()).toEqual(['every', '5', 'minutes', '5m'])
+      expect(alerts()).toEqual([])
+    })
+  })
 })
 
 /**
@@ -747,7 +1033,7 @@ describe('a library’s Directories table, with its Overlaps column', () => {
           'Last scan: Never',
           'Overlaps: Inside',
         ],
-        ['/srv/comics', 'Scan every: not set', 'Last scan: Never', ''],
+        ['/srv/comics', 'Scan every: automatic', 'Last scan: Never', ''],
       ],
       '/srv/comics',
     )
@@ -890,7 +1176,7 @@ describe('the Libraries pages at a phone’s width', () => {
         ['/srv/manga', 'Scan every: 24h', 'Last scan: Never', ''],
         [
           '/srv/chapters',
-          'Scan every: not set',
+          'Scan every: automatic',
           'Last scan: 2026-10-01 10:00:00 UTC\u00a0·\u00a0failed',
           '',
         ],
@@ -2863,6 +3149,7 @@ describe('the Configuration screens at desktop width', () => {
       'watch',
       'scan every',
       'last scan',
+      'next scan',
     ])
     // Each `<div>` lays its dt and dd out on one line, the value after its
     // label: as blocks, each fact would stand on two lines, its value under
@@ -2979,6 +3266,7 @@ describe('the Configuration screens at desktop width', () => {
       ],
       held_removals: own ? [] : [3],
       moves_held: false,
+      derive_running: false,
       scans: own
         ? [{ library_id: 1, library: 'Manga', root_ids: [3, 9] }]
         : [{ library_id: 2, library: 'Kids', root_ids: [9] }],
@@ -3042,6 +3330,7 @@ describe('a library page’s lines for a directory another library holds too', (
         dirs: [{ root_id: 3, running: true }],
         held_removals: [],
         moves_held: false,
+        derive_running: false,
         scans: [{ library_id: 2, library: 'Kids', root_ids: [3] }],
       })
       const host = await opened(LIBRARY)

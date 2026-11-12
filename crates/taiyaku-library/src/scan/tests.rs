@@ -829,6 +829,156 @@ fn roots_reads_the_directories_and_their_links_from_one_snapshot() {
     );
 }
 
+thread_local! {
+    /// What [`at_the_scan_write`] runs, once: a trace callback is a `fn`,
+    /// which captures nothing.
+    static AT_THE_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A trace callback that runs [`AT_THE_WRITE`] as the traced connection sends
+/// `BEGIN IMMEDIATE`: after its walk has read what the directory held, and
+/// before its write transaction takes the lock, which is where a scan on
+/// another connection can commit between the two.
+fn at_the_scan_write(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+        && sql.trim_start().starts_with("BEGIN IMMEDIATE")
+        && let Some(write) = AT_THE_WRITE.with(|cell| cell.borrow_mut().take())
+    {
+        write();
+    }
+}
+
+/// Scan `root` on `second`, with `first` scanning it on its own connection
+/// at [`at_the_scan_write`], then `then` run there. Answers the second scan's
+/// result and the first's, which a trace callback cannot hand back by
+/// failing: a panic there would be the fixture failing unseen.
+fn scan_overlapped(
+    first: Library,
+    second: &Library,
+    root: &Root,
+    then: impl FnOnce(&Connection) + 'static,
+) -> (Result<ScanReport, String>, Result<ScanReport, String>) {
+    let firsts = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let landed = std::rc::Rc::clone(&firsts);
+    let walked = root.clone();
+    AT_THE_WRITE.with(|cell| {
+        *cell.borrow_mut() = Some(Box::new(move || {
+            let conn = first.conn();
+            let report = scan_root(&conn, &walked);
+            then(&conn);
+            *landed.borrow_mut() = Some(report);
+        }));
+    });
+    let conn = second.conn();
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+        Some(at_the_scan_write),
+    );
+    let seconds = scan_root(&conn, root);
+    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    let firsts = firsts
+        .borrow_mut()
+        .take()
+        .expect("the fixture: the first scan ran inside the second's");
+    (seconds, firsts)
+}
+
+fn status_of(conn: &Connection, root: &Root) -> Option<String> {
+    conn.query_row(
+        "SELECT last_scan_status FROM root WHERE id = ?1",
+        [root.id],
+        |r| r.get(0),
+    )
+    .expect("reads the status")
+}
+
+/// The server's scheduled scan and a CLI `library scan` can walk one
+/// directory at once. Both read the directory's entries before either
+/// writes, so each finds every file new. The second to commit must record
+/// after the first, not fail a new entry on `UNIQUE (root_id, rel_path)` and
+/// leave the directory reading `failed`.
+#[test]
+fn a_scan_that_overlaps_another_of_its_directory_records_after_it_and_reads_ok() {
+    let tree = fixture();
+    let store = crate::tests::tempdir("scan-overlap-store");
+    let db = store.path().join("library.db");
+    let first = Library::open(&db).expect("the first connection");
+    let second = Library::open(&db).expect("a second connection on the same file");
+    let root = add_root(&second.conn(), tree.path()).expect("add");
+
+    let (seconds, firsts) = scan_overlapped(first, &second, &root, |_| {});
+
+    let firsts = firsts.expect("the first scan records the directory");
+    let seconds = seconds.expect("the second scan records after it, without a UNIQUE failure");
+    let conn = second.conn();
+    let rows: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM scan_entry WHERE root_id = ?1",
+            [root.id],
+            |r| r.get(0),
+        )
+        .expect("counts the entries");
+    let rows = usize::try_from(rows).expect("a count");
+    assert_eq!(
+        firsts.added, rows,
+        "the fixture: the first scan added every entry"
+    );
+    assert_eq!(
+        (seconds.added, seconds.updated, seconds.dirs + seconds.files),
+        (0, 0, rows),
+        "the second scan sees the first's entries and touches each, adding none"
+    );
+    assert_eq!(status_of(&conn, &root).as_deref(), Some("ok"));
+}
+
+/// The same overlap over a file that moved: the first scan records its new
+/// size, and its derive then hashes it. The second walked before either, so
+/// it would write the size again and clear the digest with it. Read again
+/// under the write lock, the entry matches what the second scan saw, so it
+/// only touches it.
+#[test]
+fn a_scan_that_overlaps_another_keeps_the_entry_and_digest_the_first_wrote() {
+    let tree = fixture();
+    let store = crate::tests::tempdir("scan-overlap-moved-store");
+    let db = store.path().join("library.db");
+    let first = Library::open(&db).expect("the first connection");
+    let second = Library::open(&db).expect("a second connection on the same file");
+    let root = add_root(&second.conn(), tree.path()).expect("add");
+    scan_root(&second.conn(), &root).expect("the scan before the overlap");
+    std::fs::write(tree.path().join("notes.pdf"), b"%PDF-1.7\nlonger now\n").expect("rewrite");
+
+    let (seconds, firsts) = scan_overlapped(first, &second, &root, |conn| {
+        // Stands for the first scan's derive, which hashes what it reads.
+        conn.execute(
+            "UPDATE scan_entry SET sha256 = 'hashed by the first' WHERE rel_path = 'notes.pdf'",
+            [],
+        )
+        .expect("writes the digest");
+    });
+
+    let firsts = firsts.expect("the first scan records the move");
+    assert_eq!(
+        firsts.updated, 1,
+        "the fixture: the first scan records the move"
+    );
+    let seconds = seconds.expect("the second scan records after it");
+    assert_eq!(
+        seconds.updated, 0,
+        "the second scan finds the size it saw already recorded"
+    );
+    let conn = second.conn();
+    let digest: Option<String> = conn
+        .query_row(
+            "SELECT sha256 FROM scan_entry WHERE rel_path = 'notes.pdf'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("reads the digest");
+    assert_eq!(digest.as_deref(), Some("hashed by the first"));
+    assert_eq!(status_of(&conn, &root).as_deref(), Some("ok"));
+}
+
 // --- add_root_checked ----------------------------------------------------
 
 /// Overlapping-libraries spec §4's W: a directory inside one of the library it
@@ -1085,8 +1235,8 @@ fn links(conn: &Connection) -> Vec<(i64, i64)> {
 /// A directory another library holds is linked into the library it is sent
 /// to, by each way that names one: one `root` row, a second link, and the
 /// settings it had, since the libraries share them. The answer names the
-/// library that held it, and no watch probe runs, as the probe would write
-/// the shared interval.
+/// library that held it, and no watch probe runs, as the probe writes a file
+/// into the directory and the directory was probed when it was first added.
 #[test]
 fn a_dir_another_library_holds_is_linked_and_keeps_its_settings() {
     for way in ["by id", "by name", "into a library the add makes"] {
@@ -1534,7 +1684,8 @@ fn a_store_fault_while_adding_a_root_is_reported_as_failed_not_unusable() {
 /// **The correction `mark_derive_failed` exists for.** [`scan_root`] itself
 /// only ever sees the walk, and writes `last_scan_status = "ok"` the moment
 /// that commits, before the derive half of the job (its own caller's job, per
-/// this function's own doc comment) has even started.
+/// this function's own doc comment) has even started. The server's job then
+/// marks the directory `deriving` until its derive ends, as it does here.
 #[test]
 fn mark_derive_failed_corrects_a_status_a_successful_scan_already_wrote() {
     let dir = crate::tests::tempdir("scan-mark-derive-failed");
@@ -1555,6 +1706,7 @@ fn mark_derive_failed_corrects_a_status_a_successful_scan_already_wrote() {
         "sanity: the scan must have recorded \"ok\" before this test corrects it"
     );
 
+    super::mark_deriving(&conn, &root).expect("marking the walk's derive owed");
     super::mark_derive_failed(&conn, &root).expect("correcting the status");
 
     let after: String = conn
@@ -1568,6 +1720,206 @@ fn mark_derive_failed_corrects_a_status_a_successful_scan_already_wrote() {
         after, "failed",
         "a derive failure right after a successful scan must correct last_scan_status, \
          not leave the walk's own \"ok\" standing"
+    );
+}
+
+/// O186: at a start, a `deriving` or a `waiting` is a scan that a stop, a
+/// panic or a refused write (O272) left without its last word, and every other
+/// word is a scan that ended one way or another.
+#[test]
+fn rewriting_cut_derives_marks_only_deriving_and_waiting_interrupted() {
+    let dir = crate::tests::tempdir("scan-interrupt-derives");
+    let library = crate::Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let ids: Vec<i64> = ["deriving", "ok", "failed", "waiting"]
+        .into_iter()
+        .map(|status| {
+            let path = dir.path().join(status);
+            std::fs::create_dir_all(&path).expect("makes the directory");
+            let root = super::add_root(&conn, &path).expect("adds the directory");
+            set_status(&conn, root.id, status);
+            root.id
+        })
+        .collect();
+
+    assert_eq!(super::interrupt_derives(&conn), Ok(2));
+    let statuses: Vec<Option<String>> = ids
+        .iter()
+        .map(|id| status_and_entries(&conn, *id).0)
+        .collect();
+    assert_eq!(
+        statuses,
+        [
+            Some("interrupted".to_string()),
+            Some("ok".to_string()),
+            Some("failed".to_string()),
+            Some("interrupted".to_string())
+        ]
+    );
+}
+
+/// Directories under `dir`, one per status, each added and set to it.
+fn dirs_reading(conn: &Connection, dir: &Path, statuses: &[&str]) -> Vec<Root> {
+    statuses
+        .iter()
+        .map(|status| {
+            let path = dir.join(status);
+            std::fs::create_dir_all(&path).expect("makes the directory");
+            let root = super::add_root(conn, &path).expect("adds the directory");
+            set_status(conn, root.id, status);
+            root
+        })
+        .collect()
+}
+
+fn statuses_of(conn: &Connection, roots: &[Root]) -> Vec<Option<String>> {
+    roots
+        .iter()
+        .map(|root| status_and_entries(conn, root.id).0)
+        .collect()
+}
+
+/// O51: a derive that failed while it waited for the lease is as missing as
+/// one that failed once it began.
+#[test]
+fn mark_derive_failed_marks_a_waiting_directory_failed() {
+    let dir = crate::tests::tempdir("scan-waiting-failed");
+    let library = crate::Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let roots = dirs_reading(&conn, dir.path(), &["waiting"]);
+
+    super::mark_derive_failed(&conn, &roots[0]).expect("marks it");
+
+    assert_eq!(statuses_of(&conn, &roots), [Some("failed".to_string())]);
+}
+
+/// O51: a walk waits for the lease as `waiting` and derives as `deriving`;
+/// each word is written only over the one before it, so a refused walk, or
+/// another scan's `ok` written while this one waited, keeps its word.
+#[test]
+fn waiting_and_waited_rewrite_only_the_word_before_them() {
+    let dir = crate::tests::tempdir("scan-waiting-waited");
+    let library = crate::Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let roots = dirs_reading(&conn, dir.path(), &["deriving", "refused", "ok"]);
+    let word = |status: &str| Some(status.to_string());
+
+    super::mark_waiting(&conn, &roots).expect("marks them waiting");
+    assert_eq!(
+        statuses_of(&conn, &roots),
+        [word("waiting"), word("refused"), word("ok")]
+    );
+
+    super::mark_waited(&conn, &roots).expect("marks them deriving again");
+    assert_eq!(
+        statuses_of(&conn, &roots),
+        [word("deriving"), word("refused"), word("ok")]
+    );
+}
+
+/// O51: after the job's one derive, a `waiting` can only be its own mark whose
+/// `mark_waited` did not land, so it ends `ok` as a `deriving` does; a refused
+/// walk, and an `interrupted` a second server's start wrote, keep their word.
+#[test]
+fn marking_derived_ends_a_waiting_as_it_ends_a_deriving() {
+    let dir = crate::tests::tempdir("scan-derived-waiting");
+    let library = crate::Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let roots = dirs_reading(
+        &conn,
+        dir.path(),
+        &["deriving", "waiting", "refused", "interrupted"],
+    );
+    let word = |status: &str| Some(status.to_string());
+
+    super::mark_derived(&conn, &roots).expect("marks them");
+
+    assert_eq!(
+        statuses_of(&conn, &roots),
+        [word("ok"), word("ok"), word("refused"), word("interrupted")]
+    );
+}
+
+/// O186: one refused write does not strand the directories after it at
+/// `deriving`, which the next start would read as a cut derive; the first
+/// refusal is what is answered.
+#[test]
+fn marking_derived_goes_on_past_a_refused_write_and_answers_the_first() {
+    let dir = crate::tests::tempdir("scan-mark-derived-refused");
+    let library = crate::Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let roots: Vec<Root> = ["first", "second", "third"]
+        .into_iter()
+        .map(|name| {
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(&path).expect("makes the directory");
+            let root = super::add_root(&conn, &path).expect("adds the directory");
+            set_status(&conn, root.id, "deriving");
+            root
+        })
+        .collect();
+    conn.execute_batch(&format!(
+        "CREATE TEMP TRIGGER planted BEFORE UPDATE OF last_scan_status ON main.root
+           WHEN old.id IN ({}, {}) BEGIN SELECT RAISE(ABORT, 'planted'); END",
+        roots[0].id, roots[2].id
+    ))
+    .expect("plants the fault");
+
+    let refused = super::mark_derived(&conn, &roots).expect_err("two writes are refused");
+    assert_eq!(
+        refused,
+        format!(
+            "recording that directory {} was derived: planted",
+            roots[0].path.display()
+        )
+    );
+    let statuses: Vec<Option<String>> = roots
+        .iter()
+        .map(|root| status_and_entries(&conn, root.id).0)
+        .collect();
+    assert_eq!(
+        statuses,
+        [
+            Some("deriving".to_string()),
+            Some("ok".to_string()),
+            Some("deriving".to_string())
+        ],
+        "the directory between the two refusals is marked"
+    );
+}
+
+/// O51: a scan queued for the job lock reads `waiting` over whatever its last
+/// scan left, never scanned included, and reads that again once it starts;
+/// a word another writer put there meanwhile is kept.
+#[test]
+fn a_queued_scan_reads_waiting_and_then_its_word_before() {
+    let dir = crate::tests::tempdir("scan-queued");
+    let library = crate::Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let mut roots = dirs_reading(&conn, dir.path(), &["ok", "refused", "failed", "rewritten"]);
+    let never = dir.path().join("never");
+    std::fs::create_dir_all(&never).expect("makes the directory");
+    roots.push(super::add_root(&conn, &never).expect("adds the directory"));
+    let word = |status: &str| Some(status.to_string());
+
+    let queued = super::mark_queued(&conn, &roots);
+    let while_queued = statuses_of(&conn, &roots);
+    set_status(&conn, roots[3].id, "ok");
+    super::unmark_queued(&conn, &queued).expect("writes them back");
+
+    assert_eq!(
+        (while_queued, statuses_of(&conn, &roots)),
+        (
+            vec![word("waiting"); 5],
+            vec![
+                word("ok"),
+                word("refused"),
+                word("failed"),
+                word("ok"),
+                None
+            ]
+        ),
+        "(queued, started)"
     );
 }
 
@@ -1591,38 +1943,34 @@ fn adding_a_root_probes_the_watcher_before_the_first_scan() {
     );
 }
 
-/// **`Added::root` is the exact row this call wrote, not the pre-probe row
-/// [`add_root`] handed back before the probe ever ran.** The one test that
-/// reads `scan_interval_secs` back — just below — reads it off a fresh
-/// [`roots`] query, never off `added.root` itself, so it says nothing about
-/// whether `Added::root` agrees with the row it names. Deleting
-/// `scan_interval_secs: Some(interval_secs)` from `add_root_checked`'s own
-/// `Ok(Added { root: Root { .., ..root }, .. })` leaves `Added::root` holding
-/// whatever `add_root` returned before the probe ran — `None`, the fresh
-/// row's column default — while the stored row itself still carries the
-/// real interval.
+/// `Added::root` is the row the add stored, which holds no interval: an
+/// answer drawn from it must say what the store says (spec §4, "The setting").
 #[test]
-fn adding_a_root_returns_the_same_interval_it_wrote_to_the_row() {
-    let dir = crate::tests::tempdir("scan-add-root-checked-returned-interval");
+fn adding_a_root_returns_the_row_it_stored() {
+    let dir = crate::tests::tempdir("scan-add-root-checked-returned-row");
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
 
     let added = super::add_root_checked(&conn, dir.path()).expect("adding the root");
 
     assert_eq!(
-        added.root.scan_interval_secs,
-        Some(added.interval.expect("a new directory is probed").as_secs() as i64),
-        "the returned Added::root must already carry the interval this same call just probed \
-         and stored, not the pre-probe default: {added:?}"
+        added.root.scan_interval_secs, None,
+        "the returned Added::root must hold no interval, as the stored row does: {added:?}"
+    );
+    assert_eq!(
+        added.root,
+        super::roots(&conn).expect("listing roots")[0],
+        "Added::root must be the stored row"
     );
 }
 
-/// The probe's answer is not just returned — it is what the stored row now
-/// says, since a rescan later reads `scan_interval_secs` back off the row
-/// rather than off whatever [`Added`] this call happened to return.
+/// The add probes, but the probe's interval is not written: a stored NULL is
+/// Automatic, which the scheduler reads as the unwatched interval until the
+/// watcher ships (spec §4, "The setting"). The probe's interval is still
+/// answered, for the add's report (spec §4, Decision 11).
 #[test]
-fn adding_a_root_writes_the_probes_interval_onto_the_stored_row() {
-    let dir = crate::tests::tempdir("scan-add-root-checked-probe-persisted");
+fn adding_a_root_writes_no_interval_onto_the_stored_row() {
+    let dir = crate::tests::tempdir("scan-add-root-checked-no-interval");
     let library = crate::Library::open_in_memory().expect("open");
     let conn = library.conn();
 
@@ -1630,9 +1978,12 @@ fn adding_a_root_writes_the_probes_interval_onto_the_stored_row() {
 
     let stored = &super::roots(&conn).expect("listing roots")[0];
     assert_eq!(
-        stored.scan_interval_secs,
-        Some(added.interval.expect("a new directory is probed").as_secs() as i64),
-        "the row must carry the same interval `Added` reported: {stored:?}"
+        stored.scan_interval_secs, None,
+        "the row must hold no interval, so it reads as Automatic: {stored:?}"
+    );
+    assert!(
+        added.interval.is_some(),
+        "the probe's interval is still answered: {added:?}"
     );
 }
 
@@ -4824,6 +5175,14 @@ fn status_and_entries(conn: &Connection, id: i64) -> (Option<String>, i64) {
     (status, entries)
 }
 
+fn set_status(conn: &Connection, id: i64, status: &str) {
+    conn.execute(
+        "UPDATE root SET last_scan_status = ?2 WHERE id = ?1",
+        rusqlite::params![id, status],
+    )
+    .expect("setting the status");
+}
+
 /// **A walk records nothing for a directory that is no longer the one walked.**
 /// A directory removed while its walk ran, and its id given to a directory added
 /// after it: the walk records neither its entries nor its status under the
@@ -4855,18 +5214,49 @@ fn a_walk_of_a_removed_dir_records_nothing_under_the_dir_that_took_its_id() {
 }
 
 /// The derive failure's correction asks the same of the directory it names.
+///
+/// The new directory reads `deriving`, one of the two statuses the correction
+/// writes over, so the id-and-path question is what keeps it.
 #[test]
 fn mark_derive_failed_leaves_the_dir_that_took_a_removed_ones_id_alone() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let (stale, new, _walked, _other) =
         stale_root_and_the_dir_that_took_its_id(&conn, "stale-derive");
+    set_status(&conn, new.id, "deriving");
 
     super::mark_derive_failed(&conn, &stale).expect("a no-op is not a fault");
     let (status, _) = status_and_entries(&conn, new.id);
     assert_eq!(
-        status, None,
+        status.as_deref(),
+        Some("deriving"),
         "the correction may not land on the new directory"
+    );
+}
+
+/// The job's marks around its derive ask the same, each over a status it
+/// writes over.
+#[test]
+fn marking_deriving_or_derived_leaves_the_dir_that_took_a_removed_ones_id_alone() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let (stale, new, _walked, _other) =
+        stale_root_and_the_dir_that_took_its_id(&conn, "stale-deriving");
+
+    set_status(&conn, new.id, "ok");
+    super::mark_deriving(&conn, &stale).expect("a no-op is not a fault");
+    assert_eq!(
+        status_and_entries(&conn, new.id).0.as_deref(),
+        Some("ok"),
+        "the mark before the derive may not land on the new directory"
+    );
+
+    set_status(&conn, new.id, "deriving");
+    super::mark_derived(&conn, std::slice::from_ref(&stale)).expect("a no-op is not a fault");
+    assert_eq!(
+        status_and_entries(&conn, new.id).0.as_deref(),
+        Some("deriving"),
+        "the mark after the derive may not land on the new directory"
     );
 }
 

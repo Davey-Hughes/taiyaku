@@ -3098,6 +3098,28 @@ pub(crate) fn router_over_an_edition_merged_from_two_libraries() -> EditionMerge
 pub(crate) fn router_over_an_edition_merged_from_two_libraries_with_part2_named(
     part2: &str,
 ) -> EditionMergedFromTwoLibraries {
+    an_edition_merged_from_two_libraries(part2, false)
+}
+
+/// [`router_over_an_edition_merged_from_two_libraries`] over a store in a
+/// file, where a reader's save writes on a connection of its own
+/// ([`taiyaku_library::Library::saving`]) and its answer is read on the
+/// shared one. In memory the two are one connection (O272).
+///
+/// # Panics
+///
+/// As [`router_over_an_edition_merged_from_two_libraries`].
+pub(crate) fn router_over_an_edition_merged_from_two_libraries_in_a_file()
+-> EditionMergedFromTwoLibraries {
+    an_edition_merged_from_two_libraries("Foo v01 part2.cbz", true)
+}
+
+/// The fixture both routers above serve. A store `in_a_file` is at
+/// `db/library.db`, outside every directory the fixture scans.
+fn an_edition_merged_from_two_libraries(
+    part2: &str,
+    in_a_file: bool,
+) -> EditionMergedFromTwoLibraries {
     let fixture = Fixture::new("merged-edition");
     let dir = |name: &str| fixture.path().join(name);
     for (archive, (root, file, pages)) in (0_u8..).zip([
@@ -3126,7 +3148,16 @@ pub(crate) fn router_over_an_edition_merged_from_two_libraries_with_part2_named(
         zip.finish().expect("finishes the archive");
     }
 
-    let library = library();
+    let library = if in_a_file {
+        let db = fixture.path().join("db");
+        std::fs::create_dir_all(&db).expect("creates the database directory");
+        let library = taiyaku_library::Library::open(&db.join("library.db"))
+            .expect("opens a file-backed library");
+        seed_fixture_account(&library);
+        std::sync::Arc::new(library)
+    } else {
+        library()
+    };
     let (slug, accounts) = {
         let conn = library.conn();
         conn.execute(
@@ -3417,4 +3448,61 @@ pub(crate) fn holding_the_job(state: &std::sync::Arc<crate::ServeState>) -> Held
         release: Some(release),
         holder: Some(holder),
     }
+}
+
+/// `state`'s store opened again, as another process would open it, so a test
+/// can hold the derive lease where `state`'s own flag does not see it (O51).
+pub(crate) fn the_store_elsewhere(state: &crate::ServeState) -> taiyaku_library::Library {
+    taiyaku_library::Library::open(state.library.path().expect("a store in a file"))
+        .expect("opens the store again")
+}
+
+/// The derive lease on `elsewhere`, which must be free.
+pub(crate) fn holding_the_lease(
+    elsewhere: &taiyaku_library::Library,
+) -> taiyaku_library::lease::DeriveLease<'_> {
+    elsewhere
+        .derive_lease(taiyaku_library::lease::Wait::No)
+        .expect("takes the lease")
+        .expect("the lease is free")
+}
+
+/// Directory `id`'s last scan as each page is sent it: its own scan status
+/// (whether it runs, and the word), the list of directories, and every
+/// library list that names it (each word once).
+pub(crate) async fn last_scan_words(router: &axum::Router, id: i64) -> serde_json::Value {
+    let own = get_json(router, &format!("/api/library/roots/{id}/scan")).await;
+    let roots = get_json(router, "/api/library/roots").await;
+    let libraries = get_json(router, "/api/library/libraries").await;
+    let in_roots = roots["roots"]
+        .as_array()
+        .expect("a list of directories")
+        .iter()
+        .find(|root| root["id"] == id)
+        .map(|root| root["last_scan_status"].clone());
+    let mut in_libraries: Vec<serde_json::Value> = libraries["libraries"]
+        .as_array()
+        .expect("a list of libraries")
+        .iter()
+        .flat_map(|library| library["dirs"].as_array().expect("its directories"))
+        .filter(|dir| dir["id"] == id)
+        .map(|dir| dir["last_scan_status"].clone())
+        .collect();
+    in_libraries.dedup();
+    serde_json::json!({
+        "running": own["running"],
+        "scan": own["last_scan_status"],
+        "roots": in_roots,
+        "libraries": in_libraries,
+    })
+}
+
+/// What [`last_scan_words`] answers where every page is sent `word`.
+pub(crate) fn every_page_reads(running: bool, word: &str) -> serde_json::Value {
+    serde_json::json!({
+        "running": running,
+        "scan": word,
+        "roots": word,
+        "libraries": [word],
+    })
 }

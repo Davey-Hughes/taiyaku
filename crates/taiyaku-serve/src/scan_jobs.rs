@@ -1,18 +1,23 @@
-//! The scans the directory routes and the library routes start in the
-//! background: one reservation in [`crate::ServeState::scans`], one job on the
-//! blocking pool, and one report landed on each directory's own reservation.
+//! The scans the directory routes, the library routes and the scheduler start
+//! in the background: one reservation in [`crate::ServeState::scans`], one job
+//! on the blocking pool, and one report landed on each directory's own
+//! reservation.
 //!
 //! **A scan of one directory is the scan of a library of one.** The directory route
-//! reserves `std::slice::from_ref(&root)` and a library route reserves every
-//! directory the library reaches ([`taiyaku_library::reach::walked_by`]);
-//! [`Reread`] is the only thing that tells them apart, in what the
-//! job reads again under [`crate::ServeState::library_job`] and in the words of
-//! what it answers where that fails.
+//! reserves `std::slice::from_ref(&root)`, a library route reserves every
+//! directory the library reaches ([`taiyaku_library::reach::walked_by`]), and
+//! the scheduler's batch reserves what its tick takes: at startup every
+//! directory not Off, then each one due, less any a scan already holds.
+//! [`Reread`] is the only thing that tells them apart: in what the job reads
+//! again under [`crate::ServeState::library_job`], in whether a directory that
+//! changed or cannot be walked ends the job, and in the words of what it
+//! answers where that fails.
 
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
-use taiyaku_library::{derive, libraries, scan};
+use taiyaku_library::{derive, lease, libraries, scan};
 
 use crate::ServeState;
 use crate::config_api::finished_scan_json;
@@ -38,11 +43,29 @@ pub(crate) enum Reread {
     /// ([`taiyaku_library::reach::walked_by`]), in the same number and order,
     /// with the same ids and paths.
     Library(i64),
+    /// The scheduler's batch: each directory asked for, read again as
+    /// [`Self::Dir`] reads it, and each answered on its own slot (spec §4,
+    /// decision 9). Nobody pressed for it, so one directory that changed or
+    /// cannot be walked must not hold back the others, or the derive: it is
+    /// answered with its own error, a failed walk keeps the `failed` it
+    /// records, and the one derive runs over what was walked, or not at all
+    /// where nothing was.
+    Batch,
 }
 
 impl Reread {
-    /// `asked` as the store holds it now, or the sentence that answers a scan
-    /// whose directories are no longer what was asked for.
+    /// Whether each directory is answered on its own slot, so that one that
+    /// changed or cannot be walked is answered alone and the rest are walked
+    /// and derived. Otherwise the first such directory ends the job, and one
+    /// sentence answers every slot.
+    fn answers_each_slot(self) -> bool {
+        matches!(self, Self::Batch)
+    }
+
+    /// `asked` as the store holds it now, one entry per directory in order:
+    /// the directory to walk, or the sentence its slot answers where it
+    /// changed. The `Err` is the store's own words where a read failed, or,
+    /// outside a batch, the sentence that ends a scan whose directories changed.
     ///
     /// Where the two readings agree the second is what is walked, with the
     /// settings the directories hold now.
@@ -50,11 +73,11 @@ impl Reread {
         self,
         conn: &rusqlite::Connection,
         asked: &[scan::Root],
-    ) -> Result<Vec<scan::Root>, String> {
+    ) -> Result<Vec<Result<scan::Root, String>>, String> {
         match self {
-            Self::Dir => {
+            Self::Dir | Self::Batch => {
                 let held = scan::roots(conn)?;
-                asked
+                let now: Vec<Result<scan::Root, String>> = asked
                     .iter()
                     .map(|asked| {
                         held.iter()
@@ -62,7 +85,11 @@ impl Reread {
                             .cloned()
                             .ok_or_else(|| DIR_CHANGED.to_string())
                     })
-                    .collect()
+                    .collect();
+                match now.iter().find_map(|now| now.as_ref().err()) {
+                    Some(changed) if !self.answers_each_slot() => Err(changed.clone()),
+                    _ => Ok(now),
+                }
             }
             Self::Library(id) => {
                 if libraries::name_of(conn, id)?.is_none() {
@@ -75,7 +102,7 @@ impl Reread {
                         .zip(asked)
                         .all(|(now, asked)| now.id == asked.id && now.path == asked.path);
                 if same {
-                    Ok(now)
+                    Ok(now.into_iter().map(Ok).collect())
                 } else {
                     Err(CHANGED.to_string())
                 }
@@ -83,16 +110,17 @@ impl Reread {
         }
     }
 
-    /// What every directory's report says where the walk of `root` failed.
+    /// What every directory's report says where the walk of `root` failed,
+    /// or, for a batch, what `root`'s alone says.
     fn walk_failed(self, root: &scan::Root, why: &str) -> String {
         match self {
-            Self::Dir => why.to_string(),
+            Self::Dir | Self::Batch => why.to_string(),
             Self::Library(_) => format!("scanning {}: {why}", root.path.display()),
         }
     }
 
-    /// What every directory's report says where the derive after the walks of
-    /// `roots` failed.
+    /// What every walked directory's report says where the derive after the
+    /// walks of `roots` failed.
     fn derive_failed(self, roots: &[scan::Root], why: &str) -> String {
         match self {
             Self::Dir => format!(
@@ -104,6 +132,10 @@ impl Reread {
             Self::Library(_) => format!(
                 "the directories the library shows were scanned, but deriving its structure \
                  afterward failed: {why}"
+            ),
+            Self::Batch => format!(
+                "the directories a scheduled scan walked were scanned, but deriving their \
+                 structure afterward failed: {why}"
             ),
         }
     }
@@ -120,63 +152,277 @@ impl Reread {
 ///
 /// **Holds `job`, [`crate::ServeState::library_job`], for its whole length,
 /// walks and derive both.** See that field's own doc comment for the
-/// interleaving this closes. Unlike a rules save's `try_lock`, this blocks: a
-/// scan already runs unwatched in the background, so there is nobody to answer
-/// a refusal to, and the scan's status route is where a caller learns how long
-/// the wait and the scan took together.
+/// interleaving this closes. Unlike a rules save's `try_lock`, this blocks,
+/// reading `waiting` meanwhile ([`the_job_lock`]): a scan runs unwatched in
+/// the background, so there is nobody to answer a refusal to, and its status
+/// route says how long the wait and the scan took together.
 ///
 /// **The directories are read again once the lock is held**, as `reread` says:
 /// `asked` is what the request found, and a directory removed while the scan
 /// waited may have had its id taken by another. Where they differ nothing is
-/// walked.
+/// walked; a batch walks the others ([`Reread::Batch`]).
 ///
-/// **A derive failure also corrects `last_scan_status`.** A walk writes `ok`
-/// the moment it commits, before the derive starts, so each directory walked has
-/// [`scan::mark_derive_failed`] applied where what it found was not derived. A
-/// walk that fails ends the scan: no later directory is walked and nothing is
-/// derived.
+/// **A walked directory reads `deriving` until the derive returns, or `waiting`
+/// while it waits for the lease** (O186), and a refused walk keeps `refused`; a
+/// stop between leaves what the next start rewrites to `interrupted`. A failed
+/// derive turns each to `failed` ([`scan::mark_derive_failed`]). So does a failed
+/// walk outside a batch, which ends the scan: nothing later is walked or derived.
 ///
 /// # Errors
 ///
-/// Returns the sentence every directory's report then carries: `reread`'s where
-/// the directories changed, the store's own words where a reading or the working
-/// connection failed, and `reread`'s wording of a failed walk or derive.
+/// Returns the sentence every directory's report then carries: the store's own
+/// words where a reading or the working connection failed and, outside a batch,
+/// `reread`'s where the directories changed or a walk or the derive failed.
 pub(crate) fn run(
     library: &taiyaku_library::Library,
     asked: &[scan::Root],
     reread: Reread,
     job: &crate::LibraryJob,
+    waiting: &dyn Fn(&[scan::Root], bool),
 ) -> Result<Vec<serde_json::Value>, String> {
-    let _job = job
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let working = library.working()?;
+    run_watched(
+        library,
+        asked,
+        reread,
+        job,
+        waiting,
+        scan::scan_root,
+        derive::derive,
+    )
+}
+
+/// [`run_watched`], telling no one that it waits, for the tests that do not
+/// ask.
+#[cfg(test)]
+pub(crate) fn run_with(
+    library: &taiyaku_library::Library,
+    asked: &[scan::Root],
+    reread: Reread,
+    job: &crate::LibraryJob,
+    walk: impl FnMut(&rusqlite::Connection, &scan::Root) -> Result<scan::ScanReport, String>,
+    derive: impl FnOnce(&rusqlite::Connection) -> Result<derive::DeriveReport, String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    run_watched(library, asked, reread, job, &|_, _| {}, walk, derive)
+}
+
+/// [`run`]'s whole body, over a caller-supplied walk and derive, telling
+/// `waiting` when it waits (`true`) and when it no longer does (`false`):
+/// with every directory of `asked` for the job lock, and with the directories
+/// whose walks recorded something (not refused) for the derive lease.
+///
+/// **Split out as `schema::migrate_with` is**: what is worth pinning is the
+/// status each directory reads *during* the job, which only a walk or derive
+/// of the test's own can read, and a derive that fails, which the real one
+/// cannot be made to do without breaking the store.
+pub(crate) fn run_watched(
+    library: &taiyaku_library::Library,
+    asked: &[scan::Root],
+    reread: Reread,
+    job: &crate::LibraryJob,
+    waiting: &dyn Fn(&[scan::Root], bool),
+    mut walk: impl FnMut(&rusqlite::Connection, &scan::Root) -> Result<scan::ScanReport, String>,
+    derive: impl FnOnce(&rusqlite::Connection) -> Result<derive::DeriveReport, String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let (_job, queued) = the_job_lock(library, asked, job, waiting);
+    let working = match library.working() {
+        Ok(working) => working,
+        Err(why) => {
+            // Nothing is walked, so each reads its last scan's word again, as
+            // one `read_again` refuses does; left `waiting`, every page would
+            // read it as queued until its next scan or the server's next start.
+            let _ = scan::unmark_queued(&library.conn(), &queued);
+            return Err(why);
+        }
+    };
+    let _ = scan::unmark_queued(&working, &queued);
     let roots = reread.read_again(&working, asked)?;
+    // One per directory asked for, in order: its walk's report, or the error
+    // its slot answers.
+    let mut slots = Vec::with_capacity(roots.len());
     let mut walked = Vec::with_capacity(roots.len());
-    for root in &roots {
-        match scan::scan_root(&working, root) {
-            Ok(report) => walked.push(report),
+    // The walks that recorded something, which the derive is for: a refused
+    // walk recorded nothing, so its directory never waits for the lease and
+    // keeps reading `refused`, the word that says to check the share.
+    let mut recorded = Vec::with_capacity(roots.len());
+    // Every status write below is best-effort, as `scan_root`'s own is: a
+    // walk or derive that succeeded is not reported failed because a
+    // bookkeeping write did not land, and one that failed keeps its own error.
+    for root in roots {
+        let root = match root {
+            Ok(root) => root,
+            Err(changed) => {
+                slots.push(Err(changed));
+                continue;
+            }
+        };
+        match walk(&working, &root) {
+            Ok(report) => {
+                let _ = scan::mark_deriving(&working, &root);
+                if report.refused.is_none() {
+                    recorded.push(root.clone());
+                }
+                slots.push(Ok(report));
+                walked.push(root);
+            }
+            Err(why) if reread.answers_each_slot() => {
+                slots.push(Err(reread.walk_failed(&root, &why)));
+            }
             Err(why) => {
-                for earlier in &roots[..walked.len()] {
+                for earlier in &walked {
                     let _ = scan::mark_derive_failed(&working, earlier);
                 }
-                return Err(reread.walk_failed(root, &why));
+                return Err(reread.walk_failed(&root, &why));
             }
         }
     }
-    let derived = match derive::derive(&working) {
-        Ok(report) => report,
+    if walked.is_empty() && reread.answers_each_slot() {
+        // No walk succeeded, so nothing is derived, and every slot already
+        // holds its own error. A walk that failed after its commit leaves its
+        // rows to the next derive.
+        return Ok(slots
+            .into_iter()
+            .filter_map(Result::err)
+            .map(|why| serde_json::json!({ "error": why }))
+            .collect());
+    }
+    let lease = lease_for_the_derive(library, &working, &recorded, waiting);
+    let outcome = match &lease {
+        Ok(lease) => lease.holding(|| derive(&working)),
+        Err(why) => Err(why.clone()),
+    };
+    let derived = match outcome {
+        Ok(report) => {
+            let _ = scan::mark_derived(&working, &walked);
+            Ok(report)
+        }
         Err(why) => {
-            for root in &roots {
+            for root in &walked {
                 let _ = scan::mark_derive_failed(&working, root);
             }
-            return Err(reread.derive_failed(&roots, &why));
+            let said = reread.derive_failed(&walked, &why);
+            if reread.answers_each_slot() {
+                // Answered on each walked slot alone, below.
+                Err(said)
+            } else {
+                // Ends the job: the one sentence answers every slot.
+                return Err(said);
+            }
         }
     };
-    Ok(walked
-        .iter()
-        .map(|walk| finished_scan_json(walk, &derived))
+    Ok(slots
+        .into_iter()
+        .map(|slot| match (slot, &derived) {
+            (Ok(walk), Ok(derived)) => finished_scan_json(&walk, derived),
+            (Ok(_), Err(said)) => serde_json::json!({ "error": said }),
+            (Err(why), _) => serde_json::json!({ "error": why }),
+        })
         .collect())
+}
+
+/// The job lock, waiting for it where another job holds it, and the
+/// directories the store marked `waiting` meanwhile, for the caller to write
+/// back ([`scan::unmark_queued`]) before its walk.
+///
+/// **While it waits, every directory of `asked` reads `waiting`**, on its
+/// reservation and in the store, which a restart reads as `interrupted`
+/// (O186). The store is marked on a connection dropped before the wait: an
+/// in-memory library's is the holder's own. The reservation is cleared once
+/// the lock is held, waited for or not, since [`reserve`] marks it too.
+fn the_job_lock<'a>(
+    library: &taiyaku_library::Library,
+    asked: &[scan::Root],
+    job: &'a crate::LibraryJob,
+    waiting: &dyn Fn(&[scan::Root], bool),
+) -> (crate::JobGuard<'a>, Vec<scan::Queued>) {
+    let (held, queued) = match job.try_lock() {
+        Ok(held) => (held, Vec::new()),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => (poisoned.into_inner(), Vec::new()),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            waiting(asked, true);
+            let queued = library
+                .working()
+                .map(|conn| scan::mark_queued(&conn, asked))
+                .unwrap_or_default();
+            let held = job
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (held, queued)
+        }
+    };
+    waiting(asked, false);
+    (held, queued)
+}
+
+/// The derive lease for the derive after the walks of `recorded`, waiting for
+/// it where another derive holds it.
+///
+/// **While it waits, the directories of `recorded` read `waiting`**, and `deriving`
+/// again once it is held, so a page tells a scan held up by another derive
+/// from one deriving. The wait has no end: a derive elsewhere always ends, and
+/// a scan's own status route says how long it has run.
+///
+/// Taken after the job lock and with no store transaction open, so nothing
+/// that waits for either is waited for here. An error fails the derive (O51).
+fn lease_for_the_derive<'a>(
+    library: &'a taiyaku_library::Library,
+    conn: &rusqlite::Connection,
+    recorded: &[scan::Root],
+    waiting: &dyn Fn(&[scan::Root], bool),
+) -> Result<lease::DeriveLease<'a>, String> {
+    if let Some(lease) = library.derive_lease(lease::Wait::No)? {
+        return Ok(lease);
+    }
+    waiting(recorded, true);
+    let _ = scan::mark_waiting(conn, recorded);
+    // Not `eprintln!`, which panics when nothing reads stderr.
+    let _ = writeln!(
+        std::io::stderr(),
+        "taiyaku: a scan is waiting for another derive of this library to finish"
+    );
+    loop {
+        if let Some(lease) =
+            library.derive_lease(lease::Wait::Yes(&mut |_: std::time::Duration| {}))?
+        {
+            let _ = scan::mark_waited(conn, recorded);
+            waiting(recorded, false);
+            return Ok(lease);
+        }
+    }
+}
+
+/// The directories whose scan, reserved and not yet done, waits for the job
+/// lock or the derive lease: what [`status_sent`] reads `waiting` from.
+pub(crate) fn waiting_for_a_lock(state: &ServeState) -> std::collections::HashSet<i64> {
+    let scans = state
+        .scans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    scans
+        .iter()
+        .filter(|(_, progress)| !progress.done && progress.waiting)
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+/// The last scan status a page is sent for directory `id`, given the store's,
+/// `stored`: `waiting` where `id` is one of `waiting`
+/// ([`waiting_for_a_lock`]), else the store's word.
+///
+/// **The store's word lags while a holder in this process derives** (O51): a
+/// preview, a save or a removal holds the store's write lock for its whole
+/// derive, so the job's `scan::mark_waiting` or `mark_queued` waits behind
+/// it. The status route and both lists read it here, so a directory's page
+/// and both lists say the same; an add's answer sends the store's word.
+pub(crate) fn status_sent(
+    waiting: &std::collections::HashSet<i64>,
+    id: i64,
+    stored: Option<String>,
+) -> Option<String> {
+    if waiting.contains(&id) {
+        Some("waiting".to_string())
+    } else {
+        stored
+    }
 }
 
 /// What a caught panic said, or that it said nothing readable.
@@ -205,6 +451,11 @@ pub(crate) fn reports_of(
         .collect()
 }
 
+/// Whether `scans` holds a scan of `root` reserved and not yet done.
+fn held(scans: &std::collections::HashMap<i64, crate::ScanProgress>, root: &scan::Root) -> bool {
+    scans.get(&root.id).is_some_and(|progress| !progress.done)
+}
+
 /// The first of `roots` with a scan reserved and not yet done, if any.
 pub(crate) fn a_scan_reserved_on<'a>(
     state: &ServeState,
@@ -214,9 +465,22 @@ pub(crate) fn a_scan_reserved_on<'a>(
         .scans
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    roots.iter().find(|root| held(&scans, root))
+}
+
+/// `roots` less each one with a scan reserved and not yet done.
+///
+/// A check only: a press may reserve one of the rest before the caller does,
+/// and [`reserve`] then refuses them all.
+pub(crate) fn not_held(state: &ServeState, roots: Vec<scan::Root>) -> Vec<scan::Root> {
+    let scans = state
+        .scans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     roots
-        .iter()
-        .find(|root| scans.get(&root.id).is_some_and(|progress| !progress.done))
+        .into_iter()
+        .filter(|root| !held(&scans, root))
+        .collect()
 }
 
 /// The refusal of a removal that a scan of `root` holds up. `what` is what
@@ -250,19 +514,20 @@ pub(crate) fn reserve(
         .scans
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(busy) = roots
-        .iter()
-        .find(|root| scans.get(&root.id).is_some_and(|progress| !progress.done))
-    {
+    if let Some(busy) = roots.iter().find(|root| held(&scans, root)) {
         return Err(format!(
             "a scan of {} is already running",
             busy.path.display()
         ));
     }
+    // A scan accepted while the job lock is held waits from now, and reads so
+    // until its job holds the lock (`the_job_lock`).
+    let waiting = state.library_job.is_held();
     for root in roots {
         scans.insert(
             root.id,
             crate::ScanProgress {
+                waiting,
                 started,
                 done: false,
                 report: None,
@@ -289,6 +554,7 @@ pub(crate) fn finish_reservation(
         && entry.started == started
     {
         *entry = crate::ScanProgress {
+            waiting: false,
             started,
             done: true,
             report: Some(report),
@@ -310,8 +576,8 @@ pub(crate) fn spawn(
     started: Instant,
     reread: Reread,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_job(state, roots, started, move |state, roots| {
-        run(&state.library, roots, reread, &state.library_job)
+    spawn_job(state, roots, started, move |state, roots, waiting| {
+        run(&state.library, roots, reread, &state.library_job, waiting)
     })
 }
 
@@ -328,13 +594,36 @@ pub(crate) fn spawn_job<F>(
     job: F,
 ) -> tokio::task::JoinHandle<()>
 where
-    F: FnOnce(&ServeState, &[scan::Root]) -> Result<Vec<serde_json::Value>, String>
+    F: FnOnce(
+            &ServeState,
+            &[scan::Root],
+            &dyn Fn(&[scan::Root], bool),
+        ) -> Result<Vec<serde_json::Value>, String>
         + Send
         + 'static,
 {
     tokio::task::spawn_blocking(move || {
-        let outcome =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&state, &roots)));
+        // Marks this job's own reservations, as `finish_reservation` does, of
+        // the directories the job names: each one asked for while it waits
+        // for the job lock, and for the derive lease only those whose walk
+        // recorded something, since one it could not walk, or whose walk was
+        // refused, has nothing to derive.
+        let waiting = |recorded: &[scan::Root], waiting: bool| {
+            let mut scans = state
+                .scans
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for root in recorded {
+                if let Some(entry) = scans.get_mut(&root.id)
+                    && entry.started == started
+                {
+                    entry.waiting = waiting;
+                }
+            }
+        };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            job(&state, &roots, &waiting)
+        }));
         let mut reports = reports_of(roots.len(), outcome).into_iter();
         let mut scans = state
             .scans
@@ -348,3 +637,6 @@ where
         }
     })
 }
+
+#[cfg(test)]
+mod tests;

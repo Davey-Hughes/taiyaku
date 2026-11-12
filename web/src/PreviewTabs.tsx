@@ -104,6 +104,7 @@ export function PreviewTabs({
   selected,
   busy,
   frozen,
+  held,
   onReorder,
   onSelectRule,
 }: {
@@ -123,6 +124,12 @@ export function PreviewTabs({
    * see their own comment below.
    */
   frozen: boolean
+  /**
+   * Why no preview is sent now (O51), said where the preview goes, in place
+   * of a preview, which describes the library as it was, and of the empty
+   * state, whose advice would send nothing.
+   */
+  held?: string
   onReorder: (from: number, to: number) => void
   onSelectRule: (index: number) => void
 }) {
@@ -221,7 +228,9 @@ export function PreviewTabs({
         thing that has already started. So the empty state is drawn only where
         no preview stands and none is out: after a preview has failed.
       */}
-        {preview === undefined ? (
+        {held !== undefined ? (
+          <p className="empty">{held}</p>
+        ) : preview === undefined ? (
           busy ? null : (
             <p className="empty">
               No preview yet. Pick a rule, or edit one — the preview runs when

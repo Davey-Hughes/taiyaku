@@ -36,8 +36,11 @@
  * reserved for the one path that really did lose the edit: a thrown
  * 409/404/403 from a hard failure.
  */
-import { type FormEvent, useRef, useState } from 'react'
+import { type FormEvent, useId, useRef, useState } from 'react'
 import { humanBytes } from './bytes'
+import { statusOf } from './config'
+import { JOB_WAITS, useDeriveHold, useOwnRequests } from './deriveHold'
+import { HeldButton } from './HeldButton'
 import { type PatchResult, reasons, type WorkEdit } from './metadata'
 import {
   type Archive,
@@ -436,7 +439,8 @@ export function MetadataEditor({
     // **`sending.archives`, not a rebuild of them.** `stamp::apply` compares
     // the body to a freshly computed plan field for field; anything
     // reconstructed here is a 409 waiting to happen.
-    performStamp(slug, sending.archives)
+    own
+      .track(performStamp(slug, sending.archives))
       .then((answer) => {
         inFlight.current = false
         setWriting(undefined)
@@ -455,6 +459,8 @@ export function MetadataEditor({
         inFlight.current = false
         setWriting(undefined)
         setStampFailure(messageOf(err))
+        // A 409 may be a hold no read here has seen: read it, so it is drawn.
+        if (statusOf(messageOf(err)) === 409) hold.askAgain()
       })
   }
 
@@ -491,6 +497,17 @@ export function MetadataEditor({
    * guard. Named once so the attribute and the ref cannot come apart.
    */
   const busy = phase.kind === 'reading' || phase.kind === 'writing'
+  /**
+   * **A derive or the job lock holds the confirm** (O51): the server refuses
+   * a stamp while either holds. Read only while a plan can be confirmed,
+   * as the plan itself is read only when asked for, and polled while it
+   * holds (`useDeriveHold`). Not while the stamp is out: that is its own,
+   * and so is the derive a read sent while it is out finds (`own`).
+   */
+  const own = useOwnRequests()
+  const hold = useDeriveHold(confirmable !== undefined, own)
+  const stampWaits = (hold.derive || hold.job) && phase.kind !== 'writing'
+  const stampWaitsId = useId()
 
   /**
    * The formats this work holds that a stamp will not write.
@@ -870,18 +887,20 @@ export function MetadataEditor({
             {phaseBody()}
           </div>
           {confirmable !== undefined && (
-            <button
+            <HeldButton
               type="button"
               name="confirm-stamp"
               onClick={() => {
                 confirmStamp(confirmable)
               }}
+              held={stampWaits}
               disabled={phase.kind === 'writing'}
+              aria-describedby={stampWaits ? stampWaitsId : undefined}
             >
               {phase.kind === 'writing'
                 ? 'Rewriting…'
                 : `Rewrite ${archiveCount(confirmable.archives.length)}`}
-            </button>
+            </HeldButton>
           )}
           {/*
            * **One read control, one label, in every phase.** Two — "What
@@ -900,6 +919,12 @@ export function MetadataEditor({
           >
             What would this change?
           </button>
+          {stampWaits && (
+            <p id={stampWaitsId} className="stamp-waits">
+              {JOB_WAITS}
+            </p>
+          )}
+          {hold.failure !== undefined && <p role="alert">{hold.failure}</p>}
         </section>
       )}
     </>

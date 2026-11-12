@@ -174,6 +174,29 @@ describe('a library’s page, held controls in a real browser', () => {
     expect(document.activeElement).toBe(scan)
   })
 
+  it('opens nothing for a real mouse press on Remove… while a derive holds the lease, and opens the removal once a poll finds it free (O51)', async () => {
+    vi.mocked(librariesApi.libraryScanStatus).mockResolvedValueOnce({
+      ...idle(1),
+      derive_running: true,
+    })
+    const host = await libraryPage()
+    const remove = named(host, 'remove-library')
+    expect(holdOf(remove)).toBe('held')
+    await pressOn(remove)
+    await settle()
+    expect(host.querySelector('.remove-library')).toBeNull()
+    expect(librariesApi.libraryRemovalCost).not.toHaveBeenCalled()
+
+    await settleUntil(
+      'Remove…, free',
+      () => holdOf(remove) === 'free',
+      config.SCAN_POLL_MS * 3,
+    )
+    await pressOn(remove)
+    await settle()
+    expect(host.querySelector('.remove-library')).not.toBeNull()
+  })
+
   it('keeps focus on Remove…, pressed with Enter, while the removal it opens holds it', async () => {
     const host = await libraryPage()
     const remove = named(host, 'remove-library')
@@ -384,6 +407,35 @@ describe('a directory’s page, held controls in a real browser', () => {
       config.SCAN_POLL_MS * 3,
     )
     expect(document.activeElement).toBe(scan)
+  })
+
+  it('keeps focus on Remove… while a derive’s hold comes on, and a real mouse press on it opens nothing until a poll finds the lease free (O51)', async () => {
+    const status = deferred<librariesApi.LibraryScanStatus>()
+    vi.mocked(librariesApi.libraryScanStatus).mockReturnValueOnce(
+      status.promise,
+    )
+    const host = await dirPage()
+    const remove = called(host, 'Remove…')
+    await focusFirst(regime(host), remove)
+
+    await act(async () => {
+      status.resolve({ ...idle(1), derive_running: true })
+    })
+    await settle()
+    expect(document.activeElement).toBe(remove)
+    expect(holdOf(remove)).toBe('held')
+    await pressOn(remove)
+    expect(host.querySelector('.remove-root')).toBeNull()
+    expect(config.removalCost).not.toHaveBeenCalled()
+
+    await settleUntil(
+      'Remove…, free',
+      () => holdOf(remove) === 'free',
+      config.SCAN_POLL_MS * 3,
+    )
+    await pressOn(remove)
+    await settle()
+    expect(host.querySelector('.remove-root')).not.toBeNull()
   })
 
   it('hands focus to Remove…, held, when a scan around the directory cancels the removal its confirm had focus in', async () => {
@@ -1539,8 +1591,12 @@ describe('a control that cannot have focus as its hold comes on, in a real brows
     await keys('{Tab}')
     expect(document.activeElement).not.toBe(called(host, 'Scan directory'))
     expect(document.activeElement).not.toBe(called(host, 'Move…'))
-    expect(document.activeElement).toBe(
-      host.querySelector('input[name="scan_interval_secs"]'),
+    // The Scan schedule's radio that is checked: Tab stops at a radio
+    // group's choice.
+    const every = host.querySelector<HTMLInputElement>(
+      'input[name^="scan_schedule-"][value="every"]',
     )
+    expect(every?.checked).toBe(true)
+    expect(document.activeElement).toBe(every)
   })
 })

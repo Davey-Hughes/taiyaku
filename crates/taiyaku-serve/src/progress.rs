@@ -13,7 +13,7 @@
 //! (`works::find_row`, `works::row_id_for_write`).
 
 use taiyaku_core::Sidecar;
-use taiyaku_library::state::Numbering;
+use taiyaku_library::state::{self, Arrival, Numbering};
 use taiyaku_library::{Library, Position, Progress};
 
 use crate::works::{self, Work};
@@ -49,7 +49,9 @@ pub fn load(
     taiyaku_library::state::progress_in(&conn, work_id, user_id, Numbering::Document(numbered))
 }
 
-/// Record where the reader got to.
+/// Record where the reader got to, unless a save of theirs on this work that
+/// arrived after `arrival` is already written, which answers as a written one
+/// would: the stored position is the newer (`state::put_progress_in_order`).
 ///
 /// The library row bridging `work`'s slug to a numeric `work_id` is minted
 /// here on first write if none exists yet — see `works::row_id_for_write`.
@@ -66,16 +68,20 @@ pub fn store(
     user_id: i64,
     progress: &Progress,
     numbered: &Sidecar,
+    arrival: Arrival,
 ) -> Result<(), String> {
-    let conn = library.conn();
+    let conn = library.saving()?;
     let work_id = works::row_id_for_write(&conn, work)?;
-    taiyaku_library::state::put_progress_in(
+    state::put_progress_in_order(
         &conn,
+        library.progress_order(),
+        arrival,
         work_id,
         user_id,
         progress,
         Numbering::Document(numbered),
-    )
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

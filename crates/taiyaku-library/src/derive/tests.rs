@@ -1383,9 +1383,8 @@ thread_local! {
 
 /// The commits `conn` writes to its WAL while `pass` runs — the ones that wait
 /// for the disk. SQLite's commit hook would also count a write statement that
-/// changed nothing (`reconcile_series`'s `INSERT … WHERE NOT EXISTS` over a
-/// series it already holds), which writes no frame and costs no sync; the WAL
-/// hook fires only for a commit that wrote frames. It takes a plain `fn`, hence
+/// changed nothing, which writes no frame and costs no sync; the WAL hook
+/// fires only for a commit that wrote frames. It takes a plain `fn`, hence
 /// the thread-local: SQLite calls it on the thread running the statement.
 ///
 /// Setting a WAL hook replaces the automatic checkpoint, which is SQLite's own
@@ -1404,13 +1403,33 @@ fn wal_commits_during<T>(conn: &rusqlite::Connection, pass: impl FnOnce() -> T) 
     (WAL_COMMITS.with(std::cell::Cell::get), out)
 }
 
-/// **O210: a derive commits each work once.** Every commit waits for the disk.
+/// The write transactions `conn` commits while `pass` runs, counted by the
+/// commit hook, so one whose statements changed nothing counts too: it still
+/// held the write lock a save waits for (O272).
+fn commits_during<T>(conn: &Connection, pass: impl FnOnce() -> T) -> (usize, T) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let commits = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&commits);
+    conn.commit_hook(Some(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        false
+    }))
+    .expect("hooks");
+    let out = pass();
+    conn.commit_hook(None::<fn() -> bool>).expect("unhooks");
+    (commits.load(Ordering::SeqCst), out)
+}
+
+/// **O210: a derive commits each work it writes once.** Every commit waits
+/// for the disk.
 ///
-/// Counted on a second derive over unchanged files, which is what a move's
-/// last pass is, and a scan where no file changed. On disk, because an
-/// in-memory store has no WAL.
+/// Counted on a second derive that has something to write on every work and
+/// no rekey: each edition's language is changed behind its back. On disk,
+/// because an in-memory store has no WAL.
 #[test]
-fn a_derive_over_unchanged_files_commits_each_work_once() {
+fn a_derive_commits_each_work_it_writes_once() {
     let tree = fixture();
     let store = crate::tests::tempdir("derive-commits");
     let library = Library::open(&store.path().join("library.db")).expect("open");
@@ -1418,12 +1437,418 @@ fn a_derive_over_unchanged_files_commits_each_work_once() {
     let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
+    conn.execute("UPDATE edition SET language = 'stale'", [])
+        .expect("a value the next derive writes back");
 
     let (commits, report) = wal_commits_during(&conn, || derive::derive(&conn));
     let report = report.expect("second derive");
 
     assert_eq!(report.works, 2, "the fixture's two volumes: {report:?}");
     assert_eq!(commits, 2, "one commit per work: {report:?}");
+    assert!(
+        edition_metadata(&conn)
+            .iter()
+            .all(|(_, _, language)| language.is_none()),
+        "the fixture: the derive wrote each work back: {:?}",
+        edition_metadata(&conn)
+    );
+}
+
+/// O272: a derive over a store it already derived, with nothing changed,
+/// takes no write transaction and changes no row, so a quiet scan's derive
+/// never holds the write lock a page turn's save waits for.
+///
+/// The fixture reaches every write a derive makes on a held work: chapters
+/// from names, a member under two directories, an edition no longer named, a
+/// refused kind (counted every pass), an open proposal (raised every pass)
+/// and hand values the derive would not reach. Its report must equal a pass
+/// that writes every work.
+#[test]
+fn a_derive_over_unchanged_files_writes_nothing() {
+    let tree = fixture();
+    let chapters = chaptered();
+    let (first, second) = crate::tests::a_copy_of_one_volume();
+    let store = crate::tests::tempdir("derive-quiet");
+    let db = store.path().join("library.db");
+    let library = Library::open(&db).expect("open");
+    let conn = library.conn();
+    for dir in [tree.path(), chapters.path(), first.path(), second.path()] {
+        let root = scan::add_root(&conn, dir).expect("add");
+        scan::scan_root(&conn, &root).expect("scan");
+    }
+    a_rule_setting(&conn, Some("bootleg"), Some("Japanese"));
+    derive::derive(&conn).expect("first derive");
+    a_kept_edition(&conn, chapters.path());
+    // Hand and column set together, as the product's writers set them, so a
+    // check that compared the column with the derived value would rewrite it.
+    let edition =
+        "(SELECT edition_id FROM member WHERE path LIKE '%Go-Toubun no Hanayome - v01 (2019)')";
+    let work = format!("(SELECT work_id FROM edition WHERE id = {edition})");
+    conn.execute_batch(&format!(
+        "UPDATE work SET series_id_hand = {series}, series_id = {series},
+                         volume_hand = 7, volume = 7
+          WHERE id = {work};
+         UPDATE edition SET label_hand = 'by hand', label = 'by hand',
+                            kind_hand = 'official', kind = 'official',
+                            language_hand = 'en', language = 'en'
+          WHERE id = {edition}",
+        series = another_series(&work),
+    ))
+    .expect("a work edited by hand");
+    conn.execute("UPDATE edition SET language = 'stale'", [])
+        .expect("a value the next derive writes back");
+    let writing = derive::derive(&conn).expect("a derive that writes every work");
+
+    assert!(
+        writing.unrecognised_kinds > 0 && writing.kept_editions > 0,
+        "the fixture: a refused kind and a kept edition: {writing:?}"
+    );
+    assert_eq!(
+        scalar(
+            &conn,
+            &format!(
+                "SELECT count(*) FROM edition e JOIN work w ON w.id = e.work_id
+                  WHERE e.id = {edition} AND w.series_id = w.series_id_hand
+                    AND w.volume = 7 AND e.label = 'by hand' AND e.kind = 'official'
+                    AND e.language = 'en'"
+            )
+        ),
+        1,
+        "the fixture: a work written from its hand values"
+    );
+    assert!(
+        scalar(&conn, "SELECT count(*) FROM proposal WHERE state = 'open'") > 0,
+        "the fixture: an open proposal"
+    );
+    assert!(
+        scalar(
+            &conn,
+            "SELECT count(*) FROM member WHERE chapter_source = 'filename'"
+        ) > 0,
+        "the fixture: a chapter from a name"
+    );
+    assert!(
+        scalar(
+            &conn,
+            "SELECT count(*) FROM (SELECT member_id FROM member_root
+               GROUP BY member_id HAVING count(*) > 1)"
+        ) > 0,
+        "the fixture: a member under two directories"
+    );
+
+    let watcher = Connection::open(&db).expect("a second connection");
+    let data_version = |c: &Connection| -> i64 {
+        c.query_row("PRAGMA data_version", [], |r| r.get(0))
+            .expect("data_version")
+    };
+    let seen = data_version(&watcher);
+    let changes = conn.total_changes();
+    let counter = crate::structure::version(&conn).expect("reads");
+
+    let (commits, quiet) = commits_during(&conn, || derive::derive(&conn));
+    let quiet = quiet.expect("a derive over nothing changed");
+
+    assert_eq!(quiet, writing, "counted as a pass that writes");
+    assert_eq!(commits, 0, "no write transaction committed");
+    assert_eq!(conn.total_changes(), changes, "no row changed");
+    assert_eq!(
+        crate::structure::version(&conn).expect("reads"),
+        counter,
+        "the structure counter stays"
+    );
+    assert_eq!(
+        data_version(&watcher),
+        seen,
+        "another connection sees no commit"
+    );
+}
+
+/// O272: a dismissed proposal is never rescored, so a derive raising it at
+/// another score takes no write transaction for it.
+#[test]
+fn a_derive_takes_no_write_for_a_dismissed_proposal_whose_score_moved() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+    let dismissed = "SELECT count(*) FROM proposal WHERE state = 'dismissed' AND score = 0.5";
+    assert_eq!(
+        scalar(&conn, "SELECT count(*) FROM proposal WHERE score = 0.5"),
+        0,
+        "the fixture: a score the derive does not give"
+    );
+    conn.execute("UPDATE proposal SET state = 'dismissed', score = 0.5", [])
+        .expect("dismissed at that score");
+    assert_eq!(scalar(&conn, dismissed), 1, "the fixture: one proposal");
+
+    let (commits, report) = commits_during(&conn, || derive::derive(&conn));
+    report.expect("derives");
+
+    assert_eq!(
+        commits, 0,
+        "no write transaction for the dismissed proposal"
+    );
+    assert_eq!(scalar(&conn, dismissed), 1, "left as it was dismissed");
+}
+
+/// The lowest series id other than the one `work` (a subquery) is in.
+fn another_series(work: &str) -> String {
+    format!(
+        "(SELECT min(id) FROM series WHERE id <> (SELECT series_id FROM work WHERE id = {work}))"
+    )
+}
+
+/// Names the editions of `dir`'s directory `scan` and derives, so each work
+/// there keeps its `raw` edition beside the new one
+/// ([`derive::DeriveReport::kept_editions`]).
+fn a_kept_edition(conn: &Connection, dir: &std::path::Path) {
+    let root = scan::roots(conn)
+        .expect("lists")
+        .into_iter()
+        .find(|r| r.path == dir.canonicalize().expect("canonical"))
+        .expect("the directory");
+    scan::update_root(
+        conn,
+        root.id,
+        &scan::RootPatch {
+            edition_key: Some(Some("scan".to_string())),
+            ..Default::default()
+        },
+    )
+    .expect("renames the directory's edition");
+    let report = derive::derive(conn).expect("derives the new edition");
+    assert!(report.kept_editions > 0, "the fixture: {report:?}");
+}
+
+/// Every row of the structure a derive writes, without row ids.
+fn work_rows(conn: &Connection) -> String {
+    let rows = |sql: &str| -> Vec<String> {
+        let mut stmt = conn.prepare(sql).expect(sql);
+        let n = stmt.column_count();
+        stmt.query_map([], |r| {
+            (0..n)
+                .map(|i| {
+                    r.get::<_, rusqlite::types::Value>(i)
+                        .map(|v| format!("{v:?}"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(|v| v.join("|"))
+        })
+        .expect(sql)
+        .collect::<Result<_, _>>()
+        .expect(sql)
+    };
+    format!(
+        "works {:?}\neditions {:?}\nmembers {:?}\ndirectories {:?}",
+        rows("SELECT content_key, series_id, volume FROM work ORDER BY content_key"),
+        rows(
+            "SELECT w.content_key, e.key, e.label, e.label_hand, e.label_derived, e.kind,
+                    e.language
+               FROM edition e JOIN work w ON w.id = e.work_id ORDER BY 1, 2"
+        ),
+        rows(
+            "SELECT w.content_key, e.key, m.ordinal, m.path, m.sha256, m.pages, m.format,
+                    m.chapter_declared, m.chapter_source, m.root_id
+               FROM member m JOIN edition e ON e.id = m.edition_id
+               JOIN work w ON w.id = e.work_id ORDER BY 1, 2, 3"
+        ),
+        rows(
+            "SELECT e.key, m.path, mr.root_id FROM member_root mr
+               JOIN member m ON m.id = mr.member_id
+               JOIN edition e ON e.id = m.edition_id ORDER BY 1, 2, 3"
+        ),
+    )
+}
+
+/// O272: a held work is skipped only where the derive would write nothing to
+/// it. Each change moves one thing a derive writes on a work whose files have
+/// not changed, and the next derive puts it back.
+#[test]
+fn a_derive_writes_back_what_a_held_work_no_longer_holds() {
+    let tree = fixture();
+    let chapters = chaptered();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    for dir in [tree.path(), chapters.path()] {
+        let root = scan::add_root(&conn, dir).expect("add");
+        scan::scan_root(&conn, &root).expect("scan");
+    }
+    derive::derive(&conn).expect("first derive");
+    a_kept_edition(&conn, chapters.path());
+    let held = work_rows(&conn);
+
+    let kept = "(SELECT id FROM edition WHERE key = 'raw'
+                  AND work_id IN (SELECT work_id FROM edition WHERE key = 'scan'))";
+    let named = format!("(SELECT id FROM edition WHERE id NOT IN {kept})");
+    let edition = format!("(SELECT min(id) FROM edition WHERE id IN {named})");
+    let member = format!("(SELECT min(id) FROM member WHERE edition_id IN {named})");
+    let chaptered = format!(
+        "(SELECT min(id) FROM member WHERE edition_id IN {named} AND chapter_source = 'filename')"
+    );
+    let changes = [
+        ("the series", "UPDATE work SET series_id = NULL".to_string()),
+        ("the volume", "UPDATE work SET volume = 99".to_string()),
+        (
+            "the derived label",
+            format!("UPDATE edition SET label_derived = NULL WHERE id = {edition}"),
+        ),
+        (
+            "the label",
+            format!("UPDATE edition SET label = 'elsewhere' WHERE id = {edition}"),
+        ),
+        (
+            "the kind",
+            format!("UPDATE edition SET kind = 'fan' WHERE id = {edition}"),
+        ),
+        (
+            "the language",
+            format!("UPDATE edition SET language = 'xx' WHERE id = {edition}"),
+        ),
+        (
+            "an edition",
+            "DELETE FROM edition WHERE id = (SELECT max(id) FROM edition)".to_string(),
+        ),
+        (
+            "a member",
+            format!(
+                "DELETE FROM member WHERE id = (SELECT max(id) FROM member WHERE edition_id = (SELECT edition_id FROM member WHERE id = {chaptered}))"
+            ),
+        ),
+        (
+            "an ordinal",
+            format!("UPDATE member SET ordinal = ordinal + 5 WHERE id = {member}"),
+        ),
+        (
+            "a path",
+            format!("UPDATE member SET path = path || '.moved' WHERE id = {member}"),
+        ),
+        (
+            "a digest",
+            format!("UPDATE member SET sha256 = 'beef' WHERE id = {member}"),
+        ),
+        (
+            "a page count",
+            format!("UPDATE member SET pages = pages + 1 WHERE id = {member}"),
+        ),
+        (
+            "a format",
+            format!("UPDATE member SET format = 'zip' WHERE id = {member}"),
+        ),
+        (
+            "a directory",
+            format!("UPDATE member SET root_id = NULL WHERE id = {member}"),
+        ),
+        (
+            "a directory column alone",
+            format!(
+                "UPDATE member SET root_id = NULL WHERE id = {member};
+                 INSERT INTO member_root (member_id, root_id)
+                 SELECT {member}, min(id) FROM root"
+            ),
+        ),
+        (
+            "a directory row",
+            format!("DELETE FROM member_root WHERE member_id = {member}"),
+        ),
+        (
+            "a chapter",
+            format!("UPDATE member SET chapter_declared = 99 WHERE id = {chaptered}"),
+        ),
+        (
+            "a kept edition's chapter",
+            format!(
+                "UPDATE member SET chapter_declared = 3, chapter_source = 'filename' WHERE id = (SELECT min(id) FROM member WHERE edition_id IN {kept})"
+            ),
+        ),
+    ];
+    for (what, sql) in changes {
+        conn.execute_batch(&sql).expect(&sql);
+        assert_ne!(work_rows(&conn), held, "the fixture: {what} moved");
+        derive::derive(&conn).expect("derives");
+        assert_eq!(work_rows(&conn), held, "{what} is written back");
+    }
+
+    // A hand value set without its column, which no writer of the product
+    // leaves, so only a check that reads the hand value sees the change.
+    let edition =
+        "(SELECT edition_id FROM member WHERE path LIKE '%Go-Toubun no Hanayome - v01 (2019)')";
+    let work = format!("(SELECT work_id FROM edition WHERE id = {edition})");
+    let series = another_series(&work);
+    for (table, row, column, value) in [
+        ("work", work.as_str(), "series_id", series.as_str()),
+        ("work", work.as_str(), "volume", "7"),
+        ("edition", edition, "label", "'by hand'"),
+        ("edition", edition, "kind", "'official'"),
+        ("edition", edition, "language", "'en'"),
+    ] {
+        let set =
+            |value: &str| format!("UPDATE {table} SET {column}_hand = {value} WHERE id = {row}");
+        let follows = format!("SELECT {column} IS {column}_hand FROM {table} WHERE id = {row}");
+        conn.execute_batch(&set(value)).expect(column);
+        assert_eq!(
+            scalar(&conn, &follows),
+            0,
+            "the fixture: {column}_hand moved"
+        );
+        derive::derive(&conn).expect("derives");
+        assert_eq!(
+            scalar(&conn, &follows),
+            1,
+            "{column}_hand is written to {column}"
+        );
+        conn.execute_batch(&set("NULL")).expect(column);
+        derive::derive(&conn).expect("derives");
+        assert_eq!(
+            work_rows(&conn),
+            held,
+            "{column} is derived again once its hand value is cleared"
+        );
+    }
+
+    // Twins share a digest, and which one's chapter the restore keeps is open
+    // (`import::held_member_meta`), so this pins only that the check agrees
+    // with the write: the work is written once and then left alone.
+    conn.execute_batch(&format!(
+        "UPDATE member SET chapter_source = 'hand' WHERE id = {chaptered}"
+    ))
+    .expect("a hand chapter on a member whose kept twin has none");
+    assert_ne!(
+        work_rows(&conn),
+        held,
+        "the fixture: a chapter source moved"
+    );
+    let (written, _) = commits_during(&conn, || derive::derive(&conn).expect("derives"));
+    let after = work_rows(&conn);
+    let (again, _) = commits_during(&conn, || derive::derive(&conn).expect("derives"));
+    assert_eq!(written, 1, "the restore's chapter is written");
+    assert_eq!(again, 0, "and the next pass leaves it");
+    assert_eq!(work_rows(&conn), after, "as the pass before left it");
+}
+
+/// O272: where a hand-set volume puts one work at another's address, the
+/// derive counts a rekey on every pass (`write_work` reads the address first),
+/// and a pass that could skip the other work counts it as a writing pass does.
+#[test]
+fn a_rekey_at_an_address_another_work_holds_is_counted_on_every_pass() {
+    let tree = fixture();
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+    conn.execute(
+        "UPDATE work SET volume_hand = 2, volume = 2 WHERE volume = 1",
+        [],
+    )
+    .expect("volume 1 set to 2 by hand");
+
+    let first = derive::derive(&conn).expect("derives");
+    let second = derive::derive(&conn).expect("derives again");
+
+    assert_eq!(first.rekeyed, 1, "the fixture: {first:?}");
+    assert_eq!(second, first, "counted as the pass before");
 }
 
 /// Every edition's `(key, kind, language)`, in a fixed order — the shape an
@@ -2964,7 +3389,7 @@ fn seed_work_at(
     }
 }
 
-/// A work whose every member is held by a work this derive wrote.
+/// A work whose every member is held by a work this derive derived.
 ///
 /// **Not "a work with zero editions", which never occurs.** Under
 /// `Scope::Scan`, `import::replace_editions` deletes only the editions the
@@ -8472,6 +8897,52 @@ fn a_pass_that_changes_no_mark_leaves_the_structure_counter_alone() {
         ),
         (Ok((0, 0)), before, "2026-11-01 00:00:00"),
         "nothing changes: the answer, the structure counter and the mark's date"
+    );
+}
+
+/// O272 over a store holding a marked work, as a real store keeps one for
+/// good: a derive over unchanged files and rules takes no write transaction
+/// and keeps the mark and its date. A read that took any marked work for a
+/// move would have every quiet scan's derive take the write lock a page
+/// turn's save waits for.
+#[test]
+fn a_derive_over_unchanged_files_with_a_work_marked_commits_nothing() {
+    let (dir, paths) = a_series_of("derive-quiet-while-marked", 2);
+    let store = crate::tests::tempdir("derive-quiet-while-marked-db");
+    let library = Library::open(&store.path().join("library.db")).expect("open");
+    let conn = library.conn();
+    let root = root_in(&conn, dir.path(), "Manga", None);
+    derive::derive(&conn).expect("derives");
+    std::fs::remove_file(&paths[1]).expect("volume 2 goes");
+    scan::scan_root(&conn, &root).expect("scans without it");
+    let gone = derive::derive(&conn).expect("derives without it");
+    assert_eq!(
+        (gone.marked_missing, marked(&conn, 2)),
+        (1, true),
+        "the fixture: volume 2's work is marked"
+    );
+    scan::scan_root(&conn, &root).expect("scans again, nothing changed");
+    let since = |conn: &Connection| -> String {
+        conn.query_row("SELECT missing_since FROM work WHERE volume = 2", [], |r| {
+            r.get(0)
+        })
+        .expect("reads the mark's date")
+    };
+    let before = since(&conn);
+
+    let (commits, quiet) = commits_during(&conn, || derive::derive(&conn));
+    let quiet = quiet.expect("a derive over nothing changed");
+
+    assert_eq!(
+        (
+            commits,
+            quiet.marked_missing,
+            quiet.found_again,
+            marked(&conn, 2),
+            since(&conn)
+        ),
+        (0, 0, 0, true, before),
+        "no commit, nothing marked or found again, the mark and its date kept"
     );
 }
 

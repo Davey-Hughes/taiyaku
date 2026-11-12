@@ -11,10 +11,17 @@
  * Remove…**: the server refuses a removal while one is reserved, and takes
  * the scan. **Anything holding the server's job lock holds Move… and Remove
  * from this library** (the serve crate's `LibraryJob` names what takes it):
- * neither waits for the lock, and each is refused while it is held. The
- * library's status says the first in `dirs`, the second as `held_removals`
- * and the third as `moves_held`, so it is read once on mount and, while any
- * holds, again each poll until none does.
+ * neither waits for the lock, and each is refused while it is held. **A
+ * derive holding the store's derive lease, in this server or another
+ * process, holds Remove…** (O51): the server refuses a removal while it
+ * does. The library's status says the first in `dirs`, the second as
+ * `held_removals`, the third as `moves_held` and the fourth as
+ * `derive_running`, so it is read once on mount and, while any holds, again
+ * each poll until none does. The removal's dry run and its DELETE take the
+ * lease themselves, so a read that overlaps either draws no hold from the
+ * derive it finds, and a later read that overlaps neither does
+ * (`OwnRequests`): drawn from it, the hold would close the dialog whose dry
+ * run it found.
  * A failed poll keeps the hold until `POLL_MISSES_ALLOWED` have failed in a
  * row, as `RootRow`'s poll keeps watching its scan. A scan of this
  * directory alone is `RootRow`'s own to see. One the library's status names
@@ -54,8 +61,11 @@ import {
   libraryScanStatus,
   type MoveAnswer,
   namesOf,
+  type RemovalHold,
+  removalHold,
   type UnlinkAnswer,
 } from './libraries'
+import { type OwnRequests, useOwnRequests } from './deriveHold'
 import { sentenceOf } from './message'
 import { invalidateLibraryViews, libraryScan } from './pageReads'
 import { markStale } from './reads'
@@ -89,9 +99,10 @@ export interface DirPageProps {
 
 /**
  * Whether the library's status names `rootId` scanning beside another of
- * `library`'s directories, as a scan of the library does (`self`), whether a
- * scan around or inside `rootId` holds its removal (`removal`), whether the
- * server refuses its move (`move`): for the job lock, or for a scan of
+ * `library`'s directories, as a scan of the library does (`self`), why its
+ * removal is held, by a scan around or inside `rootId` or by a derive
+ * (`removal`), whether the server refuses its move (`move`): for the job
+ * lock, or for a scan of
  * another of `library`'s directories, and why that could no longer be told
  * once a hold was given up. The sentence holds until the library or the
  * directory changes, which asks afresh, or `forget` is called.
@@ -99,9 +110,10 @@ export interface DirPageProps {
 function useOtherScan(
   library: Library,
   rootId: number,
+  requests: OwnRequests,
 ): {
   self: boolean
-  removal: boolean
+  removal: RemovalHold
   move: boolean
   failure?: string
   forget: () => void
@@ -110,7 +122,7 @@ function useOtherScan(
   /** Bumped by `askAgain`, which runs the read below afresh. */
   const [asked, setAsked] = useState(0)
   const [mine, setMine] = useState(false)
-  const [removal, setRemoval] = useState(false)
+  const [removal, setRemoval] = useState<RemovalHold>()
   const [move, setMove] = useState(false)
   const [failure, setFailure] = useState<string | undefined>()
   // A ref, so a list read again does not restart the poll.
@@ -125,13 +137,21 @@ function useOtherScan(
     let timer: ReturnType<typeof setTimeout> | undefined
     /** Whether the last answer held anything. */
     let holding = false
+    /** Whether the last answer that could place a derive found one. */
+    let deriving = false
     /** Consecutive failed polls, counted as `RootRow` counts its own. */
     let misses = 0
     const ask = () => {
+      const mark = requests.mark()
       libraryScanStatus(libraryId)
         .then((status) => {
           if (cancelled) return
           misses = 0
+          // The derive may be the page's own removal (`useDeriveHold`'s doc),
+          // so it is read again a poll later and the last one stands. The
+          // rest of the answer cannot be the removal, and is drawn now.
+          const unsure = status.derive_running && requests.overlapped(mark)
+          if (!unsure) deriving = status.derive_running
           const wasHolding = holding
           // A directory inside one of the library's that it shows is named
           // too, and holds this one only through `held_removals`.
@@ -147,15 +167,18 @@ function useOtherScan(
           const self =
             sibling &&
             status.dirs.some((one) => one.running && one.root_id === rootId)
-          const around = status.held_removals.includes(rootId)
-          holding = sibling || around || status.moves_held
+          const removal = removalHold(
+            status.held_removals.includes(rootId),
+            deriving,
+          )
+          holding = sibling || removal !== undefined || status.moves_held
           setMine(self)
-          setRemoval(around)
+          setRemoval(removal)
           setMove(sibling || status.moves_held)
-          if (holding) timer = setTimeout(ask, SCAN_POLL_MS)
+          if (holding || unsure) timer = setTimeout(ask, SCAN_POLL_MS)
           // The scan this page saw running is over, and what it found
           // changes what the Library views draw.
-          else if (wasHolding) invalidateLibraryViews()
+          if (wasHolding && !holding) invalidateLibraryViews()
         })
         .catch((err: unknown) => {
           if (cancelled) return
@@ -173,8 +196,9 @@ function useOtherScan(
           // buttons while the server may still refuse what they send.
           if (holding) setFailure(sentenceOf(err))
           holding = false
+          deriving = false
           setMine(false)
-          setRemoval(false)
+          setRemoval(undefined)
           setMove(false)
         })
     }
@@ -183,7 +207,7 @@ function useOtherScan(
       cancelled = true
       clearTimeout(timer)
     }
-  }, [libraryId, rootId, asked])
+  }, [libraryId, rootId, asked, requests])
   // Stable, so `RootRow`'s Scan directory handler is not made afresh each draw.
   const forget = useCallback(() => setFailure(undefined), [])
   // Asks afresh for a refusal that says something holds which no read here
@@ -267,6 +291,8 @@ export function DirPage({
   arrived,
   onOpen,
 }: DirPageProps) {
+  /** The removal's dry run and its DELETE, each of which takes the lease. */
+  const requests = useOwnRequests()
   const {
     self: held,
     removal: removalHeld,
@@ -274,7 +300,7 @@ export function DirPage({
     failure,
     forget,
     askAgain,
-  } = useOtherScan(library, root.id)
+  } = useOtherScan(library, root.id, requests)
   return (
     <div className="dir-page">
       <RootRow
@@ -299,6 +325,7 @@ export function DirPage({
         libraries={root.libraries}
         held={held}
         removalHeld={removalHeld}
+        ownRequests={requests}
         moveHeld={moveHeld}
         // A scan of this directory is a fresh start, and the sentence of a
         // hold given up says nothing of it.

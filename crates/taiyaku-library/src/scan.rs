@@ -367,12 +367,13 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// What [`add_root_checked`] built: the row [`add_root_in`] inserted, or the
 /// row another library holds, now linked; the watch experiment run against a
-/// new row immediately, and the interval that experiment implies.
+/// new row immediately, and the interval that experiment implies, which is
+/// reported and not stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Added {
     pub root: Root,
-    /// `None` for a link: the probe writes `scan_interval_secs`, which the
-    /// libraries holding the directory share.
+    /// `None` for a link: the probe writes a file into the directory, and the
+    /// directory was probed when it was first added.
     pub probe: Option<crate::watch::Probe>,
     /// The interval [`Added::probe`] implies, `None` where it did not run.
     pub interval: Option<Duration>,
@@ -414,9 +415,8 @@ pub enum AddRootError {
     /// given overlapping.
     Unusable(String),
     /// The store itself failed: opening or committing the transaction, [`vetted`]'s
-    /// own reads, the library-name lookup, the insert inside [`add_root_in`] or of
-    /// a link, or the post-insert [`update_root`] write that records the watch
-    /// probe's interval.
+    /// own reads, the library-name lookup, or the insert inside [`add_root_in`] or
+    /// of a link.
     Failed(String),
 }
 
@@ -461,14 +461,12 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 ///    holds is linked** (overlapping-libraries spec §5): one `library_root`
 ///    row, its shared settings as they stand.
 /// 3. **The watcher probe, run now rather than left for the first scan**, for
-///    a new directory only, as it writes the shared `scan_interval_secs`.
+///    a new directory only, as the probe writes a file into the directory.
 ///    [`crate::watch::probe`] answers whether this root can be watched at
-///    all — spec B §8's experiment — run at the moment a root is added
-///    rather than discovered the first time [`scan_root`] or
-///    [`fn@crate::derive::derive`] runs against a root nobody has probed
-///    yet. The interval [`crate::watch::interval_for`] derives from that
-///    answer is written to `scan_interval_secs` immediately, not left at
-///    the column default until some later call happens to set it.
+///    all — spec B §8's experiment. The interval
+///    [`crate::watch::interval_for`] derives from that answer is reported in
+///    [`Added::interval`], not written: the row stays Automatic
+///    ([`crate::schedule::every`]).
 ///
 /// **And the library it joins can be named**, checked in the same
 /// transaction, before anything is written: an [`InLibrary::Named`] needs a name
@@ -501,10 +499,8 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 ///
 /// Returns [`AddRootError::Failed`] if the store itself refuses along the
 /// way — opening or committing the transaction, [`vetted`]'s own reads, the
-/// library-name lookup,
-/// the insert ([`add_root_in`]) or the link, or the write that records the
-/// watch probe's interval ([`update_root`]) — none of which is this caller's
-/// mistake to fix.
+/// library-name lookup, the insert ([`add_root_in`]) or the link — none of
+/// which is this caller's mistake to fix.
 pub fn add_root_checked_in(
     conn: &Connection,
     path: &Path,
@@ -574,7 +570,7 @@ pub fn add_root_checked_in(
         AddRootError::Failed(format!("committing root {}: {e}", canonical.display()))
     })?;
     match placed {
-        Placed::New(root) => probed(conn, root),
+        Placed::New(root) => Ok(probed(root)),
         Placed::Linked(added) => Ok(added),
     }
 }
@@ -812,33 +808,20 @@ fn reads_as_one_volume(conn: &Connection, root_id: i64, rel_path: &str) -> Resul
     .map_err(|e| format!("reading whether {rel_path} is read as one volume: {e}"))
 }
 
-/// [`add_root_checked_in`]'s third validation, for a root just inserted: the
-/// watch probe, and the interval it implies written to the row.
-fn probed(conn: &Connection, root: Root) -> Result<Added, AddRootError> {
+/// [`add_root_checked_in`]'s third step, for a root just inserted: the watch
+/// probe, reported and not written, so the row stays Automatic
+/// ([`crate::schedule::every`]).
+fn probed(root: Root) -> Added {
     let probe = crate::watch::probe(&root.path, PROBE_TIMEOUT);
     let interval = crate::watch::interval_for(&probe);
-    let interval_secs = interval.as_secs() as i64;
-    update_root(
-        conn,
-        root.id,
-        &RootPatch {
-            scan_interval_secs: Some(Some(interval_secs)),
-            ..Default::default()
-        },
-    )
-    .map_err(AddRootError::Failed)?;
-
-    Ok(Added {
-        root: Root {
-            scan_interval_secs: Some(interval_secs),
-            ..root
-        },
+    Added {
+        root,
         probe: Some(probe),
         interval: Some(interval),
         also_in: Vec::new(),
         last_scan_at: None,
         last_scan_status: None,
-    })
+    }
 }
 
 /// What [`create_library`] made.
@@ -867,8 +850,7 @@ pub struct Created {
 /// Returns [`AddRootError::Unusable`] for no path, a name
 /// [`crate::libraries::usable_name`] refuses or that a library already holds,
 /// a path [`add_root_checked_in`] would refuse, or two of the paths
-/// overlapping. Returns [`AddRootError::Failed`] if the store refuses; a fault
-/// while recording a probe's interval is one, and by then the library exists.
+/// overlapping. Returns [`AddRootError::Failed`] if the store refuses.
 pub fn create_library(
     conn: &Connection,
     name: &str,
@@ -956,7 +938,7 @@ pub fn create_library(
     let mut dirs = Vec::with_capacity(placed.len());
     for one in placed {
         dirs.push(match one {
-            Placed::New(root) => probed(conn, root)?,
+            Placed::New(root) => probed(root),
             Placed::Linked(added) => added,
         });
     }
@@ -2491,16 +2473,16 @@ impl ScanReport {
 /// `last_scan_at` is `datetime('now')`, SQLite's own clock rather than this
 /// process's, so a scan run from a container with a skewed clock still agrees
 /// with every other timestamp the same database already keeps that way.
-/// `last_scan_status` is one of three words: `"ok"` (recorded and applied),
-/// `"refused"` (§8.1 — nothing was applied, and this call still says so
-/// rather than leaving the column to read as "never scanned"), or `"failed"`
-/// (an `Err` below — a permission refusal on the root's own directory, a
-/// symlink cycle past [`MAX_DEPTH`], or a database statement failing
-/// outright). The write itself is a plain, separate statement, issued after
-/// whatever transaction the scan itself opened has already committed or
-/// rolled back — never inside it — so a scan that failed and rolled back
-/// still leaves a truthful `"failed"` behind rather than losing the write
-/// along with everything else the transaction undid.
+/// `last_scan_status` is one of three words here: `"ok"` (recorded and
+/// applied), `"refused"` (§8.1 — nothing was applied, and this call still says
+/// so rather than leaving the column to read as "never scanned"), or
+/// `"failed"` (an `Err` below — a permission refusal on the root's own
+/// directory, a symlink cycle past [`MAX_DEPTH`], or a database statement
+/// failing outright). `taiyaku-serve`'s scan job adds `"waiting"` and
+/// `"deriving"`, and its start `"interrupted"`, through the functions beside
+/// this one (O51, O186). The write is a separate statement, after the scan's
+/// own transaction has committed or rolled back, so a scan that rolled back
+/// still leaves a truthful `"failed"`.
 ///
 /// # Errors
 ///
@@ -2528,7 +2510,13 @@ impl ScanReport {
 /// transaction that writes them, `root.id` still names `root.path`, and the
 /// status write here asks the same, so neither lands on another root.
 pub fn scan_root(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
-    let result = scan_root_inner(conn, root);
+    // A pass that walks again follows another writer's commit to this
+    // directory's entries, so the loop ends once they stop moving.
+    let result = loop {
+        if let Some(walked) = scan_root_inner(conn, root).transpose() {
+            break walked;
+        }
+    };
     let status = match &result {
         Ok(report) if report.refused.is_some() => "refused",
         Ok(_) => "ok",
@@ -2549,18 +2537,18 @@ pub fn scan_root(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
     result
 }
 
-/// Correct `last_scan_status` to `"failed"` after a walk this function had
-/// nothing to do with has already recorded `"ok"`.
+/// Correct `last_scan_status` from `"deriving"` or `"waiting"` to `"failed"`
+/// where the derive after a walk failed; a refused or failed walk keeps its word (O186).
 ///
 /// **The one caller this exists for**: `taiyaku-serve`'s scan job runs
 /// [`scan_root`] on each directory it was given and then
 /// [`fn@crate::derive::derive`] once, and folds both into the one report
 /// C4 §3's screen shows. [`scan_root`] itself only ever sees the walk — it
 /// writes `"ok"` the moment that commits, before the derive half of the job
-/// has even started — so a derive that then fails would leave that `"ok"`
-/// standing: the walk genuinely succeeded, but the library it now describes
-/// may be only partly derived. `taiyaku-cli`'s own `library scan` does not
-/// call it: an `Err` from its derive fails the whole command.
+/// has even started — and the job then marks it `"deriving"`: a derive that
+/// fails would leave that standing, though the library the walk describes may
+/// be only partly derived. `taiyaku-cli`'s own `library scan` does not call
+/// it: an `Err` from its derive fails the whole command.
 ///
 /// Kept here, not in `taiyaku-serve`, for the reason [`scan_root`]'s own doc
 /// comment states about `last_scan_at`/`last_scan_status`: there is exactly
@@ -2576,7 +2564,8 @@ pub fn scan_root(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
 /// Returns an error only if the `UPDATE` itself is refused.
 pub fn mark_derive_failed(conn: &Connection, root: &Root) -> Result<(), String> {
     conn.execute(
-        "UPDATE root SET last_scan_status = 'failed' WHERE id = ?1 AND path = ?2",
+        "UPDATE root SET last_scan_status = 'failed' \
+         WHERE id = ?1 AND path = ?2 AND last_scan_status IN ('deriving', 'waiting')",
         rusqlite::params![root.id, root.path.to_string_lossy()],
     )
     .map_err(|e| {
@@ -2588,10 +2577,208 @@ pub fn mark_derive_failed(conn: &Connection, root: &Root) -> Result<(), String> 
     Ok(())
 }
 
+/// Mark `root` `"deriving"` where its walk has just written `"ok"`, until
+/// [`mark_derived`] or [`mark_derive_failed`] ends it (O186). A stop between
+/// leaves `"deriving"` for the server's next start to rewrite
+/// ([`interrupt_derives`]). The CLI does not call it (spec §4, Decision 10).
+///
+/// Only over `"ok"`, so a refused walk keeps `"refused"`, and only where
+/// `root.id` still names `root.path`, as [`scan_root`] writes.
+///
+/// # Errors
+///
+/// If the `UPDATE` is refused.
+pub fn mark_deriving(conn: &Connection, root: &Root) -> Result<(), String> {
+    conn.execute(
+        "UPDATE root SET last_scan_status = 'deriving' \
+         WHERE id = ?1 AND path = ?2 AND last_scan_status = 'ok'",
+        rusqlite::params![root.id, root.path.to_string_lossy()],
+    )
+    .map_err(|e| {
+        format!(
+            "recording that directory {} is being derived: {e}",
+            root.path.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Mark each of `roots` `"ok"` again where it reads `"deriving"` or
+/// `"waiting"`, once the derive after their walks has returned (O186). After
+/// that one derive a `"waiting"` can only be one of the job's own marks that
+/// no later write replaced (O51).
+///
+/// A root that reads anything else is left as it reads: a refused walk keeps
+/// `"refused"`. Each write asks [`mark_deriving`]'s id-and-path question.
+///
+/// # Errors
+///
+/// Returns the first refused `UPDATE`'s error. The roots after it are still
+/// marked: one refusal must not leave them `"deriving"`, which the next start
+/// would rewrite to `"interrupted"` though their derive finished.
+pub fn mark_derived(conn: &Connection, roots: &[Root]) -> Result<(), String> {
+    rewrite_each(conn, roots, &["deriving", "waiting"], "ok", "was derived")
+}
+
+/// Mark each of `roots` `"waiting"` where it reads `"deriving"`: its derive
+/// waits for the derive lease, which another derive holds (O51).
+/// [`mark_waited`] marks it `"deriving"` again once the lease is held.
+///
+/// # Errors
+///
+/// As [`mark_derived`].
+pub fn mark_waiting(conn: &Connection, roots: &[Root]) -> Result<(), String> {
+    rewrite_each(
+        conn,
+        roots,
+        &["deriving"],
+        "waiting",
+        "waits for another derive",
+    )
+}
+
+/// Mark each of `roots` `"deriving"` again where it reads `"waiting"`, once
+/// its derive holds the lease (O51). A walk that reads anything else, a
+/// `"refused"` or another scan's `"ok"`, keeps it.
+///
+/// # Errors
+///
+/// As [`mark_derived`].
+pub fn mark_waited(conn: &Connection, roots: &[Root]) -> Result<(), String> {
+    rewrite_each(conn, roots, &["waiting"], "deriving", "is being derived")
+}
+
+/// A directory [`mark_queued`] marked `"waiting"`, with the word it read
+/// before, which [`unmark_queued`] writes back.
+#[derive(Debug)]
+pub struct Queued {
+    root: Root,
+    before: Option<String>,
+}
+
+/// Mark each of `roots` `"waiting"`: its scan has not started, because
+/// another job in the server holds the job lock (O51). Answers the
+/// directories marked, each with its word before, for [`unmark_queued`].
+///
+/// Each write asks that the word is still the one just read, and
+/// [`mark_deriving`]'s id-and-path question, so a word another writer
+/// changed meanwhile is left as it reads, and not written back later.
+///
+/// Best-effort, as every status write of the job is: a directory whose read
+/// or write is refused is left as it reads and is not answered.
+pub fn mark_queued(conn: &Connection, roots: &[Root]) -> Vec<Queued> {
+    roots
+        .iter()
+        .filter_map(|root| {
+            let path = root.path.to_string_lossy();
+            let before: Option<String> = conn
+                .query_row(
+                    "SELECT last_scan_status FROM root WHERE id = ?1 AND path = ?2",
+                    rusqlite::params![root.id, path],
+                    |r| r.get(0),
+                )
+                .ok()?;
+            let marked = conn
+                .execute(
+                    "UPDATE root SET last_scan_status = 'waiting' \
+                     WHERE id = ?1 AND path = ?2 AND last_scan_status IS ?3",
+                    rusqlite::params![root.id, path, before],
+                )
+                .ok()?;
+            (marked == 1).then(|| Queued {
+                root: root.clone(),
+                before,
+            })
+        })
+        .collect()
+}
+
+/// Write back each of `queued`'s word where it still reads `"waiting"`, once
+/// its scan holds the job lock: until its walk records, it reads what its
+/// last scan left.
+///
+/// # Errors
+///
+/// As [`mark_derived`].
+pub fn unmark_queued(conn: &Connection, queued: &[Queued]) -> Result<(), String> {
+    let mut first_refusal = None;
+    for Queued { root, before } in queued {
+        if let Err(e) = conn.execute(
+            "UPDATE root SET last_scan_status = ?3 \
+             WHERE id = ?1 AND path = ?2 AND last_scan_status = 'waiting'",
+            rusqlite::params![root.id, root.path.to_string_lossy(), before],
+        ) {
+            first_refusal.get_or_insert_with(|| {
+                format!(
+                    "recording that directory {} has started its scan: {e}",
+                    root.path.display()
+                )
+            });
+        }
+    }
+    first_refusal.map_or(Ok(()), Err)
+}
+
+/// Rewrite each of `roots` to `to`, where it reads one of `from` and its id
+/// still names its path, as [`scan_root`] writes; `done` says what the write
+/// records, in the error.
+fn rewrite_each(
+    conn: &Connection,
+    roots: &[Root],
+    from: &[&str],
+    to: &str,
+    done: &str,
+) -> Result<(), String> {
+    let sql = format!(
+        "UPDATE root SET last_scan_status = ? \
+         WHERE id = ? AND path = ? AND last_scan_status IN ({})",
+        vec!["?"; from.len()].join(", ")
+    );
+    let mut first_refusal = None;
+    for root in roots {
+        let path = root.path.to_string_lossy();
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&to, &root.id, &path];
+        values.extend(from.iter().map(|word| word as &dyn rusqlite::ToSql));
+        if let Err(e) = conn.execute(&sql, values.as_slice()) {
+            first_refusal.get_or_insert_with(|| {
+                format!(
+                    "recording that directory {} {done}: {e}",
+                    root.path.display()
+                )
+            });
+        }
+    }
+    first_refusal.map_or(Ok(()), Err)
+}
+
+/// Rewrite every `"deriving"` and `"waiting"` to `"interrupted"`, and answer
+/// how many were rewritten (O186).
+///
+/// **For `taiyaku-serve` at its start, before any scan of its own can begin.**
+/// Only the server writes either word, so there one is a scan that a stop, a
+/// panic or a refused write (O272) left without its last word, and leaving it
+/// would read as one still running. The directory's next scan writes its
+/// status again.
+///
+/// # Errors
+///
+/// Returns an error only if the `UPDATE` itself is refused.
+pub fn interrupt_derives(conn: &Connection) -> Result<usize, String> {
+    conn.execute(
+        "UPDATE root SET last_scan_status = 'interrupted' \
+         WHERE last_scan_status IN ('deriving', 'waiting')",
+        [],
+    )
+    .map_err(|e| format!("rewriting the deriving and waiting statuses to interrupted: {e}"))
+}
+
 /// The walk itself — see [`scan_root`], which wraps this to record the
 /// outcome on `root.last_scan_at`/`last_scan_status` regardless of which of
 /// the three ways out below this function takes.
-fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
+///
+/// `Ok(None)` is a fourth, which records nothing: another writer changed this
+/// directory's entries after the walk read them, so [`scan_root`] walks again.
+fn scan_root_inner(conn: &Connection, root: &Root) -> Result<Option<ScanReport>, String> {
     let excluder = Excluder::build(root.exclude_globs.as_deref());
     // Spec §4: a file under a directory nested in this one is that
     // directory's to scan, by its rules, so this walk does not descend into
@@ -2692,7 +2879,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
                      it held."
                 )
             };
-            return Ok(ScanReport {
+            return Ok(Some(ScanReport {
                 root: root.path.clone(),
                 dirs: 0,
                 files: 0,
@@ -2714,7 +2901,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
                      reading positions and notes attached to them. {remedy}",
                     root.path.display()
                 )),
-            });
+            }));
         }
     }
 
@@ -2752,6 +2939,15 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
             "{} was removed while it was being scanned, so nothing was recorded",
             root.path.display()
         ));
+    }
+    // `record` and `forget_unseen` act on `held`, read before `BEGIN`. Another
+    // scan of this directory (the server's schedule beside a CLI `library
+    // scan`) may have committed since: on that stale read the second to commit
+    // fails a new entry on `UNIQUE (root_id, rel_path)`, or writes over what
+    // the first recorded. Asked again under the write lock, a read that moved
+    // records nothing here, and the walk starts over from the store as it is.
+    if held_for(&tx, root.id)? != held {
+        return Ok(None);
     }
     let mut report = ScanReport::for_root(&root.path);
     report.unreadable_dirs = walk.unreadable;
@@ -2803,7 +2999,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
             root.path.display()
         )
     })?;
-    Ok(report)
+    Ok(Some(report))
 }
 
 /// One thing the walk found, before anything has been decided about it.
@@ -3047,7 +3243,7 @@ struct Resolved {
 ///
 /// A named type, the shape [`Seen`], [`Resolved`] and [`Measured`] use. `Copy`
 /// because `held_for`'s map is read by value throughout this module.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Held {
     size: i64,
     mtime: i64,
@@ -3058,9 +3254,9 @@ struct Held {
 ///
 /// One query rather than one per entry, and outside the transaction, so the
 /// decision about what needs opening is made before any lock is taken. That
-/// also makes it a snapshot: a concurrent writer could change a row between
-/// this read and `record`'s, and `record` would branch on the stale value it
-/// was handed.
+/// makes it a snapshot another writer can move before the transaction opens,
+/// so [`scan_root_inner`] reads it again inside, and walks again where the
+/// two differ.
 fn held_for(conn: &Connection, root_id: i64) -> Result<HashMap<String, Held>, String> {
     let mut stmt = conn
         .prepare("SELECT rel_path, size, mtime, kind FROM scan_entry WHERE root_id = ?1")

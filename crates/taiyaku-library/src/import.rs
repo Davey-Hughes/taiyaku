@@ -434,7 +434,7 @@ fn drop_stale_spoke(
 /// The work holding `key`: `content_key` is unique across the store, so
 /// content is one work whichever libraries hold it (overlapping-libraries
 /// spec §3.1).
-fn find_by_key(conn: &Connection, key: &str) -> Result<Option<i64>, String> {
+pub(crate) fn find_by_key(conn: &Connection, key: &str) -> Result<Option<i64>, String> {
     conn.query_row("SELECT id FROM work WHERE content_key = ?1", [key], |row| {
         row.get(0)
     })
@@ -1117,7 +1117,7 @@ fn held_credits(conn: &Connection, edition_id: i64) -> Result<Vec<(i64, String)>
 /// for. Keyed by `sha256` alone in the map that holds these — see
 /// `held_member_meta`'s doc comment for the work-wide-match limitation that
 /// follows from that.
-struct HeldMember {
+pub(crate) struct HeldMember {
     declared: Option<f64>,
     source: Option<String>,
     /// Every directory any held row of this hash had a `member_root` row for,
@@ -1136,6 +1136,12 @@ struct HeldMember {
 }
 
 impl HeldMember {
+    /// The `(chapter_declared, chapter_source)` a new row of this hash comes
+    /// back with.
+    pub(crate) fn chapter(&self) -> (Option<f64>, Option<String>) {
+        (self.declared, self.source.clone())
+    }
+
     /// The `root_id` a new row of this hash at `path` comes back with.
     ///
     /// **The held row at the same path, else the one directory, else NULL.**
@@ -1194,7 +1200,7 @@ impl HeldMember {
 /// edition's copy its scanned directory, and a held copy is not given
 /// another's, except that a path no held row had takes the hash's one
 /// directory, which can be another edition's ([`HeldMember::root_id`]).
-fn held_member_meta(
+pub(crate) fn held_member_meta(
     conn: &Connection,
     work_id: i64,
 ) -> Result<HashMap<String, HeldMember>, String> {

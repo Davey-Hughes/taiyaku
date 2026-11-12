@@ -111,6 +111,7 @@ const dir = (
   keeps_documents: false,
   last_scan_at: '2026-10-05T21:14:09Z',
   last_scan_status: 'ok',
+  next_scan_at: null,
   libraries: [{ id: 1, name: 'Manga' }],
   nested: [],
   inside: [],
@@ -228,6 +229,7 @@ beforeEach(() => {
       library_id: id,
       held_removals: [],
       moves_held: false,
+      derive_running: false,
       scans: [],
       running: false,
       elapsed_secs: null,
@@ -1175,6 +1177,7 @@ describe('the Libraries screen in the real Shell', () => {
           library_id: id,
           held_removals: [],
           moves_held: false,
+          derive_running: false,
           scans: [],
           running: id === 1 && scanning,
           elapsed_secs: 1,
@@ -1297,6 +1300,7 @@ describe('the Libraries screen in the real Shell', () => {
         library_id: id,
         held_removals: [],
         moves_held: false,
+        derive_running: false,
         scans: [],
         running: id === 1 && !ended,
         elapsed_secs: 1,
@@ -1510,6 +1514,9 @@ describe('the Libraries screen in the real Shell', () => {
         '2026-10-01 10:00:00 UTC\u00a0·\u00a0failed',
         '8888-88-88 88:88:88 UTC\u00a0·\u00a0failed',
         '8888-88-88 88:88:88 UTC\u00a0·\u00a0refused',
+        '8888-88-88 88:88:88 UTC\u00a0·\u00a0deriving',
+        '8888-88-88 88:88:88 UTC\u00a0·\u00a0interrupted',
+        '8888-88-88 88:88:88 UTC\u00a0·\u00a0waiting',
       ])
       for (const one of held) {
         expect(getComputedStyle(one).display).toBe('none')
@@ -1544,6 +1551,7 @@ describe('the Libraries screen in the real Shell', () => {
           library_id: id,
           held_removals: [],
           moves_held: false,
+          derive_running: false,
           scans: [],
           running: id === 1 && scanning,
           elapsed_secs: 1,
@@ -1634,6 +1642,7 @@ describe('the Libraries screen in the real Shell', () => {
         library_id: id,
         held_removals: [],
         moves_held: false,
+        derive_running: false,
         scans: [],
         running: id === 1 && scanning,
         elapsed_secs: scanning ? 1 : null,
@@ -3361,6 +3370,7 @@ describe('Move… in its dialog, in the real Shell', () => {
         library_id: id,
         held_removals: [],
         moves_held: true,
+        derive_running: false,
         scans: [],
         running: false,
         elapsed_secs: null,
@@ -3397,6 +3407,56 @@ describe('Move… in its dialog, in the real Shell', () => {
     }
     within(line, dirPage)
     within(help, removal.querySelector('.settings-box') as HTMLElement)
+    expect(dirPage.scrollWidth).toBeLessThanOrEqual(dirPage.clientWidth)
+    const doc = document.documentElement
+    expect(doc.scrollWidth).toBeLessThanOrEqual(doc.clientWidth)
+  })
+
+  it('keeps the Scan schedule’s radios, Every’s count and its unit inside the box at 390, the count and its unit on Every’s line, and nothing scrolling sideways', async () => {
+    // Light novels' directory is scanned daily, so Every is chosen and its
+    // count and unit are drawn.
+    const host = await shell(390, 844, NOVELS_DIR_PAGE)
+    const dirPage = host.querySelector('.dir-page') as HTMLElement
+    const scanned = section(host, 'How it is scanned')
+    const schedule = row(scanned, 'Scan schedule')
+    const choices = [
+      ...schedule.querySelectorAll<HTMLElement>('.settings-choices label'),
+    ]
+    expect(choices.map((label) => label.textContent)).toEqual([
+      'Automatic',
+      'Every',
+      'Off',
+    ])
+    const box = schedule.querySelector(
+      'input[name="scan_every"]',
+    ) as HTMLElement
+    const unit = schedule.querySelector(
+      'select[name="scan_every_unit"]',
+    ) as HTMLElement
+    expect([box, unit].map((el) => el instanceof HTMLElement)).toEqual([
+      true,
+      true,
+    ])
+
+    const inside = (
+      scanned.querySelector('.settings-box') as HTMLElement
+    ).getBoundingClientRect()
+    for (const el of [...choices, box, unit]) {
+      const at = el.getBoundingClientRect()
+      expect(at.left).toBeGreaterThanOrEqual(inside.left - 0.5)
+      expect(at.right).toBeLessThanOrEqual(inside.right + 0.5)
+    }
+    // On Every's line: each after the one before it, and level with Every's
+    // label, not wrapped beneath it.
+    const every = choices[1].getBoundingClientRect()
+    let before = every
+    for (const el of [box, unit]) {
+      const at = el.getBoundingClientRect()
+      expect(at.left).toBeGreaterThanOrEqual(before.right - 0.5)
+      expect(at.top).toBeLessThan(every.bottom)
+      expect(at.bottom).toBeGreaterThan(every.top)
+      before = at
+    }
     expect(dirPage.scrollWidth).toBeLessThanOrEqual(dirPage.clientWidth)
     const doc = document.documentElement
     expect(doc.scrollWidth).toBeLessThanOrEqual(doc.clientWidth)

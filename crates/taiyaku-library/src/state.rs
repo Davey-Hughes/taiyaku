@@ -51,9 +51,11 @@
 //! validation all stay in `taiyaku-serve`.** This module is rows in, rows out.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use taiyaku_core::{
     Axis, Direction, Edition, Kind, MemberPage, RegionMember, Sidecar, SlotOf, TruthDoc,
     TruthEdition, TruthRegion,
@@ -257,6 +259,82 @@ pub fn put_progress_at(
     )
     .map_err(|e| format!("writing progress for work {work_id}, user {user_id}: {e}"))?;
     Ok(())
+}
+
+/// When a reader's progress save reached its handler, after authentication
+/// and the body's read: later than every arrival taken before it in this
+/// process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Arrival(u64);
+
+impl Arrival {
+    /// The next arrival, taken as the save reaches its handler and before the
+    /// handler waits for anything, so that saves are ordered as they arrived
+    /// there.
+    #[must_use]
+    pub fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// The latest [`Arrival`] written for each `(user_id, work_id)`, which
+/// [`put_progress_in_order`] checks each save against.
+#[derive(Debug, Default)]
+pub struct ProgressOrder(Mutex<HashMap<(i64, i64), Arrival>>);
+
+/// What [`put_progress_in_order`] did with a position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Landed {
+    Written,
+    /// A save of the same reader on the same work that arrived later was
+    /// written first, so the stored position is already newer than this one.
+    Superseded,
+}
+
+/// Record where a reader got to, unless a save of theirs on this work that
+/// arrived later is already written.
+///
+/// Each save waits for the write lock on a connection of its own (O272), and
+/// SQLite hands a freed lock to whichever waiter polls first, often the one
+/// that has waited least, so one reader's saves can land newest first. A lock
+/// around the save would not keep their order: `std::sync::Mutex` wakes its
+/// waiters in no set order. Keyed by work, not edition, since the edition
+/// updated last is the one a reader resumes in.
+///
+/// # Errors
+///
+/// As [`put_progress_at`]; the arrival is then not recorded.
+pub fn put_progress_in_order(
+    conn: &Connection,
+    order: &ProgressOrder,
+    arrival: Arrival,
+    work_id: i64,
+    user_id: i64,
+    progress: &Progress,
+    numbering: Numbering<'_>,
+) -> Result<Landed, String> {
+    // IMMEDIATE whatever `conn` was configured with, so the check below runs
+    // holding the store's write lock and no other save writes between it and
+    // this one's write.
+    let held = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+        .map_err(|e| format!("starting a progress write for work {work_id}: {e}"))?;
+    // Held from the check until the arrival is recorded after the commit, so
+    // the next save is never checked against a store this one has written
+    // and `order` does not yet show. Recorded only once the commit succeeds,
+    // so a save that failed never makes an older one skip its write.
+    let mut written = order.0.lock().unwrap_or_else(PoisonError::into_inner);
+    if written
+        .get(&(user_id, work_id))
+        .is_some_and(|latest| *latest > arrival)
+    {
+        return Ok(Landed::Superseded);
+    }
+    put_progress_in(&held, work_id, user_id, progress, numbering)?;
+    held.commit()
+        .map_err(|e| format!("committing progress for work {work_id}: {e}"))?;
+    written.insert((user_id, work_id), arrival);
+    Ok(Landed::Written)
 }
 
 // --- anchors (O244) --------------------------------------------------------
@@ -1046,8 +1124,7 @@ pub fn put_truth(conn: &Connection, work_id: i64, doc: &TruthDoc) -> Result<(), 
 ///
 /// Returns an error if SQLite fails.
 pub fn put_alignments(conn: &Connection, work_id: i64, doc: &Sidecar) -> Result<(), String> {
-    let tx = conn
-        .unchecked_transaction()
+    let tx = crate::Nested::open(conn, "alignments")
         .map_err(|e| format!("starting alignments transaction: {e}"))?;
     crate::import::replace_alignments(&tx, work_id, doc)?;
     tx.commit()

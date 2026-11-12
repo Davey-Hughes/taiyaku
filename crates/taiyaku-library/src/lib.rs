@@ -24,6 +24,7 @@ mod fold;
 pub mod hand;
 pub mod identity;
 pub mod import;
+pub mod lease;
 pub mod libraries;
 pub mod librarydoc;
 pub mod migrate;
@@ -38,6 +39,7 @@ pub mod reach;
 pub mod relocate;
 pub mod rules;
 pub mod scan;
+pub mod schedule;
 pub mod schema;
 pub mod stamp;
 pub mod state;
@@ -45,6 +47,7 @@ pub mod structure;
 pub mod watch;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -294,6 +297,30 @@ fn is_busy(e: &rusqlite::Error) -> bool {
     )
 }
 
+/// Run `write` once on `conn`, refused at once rather than after the busy
+/// timeout where another connection holds the store's write lock (O272):
+/// `serve` has one shared connection, and a write a request did not ask for
+/// must not hold every other request behind a derive's lock.
+///
+/// `None`, with `write` not run, where the timeout cannot be lowered. The
+/// timeout goes back to `BUSY_TIMEOUT`, which every connection this crate
+/// hands out carries, however `write` ends.
+pub fn without_waiting<T>(conn: &Connection, write: impl FnOnce(&Connection) -> T) -> Option<T> {
+    conn.busy_timeout(Duration::ZERO).ok()?;
+    let _restore = RestoresTheWait(conn);
+    Some(write(conn))
+}
+
+/// Gives a connection back [`BUSY_TIMEOUT`] when dropped, for
+/// [`without_waiting`].
+struct RestoresTheWait<'a>(&'a Connection);
+
+impl Drop for RestoresTheWait<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.busy_timeout(BUSY_TIMEOUT);
+    }
+}
+
 /// `journal_mode = WAL`, retried while another connection is in the way.
 ///
 /// **The busy timeout does not cover this one statement**, which is why it is
@@ -339,9 +366,9 @@ fn set_wal_within(conn: &Connection, budget: Duration) -> Result<(), String> {
 
 /// An open library.
 ///
-/// One connection behind a `Mutex` rather than a pool. The write volume this
-/// serves is a reading position and the occasional note; a pool would add a
-/// dependency and a failure mode to solve a contention problem nobody has.
+/// One shared connection behind a `Mutex`; a save or a long job opens its own.
+/// The write volume is a reading position and the occasional note; a pool would
+/// add a dependency and a failure mode to solve a contention problem nobody has.
 ///
 /// **That argument is about one process.** Contention *between* processes is
 /// real and expected — `serve` and `library import` share one default
@@ -359,6 +386,13 @@ pub struct Library {
     /// has two shapes rather than this being an `Option<Connection>` that
     /// every caller of `working` would have to branch on for itself.
     path: Option<PathBuf>,
+    /// Set while one of this library's own derive leases lives, so that
+    /// [`Self::derive_running`] answers for its own process without a probe,
+    /// and is the whole lease of an in-memory library.
+    deriving: AtomicBool,
+    /// Per library, not per process, so that two stores open in one process
+    /// never order each other's saves.
+    progress_order: state::ProgressOrder,
 }
 
 impl Library {
@@ -431,6 +465,8 @@ impl Library {
         Ok(Self {
             conn: Mutex::new(conn),
             path,
+            deriving: AtomicBool::new(false),
+            progress_order: state::ProgressOrder::default(),
         })
     }
 
@@ -507,19 +543,19 @@ impl Library {
         // this exact migration. The cost is that a read-only
         // `unchecked_transaction` would also take the write lock; there is
         // none, and one would be the wrong shape here anyway — `Library` hands
-        // out one connection behind a `Mutex`, and every caller of
-        // [`Self::working`] is expected to run at most one long job against
-        // it at a time.
+        // out its shared connection behind a `Mutex`, and the long jobs on
+        // [`Self::working`] are expected to run one at a time, beside readers'
+        // saves ([`Self::saving`]), each one short write.
         //
         // **A contract on the caller, not a guarantee this type provides.**
         // Every call to `working` opens an independent connection with no
         // memory of any other, so nothing here stops two long jobs running at
-        // once. A save's single `BEGIN IMMEDIATE` landing between two of a
-        // scan's own per-work transactions would replace the rule table and
+        // once. A rule save's single `BEGIN IMMEDIATE` landing between two of
+        // a scan's own per-work transactions would replace the rule table and
         // re-derive the whole library while the scan's already-compiled
         // `Engine` was still mid-pass under the rules that transaction just
         // replaced. `taiyaku-serve`'s `ServeState::library_job` is what makes
-        // the premise true: a lock a scan's derive and a save's
+        // the premise true: a lock a scan's derive and a rule save's
         // `preview::apply` both take before ever calling `working`, so the two
         // genuinely run one at a time rather than merely being assumed to.
         conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
@@ -541,6 +577,28 @@ impl Library {
             Ok(held) => held,
             Err(poisoned) => poisoned.into_inner(),
         }
+    }
+
+    /// A connection of its own for a reader's save: a position, notes, truth
+    /// or a correction (O272). Opened per save as [`Self::working`] opens one,
+    /// so each save waits for another connection's write lock on its own, up
+    /// to the busy timeout, and holds up no read on [`Self::conn`].
+    ///
+    /// An in-memory library has one connection, so this is [`Self::conn`]
+    /// there, and a caller holding `conn()` must not call it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::working`].
+    pub fn saving(&self) -> Result<Working<'_>, String> {
+        self.working()
+    }
+
+    /// The order this library's progress saves arrived in, for
+    /// [`state::put_progress_in_order`].
+    #[must_use]
+    pub fn progress_order(&self) -> &state::ProgressOrder {
+        &self.progress_order
     }
 
     /// Where this library lives, or `None` if it is in memory.
@@ -585,11 +643,37 @@ impl Library {
             None => Ok(Working::Shared(self.conn())),
         }
     }
+
+    /// The derive lease ([`lease`]): every whole-store derive takes it first,
+    /// so that two never interleave, in this process or another (O51).
+    ///
+    /// # Errors
+    ///
+    /// If the lock file beside the store cannot be opened, written by this
+    /// process, configured, initialised or held. `Ok(None)` only under
+    /// [`lease::Wait::No`], where another holds the lease.
+    pub fn derive_lease(
+        &self,
+        wait: lease::Wait<'_>,
+    ) -> Result<Option<lease::DeriveLease<'_>>, String> {
+        match &self.path {
+            Some(path) => lease::take_file(path, &self.deriving, wait),
+            None => Ok(lease::take_flag(&self.deriving, wait)),
+        }
+    }
+
+    /// Whether a derive holds the lease now: this library's own, else one of
+    /// another connection or process. A reading, stale as soon as it is taken.
+    #[must_use]
+    pub fn derive_running(&self) -> bool {
+        self.deriving.load(std::sync::atomic::Ordering::SeqCst)
+            || self.path.as_deref().is_some_and(lease::held_elsewhere)
+    }
 }
 
-/// A connection to run a long job on: a fresh one where [`Library`] has a
-/// file to open a second connection against, the same shared one where it
-/// does not.
+/// A connection to run a long job or a save on: a fresh one where
+/// [`Library`] has a file to open a second connection against, the same
+/// shared one where it does not.
 ///
 /// **One accessor, two shapes, so no caller of [`Library::working`] carries
 /// two code paths.** The alternative was `Library::working` returning

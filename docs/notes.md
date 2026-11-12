@@ -17750,7 +17750,10 @@ re-measured here on `6a2e72d`. The same pass escapes seven rows whose cells did
 not render.
 
 *O77 has since closed, on #153; O51 is still open. Marked here rather than
-rewritten, as the ritual asks — see both rows in `docs/status.md`.*
+rewritten, as the ritual asks — see both rows in `docs/status.md`. O51 was
+narrowed again on 2026-11-12: the add no longer writes `scan_interval_secs`,
+and the server's scheduler reads it, so the last paragraph of "O51: both
+columns are written" below no longer describes the code.*
 
 ### O77: the mutant is caught, and not on purpose
 

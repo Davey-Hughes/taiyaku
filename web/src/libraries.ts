@@ -291,6 +291,29 @@ export interface LibraryScanStatus {
    * removal from a library.
    */
   moves_held: boolean
+  /**
+   * Whether a derive holds the store's derive lease, in this server or
+   * another process, for which it refuses every removal (O51).
+   */
+  derive_running: boolean
+}
+
+/**
+ * Why the server refuses a removal now: a scan of a directory around or
+ * inside it (`around`), or a derive holding the lease (`derive`). Where both
+ * hold, `around` is the one said, as the more specific.
+ */
+export type RemovalHold = 'around' | 'derive' | undefined
+
+export const removalHold = (around: boolean, derive: boolean): RemovalHold =>
+  around ? 'around' : derive ? 'derive' : undefined
+
+/** `GET /api/library/derive`. */
+export interface DeriveStatus {
+  /** A derive holds the derive lease, in this server or another process. */
+  derive_running: boolean
+  /** A library job holds the server's job lock (the serve crate's `LibraryJob`). */
+  job_held: boolean
 }
 
 /** `GET /api/library/dirs`: one directory's subdirectories, or the prefixes. */
@@ -309,6 +332,8 @@ async function expectBody<T>(sent: Promise<T | undefined>): Promise<T> {
     throw new Error('expected a JSON body, got an empty 204')
   return body
 }
+
+export const deriveStatus = () => getJson<DeriveStatus>('/api/library/derive')
 
 export const listLibraries = () =>
   getJson<{ libraries: Library[] }>('/api/library/libraries')

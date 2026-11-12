@@ -30,7 +30,8 @@ pub struct LibraryJob {
 ///
 /// It names no one holder because [`LibraryJob`] records only that the lock
 /// is held, not who holds it: a sentence naming some of its takers is wrong
-/// whenever one it leaves out holds the lock (O245).
+/// whenever one it leaves out holds the lock (O245). The derive lease, this
+/// lock's cross-process half for a derive, refuses in the same words (O51).
 pub(crate) fn waits_for_the_job(to_do: &str) -> String {
     format!("a scan or another library job is running; {to_do} once it has finished")
 }

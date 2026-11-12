@@ -295,10 +295,13 @@ export type RowProps = {
        * box is the radio group: the row's label names it and the help
        * describes it, and both are read as focus enters it. A literal role,
        * so that a group of checkboxes can be added as `'group'` beside it.
+       * A function child is handed the ids, for a control in the group that
+       * is not a radio, as Every's count is: the help describes it too, and
+       * the row's label, naming the group, labels nothing.
        */
       group: 'radiogroup'
       action?: never
-      children: ReactNode
+      children: ReactNode | ((ids: RowIds) => ReactNode)
     }
 )
 
@@ -321,7 +324,7 @@ export function Row({
   return (
     <div className={check ? 'settings-row settings-row-check' : 'settings-row'}>
       <div className="settings-row-text">
-        {form && !action ? (
+        {form && !action && group === undefined ? (
           <label className="settings-row-label" htmlFor={ids.control}>
             {/* One element, because under a coarse pointer a check row's
                 label is a grid (`settings.css`) and each child of a grid is

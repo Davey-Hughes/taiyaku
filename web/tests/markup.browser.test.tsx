@@ -50,6 +50,7 @@ const root = (over: Partial<LibraryDir> = {}): LibraryDir => ({
   keeps_documents: false,
   last_scan_at: null,
   last_scan_status: null,
+  next_scan_at: null,
   libraries: [{ id: 70, name: 'Manga' }],
   nested: [],
   inside: [],

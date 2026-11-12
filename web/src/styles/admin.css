@@ -978,12 +978,20 @@
 
 /* The line's whole width, so nothing shares it, with its words held to
    the reading measure by the room kept at its end. Contained, so the
-   words give the column no width of their own. */
+   words give the column no width of their own. Why Save is held (O51)
+   comes first, before Import's words, and moves no button as it comes. */
+.editor-actions > .save-waits,
 .editor-actions .import > p {
   order: 1;
   flex-basis: 100%;
   contain: inline-size;
   padding-inline-end: max(0px, 100% - 60ch);
+}
+
+/* Muted as the stamp's and the directory page's why-lines are: it goes as
+   the hold ends, and is no fault to act on. */
+.editor-actions > .save-waits {
+  color: var(--muted);
 }
 
 /* The rule list — §10.4. An `<ol>` whose markers are off because the row

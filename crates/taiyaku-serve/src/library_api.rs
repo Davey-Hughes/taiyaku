@@ -17,10 +17,10 @@
 //! # Every handler reads the library on the blocking pool
 //!
 //! Every browse request reads `state.library`, whatever the grant, because
-//! `browse` applies a grant in SQL; and the library is one connection behind
-//! a mutex (O42). Each handler asks through `on_the_library`, so its wait
-//! on that mutex and its queries run on the blocking pool rather than on a
-//! tokio worker thread, where they would stall the whole worker.
+//! `browse` applies a grant in SQL; and the library's reads share one
+//! connection behind a mutex (O42). Each handler asks through `on_the_library`,
+//! so its wait on that mutex and its queries run on the blocking pool rather
+//! than on a tokio worker thread, where they would stall the whole worker.
 
 use crate::{ServeState, auth::Principal};
 use axum::{

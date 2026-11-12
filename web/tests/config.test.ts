@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Unauthenticated } from '../src/api'
 import {
   humanInterval,
+  lastScan,
   listRoots,
   patchRoot,
   regimeFacts,
@@ -25,6 +26,7 @@ const root = (over: Partial<Root> = {}): Root => ({
   keeps_documents: false,
   last_scan_at: '2026-09-04T10:00:00Z',
   last_scan_status: 'ok',
+  next_scan_at: null,
   ...over,
 })
 
@@ -65,34 +67,115 @@ describe('humanInterval', () => {
     expect(humanInterval(30)).toBe('30s')
   })
 
-  it('rounds down rather than inventing precision', () => {
-    // 90 minutes is 1h, not "1.5h": the interval is a coarse operational
-    // fact and a fractional hour reads as a measurement it is not.
-    expect(humanInterval(5400)).toBe('1h')
+  it('reads an interval that is not whole hours in minutes, as the Scan schedule counts it, rounded down', () => {
+    expect(humanInterval(5400)).toBe('90m')
+    expect(humanInterval(9000)).toBe('150m')
+    expect(humanInterval(3660)).toBe('61m')
+    expect(humanInterval(330)).toBe('5m')
   })
 })
 
 describe('regimeFacts', () => {
   // A case is here only if it exercises a behaviour none of the others do.
-  // The full-array case below subsumes "no probe", "never scanned" and "no
-  // interval set" on its own, since each is one arm of the same
-  // three-entry result.
+  // The full-array case below subsumes "no probe", "never scanned",
+  // "automatic" and "due" on its own, since each is one arm of the same
+  // four-entry result.
 
-  it('names each fact under its own label, in order watch / scan every / last scan', () => {
+  it('names each fact under its own label, in order watch / scan every / last scan / next scan', () => {
     // A directory read from a list carries no probe (only a route that adds a
-    // directory runs one) and this root has never been scanned and has no
-    // interval set — every arm at its fallback, and the order the caller's
-    // `<dl>` renders in. Spec §3.1: the honest gap beats a number nobody
-    // measured.
+    // directory runs one), and this root has never been scanned and keeps the
+    // automatic schedule — every arm at its fallback, and the order the
+    // caller's `<dl>` renders in. Spec §3.1: the honest gap beats a number
+    // nobody measured.
     const bare = root({
       scan_interval_secs: null,
       last_scan_at: null,
       last_scan_status: null,
+      next_scan_at: null,
     })
     expect(regimeFacts(bare)).toEqual([
       { label: 'watch', value: 'unknown — probed when a directory is added' },
-      { label: 'scan every', value: 'not set' },
+      { label: 'scan every', value: 'automatic' },
       { label: 'last scan', value: 'never' },
+      { label: 'next scan', value: 'due' },
+    ])
+  })
+
+  it('says off for both the schedule and the next scan of a directory set to Off', () => {
+    // Scanned, so the next scan's null is the Off's and not a first scan's:
+    // only the interval tells the two apart.
+    const off = root({
+      scan_interval_secs: 0,
+      last_scan_at: '2026-11-10 12:00:00',
+      last_scan_status: 'ok',
+      next_scan_at: null,
+    })
+    expect(regimeFacts(off).slice(1)).toEqual([
+      { label: 'scan every', value: 'off' },
+      { label: 'last scan', value: '2026-11-10 12:00:00 UTC\u00a0·\u00a0ok' },
+      { label: 'next scan', value: 'off' },
+    ])
+  })
+
+  it('says off for an interval below zero, as the scheduler reads one', () => {
+    const below = root({
+      scan_interval_secs: -1,
+      last_scan_at: null,
+      last_scan_status: null,
+      next_scan_at: null,
+    })
+    expect(regimeFacts(below).slice(1)).toEqual([
+      { label: 'scan every', value: 'off' },
+      { label: 'last scan', value: 'never' },
+      { label: 'next scan', value: 'off' },
+    ])
+  })
+
+  it('gives an interval in its unit and the next scan as a time in UTC', () => {
+    const hourly = root({
+      scan_interval_secs: 3600,
+      last_scan_at: '2026-11-10 12:00:00',
+      last_scan_status: 'ok',
+      next_scan_at: '2026-11-10 13:00:00',
+    })
+    expect(regimeFacts(hourly).slice(1)).toEqual([
+      { label: 'scan every', value: '1h' },
+      { label: 'last scan', value: '2026-11-10 12:00:00 UTC\u00a0·\u00a0ok' },
+      { label: 'next scan', value: '2026-11-10 13:00:00 UTC' },
+    ])
+  })
+
+  it('gives an interval of hours and minutes in minutes, as it was set, with the next scan that far on', () => {
+    const ninety = root({
+      scan_interval_secs: 5400,
+      last_scan_at: '2026-11-10 12:00:00',
+      last_scan_status: 'ok',
+      next_scan_at: '2026-11-10 13:30:00',
+    })
+    expect(regimeFacts(ninety).slice(1)).toEqual([
+      { label: 'scan every', value: '90m' },
+      { label: 'last scan', value: '2026-11-10 12:00:00 UTC · ok' },
+      { label: 'next scan', value: '2026-11-10 13:30:00 UTC' },
+    ])
+    expect(regimeFacts(root({ scan_interval_secs: 9000 }))[1]?.value).toBe(
+      '150m',
+    )
+  })
+
+  it('draws an interval under the minimum as stored, and the next scan as the server gives it', () => {
+    // Only a store written before the minimum holds such an interval. The
+    // scheduler runs it at the minimum, so the server's next scan is five
+    // minutes on, where the page's own sum would say one.
+    const quick = root({
+      scan_interval_secs: 60,
+      last_scan_at: '2026-11-10 12:00:00',
+      last_scan_status: 'ok',
+      next_scan_at: '2026-11-10 12:05:00',
+    })
+    expect(regimeFacts(quick).slice(1)).toEqual([
+      { label: 'scan every', value: '1m' },
+      { label: 'last scan', value: '2026-11-10 12:00:00 UTC · ok' },
+      { label: 'next scan', value: '2026-11-10 12:05:00 UTC' },
     ])
   })
 
@@ -138,6 +221,19 @@ describe('regimeFacts', () => {
     expect(regimeFacts(scanned)[2].value).toBe(
       '2026-09-17 08:33:49 UTC\u00a0·\u00a0outcome unrecorded',
     )
+  })
+})
+
+describe('lastScan', () => {
+  it('draws a derive cut by a restart, one still running, and one waiting for another derive, after the time as it draws a failure', () => {
+    const at = (last_scan_status: string) =>
+      lastScan({ last_scan_at: '2026-11-10 12:00:00', last_scan_status })
+    expect(['failed', 'interrupted', 'deriving', 'waiting'].map(at)).toEqual([
+      '2026-11-10 12:00:00 UTC\u00a0·\u00a0failed',
+      '2026-11-10 12:00:00 UTC\u00a0·\u00a0interrupted',
+      '2026-11-10 12:00:00 UTC\u00a0·\u00a0deriving',
+      '2026-11-10 12:00:00 UTC\u00a0·\u00a0waiting',
+    ])
   })
 })
 

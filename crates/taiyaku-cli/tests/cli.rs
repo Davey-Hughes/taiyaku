@@ -399,6 +399,102 @@ fn library_scan_add_with_a_library_says_whether_it_made_the_library() {
     );
 }
 
+/// O51: `library scan` derives only once no other derive holds the store's
+/// derive lease, and says that it waits.
+#[test]
+fn library_scan_waits_for_another_derive_and_says_so() {
+    use std::io::BufRead;
+
+    let tree = TempDir::new("cli-scan-waits-for-the-lease");
+    let db_dir = TempDir::new("cli-scan-waits-for-the-lease-db");
+    let db = db_path(&db_dir);
+    add_dir(&tree, &db, "Comics", None);
+    let elsewhere =
+        taiyaku_library::Library::open(Path::new(&db)).expect("another process's connection");
+    let held = elsewhere
+        .derive_lease(taiyaku_library::lease::Wait::No)
+        .expect("takes the lease")
+        .expect("the lease is free");
+
+    let mut scan = taiyaku()
+        .args(["library", "scan", "--db", &db])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    let stderr = scan.stderr.take().expect("the scan's stderr");
+    let (lines, read) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let waiting = "taiyaku: waiting for another derive of this library (the server's scan, \
+                   or another `library scan`) to finish";
+    let mut said = Vec::new();
+    while let Ok(line) = read.recv_timeout(std::time::Duration::from_secs(10)) {
+        let done = line == waiting;
+        said.push(line);
+        if done {
+            break;
+        }
+    }
+    let said_it = said.last().is_some_and(|line| line == waiting);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let still_running = scan.try_wait().expect("asks after the scan").is_none();
+
+    drop(held);
+    let ended = scan.wait().expect("the scan ends");
+    assert_eq!(
+        (said_it, still_running, ended.success()),
+        (true, true, true),
+        "says it waits, still waits 500 ms on, succeeds once the lease is free: {said:?}"
+    );
+}
+
+/// O51: a lock file `library scan` cannot write would hold no lease, so the
+/// scan exits 1 before it derives, naming the file and the fix.
+#[test]
+fn library_scan_refuses_a_lock_file_it_cannot_write() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tree = TempDir::new("cli-scan-read-only-lock");
+    let db_dir = TempDir::new("cli-scan-read-only-lock-db");
+    let db = db_path(&db_dir);
+    add_dir(&tree, &db, "Comics", None);
+    taiyaku_stdout(&["library", "scan", "--db", &db]);
+    let lock = format!("{db}.derive-lock");
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o444)).expect("chmod");
+    if std::fs::OpenOptions::new().write(true).open(&lock).is_ok() {
+        return;
+    }
+
+    let run = taiyaku()
+        .args(["library", "scan", "--db", &db])
+        .output()
+        .expect("the binary runs");
+
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    let refusal = format!(
+        "taiyaku: deriving: the derive lock file {lock} cannot be written by this process, so \
+         no derive can take its turn: chown it to the user taiyaku runs as, or make it \
+         writable (chmod u+w)"
+    );
+    assert_eq!(
+        (
+            run.status.code(),
+            stderr.lines().any(|line| line == refusal)
+        ),
+        (Some(1), true),
+        "{stderr}"
+    );
+}
+
 /// `scan --library` derives once its directories are walked, and derives the
 /// whole store: a directory of another library, walked before with
 /// `--no-derive`, gains its work.
@@ -1758,6 +1854,89 @@ fn serve_says_which_dirs_it_cannot_browse() {
         said_of(&from_variable),
         0,
         "a flag replaces the variable, so the variable's directory is not in use: {seen:?}"
+    );
+}
+
+/// O186: a live server marks the scans an earlier process cut during their
+/// derive, or while they waited, before it says it is listening, and so
+/// before it starts the scheduler, whose first batch the rewrite would
+/// otherwise reach. One process's stderr is the only place the two are seen
+/// in order.
+///
+/// The cut directories are Off, so no scan of the server's own touches them.
+#[cfg(unix)]
+#[test]
+fn serve_marks_cut_derives_interrupted_before_it_says_it_is_listening() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let dir = TempDir::new("cli-serve-cut-derive");
+    let waited = TempDir::new("cli-serve-cut-wait");
+    let db_dir = TempDir::new("cli-serve-cut-derive-db");
+    let cache = TempDir::new("cli-serve-cut-derive-cache");
+    let db = db_path(&db_dir);
+    {
+        let library = taiyaku_library::Library::open(Path::new(&db)).expect("opens");
+        let conn = library.conn();
+        for (path, word) in [(&dir, "deriving"), (&waited, "waiting")] {
+            let root = taiyaku_library::scan::add_root(&conn, path).expect("adds the directory");
+            conn.execute(
+                "UPDATE root SET last_scan_status = ?2, scan_interval_secs = 0 WHERE id = ?1",
+                rusqlite::params![root.id, word],
+            )
+            .expect("leaves it cut while it waited or derived, and Off");
+        }
+    }
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let addr = probe.local_addr().expect("reads the port").to_string();
+    drop(probe);
+
+    let mut child = ServeChild(
+        taiyaku()
+            .args([
+                "serve",
+                "--db",
+                &db,
+                "--cache",
+                cache.to_str().expect("a utf-8 temp path"),
+                "--addr",
+                &addr,
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the binary runs"),
+    );
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let (said, heard) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if said.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let started = Instant::now();
+    let mut seen = Vec::new();
+    loop {
+        let left = Duration::from_secs(20).saturating_sub(started.elapsed());
+        match heard.recv_timeout(left) {
+            Ok(line) => {
+                let listening = line.contains("listening");
+                seen.push(line);
+                if listening {
+                    break;
+                }
+            }
+            Err(_) => panic!("the server never said it was listening: {seen:?}"),
+        }
+    }
+
+    assert!(
+        seen.iter().any(|line| line
+            == "marked 2 directory scan(s) cut while waiting or deriving as interrupted"),
+        "the rewrite is said before the server listens: {seen:?}"
     );
 }
 

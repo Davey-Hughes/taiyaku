@@ -65,8 +65,9 @@
  * held while a scan is known, starting, or the removal dialog is open; the
  * removal's confirm is held while a scan is known. Remove… and the confirm
  * are held too while the status names a removal waiting for a scan around or
- * inside one of the library's directories (`held_removals`), which the
- * server refuses the removal for; the status is read again each poll's
+ * inside one of the library's directories (`held_removals`), or a derive
+ * holding the lease (`derive_running`, O51), which the server refuses the
+ * removal for; the status is read again each poll's
  * interval until it names none, and once at a refusal of the removal for a
  * hold, which the page may not be drawing. A scan holds neither Rename… nor
  * Add directory…; the removal holds both, and the Directories table draws
@@ -85,16 +86,17 @@ import {
 import { NavLink, useLocation } from 'react-router'
 import {
   type Added,
-  humanInterval,
   lastScan,
   POLL_MISSES_ALLOWED,
   type RemovalAnswer,
   SCAN_POLL_MS,
   type ScanOutcome,
+  scanEvery,
   scanStatus,
   statusOf,
 } from './config'
 import { dirPath, LIBRARIES, libraryNameClash, nameAt } from './configAddress'
+import { JOB_WAITS } from './deriveHold'
 import { DirPicker } from './DirPicker'
 import { focusUnder } from './focusUnder'
 import { HeldButton } from './HeldButton'
@@ -107,6 +109,8 @@ import {
   type LibraryScanStatus,
   type NestedDir,
   namesOf,
+  type RemovalHold,
+  removalHold,
   renameLibrary,
   startLibraryScan,
 } from './libraries'
@@ -404,6 +408,15 @@ function LinkedWords({ path, also_in }: { path: string; also_in: string[] }) {
 const quieted = <T extends object>(link: T | undefined) =>
   link === undefined ? undefined : { ...link, quiet: true }
 
+/**
+ * Why a library's status holds its removal. Every read the page takes a hold
+ * from comes here, so that none of them forgets a reason.
+ */
+const removalHoldIn = (status: LibraryScanStatus | undefined): RemovalHold =>
+  status === undefined
+    ? undefined
+    : removalHold(status.held_removals.length > 0, status.derive_running)
+
 /** The directories a library's status names as scanning, by id. */
 function runningIds(status: LibraryScanStatus): ReadonlySet<number> {
   return new Set(
@@ -412,12 +425,21 @@ function runningIds(status: LibraryScanStatus): ReadonlySet<number> {
 }
 
 /**
- * A time as a Last scan cell says it after a failed scan and after a refused
- * one, in figures no time the server writes draws wider: it writes
- * `YYYY-MM-DD HH:MM:SS`, and eights are the UI face's widest figures. An ok
- * time, their opening words, is narrower than either.
+ * A time as a Last scan cell says it after each end a scan can have but ok, in
+ * figures no time the server writes draws wider: it writes
+ * `YYYY-MM-DD HH:MM:SS`, and eights are the UI face's widest figures. A scan
+ * fails or is refused; one the server runs reads `waiting` while it waits for
+ * the job lock or the lease (O51), `deriving` until its derive ends, and
+ * `interrupted` where a restart found either (O186). An ok time, their
+ * opening words, is narrower than any of them.
  */
-const WIDEST_ENDS = ['failed', 'refused'].map((status) =>
+const WIDEST_ENDS = [
+  'failed',
+  'refused',
+  'deriving',
+  'interrupted',
+  'waiting',
+].map((status) =>
   lastScan({ last_scan_at: '8888-88-88 88:88:88', last_scan_status: status }),
 )
 
@@ -556,12 +578,8 @@ export function LibraryPage({
   const [scanning, setScanning] = useState<ReadonlySet<number>>(new Set())
   /** The scans the library's status last named, by the library that asked. */
   const [scans, setScans] = useState<LibraryScanStatus['scans']>([])
-  /**
-   * Whether the status last read held the library's removal for a scan
-   * around or inside one of its directories (`held_removals`), which the
-   * server refuses the removal for.
-   */
-  const [removalHeld, setRemovalHeld] = useState(false)
+  /** Why the status last read held the library's removal (`removalHoldIn`). */
+  const [removalHeld, setRemovalHeld] = useState<RemovalHold>()
   /** Bumped as each read made for `removalHeld` settles, to ask again. */
   const [heldReads, setHeldReads] = useState(0)
   /** Consecutive failed reads made for `removalHeld`. */
@@ -665,7 +683,7 @@ export function LibraryPage({
   const [taken, setTaken] = useState<LibraryScanStatus | undefined>()
   if (ready && status !== taken) {
     setTaken(status)
-    setRemovalHeld((status?.held_removals.length ?? 0) > 0)
+    setRemovalHeld(removalHoldIn(status))
     if (running && watch.from !== 'press') {
       if (status !== undefined) {
         setElapsed(status.elapsed_secs)
@@ -743,7 +761,8 @@ export function LibraryPage({
             setElapsed(now.elapsed_secs)
             setScanning(runningIds(now))
             setScans(now.scans)
-            setRemovalHeld(now.held_removals.length > 0)
+            // Remove…'s hold is `taken`'s to draw, from the answer the store
+            // applied: this one may be an answer it dropped as overtaken.
             if (now.running) {
               setWatch((was) =>
                 was.from === 'kept' ? { ...was, from: 'status' } : was,
@@ -777,15 +796,15 @@ export function LibraryPage({
     }
   }, [running, libraryId])
 
-  // A scan around or inside one of the library's directories holds its
-  // removal and is no scan this page watches, so while it holds and none of
-  // the library's runs, the status is read again each poll's interval. The
-  // read lands in the store, which hands it to `taken`; the count asks again
-  // whether or not that answer changed anything. Failed reads give the hold
-  // up as the main poll does, and say so.
+  // A scan around or inside one of the library's directories, or a derive,
+  // holds its removal and is no scan this page watches, so while it holds
+  // and none of the library's runs, the status is read again each poll's
+  // interval. The read lands in the store, which hands it to `taken`; the
+  // count asks again whether or not that answer changed anything. Failed
+  // reads give the hold up as the main poll does, and say so.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `heldReads` is what asks again once a read has settled.
   useEffect(() => {
-    if (!removalHeld || running || libraryId === undefined) return
+    if (removalHeld === undefined || running || libraryId === undefined) return
     let cancelled = false
     const timer = setTimeout(() => {
       readNow(libraryScan(libraryId)).then(
@@ -802,7 +821,7 @@ export function LibraryPage({
             return
           }
           heldMisses.current = 0
-          setRemovalHeld(false)
+          setRemovalHeld(undefined)
           setFailure(sentenceOf(err))
         },
       )
@@ -1095,7 +1114,7 @@ export function LibraryPage({
         // overtaken, and which would then hold Remove… over a hold that read
         // saw end.
         const kept = entryOf(scan)?.answer
-        if (kept !== undefined) setRemovalHeld(kept.held_removals.length > 0)
+        if (kept !== undefined) setRemovalHeld(removalHoldIn(kept))
       },
       () => undefined,
     )
@@ -1386,9 +1405,7 @@ export function LibraryPage({
                   </td>
                   <td>
                     <span className="cell-label">Scan every: </span>
-                    {root.scan_interval_secs === null
-                      ? 'not set'
-                      : humanInterval(root.scan_interval_secs)}
+                    {scanEvery(root)}
                   </td>
                   <td>
                     <span className="cell-label">Last scan: </span>
@@ -1507,9 +1524,11 @@ export function LibraryPage({
           help={
             // Why a scan it does not walk holds it, which no scan line says
             // (O250); its own scan's lines say theirs.
-            removalHeld && !running
-              ? `Waits for a scan of a directory around or inside one of ${library.name}'s directories.`
-              : 'Asks first, with what it would take.'
+            running || removalHeld === undefined
+              ? 'Asks first, with what it would take.'
+              : removalHeld === 'around'
+                ? `Waits for a scan of a directory around or inside one of ${library.name}'s directories.`
+                : JOB_WAITS
           }
           action
         >
@@ -1520,7 +1539,7 @@ export function LibraryPage({
               type="button"
               name="remove-library"
               onClick={() => setRemoving(true)}
-              held={running || removalHeld || removing}
+              held={running || removalHeld !== undefined || removing}
               disabled={starting}
               aria-describedby={ids.help}
             >
@@ -1531,7 +1550,7 @@ export function LibraryPage({
         {removing && (
           <RemoveLibrary
             library={library}
-            blocked={running || removalHeld}
+            blocked={running || removalHeld !== undefined}
             onCancel={() => {
               backToRemove.current = true
               setRemoving(false)

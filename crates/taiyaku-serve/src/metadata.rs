@@ -92,7 +92,7 @@
 //! filename (`builtin-chapter` is a seeded rule and does exactly that), but
 //! because a hand value is a person's own answer. `taiyaku_library::derive`'s
 //! `SCANNER_CHAPTER_SOURCE` names the *opposite* of that: `'filename'` is the
-//! value `derive::write_chapters` clears and rewrites on every pass; `'hand'`
+//! value `derive::write_chapters` clears and rewrites from the filename; `'hand'`
 //! and `'comicinfo'` are the ones a re-derive is scoped never to overwrite —
 //! `write_chapters`'s own doc comment states which values are protected and
 //! why. A client that could send `chapter_source: "comicinfo"` alongside a
@@ -724,7 +724,7 @@ pub(crate) async fn patch_edition(
 /// (the scanner does exactly that, seeded and on by default), but because a
 /// hand value is a person's own answer. `derive.rs`'s `SCANNER_CHAPTER_SOURCE`
 /// names the filename-derived value instead — the one `write_chapters` clears
-/// and rewrites on every pass — and `write_chapters`'s own doc comment is
+/// and rewrites from the filename — and `write_chapters`'s own doc comment is
 /// where the protected values (`hand`, `comicinfo`) are named. A client that
 /// could send `chapter_source: "comicinfo"` alongside a number a person typed
 /// would be able to launder the one into the other, and spec G's AniList sync

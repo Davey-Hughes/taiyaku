@@ -1,12 +1,14 @@
 import { act } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from '../src/config'
 import * as curation from '../src/curation'
+import * as derive from '../src/libraries'
 import { RuleEditor } from '../src/RuleEditor'
 import * as rulesApi from '../src/rules'
 import type { Impact, Override, Preview, Rule, Saved } from '../src/rules'
 import { deferred, flush } from './support/async'
 import { holdOf } from './support/held'
+import { tick } from './support/libraries'
 import { mount, rerender } from './support/mount'
 import { keptGrid } from './support/reads'
 import {
@@ -32,6 +34,13 @@ vi.mock('../src/curation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/curation')>()),
   listProposals: vi.fn(),
 }))
+vi.mock('../src/libraries', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/libraries')>()),
+  deriveStatus: vi.fn(),
+}))
+
+/** Neither a derive nor the job lock holds. */
+const FREE: derive.DeriveStatus = { derive_running: false, job_held: false }
 
 const rule = (over: Partial<Rule> = {}): Rule => ({
   id: 1,
@@ -229,6 +238,7 @@ beforeEach(() => {
   })
   vi.mocked(rulesApi.previewRules).mockResolvedValue(previewBody())
   vi.mocked(rulesApi.saveRules).mockResolvedValue(savedBody())
+  vi.mocked(derive.deriveStatus).mockResolvedValue(FREE)
 })
 
 describe('RuleEditor', () => {
@@ -1996,20 +2006,24 @@ describe('RuleEditor', () => {
 /**
  * **`runPreview`'s two `seq !== latest.current` guards.**
  *
- * Every edit fires a preview and a preview is the slow call on this screen,
- * so two are routinely outstanding and the server need not answer them in
- * order. A stale answer landing last is a Save button stating a count derived
- * for a rule list nobody is looking at.
+ * Every edit fires a preview and a preview is the slow call on this screen.
+ * One is out at a time: an edit made while one is out queues its list, which
+ * is sent as that one lands. The answer that lands then is for a rule list
+ * nobody is looking at, and drawn it would be a Save button stating a count
+ * derived for it.
  */
 describe('RuleEditor, a preview overtaken by a newer one', () => {
-  /** Select rule 2 against a held preview, then rule 1 against a prompt one. */
+  /**
+   * Select rule 2 against a held preview, then rule 1 while it is out, whose
+   * preview is held too and sent only once the first lands.
+   */
   const overtaken = async (first: Promise<Preview>) => {
     const host = await render()
+    const newer = deferred<Preview>()
     vi.mocked(rulesApi.previewRules)
       .mockReturnValueOnce(first)
-      .mockReturnValueOnce(
-        Promise.resolve(previewBody({ impact: impact({ works_rehomed: 12 }) })),
-      )
+      .mockReturnValueOnce(newer.promise)
+    const before = vi.mocked(rulesApi.previewRules).mock.calls.length
     await act(async () => {
       host.querySelectorAll<HTMLElement>('.rule-row button.select')[1].click()
       await Promise.resolve()
@@ -2019,19 +2033,25 @@ describe('RuleEditor, a preview overtaken by a newer one', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(host.querySelector('.save')?.textContent).toContain('12')
-    return host
+    const sent = () => vi.mocked(rulesApi.previewRules).mock.calls.slice(before)
+    expect(sent().map((call) => call[1])).toEqual([1])
+    return { host, newer, sent }
   }
 
-  it('does not draw the older answer over the newer one', async () => {
+  it('does not draw the older answer, and previews the newer list once it lands', async () => {
     const slow = deferred<Preview>()
-    const host = await overtaken(slow.promise)
+    const { host, newer, sent } = await overtaken(slow.promise)
     await flush(() =>
       slow.resolve(previewBody({ impact: impact({ works_rehomed: 99 }) })),
     )
-    const save = host.querySelector('.save')?.textContent ?? ''
-    expect(save).toContain('12')
-    expect(save).not.toContain('99')
+    expect(sent().map((call) => call[1])).toEqual([1, 0])
+    expect(host.querySelector('.save')?.textContent).not.toContain('99')
+    expect(await savesSentByPress(host)).toBe(0)
+    await flush(() =>
+      newer.resolve(previewBody({ impact: impact({ works_rehomed: 12 }) })),
+    )
+    expect(host.querySelector('.save')?.textContent).toContain('12')
+    expect(holdOf(saveButton(host))).toBe('free')
   })
 
   it("does not let the older answer's failure invalidate the newer one", async () => {
@@ -2039,8 +2059,13 @@ describe('RuleEditor, a preview overtaken by a newer one', () => {
     // the reason this guard is not merely cosmetic: a stale rejection without
     // it holds Save over a preview that succeeded afterwards.
     const slow = deferred<Preview>()
-    const host = await overtaken(slow.promise)
+    const { host, newer, sent } = await overtaken(slow.promise)
     await flush(() => slow.reject(new Error('/api/library/rules/preview: 500')))
+    expect(sent().map((call) => call[1])).toEqual([1, 0])
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    await flush(() =>
+      newer.resolve(previewBody({ impact: impact({ works_rehomed: 12 }) })),
+    )
     expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(host.querySelector('.save')?.textContent).toContain('12')
     expect(holdOf(saveButton(host))).toBe('free')
@@ -2665,5 +2690,372 @@ describe('RuleEditor’s reads', () => {
 
     await flush(() => reread.resolve({ rules: imported, complaints: [] }))
     expect(names(host)).toEqual(['Imported A', 'Imported B'])
+  })
+})
+
+describe('RuleEditor, held while a derive or the job lock holds (O51)', () => {
+  const JOB_WAITS = 'Waits for a scan or another library job to finish.'
+  const DERIVING = { derive_running: true, job_held: false }
+  const JOB = { derive_running: false, job_held: true }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** What the Preview box's panel says. */
+  const pane = (host: HTMLElement) =>
+    host.querySelector('.preview [role="tabpanel"]')?.textContent
+  /** What Save's `aria-describedby` names, or nothing where it names none. */
+  const saveWaits = (host: HTMLElement) =>
+    document.getElementById(
+      saveButton(host).getAttribute('aria-describedby') ?? '',
+    )?.textContent
+  const alerts = (host: HTMLElement) =>
+    [...host.querySelectorAll('[role="alert"]')].map((one) => one.textContent)
+  /** The first rule's enable box, a gesture that previews. */
+  const toggle = (host: HTMLElement) =>
+    act(async () => {
+      host
+        .querySelectorAll<HTMLInputElement>(
+          '.rule-row input[type="checkbox"]',
+        )[0]
+        .click()
+      await Promise.resolve()
+    })
+
+  it('sends no preview for an edit while a derive holds the lease, says why in the preview’s place, and previews the list on screen once when a poll finds it free', async () => {
+    vi.mocked(derive.deriveStatus).mockResolvedValue(DERIVING)
+    const host = await render()
+    await flush()
+    expect(pane(host)).toBe(JOB_WAITS)
+    vi.mocked(rulesApi.previewRules).mockClear()
+
+    await toggle(host)
+    expect(rulesApi.previewRules).not.toHaveBeenCalled()
+    expect(pane(host)).toBe(JOB_WAITS)
+    await tick()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(2)
+    expect(rulesApi.previewRules).not.toHaveBeenCalled()
+
+    vi.mocked(derive.deriveStatus).mockResolvedValue(FREE)
+    await tick()
+    await flush()
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(rulesApi.previewRules).mock.calls[0][0][0].enabled).toBe(
+      false,
+    )
+    expect(pane(host)).not.toContain(JOB_WAITS)
+    await tick()
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    { holder: 'a derive', status: DERIVING },
+    { holder: 'the job lock', status: JOB },
+  ])(
+    'holds Save while $holder holds, says why beside it, sends nothing for a press, and frees it once a poll finds neither',
+    async ({ status }) => {
+      vi.mocked(derive.deriveStatus).mockResolvedValue(status)
+      const host = await render()
+      await flush()
+      expect(holdOf(saveButton(host))).toBe('held')
+      expect(saveWaits(host)).toBe(JOB_WAITS)
+      expect(await savesSentByPress(host)).toBe(0)
+
+      vi.mocked(derive.deriveStatus).mockResolvedValue(FREE)
+      await tick()
+      await flush()
+      expect(holdOf(saveButton(host))).toBe('free')
+      expect(saveWaits(host)).toBeUndefined()
+      expect(await savesSentByPress(host)).toBe(1)
+    },
+  )
+
+  it('previews while only the job lock holds, which refuses no preview', async () => {
+    vi.mocked(derive.deriveStatus).mockResolvedValue(JOB)
+    const host = await render()
+    await flush()
+    vi.mocked(rulesApi.previewRules).mockClear()
+    await toggle(host)
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+    expect(pane(host)).not.toContain(JOB_WAITS)
+  })
+
+  it('keeps its own preview when a poll sent while it is out finds a derive, which may be that preview, and drops the preview on screen for a derive a poll finds once it has landed', async () => {
+    // The job lock keeps the page polling, and refuses no preview.
+    vi.mocked(derive.deriveStatus).mockResolvedValue(JOB)
+    const host = await render()
+    await flush()
+    vi.mocked(rulesApi.previewRules).mockClear()
+    const own = deferred<Preview>()
+    vi.mocked(rulesApi.previewRules).mockReturnValueOnce(own.promise)
+    await toggle(host)
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+
+    // The server counts the preview's own lease as a derive.
+    vi.mocked(derive.deriveStatus).mockResolvedValue({
+      derive_running: true,
+      job_held: true,
+    })
+    await tick()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(2)
+    expect(pane(host)).not.toBe(JOB_WAITS)
+    await flush(() =>
+      own.resolve(previewBody({ impact: impact({ works_rehomed: 5 }) })),
+    )
+    expect(saveButton(host).textContent).toBe('Save — apply to 5 works')
+    expect(pane(host)).not.toBe(JOB_WAITS)
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+
+    // Sent with nothing of the page's out, this read's derive is another's,
+    // and the preview on screen is from before it.
+    await tick()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(3)
+    expect(pane(host)).toBe(JOB_WAITS)
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+
+    vi.mocked(derive.deriveStatus).mockResolvedValue(JOB)
+    await tick()
+    await flush()
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(2)
+    expect(pane(host)).not.toBe(JOB_WAITS)
+  })
+
+  it('keeps its own preview through every poll that finds a derive while it is out, 31 s of them, draws its answer, and does not send it again once the derive ends', async () => {
+    vi.mocked(derive.deriveStatus).mockResolvedValue(JOB)
+    const host = await render()
+    await flush()
+    vi.mocked(rulesApi.previewRules).mockClear()
+    const own = deferred<Preview>()
+    vi.mocked(rulesApi.previewRules).mockReturnValueOnce(own.promise)
+    await toggle(host)
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+
+    vi.mocked(derive.deriveStatus).mockResolvedValue({
+      derive_running: true,
+      job_held: true,
+    })
+    const drawn: (string | undefined)[] = []
+    for (let second = 1; second <= 31; second += 1) {
+      await tick()
+      drawn.push(pane(host))
+    }
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(32)
+    expect(drawn).not.toContain(JOB_WAITS)
+
+    await flush(() =>
+      own.resolve(previewBody({ impact: impact({ works_rehomed: 5 }) })),
+    )
+    expect(saveButton(host).textContent).toBe('Save — apply to 5 works')
+    expect(pane(host)).not.toBe(JOB_WAITS)
+
+    vi.mocked(derive.deriveStatus).mockResolvedValue(JOB)
+    await tick()
+    await flush()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(33)
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+    expect(saveButton(host).textContent).toBe('Save — apply to 5 works')
+  })
+
+  it('reads the status again when a preview is refused for a hold, draws the hold from that read rather than a failure, and previews once it ends', async () => {
+    const host = await render()
+    await flush()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(1)
+    vi.mocked(rulesApi.previewRules).mockClear()
+    vi.mocked(rulesApi.previewRules).mockRejectedValueOnce(
+      new Error(
+        '/api/library/rules/preview: 409 {"error":"a scan or another library job is running; preview again once it has finished"}',
+      ),
+    )
+    vi.mocked(derive.deriveStatus).mockResolvedValue(DERIVING)
+    await toggle(host)
+    await flush()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(2)
+    expect(pane(host)).toBe(JOB_WAITS)
+    expect(alerts(host)).toEqual([])
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+
+    vi.mocked(derive.deriveStatus).mockResolvedValue(FREE)
+    await tick()
+    await flush()
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(2)
+    expect(pane(host)).not.toContain(JOB_WAITS)
+  })
+
+  it('previews the list on screen when the read a refused preview sends finds nothing holding', async () => {
+    const host = await render()
+    await flush()
+    vi.mocked(rulesApi.previewRules).mockClear()
+    vi.mocked(rulesApi.previewRules).mockRejectedValueOnce(
+      new Error(
+        '/api/library/rules/preview: 409 {"error":"a scan or another library job is running; preview again once it has finished"}',
+      ),
+    )
+    await toggle(host)
+    await flush()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(2)
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(rulesApi.previewRules).mock.calls[1][0][0].enabled).toBe(
+      false,
+    )
+    expect(alerts(host)).toEqual([])
+  })
+
+  it('holds nothing for its own save when the poll a discounted read left finds a derive and the job lock while the save is out, and holds Save from the read after it lands', async () => {
+    // The mount read is out as the first preview is sent, so the derive it
+    // finds may be that preview: it holds nothing, Save is free, and the
+    // status is read again a poll later.
+    const first = deferred<derive.DeriveStatus>()
+    vi.mocked(derive.deriveStatus).mockReturnValueOnce(first.promise)
+    const host = await render()
+    await flush()
+    await flush(() => first.resolve(DERIVING))
+    expect(holdOf(saveButton(host))).toBe('free')
+
+    // The server counts the save's own lease and job lock.
+    const sent = deferred<Saved>()
+    vi.mocked(rulesApi.saveRules).mockReturnValueOnce(sent.promise)
+    vi.mocked(derive.deriveStatus).mockResolvedValue({
+      derive_running: true,
+      job_held: true,
+    })
+    expect(await savesSentByPress(host)).toBe(1)
+    await tick()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(2)
+    expect(pane(host)).not.toBe(JOB_WAITS)
+    expect(saveWaits(host)).toBeUndefined()
+
+    await flush(() => sent.resolve(savedBody()))
+    await flush()
+    expect(holdOf(saveButton(host))).toBe('free')
+    expect(pane(host)).not.toBe(JOB_WAITS)
+    expect(saveWaits(host)).toBeUndefined()
+
+    // Sent with nothing of the page's out, this read's derive is another's.
+    await tick()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(3)
+    expect(holdOf(saveButton(host))).toBe('held')
+    expect(saveWaits(host)).toBe(JOB_WAITS)
+  })
+
+  it('reads the status again when a save is refused for a hold, and holds Save from that read, saying why', async () => {
+    const host = await render()
+    await flush()
+    vi.mocked(rulesApi.saveRules).mockRejectedValueOnce(
+      new Error(
+        '/api/library/rules: 409 {"error":"a scan or another library job is running; save again once it has finished"}',
+      ),
+    )
+    vi.mocked(derive.deriveStatus).mockResolvedValue(JOB)
+    expect(await savesSentByPress(host)).toBe(1)
+    await flush()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(2)
+    expect(holdOf(saveButton(host))).toBe('held')
+    expect(saveWaits(host)).toBe(JOB_WAITS)
+    expect(alerts(host)).toEqual([
+      'The rules were not saved: a scan or another library job is running; save again once it has finished',
+    ])
+  })
+
+  /** The sentence of the read that ends a run of failed ones. */
+  const LOCKED = new Error(
+    '/api/library/derive: 500 {"error":"the store is locked"}',
+  )
+
+  it('keeps Save held through two failed polls, lets go of it on the third and says why, and reads the status no more', async () => {
+    vi.mocked(derive.deriveStatus).mockResolvedValue(JOB)
+    const host = await render()
+    await flush()
+    expect(holdOf(saveButton(host))).toBe('held')
+
+    vi.mocked(derive.deriveStatus)
+      .mockRejectedValueOnce(new Error('502'))
+      .mockRejectedValueOnce(new Error('502'))
+      .mockRejectedValue(LOCKED)
+    await tick()
+    await tick()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(3)
+    expect(holdOf(saveButton(host))).toBe('held')
+    expect(saveWaits(host)).toBe(JOB_WAITS)
+    expect(alerts(host)).toEqual([])
+
+    await tick()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(4)
+    expect(holdOf(saveButton(host))).toBe('free')
+    expect(saveWaits(host)).toBeUndefined()
+    expect(alerts(host)).toEqual(['the store is locked'])
+    expect(await savesSentByPress(host)).toBe(1)
+    await tick()
+    await tick()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(4)
+  })
+
+  it('counts only consecutive failed polls toward letting go of Save', async () => {
+    vi.mocked(derive.deriveStatus).mockResolvedValue(JOB)
+    const host = await render()
+    await flush()
+    for (const answer of ['miss', 'miss', 'held', 'miss', 'miss'] as const) {
+      if (answer === 'miss')
+        vi.mocked(derive.deriveStatus).mockRejectedValueOnce(new Error('502'))
+      else vi.mocked(derive.deriveStatus).mockResolvedValueOnce(JOB)
+    }
+    for (let poll = 0; poll < 5; poll++) await tick()
+    // Four misses in five polls and never three together: still held.
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(6)
+    expect(holdOf(saveButton(host))).toBe('held')
+    expect(saveWaits(host)).toBe(JOB_WAITS)
+    expect(alerts(host)).toEqual([])
+  })
+
+  it('keeps a refused preview owed through two failed reads of the status, and on the third says why and previews the list on screen', async () => {
+    const host = await render()
+    await flush()
+    vi.mocked(rulesApi.previewRules).mockClear()
+    vi.mocked(rulesApi.previewRules).mockRejectedValueOnce(
+      new Error(
+        '/api/library/rules/preview: 409 {"error":"a scan or another library job is running; preview again once it has finished"}',
+      ),
+    )
+    vi.mocked(derive.deriveStatus)
+      .mockRejectedValueOnce(new Error('502'))
+      .mockRejectedValueOnce(new Error('502'))
+      .mockRejectedValue(LOCKED)
+    await toggle(host)
+    await flush()
+    await tick()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(3)
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(1)
+    expect(alerts(host)).toEqual([])
+
+    // The refusal held nothing a read drew, so only the given-up hold's
+    // bump of `reads` sends what the refusal owed.
+    await tick()
+    await flush()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(4)
+    expect(alerts(host)).toEqual(['the store is locked'])
+    expect(rulesApi.previewRules).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(rulesApi.previewRules).mock.calls[1][0][0].enabled).toBe(
+      false,
+    )
+    expect(holdOf(saveButton(host))).toBe('free')
+    await tick()
+    await tick()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(4)
+  })
+
+  it('holds nothing, says nothing and reads the status no more when its first read fails', async () => {
+    vi.mocked(derive.deriveStatus).mockRejectedValue(LOCKED)
+    const host = await render()
+    await flush()
+    expect(holdOf(saveButton(host))).toBe('free')
+    expect(alerts(host)).toEqual([])
+    await tick()
+    await tick()
+    await tick()
+    expect(derive.deriveStatus).toHaveBeenCalledTimes(1)
+    expect(alerts(host)).toEqual([])
   })
 })

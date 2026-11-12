@@ -2730,10 +2730,10 @@ async fn a_basic_request_with_a_wrong_password_records_its_failure_holding_its_p
 
 /// The same on the password change, which records one failure.
 ///
-/// A request by cookie makes commits of its own before the handler takes a
-/// permit, when the guard looks the session up: `session_owner` sweeps and
-/// slides it, and each is a write. The permit is free at those, since the
-/// request has none yet. The failure's record is the last commit it makes.
+/// A request by cookie makes a commit of its own before the handler takes a
+/// permit, when the guard looks the session up: `session_owner` slides it,
+/// which is a write. The permit is free at that, since the request has none
+/// yet. The failure's record is the last commit it makes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_password_change_records_its_failure_holding_its_permit() {
     let tmp = crate::test_support::Fixture::new("verify-record-change");
@@ -3199,4 +3199,203 @@ async fn a_login_verified_in_a_used_working_memory_is_answered_as_in_a_new_one()
 
     // Or none of the answers above was shown to come from a used memory.
     assert_verified_in_one_memory(&state);
+}
+
+/// O266: a cookie request with a live session is served while another
+/// connection holds the store's write lock past its busy timeout. The lookup's
+/// two writes, the sweep of an expired row and the slide of a live one, are
+/// bookkeeping, and neither can sign a reader out.
+#[tokio::test]
+async fn a_live_session_is_served_while_another_connection_holds_the_write_lock() {
+    let (router, state, _fixture) = crate::test_support::state_with_two_scanned_roots_on_disk();
+    let holder = rusqlite::Connection::open(state.library.path().expect("a store in a file"))
+        .expect("another connection");
+    holder
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("takes the write lock");
+
+    let answered = router
+        .oneshot(
+            Request::get("/api/library/roots")
+                .body(Body::empty())
+                .expect("builds the request"),
+        )
+        .await
+        .expect("answers")
+        .status();
+    holder.execute_batch("ROLLBACK").expect("releases the lock");
+
+    assert_eq!(answered, StatusCode::OK);
+}
+
+/// Well under the store's busy timeout (5 s), which a request that waited for
+/// the write lock would take.
+const NO_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// [`crate::test_support::FIXTURE_PASSWORD`] hashed with argon2id at m=8, t=1,
+/// p=1, argon2's least cost, so a password request's time is its wait and not
+/// its hash. A request answered 200 with it is the proof that it verifies.
+const CHEAP_PHC: &str =
+    "$argon2id$v=19$m=8,t=1,p=1$bzI3Mi1jaGVhcC1zYWx0$lpSyVDkw9eWsFGcgMAS8DcTIlgwKxC22nMOGecBa2Kk";
+
+/// Another connection's `BEGIN IMMEDIATE` on the fixture's store, as a derive
+/// holds it while it writes a work.
+fn holding_the_write_lock(state: &crate::ServeState) -> rusqlite::Connection {
+    let holder = rusqlite::Connection::open(state.library.path().expect("a store in a file"))
+        .expect("another connection");
+    holder
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("takes the write lock");
+    holder
+}
+
+/// How `router` answers `request`, and how long it took.
+async fn timed(router: axum::Router, request: Request<Body>) -> (StatusCode, std::time::Duration) {
+    let started = std::time::Instant::now();
+    let status = router.oneshot(request).await.expect("answers").status();
+    (status, started.elapsed())
+}
+
+/// A request for the works, authenticated by `authorization` where given and
+/// otherwise by the fixture router's own session cookie.
+fn works_request(authorization: Option<String>) -> Request<Body> {
+    let request = Request::get("/api/works");
+    let request = match authorization {
+        Some(value) => request.header("authorization", value),
+        None => request,
+    };
+    request.body(Body::empty()).expect("builds the request")
+}
+
+/// The fixture account's password through `Authorization: Basic`.
+fn basic_password() -> String {
+    use base64::Engine as _;
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(format!(
+        "{}:{}",
+        crate::test_support::FIXTURE_NAME,
+        crate::test_support::FIXTURE_PASSWORD
+    ));
+    format!("Basic {encoded}")
+}
+
+/// Gives the fixture account [`CHEAP_PHC`] and records one failure against the
+/// pair a `oneshot` request is keyed on (no peer address reads `0.0.0.0`), and
+/// answers that pair's key.
+fn a_cheap_password_with_one_failure(state: &crate::ServeState) -> String {
+    let conn = state.library.conn();
+    conn.execute(
+        "UPDATE user SET password_hash = ?1 WHERE id = 1",
+        [CHEAP_PHC],
+    )
+    .expect("sets the password");
+    let key = account::attempt_key("0.0.0.0", crate::test_support::FIXTURE_NAME);
+    account::note_failure(&conn, &key).expect("records a failure");
+    key
+}
+
+/// How many failure rows the pair `key` has.
+fn failures_of(state: &crate::ServeState, key: &str) -> i64 {
+    state
+        .library
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM login_attempt WHERE key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .expect("counts the failures")
+}
+
+/// O272: a cookie request with a live session is answered without waiting for
+/// the store's write lock to slide the session.
+#[tokio::test]
+async fn a_cookie_request_does_not_wait_for_the_write_lock_to_slide_its_session() {
+    let (router, state, _fixture) = crate::test_support::state_with_two_scanned_roots_on_disk();
+    let holder = holding_the_write_lock(&state);
+
+    let (status, took) = timed(router, works_request(None)).await;
+    holder.execute_batch("ROLLBACK").expect("releases the lock");
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(took < NO_WAIT, "the request took {took:?}");
+}
+
+/// O272: a cookie naming no live session is refused without waiting for the
+/// store's write lock to sweep its expired row.
+#[tokio::test]
+async fn a_cookie_naming_no_live_session_does_not_wait_for_the_write_lock_to_sweep_it() {
+    let (router, state, _fixture) = crate::test_support::state_with_two_scanned_roots_on_disk();
+    let stale = credential::mint_token();
+    state
+        .library
+        .conn()
+        .execute(
+            "INSERT INTO session (token_sha256, user_id, expires)
+             VALUES (?1, 1, datetime('now', '-1 hour'))",
+            [credential::token_sha256(&stale)],
+        )
+        .expect("inserts an expired session");
+    let holder = holding_the_write_lock(&state);
+
+    let request = Request::get("/api/works")
+        .header("cookie", format!("{COOKIE_NAME}={stale}"))
+        .body(Body::empty())
+        .expect("builds the request");
+    let (status, took) = timed(router, request).await;
+    holder.execute_batch("ROLLBACK").expect("releases the lock");
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(took < NO_WAIT, "the request took {took:?}");
+}
+
+/// O272: an API-key request is answered without waiting for the store's write
+/// lock to record the key's use.
+#[tokio::test]
+async fn an_api_key_request_does_not_wait_for_the_write_lock_to_touch_its_key() {
+    let (router, state, _fixture) = crate::test_support::state_with_two_scanned_roots_on_disk();
+    let holder = holding_the_write_lock(&state);
+
+    let request = works_request(Some(crate::test_support::fixture_authorization()));
+    let (status, took) = timed(router, request).await;
+    holder.execute_batch("ROLLBACK").expect("releases the lock");
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(took < NO_WAIT, "the request took {took:?}");
+}
+
+/// O272: a request a password authenticates through `Authorization: Basic` is
+/// answered without waiting for the store's write lock to forget the pair's
+/// failures, which stay for the next success to forget.
+#[tokio::test]
+async fn a_basic_password_request_does_not_wait_for_the_write_lock_to_clear_its_failures() {
+    let (router, state, _fixture) = crate::test_support::state_with_two_scanned_roots_on_disk();
+    let key = a_cheap_password_with_one_failure(&state);
+    let holder = holding_the_write_lock(&state);
+
+    let (status, took) = timed(router, works_request(Some(basic_password()))).await;
+    holder.execute_batch("ROLLBACK").expect("releases the lock");
+
+    assert_eq!(
+        (status, failures_of(&state, &key)),
+        (StatusCode::OK, 1),
+        "(the answer, the pair's failure rows)"
+    );
+    assert!(took < NO_WAIT, "the request took {took:?}");
+}
+
+/// O272: with the write lock free, a password through `Authorization: Basic`
+/// still forgets the pair's failures.
+#[tokio::test]
+async fn a_basic_password_request_clears_its_failures_while_the_write_lock_is_free() {
+    let (router, state, _fixture) = crate::test_support::state_with_two_scanned_roots_on_disk();
+    let key = a_cheap_password_with_one_failure(&state);
+
+    let (status, _) = timed(router, works_request(Some(basic_password()))).await;
+
+    assert_eq!(
+        (status, failures_of(&state, &key)),
+        (StatusCode::OK, 0),
+        "(the answer, the pair's failure rows)"
+    );
 }
