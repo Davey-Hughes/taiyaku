@@ -48,8 +48,9 @@
 //! mapped edition was drawn against the same archives on the two sides; and
 //! whether the two works hold different hand-set titles, volumes or series —
 //! and refuses the whole fold when the answer to any of them is wrong. Two
-//! copies of one note id that agree in every column are not a wrong answer:
-//! they are one note, and the superseded work's copy is dropped (O78).
+//! copies of one note id that agree in every column a reader can see are not
+//! a wrong answer: they are one note, and the superseded work's copy is
+//! dropped (O78).
 //!
 //! **A refusal is recoverable, a delete is not, and an `Err` is neither.** A
 //! refused fold leaves a volume visibly duplicated, which an operator can see
@@ -63,7 +64,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::Connection;
-use taiyaku_core::{Alignment, Sidecar, Slot, SlotSpan, Source};
+use taiyaku_core::{Alignment, Direction, Edition, MemberPage, Sidecar, Slot, SlotSpan, Source};
+
+use crate::state::{AtColumns, at_from_columns, resolve_note, resolve_position};
 
 /// What one absorption moved.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -458,13 +461,13 @@ fn stranded(
 /// Everything one `note` row says apart from whose it is and where it is kept
 /// — the columns two copies under one id must agree on to be one note.
 ///
-/// **Every column of `note` but four.** `user_id` and `id` are what
-/// [`shared_note_ids`] joins the two copies on, so they are equal by
-/// construction; `work_id` and `edition` are the two [`move_notes`] rewrites,
-/// and `edition` is compared through the map instead. Nothing else is left out:
-/// `color` is a reader's choice, and `created` and `updated` are the client's
-/// own timestamps, which `state::merge_notes` reads to decide between two
-/// copies — so two rows differing only there are not one fact.
+/// **Every column of `note` but eight.** `user_id` and `id` are what
+/// [`shared_note_ids`] joins on; `work_id` and `edition` are the two
+/// [`move_notes`] rewrites, `edition` compared through the map instead; and
+/// the four `at_` columns are what the compared slot is resolved from (O244),
+/// so a copy with none and one naming the same page are one note. Nothing
+/// else is left out: `color` is a reader's choice, and `created` and `updated`
+/// are the timestamps `state::merge_notes` decides between two copies by.
 ///
 /// **Compared here, in Rust, and not in SQL, for NULL's sake.** Five of these
 /// columns are nullable, and all five are NULL on the ordinary note — the
@@ -504,6 +507,17 @@ fn note_content(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<NoteCont
     })
 }
 
+/// One reader's two copies of one note id, as [`shared_note_ids`] reads them:
+/// each copy's content and its `at_` columns.
+struct Copies {
+    user_id: i64,
+    id: String,
+    from_key: String,
+    into_key: String,
+    source: (NoteContent, AtColumns),
+    target: (NoteContent, AtColumns),
+}
+
 /// Note ids one reader holds on both works, split by whether the two copies
 /// are one note. See [`shared_note_ids`].
 #[derive(Debug, Default)]
@@ -538,10 +552,10 @@ struct SharedNotes {
 /// catching the error after the write has begun would give up the "a refusal
 /// costs the database nothing" property as well.
 ///
-/// **Identical is every column: O78.** The rows the route above actually
-/// writes, one sidecar imported against both works, agree in everything. Two
-/// copies are one note when their [`NoteContent`] is equal and the target's
-/// `edition` is exactly the key `map` sends the source's edition to.
+/// **Identical is every column a reader can see: O78.** The rows the route
+/// above writes, one sidecar imported against both works, agree in all of
+/// them. Two copies are one note when their [`NoteContent`] is equal and the
+/// target's `edition` is the key `map` sends the source's edition to.
 /// [`edition_map`] pairs editions holding the same digests in the same order,
 /// so a region carries across unchanged, and the edition key and the slot are
 /// the parts of the anchor that move — the slot by the page and half it names,
@@ -551,12 +565,12 @@ struct SharedNotes {
 /// colour, a timestamp, a coordinate, a key — is two notes, and choosing
 /// between them is not this fold's to do.
 ///
-/// **The slot is compared where each copy will stand, not as stored.**
-/// [`plan_slots`] rewrites a slot whose edition's slot sequence the fold
-/// changes, on either work, so two copies stored under different numbers can
-/// name one page and two stored under one number can name two. `plan` answers
-/// both; a slot it cannot place has already refused the fold, so the `None` arm
-/// here is a copy that is not identical.
+/// **The slot is compared where each copy will stand, not as stored**: the
+/// slot it answers (O244), rewritten by [`plan_slots`] where the fold changes
+/// its edition's slot sequence on either work. Two copies stored under
+/// different numbers can name one page, and two stored under one number can
+/// name two pages; [`SlotPlan::placed`] answers both. A slot it cannot place
+/// has already refused the fold, so the `None` arm here is not identical.
 ///
 /// **Per reader, and `user_id` is in both the join and the result.** Two
 /// readers holding one id is migration 5's first case and is not a collision
@@ -579,7 +593,9 @@ fn shared_note_ids(
         .prepare(
             "SELECT s.user_id, s.id, s.edition, t.edition,
                     s.slot, s.rx, s.ry, s.rw, s.rh, s.color, s.body, s.created, s.updated,
-                    t.slot, t.rx, t.ry, t.rw, t.rh, t.color, t.body, t.created, t.updated
+                    s.at_sha256, s.at_nth, s.at_page, s.at_half,
+                    t.slot, t.rx, t.ry, t.rw, t.rh, t.color, t.body, t.created, t.updated,
+                    t.at_sha256, t.at_nth, t.at_page, t.at_half
                FROM note s
                JOIN note t ON t.user_id = s.user_id AND t.id = s.id AND t.work_id = ?2
               WHERE s.work_id = ?1
@@ -588,25 +604,50 @@ fn shared_note_ids(
         .map_err(|e| format!("{}: {e}", reading()))?;
     let rows = statement
         .query_map(rusqlite::params![from_work, into_work], |row| {
-            let from_key: String = row.get(2)?;
-            let into_key: String = row.get(3)?;
-            let mut source = note_content(row, 4)?;
-            let mut target = note_content(row, 13)?;
-            let placed = plan
-                .source_slot(&from_key, source.slot)
-                .zip(plan.target_slot(&into_key, target.slot));
-            let identical = map.get(&from_key) == Some(&into_key)
-                && placed.is_some_and(|(from_slot, into_slot)| {
-                    source.slot = from_slot;
-                    target.slot = into_slot;
-                    source == target
-                });
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, identical))
+            Ok(Copies {
+                user_id: row.get(0)?,
+                id: row.get(1)?,
+                from_key: row.get(2)?,
+                into_key: row.get(3)?,
+                source: (note_content(row, 4)?, at_columns(row, 13)?),
+                target: (note_content(row, 17)?, at_columns(row, 26)?),
+            })
         })
+        .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
         .map_err(|e| format!("{}: {e}", reading()))?;
     let mut shared = SharedNotes::default();
-    for row in rows {
-        let (user_id, id, identical) = row.map_err(|e| format!("{}: {e}", reading()))?;
+    for copies in rows {
+        let Copies {
+            user_id,
+            id,
+            from_key,
+            into_key,
+            source: (mut source, source_at),
+            target: (mut target, target_at),
+        } = copies;
+        let source_at = anchor(source_at, Table::Note, from_work, &from_key)?;
+        let target_at = anchor(target_at, Table::Note, into_work, &into_key)?;
+        let placed = plan
+            .placed(
+                Table::Note,
+                Side::Source,
+                &from_key,
+                source.slot,
+                source_at.as_ref(),
+            )
+            .zip(plan.placed(
+                Table::Note,
+                Side::Target,
+                &into_key,
+                target.slot,
+                target_at.as_ref(),
+            ));
+        let identical = map.get(&from_key) == Some(&into_key)
+            && placed.is_some_and(|(from_slot, into_slot)| {
+                source.slot = from_slot;
+                target.slot = into_slot;
+                source == target
+            });
         if identical {
             shared.identical.push((user_id, id));
         } else {
@@ -848,22 +889,138 @@ struct SlotPlan {
     /// Alignments of `into_work`, counted under a key [`Self::target`]
     /// resequences, whose spans would name other slots once it has.
     broken: BTreeMap<String, usize>,
+    /// Each edition of `from_work`, by key, with its work's reading
+    /// direction, as [`plan_slots`] read it: what a row there is resolved
+    /// against (O244).
+    from_layouts: BTreeMap<String, (Edition, Direction)>,
+    /// The same for `into_work`, before [`write_spreads`]: its rows were
+    /// written under these flags, and one resolved against the flags just
+    /// written would be placed from a slot already in the new sequence.
+    into_layouts: BTreeMap<String, (Edition, Direction)>,
+}
+
+/// The table a slot-addressed row is in, which decides how its anchor
+/// resolves: a position whose half is gone goes to its page, and a note stays
+/// where it was (O244).
+#[derive(Debug, Clone, Copy)]
+enum Table {
+    Progress,
+    Note,
+}
+
+impl Table {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Progress => "progress",
+            Self::Note => "note",
+        }
+    }
+}
+
+/// Which of the two works a row is on.
+#[derive(Debug, Clone, Copy)]
+enum Side {
+    /// `from_work`, which the fold takes away.
+    Source,
+    /// `into_work`, which stands.
+    Target,
 }
 
 impl SlotPlan {
-    /// Where a reader row on `from_work`'s edition `key` will stand.
-    fn source_slot(&self, key: &str, slot: i64) -> Option<i64> {
-        self.source
+    /// The slot a `table` row on `side`'s edition `key` answers before the
+    /// fold (O244): its anchor resolved against the layouts this plan read, as
+    /// `state::` resolves it, and its stored slot where the anchor names no
+    /// page there. A position whose page is gone is planned from its stored
+    /// slot as a note is, so its clamp neither refuses a fold nor is written
+    /// into the row. Placing the stored number of a row whose page is there
+    /// would carry a slot gone stale onto another page, or refuse over it.
+    fn resolved(
+        &self,
+        table: Table,
+        side: Side,
+        key: &str,
+        stored: i64,
+        at: Option<&MemberPage>,
+    ) -> i64 {
+        let layouts = match side {
+            Side::Source => &self.from_layouts,
+            Side::Target => &self.into_layouts,
+        };
+        let layout = layouts
             .get(key)
-            .map_or(Some(slot), |moved| moved.place(slot))
+            .map(|(edition, reading)| (edition, *reading));
+        u32::try_from(stored).map_or(stored, |stored| {
+            i64::from(match (table, layout, at) {
+                (Table::Progress, Some((edition, reading)), Some(at))
+                    if edition.slot_of(at, reading).is_none() =>
+                {
+                    stored
+                }
+                (Table::Progress, ..) => resolve_position(layout, stored, at),
+                (Table::Note, ..) => resolve_note(layout, stored, at).0,
+            })
+        })
     }
 
-    /// Where a row already on `into_work`'s edition `key` will stand.
-    fn target_slot(&self, key: &str, slot: i64) -> Option<i64> {
-        self.target
+    /// Where a `table` row on `side`'s edition `key` will stand: the slot it
+    /// answers ([`Self::resolved`]), placed where its page and half stands
+    /// afterwards. `None` where that page and half has no slot there; see
+    /// [`Resequenced::place`].
+    fn placed(
+        &self,
+        table: Table,
+        side: Side,
+        key: &str,
+        stored: i64,
+        at: Option<&MemberPage>,
+    ) -> Option<i64> {
+        let resequenced = match side {
+            Side::Source => &self.source,
+            Side::Target => &self.target,
+        };
+        let slot = self.resolved(table, side, key, stored, at);
+        resequenced
             .get(key)
             .map_or(Some(slot), |moved| moved.place(slot))
     }
+}
+
+/// `sidecar`'s editions by key, each with the work's reading direction.
+fn layouts(sidecar: Sidecar) -> BTreeMap<String, (Edition, Direction)> {
+    let reading = sidecar.work.reading;
+    sidecar
+        .editions
+        .into_iter()
+        .map(|(key, edition)| (key, (edition, reading)))
+        .collect()
+}
+
+/// A row's four `at_` columns, from four consecutive columns of `row`
+/// starting at `at`.
+fn at_columns(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<AtColumns> {
+    Ok(AtColumns {
+        sha256: row.get(at)?,
+        nth: row.get(at + 1)?,
+        page: row.get(at + 2)?,
+        half: row.get(at + 3)?,
+    })
+}
+
+/// The page a `table` row on `work_id`'s edition `key` names, refused as
+/// `state::` refuses it where some but not all of `at_sha256`, `at_nth` and
+/// `at_page` are set, or a half with none of them.
+fn anchor(
+    columns: AtColumns,
+    table: Table,
+    work_id: i64,
+    key: &str,
+) -> Result<Option<MemberPage>, String> {
+    at_from_columns(columns).map_err(|e| {
+        format!(
+            "a `{}` row of work {work_id} on `{key}` has {e}",
+            table.name()
+        )
+    })
 }
 
 /// Decide what a fold does to spread flags, to every reader row addressed by
@@ -976,6 +1133,8 @@ fn plan_slots(
         &standing,
         &mut plan,
     )?;
+    plan.from_layouts = layouts(source);
+    plan.into_layouts = layouts(target);
     Ok(plan)
 }
 
@@ -1172,8 +1331,9 @@ fn covered(slots: &[Slot], span: SlotSpan) -> Option<&[Slot]> {
 
 /// Rows the fold would leave naming another page, as `(work, edition key) ->
 /// [(what, rows)]`: `progress` and `note` rows that named a page and that
-/// [`SlotPlan`] cannot place, on either work, and `into_work` alignments its
-/// new spread flags would break. A row that named no page is not one of them.
+/// [`SlotPlan`] cannot place from the slot each answers, on either work, and
+/// `into_work` alignments its new spread flags would break. A row that named
+/// no page is not one of them.
 type Unplaceable = BTreeMap<(i64, String), BTreeMap<&'static str, usize>>;
 
 fn unplaceable(
@@ -1183,31 +1343,43 @@ fn unplaceable(
     plan: &SlotPlan,
 ) -> Result<Unplaceable, String> {
     let mut found = Unplaceable::new();
-    for table in ["progress", "note"] {
-        for (work_id, resequenced) in [(from_work, &plan.source), (into_work, &plan.target)] {
+    for table in [Table::Progress, Table::Note] {
+        for (work_id, side, resequenced) in [
+            (from_work, Side::Source, &plan.source),
+            (into_work, Side::Target, &plan.target),
+        ] {
             if resequenced.is_empty() {
                 continue;
             }
-            // `table` is one of the two constants above, not anything a
-            // caller supplies — `stranded` says the same of its own.
-            let rows: Vec<(String, i64)> = conn
+            let name = table.name();
+            // `name` is one of `Table`'s two constants, not anything a caller
+            // supplies — `stranded` says the same of its own.
+            let rows: Vec<(String, i64, AtColumns)> = conn
                 .prepare(&format!(
-                    "SELECT edition, slot FROM {table} WHERE work_id = ?1"
+                    "SELECT edition, slot, at_sha256, at_nth, at_page, at_half
+                       FROM {name} WHERE work_id = ?1"
                 ))
                 .and_then(|mut statement| {
                     statement
-                        .query_map([work_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                        .query_map([work_id], |row| {
+                            Ok((row.get(0)?, row.get(1)?, at_columns(row, 2)?))
+                        })?
                         .collect::<rusqlite::Result<Vec<_>>>()
                 })
-                .map_err(|e| format!("reading the `{table}` slots of work {work_id}: {e}"))?;
-            for (edition, slot) in rows {
-                if let Some(moved) = resequenced.get(&edition)
-                    && moved.place(slot).is_none()
+                .map_err(|e| format!("reading the `{name}` slots of work {work_id}: {e}"))?;
+            for (edition, stored, columns) in rows {
+                if !resequenced.contains_key(&edition) {
+                    continue;
+                }
+                let at = anchor(columns, table, work_id, &edition)?;
+                if plan
+                    .placed(table, side, &edition, stored, at.as_ref())
+                    .is_none()
                 {
                     *found
                         .entry((work_id, edition))
                         .or_default()
-                        .entry(table)
+                        .entry(name)
                         .or_default() += 1;
                 }
             }
@@ -1237,31 +1409,46 @@ fn write_spreads(conn: &Connection, into_work: i64, plan: &SlotPlan) -> Result<(
     Ok(())
 }
 
-/// Rewrite every `progress` and `note` slot on `work_id`'s resequenced
-/// editions to where its page and half stands.
+/// Rewrite every `progress` and `note` slot on `side`'s resequenced editions
+/// to where the page and half it answers stands ([`SlotPlan::placed`]).
 ///
 /// **Read whole before the first write, and keyed by each row's own key**,
 /// so a rewritten slot is never read back and rewritten again. Called for
 /// `into_work` before a single row moves onto it, which is what keeps a
 /// carried row — already placed — from being placed a second time.
+///
+/// **The slot only, never the `at_` columns** (O244): the slot is the row's
+/// fallback, and an anchor rewritten from it would lose a lost file's page.
 fn resequence_rows(
     conn: &Connection,
     work_id: i64,
-    resequenced: &BTreeMap<String, Resequenced>,
+    side: Side,
+    plan: &SlotPlan,
 ) -> Result<(), String> {
-    for (key, moved) in resequenced {
-        let positions: Vec<(i64, i64)> = conn
-            .prepare("SELECT user_id, slot FROM progress WHERE work_id = ?1 AND edition = ?2")
+    let resequenced = match side {
+        Side::Source => &plan.source,
+        Side::Target => &plan.target,
+    };
+    for key in resequenced.keys() {
+        let positions: Vec<(i64, i64, AtColumns)> = conn
+            .prepare(
+                "SELECT user_id, slot, at_sha256, at_nth, at_page, at_half
+                   FROM progress WHERE work_id = ?1 AND edition = ?2",
+            )
             .and_then(|mut statement| {
                 statement
                     .query_map(rusqlite::params![work_id, key], |row| {
-                        Ok((row.get(0)?, row.get(1)?))
+                        Ok((row.get(0)?, row.get(1)?, at_columns(row, 2)?))
                     })?
                     .collect::<rusqlite::Result<Vec<_>>>()
             })
             .map_err(|e| format!("reading the positions on `{key}` of work {work_id}: {e}"))?;
-        for (user_id, slot) in positions {
-            if let Some(placed) = moved.place(slot).filter(|placed| *placed != slot) {
+        for (user_id, slot, columns) in positions {
+            let at = anchor(columns, Table::Progress, work_id, key)?;
+            if let Some(placed) = plan
+                .placed(Table::Progress, side, key, slot, at.as_ref())
+                .filter(|placed| *placed != slot)
+            {
                 conn.execute(
                     "UPDATE progress SET slot = ?1 WHERE user_id = ?2 AND work_id = ?3 AND edition = ?4",
                     rusqlite::params![placed, user_id, work_id, key],
@@ -1269,18 +1456,25 @@ fn resequence_rows(
                 .map_err(|e| format!("placing a position on `{key}` of work {work_id}: {e}"))?;
             }
         }
-        let notes: Vec<(i64, String, i64)> = conn
-            .prepare("SELECT user_id, id, slot FROM note WHERE work_id = ?1 AND edition = ?2")
+        let notes: Vec<(i64, String, i64, AtColumns)> = conn
+            .prepare(
+                "SELECT user_id, id, slot, at_sha256, at_nth, at_page, at_half
+                   FROM note WHERE work_id = ?1 AND edition = ?2",
+            )
             .and_then(|mut statement| {
                 statement
                     .query_map(rusqlite::params![work_id, key], |row| {
-                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, at_columns(row, 3)?))
                     })?
                     .collect::<rusqlite::Result<Vec<_>>>()
             })
             .map_err(|e| format!("reading the notes on `{key}` of work {work_id}: {e}"))?;
-        for (user_id, id, slot) in notes {
-            if let Some(placed) = moved.place(slot).filter(|placed| *placed != slot) {
+        for (user_id, id, slot, columns) in notes {
+            let at = anchor(columns, Table::Note, work_id, key)?;
+            if let Some(placed) = plan
+                .placed(Table::Note, side, key, slot, at.as_ref())
+                .filter(|placed| *placed != slot)
+            {
                 conn.execute(
                     "UPDATE note SET slot = ?1 WHERE user_id = ?2 AND work_id = ?3 AND id = ?4",
                     rusqlite::params![placed, user_id, work_id, id],
@@ -1477,9 +1671,9 @@ fn carry_hand_values(
 ///    collides on a shape the schema calls supported. Refused rather than
 ///    re-keyed: the id is one the reader's own sidecar names, and rewriting it
 ///    silently is worse than declining. **Copies that agree in every column
-///    are not refused (O78)**: they are one note, and the superseded work's
-///    copy is dropped — after the last check below, so that a fold refused
-///    over anything has written nothing — and counted in
+///    a reader can see are not refused (O78)**: they are one note, and the
+///    superseded work's copy is dropped — after the last check below, so that
+///    a fold refused over anything has written nothing — and counted in
 ///    [`Moved::dropped_notes`].
 /// 6. **Ground truth meeting on one target edition that cannot be given one
 ///    provenance** — see [`truth_provenance_clashes`]. Identical `member`
@@ -1498,7 +1692,10 @@ fn carry_hand_values(
 ///
 /// # Errors
 ///
-/// Returns an error if SQLite fails. A fold it declines to make is not one of
+/// Returns an error if SQLite fails, if `project::sidecar` refuses either work
+/// (both are read whole through it), or if a `progress` or `note` row it reads
+/// has an anchor with some but not all of `at_sha256`, `at_nth` and `at_page`
+/// set, or a half with none of them. A fold it declines to make is not one of
 /// those; see [`Outcome`].
 pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outcome, String> {
     // **The invariant lives where the delete is.** Handed one id twice, every
@@ -1605,9 +1802,9 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
     // about to carry across — no per-edition loop, and nothing missed.
     //
     // **Only the ids whose copies differ refuse.** Copies identical in every
-    // column are one note and are dropped from the source further down —
-    // after the last refusal, not here, so that a fold refused over one
-    // conflicting id has written nothing, identical copies included.
+    // column a reader can see are one note and are dropped from the source
+    // further down — after the last refusal, not here, so that a fold refused
+    // over one conflicting id has written nothing, identical copies included.
     let shared = shared_note_ids(&tx, from_work, into_work, &map, &plan)?;
     let conflicting = &shared.conflicting;
     if !conflicting.is_empty() {
@@ -1689,8 +1886,8 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
     // carried row has moved onto one, a rewrite keyed on the edition would
     // place it a second time. See `plan_slots`.
     write_spreads(&tx, into_work, &plan)?;
-    resequence_rows(&tx, into_work, &plan.target)?;
-    resequence_rows(&tx, from_work, &plan.source)?;
+    resequence_rows(&tx, into_work, Side::Target, &plan)?;
+    resequence_rows(&tx, from_work, Side::Source, &plan)?;
     carry_alignments(&tx, from_work, into_work, &plan)?;
 
     // **The two halves of the position identity, read before the first
@@ -1792,10 +1989,10 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
 /// arithmetic. "Newer wins" itself stays: a slot number is not mergeable, and
 /// the later reading is the one somebody is in the middle of.
 ///
-/// **On a conflict the newer row wins entire, history included**, which is why
-/// the `DO UPDATE` sets all four columns rather than the two that make up the
-/// place. Setting `slot` and `updated` alone would produce a row belonging to
-/// neither reading — the source's place under the target's re-read count.
+/// **On a conflict the newer row wins entire, history and page included**, so
+/// the `DO UPDATE` sets every column the insert names past the key. `slot` and
+/// `updated` alone would make a row belonging to neither reading: the source's
+/// place under the target's re-read count or `at_` columns (O244).
 fn move_positions(
     conn: &Connection,
     from_work: i64,
@@ -1803,15 +2000,26 @@ fn move_positions(
     from_key: &str,
     into_key: &str,
 ) -> Result<usize, String> {
+    // The `at_` columns are named in both lists: one the insert leaves out is
+    // NULL on the row it writes, and the moved place loses its page (O244).
+    // They are copied as they stand, since `edition_map` pairs editions of
+    // the same digests in the same order.
     conn.execute(
-        "INSERT INTO progress (user_id, work_id, edition, slot, updated, completed_at, read_count)
-         SELECT user_id, ?2, ?4, slot, updated, completed_at, read_count
+        "INSERT INTO progress
+           (user_id, work_id, edition, slot, updated, completed_at, read_count,
+            at_sha256, at_nth, at_page, at_half)
+         SELECT user_id, ?2, ?4, slot, updated, completed_at, read_count,
+                at_sha256, at_nth, at_page, at_half
            FROM progress WHERE work_id = ?1 AND edition = ?3
          ON CONFLICT(user_id, work_id, edition) DO UPDATE SET
            slot = excluded.slot,
            updated = excluded.updated,
            completed_at = excluded.completed_at,
-           read_count = excluded.read_count
+           read_count = excluded.read_count,
+           at_sha256 = excluded.at_sha256,
+           at_nth = excluded.at_nth,
+           at_page = excluded.at_page,
+           at_half = excluded.at_half
          WHERE excluded.updated > progress.updated",
         rusqlite::params![from_work, into_work, from_key, into_key],
     )
@@ -1853,9 +2061,9 @@ fn positions_on(conn: &Connection, work_id: i64) -> Result<usize, String> {
 /// sidecar against two works", and a fold pair is by construction two works
 /// over the same volume. The `UPDATE` below then fails outright, so [`absorb`]
 /// reads for that state first: it refuses where the two copies differ, and
-/// where they agree in every column it has already dropped the source's copy by
-/// the time this runs, so nothing here collides; see [`shared_note_ids`]
-/// and [`drop_identical_notes`].
+/// where they agree in every column a reader can see it has already dropped
+/// the source's copy by the time this runs, so nothing here collides; see
+/// [`shared_note_ids`] and [`drop_identical_notes`].
 fn move_notes(
     conn: &Connection,
     from_work: i64,

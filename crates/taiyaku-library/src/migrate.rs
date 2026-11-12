@@ -441,8 +441,12 @@ pub(crate) fn record_absorbed(
 /// none of those declares a newer version, and each writer already has its
 /// own answer for such a file.
 pub fn declared_version(path: &Path, key: &str) -> Option<u64> {
-    let text = std::fs::read(path).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&text).ok()?;
+    declared_in(&std::fs::read(path).ok()?, key)
+}
+
+/// [`declared_version`] of a document already in hand.
+pub(crate) fn declared_in(text: &[u8], key: &str) -> Option<u64> {
+    let value: serde_json::Value = serde_json::from_slice(text).ok()?;
     value.as_object()?.get(key)?.as_u64()
 }
 
@@ -587,6 +591,7 @@ fn apply_progress(
             user_id,
             &position.place,
             position.updated.as_deref(),
+            state::Numbering::Store,
         )?;
     }
     tx.commit()
@@ -623,6 +628,7 @@ fn apply_notes(
     path: &Path,
 ) -> Result<usize, String> {
     let text = read_sibling(path)?;
+    Notes::refuse_newer(text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
     let notes: Notes = serde_json::from_str(&text)
         .map_err(|e| format!("{}: not a readable notes document: {e}", path.display()))?;
     let count = notes.notes.len();

@@ -292,6 +292,7 @@ fn a_notes_json_beside_the_sidecar_migrates_every_note_id_body_and_region() {
                 body: "whole slot".to_string(),
                 created: "2026-08-14T10:00:00Z".to_string(),
                 updated: "2026-08-14T10:00:00Z".to_string(),
+                stale: false,
             },
             Note {
                 id: "01H2".to_string(),
@@ -307,6 +308,7 @@ fn a_notes_json_beside_the_sidecar_migrates_every_note_id_body_and_region() {
                 body: "on a panel".to_string(),
                 created: "2026-08-14T10:01:00Z".to_string(),
                 updated: "2026-08-14T10:01:00Z".to_string(),
+                stale: false,
             },
         ],
         "every note's id, body and region must survive exactly"
@@ -324,6 +326,7 @@ fn notes_already_held_are_not_overwritten_by_the_file() {
         work_id,
         THE_READER,
         &Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
             work: "t".to_string(),
             notes: vec![Note {
                 id: "live".to_string(),
@@ -334,6 +337,7 @@ fn notes_already_held_are_not_overwritten_by_the_file() {
                 body: "written since".to_string(),
                 created: "2026-08-15T00:00:00Z".to_string(),
                 updated: "2026-08-15T00:00:00Z".to_string(),
+                stale: false,
             }],
         },
     )
@@ -380,6 +384,7 @@ fn deleting_the_last_note_is_not_undone_by_the_next_import() {
         work_id,
         THE_READER,
         &Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
             work: "t".to_string(),
             notes: Vec::new(),
         },
@@ -547,6 +552,173 @@ fn a_notes_json_that_does_not_parse_is_reported_and_skipped() {
             .notes
             .is_empty(),
         "nothing was written from an unreadable file"
+    );
+}
+
+/// A notes document a newer taiyaku wrote may mean something else by keys
+/// this build knows, so the import refuses it and writes none of it
+/// (pre-deploy spec §3, decision 5).
+#[test]
+fn a_newer_notes_json_is_refused_and_nothing_of_it_is_written() {
+    let root = scratch("newer-notes");
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let (work_id, path) = a_work(&conn, &root);
+    // Spaced as no serialiser here writes it, so a file written back from the
+    // parsed document differs from it.
+    let newer = r#"{ "taiyaku_notes": 2, "work": "t", "notes": [{"id":"01H1","edition":"raw-mono","slot":0,"body":"from a newer taiyaku","created":"2026-08-14T10:00:00Z","updated":"2026-08-14T10:00:00Z"}] }"#;
+    write_sibling(&root, "notes.json", newer);
+    let notes_path = root.join("taiyaku.notes.json");
+
+    let report = work(&conn, work_id, THE_READER, &path).expect("does not fail the import");
+
+    assert_eq!(
+        report.notes,
+        Some(NotesOutcome::Malformed(format!(
+            "{}: this document declares taiyaku_notes format version 2, and this build reads 1. \
+             Refusing to read it rather than dropping the fields it does not understand and \
+             writing them back out as version 1 — upgrade taiyaku instead",
+            notes_path.display()
+        )))
+    );
+    assert!(
+        state::notes(&conn, work_id, THE_READER)
+            .expect("reads")
+            .notes
+            .is_empty(),
+        "no note row is written from a newer document"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&notes_path).expect("reads"),
+        newer,
+        "the file is left as it was"
+    );
+}
+
+/// A newer notes document may add a key this build has no name for; it is
+/// still refused as newer, not as unreadable, because the version is asked
+/// before the shape (O264).
+#[test]
+fn a_newer_notes_json_with_a_key_this_build_does_not_know_is_refused_as_newer() {
+    let root = scratch("newer-notes-new-key");
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let (work_id, path) = a_work(&conn, &root);
+    // Spaced as no serialiser here writes it, so a file written back differs.
+    let newer = r#"{ "taiyaku_notes": 2, "work": "t", "notes": [{"id":"01H1","edition":"raw-mono","slot":0,"ink":"red","body":"b","created":"2026-08-14T10:00:00Z","updated":"2026-08-14T10:00:00Z"}] }"#;
+    write_sibling(&root, "notes.json", newer);
+    let notes_path = root.join("taiyaku.notes.json");
+
+    let report = work(&conn, work_id, THE_READER, &path).expect("does not fail the import");
+
+    assert_eq!(
+        report.notes,
+        Some(NotesOutcome::Malformed(format!(
+            "{}: this document declares taiyaku_notes format version 2, and this build reads 1. \
+             Refusing to read it rather than dropping the fields it does not understand and \
+             writing them back out as version 1 — upgrade taiyaku instead",
+            notes_path.display()
+        )))
+    );
+    assert_eq!(
+        std::fs::read_to_string(&notes_path).expect("reads"),
+        newer,
+        "the file is left as it was"
+    );
+}
+
+/// At this build's own version an unknown key is still a malformed document:
+/// asking the version first refuses only what is newer.
+#[test]
+fn a_version_1_notes_json_with_a_key_this_build_does_not_know_is_malformed() {
+    let root = scratch("notes-v1-new-key");
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let (work_id, path) = a_work(&conn, &root);
+    write_sibling(
+        &root,
+        "notes.json",
+        r#"{"taiyaku_notes":1,"work":"t","notes":[{"id":"01H1","edition":"raw-mono","slot":0,"ink":"red","body":"b","created":"2026-08-14T10:00:00Z","updated":"2026-08-14T10:00:00Z"}]}"#,
+    );
+    let notes_path = root.join("taiyaku.notes.json");
+
+    let report = work(&conn, work_id, THE_READER, &path).expect("does not fail the import");
+
+    match report.notes {
+        Some(NotesOutcome::Malformed(why)) => assert!(
+            why.starts_with(&format!(
+                "{}: not a readable notes document: unknown field `ink`",
+                notes_path.display()
+            )),
+            "{why}"
+        ),
+        other => panic!("expected the document refused as malformed, got {other:?}"),
+    }
+}
+
+// -- anchors (O244) ---------------------------------------------------------
+
+/// A position and a note read from their documents are written through
+/// `state::`, which names the page each slot shows (decision 7), so each
+/// answers that page after the member before it goes. Both on `b`'s second
+/// page, slot 4 beside `a`'s three, and slot 1 once `a` is imported away.
+#[test]
+fn an_imported_position_and_note_answer_their_page_after_the_member_before_them_goes() {
+    let root = scratch("anchored");
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let path = root.join("taiyaku.json");
+    let of = |members: &str| {
+        let json = format!(
+            r#"{{"taiyaku":1,"work":{{"title":"T","reading":"rtl"}},
+                 "editions":{{"raw":{{"label":"R","members":[{members}]}}}},
+                 "hub":"raw","alignments":[]}}"#
+        );
+        std::fs::write(&path, &json).unwrap();
+        taiyaku_core::Sidecar::from_json(&json).expect("parses")
+    };
+    let a = r#"{"path":"raw/a.cbz","sha256":"aa","pages":3}"#;
+    let b = r#"{"path":"raw/b.cbz","sha256":"bb","pages":4}"#;
+    let work_id = crate::import::sidecar(&conn, &of(&format!("{a},{b}")), &path).expect("import");
+    write_sibling(&root, "progress.json", r#"{"edition":"raw","slot":4}"#);
+    write_sibling(
+        &root,
+        "notes.json",
+        r#"{"work":"t","notes":[
+            {"id":"01H1","edition":"raw","slot":4,"body":"on b",
+             "created":"2026-11-10T10:00:00Z","updated":"2026-11-10T10:00:00Z"}
+        ]}"#,
+    );
+    let report = work(&conn, work_id, THE_READER, &path).expect("migrates");
+    assert_eq!(
+        (report.progress, report.notes),
+        (
+            Some(ProgressOutcome::Applied),
+            Some(NotesOutcome::Applied { count: 1 })
+        ),
+        "the fixture: both documents are applied"
+    );
+
+    assert_eq!(
+        crate::import::sidecar(&conn, &of(b), &path).expect("imports without a"),
+        work_id,
+        "the fixture: the same work"
+    );
+    let positions: Vec<u32> = state::progress(&conn, work_id, THE_READER)
+        .expect("reads the positions")
+        .iter()
+        .map(|position| position.slot)
+        .collect();
+    let notes: Vec<(u32, bool)> = state::notes(&conn, work_id, THE_READER)
+        .expect("reads the notes")
+        .notes
+        .iter()
+        .map(|note| (note.slot, note.stale))
+        .collect();
+    assert_eq!(
+        (positions, notes),
+        (vec![1], vec![(1, false)]),
+        "b's second page, now slot 1"
     );
 }
 

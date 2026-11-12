@@ -407,7 +407,11 @@ hand, before it is trusted.
 9. **The fold plans from resolved slots** (the spec's own call). It reads
    each row's slot as `state::` answers it, not the stored number, so a stored
    slot gone stale neither refuses a fold nor is re-placed as the wrong page.
-   The anchor columns travel unchanged.
+   The anchor columns travel unchanged. A position whose anchor does not
+   resolve is planned from its stored slot, unclamped, as a note is: the clamp
+   neither refuses a fold nor is written into the row, and the fold refuses
+   such a position only where it would refuse a note on that slot; the clamp
+   is the reader's answer only (ruled 2026-11-10, "Never refuse").
 10. **A row on an edition key the work no longer has** (the spec's own call)
     has no layout to resolve against. It answers its stored slot, unclamped,
     as today, and a note there is `stale`. `import::sidecar` of a document
@@ -481,11 +485,21 @@ Resolution lives in the core alone. Serve's `View` does not resolve.
   `fold::resequence_rows` and `fold::shared_note_ids` each read `slot` by SQL
   today. They read each row's resolved slot instead, through the resolution
   `state::` uses, so `plan_slots`' re-placement starts from the page the row
-  names in the source's current layout. `resequence_rows` then writes the
+  names in the source's current layout. The exception is decision 9's: a
+  position whose page is gone is planned from its stored slot, unclamped, as
+  a note is, never from its clamp. `resequence_rows` then writes the
   re-placed number into `slot` and leaves the anchor columns alone.
 - `migrate::apply_progress` and `migrate::apply_notes` write through
   `state::put_progress_at` and `state::put_notes`, so an import fills anchors
   with no change of its own.
+- **A stamp moves the anchors on the archives it rewrites.** A stamp keeps
+  every page byte for byte, so it is not a lost file: in the stamp's own
+  transaction, before the members' new digests are written, each position
+  and note on a member of a stamped edition moves from the member's digest
+  and occurrence before the stamp to its pair after it
+  (`stamp::rekey_anchors`), a copy the stamp did not rewrite included. A
+  derive before the next scan of the archive's directory puts the old digest
+  back on the member (O270).
 
 ### Reads
 
@@ -517,8 +531,10 @@ Resolution lives in the core alone. Serve's `View` does not resolve.
   `notes::as_stored` refuses a change to a note the account is not shown by
   comparing whole notes. So the notes `PUT` handler clears `stale` on every
   incoming note, and on the stored document it compares against, before
-  `notes::as_stored` and `notes::validate_against` run. `library import` clears it
-  too. `library export` writes `notes.json` with `stale` cleared (decision 7).
+  `notes::as_stored` and `notes::validate_against` run. `library import` cannot
+  store `stale`: it writes through `state::put_notes`, which has no column for
+  it, so an import writes no mark. `library export` writes `notes.json` with
+  `stale` cleared (decision 7).
 - Lane 1's export guard gains the notes key.
 - The bump rule is the sidecar's (`docs/sidecar.md`): only a newer version is
   refused, and whoever bumps it owns what reading a 1 means.

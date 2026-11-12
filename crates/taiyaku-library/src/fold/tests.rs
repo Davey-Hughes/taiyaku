@@ -106,6 +106,7 @@ fn seed_note(conn: &Connection, work_id: i64, edition: &str, slot: u32) {
         work_id,
         1,
         &Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
             work: "ignored".to_string(),
             notes: vec![Note {
                 id: "01JEXAMPLE0000000000000000".to_string(),
@@ -116,6 +117,7 @@ fn seed_note(conn: &Connection, work_id: i64, edition: &str, slot: u32) {
                 body: "the sign in the background".to_string(),
                 created: "2026-08-27T09:00:00Z".to_string(),
                 updated: "2026-08-27T09:00:00Z".to_string(),
+                stale: false,
             }],
         },
     )
@@ -1410,6 +1412,7 @@ fn the_stranded_message_pairs_each_count_with_the_table_it_came_from() {
         from,
         1,
         &Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
             work: "ignored".to_string(),
             notes: (1..=3)
                 .map(|n| Note {
@@ -1421,6 +1424,7 @@ fn the_stranded_message_pairs_each_count_with_the_table_it_came_from() {
                     body: "a note on a key nothing can move".to_string(),
                     created: "2026-08-27T09:00:00Z".to_string(),
                     updated: "2026-08-27T09:00:00Z".to_string(),
+                    stale: false,
                 })
                 .collect(),
         },
@@ -1500,6 +1504,7 @@ fn the_shared_note_refusal_counts_the_ids_and_shows_a_few() {
             work,
             1,
             &Notes {
+                taiyaku_notes: crate::NOTES_VERSION,
                 work: "ignored".to_string(),
                 notes: ids
                     .iter()
@@ -1514,6 +1519,7 @@ fn the_shared_note_refusal_counts_the_ids_and_shows_a_few() {
                         ),
                         created: "2026-08-27T09:00:00Z".to_string(),
                         updated: "2026-08-27T09:00:00Z".to_string(),
+                        stale: false,
                     })
                     .collect(),
             },
@@ -1559,6 +1565,7 @@ fn shared_note(edition: &str) -> Note {
         body: "the shop sign reads 'closed on Tuesdays'".to_string(),
         created: "2026-08-27T09:00:00Z".to_string(),
         updated: "2026-08-27T09:00:00Z".to_string(),
+        stale: false,
     }
 }
 
@@ -1584,6 +1591,7 @@ fn write_notes(conn: &Connection, work_id: i64, user_id: i64, notes: Vec<Note>) 
         work_id,
         user_id,
         &Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
             work: "ignored".to_string(),
             notes,
         },
@@ -3246,6 +3254,420 @@ fn a_fold_refused_after_its_slot_plan_has_writes_makes_none_of_them() {
         ),
         (vec![], 5, vec![]),
         "nothing the plan would have written is there"
+    );
+}
+
+/// Reader 1's position on `work_id`'s edition `key`: its four `at_` columns,
+/// read by SQL, so a check of what the fold wrote is not a check of what a
+/// read answers from it.
+fn position_anchor(
+    conn: &Connection,
+    work_id: i64,
+    key: &str,
+) -> (Option<String>, Option<i64>, Option<i64>, Option<String>) {
+    conn.query_row(
+        "SELECT at_sha256, at_nth, at_page, at_half FROM progress
+          WHERE user_id = 1 AND work_id = ?1 AND edition = ?2",
+        params![work_id, key],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .expect("the position's anchor")
+}
+
+/// Join `page` of `work_id`'s edition `key` into a spread after the rows on
+/// it were written: a layout change under them.
+fn join_spread(conn: &Connection, work_id: i64, key: &str, page: u32) {
+    conn.execute(
+        "INSERT INTO page_flag (edition_id, kind, page)
+         SELECT id, 'spread', ?3 FROM edition WHERE work_id = ?1 AND key = ?2",
+        params![work_id, key, page],
+    )
+    .expect("a spread flag");
+}
+
+/// Reader 1's position on `work_id`'s edition `key` as `state::progress`
+/// answers it.
+fn answered_position(conn: &Connection, work_id: i64, key: &str) -> u32 {
+    progress(conn, work_id, 1)
+        .expect("reads the positions")
+        .into_iter()
+        .find(|position| position.edition == key)
+        .expect("a position on the edition")
+        .slot
+}
+
+/// **A moved position keeps the page it names (O244)**, inserted onto a twin
+/// holding no position there and updating an older one on page 3 alike. The
+/// folded work's place is on page 5. After the fold the twin's page 2 is
+/// joined into a spread, so page 5 is slot 6 and the stored 5 names page 4.
+/// A row moved without its four `at_` columns answers 5 from its stored slot
+/// on the insert, and 4, page 3's slot, from the older row's anchor on the
+/// update.
+#[test]
+fn a_moved_position_keeps_the_page_it_names_through_a_later_layout_change() {
+    for older in [false, true] {
+        let conn = open();
+        seed_paged_work(
+            &conn,
+            1,
+            "target",
+            "rtl",
+            &[("raw", "aaa", 8, &[]), ("full-color", "bbb", 8, &[])],
+        );
+        seed_paged_work(&conn, 2, "superseded", "rtl", &[("colour", "bbb", 8, &[])]);
+        if older {
+            crate::state::put_progress_at(
+                &conn,
+                1,
+                1,
+                &Progress {
+                    edition: "full-color".into(),
+                    slot: 3,
+                },
+                Some("2000-01-01 00:00:00"),
+                crate::state::Numbering::Store,
+            )
+            .expect("an older place on the twin, on page 3");
+        }
+        place(&conn, 2, 1, "colour", 5);
+        let carried = position_anchor(&conn, 2, "colour");
+        assert_eq!(
+            carried,
+            (Some("bbb".to_string()), Some(0), Some(5), None),
+            "older {older}: the fixture: the folded work's place names page 5"
+        );
+
+        let moved = folded(&conn, 2, 1);
+        join_spread(&conn, 1, "full-color", 2);
+
+        assert_eq!(
+            (
+                (moved.positions, moved.lost_positions),
+                position_anchor(&conn, 1, "full-color"),
+                answered_position(&conn, 1, "full-color"),
+            ),
+            ((1, usize::from(older)), carried, 6),
+            "older {older}: the place moved with its four columns and answers page 5's slot"
+        );
+    }
+}
+
+/// **A fold plans from the slot a row answers, not the number it holds**
+/// (O244, decision 9). The folded work's place was written on page 3, slot 3,
+/// and page 2 was joined into a spread after, so its stored 3 names page 2's
+/// left half and it answers slot 4, page 3. The twin keeps its own flag on
+/// page 4: page 2 is whole there and page 3 is slot 3. Planned from the
+/// stored 3, the place names a half the twin does not hold, and the fold is
+/// refused.
+#[test]
+fn a_fold_places_a_row_by_the_slot_it_answers() {
+    let conn = open();
+    seed_paged_work(&conn, 1, "target", "rtl", &[("raw", "xxx", 6, &[4])]);
+    seed_paged_work(&conn, 2, "superseded", "rtl", &[("raw", "xxx", 6, &[])]);
+    place(&conn, 2, 1, "raw", 3);
+    join_spread(&conn, 2, "raw", 2);
+    assert_eq!(
+        (
+            page_at(&conn, 2, "raw", 3),
+            answered_position(&conn, 2, "raw")
+        ),
+        (Some(left(2)), 4),
+        "the fixture: the stored slot names page 2's left half, and the place answers page 3's"
+    );
+
+    folded(&conn, 2, 1);
+
+    let slot = answered_position(&conn, 1, "raw");
+    assert_eq!(
+        (slot, page_at(&conn, 1, "raw", i64::from(slot))),
+        (3, Some(whole(3))),
+        "the place is on page 3 of the twin"
+    );
+}
+
+/// **The slot a fold writes is placed from the slot the row answers** (O244):
+/// it is the row's fallback, and names the page its anchor does. A place and
+/// a note were written on page 5 of the folded work, and page 2 was joined
+/// after, so each stored 5 names page 4 and each answers slot 6. The twin
+/// keeps its own flag on page 6, where page 5 is slot 5 and page 4 is slot 4.
+/// Placed from the stored 5, each row's slot would be written as 4, page 4.
+#[test]
+fn the_slot_a_fold_writes_names_the_page_the_row_answers() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[("raw", "aaa", 8, &[]), ("full-color", "bbb", 8, &[6])],
+    );
+    seed_paged_work(&conn, 2, "superseded", "rtl", &[("colour", "bbb", 8, &[])]);
+    place(&conn, 2, 1, "colour", 5);
+    seed_note(&conn, 2, "colour", 5);
+    join_spread(&conn, 2, "colour", 2);
+    let answered_note = |work_id: i64| {
+        crate::state::notes(&conn, work_id, 1)
+            .expect("reads the notes")
+            .notes[0]
+            .slot
+    };
+    assert_eq!(
+        (
+            page_at(&conn, 2, "colour", 5),
+            answered_position(&conn, 2, "colour"),
+            answered_note(2),
+        ),
+        (Some(whole(4)), 6, 6),
+        "the fixture: each stored 5 names page 4, and each row answers page 5's slot"
+    );
+
+    folded(&conn, 2, 1);
+
+    let (position, note) = (
+        position_slot(&conn, 1, 1, "full-color"),
+        note_slot(&conn, 1, "full-color"),
+    );
+    assert_eq!(
+        (
+            page_at(&conn, 1, "full-color", position),
+            page_at(&conn, 1, "full-color", note),
+            answered_position(&conn, 1, "full-color"),
+            answered_note(1),
+        ),
+        (Some(whole(5)), Some(whole(5)), 5, 5),
+        "each stored slot names page 5 of the twin, and each row answers it"
+    );
+}
+
+/// **A fold places a position and a note each by its own rule** (O244,
+/// decision 6). Both were written on page 2's left half, and the folded
+/// edition's flag on page 2 was cleared after, so each stored 3 names page 3.
+/// The position answers page 2's slot, 2; the note keeps its stored 3,
+/// `stale`. The twin keeps its own flag on page 4. Placed by the position's
+/// rule the note would be rewritten to 2, and placed by the note's rule the
+/// position's fallback would stay 3, page 3.
+#[test]
+fn a_fold_places_a_position_and_a_stale_note_each_by_its_own_rule() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[("raw", "aaa", 6, &[]), ("full-color", "bbb", 6, &[4])],
+    );
+    seed_paged_work(&conn, 2, "superseded", "rtl", &[("colour", "bbb", 6, &[2])]);
+    seed_note(&conn, 2, "colour", 3);
+    place(&conn, 2, 1, "colour", 3);
+    conn.execute(
+        "DELETE FROM page_flag WHERE edition_id IN (SELECT id FROM edition WHERE work_id = 2)",
+        [],
+    )
+    .expect("clears the folded edition's flag");
+    let answered_notes = |work_id: i64| {
+        crate::state::notes(&conn, work_id, 1)
+            .expect("reads the notes")
+            .notes
+            .into_iter()
+            .map(|note| (note.slot, note.stale))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        (
+            page_at(&conn, 2, "colour", 3),
+            answered_notes(2),
+            answered_position(&conn, 2, "colour"),
+        ),
+        (Some(whole(3)), vec![(3, true)], 2),
+        "the fixture: the stored 3 names page 3; the note is stale there and the place answers page 2"
+    );
+
+    folded(&conn, 2, 1);
+
+    assert_eq!(
+        (
+            answered_notes(1),
+            position_slot(&conn, 1, 1, "full-color"),
+            answered_position(&conn, 1, "full-color"),
+        ),
+        (vec![(3, true)], 2, 2),
+        "the note stays at its stored 3, stale, and the place's stored slot and answer are page 2's"
+    );
+}
+
+/// **A place whose page is gone is planned from its stored slot, as a note
+/// is, not from the clamp a read answers** (O244). Each place is stored at 40,
+/// past the end, on an archive the edition no longer holds, so a read clamps
+/// it to the last slot. Planned from that clamp, the folded work's last half
+/// that the twin does not split, and a twin's last page its new flag splits,
+/// would each refuse the fold, and a twin's last page its new flag moves
+/// would have its stored 40 rewritten. Each is carried at 40, and a read
+/// clamps it there.
+#[test]
+fn a_lost_place_past_the_end_is_planned_as_stored_not_from_its_clamp() {
+    let cases = [
+        (true, &[1_u32][..], &[5_u32][..], (6_u32, left(5))),
+        (false, &[][..], &[5][..], (5, whole(5))),
+        (false, &[][..], &[1][..], (5, whole(5))),
+    ];
+    let mut outcomes = Vec::new();
+    for (on_folded, twin_flags, folded_flags, before) in cases {
+        let conn = open();
+        seed_paged_work(
+            &conn,
+            1,
+            "target",
+            "rtl",
+            &[("raw", "aaa", 6, &[]), ("full-color", "bbb", 6, twin_flags)],
+        );
+        seed_paged_work(
+            &conn,
+            2,
+            "superseded",
+            "rtl",
+            &[("colour", "bbb", 6, folded_flags)],
+        );
+        let (work_id, key) = if on_folded {
+            (2, "colour")
+        } else {
+            (1, "full-color")
+        };
+        conn.execute(
+            "INSERT INTO progress (user_id, work_id, edition, slot, at_sha256, at_nth, at_page)
+             VALUES (1, ?1, ?2, 40, 'an archive no longer held', 0, 0)",
+            params![work_id, key],
+        )
+        .expect("a place on a lost file");
+        let answered = answered_position(&conn, work_id, key);
+        assert_eq!(
+            (answered, page_at(&conn, work_id, key, i64::from(answered))),
+            (before.0, Some(before.1)),
+            "the fixture: on the folded work {on_folded}, the place reads as the last slot"
+        );
+
+        outcomes.push(match absorb(&conn, 2, 1).expect("folding") {
+            Outcome::Folded(_) => {
+                let answered = answered_position(&conn, 1, "full-color");
+                Ok((
+                    position_slot(&conn, 1, 1, "full-color"),
+                    answered,
+                    page_at(&conn, 1, "full-color", i64::from(answered)),
+                ))
+            }
+            Outcome::Refused(why) => Err(why),
+        });
+    }
+    assert_eq!(
+        outcomes,
+        [
+            Ok((40, 6, Some(whole(5)))),
+            Ok((40, 6, Some(left(5)))),
+            Ok((40, 6, Some(whole(5)))),
+        ],
+        "each fold goes ahead, the place stored at 40 and read as the twin's last slot"
+    );
+}
+
+/// **Two copies of a note are one by the slot each answers, and their
+/// anchors are not compared** (O244; O78). Both works hold `xxx`. The folded
+/// work's copy was written on page 3 and page 1 was joined after, so its
+/// stored 3 names page 2 and it answers slot 4. The twin's copy holds no
+/// anchor, as a row written before anchors does, at slot 3, page 3; the twin
+/// takes the flag, so it is placed from 3 to 4. One note on page 3: the folded
+/// work's copy is dropped and the twin's row stays. Compared at the stored 3,
+/// or with the anchors compared, the copies differ and the fold is refused.
+#[test]
+fn note_copies_are_one_note_by_the_slot_each_answers_whatever_their_anchors() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[("raw", "aaa", 6, &[]), ("full-color", "xxx", 6, &[])],
+    );
+    seed_paged_work(&conn, 2, "superseded", "rtl", &[("colour", "xxx", 6, &[])]);
+    write_notes(
+        &conn,
+        2,
+        1,
+        vec![Note {
+            id: SHARED.to_string(),
+            edition: "colour".to_string(),
+            slot: 3,
+            region: None,
+            color: None,
+            body: "a note".to_string(),
+            created: "2026-09-15T00:00:00Z".to_string(),
+            updated: "2026-09-15T00:00:00Z".to_string(),
+            stale: false,
+        }],
+    );
+    join_spread(&conn, 2, "colour", 1);
+    insert_note(&conn, 1, 1, SHARED, "full-color", 3);
+    let answered = |work_id: i64| {
+        crate::state::notes(&conn, work_id, 1)
+            .expect("reads the notes")
+            .notes
+            .into_iter()
+            .map(|note| (note.slot, note.stale))
+            .collect::<Vec<_>>()
+    };
+    let twins_row = every_note(&conn)
+        .into_iter()
+        .find(|row| row.work_id == 1)
+        .expect("the twin's copy")
+        .rowid;
+    assert_eq!(
+        (page_at(&conn, 2, "colour", 3), answered(2), answered(1)),
+        (Some(whole(2)), vec![(4, false)], vec![(3, false)]),
+        "the fixture: the folded copy's stored 3 names page 2 and it answers 4; the twin's answers 3"
+    );
+
+    let moved = folded(&conn, 2, 1);
+
+    let left: Vec<(i64, i64)> = every_note(&conn)
+        .into_iter()
+        .map(|row| (row.rowid, row.work_id))
+        .collect();
+    assert_eq!(
+        (
+            moved.dropped_notes,
+            left,
+            answered(1),
+            page_at(&conn, 1, "full-color", 4)
+        ),
+        (1, vec![(twins_row, 1)], vec![(4, false)], Some(whole(3))),
+        "one note, the twin's row, on page 3"
+    );
+}
+
+/// A row whose anchor is part set fails the fold, naming the row, as
+/// `state::progress` refuses it: no writer makes one, so the slot it answers
+/// is not known.
+#[test]
+fn a_row_whose_anchor_is_part_set_fails_the_fold_naming_it() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "target",
+        "rtl",
+        &[("raw", "aaa", 6, &[]), ("full-color", "bbb", 6, &[])],
+    );
+    seed_paged_work(&conn, 2, "superseded", "rtl", &[("colour", "bbb", 6, &[1])]);
+    place(&conn, 1, 1, "full-color", 4);
+    conn.execute("UPDATE progress SET at_page = NULL", [])
+        .expect("part-sets the anchor");
+
+    assert_eq!(
+        absorb(&conn, 2, 1).map(|_| ()),
+        Err(
+            "a `progress` row of work 1 on `full-color` has an anchor with only some of \
+             at_sha256, at_nth and at_page set (at_sha256=Some(\"bbb\"), at_nth=Some(0), \
+             at_page=None, at_half=None); an anchor is all three or none"
+                .to_string()
+        )
     );
 }
 

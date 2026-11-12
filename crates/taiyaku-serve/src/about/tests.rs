@@ -207,7 +207,7 @@ async fn about_answers_the_commit_the_source_the_catalog_and_every_format() {
                 },
                 {
                     "name": "<stem>.notes.json",
-                    "version": null,
+                    "version": taiyaku_library::NOTES_VERSION.to_string(),
                     "description": "Notes one reader left on a work’s pages.",
                 },
                 {

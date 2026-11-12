@@ -41,7 +41,7 @@ export const ABOUT: About = {
     },
     {
       name: '<stem>.notes.json',
-      version: null,
+      version: '1',
       description: 'Notes one reader left on a work’s pages.',
     },
     {

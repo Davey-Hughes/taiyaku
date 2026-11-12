@@ -898,6 +898,20 @@ fn a_stamp_beside_a_progress_document_a_newer_taiyaku_wrote_is_refused_too() {
 }
 
 #[test]
+fn a_stamp_beside_a_notes_document_a_newer_taiyaku_wrote_is_refused_too() {
+    let newer = r#"{"taiyaku_notes": 2, "from": "newer"}"#;
+    let (refused, before, after, _) = stamp_beside_a_newer("taiyaku.notes.json", newer);
+
+    let refusal = refused.expect_err("a newer notes document refuses the stamp");
+    assert!(
+        refusal
+            .contains("taiyaku.notes.json: this document declares taiyaku_notes format version 2"),
+        "{refusal}"
+    );
+    assert_eq!(after, before, "no archive's bytes changed");
+}
+
+#[test]
 fn a_stamp_beside_a_truth_document_a_newer_taiyaku_wrote_is_refused_too() {
     let newer = r#"{"taiyaku_truth": 2, "from": "newer"}"#;
     let (refused, before, after, _) = stamp_beside_a_newer("taiyaku.truth.json", newer);
@@ -2280,4 +2294,587 @@ fn a_rewrite_syncs_the_staged_archive_before_the_rename_and_the_directory_after_
         "the traced child must actually have rewritten the archive"
     );
     assert_replaced_durably(&calls, &path, &dir);
+}
+
+/// Note `id` on `edition`'s `slot`.
+fn a_note(id: &str, edition: &str, slot: u32) -> crate::Note {
+    crate::Note {
+        id: id.into(),
+        edition: edition.into(),
+        slot,
+        region: None,
+        color: None,
+        body: format!("{id}'s words"),
+        created: "2026-11-10T10:00:00Z".into(),
+        updated: "2026-11-10T10:00:00Z".into(),
+        stale: false,
+    }
+}
+
+/// Account 1's notes on `work_id`, through `state::`, which anchors each.
+fn hold_notes(conn: &Connection, work_id: i64, notes: Vec<crate::Note>) {
+    hold_notes_as(conn, work_id, 1, notes);
+}
+
+/// Account `user_id`'s notes on `work_id`, through `state::`.
+fn hold_notes_as(conn: &Connection, work_id: i64, user_id: i64, notes: Vec<crate::Note>) {
+    crate::state::put_notes(
+        conn,
+        work_id,
+        user_id,
+        &crate::Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
+            work: "w".into(),
+            notes,
+        },
+    )
+    .expect("writes the notes");
+}
+
+/// Account 1's position on `edition`, through `state::`, which anchors it.
+fn put_position(conn: &Connection, work_id: i64, edition: &str, slot: u32) {
+    crate::state::put_progress(
+        conn,
+        work_id,
+        1,
+        &crate::Progress {
+            edition: edition.into(),
+            slot,
+        },
+    )
+    .expect("writes the position");
+}
+
+/// Each of account 1's notes as `state::notes` answers it: id, edition, slot
+/// and `stale`.
+fn notes_on(conn: &Connection, work_id: i64) -> Vec<(String, String, u32, bool)> {
+    notes_of(conn, work_id, 1)
+}
+
+/// Each of account `user_id`'s notes, as [`notes_on`] reads account 1's.
+fn notes_of(conn: &Connection, work_id: i64, user_id: i64) -> Vec<(String, String, u32, bool)> {
+    crate::state::notes(conn, work_id, user_id)
+        .expect("reads the notes")
+        .notes
+        .into_iter()
+        .map(|note| (note.id, note.edition, note.slot, note.stale))
+        .collect()
+}
+
+fn on(id: &str, edition: &str, slot: u32, stale: bool) -> (String, String, u32, bool) {
+    (id.into(), edition.into(), slot, stale)
+}
+
+/// Each position as `state::progress` answers it.
+fn positions_on(conn: &Connection, work_id: i64) -> Vec<(String, u32)> {
+    crate::state::progress(conn, work_id, 1)
+        .expect("reads the positions")
+        .into_iter()
+        .map(|p| (p.edition, p.slot))
+        .collect()
+}
+
+/// The digest each of `work_id`'s positions is anchored on, by edition: the
+/// column the re-key writes, which a lost anchor's clamp can hide from a read.
+fn position_anchors(conn: &Connection, work_id: i64) -> Vec<(String, String)> {
+    conn.prepare("SELECT edition, at_sha256 FROM progress WHERE work_id = ?1 ORDER BY edition")
+        .and_then(|mut statement| {
+            statement
+                .query_map([work_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+        })
+        .expect("reads the anchors")
+}
+
+/// The digest of each of `work_id`'s members, by edition key.
+fn member_digests(conn: &Connection, work_id: i64) -> Vec<(String, String)> {
+    conn.prepare(
+        "SELECT e.key, m.sha256 FROM member m JOIN edition e ON e.id = m.edition_id
+          WHERE e.work_id = ?1 ORDER BY e.key, m.ordinal",
+    )
+    .and_then(|mut statement| {
+        statement
+            .query_map([work_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+    })
+    .expect("reads the members")
+}
+
+/// One edition listing one archive twice: `Series - v01 - c001.cbz` and a
+/// byte-identical `c002`, three pages each, which the derive keeps as two
+/// members. Account 1 holds n1 on c001's second page (slot 1), n2 on c002's
+/// third (slot 5) and its position on c002's second (slot 4), so each copy
+/// has rows of its own.
+struct TwoCopies {
+    fixture: Fixture,
+    root: crate::scan::Root,
+    c001: i64,
+    c002: i64,
+}
+
+fn two_copies() -> TwoCopies {
+    let dir = crate::tests::tempdir("stamp-copies");
+    let c001 = dir.path().join("Series").join("Series - v01 - c001.cbz");
+    crate::scan::tests::write_archive(&c001, 3);
+    std::fs::copy(
+        &c001,
+        dir.path().join("Series").join("Series - v01 - c002.cbz"),
+    )
+    .expect("copies c001");
+
+    let library = crate::Library::open_in_memory().expect("an in-memory library opens");
+    let (root, work_id, members) = {
+        let conn = library.conn();
+        let root = crate::scan::add_root(&conn, dir.path()).expect("adding the root");
+        crate::scan::scan_root(&conn, &root).expect("the scan");
+        crate::derive::derive(&conn).expect("the derive");
+        let members: Vec<(i64, i64, String, String)> = conn
+            .prepare(
+                "SELECT m.id, e.work_id, e.key, m.sha256 FROM member m
+                   JOIN edition e ON e.id = m.edition_id ORDER BY m.ordinal",
+            )
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    })?
+                    .collect()
+            })
+            .expect("reads the members");
+        assert_eq!(members.len(), 2, "the fixture: two members");
+        assert_eq!(members[0].1, members[1].1, "the fixture: one work");
+        assert_eq!(
+            (members[0].2.as_str(), members[1].2.as_str()),
+            ("raw", "raw"),
+            "the fixture: one edition, raw"
+        );
+        assert_eq!(members[0].3, members[1].3, "the fixture: one digest");
+        let work_id = members[0].1;
+        put_position(&conn, work_id, "raw", 4);
+        hold_notes(
+            &conn,
+            work_id,
+            vec![a_note("n1", "raw", 1), a_note("n2", "raw", 5)],
+        );
+        (root, work_id, members)
+    };
+
+    TwoCopies {
+        fixture: Fixture {
+            library,
+            dir,
+            work_id,
+        },
+        root,
+        c001: members[0].0,
+        c002: members[1].0,
+    }
+}
+
+/// The stamp's transaction over `written`, as if its rewrites had given those
+/// digests, so a test chooses which copies the stamp wrote and what each got.
+fn record_digests(conn: &Connection, work_id: i64, written: &[(i64, String)]) {
+    let key: String = conn
+        .query_row(
+            "SELECT content_key FROM work WHERE id = ?1",
+            [work_id],
+            |row| row.get(0),
+        )
+        .expect("the work's key");
+    record_rows(conn, work_id, &key, written).expect("records the stamp");
+}
+
+/// c001 out of the edition, as a removal would take it: c002's pages become
+/// slots 0 to 2, so a row on c002 moves there and a row on c001 has no page.
+fn without_c001(conn: &Connection, copies: &TwoCopies) {
+    conn.execute("DELETE FROM member WHERE id = ?1", [copies.c001])
+        .expect("deletes c001's member");
+}
+
+/// The notes and the positions `state::` answers once c001 is gone.
+type Answers = (Vec<(String, String, u32, bool)>, Vec<(String, u32)>);
+
+fn once_c001_is_gone(conn: &Connection, copies: &TwoCopies) -> Answers {
+    without_c001(conn, copies);
+    let work_id = copies.fixture.work_id;
+    (notes_on(conn, work_id), positions_on(conn, work_id))
+}
+
+/// A stamp gives the two copies different digests whenever their documents
+/// are started in different two-second windows. Each copy's rows move to its
+/// own copy's new digest, not to whichever copy was recorded first.
+#[test]
+fn a_stamp_moves_each_copys_rows_to_that_copys_new_digest() {
+    let copies = two_copies();
+    let conn = copies.fixture.conn();
+    let work_id = copies.fixture.work_id;
+    record_digests(
+        &conn,
+        work_id,
+        &[(copies.c001, "1".repeat(64)), (copies.c002, "2".repeat(64))],
+    );
+
+    assert_eq!(
+        notes_on(&conn, work_id),
+        vec![on("n1", "raw", 1, false), on("n2", "raw", 5, false)],
+        "each note on its own copy's page"
+    );
+    assert_eq!(
+        once_c001_is_gone(&conn, &copies),
+        (
+            vec![on("n1", "raw", 1, true), on("n2", "raw", 2, false)],
+            vec![("raw".to_string(), 1)]
+        ),
+        "c002's rows on its pages, now slots 0 to 2, and c001's note stale"
+    );
+}
+
+/// A stamp that rewrites c001 and not c002 leaves c002 the only copy with the
+/// old digest, so c002 is now that digest's first copy; its rows go with it,
+/// and none go to c001.
+#[test]
+fn a_copy_the_stamp_does_not_rewrite_keeps_its_rows() {
+    let copies = two_copies();
+    let conn = copies.fixture.conn();
+    let work_id = copies.fixture.work_id;
+    record_digests(&conn, work_id, &[(copies.c001, "1".repeat(64))]);
+
+    assert_eq!(
+        notes_on(&conn, work_id),
+        vec![on("n1", "raw", 1, false), on("n2", "raw", 5, false)],
+        "each note on its own copy's page"
+    );
+    assert_eq!(
+        once_c001_is_gone(&conn, &copies),
+        (
+            vec![on("n1", "raw", 1, true), on("n2", "raw", 2, false)],
+            vec![("raw".to_string(), 1)]
+        ),
+        "c002's rows on its pages, now slots 0 to 2, and c001's note stale"
+    );
+}
+
+/// c001's file is gone at the stamp, so the plan leaves it out and the stamp
+/// rewrites c002 alone. c001's note stays on c001 while it is listed, and
+/// c002's rows stay on c002 after the scan drops c001.
+#[test]
+fn a_copy_the_plan_leaves_out_keeps_its_rows_through_the_next_scan() {
+    let copies = two_copies();
+    std::fs::remove_file(copies.fixture.archive("Series - v01 - c001.cbz"))
+        .expect("removes c001's file");
+    let conn = copies.fixture.conn();
+    let work_id = copies.fixture.work_id;
+    let planned = plan(&conn, work_id).expect("plans");
+    assert_eq!(
+        planned.iter().map(|p| p.member_id).collect::<Vec<_>>(),
+        vec![copies.c002],
+        "the fixture: the stamp rewrites c002 alone"
+    );
+    apply(&conn, work_id, 1, &planned).expect("stamps");
+
+    assert_eq!(
+        notes_on(&conn, work_id),
+        vec![on("n1", "raw", 1, false), on("n2", "raw", 5, false)],
+        "each note on its own copy's page"
+    );
+
+    crate::scan::scan_root(&conn, &copies.root).expect("scans again");
+    crate::derive::derive(&conn).expect("derives");
+    assert_eq!(
+        (notes_on(&conn, work_id), positions_on(&conn, work_id)),
+        (
+            vec![on("n1", "raw", 1, true), on("n2", "raw", 2, false)],
+            vec![("raw".to_string(), 1)]
+        ),
+        "c002's rows on its pages, now slots 0 to 2, and c001's note stale"
+    );
+}
+
+/// A stamp whose two documents start in one two-second window gives both
+/// copies one new digest, so c002 is still that digest's second copy and its
+/// rows stay with it rather than going to c001's pages. The position's page is
+/// also its stored slot, which a lost anchor falls back to, so its digest is
+/// read as well.
+#[test]
+fn a_stamp_giving_both_copies_one_digest_keeps_each_copys_rows() {
+    let copies = two_copies();
+    let conn = copies.fixture.conn();
+    let work_id = copies.fixture.work_id;
+    record_digests(
+        &conn,
+        work_id,
+        &[(copies.c001, "1".repeat(64)), (copies.c002, "1".repeat(64))],
+    );
+
+    assert_eq!(
+        (notes_on(&conn, work_id), positions_on(&conn, work_id)),
+        (
+            vec![on("n1", "raw", 1, false), on("n2", "raw", 5, false)],
+            vec![("raw".to_string(), 4)]
+        ),
+        "each row on its own copy's page"
+    );
+    assert_eq!(
+        position_anchors(&conn, work_id),
+        vec![("raw".to_string(), "1".repeat(64))],
+        "the position moved to the new digest"
+    );
+}
+
+/// Two accounts can hold a note with one id on one work (migration 005): here
+/// account 2's n1 is on c002's second page and account 1's on c001's. Each
+/// account's note moves by its own anchor, not by the other's.
+#[test]
+fn a_stamp_moves_each_accounts_note_by_its_own_anchor() {
+    let copies = two_copies();
+    let conn = copies.fixture.conn();
+    let work_id = copies.fixture.work_id;
+    conn.execute(
+        "INSERT INTO user (id, name, password_hash, role) VALUES (2, 'second', '!', 'user')",
+        [],
+    )
+    .expect("a second account");
+    hold_notes_as(&conn, work_id, 2, vec![a_note("n1", "raw", 4)]);
+    record_digests(
+        &conn,
+        work_id,
+        &[(copies.c001, "1".repeat(64)), (copies.c002, "2".repeat(64))],
+    );
+
+    assert_eq!(
+        (notes_of(&conn, work_id, 1), notes_of(&conn, work_id, 2)),
+        (
+            vec![on("n1", "raw", 1, false), on("n2", "raw", 5, false)],
+            vec![on("n1", "raw", 4, false)]
+        ),
+        "each account's n1 on its own copy's page"
+    );
+}
+
+/// A work imported from a document listing `files`, three pages each, as its
+/// `raw` members.
+fn imported_with(
+    conn: &Connection,
+    dir: &std::path::Path,
+    title: &str,
+    files: &[&std::path::Path],
+) -> i64 {
+    let members: Vec<String> = files
+        .iter()
+        .map(|file| {
+            format!(
+                r#"{{"path":"{}","sha256":"{}","pages":3}}"#,
+                file.display(),
+                digest_of(file)
+            )
+        })
+        .collect();
+    let json = format!(
+        r#"{{"taiyaku":1,"work":{{"title":"{title}","reading":"rtl"}},
+            "editions":{{"raw":{{"label":"Raw","members":[{}]}}}},
+            "hub":"raw","alignments":[]}}"#,
+        members.join(",")
+    );
+    let doc = taiyaku_core::Sidecar::from_json(&json).expect("the fixture document parses");
+    let sidecar = dir.join(format!("{title}.json"));
+    std::fs::write(&sidecar, &json).expect("writes the fixture sidecar");
+    crate::import::sidecar(conn, &doc, &sidecar).expect("imports")
+}
+
+/// Two imported documents can name one archive in two works: here B's second
+/// member, b2, is a copy of A's first, a1. A stamp of A moves A's rows and
+/// leaves B's on b2, whose digest has not moved. Both works' notes carry one
+/// id, as a notes document imported against two works gives them (migration
+/// 005), so a move that found its note by id alone would take B's too.
+#[test]
+fn a_stamp_leaves_another_works_rows_on_the_same_archive() {
+    let dir = crate::tests::tempdir("stamp-two-works");
+    let file = |name: &str| dir.path().join(name);
+    let (a1, a2, b1, b2) = (
+        file("a1.cbz"),
+        file("a2.cbz"),
+        file("b1.cbz"),
+        file("b2.cbz"),
+    );
+    for each in [&a1, &a2, &b1] {
+        crate::scan::tests::write_archive(each, 3);
+    }
+    std::fs::copy(&a1, &b2).expect("copies a1");
+    let library = crate::Library::open_in_memory().expect("an in-memory library opens");
+    let conn = library.conn();
+    let work_a = imported_with(&conn, dir.path(), "A", &[&a1, &a2]);
+    let work_b = imported_with(&conn, dir.path(), "B", &[&b1, &b2]);
+    let shared = digest_of(&a1);
+    assert_eq!(
+        (
+            member_digests(&conn, work_a)[0].1.as_str(),
+            member_digests(&conn, work_b)[1].1.as_str()
+        ),
+        (shared.as_str(), shared.as_str()),
+        "the fixture: a1 and b2 are one archive"
+    );
+    // b2's second page is B's slot 4 and its third slot 5; a1's second is A's slot 1.
+    put_position(&conn, work_b, "raw", 4);
+    hold_notes(&conn, work_b, vec![a_note("n", "raw", 5)]);
+    put_position(&conn, work_a, "raw", 1);
+    hold_notes(&conn, work_a, vec![a_note("n", "raw", 1)]);
+
+    apply(&conn, work_a, 1, &plan(&conn, work_a).expect("plans")).expect("stamps A");
+
+    assert_eq!(
+        notes_on(&conn, work_b),
+        vec![on("n", "raw", 5, false)],
+        "B's note stays on b2's page"
+    );
+    assert_eq!(
+        position_anchors(&conn, work_b),
+        vec![("raw".to_string(), shared.clone())],
+        "B's position keeps b2's digest"
+    );
+    assert_eq!(
+        notes_on(&conn, work_a),
+        vec![on("n", "raw", 1, false)],
+        "A's note follows a1's stamp"
+    );
+}
+
+/// B's note n is on b2, a copy of a1, and A's note n is on a2, whose digest
+/// the stamp leaves alone. With only a1 recorded stamped, the one move is
+/// a1's pair: B's n names it and A's does not, so a read of every work's notes
+/// would move A's n, which shares the id, onto a1's page.
+#[test]
+fn a_stamp_moves_no_note_by_another_works_anchor() {
+    let dir = crate::tests::tempdir("stamp-other-works-note");
+    let file = |name: &str| dir.path().join(name);
+    let (a1, a2, b1, b2) = (
+        file("a1.cbz"),
+        file("a2.cbz"),
+        file("b1.cbz"),
+        file("b2.cbz"),
+    );
+    for each in [&a1, &a2, &b1] {
+        crate::scan::tests::write_archive(each, 3);
+    }
+    std::fs::copy(&a1, &b2).expect("copies a1");
+    let library = crate::Library::open_in_memory().expect("an in-memory library opens");
+    let conn = library.conn();
+    let work_a = imported_with(&conn, dir.path(), "A", &[&a1, &a2]);
+    let work_b = imported_with(&conn, dir.path(), "B", &[&b1, &b2]);
+    // Slot 4 is a2's second page in A and b2's in B.
+    hold_notes(&conn, work_a, vec![a_note("n", "raw", 4)]);
+    hold_notes(&conn, work_b, vec![a_note("n", "raw", 4)]);
+    let a1_member: i64 = conn
+        .query_row(
+            "SELECT m.id FROM member m JOIN edition e ON e.id = m.edition_id
+              WHERE e.work_id = ?1 ORDER BY m.ordinal LIMIT 1",
+            [work_a],
+            |row| row.get(0),
+        )
+        .expect("a1's member");
+
+    record_digests(&conn, work_a, &[(a1_member, "1".repeat(64))]);
+
+    assert_eq!(
+        (notes_on(&conn, work_a), notes_on(&conn, work_b)),
+        (
+            vec![on("n", "raw", 4, false)],
+            vec![on("n", "raw", 4, false)]
+        ),
+        "A's note stays on a2's page"
+    );
+}
+
+/// The same for positions: A's is on a2's second page and B's on b2's, and
+/// only a1 is recorded stamped. A read of every work's positions would move
+/// A's onto a1's page by B's anchor.
+#[test]
+fn a_stamp_moves_no_position_by_another_works_anchor() {
+    let dir = crate::tests::tempdir("stamp-other-works-position");
+    let file = |name: &str| dir.path().join(name);
+    let (a1, a2, b1, b2) = (
+        file("a1.cbz"),
+        file("a2.cbz"),
+        file("b1.cbz"),
+        file("b2.cbz"),
+    );
+    for each in [&a1, &a2, &b1] {
+        crate::scan::tests::write_archive(each, 3);
+    }
+    std::fs::copy(&a1, &b2).expect("copies a1");
+    let library = crate::Library::open_in_memory().expect("an in-memory library opens");
+    let conn = library.conn();
+    let work_a = imported_with(&conn, dir.path(), "A", &[&a1, &a2]);
+    let work_b = imported_with(&conn, dir.path(), "B", &[&b1, &b2]);
+    put_position(&conn, work_a, "raw", 4);
+    put_position(&conn, work_b, "raw", 4);
+    let a1_member: i64 = conn
+        .query_row(
+            "SELECT m.id FROM member m JOIN edition e ON e.id = m.edition_id
+              WHERE e.work_id = ?1 ORDER BY m.ordinal LIMIT 1",
+            [work_a],
+            |row| row.get(0),
+        )
+        .expect("a1's member");
+
+    record_digests(&conn, work_a, &[(a1_member, "1".repeat(64))]);
+
+    assert_eq!(
+        (positions_on(&conn, work_a), positions_on(&conn, work_b)),
+        (vec![("raw".to_string(), 4)], vec![("raw".to_string(), 4)]),
+        "A's position stays on a2's page"
+    );
+}
+
+/// One work whose `en` and `raw` editions each list a copy of one archive. The
+/// stamp writes each a document of its own edition, so the copies take two
+/// digests, and each edition's rows go to its own copy's.
+#[test]
+fn a_stamp_moves_each_editions_rows_to_its_own_copy() {
+    let dir = crate::tests::tempdir("stamp-two-editions");
+    let raw = dir.path().join("raw-v01.cbz");
+    let en = dir.path().join("en-v01.cbz");
+    crate::scan::tests::write_archive(&raw, 3);
+    std::fs::copy(&raw, &en).expect("copies raw");
+    let shared = digest_of(&raw);
+    let json = format!(
+        r#"{{"taiyaku":1,"work":{{"title":"Two","reading":"rtl"}},
+            "editions":{{"raw":{{"label":"Raw","members":[
+              {{"path":"{}","sha256":"{shared}","pages":3}}]}},
+              "en":{{"label":"EN","members":[
+              {{"path":"{}","sha256":"{shared}","pages":3}}]}}}},
+            "hub":"raw","alignments":[]}}"#,
+        raw.display(),
+        en.display()
+    );
+    let doc = taiyaku_core::Sidecar::from_json(&json).expect("the fixture document parses");
+    let sidecar = dir.path().join("taiyaku.json");
+    std::fs::write(&sidecar, &json).expect("writes the fixture sidecar");
+    let library = crate::Library::open_in_memory().expect("an in-memory library opens");
+    let conn = library.conn();
+    let work_id = crate::import::sidecar(&conn, &doc, &sidecar).expect("imports");
+    put_position(&conn, work_id, "raw", 1);
+    put_position(&conn, work_id, "en", 2);
+    hold_notes(
+        &conn,
+        work_id,
+        vec![a_note("e", "en", 2), a_note("r", "raw", 1)],
+    );
+
+    apply(&conn, work_id, 1, &plan(&conn, work_id).expect("plans")).expect("stamps");
+    let digests = member_digests(&conn, work_id);
+    assert_ne!(
+        digests[0].1, digests[1].1,
+        "the fixture: the stamp gave the two copies two digests: {digests:?}"
+    );
+
+    assert_eq!(
+        notes_on(&conn, work_id),
+        vec![on("e", "en", 2, false), on("r", "raw", 1, false)],
+        "each edition's note on its own copy's page"
+    );
+    assert_eq!(
+        position_anchors(&conn, work_id),
+        digests,
+        "each edition's position on its own copy's digest"
+    );
 }

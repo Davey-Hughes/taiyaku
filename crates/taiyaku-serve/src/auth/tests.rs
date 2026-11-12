@@ -2786,6 +2786,7 @@ async fn every_route_declares_its_grant_posture() {
                     edition: edition.to_string(),
                     slot: 1,
                 },
+                &split_work.sidecar(),
             )
             .expect("stores a position");
         }
@@ -2835,12 +2836,21 @@ async fn every_route_declares_its_grant_posture() {
             body: "b".into(),
             created: "c".into(),
             updated: "u".into(),
+            stale: false,
         };
         let notes = crate::notes::Notes {
+            taiyaku_notes: taiyaku_library::NOTES_VERSION,
             work: split_slug.clone(),
             notes: vec![note("raw"), note("en")],
         };
-        crate::notes::store(&split_state.library, &split_work, 1, &notes).expect("stores notes");
+        crate::notes::store(
+            &split_state.library,
+            &split_work,
+            1,
+            &notes,
+            &split_work.sidecar(),
+        )
+        .expect("stores notes");
         let mut truth = taiyaku_core::TruthDoc::new();
         for edition in ["raw", "en"] {
             let looked_at = taiyaku_core::TruthEdition {
@@ -3124,12 +3134,14 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
         body: body.into(),
         created: "c".into(),
         updated: "u".into(),
+        stale: false,
     };
     crate::notes::store(
         &merged.state.library,
         &work,
         merged.user_id(Reader::MangaOnly),
         &crate::notes::Notes {
+            taiyaku_notes: taiyaku_library::NOTES_VERSION,
             work: slug.clone(),
             notes: vec![
                 note("n1", "raw", 1, "on part1"),
@@ -3138,6 +3150,7 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
                 note("n4", "en", 0, "on en"),
             ],
         },
+        &work.sidecar(),
     )
     .expect("stores notes");
     let boxed = |text: &str| taiyaku_core::TruthRegion {
@@ -3178,6 +3191,7 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
                 &merged.state.library,
                 &work,
                 merged.user_id(Reader::MangaOnly),
+                &work.sidecar(),
             )
             .expect("reads notes")
             .expect("notes are held");
@@ -3221,11 +3235,16 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
                     );
                 }
                 let stored = |reader: Reader| -> Vec<(String, u32)> {
-                    crate::progress::load(&merged.state.library, &work, merged.user_id(reader))
-                        .expect("reads progress")
-                        .into_iter()
-                        .map(|position| (position.edition, position.slot))
-                        .collect()
+                    crate::progress::load(
+                        &merged.state.library,
+                        &work,
+                        merged.user_id(reader),
+                        &work.sidecar(),
+                    )
+                    .expect("reads progress")
+                    .into_iter()
+                    .map(|position| (position.edition, position.slot))
+                    .collect()
                 };
                 assert_eq!(
                     stored(Reader::MangaOnly),

@@ -286,6 +286,7 @@ fn a_note_can_be_anchored_to_every_slot_of_every_real_edition() {
     let stored = crate::notes::empty(&work.id);
 
     let note = |edition: &str, slot: u32| crate::notes::Notes {
+        taiyaku_notes: taiyaku_library::NOTES_VERSION,
         work: work.id.clone(),
         notes: vec![crate::notes::Note {
             id: format!("01{edition}{slot}"),
@@ -296,6 +297,7 @@ fn a_note_can_be_anchored_to_every_slot_of_every_real_edition() {
             body: "anchored".into(),
             created: "2026-08-05T10:00:00Z".into(),
             updated: "2026-08-05T10:00:00Z".into(),
+            stale: false,
         }],
     };
 

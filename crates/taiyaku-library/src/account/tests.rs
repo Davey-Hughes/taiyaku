@@ -506,6 +506,7 @@ fn promotion_reaches_the_seeded_row_and_keeps_what_hangs_off_it() {
         work_id,
         1,
         &crate::Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
             work: "t".to_string(),
             notes: vec![crate::Note {
                 id: "01HBEFORE".to_string(),
@@ -516,6 +517,7 @@ fn promotion_reaches_the_seeded_row_and_keeps_what_hangs_off_it() {
                 body: "written before there was a login".to_string(),
                 created: "2026-08-18T00:00:00Z".to_string(),
                 updated: "2026-08-18T00:00:00Z".to_string(),
+                stale: false,
             }],
         },
     )

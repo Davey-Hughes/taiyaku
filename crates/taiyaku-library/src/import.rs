@@ -1378,7 +1378,7 @@ fn verdict_text(verdict: Verdict) -> &'static str {
     }
 }
 
-fn half_text(half: Option<Half>) -> Option<&'static str> {
+pub(crate) fn half_text(half: Option<Half>) -> Option<&'static str> {
     match half {
         Some(Half::Left) => Some("left"),
         Some(Half::Right) => Some("right"),

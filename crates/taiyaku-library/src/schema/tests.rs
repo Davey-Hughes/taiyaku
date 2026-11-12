@@ -1417,8 +1417,8 @@ fn migration_20_adds_missing_since_leaving_existing_works_present() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_twenty() {
-    assert_eq!(SCHEMA_VERSION, 20);
+fn the_schema_version_is_twenty_one() {
+    assert_eq!(SCHEMA_VERSION, 21);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -3038,6 +3038,88 @@ fn migration_19_links_each_directory_to_its_library_and_drops_the_column() {
         .map(|(name, table)| vec![format!("Text({name:?})"), format!("Text({table:?})")])
         .collect::<Vec<_>>(),
         "no trigger is left on root, and the link has the three"
+    );
+}
+
+/// A store at version 20 with one reading position and one note, every
+/// column given a value so a column the migration disturbed would show.
+const SCHEMA_20_POSITION_AND_NOTE: &str = "
+    INSERT INTO user (id, name, password_hash, every_library) VALUES (2, 'a', 'x', 1);
+    INSERT INTO work (id, content_key, slug, title, reading, hub)
+    VALUES (1, 'k', 's', 'T', 'rtl', 'raw');
+    INSERT INTO progress (user_id, work_id, edition, slot, updated, completed_at, read_count)
+    VALUES (2, 1, 'raw', 3, '2026-11-01 10:00:00', '2026-11-02 11:00:00', 2);
+    INSERT INTO note (user_id, id, work_id, edition, slot, rx, ry, rw, rh, color, body,
+                      created, updated)
+    VALUES (2, 'n1', 1, 'raw', 4, 0.1, 0.2, 0.3, 0.4, 'yellow', 'a body',
+            '2026-11-01T10:00:00Z', '2026-11-01T10:05:00Z');
+";
+
+/// **Migration 21 gives a reading position and a note a page beside the
+/// slot** (O244): four columns at the end of `progress` and of `note`, NULL
+/// on the rows already there, which read otherwise as they were. ADD COLUMN
+/// rebuilds neither table, so `note_by_work` stands, and `at_half` takes
+/// only the two halves.
+#[test]
+fn migration_21_gives_progress_and_note_a_page_beside_the_slot() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..20]).expect("migrates to 20");
+    conn.execute_batch(SCHEMA_20_POSITION_AND_NOTE)
+        .expect("seeds a schema-20 store");
+    let before: Vec<_> = ["progress", "note"]
+        .iter()
+        .map(|table| rows_of(&conn, &format!("SELECT * FROM {table}")))
+        .collect();
+
+    migrate(&conn).expect("migrates to 21");
+
+    assert_eq!(version(&conn).expect("reads the version"), 21);
+    for (table, before) in ["progress", "note"].iter().zip(before) {
+        let columns = columns_of(&conn, table);
+        assert_eq!(
+            columns[columns.len().saturating_sub(4)..],
+            ["at_sha256", "at_nth", "at_page", "at_half"],
+            "{table} ends with the page's four columns: {columns:?}"
+        );
+        let with_no_page: Vec<Vec<String>> = before
+            .into_iter()
+            .map(|mut row| {
+                row.extend(std::iter::repeat_n("Null".to_string(), 4));
+                row
+            })
+            .collect();
+        assert_eq!(
+            rows_of(&conn, &format!("SELECT * FROM {table}")),
+            with_no_page,
+            "{table}'s row is as it was, naming no page"
+        );
+        let refused = conn
+            .execute(&format!("UPDATE {table} SET at_half = 'middle'"), [])
+            .expect_err(&format!("{table} refuses a half that is not one"));
+        assert!(
+            refused.to_string().contains("CHECK constraint failed"),
+            "{table} refuses it by its CHECK: {refused}"
+        );
+        assert_eq!(
+            conn.execute(&format!("UPDATE {table} SET at_half = 'left'"), []),
+            Ok(1),
+            "{table} takes a half"
+        );
+        assert_eq!(
+            conn.execute(&format!("UPDATE {table} SET at_half = 'right'"), []),
+            Ok(1),
+            "{table} takes the other half"
+        );
+    }
+    assert_eq!(
+        rows_of(
+            &conn,
+            "SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = 'note_by_work'"
+        ),
+        vec![vec!["Text(\"note\")".to_string()]],
+        "note_by_work stands"
     );
 }
 

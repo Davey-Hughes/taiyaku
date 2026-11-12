@@ -454,11 +454,7 @@ describe('About', () => {
         'Where the text is on each page, as the regions command found it.',
         '1',
       ),
-      row(
-        '<stem>.notes.json',
-        'Notes one reader left on a work’s pages.',
-        'unversioned',
-      ),
+      row('<stem>.notes.json', 'Notes one reader left on a work’s pages.', '1'),
       row(
         'Database schema',
         'The layout of the SQLite database taiyaku keeps its library in.',
@@ -513,7 +509,7 @@ describe('About', () => {
       versioned('1'),
       versioned('1'),
       versioned('1'),
-      unversioned,
+      versioned('1'),
       versioned('17'),
       versioned('1.2'),
       unversioned,

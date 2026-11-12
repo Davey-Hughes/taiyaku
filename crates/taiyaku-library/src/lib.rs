@@ -168,14 +168,87 @@ pub struct Note {
     pub body: String,
     pub created: String,
     pub updated: String,
+    /// The page and half this note was written on are not in its edition's
+    /// layout now, so `slot` is where it was stored and may show another page
+    /// (O244).
+    ///
+    /// Set on a read's answer, never stored: the row keeps its `at_` columns,
+    /// so the note reads unmarked again if its page comes back. False when
+    /// absent and left out when false, so older documents read and write
+    /// unchanged. A field because `Note` refuses unknown keys and a reader
+    /// echoes what it read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
+}
+
+impl Note {
+    /// Whether two notes are anchored to exactly the same place: the same
+    /// edition, slot and region.
+    ///
+    /// Not whether they are equal: a reader retyping a note's words leaves the
+    /// anchor alone, and re-checking an anchor that has not moved is what
+    /// makes the notes `PUT` refuse documents for a note nobody touched.
+    #[must_use]
+    pub fn same_anchor(&self, other: &Note) -> bool {
+        self.edition == other.edition && self.slot == other.slot && self.region == other.region
+    }
+}
+
+/// The notes document's format version this build writes and reads.
+pub const NOTES_VERSION: u32 = 1;
+
+fn notes_version() -> u32 {
+    NOTES_VERSION
 }
 
 /// Every note on one work.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Notes {
+    /// The format version the document declares: absent reads as 1, the shape
+    /// every notes document had before it was named, and it is always written.
+    ///
+    /// Only a newer version is refused ([`Notes::refuse_newer`]); whoever
+    /// bumps [`NOTES_VERSION`] owns what reading a 1 means (`docs/sidecar.md`,
+    /// "Forward compatibility").
+    #[serde(default = "notes_version")]
+    pub taiyaku_notes: u32,
     pub work: String,
     pub notes: Vec<Note>,
+}
+
+impl Notes {
+    /// Refuse the notes document `text` when it declares a newer
+    /// `taiyaku_notes` than this build reads, in
+    /// [`taiyaku_core::refuse_newer`]'s words: the notes `PUT` and
+    /// `library import` would otherwise store a newer document whose keys this
+    /// build knows as though it were version 1. Asked of the raw JSON before it
+    /// is parsed as [`Notes`], which refuses unknown keys, so a newer document
+    /// that adds one is refused as newer; text that declares no version is left
+    /// to the parse.
+    ///
+    /// # Errors
+    ///
+    /// Returns that refusal, naming both versions.
+    pub fn refuse_newer(text: &[u8]) -> Result<(), String> {
+        let Some(declared) = crate::migrate::declared_in(text, "taiyaku_notes") else {
+            return Ok(());
+        };
+        // Past `u32` is newer than any build, so it is named at the largest.
+        let declared = u32::try_from(declared).unwrap_or(u32::MAX);
+        taiyaku_core::refuse_newer("taiyaku_notes", declared, NOTES_VERSION)
+    }
+
+    /// Every note unmarked. [`Note::stale`] is set on a read's answer and
+    /// never stored, so a document is compared or written out without it: a
+    /// note a reader echoes would otherwise differ from the one held by the
+    /// mark alone, and an exported file would carry a mark the store does
+    /// not hold (O244).
+    pub fn clear_stale(&mut self) {
+        for note in &mut self.notes {
+            note.stale = false;
+        }
+    }
 }
 
 /// **How long any of this waits for another process, in one place.**

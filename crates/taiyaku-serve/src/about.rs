@@ -135,7 +135,7 @@ pub(crate) fn about_body(label: &BuildLabel) -> serde_json::Value {
             },
             {
                 "name": "<stem>.notes.json",
-                "version": null,
+                "version": taiyaku_library::NOTES_VERSION.to_string(),
                 "description": "Notes one reader left on a work’s pages.",
             },
             {

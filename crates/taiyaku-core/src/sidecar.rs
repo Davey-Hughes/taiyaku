@@ -272,6 +272,95 @@ impl Edition {
         let wide: Vec<bool> = (0..pages).map(|p| self.spreads.contains(&p)).collect();
         crate::expand(&wide, reading)
     }
+
+    /// The page of one member that `slot` shows, so a reading position or a
+    /// note can find that page again after the members around it or the
+    /// spread flags change, which move every slot after the change (O244),
+    /// unless an earlier copy of the member's archive goes (`slot_of`).
+    ///
+    /// The member is named by its digest and by its occurrence among the
+    /// members with that digest, because one archive can stand twice in an
+    /// edition, and the digest alone would name the first copy.
+    ///
+    /// `None` past the end.
+    #[must_use]
+    pub fn member_page(&self, slot: u32, reading: Direction) -> Option<MemberPage> {
+        let at = *self.slots(reading).get(slot as usize)?;
+        let (position, page) = self.locate(at.page)?;
+        let member = &self.members[position];
+        let nth = self.members[..position]
+            .iter()
+            .filter(|m| m.sha256 == member.sha256)
+            .count();
+        Some(MemberPage {
+            sha256: member.sha256.clone(),
+            nth: u32::try_from(nth).ok()?,
+            page,
+            half: at.half,
+        })
+    }
+
+    /// Where `at` stands in this edition's slots now. `None` where that copy
+    /// of the archive is gone, or `at.page` is past its end rather than a page
+    /// of the next member; [`SlotOf::PageOnly`] where the page is there and
+    /// its half is not.
+    ///
+    /// The copy is matched by occurrence as well as digest, because one archive
+    /// can stand twice in an edition (derive keeps two such files as two
+    /// members). Removing the first copy renumbers the second, so its pages
+    /// answer `None` though they are still there: accepted, as rare (O244).
+    #[must_use]
+    pub fn slot_of(&self, at: &MemberPage, reading: Direction) -> Option<SlotOf> {
+        let mut first = 0u32;
+        let mut seen = 0u32;
+        for member in &self.members {
+            if member.sha256 == at.sha256 {
+                if seen == at.nth {
+                    if at.page >= member.pages {
+                        return None;
+                    }
+                    let page = first + at.page;
+                    let slots = self.slots(reading);
+                    let exact = Slot {
+                        page,
+                        half: at.half,
+                    };
+                    return match slots.iter().position(|s| *s == exact) {
+                        Some(i) => Some(SlotOf::Exact(slot_position(i))),
+                        None => slot_index(&slots, Slot { page, half: None })
+                            .map(|i| SlotOf::PageOnly(slot_position(i))),
+                    };
+                }
+                seen += 1;
+            }
+            first += member.pages;
+        }
+        None
+    }
+}
+
+/// Where a reading position or a note stands: a page of one member of an
+/// edition, held by the member's digest so the members around it can change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberPage {
+    pub sha256: String,
+    /// Which of the edition's members with this digest, from 0 in member order.
+    pub nth: u32,
+    /// The page within that member, from 0.
+    pub page: u32,
+    /// The half of a spread; `None` for a whole page.
+    pub half: Option<Half>,
+}
+
+/// Where a `MemberPage` stands in an edition's slots now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotOf {
+    /// The slot naming that page and half.
+    Exact(u32),
+    /// The page is there and its half is not: a half on a page that is no
+    /// longer a spread, or a whole page that now is one. The page's first
+    /// slot in reading order.
+    PageOnly(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -394,12 +483,12 @@ pub const VERSION: u32 = 1;
 /// **A document declaring a format version newer than this build reads is
 /// refused**, in one sentence for each document whose key is listed below.
 ///
-/// `key` is the version field (`taiyaku`, `taiyaku_library`, `taiyaku_truth`,
-/// `taiyaku_regions`; `taiyaku_progress` refuses in its own words), named so
-/// that whoever holds several documents beside one archive can tell which was
-/// refused. [`Sidecar::readable_version`] gives the reason to refuse rather
-/// than read, and it holds for each: each is written back whole by something
-/// that drops the fields it has no name for (O264). Only newer is refused.
+/// `key` is the version field (`taiyaku`, `taiyaku_library`, `taiyaku_notes`,
+/// `taiyaku_truth`, `taiyaku_regions`; `taiyaku_progress` refuses in its own
+/// words), named so whoever holds several documents beside one archive can
+/// tell which was refused. [`Sidecar::readable_version`] gives the reason:
+/// each is written back whole, a newer notes document as version 1 and the
+/// rest without fields this build cannot name (O264). Only newer is refused.
 ///
 /// # Errors
 ///

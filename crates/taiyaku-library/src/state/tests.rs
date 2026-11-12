@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use taiyaku_core::{Direction, Edition, Half, Member, MemberPage};
+
 use super::*;
 use crate::{Library, Note, Notes};
 
@@ -19,6 +21,7 @@ fn a_work(conn: &Connection) -> i64 {
 /// merge rule looks at them, only `id` and `updated`.
 fn notes_doc(entries: &[(&str, &str, &str)]) -> Notes {
     Notes {
+        taiyaku_notes: crate::NOTES_VERSION,
         work: "t".to_string(),
         notes: entries
             .iter()
@@ -31,6 +34,7 @@ fn notes_doc(entries: &[(&str, &str, &str)]) -> Notes {
                 body: (*body).to_string(),
                 created: (*updated).to_string(),
                 updated: (*updated).to_string(),
+                stale: false,
             })
             .collect(),
     }
@@ -108,6 +112,7 @@ fn a_note_with_a_region_round_trips() {
     let conn = library.conn();
     let work_id = a_work(&conn);
     let doc = Notes {
+        taiyaku_notes: crate::NOTES_VERSION,
         work: "t".to_string(),
         notes: vec![Note {
             id: "01H".to_string(),
@@ -123,6 +128,7 @@ fn a_note_with_a_region_round_trips() {
             body: "a boxed note".to_string(),
             created: "2026-08-14T10:00:00Z".to_string(),
             updated: "2026-08-14T10:00:00Z".to_string(),
+            stale: false,
         }],
     };
 
@@ -1189,5 +1195,881 @@ fn one_reader_can_hold_one_note_id_on_two_works() {
     assert_eq!(
         notes(&conn, second, 1).expect("reads").notes[0].body,
         "on volume two"
+    );
+}
+
+// --- anchors (O244) ------------------------------------------------------------
+
+fn an_anchor(sha256: &str, nth: u32, page: u32, half: Option<Half>) -> MemberPage {
+    MemberPage {
+        sha256: sha256.into(),
+        nth,
+        page,
+        half,
+    }
+}
+
+/// `a` (3 pages, page 1 a spread) then `b` (2 pages). Under rtl the slots are
+/// page 0, page 1's right then left half, then pages 2, 3 and 4: slots 0-5.
+fn a_layout() -> Edition {
+    let member = |sha256: &str, pages: u32| Member {
+        path: format!("{sha256}.cbz"),
+        sha256: sha256.into(),
+        pages,
+    };
+    Edition {
+        label: "R".into(),
+        members: vec![member("a", 3), member("b", 2)],
+        spreads: vec![1],
+        credits: Vec::new(),
+    }
+}
+
+/// One case per row of the resolution table, for a position. Every stored
+/// slot differs from the slot the anchor would give, so each arm's answer is
+/// its own.
+#[test]
+fn a_position_answers_its_page_or_falls_back_to_its_slot_clamped() {
+    let layout = a_layout();
+    let rtl = Direction::RightToLeft;
+    let on = Some((&layout, rtl));
+    let gone = an_anchor("z", 0, 0, None);
+
+    assert_eq!(
+        resolve_position(None, 9, Some(&an_anchor("b", 0, 1, None))),
+        9,
+        "an edition key the work no longer has: the stored slot, unclamped"
+    );
+    assert_eq!(
+        resolve_position(on, 9, None),
+        9,
+        "no anchor: the stored slot, unclamped"
+    );
+    assert_eq!(
+        resolve_position(on, 2, Some(&an_anchor("b", 0, 1, None))),
+        5,
+        "the page: `b`'s second page is the last slot"
+    );
+    assert_eq!(
+        resolve_position(on, 3, Some(&an_anchor("a", 0, 1, None))),
+        1,
+        "a whole page that is now a spread: the page's first slot"
+    );
+    assert_eq!(
+        resolve_position(on, 9, Some(&gone)),
+        5,
+        "the page gone: the stored slot clamped to the last slot"
+    );
+    let empty = Edition {
+        members: Vec::new(),
+        spreads: Vec::new(),
+        ..a_layout()
+    };
+    assert_eq!(
+        resolve_position(Some((&empty, rtl)), 9, Some(&gone)),
+        9,
+        "the page gone from an edition with no slots: the stored slot"
+    );
+}
+
+/// One case per row of the resolution table, for a note: it never moves to a
+/// slot its anchor does not name exactly, and is `stale` wherever it stays
+/// for want of its page.
+#[test]
+fn a_note_answers_its_exact_page_or_stays_at_its_slot_stale() {
+    let layout = a_layout();
+    let rtl = Direction::RightToLeft;
+    let on = Some((&layout, rtl));
+
+    assert_eq!(
+        resolve_note(None, 9, Some(&an_anchor("b", 0, 1, None))),
+        (9, true),
+        "an edition key the work no longer has: the stored slot, stale"
+    );
+    assert_eq!(
+        resolve_note(None, 9, None),
+        (9, true),
+        "stale there whatever its anchor"
+    );
+    assert_eq!(
+        resolve_note(on, 9, None),
+        (9, false),
+        "no anchor: the stored slot"
+    );
+    assert_eq!(
+        resolve_note(on, 2, Some(&an_anchor("b", 0, 1, None))),
+        (5, false),
+        "the page: `b`'s second page"
+    );
+    assert_eq!(
+        resolve_note(on, 3, Some(&an_anchor("a", 0, 1, None))),
+        (3, true),
+        "a whole page that is now a spread: the stored slot, stale"
+    );
+    assert_eq!(
+        resolve_note(on, 9, Some(&an_anchor("z", 0, 0, None))),
+        (9, true),
+        "the page gone: the stored slot, unclamped, stale"
+    );
+}
+
+/// `aa` (3 pages) then `bb` (4 pages, its page 1 a spread), read rtl: slots
+/// 0-2 are `aa`'s, 3 is `bb`'s first page, 4 and 5 its spread's right and
+/// left halves, 6 and 7 its last two pages.
+fn a_work_of_two_members(conn: &Connection) -> i64 {
+    let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{"raw":{"label":"R","members":[
+          {"path":"raw/c001.cbz","sha256":"aa","pages":3},
+          {"path":"raw/c002.cbz","sha256":"bb","pages":4}],
+          "spreads":[4]}},
+        "hub":"raw","alignments":[]}"#;
+    let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+    crate::import::sidecar(conn, &doc, Path::new("/x/taiyaku.json")).expect("import")
+}
+
+type StoredAnchor = (Option<String>, Option<u32>, Option<u32>, Option<String>);
+
+/// The four anchor columns of one reader's `raw` position, read by SQL: the
+/// columns themselves are what these tests check.
+fn stored_anchor(conn: &Connection, work_id: i64, user_id: i64) -> StoredAnchor {
+    conn.query_row(
+        "SELECT at_sha256, at_nth, at_page, at_half FROM progress
+          WHERE work_id = ?1 AND user_id = ?2 AND edition = 'raw'",
+        params![work_id, user_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .expect("the position's row")
+}
+
+fn put_raw(conn: &Connection, work_id: i64, user_id: i64, slot: u32) {
+    put_progress(
+        conn,
+        work_id,
+        user_id,
+        &Progress {
+            edition: "raw".into(),
+            slot,
+        },
+    )
+    .expect("writes the position");
+}
+
+/// Every position `state::` writes names its page, on a page turn as on the
+/// first write, and a position past the end names none.
+#[test]
+fn every_position_write_names_the_page_it_stands_on() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work_of_two_members(&conn);
+
+    put_raw(&conn, work_id, 1, 1);
+    assert_eq!(
+        stored_anchor(&conn, work_id, 1),
+        (Some("aa".into()), Some(0), Some(1), None),
+        "the first write names `aa`'s second page"
+    );
+    put_raw(&conn, work_id, 1, 5);
+    assert_eq!(
+        stored_anchor(&conn, work_id, 1),
+        (Some("bb".into()), Some(0), Some(1), Some("left".into())),
+        "a page turn names the page it turned to: `bb`'s spread, its left half"
+    );
+
+    conn.execute(
+        "INSERT INTO user (id, name, password_hash, role) VALUES (2, 'second', '!', 'admin')",
+        [],
+    )
+    .expect("a second reader, for a row of its own");
+    put_raw(&conn, work_id, 2, 8);
+    assert_eq!(
+        stored_anchor(&conn, work_id, 2),
+        (None, None, None, None),
+        "slot 8 is past the last slot (7), so it names no page"
+    );
+
+    let (rows, mixed): (i64, i64) = conn
+        .query_row(
+            "SELECT count(*),
+                    count(*) FILTER (WHERE NOT (
+                      (at_sha256 IS NULL AND at_nth IS NULL AND at_page IS NULL)
+                      OR (at_sha256 IS NOT NULL AND at_nth IS NOT NULL
+                          AND at_page IS NOT NULL)))
+               FROM progress",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("counts the rows");
+    assert_eq!((rows, mixed), (2, 0), "both rows hold all three or none");
+}
+
+/// A row whose anchor is part set is refused rather than read as no anchor,
+/// as a part-set region is: no write makes one.
+#[test]
+fn a_position_whose_anchor_is_part_set_is_refused() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work_of_two_members(&conn);
+    put_raw(&conn, work_id, 1, 1);
+    conn.execute(
+        "UPDATE progress SET at_nth = NULL WHERE work_id = ?1",
+        [work_id],
+    )
+    .expect("part-sets the anchor");
+
+    assert_eq!(
+        progress(&conn, work_id, 1),
+        Err(format!(
+            "the position of user 1 on work {work_id}, edition `raw`, has an anchor with \
+             only some of at_sha256, at_nth and at_page set (at_sha256=Some(\"aa\"), \
+             at_nth=None, at_page=Some(1), at_half=None); an anchor is all three or none"
+        ))
+    );
+}
+
+/// A half with no page is refused too, in words of its own: none of the
+/// three is set, so "only some of" them would be untrue.
+#[test]
+fn a_position_with_a_half_and_no_page_is_refused() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work_of_two_members(&conn);
+    put_raw(&conn, work_id, 1, 5);
+    let changed = conn
+        .execute(
+            "UPDATE progress SET at_sha256 = NULL, at_nth = NULL, at_page = NULL
+              WHERE work_id = ?1 AND at_half = 'left'",
+            [work_id],
+        )
+        .expect("leaves the half alone");
+    assert_eq!(changed, 1, "the fixture: slot 5 is a left half");
+
+    assert_eq!(
+        progress(&conn, work_id, 1),
+        Err(format!(
+            "the position of user 1 on work {work_id}, edition `raw`, has a half with no \
+             page (at_half=\"left\"); at_half is set only beside at_sha256, at_nth and at_page"
+        ))
+    );
+}
+
+/// `raw`'s position as `state::progress` answers it.
+fn raw_slot(conn: &Connection, work_id: i64) -> Vec<(String, u32)> {
+    progress(conn, work_id, 1)
+        .expect("reads the positions")
+        .into_iter()
+        .map(|p| (p.edition, p.slot))
+        .collect()
+}
+
+/// O244's own case: a position on c002's second page (slot 4) stays on that
+/// page when c001's directory goes and c002's pages move down three slots.
+#[test]
+fn a_position_stays_on_its_page_when_a_directory_before_it_goes() {
+    let volume = crate::tests::a_volume_across_two_directories();
+    put_raw(&volume.conn(), volume.work_id, 1, 4);
+
+    crate::scan::remove_root(&volume.conn(), volume.a.id).expect("removes a");
+
+    assert_eq!(
+        raw_slot(&volume.conn(), volume.work_id),
+        vec![("raw".to_string(), 1)],
+        "c002's second page, now slot 1"
+    );
+}
+
+/// A position whose file goes falls back to its stored slot, clamped into
+/// what is left, and the row is not rewritten: the page comes back with the
+/// file. On c002's last page (slot 6), so the stored slot falls out of the
+/// three slots c001 leaves.
+#[test]
+fn a_position_whose_file_goes_is_clamped_and_finds_its_page_when_it_returns() {
+    let volume = crate::tests::a_volume_across_two_directories();
+    put_raw(&volume.conn(), volume.work_id, 1, 6);
+
+    crate::scan::remove_root(&volume.conn(), volume.b.id).expect("removes b");
+    assert_eq!(
+        raw_slot(&volume.conn(), volume.work_id),
+        vec![("raw".to_string(), 2)],
+        "c001's last slot, the clamp"
+    );
+
+    volume.put_back(&volume.b);
+    assert_eq!(
+        raw_slot(&volume.conn(), volume.work_id),
+        vec![("raw".to_string(), 6)],
+        "c002's last page again"
+    );
+}
+
+/// Decision 6: a position on a half the layout no longer holds goes to its
+/// page. On the left half, second under rtl, so the page's one slot is one
+/// below the stored slot and the stored slot is the next page's.
+#[test]
+fn a_position_on_a_half_goes_to_its_page_when_the_spread_flag_goes() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{"raw":{"label":"R","members":[
+          {"path":"raw/v01.cbz","sha256":"hh","pages":4}],
+          "spreads":[1]}},
+        "hub":"raw","alignments":[]}"#;
+    let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+    let work_id =
+        crate::import::sidecar(&conn, &doc, Path::new("/x/taiyaku.json")).expect("import");
+    put_raw(&conn, work_id, 1, 2);
+    assert_eq!(
+        stored_anchor(&conn, work_id, 1),
+        (Some("hh".into()), Some(0), Some(1), Some("left".into())),
+        "the fixture: slot 2 is page 1's left half"
+    );
+
+    conn.execute("DELETE FROM page_flag", [])
+        .expect("clears the spread flag");
+
+    assert_eq!(
+        raw_slot(&conn, work_id),
+        vec![("raw".to_string(), 1)],
+        "page 1's one slot, not page 2 (the stored slot)"
+    );
+}
+
+/// Decision 10: a position on an edition key the work no longer has answers
+/// its stored slot, with nothing to clamp it into.
+#[test]
+fn a_position_on_an_edition_the_work_no_longer_has_answers_its_slot() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let two = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{
+          "raw":{"label":"R","members":[
+            {"path":"raw/v01.cbz","sha256":"hh","pages":10}]},
+          "en":{"label":"En","members":[
+            {"path":"en/v01.cbz","sha256":"ee","pages":10}]}},
+        "hub":"raw","alignments":[]}"#;
+    let raw_alone = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{"raw":{"label":"R","members":[
+          {"path":"raw/v01.cbz","sha256":"hh","pages":10}]}},
+        "hub":"raw","alignments":[]}"#;
+    let at = Path::new("/x/taiyaku.json");
+    let work_id = crate::import::sidecar(
+        &conn,
+        &taiyaku_core::Sidecar::from_json(two).expect("parses"),
+        at,
+    )
+    .expect("imports raw and en");
+    put_progress(
+        &conn,
+        work_id,
+        1,
+        &Progress {
+            edition: "en".into(),
+            slot: 3,
+        },
+    )
+    .expect("a position on en");
+
+    let again = crate::import::sidecar(
+        &conn,
+        &taiyaku_core::Sidecar::from_json(raw_alone).expect("parses"),
+        at,
+    )
+    .expect("imports raw alone");
+    assert_eq!(again, work_id, "the same work");
+    let editions: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM edition WHERE work_id = ?1 AND key = 'en'",
+            [work_id],
+            |r| r.get(0),
+        )
+        .expect("counts");
+    assert_eq!(editions, 0, "the fixture: en is gone");
+
+    let held: Vec<(String, u32)> = progress(&conn, work_id, 1)
+        .expect("reads")
+        .into_iter()
+        .map(|p| (p.edition, p.slot))
+        .collect();
+    assert_eq!(held, vec![("en".to_string(), 3)], "its stored slot");
+}
+
+/// Note `id` on `raw`'s `slot`, its words its own.
+fn a_raw_note(id: &str, slot: u32) -> Note {
+    Note {
+        id: id.into(),
+        edition: "raw".into(),
+        slot,
+        region: None,
+        color: None,
+        body: format!("{id}'s words"),
+        created: "2026-11-10T10:00:00Z".into(),
+        updated: "2026-11-10T10:00:00Z".into(),
+        stale: false,
+    }
+}
+
+fn hold_notes(conn: &Connection, work_id: i64, notes: Vec<Note>) {
+    put_notes(
+        conn,
+        work_id,
+        1,
+        &Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
+            work: "foo".into(),
+            notes,
+        },
+    )
+    .expect("writes the notes");
+}
+
+/// Each note as `state::notes` answers it: id, edition, slot and `stale`.
+fn answered(notes: &Notes) -> Vec<(String, String, u32, bool)> {
+    notes
+        .notes
+        .iter()
+        .map(|note| (note.id.clone(), note.edition.clone(), note.slot, note.stale))
+        .collect()
+}
+
+fn note_slots(conn: &Connection, work_id: i64) -> Vec<(String, String, u32, bool)> {
+    answered(&notes(conn, work_id, 1).expect("reads the notes"))
+}
+
+fn on(id: &str, edition: &str, slot: u32, stale: bool) -> (String, String, u32, bool) {
+    (id.into(), edition.into(), slot, stale)
+}
+
+/// Decision 2: a note whose file goes stays at its stored slot, `stale`,
+/// and finds its page again when the file returns. On c002's last page (slot
+/// 6), past the three slots c001 leaves, so a clamp would show.
+#[test]
+fn a_note_whose_file_goes_stays_at_its_slot_stale_and_finds_its_page_when_it_returns() {
+    let volume = crate::tests::a_volume_across_two_directories();
+    hold_notes(&volume.conn(), volume.work_id, vec![a_raw_note("n", 6)]);
+
+    crate::scan::remove_root(&volume.conn(), volume.b.id).expect("removes b");
+    assert_eq!(
+        note_slots(&volume.conn(), volume.work_id),
+        vec![on("n", "raw", 6, true)],
+        "its stored slot, not c001's last (2), and stale"
+    );
+
+    volume.put_back(&volume.b);
+    assert_eq!(
+        note_slots(&volume.conn(), volume.work_id),
+        vec![on("n", "raw", 6, false)],
+        "c002's last page again"
+    );
+}
+
+/// Decision 3: a rule that moves c001 to another edition leaves a note on its
+/// page with its own edition, `stale`; the page is not looked for in the
+/// work's other editions.
+#[test]
+fn a_note_whose_file_moves_to_another_edition_stays_on_its_own_stale() {
+    let volume = crate::tests::a_volume_across_two_directories();
+    hold_notes(&volume.conn(), volume.work_id, vec![a_raw_note("n", 1)]);
+    {
+        let conn = volume.conn();
+        crate::rules::create(
+            &conn,
+            &crate::rules::NewRule {
+                ordinal: None,
+                enabled: true,
+                root_id: None,
+                kind: crate::rules::RuleKind::Regex,
+                pattern: "c001".into(),
+                match_on: crate::rules::MatchOn::Path,
+                set_edition_key: Some("colour".into()),
+                set_kind: None,
+                set_language: None,
+                set_series: None,
+                note: None,
+            },
+        )
+        .expect("a rule sending c001 to colour");
+        crate::scan::scan_root(&conn, &volume.a).expect("scans a again");
+        crate::derive::derive(&conn).expect("derives with the rule");
+
+        let members: Vec<(i64, String, i64)> = conn
+            .prepare(
+                "SELECT e.work_id, e.key, count(*) FROM member m
+                   JOIN edition e ON e.id = m.edition_id
+                  GROUP BY e.work_id, e.key ORDER BY e.key",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect()
+            })
+            .expect("lists the editions");
+        assert_eq!(
+            members,
+            vec![
+                (volume.work_id, "colour".to_string(), 1),
+                (volume.work_id, "raw".to_string(), 1),
+            ],
+            "the fixture: one work, c001 on colour and c002 left on raw"
+        );
+    }
+
+    assert_eq!(
+        note_slots(&volume.conn(), volume.work_id),
+        vec![on("n", "raw", 1, true)],
+        "on raw at its stored slot, stale, and nothing on colour"
+    );
+}
+
+/// Decision 6: a note on a half the layout no longer holds stays at its
+/// stored slot, `stale`. On the left half, second under rtl, so the page's
+/// one slot is one below the stored slot.
+#[test]
+fn a_note_on_a_half_stays_at_its_slot_stale_when_the_spread_flag_goes() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let json = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{"raw":{"label":"R","members":[
+          {"path":"raw/v01.cbz","sha256":"hh","pages":4}],
+          "spreads":[1]}},
+        "hub":"raw","alignments":[]}"#;
+    let doc = taiyaku_core::Sidecar::from_json(json).expect("parses");
+    let work_id =
+        crate::import::sidecar(&conn, &doc, Path::new("/x/taiyaku.json")).expect("import");
+    hold_notes(&conn, work_id, vec![a_raw_note("n", 2)]);
+    assert_eq!(
+        note_anchor(&conn, "n"),
+        (Some("hh".into()), Some(0), Some(1), Some("left".into())),
+        "the fixture: slot 2 is page 1's left half"
+    );
+
+    conn.execute("DELETE FROM page_flag", [])
+        .expect("clears the spread flag");
+
+    assert_eq!(
+        note_slots(&conn, work_id),
+        vec![on("n", "raw", 2, true)],
+        "its stored slot, stale, not page 1's one slot (1)"
+    );
+}
+
+/// Decision 10: a note on an edition key the work no longer has answers its
+/// stored slot, `stale`.
+#[test]
+fn a_note_on_an_edition_the_work_no_longer_has_is_stale() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let two = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{
+          "raw":{"label":"R","members":[
+            {"path":"raw/v01.cbz","sha256":"hh","pages":10}]},
+          "en":{"label":"En","members":[
+            {"path":"en/v01.cbz","sha256":"ee","pages":10}]}},
+        "hub":"raw","alignments":[]}"#;
+    let raw_alone = r#"{"taiyaku":1,"work":{"title":"T","reading":"rtl"},
+        "editions":{"raw":{"label":"R","members":[
+          {"path":"raw/v01.cbz","sha256":"hh","pages":10}]}},
+        "hub":"raw","alignments":[]}"#;
+    let at = Path::new("/x/taiyaku.json");
+    let work_id = crate::import::sidecar(
+        &conn,
+        &taiyaku_core::Sidecar::from_json(two).expect("parses"),
+        at,
+    )
+    .expect("imports raw and en");
+    hold_notes(
+        &conn,
+        work_id,
+        vec![Note {
+            edition: "en".into(),
+            ..a_raw_note("n", 3)
+        }],
+    );
+    assert_eq!(
+        note_slots(&conn, work_id),
+        vec![on("n", "en", 3, false)],
+        "the fixture: on en's fourth page"
+    );
+
+    crate::import::sidecar(
+        &conn,
+        &taiyaku_core::Sidecar::from_json(raw_alone).expect("parses"),
+        at,
+    )
+    .expect("imports raw alone");
+
+    assert_eq!(
+        note_slots(&conn, work_id),
+        vec![on("n", "en", 3, true)],
+        "its stored slot, stale"
+    );
+}
+
+type NoteAnchor = (Option<String>, Option<u32>, Option<u32>, Option<String>);
+
+/// The digest of the member whose file names `chapter`.
+fn digest_of(conn: &Connection, chapter: &str) -> String {
+    conn.query_row(
+        "SELECT sha256 FROM member WHERE path LIKE '%' || ?1 || '.cbz'",
+        [chapter],
+        |r| r.get(0),
+    )
+    .expect("the member's digest")
+}
+
+/// The four anchor columns of note `id`, read by SQL: the columns themselves
+/// are what these tests check.
+fn note_anchor(conn: &Connection, id: &str) -> NoteAnchor {
+    conn.query_row(
+        "SELECT at_sha256, at_nth, at_page, at_half FROM note WHERE id = ?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .expect("the note's row")
+}
+
+/// Trap 1: saving the document keeps the page of a note nobody moved, so a
+/// lost note finds its page again when its file returns. A is removed, not
+/// B, so n1's stored slot (1) names one of c002's pages in what is left: an
+/// anchor made again from it would name that page instead of c001's.
+#[test]
+fn saving_the_notes_keeps_the_page_of_a_lost_note_nobody_moved() {
+    let volume = crate::tests::a_volume_across_two_directories();
+    hold_notes(
+        &volume.conn(),
+        volume.work_id,
+        vec![a_raw_note("n1", 1), a_raw_note("n2", 4)],
+    );
+    crate::scan::remove_root(&volume.conn(), volume.a.id).expect("removes a");
+    assert_eq!(
+        note_slots(&volume.conn(), volume.work_id),
+        vec![on("n1", "raw", 1, true), on("n2", "raw", 1, false)],
+        "the fixture: n1 lost, n2 on c002's second page, now slot 1"
+    );
+
+    {
+        let conn = volume.conn();
+        let mut doc = notes(&conn, volume.work_id, 1).expect("reads the notes");
+        doc.notes[1].body = "n2, retyped".into();
+        put_notes(&conn, volume.work_id, 1, &doc).expect("writes the notes back");
+    }
+    volume.put_back(&volume.a);
+
+    assert_eq!(
+        note_slots(&volume.conn(), volume.work_id),
+        vec![on("n1", "raw", 1, false), on("n2", "raw", 4, false)],
+        "n1 on c001's second page again, n2 on c002's"
+    );
+}
+
+/// A note that moves is anchored to the page it moved to, though its id is
+/// one the store holds; and every write leaves a row's first three anchor
+/// columns all set or all NULL.
+#[test]
+fn a_note_moved_to_another_page_names_that_page() {
+    let volume = crate::tests::a_volume_across_two_directories();
+    let conn = volume.conn();
+    hold_notes(
+        &conn,
+        volume.work_id,
+        vec![
+            a_raw_note("n1", 1),
+            a_raw_note("n2", 4),
+            a_raw_note("n3", 9),
+        ],
+    );
+    assert_eq!(
+        note_anchor(&conn, "n2"),
+        (Some(digest_of(&conn, "c002")), Some(0), Some(1), None),
+        "the fixture: n2 names c002's second page"
+    );
+
+    hold_notes(
+        &conn,
+        volume.work_id,
+        vec![
+            a_raw_note("n1", 1),
+            a_raw_note("n2", 6),
+            a_raw_note("n3", 9),
+        ],
+    );
+
+    assert_eq!(
+        note_anchor(&conn, "n2"),
+        (Some(digest_of(&conn, "c002")), Some(0), Some(3), None),
+        "n2 names c002's last page, where it moved"
+    );
+    assert_eq!(
+        note_anchor(&conn, "n3"),
+        (None, None, None, None),
+        "slot 9 is past the last slot (6), so it names no page"
+    );
+    let (rows, mixed): (i64, i64) = conn
+        .query_row(
+            "SELECT count(*),
+                    count(*) FILTER (WHERE NOT (
+                      (at_sha256 IS NULL AND at_nth IS NULL AND at_page IS NULL)
+                      OR (at_sha256 IS NOT NULL AND at_nth IS NOT NULL
+                          AND at_page IS NOT NULL)))
+               FROM note",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("counts the rows");
+    assert_eq!((rows, mixed), (3, 0), "every row holds all three or none");
+}
+
+/// `same_anchor` compares slots, so a write reads the notes it holds in the
+/// numbering it was handed. Here the server's document (after B went) lacks
+/// c002, which the store (B back, A gone) holds: n2 is lost in the document
+/// at its stored slot 4 and is on slot 1 in the store.
+#[test]
+fn a_write_reads_the_notes_it_holds_in_the_numbering_it_was_handed() {
+    let volume = crate::tests::a_volume_across_two_directories();
+    hold_notes(
+        &volume.conn(),
+        volume.work_id,
+        vec![a_raw_note("n1", 0), a_raw_note("n2", 4)],
+    );
+    crate::scan::remove_root(&volume.conn(), volume.b.id).expect("removes b");
+    let sent = crate::project::sidecar(&volume.conn(), volume.work_id).expect("the document");
+    volume.put_back(&volume.b);
+    crate::scan::remove_root(&volume.conn(), volume.a.id).expect("removes a");
+
+    let conn = volume.conn();
+    let mut doc =
+        notes_in(&conn, volume.work_id, 1, Numbering::Document(&sent)).expect("reads the notes");
+    assert_eq!(
+        answered(&doc),
+        vec![on("n1", "raw", 0, false), on("n2", "raw", 4, true)],
+        "the fixture: in the document sent, n2 is lost at its stored slot"
+    );
+    assert_eq!(
+        note_slots(&conn, volume.work_id),
+        vec![on("n1", "raw", 0, true), on("n2", "raw", 1, false)],
+        "the fixture: in the store, n2 is on c002's second page, slot 1"
+    );
+
+    doc.notes[0].body = "n1, retyped".into();
+    put_notes_in(&conn, volume.work_id, 1, &doc, Numbering::Document(&sent))
+        .expect("writes the notes back");
+
+    assert_eq!(
+        note_slots(&conn, volume.work_id),
+        vec![on("n1", "raw", 0, true), on("n2", "raw", 1, false)],
+        "n2 still on c002's second page"
+    );
+}
+
+/// A note whose anchor is part set is refused, naming the note, as a
+/// part-set region is: no write makes one.
+#[test]
+fn a_note_whose_anchor_is_part_set_is_refused() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work_of_two_members(&conn);
+    hold_notes(&conn, work_id, vec![a_raw_note("n", 1)]);
+    conn.execute("UPDATE note SET at_page = NULL", [])
+        .expect("part-sets the anchor");
+
+    assert_eq!(
+        notes(&conn, work_id, 1),
+        Err(
+            "note `n` has an anchor with only some of at_sha256, at_nth and at_page set \
+             (at_sha256=Some(\"aa\"), at_nth=Some(0), at_page=None, at_half=None); an anchor \
+             is all three or none"
+                .to_string()
+        )
+    );
+}
+
+/// Stamp both of the volume's archives, as the metadata editor's write to
+/// files does: each archive's digest moves and its pages stay byte for byte.
+fn stamp_the_volume(volume: &crate::tests::VolumeAcrossTwoDirectories) {
+    let conn = volume.conn();
+    let planned = crate::stamp::plan(&conn, volume.work_id).expect("plans the stamp");
+    assert_eq!(
+        planned.len(),
+        2,
+        "the fixture: the stamp rewrites c001 and c002"
+    );
+    crate::stamp::apply(&conn, volume.work_id, 1, &planned).expect("stamps");
+}
+
+/// Both directories scanned again and the library derived, which records
+/// each stamped archive's new digest.
+fn rescan_the_volume(volume: &crate::tests::VolumeAcrossTwoDirectories) {
+    let conn = volume.conn();
+    crate::scan::scan_root(&conn, &volume.a).expect("scans a again");
+    crate::scan::scan_root(&conn, &volume.b).expect("scans b again");
+    crate::derive::derive(&conn).expect("derives");
+}
+
+/// The notes as `note_slots` answers them, and the positions as `raw_slot` does.
+type NotesAndPositions = (Vec<(String, String, u32, bool)>, Vec<(String, u32)>);
+
+/// A note and a position on c002's second page (slot 4), and A removed after
+/// `before_a_goes`: what `state::` answers for them then.
+fn after_a_stamp_and_a_removal(
+    before_a_goes: impl FnOnce(&crate::tests::VolumeAcrossTwoDirectories),
+) -> NotesAndPositions {
+    let volume = crate::tests::a_volume_across_two_directories();
+    put_raw(&volume.conn(), volume.work_id, 1, 4);
+    hold_notes(&volume.conn(), volume.work_id, vec![a_raw_note("n1", 4)]);
+    before_a_goes(&volume);
+    crate::scan::remove_root(&volume.conn(), volume.a.id).expect("removes a");
+    let conn = volume.conn();
+    (
+        note_slots(&conn, volume.work_id),
+        raw_slot(&conn, volume.work_id),
+    )
+}
+
+/// O244's own case after a stamp: the stamp gives c002 a new digest and
+/// keeps its pages, so a note and a position on its second page still name
+/// that page, and stay on it when A goes.
+#[test]
+fn a_stamp_keeps_a_note_and_a_position_on_their_page() {
+    let answered = after_a_stamp_and_a_removal(|volume| {
+        stamp_the_volume(volume);
+        assert_eq!(
+            note_slots(&volume.conn(), volume.work_id),
+            vec![on("n1", "raw", 4, false)],
+            "the stamped note still names its page"
+        );
+        rescan_the_volume(volume);
+    });
+
+    assert_eq!(
+        answered,
+        (
+            vec![on("n1", "raw", 1, false)],
+            vec![("raw".to_string(), 1)]
+        ),
+        "c002's second page, now slot 1"
+    );
+}
+
+/// A derive before the next scan writes c002's old digest back onto its
+/// member, from the scan's entry; the scan then records the new one, and the
+/// rows the stamp moved to it name their page again.
+#[test]
+fn a_derive_between_a_stamp_and_the_next_scan_leaves_the_rows_on_their_page() {
+    let answered = after_a_stamp_and_a_removal(|volume| {
+        let unstamped = digest_of(&volume.conn(), "c002");
+        stamp_the_volume(volume);
+        crate::derive::derive(&volume.conn()).expect("derives before the next scan");
+        assert_eq!(
+            digest_of(&volume.conn(), "c002"),
+            unstamped,
+            "the fixture: the derive put c002's old digest back"
+        );
+        rescan_the_volume(volume);
+    });
+
+    assert_eq!(
+        answered,
+        (
+            vec![on("n1", "raw", 1, false)],
+            vec![("raw".to_string(), 1)]
+        ),
+        "c002's second page, now slot 1"
     );
 }

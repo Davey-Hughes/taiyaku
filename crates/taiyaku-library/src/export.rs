@@ -245,7 +245,10 @@ pub fn work(
 
     let sidecar = crate::project::sidecar(conn, work_id)?;
     let library_doc = crate::librarydoc::of(conn, work_id)?;
-    let notes = crate::state::notes(conn, work_id, user_id)?;
+    let mut notes = crate::state::notes(conn, work_id, user_id)?;
+    // A lost note is written at its stored slot, unmarked (O244): the mark
+    // says what this store's layout holds now, and is not part of the note.
+    notes.clear_stale();
     let progress = crate::state::progress(conn, work_id, user_id)?;
     let other_users = readers_left_behind(conn, work_id, user_id)?;
     let truth = crate::state::truth(conn, work_id)?;
@@ -479,13 +482,14 @@ pub(crate) fn stem_of(sidecar_path: Option<&str>) -> String {
 /// Each versioned sibling's suffix, the key its version sits under, and the
 /// version this build writes. A suffix with no row here declares no version,
 /// so it is never [`newer_sibling`].
-const VERSIONED: [(&str, &str, u32); 4] = [
+const VERSIONED: [(&str, &str, u32); 5] = [
     ("json", "taiyaku", taiyaku_core::VERSION),
     (
         "library.json",
         "taiyaku_library",
         crate::librarydoc::VERSION,
     ),
+    ("notes.json", "taiyaku_notes", crate::NOTES_VERSION),
     (
         "progress.json",
         "taiyaku_progress",

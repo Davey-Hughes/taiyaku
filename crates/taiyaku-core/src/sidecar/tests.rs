@@ -1993,6 +1993,211 @@ fn a_zero_page_member_is_skipped_rather_than_matched() {
     assert_eq!(edition.locate(2), None);
 }
 
+/// An edition of `(sha256, pages)` members in that order, with `spreads`
+/// flagged in the flattened page sequence.
+fn edition_of(members: &[(&str, u32)], spreads: &[u32]) -> Edition {
+    Edition {
+        label: "Raw".into(),
+        members: members
+            .iter()
+            .enumerate()
+            .map(|(i, &(sha256, pages))| Member {
+                path: format!("{sha256}{i}.cbz"),
+                sha256: sha256.into(),
+                pages,
+            })
+            .collect(),
+        spreads: spreads.to_vec(),
+        credits: Vec::new(),
+    }
+}
+
+fn page_of(sha256: &str, nth: u32, page: u32, half: Option<Half>) -> MemberPage {
+    MemberPage {
+        sha256: sha256.into(),
+        nth,
+        page,
+        half,
+    }
+}
+
+/// O244: every slot names a page of one member, and that page names the
+/// slot again, in both reading orders, across a spread inside a member that
+/// is neither the first nor the last.
+#[test]
+fn every_slot_names_its_member_page_and_that_page_names_the_slot() {
+    // Pages 0-1 are `a`'s, 2-4 `b`'s with the spread at 3, 5-6 `c`'s.
+    let edition = edition_of(&[("a", 2), ("b", 3), ("c", 2)], &[3]);
+
+    for reading in [Direction::RightToLeft, Direction::LeftToRight] {
+        assert_eq!(edition.slots(reading).len(), 8, "seven pages, one a spread");
+        for slot in 0..8 {
+            let at = edition
+                .member_page(slot, reading)
+                .unwrap_or_else(|| panic!("slot {slot} names a page under {reading:?}"));
+            assert_eq!(
+                edition.slot_of(&at, reading),
+                Some(SlotOf::Exact(slot)),
+                "slot {slot} under {reading:?} comes back from {at:?}"
+            );
+        }
+        assert_eq!(
+            edition.member_page(8, reading),
+            None,
+            "one past the end names no page under {reading:?}"
+        );
+        assert_eq!(edition.member_page(u32::MAX, reading), None);
+    }
+
+    let rtl = Direction::RightToLeft;
+    assert_eq!(
+        edition.member_page(1, rtl),
+        Some(page_of("a", 0, 1, None)),
+        "the first member's last page"
+    );
+    assert_eq!(
+        edition.member_page(2, rtl),
+        Some(page_of("b", 0, 0, None)),
+        "the middle member's first page, after the first member's two"
+    );
+    assert_eq!(
+        edition.member_page(3, rtl),
+        Some(page_of("b", 0, 1, Some(Half::Right))),
+        "the spread's right half, first under rtl"
+    );
+    assert_eq!(
+        edition.member_page(4, rtl),
+        Some(page_of("b", 0, 1, Some(Half::Left))),
+        "the spread's left half, second under rtl"
+    );
+    assert_eq!(
+        edition.member_page(3, Direction::LeftToRight),
+        Some(page_of("b", 0, 1, Some(Half::Left))),
+        "the spread's left half, first under ltr"
+    );
+    assert_eq!(
+        edition.member_page(5, rtl),
+        Some(page_of("b", 0, 2, None)),
+        "the middle member's last page, one slot after the spread's two"
+    );
+    assert_eq!(
+        edition.member_page(7, rtl),
+        Some(page_of("c", 0, 1, None)),
+        "the last slot"
+    );
+}
+
+/// One archive can stand twice in an edition, so a page names which copy it
+/// is on, counting only the members with its digest.
+#[test]
+fn a_page_of_the_second_copy_of_an_archive_names_that_copy() {
+    let edition = edition_of(&[("a", 2), ("b", 1), ("a", 2)], &[]);
+    let rtl = Direction::RightToLeft;
+
+    let second = edition
+        .member_page(4, rtl)
+        .expect("slot 4 is on the second copy");
+    assert_eq!(
+        second,
+        page_of("a", 1, 1, None),
+        "the second copy's second page"
+    );
+    assert_eq!(
+        edition.slot_of(&second, rtl),
+        Some(SlotOf::Exact(4)),
+        "the second copy's page, not the first copy's (slot 1)"
+    );
+    assert_eq!(
+        edition.member_page(1, rtl),
+        Some(page_of("a", 0, 1, None)),
+        "the first copy's second page"
+    );
+    assert_eq!(
+        edition.slot_of(&page_of("a", 0, 1, None), rtl),
+        Some(SlotOf::Exact(1)),
+        "the first copy's page, not the last copy's (slot 4)"
+    );
+    assert_eq!(
+        edition.member_page(2, rtl),
+        Some(page_of("b", 0, 0, None)),
+        "the only `b`, though two members stand before it"
+    );
+}
+
+/// O244: a half anchor on a page that is no longer a spread, or a
+/// whole-page anchor on a page that now is one, finds the page and not the
+/// half. It answers the page's first slot in reading order, marked as the
+/// page only, so a position can stand there and a note can be told apart.
+#[test]
+fn a_half_the_layout_no_longer_holds_answers_the_page_only() {
+    // Pages 0-1 are `a`'s, 2-4 `b`'s; page 3 is the spread or is not.
+    let spread = edition_of(&[("a", 2), ("b", 3)], &[3]);
+    let flat = edition_of(&[("a", 2), ("b", 3)], &[]);
+    let rtl = Direction::RightToLeft;
+
+    let left = spread
+        .member_page(4, rtl)
+        .expect("slot 4 is the spread's left half");
+    assert_eq!(left, page_of("b", 0, 1, Some(Half::Left)));
+    assert_eq!(
+        flat.slot_of(&left, rtl),
+        Some(SlotOf::PageOnly(3)),
+        "the page's one slot, as the page only"
+    );
+
+    let whole = flat.member_page(3, rtl).expect("slot 3 is the whole page");
+    assert_eq!(whole, page_of("b", 0, 1, None));
+    for (reading, first) in [
+        (Direction::RightToLeft, Half::Right),
+        (Direction::LeftToRight, Half::Left),
+    ] {
+        assert_eq!(
+            spread.slots(reading)[3],
+            Slot {
+                page: 3,
+                half: Some(first)
+            },
+            "slot 3 is the spread's first half under {reading:?}"
+        );
+        assert_eq!(
+            spread.slot_of(&whole, reading),
+            Some(SlotOf::PageOnly(3)),
+            "the spread's first half under {reading:?}, as the page only"
+        );
+    }
+}
+
+/// O244: an anchor whose copy of an archive is gone, or whose page is past
+/// its member's end, names no slot, even where the flattened page it would
+/// make is another member's page.
+#[test]
+fn a_page_whose_copy_is_gone_or_past_its_member_names_no_slot() {
+    let rtl = Direction::RightToLeft;
+    let one_copy = edition_of(&[("a", 2), ("b", 1)], &[]);
+    assert_eq!(
+        one_copy.slot_of(&page_of("a", 1, 0, None), rtl),
+        None,
+        "the second copy of `a` is gone"
+    );
+    assert_eq!(
+        one_copy.slot_of(&page_of("z", 0, 0, None), rtl),
+        None,
+        "no member has the digest"
+    );
+
+    let before = edition_of(&[("x", 3), ("y", 3)], &[]);
+    let last_of_x = before
+        .member_page(2, rtl)
+        .expect("slot 2 is `x`'s last page");
+    assert_eq!(last_of_x, page_of("x", 0, 2, None));
+    let shrunk = edition_of(&[("x", 2), ("y", 3)], &[]);
+    assert_eq!(
+        shrunk.slot_of(&last_of_x, rtl),
+        None,
+        "`x` holds two pages now; slot 2 is `y`'s first page, another page"
+    );
+}
+
 /// The ordinary case: a slot of the single-member edition resolves into
 /// the chapter-organised one and lands in the member the alignment says
 /// it does, not the one page arithmetic on the filename would suggest.

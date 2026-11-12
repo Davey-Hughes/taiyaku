@@ -384,8 +384,9 @@ fn move_document(
     Ok((now_at, crate::hand::rename_from(conn, work_id, old)?))
 }
 
-/// [`record`]'s transaction: each stamped member's new digest, and the work's
-/// key where the hub's digests moved it. Answers that moved key.
+/// [`record`]'s transaction: each stamped member's new digest, the rows
+/// anchored on the members of the editions it holds ([`rekey_anchors`]), and
+/// the work's key where the hub's digests moved it. Answers that moved key.
 fn record_rows(
     conn: &Connection,
     work_id: i64,
@@ -395,6 +396,11 @@ fn record_rows(
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("starting the transaction for this stamp: {e}"))?;
+    // Read before the members' own updates: the anchors name the digests the
+    // members hold now.
+    for (key, members) in stamped_editions(&tx, written)? {
+        rekey_anchors(&tx, work_id, &key, &members, written)?;
+    }
     for (member_id, digest) in written {
         tx.execute(
             "UPDATE member SET sha256 = ?1 WHERE id = ?2",
@@ -417,6 +423,145 @@ fn record_rows(
     tx.commit()
         .map_err(|e| format!("committing this stamp: {e}"))?;
     Ok(moved_key)
+}
+
+/// An edition's members as `(id, digest)`, in member order.
+type Members = Vec<(i64, String)>;
+
+/// Each edition holding one of `written`'s members: its key and its members,
+/// the stamped ones among them.
+fn stamped_editions(
+    tx: &Connection,
+    written: &[(i64, String)],
+) -> Result<Vec<(String, Members)>, String> {
+    let mut editions = BTreeMap::new();
+    for (member_id, _) in written {
+        let (edition_id, key): (i64, String) = tx
+            .query_row(
+                "SELECT e.id, e.key FROM member m JOIN edition e ON e.id = m.edition_id
+                  WHERE m.id = ?1",
+                [member_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| format!("reading the edition of member {member_id}: {e}"))?;
+        editions.insert(edition_id, key);
+    }
+    editions
+        .into_iter()
+        .map(|(edition_id, key)| {
+            let members = tx
+                .prepare("SELECT id, sha256 FROM member WHERE edition_id = ?1 ORDER BY ordinal")
+                .and_then(|mut statement| {
+                    statement
+                        .query_map([edition_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .map_err(|e| format!("reading the members of edition `{key}`: {e}"))?;
+            Ok((key, members))
+        })
+        .collect()
+}
+
+/// Each member's `(digest, occurrence)`, the pair an anchor names it by: the
+/// occurrence counts the members before it with its digest, from 0, as
+/// `Edition::member_page` counts them.
+fn occurrences(members: &[(i64, String)]) -> Vec<(String, u32)> {
+    let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
+    members
+        .iter()
+        .map(|(_, digest)| {
+            let nth = seen.entry(digest.as_str()).or_default();
+            let pair = (digest.clone(), *nth);
+            *nth += 1;
+            pair
+        })
+        .collect()
+}
+
+/// Move the positions and notes on edition `key` of `work_id` from each
+/// member's `(digest, occurrence)` before the stamp to its pair after it
+/// (O244): a stamp keeps every page byte for byte, so the page is still
+/// there. `members` is the edition's members before the stamp. A copy the
+/// stamp does not rewrite moves too when a copy before it leaves its digest.
+/// A derive before the next scan of the archive's directory puts the old
+/// digest back on the member; O270 says what the rows read until then.
+fn rekey_anchors(
+    tx: &Connection,
+    work_id: i64,
+    key: &str,
+    members: &[(i64, String)],
+    written: &[(i64, String)],
+) -> Result<(), String> {
+    let after: Vec<(i64, String)> = members
+        .iter()
+        .map(|(id, digest)| {
+            let now = written
+                .iter()
+                .find(|(stamped, _)| stamped == id)
+                .map_or(digest, |(_, new)| new);
+            (*id, now.clone())
+        })
+        .collect();
+    let moves: BTreeMap<(String, u32), (String, u32)> = occurrences(members)
+        .into_iter()
+        .zip(occurrences(&after))
+        .filter(|(was, now)| was != now)
+        .collect();
+    let failed =
+        |e: rusqlite::Error| format!("moving the rows on `{key}` to their new digests: {e}");
+
+    // Every row is read before any moves: the pair one copy leaves can be the
+    // pair another takes, and a row moved onto it must not move again.
+    let positions: Vec<(i64, (String, u32))> = tx
+        .prepare(
+            "SELECT user_id, at_sha256, at_nth FROM progress
+              WHERE work_id = ?1 AND edition = ?2 AND at_sha256 IS NOT NULL",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map(rusqlite::params![work_id, key], |row| {
+                    Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))
+                })?
+                .collect()
+        })
+        .map_err(failed)?;
+    let notes: Vec<(i64, String, (String, u32))> = tx
+        .prepare(
+            "SELECT user_id, id, at_sha256, at_nth FROM note
+              WHERE work_id = ?1 AND edition = ?2 AND at_sha256 IS NOT NULL",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map(rusqlite::params![work_id, key], |row| {
+                    Ok((row.get(0)?, row.get(1)?, (row.get(2)?, row.get(3)?)))
+                })?
+                .collect()
+        })
+        .map_err(failed)?;
+
+    for (user_id, at) in positions {
+        if let Some((digest, nth)) = moves.get(&at) {
+            tx.execute(
+                "UPDATE progress SET at_sha256 = ?1, at_nth = ?2
+                  WHERE user_id = ?3 AND work_id = ?4 AND edition = ?5",
+                rusqlite::params![digest, nth, user_id, work_id, key],
+            )
+            .map_err(failed)?;
+        }
+    }
+    // A note's id is one account's on one work (migration 005), so another
+    // account or work can hold the same id on a page this move does not name.
+    for (user_id, id, at) in notes {
+        if let Some((digest, nth)) = moves.get(&at) {
+            tx.execute(
+                "UPDATE note SET at_sha256 = ?1, at_nth = ?2
+                  WHERE user_id = ?3 AND work_id = ?4 AND id = ?5",
+                rusqlite::params![digest, nth, user_id, work_id, id],
+            )
+            .map_err(failed)?;
+        }
+    }
+    Ok(())
 }
 
 /// `e`, saying that `rewritten` of the work's archives are stamped and their

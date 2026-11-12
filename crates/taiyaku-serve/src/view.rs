@@ -90,6 +90,13 @@ impl View {
         &self.sidecar
     }
 
+    /// The whole sidecar this view was built from: the numbering a stored slot
+    /// is in, so a position is resolved and anchored in it (O244), not in the
+    /// store's, which can have moved on since.
+    pub(crate) fn full(&self) -> &Arc<Sidecar> {
+        &self.full
+    }
+
     /// `edition` narrowed, or `None` when it is sent whole or not at all.
     pub(crate) fn narrowed(&self, edition: &str) -> Option<&Narrowed> {
         self.narrowed.get(edition)

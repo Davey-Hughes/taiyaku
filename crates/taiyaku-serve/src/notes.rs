@@ -26,8 +26,9 @@
 /// other is meant.
 pub use taiyaku_library::{Note, Notes, Region};
 
-use taiyaku_core::{Direction, Edition, FromFull};
+use taiyaku_core::{Direction, Edition, FromFull, Sidecar};
 use taiyaku_library::Library;
+use taiyaku_library::state::Numbering;
 
 use crate::view::View;
 use crate::works::{self, Work};
@@ -47,15 +48,6 @@ pub enum Invalid {
     Missing(String),
     /// Malformed in itself — a 400's shape.
     Refused(String),
-}
-
-/// Whether two notes are anchored to exactly the same place.
-///
-/// Not whether they are equal: a reader retyping a note's words leaves the
-/// anchor alone, and re-checking an anchor that has not moved is what makes
-/// `validate` refuse documents for a note nobody touched.
-fn same_anchor(a: &Note, b: &Note) -> bool {
-    a.edition == b.edition && a.slot == b.slot && a.region == b.region
 }
 
 /// [`validate_against`], against the work's own sidecar.
@@ -135,7 +127,7 @@ pub fn validate_against(
         let unchanged = stored
             .notes
             .iter()
-            .any(|held| held.id == note.id && same_anchor(held, note));
+            .any(|held| held.id == note.id && held.same_anchor(note));
         if !unchanged {
             let edition = sidecar.editions.get(&note.edition).ok_or_else(|| {
                 Invalid::Missing(format!(
@@ -247,6 +239,7 @@ pub(crate) fn as_seen(stored: &Notes, view: &View) -> Notes {
         })
         .collect();
     Notes {
+        taiyaku_notes: taiyaku_library::NOTES_VERSION,
         work: stored.work.clone(),
         notes,
     }
@@ -302,6 +295,7 @@ pub(crate) fn as_stored(incoming: Notes, stored: &Notes, view: &View) -> Result<
         }
     }
     Ok(Notes {
+        taiyaku_notes: taiyaku_library::NOTES_VERSION,
         work: incoming.work,
         notes,
     })
@@ -331,6 +325,7 @@ pub(crate) fn tagged_for(stored: &Notes, view: &View) -> Result<(String, String)
 #[must_use]
 pub fn empty(id: &str) -> Notes {
     Notes {
+        taiyaku_notes: taiyaku_library::NOTES_VERSION,
         work: id.to_string(),
         notes: Vec::new(),
     }
@@ -368,44 +363,66 @@ pub fn to_json(notes: &Notes) -> Result<String, String> {
 /// `Some`, even with zero notes on it — `taiyaku_library::state::notes`
 /// returns a real, empty `Notes` for a work with no note rows, and that is a
 /// different fact from a work nobody has ever touched: a reader who deleted
-/// their last note is not the same as a reader who never wrote one, and the
-/// route above this one relies on being able to tell them apart (`get_notes`'s
-/// doc comment collapses the two deliberately, but that collapsing is its
-/// decision to make, not this function's to make for it).
+/// their last note is not the same as a reader who never wrote one, and
+/// whether to collapse the two is the caller's call (both routes do).
+///
+/// Each slot is in `numbered`, the document the reader's view was numbered
+/// from (O244).
 ///
 /// # Errors
 ///
 /// Returns an error if SQLite fails, or if a stored note has a region with
-/// only some of its four columns set — see
-/// `taiyaku_library::state::notes`'s own `# Errors`.
-pub fn load(library: &Library, work: &Work, user_id: i64) -> Result<Option<Notes>, String> {
+/// only some of its four columns set, or an anchor with some but not all of
+/// `at_sha256`, `at_nth` and `at_page` set or a half with none of them, each
+/// a state `taiyaku_library::state::put_notes` cannot write.
+pub fn load(
+    library: &Library,
+    work: &Work,
+    user_id: i64,
+    numbered: &Sidecar,
+) -> Result<Option<Notes>, String> {
     let conn = library.conn();
     let Some(work_id) = works::find_row(&conn, work)? else {
         return Ok(None);
     };
-    taiyaku_library::state::notes(&conn, work_id, user_id).map(Some)
+    taiyaku_library::state::notes_in(&conn, work_id, user_id, Numbering::Document(numbered))
+        .map(Some)
 }
 
 /// Replace the notes, inside one transaction.
 ///
 /// The library row bridging `work`'s slug to a numeric `work_id` is minted
 /// here on first write if none exists yet — see `works::row_id_for_write`.
-/// `notes.work` is not written anywhere: nothing in the `note` table carries
-/// a work label, and `taiyaku_library::state::notes` reconstructs it on read
-/// from `work_id`'s own slug — which, by construction, is `work.id`, so a
-/// caller-supplied `notes.work` that differs never survives to be read back
-/// differently. `notes::validate_against` already refuses any document where
-/// it differs before this is ever called, so nothing here re-checks it.
+/// `notes.work` is not written: `taiyaku_library::state::notes` rebuilds it
+/// from `work_id`'s own slug, which is `work.id`, and
+/// `notes::validate_against` has already refused a document where it differs.
+///
+/// A new or moved note is stored with the page its slot names in `numbered`,
+/// the document the view was numbered from; any other keeps its row's (O244).
 ///
 /// # Errors
 ///
 /// Returns an error if SQLite fails — including a `UNIQUE` violation on a
 /// note `id` repeated in `notes.notes`, since this module's own
-/// `validate_against` is what is relied on to have refused that already.
-pub fn store(library: &Library, work: &Work, user_id: i64, notes: &Notes) -> Result<(), String> {
+/// `validate_against` is what is relied on to have refused that already — or
+/// if a note already held cannot be read, as
+/// `taiyaku_library::state::put_notes`'s own `# Errors` says.
+pub fn store(
+    library: &Library,
+    work: &Work,
+    user_id: i64,
+    notes: &Notes,
+    numbered: &Sidecar,
+) -> Result<(), String> {
     let conn = library.conn();
     let work_id = works::row_id_for_write(&conn, work)?;
-    taiyaku_library::state::put_notes(&conn, work_id, user_id, notes)
+    taiyaku_library::state::put_notes_in(
+        &conn,
+        work_id,
+        user_id,
+        notes,
+        Numbering::Document(numbered),
+    )
 }
 
 /// The `ETag` of a notes or truth document as `Access::Every` is sent it: a

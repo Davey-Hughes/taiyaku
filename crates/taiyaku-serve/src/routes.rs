@@ -1068,7 +1068,7 @@ async fn get_notes(
         // header exists to close, left open for the one request a second device
         // is most likely to be racing. Synthesising the document here means the
         // first write is an ordinary conditional write like every later one.
-        let notes = crate::notes::load(&state.library, &found, user_id)
+        let notes = crate::notes::load(&state.library, &found, user_id, view.full())
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
         // The body is the part of the document this account is sent, under the
@@ -1122,13 +1122,21 @@ async fn put_notes(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    // Before the shape, so a newer taiyaku's notes with a key this build has
+    // no name for are refused as newer, and before anything reads the store.
+    if let Err(why) = crate::notes::Notes::refuse_newer(&body) {
+        return bad_request(why);
+    }
     // Taken as `Bytes` and deserialised here rather than through `Json`, so a
     // malformed body is refused in this server's own words — O5's rule, and
     // the shape `patch_alignments` already follows.
-    let incoming: crate::notes::Notes = match serde_json::from_slice(&body) {
+    let mut incoming: crate::notes::Notes = match serde_json::from_slice(&body) {
         Ok(notes) => notes,
         Err(why) => return bad_request(format!("these are not notes: {why}")),
     };
+    // A reader echoes what it read, `stale` included, or leaves it out; it is
+    // never stored, so either is the note as it was (O244).
+    incoming.clear_stale();
 
     let user_id = match reader(&extensions) {
         Ok(id) => id,
@@ -1155,9 +1163,12 @@ async fn put_notes(
         // so — see `Work::notes_guard`.
         let _guard = found.notes_guard();
 
-        let current = crate::notes::load(&state.library, &found, user_id)
+        let mut current = crate::notes::load(&state.library, &found, user_id, view.full())
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
+        // Over the document as read, `stale` marks and all, as `get_notes`
+        // tags it: taken after the marks are cleared below, it would refuse
+        // every write over a lost note.
         let tag =
             view.etag_naming_numbering(&crate::notes::to_json(&current).map_err(NoNotes::Failed)?);
         match if_match_hits(&headers, &tag) {
@@ -1181,9 +1192,14 @@ async fn put_notes(
             Some(true) => {}
         }
 
+        // Compared unmarked, as `incoming` is: `as_stored` refuses a note the
+        // account is not sent unless it comes back equal to the one held, and
+        // a held note marked `stale` would differ from every copy sent back.
+        current.clear_stale();
+
         // In the stored numbering, with the notes this account is not sent
         // kept (spec §3.8).
-        let mut merged = crate::notes::as_stored(incoming, &current, &view)?;
+        let merged = crate::notes::as_stored(incoming, &current, &view)?;
 
         // Validated against what is stored, and therefore inside the guard
         // rather than ahead of it: an anchor that has not moved since the last
@@ -1197,12 +1213,17 @@ async fn put_notes(
             &view.visible_editions_in_full(),
             &current,
         )?;
-        // In id order, the order `notes::load` reads, so the answer's `ETag`
-        // is the one the next write is checked against.
-        merged.notes.sort_by(|a, b| a.id.cmp(&b.id));
 
-        crate::notes::store(&state.library, &found, user_id, &merged).map_err(NoNotes::Failed)?;
-        crate::notes::tagged_for(&merged, &view).map_err(NoNotes::Failed)
+        crate::notes::store(&state.library, &found, user_id, &merged, view.full())
+            .map_err(NoNotes::Failed)?;
+        // The answer is read back rather than built from `merged`, so its
+        // `ETag` is the next read's: `merged` carries no `stale` marks, which
+        // a read sets on a note whose page is gone (O244), and lists notes in
+        // the client's order, where a read lists them by id.
+        let stored = crate::notes::load(&state.library, &found, user_id, view.full())
+            .map_err(NoNotes::Failed)?
+            .unwrap_or_else(|| crate::notes::empty(&found.id));
+        crate::notes::tagged_for(&stored, &view).map_err(NoNotes::Failed)
     })
     .await;
 
@@ -1442,7 +1463,7 @@ async fn get_progress(
     // it unchanged.
     let loaded = tokio::task::spawn_blocking(move || {
         let found = state.find_blocking(&id).map_err(NoProgress::NotFound)?;
-        crate::progress::load(&state.library, &found, user_id)
+        crate::progress::load(&state.library, &found, user_id, view.full())
             .map(|mut positions| {
                 // A position on an edition outside the grant is left out, as
                 // `get_sidecar` leaves the edition out, and so is one past a
@@ -1543,7 +1564,7 @@ async fn put_progress(
                 ))
             })?;
         let progress = crate::Progress { slot, ..progress };
-        crate::progress::store(&state.library, &found, user_id, &progress)
+        crate::progress::store(&state.library, &found, user_id, &progress, view.full())
             .map_err(NoProgress::Failed)
     })
     .await;

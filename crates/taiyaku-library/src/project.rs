@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension as _};
 use taiyaku_core::{
     Alignment, Direction, Edition, Half, Member, Quality, RunEntry, Sidecar, Slot, SlotSpan,
     SolverInfo, Source, Verdict, Work,
@@ -48,6 +48,42 @@ pub fn sidecar(conn: &Connection, work_id: i64) -> Result<Sidecar, String> {
         hub,
         alignments,
     })
+}
+
+/// One edition's layout, which a slot and the page it shows are mapped
+/// against (O244): its members in order, its spread pages and the work's
+/// reading direction. `None` where the work holds no edition `key`.
+///
+/// Credit flags are left out: they do not change which page a slot shows.
+///
+/// # Errors
+///
+/// Returns an error if a stored reading direction is not one this crate
+/// writes, or if SQLite fails.
+pub(crate) fn layout(
+    conn: &Connection,
+    work_id: i64,
+    key: &str,
+) -> Result<Option<(Edition, Direction)>, String> {
+    let found: Option<(i64, String, String)> = conn
+        .query_row(
+            "SELECT e.id, e.label, w.reading FROM edition e JOIN work w ON w.id = e.work_id
+              WHERE e.work_id = ?1 AND e.key = ?2",
+            rusqlite::params![work_id, key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("reading edition `{key}` of work {work_id}: {e}"))?;
+    let Some((edition_id, label, reading)) = found else {
+        return Ok(None);
+    };
+    let edition = Edition {
+        label,
+        members: members_for(conn, edition_id)?,
+        spreads: flags_for(conn, edition_id, "spread")?,
+        credits: Vec::new(),
+    };
+    Ok(Some((edition, parse_direction(&reading)?)))
 }
 
 fn work_row(conn: &Connection, work_id: i64) -> Result<(String, Direction, String), String> {
@@ -326,7 +362,7 @@ fn parse_verdict(text: &str) -> Result<Verdict, String> {
     }
 }
 
-fn parse_half(text: Option<&str>) -> Result<Option<Half>, String> {
+pub(crate) fn parse_half(text: Option<&str>) -> Result<Option<Half>, String> {
     match text {
         None => Ok(None),
         Some("left") => Ok(Some(Half::Left)),

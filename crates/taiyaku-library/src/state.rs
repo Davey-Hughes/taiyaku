@@ -30,13 +30,34 @@
 //! three rules — see its own doc comment for why the document it writes is a
 //! different kind of thing, and where its merge rule actually lives.
 //!
+//! **A position or a note names the page it was written on, beside its
+//! slot** (O244): the member's digest, which copy of it, the page within it
+//! and the half. [`put_progress_at`] and [`put_notes_in`] write them from the
+//! layout the slot is numbered in, and [`progress_in`] and [`notes_in`]
+//! resolve them against the layout the slot is read in, so a change to the
+//! members or spread flags around the page leaves the row on it, unless an
+//! earlier copy of its archive in the edition goes and the copies renumber
+//! (`Edition::slot_of`). The stored slot is the fallback, for a row that
+//! names no page or whose page is gone; `resolve_position` and
+//! `resolve_note` hold the rules.
+//!
+//! **One layout per request** ([`Numbering`]). A server numbers its reader's
+//! slots in its own copy of the work, which trails the store's for a moment
+//! after a scan or a removal, so it hands that copy in and a slot is read and
+//! anchored in the whole document its reader's view is built from. A caller
+//! with no document of its own (import, export) uses the store's.
+//!
 //! **File I/O, the `ETag` helper, the `Invalid` enum and route-facing
 //! validation all stay in `taiyaku-serve`.** This module is rows in, rows out.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use rusqlite::{Connection, params};
-use taiyaku_core::{Axis, Kind, RegionMember, Sidecar, TruthDoc, TruthEdition, TruthRegion};
+use taiyaku_core::{
+    Axis, Direction, Edition, Kind, MemberPage, RegionMember, Sidecar, SlotOf, TruthDoc,
+    TruthEdition, TruthRegion,
+};
 
 use crate::{Note, Notes, Position, Progress, Region};
 
@@ -49,28 +70,78 @@ use crate::{Note, Notes, Position, Progress, Region};
 /// caller wanting "where was I" should take — see `serve`'s `get_progress` and
 /// `web/src/api.ts`'s `getProgress`.
 ///
+/// Each slot is the one the position's page shows in the store's layout now,
+/// as the module doc says, not necessarily the number stored.
+///
 /// # Errors
 ///
-/// Returns an error if SQLite fails.
+/// Returns an error if SQLite fails, if the work's stored reading direction
+/// is not one this crate writes, or if a row's anchor has some but not all
+/// of `at_sha256`, `at_nth` and `at_page` set, or a half with none of them,
+/// a state [`put_progress_at`] cannot write.
 pub fn progress(conn: &Connection, work_id: i64, user_id: i64) -> Result<Vec<Position>, String> {
+    progress_in(conn, work_id, user_id, Numbering::Store)
+}
+
+/// [`progress`], each slot the one the position's page shows in `numbering`.
+///
+/// # Errors
+///
+/// As [`progress`].
+pub fn progress_in(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    numbering: Numbering<'_>,
+) -> Result<Vec<Position>, String> {
     let mut statement = conn
         .prepare(
-            "SELECT edition, slot, updated FROM progress
+            "SELECT edition, slot, updated, at_sha256, at_nth, at_page, at_half FROM progress
               WHERE work_id = ?1 AND user_id = ?2
               ORDER BY updated DESC, edition ASC",
         )
         .map_err(|e| format!("preparing the progress read: {e}"))?;
     let rows = statement
         .query_map(params![work_id, user_id], |row| {
-            Ok(Position {
-                edition: row.get(0)?,
-                slot: row.get(1)?,
-                updated: row.get(2)?,
-            })
+            Ok((
+                Position {
+                    edition: row.get(0)?,
+                    slot: row.get(1)?,
+                    updated: row.get(2)?,
+                },
+                AtColumns {
+                    sha256: row.get(3)?,
+                    nth: row.get(4)?,
+                    page: row.get(5)?,
+                    half: row.get(6)?,
+                },
+            ))
         })
+        .map_err(|e| format!("reading progress for work {work_id}, user {user_id}: {e}"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| format!("reading progress for work {work_id}, user {user_id}: {e}"))?;
-    rows.collect::<rusqlite::Result<Vec<Position>>>()
-        .map_err(|e| format!("reading progress for work {work_id}, user {user_id}: {e}"))
+
+    // The primary key holds one row per edition key, so each layout is read
+    // once.
+    rows.into_iter()
+        .map(|(mut position, columns)| {
+            let at = at_from_columns(columns).map_err(|e| {
+                format!(
+                    "the position of user {user_id} on work {work_id}, edition `{}`, has {e}",
+                    position.edition
+                )
+            })?;
+            let layout = layout_in(conn, work_id, &position.edition, numbering)?;
+            position.slot = resolve_position(
+                layout
+                    .as_ref()
+                    .map(|(edition, reading)| (edition.as_ref(), *reading)),
+                position.slot,
+                at.as_ref(),
+            );
+            Ok(position)
+        })
+        .collect()
 }
 
 /// Record where a reader got to, now.
@@ -80,14 +151,30 @@ pub fn progress(conn: &Connection, work_id: i64, user_id: i64) -> Result<Vec<Pos
 ///
 /// # Errors
 ///
-/// Returns an error if SQLite fails.
+/// As [`put_progress_at`].
 pub fn put_progress(
     conn: &Connection,
     work_id: i64,
     user_id: i64,
     progress: &Progress,
 ) -> Result<(), String> {
-    put_progress_at(conn, work_id, user_id, progress, None)
+    put_progress_at(conn, work_id, user_id, progress, None, Numbering::Store)
+}
+
+/// [`put_progress`], its page found in `numbering`: a server passes the
+/// document its reader's slot is numbered in.
+///
+/// # Errors
+///
+/// As [`put_progress_at`].
+pub fn put_progress_in(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    progress: &Progress,
+    numbering: Numbering<'_>,
+) -> Result<(), String> {
+    put_progress_at(conn, work_id, user_id, progress, None, numbering)
 }
 
 /// Record where a reader got to, at the time the caller names.
@@ -96,11 +183,11 @@ pub fn put_progress(
 /// `completed_at` or `read_count`, which nothing in this module's interface
 /// manages.
 ///
-/// **`ON CONFLICT … DO UPDATE` naming two columns rather than
-/// `INSERT OR REPLACE`, and that is the whole of the promise above.** A
-/// REPLACE would clear both columns on every page turn — reading history the
-/// schema calls "behavioural data with NOTHING to backfill" — and the two
-/// statements are otherwise interchangeable here, `progress` being
+/// **`ON CONFLICT … DO UPDATE` naming the columns a position is made of
+/// rather than `INSERT OR REPLACE`, and that is the whole of the promise
+/// above.** A REPLACE would clear both columns on every page turn — reading
+/// history the schema calls "behavioural data with NOTHING to backfill" — and
+/// the two statements are otherwise interchangeable here, `progress` being
 /// `WITHOUT ROWID` on `(user_id, work_id, edition)`. `edition` itself is not
 /// named in the `DO UPDATE` list: it is part of the conflict target, so
 /// assigning it would be assigning a column to itself. Pinned by
@@ -128,24 +215,200 @@ pub fn put_progress(
 ///
 /// # Errors
 ///
-/// Returns an error if SQLite fails.
+/// Returns an error if SQLite fails, or if the work's stored reading
+/// direction is not one this crate writes.
 pub fn put_progress_at(
     conn: &Connection,
     work_id: i64,
     user_id: i64,
     progress: &Progress,
     updated: Option<&str>,
+    numbering: Numbering<'_>,
 ) -> Result<(), String> {
+    // The page the slot shows in `numbering` is written beside it on insert
+    // and on a page turn alike (O244), all NULL past the end or on an edition
+    // the layout does not hold. A `DO UPDATE` without the four would keep the
+    // first page a reader stood on, and `progress` would answer it.
+    let at = layout_in(conn, work_id, &progress.edition, numbering)?
+        .and_then(|(edition, reading)| edition.member_page(progress.slot, reading));
+    let (sha256, nth, page, half) = at_columns(at.as_ref());
     conn.execute(
-        "INSERT INTO progress (user_id, work_id, edition, slot, updated)
-         VALUES (?1, ?2, ?3, ?4, coalesce(?5, datetime('now')))
+        "INSERT INTO progress
+           (user_id, work_id, edition, slot, updated, at_sha256, at_nth, at_page, at_half)
+         VALUES (?1, ?2, ?3, ?4, coalesce(?5, datetime('now')), ?6, ?7, ?8, ?9)
          ON CONFLICT(user_id, work_id, edition) DO UPDATE SET
            slot = excluded.slot,
-           updated = excluded.updated",
-        params![user_id, work_id, progress.edition, progress.slot, updated],
+           updated = excluded.updated,
+           at_sha256 = excluded.at_sha256,
+           at_nth = excluded.at_nth,
+           at_page = excluded.at_page,
+           at_half = excluded.at_half",
+        params![
+            user_id,
+            work_id,
+            progress.edition,
+            progress.slot,
+            updated,
+            sha256,
+            nth,
+            page,
+            half
+        ],
     )
     .map_err(|e| format!("writing progress for work {work_id}, user {user_id}: {e}"))?;
     Ok(())
+}
+
+// --- anchors (O244) --------------------------------------------------------
+
+/// The layout a position's slot is numbered in, which its page is found and
+/// resolved in (O244).
+#[derive(Debug, Clone, Copy)]
+pub enum Numbering<'a> {
+    /// The store's rows as they stand: for a caller with no document of its
+    /// own, as import and export are.
+    Store,
+    /// The document a server numbered its reader's view with. It trails the
+    /// store's for a moment after a scan or a removal. Slots are read and
+    /// written in its numbering; a narrowed reader's are translated at serve.
+    Document(&'a Sidecar),
+}
+
+/// Edition `key`'s layout in `numbering`, and the reading direction its slots
+/// run in. `None` where that layout holds no edition `key`.
+fn layout_in<'a>(
+    conn: &Connection,
+    work_id: i64,
+    key: &str,
+    numbering: Numbering<'a>,
+) -> Result<Option<(Cow<'a, Edition>, Direction)>, String> {
+    Ok(match numbering {
+        Numbering::Store => crate::project::layout(conn, work_id, key)?
+            .map(|(edition, reading)| (Cow::Owned(edition), reading)),
+        Numbering::Document(doc) => doc
+            .editions
+            .get(key)
+            .map(|edition| (Cow::Borrowed(edition), doc.work.reading)),
+    })
+}
+
+/// A row's four `at_` columns as read, before [`at_from_columns`] checks them.
+pub(crate) struct AtColumns {
+    pub(crate) sha256: Option<String>,
+    pub(crate) nth: Option<u32>,
+    pub(crate) page: Option<u32>,
+    pub(crate) half: Option<String>,
+}
+
+/// The four `at_` column values for `at`, all NULL for no page.
+///
+/// The one place a row's anchor columns are made, so the first three are all
+/// set or all NULL: [`at_from_columns`] refuses anything else, and the
+/// migration has no CHECK across the columns to keep it.
+fn at_columns(at: Option<&MemberPage>) -> (Option<&str>, Option<u32>, Option<u32>, Option<&str>) {
+    match at {
+        Some(at) => (
+            Some(at.sha256.as_str()),
+            Some(at.nth),
+            Some(at.page),
+            crate::import::half_text(at.half),
+        ),
+        None => (None, None, None, None),
+    }
+}
+
+/// A row's four `at_` columns back into the page it names, refusing what
+/// [`at_columns`] never writes: some but not all of the first three set, or a
+/// half with no page. The error completes a sentence naming the row.
+pub(crate) fn at_from_columns(columns: AtColumns) -> Result<Option<MemberPage>, String> {
+    match columns {
+        AtColumns {
+            sha256: None,
+            nth: None,
+            page: None,
+            half: None,
+        } => Ok(None),
+        AtColumns {
+            sha256: Some(sha256),
+            nth: Some(nth),
+            page: Some(page),
+            half,
+        } => Ok(Some(MemberPage {
+            sha256,
+            nth,
+            page,
+            half: crate::project::parse_half(half.as_deref())?,
+        })),
+        AtColumns {
+            sha256: None,
+            nth: None,
+            page: None,
+            half: Some(half),
+        } => Err(format!(
+            "a half with no page (at_half={half:?}); at_half is set only beside \
+             at_sha256, at_nth and at_page"
+        )),
+        AtColumns {
+            sha256,
+            nth,
+            page,
+            half,
+        } => Err(format!(
+            "an anchor with only some of at_sha256, at_nth and at_page set \
+             (at_sha256={sha256:?}, at_nth={nth:?}, at_page={page:?}, at_half={half:?}); \
+             an anchor is all three or none"
+        )),
+    }
+}
+
+/// Where a position stands in its edition's layout now (O244): the slot its
+/// page shows; the page's first slot where its half is no longer held (a half
+/// of a page no longer a spread, or a whole page now one); and otherwise its
+/// stored slot, clamped to the last slot where the page is gone, so it still
+/// opens a page the edition has.
+///
+/// A row with no anchor, or on an edition key the layout does not hold,
+/// answers its stored slot as it stands: there is nothing to find or clamp to.
+pub(crate) fn resolve_position(
+    layout: Option<(&Edition, Direction)>,
+    stored: u32,
+    at: Option<&MemberPage>,
+) -> u32 {
+    let (Some((edition, reading)), Some(at)) = (layout, at) else {
+        return stored;
+    };
+    match edition.slot_of(at, reading) {
+        Some(SlotOf::Exact(slot) | SlotOf::PageOnly(slot)) => slot,
+        None => match edition.slots(reading).len().checked_sub(1) {
+            Some(last) => stored.min(u32::try_from(last).unwrap_or(u32::MAX)),
+            None => stored,
+        },
+    }
+}
+
+/// Where a note stands in its edition's layout now, and whether it is
+/// `stale` (O244): the slot its page and half show, and otherwise its stored
+/// slot, unclamped and `stale`. A note is never moved to a page it was not
+/// written on, so a half the layout no longer holds leaves it where it was,
+/// `stale`.
+///
+/// On an edition key the layout does not hold it is `stale` whatever its
+/// anchor; with no anchor otherwise, it answers its stored slot and is not.
+pub(crate) fn resolve_note(
+    layout: Option<(&Edition, Direction)>,
+    stored: u32,
+    at: Option<&MemberPage>,
+) -> (u32, bool) {
+    let Some((edition, reading)) = layout else {
+        return (stored, true);
+    };
+    let Some(at) = at else {
+        return (stored, false);
+    };
+    match edition.slot_of(at, reading) {
+        Some(SlotOf::Exact(slot)) => (slot, false),
+        Some(SlotOf::PageOnly(_)) | None => (stored, true),
+    }
 }
 
 // --- notes ---------------------------------------------------------------
@@ -165,6 +428,34 @@ struct NoteRow {
     body: String,
     created: String,
     updated: String,
+    at: AtColumns,
+}
+
+/// Each edition key's layout in one [`Numbering`], read once however many
+/// notes stand on it. `None` where that layout holds no such edition.
+type Layouts<'a> = BTreeMap<String, Option<(Cow<'a, Edition>, Direction)>>;
+
+fn layouts_in<'a, 'k>(
+    conn: &Connection,
+    work_id: i64,
+    keys: impl IntoIterator<Item = &'k str>,
+    numbering: Numbering<'a>,
+) -> Result<Layouts<'a>, String> {
+    let mut layouts = Layouts::new();
+    for key in keys {
+        if !layouts.contains_key(key) {
+            let layout = layout_in(conn, work_id, key, numbering)?;
+            layouts.insert(key.to_string(), layout);
+        }
+    }
+    Ok(layouts)
+}
+
+fn layout_of<'l>(layouts: &'l Layouts<'_>, key: &str) -> Option<(&'l Edition, Direction)> {
+    layouts
+        .get(key)
+        .and_then(Option::as_ref)
+        .map(|(edition, reading)| (edition.as_ref(), *reading))
 }
 
 /// Every note a reader holds on a work.
@@ -173,17 +464,66 @@ struct NoteRow {
 /// a work with a store row, since nothing in the `note` table carries a work
 /// label of its own.
 ///
+/// Each slot is the one the note's page shows in the store's layout now, or
+/// its stored slot marked `stale` where that page is not there, as the module
+/// doc says.
+///
 /// # Errors
 ///
-/// Returns an error if `work_id` names no work, if SQLite fails, or if a
+/// Returns an error if `work_id` names no work, if SQLite fails, if the
+/// work's stored reading direction is not one this crate writes, or if a
 /// stored note has a region with some but not all of its four columns set —
 /// a state `put_notes` cannot write and that must not be read back as either
-/// "no region" or a silently-guessed one.
+/// "no region" or a silently-guessed one. The same for an anchor with some
+/// but not all of `at_sha256`, `at_nth` and `at_page` set, or a half with
+/// none of them.
 pub fn notes(conn: &Connection, work_id: i64, user_id: i64) -> Result<Notes, String> {
+    notes_in(conn, work_id, user_id, Numbering::Store)
+}
+
+/// [`notes`], each slot the one the note's page shows in `numbering`.
+///
+/// # Errors
+///
+/// As [`notes`].
+pub fn notes_in(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    numbering: Numbering<'_>,
+) -> Result<Notes, String> {
     let work = work_slug(conn, work_id)?;
+    let held = held_notes(conn, work_id, user_id)?;
+    let layouts = layouts_in(
+        conn,
+        work_id,
+        held.iter().map(|(note, _)| note.edition.as_str()),
+        numbering,
+    )?;
+    let notes = held
+        .into_iter()
+        .map(|(mut note, at)| {
+            resolve(&mut note, at.as_ref(), &layouts);
+            note
+        })
+        .collect();
+    Ok(Notes {
+        taiyaku_notes: crate::NOTES_VERSION,
+        work,
+        notes,
+    })
+}
+
+/// Every note row as stored, in id order, beside the page its row names.
+fn held_notes(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+) -> Result<Vec<(Note, Option<MemberPage>)>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, edition, slot, rx, ry, rw, rh, color, body, created, updated
+            "SELECT id, edition, slot, rx, ry, rw, rh, color, body, created, updated,
+                    at_sha256, at_nth, at_page, at_half
              FROM note WHERE work_id = ?1 AND user_id = ?2 ORDER BY id",
         )
         .map_err(|e| format!("preparing notes: {e}"))?;
@@ -201,22 +541,30 @@ pub fn notes(conn: &Connection, work_id: i64, user_id: i64) -> Result<Notes, Str
                 body: row.get(8)?,
                 created: row.get(9)?,
                 updated: row.get(10)?,
+                at: AtColumns {
+                    sha256: row.get(11)?,
+                    nth: row.get(12)?,
+                    page: row.get(13)?,
+                    half: row.get(14)?,
+                },
             })
         })
         .map_err(|e| format!("querying notes: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("reading notes: {e}"))?;
 
-    let notes = rows
-        .into_iter()
-        .map(note_from_row)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Notes { work, notes })
+    rows.into_iter().map(note_from_row).collect()
 }
 
-fn note_from_row(row: NoteRow) -> Result<Note, String> {
+/// `note`'s slot and `stale` as its own edition's layout answers them.
+fn resolve(note: &mut Note, at: Option<&MemberPage>, layouts: &Layouts<'_>) {
+    (note.slot, note.stale) = resolve_note(layout_of(layouts, &note.edition), note.slot, at);
+}
+
+fn note_from_row(row: NoteRow) -> Result<(Note, Option<MemberPage>), String> {
     let region = region_from_columns(&row.id, row.rx, row.ry, row.rw, row.rh)?;
-    Ok(Note {
+    let at = at_from_columns(row.at).map_err(|e| format!("note `{}` has {e}", row.id))?;
+    let note = Note {
         id: row.id,
         edition: row.edition,
         slot: row.slot,
@@ -225,7 +573,9 @@ fn note_from_row(row: NoteRow) -> Result<Note, String> {
         body: row.body,
         created: row.created,
         updated: row.updated,
-    })
+        stale: false,
+    };
+    Ok((note, at))
 }
 
 /// Four nullable columns back into `Option<Region>`, refusing the shape
@@ -262,17 +612,56 @@ fn work_slug(conn: &Connection, work_id: i64) -> Result<String, String> {
 /// transaction so a failure partway through leaves the prior set intact rather
 /// than half-replaced. `doc.work` is not written anywhere: nothing in the
 /// `note` table carries a work label, and `work_id` already says which work
-/// this is.
+/// this is. A note nobody moved keeps the page its row names
+/// ([`put_notes_in`]).
 ///
 /// # Errors
 ///
 /// Returns an error if SQLite fails — including a `UNIQUE` violation on
 /// `note.id` if `doc.notes` repeats an id, since this module does not
-/// duplicate `notes.rs`'s own check for that.
+/// duplicate `notes.rs`'s own check for that — or if a held note cannot be
+/// read, as [`notes`] says.
 pub fn put_notes(conn: &Connection, work_id: i64, user_id: i64, doc: &Notes) -> Result<(), String> {
+    put_notes_in(conn, work_id, user_id, doc, Numbering::Store)
+}
+
+/// [`put_notes`], each slot read in `numbering` (O244). A note whose edition,
+/// slot and region equal its held note's ([`Note::same_anchor`]) keeps the
+/// held `at_` columns; any other is given the page its slot shows. Giving every
+/// note that page would tie a lost file's note to the page its stored slot
+/// shows now, so it could never find its own page again. The held notes are
+/// read in `numbering` too: `same_anchor` compares slots, so one read in
+/// another numbering would look moved.
+///
+/// # Errors
+///
+/// As [`put_notes`].
+pub fn put_notes_in(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    doc: &Notes,
+    numbering: Numbering<'_>,
+) -> Result<(), String> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("starting notes transaction: {e}"))?;
+    let held = held_notes(&tx, work_id, user_id)?;
+    let layouts = layouts_in(
+        &tx,
+        work_id,
+        held.iter()
+            .map(|(note, _)| note.edition.as_str())
+            .chain(doc.notes.iter().map(|note| note.edition.as_str())),
+        numbering,
+    )?;
+    let held: BTreeMap<String, (Note, Option<MemberPage>)> = held
+        .into_iter()
+        .map(|(mut note, at)| {
+            resolve(&mut note, at.as_ref(), &layouts);
+            (note.id.clone(), (note, at))
+        })
+        .collect();
     tx.execute(
         "DELETE FROM note WHERE work_id = ?1 AND user_id = ?2",
         params![work_id, user_id],
@@ -283,8 +672,10 @@ pub fn put_notes(conn: &Connection, work_id: i64, user_id: i64, doc: &Notes) -> 
         let mut stmt = tx
             .prepare(
                 "INSERT INTO note
-                   (id, user_id, work_id, edition, slot, rx, ry, rw, rh, color, body, created, updated)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                   (id, user_id, work_id, edition, slot, rx, ry, rw, rh, color, body, created,
+                    updated, at_sha256, at_nth, at_page, at_half)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                         ?14, ?15, ?16, ?17)",
             )
             .map_err(|e| format!("preparing note insert: {e}"))?;
         for note in &doc.notes {
@@ -292,6 +683,12 @@ pub fn put_notes(conn: &Connection, work_id: i64, user_id: i64, doc: &Notes) -> 
                 Some(r) => (Some(r.x), Some(r.y), Some(r.w), Some(r.h)),
                 None => (None, None, None, None),
             };
+            let at = match held.get(&note.id) {
+                Some((stored, at)) if stored.same_anchor(note) => at.clone(),
+                _ => layout_of(&layouts, &note.edition)
+                    .and_then(|(edition, reading)| edition.member_page(note.slot, reading)),
+            };
+            let (sha256, nth, page, half) = at_columns(at.as_ref());
             stmt.execute(params![
                 note.id,
                 user_id,
@@ -306,6 +703,10 @@ pub fn put_notes(conn: &Connection, work_id: i64, user_id: i64, doc: &Notes) -> 
                 note.body,
                 note.created,
                 note.updated,
+                sha256,
+                nth,
+                page,
+                half,
             ])
             .map_err(|e| format!("writing note `{}`: {e}", note.id))?;
         }
@@ -335,6 +736,7 @@ pub fn merge_notes(held: &Notes, incoming: &Notes) -> Notes {
         }
     }
     Notes {
+        taiyaku_notes: crate::NOTES_VERSION,
         work: held.work.clone(),
         notes: by_id.into_values().collect(),
     }

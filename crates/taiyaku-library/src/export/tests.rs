@@ -56,6 +56,7 @@ fn a_work_with_notes_and_progress(conn: &rusqlite::Connection, dir: &TempDir) ->
         id,
         1,
         &crate::Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
             work: "t".to_string(),
             notes: vec![crate::Note {
                 id: "01H".to_string(),
@@ -66,6 +67,7 @@ fn a_work_with_notes_and_progress(conn: &rusqlite::Connection, dir: &TempDir) ->
                 body: "a note".to_string(),
                 created: "2026-08-14T10:00:00Z".to_string(),
                 updated: "2026-08-14T10:00:00Z".to_string(),
+                stale: false,
             }],
         },
     )
@@ -290,6 +292,7 @@ fn a_document_this_export_wrote_is_this_librarys_from_then_on() {
         id,
         THE_READER,
         &crate::Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
             work: "t".to_string(),
             notes: Vec::new(),
         },
@@ -550,6 +553,81 @@ fn a_work_with_no_notes_exports_an_empty_notes_document() {
         std::fs::read_to_string(dir.path().join("bare").join("taiyaku.notes.json")).expect("reads");
     let doc: serde_json::Value = serde_json::from_str(&text).expect("json");
     assert_eq!(doc["notes"].as_array().map(Vec::len), Some(0));
+}
+
+/// A note whose page is gone is exported at its stored slot and without
+/// `stale`, which a read sets from the store's layout and the document does
+/// not carry (O244, decision 7). On `b`'s second page, slot 4, and `b` is
+/// then imported away.
+#[test]
+fn a_note_whose_page_is_gone_is_exported_at_its_slot_without_stale() {
+    let dir = tempdir();
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let path = dir.path().join("taiyaku.json");
+    let of = |members: &str| {
+        Sidecar::from_json(&format!(
+            r#"{{"taiyaku":1,"work":{{"title":"T","reading":"rtl"}},
+                 "editions":{{"raw":{{"label":"R","members":[{members}]}}}},
+                 "hub":"raw","alignments":[]}}"#
+        ))
+        .expect("parses")
+    };
+    let a = r#"{"path":"raw/a.cbz","sha256":"aa","pages":3}"#;
+    let b = r#"{"path":"raw/b.cbz","sha256":"bb","pages":4}"#;
+    let id = crate::import::sidecar(&conn, &of(&format!("{a},{b}")), &path).expect("import");
+    crate::state::put_notes(
+        &conn,
+        id,
+        THE_READER,
+        &crate::Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
+            work: "t".to_string(),
+            notes: vec![crate::Note {
+                id: "01H".to_string(),
+                edition: "raw".to_string(),
+                slot: 4,
+                region: None,
+                color: None,
+                body: "on b".to_string(),
+                created: "2026-11-10T10:00:00Z".to_string(),
+                updated: "2026-11-10T10:00:00Z".to_string(),
+                stale: false,
+            }],
+        },
+    )
+    .expect("put_notes");
+    assert_eq!(
+        crate::import::sidecar(&conn, &of(a), &path).expect("imports without b"),
+        id,
+        "the fixture: the same work"
+    );
+    let read = crate::state::notes(&conn, id, THE_READER).expect("reads the notes");
+    assert_eq!(
+        read.notes
+            .iter()
+            .map(|note| (note.slot, note.stale))
+            .collect::<Vec<_>>(),
+        [(4, true)],
+        "the fixture: the note is read stale"
+    );
+
+    work(&conn, id, THE_READER, Some(dir.path())).expect("export");
+    let text =
+        std::fs::read_to_string(dir.path().join("t").join("taiyaku.notes.json")).expect("reads");
+    let doc: serde_json::Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(
+        doc["notes"],
+        serde_json::json!([{
+            "id": "01H",
+            "edition": "raw",
+            "slot": 4,
+            "body": "on b",
+            "created": "2026-11-10T10:00:00Z",
+            "updated": "2026-11-10T10:00:00Z",
+        }]),
+        "{text}"
+    );
 }
 
 /// A work with no recorded position, no labelling and no hand-fixed metadata
@@ -963,6 +1041,44 @@ fn an_in_place_export_keeps_a_document_a_newer_taiyaku_wrote_even_one_it_absorbe
     );
 }
 
+/// The notes document is versioned too, so an in-place export keeps one a
+/// newer taiyaku wrote (pre-deploy spec §3, decision 5). The first export
+/// writes it and arms its marker, so only the version can keep it.
+#[test]
+fn an_in_place_export_keeps_a_notes_document_a_newer_taiyaku_wrote() {
+    let dir = tempdir();
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let id = a_work_with_notes_and_progress(&conn, &dir);
+    migrate_siblings(&conn, &dir, id);
+    let notes_path = dir.path().join("taiyaku.notes.json");
+    let first = work(&conn, id, THE_READER, None).expect("first export");
+    assert!(
+        first.written.contains(&notes_path),
+        "the fixture must write the notes document: {:?}",
+        first.written
+    );
+    assert!(
+        crate::migrate::absorbed(&conn, id, crate::migrate::NOTES).expect("reads the marker"),
+        "the first export must record the notes absorbed, or this test proves nothing"
+    );
+    let newer = r#"{"taiyaku_notes": 2, "work": "t", "notes": [], "from": "newer"}"#;
+    std::fs::write(&notes_path, newer).expect("a newer taiyaku writes its notes");
+
+    let exported = work(&conn, id, THE_READER, None).expect("the export under test");
+
+    assert_eq!(
+        std::fs::read_to_string(&notes_path).expect("reads"),
+        newer,
+        "a newer taiyaku's notes must be exactly as it left them"
+    );
+    assert!(
+        exported.kept.contains(&notes_path),
+        "and named among the files kept: {:?}",
+        exported.kept
+    );
+}
+
 /// The other half of the same rule: a work that never had any optional document
 /// reports no removals. A `remove_file` on a path that is not there is the
 /// ordinary case — most works have none — and must not be reported as a
@@ -989,6 +1105,7 @@ fn note_for(conn: &rusqlite::Connection, work_id: i64, user_id: i64, id: &str, b
         work_id,
         user_id,
         &crate::Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
             work: "t".to_string(),
             notes: vec![crate::Note {
                 id: id.to_string(),
@@ -999,6 +1116,7 @@ fn note_for(conn: &rusqlite::Connection, work_id: i64, user_id: i64, id: &str, b
                 body: body.to_string(),
                 created: "2026-08-18T00:00:00Z".to_string(),
                 updated: "2026-08-18T00:00:00Z".to_string(),
+                stale: false,
             }],
         },
     )

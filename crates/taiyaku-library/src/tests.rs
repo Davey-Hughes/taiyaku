@@ -389,6 +389,106 @@ pub(crate) fn library_with_two_roots_and_a_reading_position() -> FixtureLibrary 
     FixtureLibrary { library, dir }
 }
 
+/// One volume whose two chapters stand in two directories of one library, so
+/// removing the first directory moves the second chapter's pages down three
+/// slots, and removing the second takes its pages out of the edition (O244).
+/// See [`a_volume_across_two_directories`].
+pub(crate) struct VolumeAcrossTwoDirectories {
+    pub(crate) library: Library,
+    /// `Foo/Foo - v01 - c001.cbz`, 3 pages.
+    pub(crate) a: crate::scan::Root,
+    /// `Foo/Foo - v01 - c002.cbz`, 4 pages.
+    pub(crate) b: crate::scan::Root,
+    pub(crate) work_id: i64,
+    _dir: TempDir,
+}
+
+impl VolumeAcrossTwoDirectories {
+    pub(crate) fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.library.conn()
+    }
+
+    /// Put a directory back after `scan::remove_root` took it: added to the
+    /// same library again, scanned and derived. Its files are still on disk,
+    /// so the member comes back with the digest it had.
+    pub(crate) fn put_back(&self, root: &crate::scan::Root) -> crate::scan::Root {
+        let conn = self.conn();
+        let again = crate::scan::add_root_in(
+            &conn,
+            &root.path,
+            crate::scan::InLibrary::Named(VOLUME_LIBRARY),
+        )
+        .expect("adds the directory back");
+        crate::scan::scan_root(&conn, &again).expect("scans it again");
+        crate::derive::derive(&conn).expect("derives with it back");
+        again
+    }
+}
+
+const VOLUME_LIBRARY: &str = "Manga";
+
+/// Directory A holds `Foo/Foo - v01 - c001.cbz` (3 pages) and directory B
+/// `Foo/Foo - v01 - c002.cbz` (4 pages), both in one library, scanned and
+/// derived into one work whose `raw` edition is c001 then c002: slots 0-2 are
+/// c001's and 3-6 c002's. Neither archive has a spread flag, so a slot is a page.
+pub(crate) fn a_volume_across_two_directories() -> VolumeAcrossTwoDirectories {
+    let dir = tempdir("volume-across-two-directories");
+    let a_dir = dir.path().join("a");
+    let b_dir = dir.path().join("b");
+    crate::scan::tests::write_archive(&a_dir.join("Foo").join("Foo - v01 - c001.cbz"), 3);
+    crate::scan::tests::write_archive(&b_dir.join("Foo").join("Foo - v01 - c002.cbz"), 4);
+
+    let library = Library::open_in_memory().expect("an in-memory library opens");
+    let (a, b, work_id) = {
+        let conn = library.conn();
+        let one_library = crate::scan::InLibrary::Named(VOLUME_LIBRARY);
+        let a = crate::scan::add_root_in(&conn, &a_dir, one_library).expect("adds a");
+        crate::scan::scan_root(&conn, &a).expect("scans a");
+        let b = crate::scan::add_root_in(&conn, &b_dir, one_library).expect("adds b");
+        crate::scan::scan_root(&conn, &b).expect("scans b");
+        crate::derive::derive(&conn).expect("derives the volume");
+
+        let members: Vec<(i64, String, String, u32)> = conn
+            .prepare(
+                "SELECT e.work_id, e.key, m.path, m.pages FROM member m
+                   JOIN edition e ON e.id = m.edition_id
+                  ORDER BY e.work_id, e.key, m.ordinal",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                    .collect()
+            })
+            .expect("lists the members");
+        let work_id = members.first().expect("the volume derived a work").0;
+        let shape: Vec<(i64, &str, String, u32)> = members
+            .iter()
+            .map(|(work, key, path, pages)| {
+                let file = Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("a member names its file");
+                (*work, key.as_str(), file.to_string(), *pages)
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (work_id, "raw", "Foo - v01 - c001.cbz".to_string(), 3),
+                (work_id, "raw", "Foo - v01 - c002.cbz".to_string(), 4),
+            ],
+            "the fixture: one work, its `raw` edition c001 then c002"
+        );
+        (a, b, work_id)
+    };
+    VolumeAcrossTwoDirectories {
+        library,
+        a,
+        b,
+        work_id,
+        _dir: dir,
+    }
+}
+
 /// A rule that sends every path to `series`, regardless of what it already
 /// resolves to — the widest possible edit, and the one
 /// `crate::preview::tests` uses to prove a preview's [`crate::preview::Impact`]
@@ -1867,5 +1967,148 @@ fn committing_the_savepoint_branch_sends_no_rollback_to_savepoint_statement() {
         "committing the savepoint branch must send no `ROLLBACK TO SAVEPOINT` at all — the \
          savepoint named `watched_savepoint` was released, not left open, so `Drop` has nothing \
          left to roll back"
+    );
+}
+
+/// A note with a region, for the `stale` and `same_anchor` tests below: each
+/// changes one or more fields from here.
+fn a_note() -> Note {
+    Note {
+        id: "01J8".into(),
+        edition: "raw".into(),
+        slot: 3,
+        region: Some(Region {
+            x: 0.1,
+            y: 0.2,
+            w: 0.3,
+            h: 0.4,
+        }),
+        color: None,
+        body: "why is this page here".into(),
+        created: "2026-08-05T10:00:00Z".into(),
+        updated: "2026-08-05T10:00:00Z".into(),
+        stale: false,
+    }
+}
+
+/// Every notes document written before `stale` existed has no `stale` key, a
+/// reader echoing a read's answer sends one, and `Note` refuses a body it
+/// cannot fill.
+#[test]
+fn a_note_with_no_stale_key_reads_as_not_stale_and_one_with_it_reads_as_stale() {
+    let unmarked = r#"{"id":"01J8","edition":"raw","slot":3,"body":"why","created":"2026-08-05T10:00:00Z","updated":"2026-08-05T10:00:00Z"}"#;
+    let note: Note = serde_json::from_str(unmarked)
+        .expect("a note with no `stale` key, as every body written so far has, must read");
+    assert!(
+        !note.stale,
+        "a note with no `stale` key must read as not stale"
+    );
+
+    let marked = r#"{"id":"01J8","edition":"raw","slot":3,"body":"why","created":"2026-08-05T10:00:00Z","updated":"2026-08-05T10:00:00Z","stale":true}"#;
+    let note: Note = serde_json::from_str(marked)
+        .expect("a note with `\"stale\": true`, as a reader echoes a read's answer, must read");
+    assert!(
+        note.stale,
+        "a note with `\"stale\": true` must read as stale"
+    );
+}
+
+/// `stale` is the exception, so a document carries it only on the notes it
+/// marks.
+#[test]
+fn a_note_is_written_with_a_stale_key_only_when_it_is_stale() {
+    let mut note = a_note();
+    let written = serde_json::to_value(&note).expect("serialising a note");
+    assert_eq!(
+        written.get("stale"),
+        None,
+        "a note that is not stale must be written with no `stale` key"
+    );
+
+    note.stale = true;
+    let written = serde_json::to_value(&note).expect("serialising a note");
+    assert_eq!(
+        written.get("stale"),
+        Some(&serde_json::Value::Bool(true)),
+        "a stale note must be written with `\"stale\": true`"
+    );
+}
+
+#[test]
+fn two_notes_have_the_same_anchor_when_only_their_words_colour_times_or_stale_differ() {
+    let held = a_note();
+
+    let retyped = Note {
+        body: "the same page, other words".into(),
+        color: Some("amber".into()),
+        created: "2026-09-01T08:00:00Z".into(),
+        updated: "2026-09-02T08:00:00Z".into(),
+        stale: true,
+        ..a_note()
+    };
+    assert_ne!(
+        held, retyped,
+        "the fixture's two notes must differ, or `same_anchor` could be `==`"
+    );
+    assert!(
+        held.same_anchor(&retyped),
+        "a note whose body, colour, times and `stale` changed has not moved"
+    );
+
+    let moved = [
+        (
+            "its edition changes",
+            Note {
+                edition: "scan".into(),
+                ..a_note()
+            },
+        ),
+        (
+            "its slot changes",
+            Note {
+                slot: 4,
+                ..a_note()
+            },
+        ),
+        (
+            "its region changes",
+            Note {
+                region: Some(Region {
+                    x: 0.5,
+                    y: 0.2,
+                    w: 0.3,
+                    h: 0.4,
+                }),
+                ..a_note()
+            },
+        ),
+        (
+            "its region becomes the whole slot",
+            Note {
+                region: None,
+                ..a_note()
+            },
+        ),
+    ];
+    for (what, note) in moved {
+        assert!(!held.same_anchor(&note), "a note has moved when {what}");
+    }
+}
+
+/// A `taiyaku_notes` past `u32` is newer than any build, so it is refused as
+/// newer, named at the largest `u32`. 2^32 is chosen because it truncates to 0
+/// and fails `u32::try_from`, so falling back to 0 or casting would both read
+/// it as a version this build reads and let it through to the parse.
+#[test]
+fn a_notes_document_declaring_a_version_past_u32_is_refused_as_newer() {
+    let text = br#"{"taiyaku_notes":4294967296,"work":"t","notes":[]}"#;
+    assert_eq!(
+        Notes::refuse_newer(text),
+        Err(
+            "this document declares taiyaku_notes format version 4294967295, and this build \
+             reads 1. Refusing to read it rather than dropping the fields it does not \
+             understand and writing them back out as version 1 — upgrade taiyaku instead"
+                .to_owned()
+        )
     );
 }

@@ -3313,6 +3313,7 @@ fn seed_notes(conn: &Connection, work_id: i64, user_id: i64, edition: &str, ids:
         work_id,
         user_id,
         &crate::Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
             work: "ignored".to_string(),
             notes: ids
                 .iter()
@@ -3325,6 +3326,7 @@ fn seed_notes(conn: &Connection, work_id: i64, user_id: i64, edition: &str, ids:
                     body: format!("the sign, note {id}"),
                     created: "2026-08-27T09:00:00Z".to_string(),
                     updated: "2026-08-27T09:00:00Z".to_string(),
+                    stale: false,
                 })
                 .collect(),
         },
@@ -7303,7 +7305,8 @@ fn removing_the_older_directory_of_a_split_volume_leaves_its_work_unfolded() {
             })
             .expect("positions")
     };
-    // Past the end of Foo's 4 pages: a removal keeps the old numbering (O244).
+    // Past the end of Foo's 4 pages: this removal rewrites no stored slot,
+    // and this row, inserted with no anchor, is read at it (O244).
     assert_eq!(
         positions(),
         [(foo, "raw".to_string(), 4)],
@@ -7496,8 +7499,9 @@ fn removing_the_directory_of_one_of_two_editions_keeps_its_stale_edition_beside_
             })
             .expect("positions")
     };
-    // Past the end of the stale `raw`'s 4 pages: a removal keeps the old
-    // numbering (O244).
+    // Past the end of the stale `raw`'s 4 pages: this removal rewrites no
+    // stored slot, and this row, inserted with no anchor, is read at it
+    // (O244).
     assert_eq!(
         positions(),
         [(bar_work, "raw".to_string(), 4)],

@@ -930,6 +930,7 @@ fn a_second_import_does_not_overwrite_state_changed_since_the_first() {
             work_id,
             1,
             &taiyaku_library::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
                 work: "t".to_string(),
                 notes: vec![taiyaku_library::Note {
                     id: "live".to_string(),
@@ -940,6 +941,7 @@ fn a_second_import_does_not_overwrite_state_changed_since_the_first() {
                     body: "written since".to_string(),
                     created: "2026-08-15T00:00:00Z".to_string(),
                     updated: "2026-08-15T00:00:00Z".to_string(),
+                    stale: false,
                 }],
             },
         )
@@ -996,6 +998,7 @@ fn a_deletion_made_since_the_first_import_survives_every_restart() {
             work_id,
             1,
             &taiyaku_library::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
                 work: "t".to_string(),
                 notes: Vec::new(),
             },
@@ -1192,6 +1195,7 @@ fn round_trip_export_wipe_the_database_and_reimport_recovers_the_same_state() {
             work_id_a,
             1,
             &taiyaku_library::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
                 work: "t".to_string(),
                 notes: vec![taiyaku_library::Note {
                     id: "01H9".to_string(),
@@ -1202,6 +1206,7 @@ fn round_trip_export_wipe_the_database_and_reimport_recovers_the_same_state() {
                     body: "round trip me".to_string(),
                     created: "2026-08-14T10:00:00Z".to_string(),
                     updated: "2026-08-14T10:00:00Z".to_string(),
+                    stale: false,
                 }],
             },
         )

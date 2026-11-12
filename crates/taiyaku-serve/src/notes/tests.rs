@@ -18,6 +18,7 @@ fn note(id: &str, slot: u32, region: Option<Region>) -> Note {
         body: "why is this page here".into(),
         created: "2026-08-05T10:00:00Z".into(),
         updated: "2026-08-05T10:00:00Z".into(),
+        stale: false,
     }
 }
 
@@ -35,14 +36,16 @@ fn notes_are_written_to_the_library_not_into_the_sidecar() {
         &work,
         1,
         &Notes {
+            taiyaku_notes: taiyaku_library::NOTES_VERSION,
             work: "t".into(),
             notes: vec![note("01J8", 12, None)],
         },
+        &work.sidecar(),
     )
     .unwrap();
 
     let sidecar_after = std::fs::read_to_string(&work.path).unwrap();
-    let stored = load(&library, &work, 1).unwrap();
+    let stored = load(&library, &work, 1, &work.sidecar()).unwrap();
     assert_eq!(sidecar_before, sidecar_after, "the sidecar must not change");
     assert_eq!(
         stored.map(|n| n.notes.len()),
@@ -61,6 +64,7 @@ fn a_note_round_trips_with_and_without_a_region() {
     let work = crate::test_support::work(&tmp);
     let library = library();
     let stored = Notes {
+        taiyaku_notes: taiyaku_library::NOTES_VERSION,
         work: "t".into(),
         notes: vec![
             note(
@@ -77,8 +81,8 @@ fn a_note_round_trips_with_and_without_a_region() {
         ],
     };
 
-    store(&library, &work, 1, &stored).unwrap();
-    let read_back = load(&library, &work, 1).unwrap();
+    store(&library, &work, 1, &stored, &work.sidecar()).unwrap();
+    let read_back = load(&library, &work, 1, &work.sidecar()).unwrap();
     // `notes::to_json`'s own doc comment is the invariant this is standing in
     // for: the region-less note must serialise with the field omitted, not
     // written as `null`, in exactly the bytes a client would be sent.
@@ -149,6 +153,7 @@ fn a_stale_anchor_already_stored_does_not_refuse_the_writes_that_follow_it() {
         body: "an ordinary note".into(),
         created: "2026-08-05T10:00:00Z".into(),
         updated: "2026-08-05T10:00:00Z".into(),
+        stale: false,
     });
     let alongside = validate(&both, &work, &stale);
 
@@ -205,7 +210,7 @@ fn a_grandfathered_note_still_has_its_colour_checked() {
 fn a_work_with_no_notes_recorded_loads_as_nothing_recorded() {
     let tmp = crate::test_support::Fixture::new("notes-absent");
     let work = crate::test_support::work(&tmp);
-    let loaded = load(&library(), &work, 1);
+    let loaded = load(&library(), &work, 1, &work.sidecar());
     assert_eq!(loaded.unwrap(), None);
 }
 
@@ -225,12 +230,12 @@ fn storing_notes_mints_exactly_one_bridge_row_for_a_work_the_library_never_impor
         "nothing has been written yet, so no row exists"
     );
 
-    store(&library, &work, 1, &on("raw", 0, None)).unwrap();
+    store(&library, &work, 1, &on("raw", 0, None), &work.sidecar()).unwrap();
     let first_id = crate::works::find_row(&library.conn(), &work)
         .unwrap()
         .expect("a row now exists");
 
-    store(&library, &work, 1, &empty("t")).unwrap();
+    store(&library, &work, 1, &empty("t"), &work.sidecar()).unwrap();
     let second_id = crate::works::find_row(&library.conn(), &work)
         .unwrap()
         .expect("still there");
@@ -240,7 +245,7 @@ fn storing_notes_mints_exactly_one_bridge_row_for_a_work_the_library_never_impor
         "the second write reuses the first's row"
     );
     assert_eq!(
-        load(&library, &work, 1).unwrap(),
+        load(&library, &work, 1, &work.sidecar()).unwrap(),
         Some(empty("t")),
         "the second write replaced the first note with none"
     );
@@ -255,7 +260,7 @@ fn loading_notes_for_an_unregistered_work_creates_no_row() {
     let work = crate::test_support::work(&tmp);
     let library = library();
 
-    let loaded = load(&library, &work, 1).unwrap();
+    let loaded = load(&library, &work, 1, &work.sidecar()).unwrap();
 
     let row = crate::works::find_row(&library.conn(), &work).unwrap();
     assert_eq!(loaded, None);
@@ -264,6 +269,7 @@ fn loading_notes_for_an_unregistered_work_creates_no_row() {
 
 fn on(edition: &str, slot: u32, region: Option<Region>) -> Notes {
     Notes {
+        taiyaku_notes: taiyaku_library::NOTES_VERSION,
         work: "t".into(),
         notes: vec![Note {
             id: "01J8".into(),
@@ -274,6 +280,7 @@ fn on(edition: &str, slot: u32, region: Option<Region>) -> Notes {
             body: "b".into(),
             created: "2026-08-05T10:00:00Z".into(),
             updated: "2026-08-05T10:00:00Z".into(),
+            stale: false,
         }],
     }
 }
@@ -444,6 +451,7 @@ fn an_empty_document_names_the_work_it_is_for() {
     assert_eq!(
         empty("go-toubun-v01"),
         Notes {
+            taiyaku_notes: taiyaku_library::NOTES_VERSION,
             work: "go-toubun-v01".into(),
             notes: Vec::new()
         }

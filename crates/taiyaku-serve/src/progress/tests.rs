@@ -17,7 +17,7 @@ fn absent_progress_is_not_the_same_as_slot_zero() {
     let work = crate::test_support::work(&tmp);
     let library = library();
 
-    let before = load(&library, &work, 1).unwrap();
+    let before = load(&library, &work, 1, &work.sidecar()).unwrap();
     store(
         &library,
         &work,
@@ -26,9 +26,10 @@ fn absent_progress_is_not_the_same_as_slot_zero() {
             edition: "raw".into(),
             slot: 0,
         },
+        &work.sidecar(),
     )
     .unwrap();
-    let after = load(&library, &work, 1).unwrap();
+    let after = load(&library, &work, 1, &work.sidecar()).unwrap();
 
     assert_eq!(before, Vec::new(), "nothing recorded yet");
     assert_eq!(
@@ -57,6 +58,7 @@ fn progress_is_written_to_the_library_not_into_the_sidecar() {
             edition: "raw".into(),
             slot: 12,
         },
+        &work.sidecar(),
     )
     .unwrap();
 
@@ -88,6 +90,7 @@ fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_im
             edition: "raw".into(),
             slot: 1,
         },
+        &work.sidecar(),
     )
     .unwrap();
     let first_id = crate::works::find_row(&library.conn(), &work)
@@ -102,6 +105,7 @@ fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_im
             edition: "raw".into(),
             slot: 2,
         },
+        &work.sidecar(),
     )
     .unwrap();
     let second_id = crate::works::find_row(&library.conn(), &work)
@@ -112,7 +116,7 @@ fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_im
         first_id, second_id,
         "the second write reuses the first's row"
     );
-    let loaded = load(&library, &work, 1).unwrap();
+    let loaded = load(&library, &work, 1, &work.sidecar()).unwrap();
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].edition, "raw");
     assert_eq!(loaded[0].slot, 2);
@@ -127,7 +131,7 @@ fn loading_progress_for_an_unregistered_work_creates_no_row() {
     let work = crate::test_support::work(&tmp);
     let library = library();
 
-    let loaded = load(&library, &work, 1).unwrap();
+    let loaded = load(&library, &work, 1, &work.sidecar()).unwrap();
 
     let row = crate::works::find_row(&library.conn(), &work).unwrap();
     assert_eq!(loaded, Vec::new());

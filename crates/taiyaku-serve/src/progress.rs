@@ -12,6 +12,8 @@
 //! slug — to the numeric `work_id` those functions need
 //! (`works::find_row`, `works::row_id_for_write`).
 
+use taiyaku_core::Sidecar;
+use taiyaku_library::state::Numbering;
 use taiyaku_library::{Library, Position, Progress};
 
 use crate::works::{self, Work};
@@ -25,21 +27,35 @@ use crate::works::{self, Work};
 /// A work with no row in `library`'s `work` table answers empty without
 /// touching `progress` at all: `works::find_row` never creates a row.
 ///
+/// Each slot is in `numbered`, the document the reader's view was numbered
+/// from (O244).
+///
 /// # Errors
 ///
-/// Returns an error if SQLite fails.
-pub fn load(library: &Library, work: &Work, user_id: i64) -> Result<Vec<Position>, String> {
+/// Returns an error if SQLite fails, or if a stored position's anchor has
+/// some but not all of `at_sha256`, `at_nth` and `at_page` set, or a half
+/// with none of them: a state `taiyaku_library::state::put_progress_at`
+/// cannot write.
+pub fn load(
+    library: &Library,
+    work: &Work,
+    user_id: i64,
+    numbered: &Sidecar,
+) -> Result<Vec<Position>, String> {
     let conn = library.conn();
     let Some(work_id) = works::find_row(&conn, work)? else {
         return Ok(Vec::new());
     };
-    taiyaku_library::state::progress(&conn, work_id, user_id)
+    taiyaku_library::state::progress_in(&conn, work_id, user_id, Numbering::Document(numbered))
 }
 
 /// Record where the reader got to.
 ///
 /// The library row bridging `work`'s slug to a numeric `work_id` is minted
 /// here on first write if none exists yet — see `works::row_id_for_write`.
+///
+/// The slot is in `numbered`, the document the reader's view was numbered
+/// from, and the page it names there is stored with it (O244).
 ///
 /// # Errors
 ///
@@ -49,10 +65,17 @@ pub fn store(
     work: &Work,
     user_id: i64,
     progress: &Progress,
+    numbered: &Sidecar,
 ) -> Result<(), String> {
     let conn = library.conn();
     let work_id = works::row_id_for_write(&conn, work)?;
-    taiyaku_library::state::put_progress(&conn, work_id, user_id, progress)
+    taiyaku_library::state::put_progress_in(
+        &conn,
+        work_id,
+        user_id,
+        progress,
+        Numbering::Document(numbered),
+    )
 }
 
 #[cfg(test)]
