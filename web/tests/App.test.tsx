@@ -51,7 +51,7 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeResolver, whole } from './support/fixtures'
-import { Unauthenticated, WorkNotFound } from '../src/api'
+import { Unauthenticated, WorkMissing, WorkNotFound } from '../src/api'
 import type { WorkDetail } from '../src/library'
 import type { NotesDoc } from '../src/notes'
 import type { Resolver } from '../src/resolver'
@@ -696,9 +696,9 @@ describe('opening a work', () => {
  * answers the reader draws nothing. The last case is the guard's own: a
  * failure that carries no message is still drawn.
  *
- * **One failure has a sentence of the screen's own (O179)**, and the second
- * and third cases are its: a `WorkNotFound` is said in that sentence, and a
- * plain `Error` is shown as thrown whatever its message reads like.
+ * **Two failures have a sentence of the screen's own (O179, O91)**: the next
+ * cases say a `WorkNotFound` and a `WorkMissing` each in theirs, and show a
+ * plain `Error` as thrown whatever its message reads like.
  */
 describe('a work that fails to load — O176', () => {
   /**
@@ -816,6 +816,38 @@ describe('a work that fails to load — O176', () => {
     // passes a copy of it, so the second line asks for the object.
     expect(logged.mock.calls).toEqual([[err]])
     expect(logged.mock.calls[0][0]).toBe(err)
+    logged.mockRestore()
+  })
+
+  /**
+   * O91: a `WorkMissing`, the 404 for a work whose files a scan found in no
+   * directory, is said in a sentence of its own, the slug in a `<code>`, and
+   * not in the not-found sentence nor as the message that was thrown.
+   */
+  it('says the files of a WorkMissing are missing, the slug in a code element', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const err = new WorkMissing(
+      'vol-01',
+      'loading vol-01: 404 {"error":"the files of work `vol-01` are missing","missing":true}',
+    )
+    ports.getSidecarWithEtag.mockRejectedValue(err)
+    const host = await open()
+    const main = host.querySelector('main') as HTMLElement
+
+    expect(alerts(main)).toEqual([
+      [
+        'P',
+        'The files of vol-01 are missing from every directory that held them. It opens again once a scan finds them.',
+      ],
+    ])
+    expect(
+      [...main.querySelectorAll('code')].map((el) => [
+        el.parentElement?.getAttribute('role'),
+        el.textContent,
+      ]),
+    ).toEqual([['alert', 'vol-01']])
+    expect(main.textContent).not.toContain('The server found no work named')
+    expect(logged.mock.calls).toEqual([[err]])
     logged.mockRestore()
   })
 

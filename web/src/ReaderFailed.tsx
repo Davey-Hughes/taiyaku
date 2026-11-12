@@ -3,12 +3,13 @@
  * `catch`.
  *
  * `not-found` is `api.ts`'s `WorkNotFound`, the sidecar read's 404, and
- * `work` is the slug that error carries. `thrown` is anything else, and
- * `message` is what `message.ts`'s `messageOf` reads from it, which may be
- * `''`.
+ * `missing` its `WorkMissing` (O91); `work` is the slug either carries.
+ * `thrown` is anything else, and `message` is what `message.ts`'s
+ * `messageOf` reads from it, which may be `''`.
  */
 export type LoadFailure =
   | { kind: 'not-found'; work: string }
+  | { kind: 'missing'; work: string }
   | { kind: 'thrown'; message: string }
 
 export interface ReaderFailedProps {
@@ -27,21 +28,20 @@ export interface ReaderFailedProps {
  * back but the browser's own. A typed `/read/…` for a slug the library does
  * not hold gets here, and so does a server that does not answer.
  *
- * **One failure is said in this screen's own words, and every other is shown
- * as it was thrown** — either way in a `<p role="alert">`, which is where
- * `Library.tsx` and `Series.tsx` put a failed read of theirs. The one is
- * `not-found` (O179): the alert reads "The server found no work named" and
- * then the slug, in a `<code>`, with no quotation mark and no backtick round
- * it. The thrown message is not on screen in that case, and so neither is the
- * response's body.
+ * **Two failures are said in this screen's own words, and every other is
+ * shown as it was thrown** — either way in a `<p role="alert">`, which is
+ * where `Library.tsx` and `Series.tsx` put a failed read of theirs. The two
+ * are `not-found` (O179) and `missing` (O91): each sentence holds the slug in
+ * a `<code>`, with no quotation mark and no backtick round it, and neither
+ * shows the thrown message, so neither shows the response's body.
  *
- * **It says what the server found, and not what the library holds**, because
- * a 404 here is three different facts under one body. `routes.rs`'s
- * `get_sidecar` answers it for a slug the library does not hold; for a work
- * the account's grant hides; and for a work the library does hold and this
- * server process has not loaded — `ServeState`'s `works` is a snapshot taken
- * at startup, so a volume a scan has just derived is in the library's own
- * answers and is a 404 to the reader.
+ * **`not-found` says what the server found, not what the library holds**,
+ * because that 404 is three facts under one body: `routes.rs`'s `get_sidecar`
+ * answers it for a slug the library does not hold; for a work the account's
+ * grant hides; and for a work this server's registry does not hold even
+ * after a live registry reads the store again (`ServeState::find`). The
+ * fourth, a work the grant shows whose files a scan found in no directory,
+ * has a body of its own: `missing`.
  *
  * For `thrown` the alert is the message — for a read the server refused,
  * `api.ts`'s sentence with the status and the body, and for anything else
@@ -98,6 +98,11 @@ export function ReaderFailed({ failure, onLeave }: ReaderFailedProps) {
         {failure.kind === 'not-found' ? (
           <>
             The server found no work named <code>{failure.work}</code>.
+          </>
+        ) : failure.kind === 'missing' ? (
+          <>
+            The files of <code>{failure.work}</code> are missing from every
+            directory that held them. It opens again once a scan finds them.
           </>
         ) : (
           failure.message

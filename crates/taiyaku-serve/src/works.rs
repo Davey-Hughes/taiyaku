@@ -33,9 +33,17 @@ pub struct Work {
     sidecar: std::sync::RwLock<std::sync::Arc<Sidecar>>,
     /// Serialises one work's notes read-modify-write. See `notes_guard`.
     notes: std::sync::Mutex<()>,
+    /// Whether the library marks the work missing (`work.missing_since`,
+    /// O91). Written in place on the `Work` a registry holds, never by
+    /// minting a new one, so a mark keeps the notes and correction locks
+    /// every request in flight holds (`Work::reproject`'s reason); atomic
+    /// because a refresh writes it while requests read it.
+    missing: std::sync::atomic::AtomicBool,
 }
 
 impl Work {
+    /// A work not marked missing; a registry reading the library sets the
+    /// mark with [`Self::set_missing`].
     #[must_use]
     pub fn new(id: String, path: PathBuf, sidecar: Sidecar) -> Self {
         Self {
@@ -43,7 +51,23 @@ impl Work {
             path,
             sidecar: std::sync::RwLock::new(std::sync::Arc::new(sidecar)),
             notes: std::sync::Mutex::new(()),
+            missing: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Whether none of the work's files is in any directory that held them:
+    /// `/api/works` and OPDS leave it out, and the reader's read of it says
+    /// why it will not open.
+    #[must_use]
+    pub fn is_missing(&self) -> bool {
+        // Read alone: nothing else a request reads has to agree with it.
+        self.missing.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Carry the library's mark, as a registry refresh read it.
+    pub(crate) fn set_missing(&self, missing: bool) {
+        self.missing
+            .store(missing, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Whether this work has a `taiyaku.json` on disk.
@@ -460,7 +484,7 @@ fn direction_text(direction: taiyaku_core::Direction) -> &'static str {
     }
 }
 
-/// Every `work` row in `library`, as a servable [`Work`].
+/// Every `work` row in `library`, as a servable [`Work`] with its missing mark.
 ///
 /// **Built from rows, not from paths.** `taiyaku serve <sidecar>...` builds
 /// its works one path at a time in `taiyaku-cli`'s `serve_work`, because it
@@ -489,7 +513,9 @@ pub fn from_library(library: &taiyaku_library::Library) -> Result<Vec<Work>, Str
         .map(|row| {
             let sidecar = taiyaku_library::project::sidecar(&conn, row.id)
                 .map_err(|e| format!("projecting work {} (`{}`): {e}", row.id, row.slug))?;
-            Ok(Work::new(row.slug.clone(), row.path(), sidecar))
+            let work = Work::new(row.slug.clone(), row.path(), sidecar);
+            work.set_missing(row.missing);
+            Ok(work)
         })
         .collect()
 }

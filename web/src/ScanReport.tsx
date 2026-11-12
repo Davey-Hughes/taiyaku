@@ -363,6 +363,11 @@ export function DeriveSection({
           n={derive.series_holding_no_work}
         />
         <Count
+          field="marked_missing"
+          label="Works marked missing"
+          n={derive.marked_missing}
+        />
+        <Count
           field="root_removed_mid_derive"
           label="Members whose directory was removed mid-derive"
           n={derive.root_removed_mid_derive}
@@ -416,6 +421,11 @@ export function DeriveSection({
           field="unfolded_works"
           label="Works unfolded"
           n={derive.unfolded_works}
+        />
+        <Count
+          field="found_again"
+          label="Missing works found again"
+          n={derive.found_again}
         />
         <Count
           field="repaired_documents"

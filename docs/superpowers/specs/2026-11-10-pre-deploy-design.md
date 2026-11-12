@@ -873,12 +873,19 @@ written and what its pre-flight settled; everything else is Part D's.
 2. **The presence test asks every directory a member names** (the spec's own
    call, from the daily pre-flight's D-1). A work is present while any of its
    members has a `scan_entry` with the member's `sha256` in any directory the
-   member's `member_root` rows name: the join `scan::repoint_kept_members`
-   already uses to find a surviving copy. It does not depend on the primary
-   having been re-pointed first. For a work this derive writes, `write_roots`
-   has already pointed the primary at a surviving copy, so there the primary
-   path would give the same answer. Not "written this pass", which hides
-   O243's works.
+   member's `member_root` rows name, the join `scan::repoint_kept_members`
+   already uses to find a surviving copy, or any `scan_entry` at the member's
+   path there, whatever its digest (the owner's ruling of 2026-11-11, "Path
+   counts too"), so a file replaced in place that no rule makes a member of
+   again still holds its work. An entry the walk found empty holds nothing,
+   so a folder volume emptied in place, its folder left, reads missing (one
+   emptied within the same second as the change its last walk read can
+   leave unmoved the size and mtime the walk compares, and then keeps its
+   digest and reads present until a walk finds its mtime moved, the walk's
+   skip already filed as O56). It does not depend on the primary having been re-pointed first. For a work
+   this derive writes, `write_roots` has already
+   pointed the primary at a surviving copy, so there the primary path would
+   give the same answer. Not "written this pass", which hides O243's works.
 3. **The hide is carried on the registry's work** (the spec's own call, from
    D-2). `Access::Every` skips `browse::visible_editions`, so a predicate in
    the grant clause alone would still list missing works to the owner in
@@ -934,7 +941,28 @@ written and what its pre-flight settled; everything else is Part D's.
 - O243's unfolded works hold files that are present, so they stay unmarked.
 - An exclude pattern's losses mark too: `forget_unseen` deletes the
   `scan_entry` rows a pattern now covers, and clearing the pattern brings them
-  back (O92).
+  back (O92). A nested directory's pattern is the exception where the
+  directory immediately around it reaches the file: that directory keeps or
+  receives the row and member, whether the pattern or the nested scan came
+  first, so its work stays present (overlapping-libraries decision 21, the
+  owner's ruling of 2026-11-10). A directory's or library's removal, of a
+  nested directory or of the outer one, never deletes a work whose file is
+  on disk inside a directory left, whether the removed directory held its
+  row or its patterns kept it out, but for a share mounted below a
+  directory, at a path that is none of the directories: a member with no
+  row copied goes, with no row, to the nearest directory left around the
+  file, and the work stays missing until that directory's walk records the
+  file. A file counts as vanished only where every walk that may last have
+  looked for it reaches it and the disk, asked before the removal's
+  transaction, holds nothing at its path, and only where each directory whose
+  tree holds the file reads present and holds a name a walk visits, §8.1's
+  test for an unmounted share. A share mounted below a directory, at a path
+  that is none of the directories, is not asked, so while it is unmounted its
+  files with no row read as gone (the owner's rulings of 2026-11-10, "Never
+  delete on disk", "Cover both" and "Every removal", and of 2026-11-11, "Fix
+  it" and "Add a guard"). A pattern the outer directory lifts over a file the
+  nested directory excludes does not bring the file back while the nested
+  directory exists, since no walk reads what a nested directory excludes.
 - **A returning file rejoins its work.** `derive::held_work` finds a volume's
   work by `(series, volume)` and a volume-less one by `member.path`, and the
   missing work's rows were never deleted (inferred; the first test settles
@@ -958,8 +986,26 @@ written and what its pre-flight settled; everything else is Part D's.
   work for every access, `Access::Every` included.
 - `routes::get_sidecar` answers a missing work 404 with words saying its files
   are missing. The reader's `LoadFailure` gains that kind, and `ReaderFailed`
-  says it. Every other work route answers as today, so a missing work's
-  positions and notes stay readable.
+  says it. `opds::work_feed`, a work's own OPDS feed, answers it 404 in the
+  same words as plain text, the form of every OPDS refusal, rather than an
+  entry whose links fail wherever its files are gone; it asks after
+  `view::of_work`'s grant check, as `get_sidecar` does, so a work the grant
+  hides answers `` no work `{slug}` `` missing or not. Every other work route
+  answers as today, so a missing work's positions and notes stay readable to
+  an account whose grant reaches it.
+- A grant reaches a member through a directory that holds it as decision 2
+  says, by an entry of its digest or any entry at its path not found empty, or
+  whose walk reaches its path as `hand_back` asks it (the owner's rulings of
+  2026-11-11, "Narrow the grant" and "Path counts too"; one clause,
+  `browse::held_by`, says "holds" for the mark and the grant). So a member a
+  removal hands, with no
+  entry, to a directory whose patterns keep its walk off the file is outside
+  that directory's grant: its accounts are answered on every route, listing and
+  slug alike, as for a slug no work holds, and an administrator or an account
+  whose grant reaches the member through another directory still reads it.
+  `browse::member_under` asks it, so every grant does; a directory's patterns
+  are read in the same statement, so lifting one lets its accounts reach the
+  member at once, still missing until a scan finds the file.
 
 ### PR 2: list and remove
 
@@ -1005,7 +1051,12 @@ written and what its pre-flight settled; everything else is Part D's.
 ### Boundaries
 
 - No threshold for a partial mount: O48 closes by consequence (Part D §5.2).
-- No change to what a directory removal does.
+- No change to what a directory's or library's removal does, but that it
+  keeps, inside a directory left, every work whose file is on disk (but for a
+  share mounted below a directory, at no directory's path) and every work
+  whose file has no row under a directory that reads unmounted, missing until
+  a walk records the file ("Never delete on disk", "Cover both", "Every
+  removal" and "Add a guard", above).
 - A removal frees its works' slugs for later works (lane 1's residual).
 
 ### Testing
@@ -1042,6 +1093,9 @@ written and what its pre-flight settled; everything else is Part D's.
   so a listing added later without it fails its own test.
 - **The reader.** The sidecar `GET` of a missing work answers 404 in the
   missing words, and `ReaderFailed` draws them. *Fails on:* the sidecar served.
+  The work's own OPDS feed answers 404 in the same words after the grant, and
+  a work the grant hides answers `` no work `{slug}` ``. *Fails on:* the feed
+  served; the check before the grant.
 - **The list** carries each row's fields, the libraries included.
 - **Dry run.** Its counts equal what the removal then deletes, and it leaves
   the store unchanged. *Fails on:* the dry run committing.

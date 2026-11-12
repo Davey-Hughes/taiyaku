@@ -4765,6 +4765,151 @@ async fn the_work_list_names_every_dir_of_a_granted_library() {
 }
 
 // ---------------------------------------------------------------------------
+// A missing work (O91): `/api/works` leaves it out for every account, and the
+// reader's read of it says why it will not open, to an account that may see it.
+// ---------------------------------------------------------------------------
+
+/// The slugs `/api/works` lists.
+async fn listed_slugs(router: &axum::Router) -> Vec<String> {
+    crate::test_support::get_json(router, "/api/works")
+        .await
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|work| work["slug"].as_str().expect("a slug").to_string())
+        .collect()
+}
+
+/// An account that sees every library is not listed a missing work, which
+/// `browse::visible_editions` never filters for it: only the registry's mark
+/// can.
+#[tokio::test]
+async fn the_work_list_leaves_a_missing_work_out_for_an_account_that_sees_every_library() {
+    let (router, state, _fixture, [present, missing, _]) =
+        crate::test_support::router_over_a_live_library_of_two_directories();
+    crate::test_support::mark_missing(&state, &missing);
+
+    let listed = listed_slugs(&router).await;
+    assert!(listed.contains(&present), "the present work: {listed:?}");
+    assert!(
+        !listed.contains(&missing),
+        "a missing work is listed to an account that sees every library: {listed:?}"
+    );
+}
+
+/// A reader granted the directory a missing work is under is not listed it
+/// either.
+#[tokio::test]
+async fn the_work_list_leaves_a_missing_work_out_under_a_grant() {
+    let (router, state, _fixture, [present, missing, withheld]) =
+        crate::test_support::router_over_a_live_library_of_two_directories();
+    crate::test_support::grant_the_scanned_directory(&state);
+    crate::test_support::mark_missing(&state, &missing);
+
+    let listed = listed_slugs(&router).await;
+    assert!(listed.contains(&present), "the present work: {listed:?}");
+    assert!(!listed.contains(&withheld), "the grant holds: {listed:?}");
+    assert!(
+        !listed.contains(&missing),
+        "a missing work is listed under a grant that reaches it: {listed:?}"
+    );
+}
+
+/// `GET /api/works/{work}` of a missing work answers 404 with JSON saying its
+/// files are missing, to an administrator and to a reader whose grant reaches
+/// it, and to one revalidating the copy it read while the work was present,
+/// whose tag the mark leaves unchanged. A work the grant hides answers as one
+/// that does not exist, missing or not, so the reason never tells a reader of
+/// a work outside their grant.
+#[tokio::test]
+async fn the_reader_s_read_of_a_missing_work_says_its_files_are_missing() {
+    let (router, state, _fixture, [present, missing, withheld]) =
+        crate::test_support::router_over_a_live_library_of_two_directories();
+    let uri = format!("/api/works/{missing}");
+    let fresh = crate::test_support::get(&router, &uri).await;
+    assert_eq!(
+        fresh.status(),
+        StatusCode::OK,
+        "the fixture: present at first"
+    );
+    let tag = fresh.headers()[header::ETAG].clone();
+    crate::test_support::mark_missing(&state, &missing);
+    crate::test_support::mark_missing(&state, &withheld);
+    let read = |slug: String| {
+        let router = router.clone();
+        async move {
+            let response = crate::test_support::get(&router, &format!("/api/works/{slug}")).await;
+            let status = response.status();
+            let kind = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .map(|value| value.to_str().expect("ascii").to_string());
+            (
+                status,
+                kind,
+                crate::test_support::body_string(response).await,
+            )
+        }
+    };
+    let says_missing = |slug: &str| {
+        serde_json::json!({
+            "error": format!(
+                "the files of work `{slug}` are missing from every directory that held them; \
+                 it opens again once a scan finds them"
+            ),
+            "missing": true,
+        })
+    };
+
+    let (status, kind, body) = read(missing.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "an administrator: {body}");
+    assert_eq!(kind.as_deref(), Some("application/json"), "{body}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).expect("a JSON body"),
+        says_missing(&missing),
+        "an administrator"
+    );
+    let (status, _, body) = read(present.clone()).await;
+    assert_eq!(status, StatusCode::OK, "the present work: {body}");
+    let revalidated = router
+        .clone()
+        .oneshot(
+            Request::get(&uri)
+                .header(header::IF_NONE_MATCH, tag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = revalidated.status();
+    let body = crate::test_support::body_string(revalidated).await;
+    assert_eq!(
+        (
+            status,
+            serde_json::from_str::<serde_json::Value>(&body).ok()
+        ),
+        (StatusCode::NOT_FOUND, Some(says_missing(&missing))),
+        "revalidating the copy read while it was present: {body}"
+    );
+
+    crate::test_support::grant_the_scanned_directory(&state);
+    let (status, _, body) = read(missing.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "a granted reader: {body}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).expect("a JSON body"),
+        says_missing(&missing),
+        "a reader whose grant reaches the work"
+    );
+    let (status, _, body) = read(withheld.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(
+        body,
+        format!("no work `{withheld}`"),
+        "a work the grant hides answers as one that does not exist, missing or not"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The grant on `patch_alignments`: a restricted account may neither read the
 // sidecar this handler returns nor write shared `alignment`/`run` rows for a
 // work outside every root it holds. An alignment is shared library truth

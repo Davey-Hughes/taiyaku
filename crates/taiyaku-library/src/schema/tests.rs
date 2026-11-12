@@ -1389,11 +1389,36 @@ fn migration_6_adds_member_root_id_leaving_existing_members_null() {
     assert_eq!(root_id, None, "an imported member belongs to no root");
 }
 
+/// Migration 20 adds `work.missing_since` and leaves every existing work
+/// NULL, which reads as present: a store migrating has not been asked yet
+/// whether any directory still holds its works, and a work marked by the
+/// migration would vanish from every listing before a scan could say so.
+#[test]
+fn migration_20_adds_missing_since_leaving_existing_works_present() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    migrate_with(&conn, &MIGRATIONS[..19]).expect("migrates to 19");
+    conn.execute(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (7, 'k', 'a-work', 'A Work', 'rtl', 'raw')",
+        [],
+    )
+    .expect("seeds a schema-19 work");
+
+    migrate(&conn).expect("migrates to 20");
+
+    let mark: Option<String> = conn
+        .query_row("SELECT missing_since FROM work WHERE id = 7", [], |row| {
+            row.get(0)
+        })
+        .expect("reading the new column");
+    assert_eq!(mark, None, "an existing work is present");
+}
+
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_nineteen() {
-    assert_eq!(SCHEMA_VERSION, 19);
+fn the_schema_version_is_twenty() {
+    assert_eq!(SCHEMA_VERSION, 20);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -2973,7 +2998,7 @@ fn migration_19_links_each_directory_to_its_library_and_drops_the_column() {
         "SELECT user_id, work_id, edition, slot FROM progress ORDER BY user_id, work_id";
     let (grants_before, positions_before) = (rows_of(&conn, grants), rows_of(&conn, positions));
 
-    migrate(&conn).expect("migrates to 19");
+    migrate_with(&conn, &MIGRATIONS[..19]).expect("migrates to 19");
 
     assert_eq!(version(&conn).expect("reads the version"), 19);
     assert_eq!(

@@ -1542,6 +1542,22 @@ fn derive_summary_prints_unrecognised_kinds_when_nonzero_and_omits_them_when_zer
     assert!(!quiet.contains("unrecognised"), "{quiet}");
 }
 
+/// The same rule for the missing works (O48): a mark hides a work from every
+/// listing, so a partial mount that hides hundreds says so here or nowhere.
+/// Two distinct numbers, so the two clauses cannot swap unseen.
+#[test]
+fn derive_summary_prints_the_missing_counts_when_nonzero_and_omits_them_when_zero() {
+    let mut report = derive_report();
+    report.marked_missing = 7;
+    report.found_again = 4;
+    let line = derive_summary(&report, 0);
+    assert!(line.contains(", 7 work(s) marked missing"), "{line}");
+    assert!(line.contains(", 4 missing work(s) found again"), "{line}");
+    let quiet = derive_summary(&derive_report(), 0);
+    assert!(!quiet.contains("marked missing"), "{quiet}");
+    assert!(!quiet.contains("found again"), "{quiet}");
+}
+
 /// The same rule once more, for the fold's counters — and the one place it
 /// matters most, `emptied_works` being the only derive outcome that deletes a
 /// `work` row.

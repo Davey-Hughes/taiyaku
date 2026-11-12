@@ -53,6 +53,8 @@ pub(crate) struct WorkRow {
     pub(crate) id: i64,
     pub(crate) slug: String,
     sidecar_path: Option<String>,
+    /// `work.missing_since` is set (O91).
+    pub(crate) missing: bool,
 }
 
 impl WorkRow {
@@ -73,13 +75,14 @@ impl WorkRow {
 /// Returns an error if the rows cannot be read.
 pub(crate) fn work_rows(conn: &Connection) -> Result<Vec<WorkRow>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, slug, sidecar_path FROM work ORDER BY id")
+        .prepare("SELECT id, slug, sidecar_path, missing_since IS NOT NULL FROM work ORDER BY id")
         .map_err(|e| format!("listing the library's works: {e}"))?;
     stmt.query_map([], |row| {
         Ok(WorkRow {
             id: row.get(0)?,
             slug: row.get(1)?,
             sidecar_path: row.get(2)?,
+            missing: row.get(3)?,
         })
     })
     .map_err(|e| format!("listing the library's works: {e}"))?
@@ -297,11 +300,17 @@ impl Works {
                 None => read_one(&conn, project, row.id)
                     .map(|sidecar| Arc::new(Work::new(row.slug.clone(), path, sidecar))),
             };
+            // The mark is set on whichever `Work` is served, held or new: it
+            // comes from the row, which reads even when the document will not.
             match read {
-                Ok(work) => order.push(work),
+                Ok(work) => {
+                    work.set_missing(row.missing);
+                    order.push(work);
+                }
                 Err(why) => {
                     kept.push(format!("`{}`: {why}", row.slug));
                     if let Some(previous) = before.by_slug.get(&row.slug) {
+                        previous.set_missing(row.missing);
                         order.push(Arc::clone(previous));
                     }
                 }

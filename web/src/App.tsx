@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import {
   Unauthenticated,
+  WorkMissing,
   WorkNotFound,
   getNotes,
   getProgress,
@@ -290,9 +291,9 @@ export interface AppProps {
 function App({ work, onLeave }: AppProps) {
   const [session, setSession] = useState<Session>()
   // O176: what the load threw, when it threw anything but a 401, as
-  // `ReaderFailed.tsx`'s `LoadFailure` — the slug for a `WorkNotFound` (O179),
-  // and for anything else the sentence `messageOf` makes of it. No `session`
-  // follows it in the app, because `Routes.tsx` keys this component by `work`
+  // `ReaderFailed.tsx`'s `LoadFailure` — the slug for a `WorkNotFound` or a
+  // `WorkMissing`, and for anything else the sentence `messageOf` makes. No
+  // `session` follows it, because `Routes.tsx` keys this component by `work`
   // and so no instance has its `work` changed under it. `ReaderFailed` draws
   // it, from beside the `if (!session) return null` far below: the first
   // place a second render path can sit with no hook after it.
@@ -791,17 +792,19 @@ function App({ work, onLeave }: AppProps) {
         // naming no hub. Below the `cancelled` check with everything else
         // here, so a load that was superseded says nothing.
         //
-        // O179. The sidecar read's 404 is told apart by its type, as the 401
-        // above is: `api.ts` throws a `WorkNotFound` for it, and what is kept
-        // is the slug it carries, which `ReaderFailed` puts in a sentence of
-        // its own. That is the first of those three and more than it —
-        // `ReaderFailed`'s own comment says what else answers 404. Every
-        // other failure is read with `messageOf`, as `Library.tsx` and
-        // `Series.tsx` read theirs, and shown as that.
+        // O179, O91. The sidecar read's 404 is told apart by its type, as
+        // the 401 above is: `api.ts` throws a `WorkMissing` for a work marked
+        // missing and a `WorkNotFound` for any other, and what is kept is the
+        // slug either carries, which `ReaderFailed` puts in a sentence of its
+        // own; its comment says what answers 404. Every other failure is read
+        // with `messageOf`, as `Library.tsx` and `Series.tsx` read theirs, and
+        // shown as that.
         setFailure(
-          err instanceof WorkNotFound
-            ? { kind: 'not-found', work: err.work }
-            : { kind: 'thrown', message: messageOf(err) },
+          err instanceof WorkMissing
+            ? { kind: 'missing', work: err.work }
+            : err instanceof WorkNotFound
+              ? { kind: 'not-found', work: err.work }
+              : { kind: 'thrown', message: messageOf(err) },
         )
       })
     return () => {

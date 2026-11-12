@@ -5,6 +5,11 @@
 //! writes, and nothing here formats — `taiyaku-serve`'s `library_api` turns
 //! these into JSON.
 //!
+//! A work marked missing (`work.missing_since`, O91) is left out of every
+//! listing, each listing's own SQL saying so, since no directory holds a file
+//! of it to open; [`work`] and [`visible_members`] still read it, so the
+//! reader can answer it with that reason rather than as no work at all.
+//!
 //! # The filter, which is the reason this module exists rather than a handful
 //! # of queries at the call sites
 //!
@@ -17,10 +22,12 @@
 //!
 //! The filter is applied to **editions**: an edition survives if its members
 //! do, and a work is listed if it keeps at least one edition. A member is
-//! under every directory it has a `member_root` row for, so a copy held in two
-//! libraries is read through either grant (overlapping-libraries spec §3.4).
-//! A member under no directory — every member of every imported work — has no
-//! row, and `EXISTS` over none is false, so that case needs no branch.
+//! under each directory it has a `member_root` row for that holds an entry of
+//! its digest or one at its path not found empty (`held_by`), or whose walk
+//! reaches its path ([`member_under`]), so a copy held in two libraries is
+//! read through either grant (overlapping-libraries spec §3.4). A member under
+//! no directory — every member of every imported work — has no row, and
+//! `EXISTS` over none is false, so that case needs no branch.
 //!
 //! A listing narrowed to one library reads the directories that library reaches
 //! and the grant allows in place of the grant, so a library's page lists what
@@ -355,14 +362,87 @@ fn member_clause_for(alias: &str, access: &Access) -> String {
 }
 
 /// Whether member `alias` has a `member_root` row naming one of the `holes`
-/// directories: the one rule for which members an account sees (spec §3.8).
-/// [`member_clause_for`], [`root_clause_for`], [`whole_clause_for`] and
-/// `taiyaku-serve`'s metadata lookups read it, so a change to what reaches a
-/// member changes all of them. `alias` is a literal at every call site.
+/// directories that holds it (`held_by`) or whose walk reaches its path:
+/// the one rule for which members an account sees (spec §3.8), read by every
+/// grant clause here, [`held_in`] and `taiyaku-serve`'s metadata lookups. A
+/// removal can hand a member with no entry to a directory whose patterns keep
+/// its walk off the file, outside that directory's grant (the owner's ruling
+/// "Narrow the grant", O91). The entries are asked first, so the patterns are
+/// read only for a row with none. `alias` is a literal.
 pub fn member_under(alias: &str, holes: &str) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM member_root mr \
-         WHERE mr.member_id = {alias}.id AND mr.root_id IN ({holes}))"
+        "EXISTS (SELECT 1 FROM member_root mr JOIN root r ON r.id = mr.root_id \
+         WHERE mr.member_id = {alias}.id AND mr.root_id IN ({holes}) \
+           AND ({} OR {WALK_REACHES}(r.path, r.exclude_globs, {alias}.path)))",
+        held_by(alias, "mr")
+    )
+}
+
+/// Whether the directory of `member_root` row `row` holds member `member`: an
+/// entry there of its digest, or one at its path the walk did not find empty,
+/// whatever its digest (the owner's "Path counts too", O91). So a file replaced
+/// in place holds its work, a folder the walk found emptied does not, and a file
+/// whose pages the walk did not count, as for any format but zip, does. The one
+/// "held" [`member_under`] and `derive::mark_missing` read. The prefix is
+/// compared by `substr` up to a `'/'`, never `LIKE` (`_` and `%` occur in
+/// names). Both aliases are literals; `he` and `hr` shadow none of a caller's.
+pub(crate) fn held_by(member: &str, row: &str) -> String {
+    format!(
+        "(EXISTS (SELECT 1 FROM scan_entry he \
+                   WHERE he.root_id = {row}.root_id AND he.sha256 = {member}.sha256) \
+          OR EXISTS (SELECT 1 FROM root hr JOIN scan_entry he ON he.root_id = hr.id \
+                      WHERE hr.id = {row}.root_id \
+                        AND substr({member}.path, 1, length(hr.path) + 1) = hr.path || '/' \
+                        AND he.rel_path = substr({member}.path, length(hr.path) + 2) \
+                        AND coalesce(he.pages, 1) > 0))"
+    )
+}
+
+/// The SQL name of the function [`register_walk_reaches`] adds.
+const WALK_REACHES: &str = "walk_reaches";
+
+/// How many pattern texts one connection keeps compiled before it starts
+/// over: a text is added per pattern edit, and a store has a few directories.
+const COMPILED_PATTERNS: usize = 64;
+
+/// Add `walk_reaches(directory, patterns, path)` to `conn`: whether the walk
+/// of the directory at `directory`, excluding `patterns`, reaches a member at
+/// `path`, asked as `scan::Excluder::reaches_member` asks it. A path not under
+/// the directory is a copy's, whose own path the store does not keep, and is
+/// answered true, so such a row counts as it always did.
+///
+/// **On every connection [`crate::Library`] opens**, since [`member_under`]
+/// names it and a statement naming an unknown function fails to prepare.
+/// Each connection compiles a pattern text once, not per row or request.
+pub(crate) fn register_walk_reaches(conn: &Connection) -> rusqlite::Result<()> {
+    let compiled: std::sync::Mutex<HashMap<String, crate::scan::Excluder>> =
+        std::sync::Mutex::new(HashMap::new());
+    conn.create_scalar_function(
+        WALK_REACHES,
+        3,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        move |ctx| {
+            let directory: String = ctx.get(0)?;
+            let patterns: String = ctx.get::<Option<String>>(1)?.unwrap_or_default();
+            let path: String = ctx.get(2)?;
+            let Some(rel) = crate::reach::nested_in(
+                std::path::Path::new(&path),
+                std::path::Path::new(&directory),
+            ) else {
+                return Ok(true);
+            };
+            let mut compiled = compiled
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if compiled.len() >= COMPILED_PATTERNS && !compiled.contains_key(&patterns) {
+                compiled.clear();
+            }
+            let excluder = compiled
+                .entry(patterns)
+                .or_insert_with_key(|text| crate::scan::Excluder::build(Some(text)));
+            Ok(excluder.reaches_member(&rel))
+        },
     )
 }
 
@@ -521,7 +601,7 @@ fn cover_edition(access: &Access) -> String {
     let joined = member_clause(access);
     format!(
         "(SELECT e.id FROM series cs
-           JOIN work w ON w.series_id = cs.id
+           JOIN work w ON w.series_id = cs.id AND w.missing_since IS NULL
            JOIN edition e ON e.work_id = w.id
           WHERE cs.id = s.id
             AND EXISTS (SELECT 1 FROM member m WHERE m.edition_id = e.id{joined})
@@ -631,7 +711,7 @@ fn series_cards(
                         MAX(w.id) AS added,
                         COUNT(DISTINCT CASE WHEN p.work_id IS NULL THEN w.id END) AS unread
                    FROM series s
-                   JOIN work w ON w.series_id = s.id
+                   JOIN work w ON w.series_id = s.id AND w.missing_since IS NULL
                    JOIN edition e ON e.work_id = w.id{clause}
                    LEFT JOIN progress p ON p.work_id = w.id AND p.user_id = ?
                    LEFT JOIN series_title st ON st.series_id = s.id
@@ -1059,7 +1139,7 @@ pub fn one_series(
         &listed,
         access,
         user_id,
-        "w.series_id = ?",
+        "w.series_id = ? AND w.missing_since IS NULL",
         &[&id],
         "w.volume, w.id",
     )?;
@@ -1141,7 +1221,7 @@ fn unfiled_cards(
         access,
         account,
         user_id,
-        "w.series_id IS NULL",
+        "w.series_id IS NULL AND w.missing_since IS NULL",
         &[],
         "w.title COLLATE NOCASE, w.id",
     )
@@ -1298,13 +1378,15 @@ fn series_of_matching_works(conn: &Connection, m: &Match, shown: &str) -> Result
         Match::Fts(q) => (
             "SELECT DISTINCT w.series_id FROM work_fts f
                JOIN work w ON w.id = f.rowid
-              WHERE work_fts MATCH ? AND w.series_id IS NOT NULL",
+              WHERE work_fts MATCH ? AND w.series_id IS NOT NULL
+                AND w.missing_since IS NULL",
             q,
         ),
         Match::Like(q) => (
             "SELECT DISTINCT w.series_id FROM work w
               WHERE w.title LIKE '%' || ? || '%' ESCAPE '\\'
-                AND w.series_id IS NOT NULL",
+                AND w.series_id IS NOT NULL
+                AND w.missing_since IS NULL",
             q,
         ),
     };
@@ -1409,7 +1491,8 @@ pub fn home(
         access,
         user_id,
         "w.id IN (SELECT work_id FROM progress
-                   WHERE user_id = ? AND completed_at IS NULL)",
+                   WHERE user_id = ? AND completed_at IS NULL)
+         AND w.missing_since IS NULL",
         &[&user_id, &user_id],
         "(SELECT MAX(updated) FROM progress p WHERE p.work_id = w.id AND p.user_id = ?) DESC",
     )?;
@@ -1421,7 +1504,8 @@ pub fn home(
         "w.id IN (SELECT work_id FROM progress
                    WHERE user_id = ? AND completed_at IS NOT NULL)
          AND w.id NOT IN (SELECT work_id FROM progress
-                           WHERE user_id = ? AND completed_at IS NULL)",
+                           WHERE user_id = ? AND completed_at IS NULL)
+         AND w.missing_since IS NULL",
         &[&user_id, &user_id, &user_id],
         "(SELECT MAX(completed_at) FROM progress p WHERE p.work_id = w.id AND p.user_id = ?) DESC",
     )?;
@@ -1433,7 +1517,7 @@ pub fn home(
         &listed,
         access,
         user_id,
-        "1 = 1",
+        "w.missing_since IS NULL",
         &[],
         "w.id DESC LIMIT 20",
     )?;
@@ -1642,9 +1726,9 @@ pub fn visible_members(
 /// entry mapping to an empty set — a caller that iterates the map's keys
 /// never sees such a work named.
 ///
-/// Answers every edition of every work for [`Access::Every`] — though a
-/// caller checking for `Every` first, the way `routes::list_works` does, never
-/// reaches this call at all.
+/// Answers every edition of every work not marked missing for
+/// [`Access::Every`] — though a caller checking for `Every` first, the way
+/// `routes::list_works` does, never reaches this call at all.
 ///
 /// # Errors
 ///
@@ -1657,7 +1741,8 @@ pub fn visible_editions(
     let sql = format!(
         "SELECT DISTINCT w.slug, e.key
            FROM work w
-           JOIN edition e ON e.work_id = w.id{clause}"
+           JOIN edition e ON e.work_id = w.id{clause}
+          WHERE w.missing_since IS NULL"
     );
     let params: Vec<&dyn rusqlite::ToSql> = access
         .bound()
@@ -1703,9 +1788,8 @@ pub fn held_in(conn: &Connection, library: i64) -> Result<HashSet<String>, Strin
             "SELECT DISTINCT w.slug FROM work w
                JOIN edition e ON e.work_id = w.id
                JOIN member m ON m.edition_id = e.id
-               JOIN member_root mr ON mr.member_id = m.id
-              WHERE mr.root_id IN ({})",
-            holes(dirs.len())
+              WHERE {}",
+            member_under("m", &holes(dirs.len()))
         ),
     )
     .map_err(|e| format!("preparing the works held in library {library}: {e}"))?;

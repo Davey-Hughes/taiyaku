@@ -38,8 +38,10 @@
 //! rows this directory already held under it are neither counted gone nor
 //! counted toward §8.1's refusal: they wait for the nested directory's scan,
 //! which takes them over, with the members under them (`take_over`), and
-//! counts them toward its own §8.1 refusal. A symlink to it is skipped too,
-//! but rows recorded through one are forgotten, since no scan takes them.
+//! counts them toward its own §8.1 refusal: all but the rows its walk does
+//! not reach and the one around it does, which that one holds (decision 21).
+//! A symlink to it is skipped too, but rows recorded through one are
+//! forgotten, since no scan takes them.
 //!
 //! **This module writes nothing to the library tree but the hand documents it
 //! moves.** §10. When a directory takes a work's files over or hands them
@@ -1322,10 +1324,15 @@ pub(crate) fn only_grant_holders(
 /// [`DOOMED_WORKS`] names only what none of them takes, and note in `carried`
 /// each work whose members move. Returns the `scan_entry` rows copied.
 /// **Copied rather than walked again:** a walk cannot run inside the removal's
-/// transaction, and the rehearsal counts without reading the disk.
+/// transaction, so the disk is asked only before it, by [`gone_from_disk`].
 /// `dir_state` is not copied, so the receiving directory's next walk lists
 /// those directories whole.
-fn hand_back(tx: &Connection, removed: i64, carried: &mut Carried) -> Result<usize, String> {
+fn hand_back(
+    tx: &Connection,
+    removed: i64,
+    gone: &HashSet<String>,
+    carried: &mut Carried,
+) -> Result<usize, String> {
     let all = roots(tx)?;
     let Some(root) = all.iter().find(|root| root.id == removed) else {
         return Ok(0);
@@ -1340,117 +1347,290 @@ fn hand_back(tx: &Connection, removed: i64, carried: &mut Carried) -> Result<usi
             Some((other, rel, Excluder::build(other.exclude_globs.as_deref())))
         })
         .collect();
-    let outer = around(&all, root)
-        .into_iter()
-        .max_by_key(|(outer, ..)| outer.path.components().count())
-        .map(|(outer, rel, _)| (outer, rel, Excluder::build(outer.exclude_globs.as_deref())));
-    let rows: Vec<(i64, String, String)> = tx
-        .prepare("SELECT id, rel_path, kind FROM scan_entry WHERE root_id = ?1")
+    let outer = Enclosing::of(&all, root);
+    let rows: Vec<(String, String)> = tx
+        .prepare("SELECT rel_path, kind FROM scan_entry WHERE root_id = ?1")
         .and_then(|mut stmt| {
-            stmt.query_map([removed], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            stmt.query_map([removed], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect()
         })
         .map_err(|e| failed("the entries", e))?;
-    // The directory whose walk reaches `rel_path` once `removed` is gone, by
-    // id, and the path relative to it; `None` where no walk would.
-    let place = |rel_path: &str, is_dir: bool| -> Option<(i64, String)> {
-        // A path beneath a directory nested in `removed` is that directory's:
-        // `removed` holds one only where it has not scanned since it was added
-        // (`take_over`). The deepest such directory takes it where its walk
-        // would reach it; one its patterns exclude stays for `take_root` to
-        // count, as its first scan would drop it.
-        let nested = inside
+    // The directories nested in `removed` whose trees hold `rel_path`,
+    // deepest first, each with the path relative to it and its patterns.
+    let nested_at = |rel_path: &str| {
+        let mut holding: Vec<_> = inside
             .iter()
             .filter(|(_, rel, _)| under_any(rel_path, std::slice::from_ref(rel)))
-            .max_by_key(|(_, rel, _)| rel.len());
-        if let Some((nested, rel, excluder)) = nested {
-            // `rel_path` is `rel` or beneath it, as `under_any` asked.
-            let own = rel_path
-                .strip_prefix(rel.as_str())
-                .map_or(rel_path, |rest| rest.strip_prefix('/').unwrap_or(rest));
-            return excluder
-                .visits(own, is_dir)
-                .then(|| (nested.id, own.to_string()));
+            .map(|(nested, rel, excluder)| {
+                // `rel_path` is `rel` or beneath it, as `under_any` asked.
+                let own = rel_path
+                    .strip_prefix(rel.as_str())
+                    .map_or(rel_path, |rest| rest.strip_prefix('/').unwrap_or(rest));
+                (nested.id, own.to_string(), excluder)
+            })
+            .collect();
+        holding.sort_by_key(|(_, own, _)| own.len());
+        holding
+    };
+    // Where a row at `rel_path` goes once `removed` is gone, by id, with the
+    // path there: the deepest directory left whose tree holds it, where that
+    // one's walk reaches it, else, where that one is nested in `removed`, the
+    // directory immediately around it, where its walk does (decision 21);
+    // `None` where neither does. A directory further out is not asked.
+    let place = |rel_path: &str, is_dir: bool| -> Option<(i64, String)> {
+        let nested = nested_at(rel_path);
+        if let Some((to, own, _)) = nested
+            .iter()
+            .take(2)
+            .find(|(_, own, excluder)| excluder.visits(own, is_dir))
+        {
+            return Some((*to, own.clone()));
         }
-        // Any other path goes to the deepest directory around, where its walk
-        // would reach it. Asked per file, so a file-level pattern that
-        // governed nothing while the nested directory held the file governs
-        // it again.
-        let (outer, rel, excluder) = outer.as_ref()?;
-        let to_rel = if rel_path.is_empty() {
-            rel.clone()
-        } else {
-            join_rel(rel, rel_path)
-        };
-        excluder
-            .visits(&to_rel, is_dir)
-            .then_some((outer.id, to_rel))
+        if nested.len() > 1 {
+            return None;
+        }
+        outer.as_ref()?.place(rel_path, is_dir)
     };
     let mut copied = 0;
-    // Each handed member path, joined as `derive::classify` joins it, and the
-    // directory it went to.
     let mut went_to: HashMap<String, i64> = HashMap::new();
-    for (id, rel_path, kind) in &rows {
+    for (rel_path, kind) in &rows {
         let Some((to, to_rel)) = place(rel_path, kind == Kind::Dir.as_str()) else {
             continue;
         };
-        // A row the receiving directory already holds is kept as it is.
-        copied += tx
-            .execute(
-                "INSERT INTO scan_entry
-                     (root_id, rel_path, kind, format, size, mtime, pages, sha256,
-                      first_seen, last_seen)
-                 SELECT ?1, ?2, kind, format, size, mtime, pages, sha256, first_seen, last_seen
-                   FROM scan_entry WHERE id = ?3
-                 ON CONFLICT (root_id, rel_path) DO NOTHING",
-                rusqlite::params![to, to_rel, id],
-            )
-            .map_err(|e| failed(rel_path, e))?;
+        copied +=
+            copy_entry(tx, removed, rel_path, to, &to_rel).map_err(|e| failed(rel_path, e))?;
         went_to.insert(root.path.join(rel_path).to_string_lossy().into_owned(), to);
     }
-    // Each member at a copied row's path follows the row, and migration 018's
-    // trigger moves its `member_root` row. A member left on `removed` is one
-    // `take_root` removes.
-    let members: Vec<(i64, String, i64, Option<String>)> = tx
-        .prepare(
-            "SELECT m.id, m.path, e.work_id, m.format FROM member m
-               JOIN edition e ON e.id = m.edition_id
-              WHERE m.root_id = ?1",
-        )
-        .and_then(|mut stmt| {
-            stmt.query_map([removed], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-            })?
-            .collect()
-        })
-        .map_err(|e| failed("the members", e))?;
-    // A member with no row, of a file `removed`'s own patterns came to exclude
-    // after its scan took it over, goes where a row at its path would: the
-    // directory around still reaches the file (spec decision 21). One whose
-    // file vanished is left for `take_root`, as before.
+    // Each member at a copied row's path follows the row. A member left on
+    // `removed` is one `take_root` removes.
+    let members = members_of(tx, removed).map_err(|e| failed("the members", e))?;
     let held: HashSet<String> = rows
         .iter()
-        .map(|(_, rel, _)| root.path.join(rel).to_string_lossy().into_owned())
+        .map(|(rel, _)| root.path.join(rel).to_string_lossy().into_owned())
         .collect();
     let own = Excluder::build(root.exclude_globs.as_deref());
     let here = format!("{}/", root.path.to_string_lossy());
-    for (_, path, _, format) in &members {
-        if went_to.contains_key(path) || held.contains(path) {
+    let reaches = |excluder: &Excluder, at: &str| excluder.reaches_member(at);
+    for (_, path, ..) in &members {
+        if went_to.contains_key(path) {
             continue;
         }
         let Some(rel) = path.strip_prefix(here.as_str()) else {
             continue;
         };
-        let is_dir = format.as_deref() == Some("dir");
-        if own.visits(rel, is_dir) {
+        let nested = nested_at(rel);
+        // With no row, the file vanished only where every walk that may last
+        // have looked for it reaches it: `removed`'s, which looked before a
+        // directory nested in it was added, and each such directory's since.
+        // And only where the disk says so too: a pattern lifted with no scan
+        // since makes a walk "reach" a file it never looked for.
+        let looked =
+            reaches(&own, rel) && nested.iter().all(|(_, at, excluder)| reaches(excluder, at));
+        if !held.contains(path) && looked && gone.contains(path) {
             continue;
         }
-        if let Some((to, _)) = place(rel, is_dir) {
+        // Any other file is taken to be on disk: a row says the last walk saw
+        // it, and a row forgotten by exclusion says nothing. With no row
+        // copied, its member goes to the nearest directory left around the
+        // file, the one walk that can record it again: its work stays missing,
+        // not deleted, until that walk does (the owner's rulings of 2026-11-10,
+        // "Never delete on disk", "Cover both" and "Every removal"). With no
+        // directory left around the file, it stays for `take_root` to remove.
+        let to = nested
+            .first()
+            .map(|(nested, ..)| *nested)
+            .or_else(|| outer.as_ref().map(|outer| outer.root.id));
+        if let Some(to) = to {
             went_to.insert(path.clone(), to);
         }
     }
-    // Read before any member is re-pointed, and before the removal's derive,
-    // which can rekey the work: afterwards nothing names where its document is.
+    move_members(tx, &members, &went_to, carried, &failed)?;
+    Ok(copied)
+}
+
+/// The paths of the row-less members of each directory `removing` picks at
+/// which the disk holds nothing, of either kind, for [`hand_back`]: a pattern
+/// lifted with no scan since makes a walk reach a file it never looked for,
+/// and a removal must never delete a work whose file is there inside a
+/// directory left (the owner's ruling of 2026-11-11, "Fix it"). Read before
+/// the removal's transaction, so a slow share's stat holds no lock. A stat
+/// failing other than "not found", a member this read missed, and a file
+/// under a directory that [`reads_unmounted`] each keep their work.
+fn gone_from_disk(
+    conn: &Connection,
+    removing: impl Fn(&Root) -> bool,
+) -> Result<HashSet<String>, String> {
+    let all = roots(conn)?;
+    let mut unmounted: HashMap<i64, bool> = HashMap::new();
+    let mut gone = HashSet::new();
+    for root in all.iter().filter(|root| removing(root)) {
+        let failed = |e: rusqlite::Error| {
+            format!(
+                "reading what {} holds with no row: {e}",
+                root.path.display()
+            )
+        };
+        let rows: HashSet<String> = conn
+            .prepare("SELECT rel_path FROM scan_entry WHERE root_id = ?1")
+            .and_then(|mut stmt| {
+                stmt.query_map([root.id], |r| {
+                    Ok(root
+                        .path
+                        .join(r.get::<_, String>(0)?)
+                        .to_string_lossy()
+                        .into_owned())
+                })?
+                .collect()
+            })
+            .map_err(failed)?;
+        for (_, path, ..) in members_of(conn, root.id).map_err(failed)? {
+            if rows.contains(&path)
+                || !std::fs::metadata(&path)
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            {
+                continue;
+            }
+            // Each directory whose tree holds the file is asked, the removed
+            // one and those left around and inside it, since any may be the
+            // share that is not mounted.
+            let at = Path::new(&path);
+            let under_unmounted = all
+                .iter()
+                .filter(|dir| at.starts_with(&dir.path))
+                .any(|dir| {
+                    *unmounted
+                        .entry(dir.id)
+                        .or_insert_with(|| reads_unmounted(&dir.path))
+                });
+            if !under_unmounted {
+                gone.insert(path);
+            }
+        }
+    }
+    Ok(gone)
+}
+
+/// Whether directory `path` reads as an unmounted share does, §8.1's test at a
+/// removal (the owner's ruling of 2026-11-11, "Add a guard"): absent or
+/// unreadable, or holding no name a walk visits, a walk skipping every dot
+/// name. Read at its top only, where §8.1 walks the tree: any entry there is
+/// something beneath it, and the patterns and nested directories §8.1's walk
+/// also applies shape what a scan records, not whether the share is mounted.
+fn reads_unmounted(path: &Path) -> bool {
+    !std::fs::read_dir(path).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+    })
+}
+
+/// The deepest directory around another: where a file the inner one stops
+/// holding goes, if this one's walk reaches it (spec §4, decision 21).
+struct Enclosing<'a> {
+    root: &'a Root,
+    /// The inner directory's path relative to `root`.
+    rel: String,
+    excluder: Excluder,
+}
+
+impl<'a> Enclosing<'a> {
+    fn of(all: &'a [Root], inner: &Root) -> Option<Self> {
+        around(all, inner)
+            .into_iter()
+            .max_by_key(|(outer, ..)| outer.path.components().count())
+            .map(|(root, rel, _)| Self {
+                root,
+                rel,
+                excluder: Excluder::build(root.exclude_globs.as_deref()),
+            })
+    }
+
+    /// Where this directory's walk reaches `rel_path`, a path relative to the
+    /// inner one: its id and the path relative to it, or `None` where its
+    /// patterns keep the walk out. Asked per file, so a file-level pattern
+    /// that governed nothing while the inner directory held the file governs
+    /// it again.
+    fn place(&self, rel_path: &str, is_dir: bool) -> Option<(i64, String)> {
+        let to_rel = if rel_path.is_empty() {
+            self.rel.clone()
+        } else {
+            join_rel(&self.rel, rel_path)
+        };
+        self.excluder
+            .visits(&to_rel, is_dir)
+            .then_some((self.root.id, to_rel))
+    }
+}
+
+/// Which directory holds a row at `rel_path` that the walk of the directory
+/// whose patterns are `excluder` does not reach (decision 21): `around`, by id
+/// with the path there, where its walk reaches the file; `None` where the
+/// inner walk reaches it, or no walk does. The one decision behind keeping a
+/// row ([`take_over`]), handing one back ([`forget_unseen`]) and §8.1's counts,
+/// so which came first, the pattern or the scan, cannot change the outcome.
+fn outer_holder(
+    around: Option<&Enclosing>,
+    excluder: &Excluder,
+    rel_path: &str,
+    is_dir: bool,
+) -> Option<(i64, String)> {
+    if excluder.visits(rel_path, is_dir) {
+        return None;
+    }
+    around?.place(rel_path, is_dir)
+}
+
+/// Copy directory `from`'s `scan_entry` row at `rel_path` to directory `to` at
+/// `to_rel`. A row `to` already holds there is kept as it is. Returns the rows
+/// copied.
+fn copy_entry(
+    tx: &Connection,
+    from: i64,
+    rel_path: &str,
+    to: i64,
+    to_rel: &str,
+) -> rusqlite::Result<usize> {
+    tx.execute(
+        "INSERT INTO scan_entry
+             (root_id, rel_path, kind, format, size, mtime, pages, sha256, first_seen, last_seen)
+         SELECT ?1, ?2, kind, format, size, mtime, pages, sha256, first_seen, last_seen
+           FROM scan_entry WHERE root_id = ?3 AND rel_path = ?4
+         ON CONFLICT (root_id, rel_path) DO NOTHING",
+        rusqlite::params![to, to_rel, from, rel_path],
+    )
+}
+
+/// A member: its id, its path, its work and its format.
+type MemberRow = (i64, String, i64, Option<String>);
+
+/// Each member directory `root_id` holds.
+fn members_of(tx: &Connection, root_id: i64) -> rusqlite::Result<Vec<MemberRow>> {
+    tx.prepare(
+        "SELECT m.id, m.path, e.work_id, m.format FROM member m
+           JOIN edition e ON e.id = m.edition_id
+          WHERE m.root_id = ?1",
+    )
+    .and_then(|mut stmt| {
+        stmt.query_map([root_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect()
+    })
+}
+
+/// Re-point each of `members` whose path `went_to` names (joined as
+/// `derive::classify` joins it) to the directory named there; migration 018's
+/// trigger moves its own `member_root` row, and the next derive its copies'.
+/// Each moving member's work's address is noted in `carried` first: read
+/// before any member moves or a derive rekeys the work, since afterwards
+/// nothing names where its document is.
+fn move_members(
+    tx: &Connection,
+    members: &[MemberRow],
+    went_to: &HashMap<String, i64>,
+    carried: &mut Carried,
+    failed: &dyn Fn(&str, rusqlite::Error) -> String,
+) -> Result<(), String> {
     note_addresses(
         tx,
         members
@@ -1460,15 +1640,15 @@ fn hand_back(tx: &Connection, removed: i64, carried: &mut Carried) -> Result<usi
         carried,
     )?;
     for (member, path, ..) in members {
-        if let Some(to) = went_to.get(&path) {
+        if let Some(to) = went_to.get(path) {
             tx.execute(
                 "UPDATE member SET root_id = ?1 WHERE id = ?2",
                 rusqlite::params![to, member],
             )
-            .map_err(|e| failed(&path, e))?;
+            .map_err(|e| failed(path, e))?;
         }
     }
-    Ok(copied)
+    Ok(())
 }
 
 /// Each work whose hand document a hand-over or a removal must carry, with
@@ -1748,6 +1928,7 @@ fn emptied_by_removing(conn: &Connection, id: i64) -> Result<Vec<i64>, String> {
 fn apply_removal(
     conn: &Connection,
     id: i64,
+    gone: &HashSet<String>,
 ) -> Result<(Removal, crate::derive::DeriveReport, Carried), String> {
     let emptied = emptied_by_removing(conn, id)?;
     let left_with_no_library = only_grant_holders(conn, &emptied)?;
@@ -1756,7 +1937,7 @@ fn apply_removal(
     // would walk, so `take_root` counts only what none of them holds, and the
     // rehearsal, which runs this function too, counts what the removal does.
     let mut carried = Carried::new();
-    hand_back(conn, id, &mut carried)?;
+    hand_back(conn, id, gone, &mut carried)?;
     let mut removal = take_root(conn, id, &mut carried)?;
     removal.left_with_no_library = left_with_no_library;
     removal.libraries_removed = libraries_removed;
@@ -1801,15 +1982,16 @@ fn apply_removal(
 ///
 /// # Errors
 ///
-/// Returns an error if SQLite refuses the transaction or if [`apply_removal`]
-/// fails.
+/// Returns an error if SQLite refuses the transaction or the reads before it,
+/// or if [`apply_removal`] fails.
 pub fn removal_cost(
     conn: &Connection,
     id: i64,
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
+    let gone = gone_from_disk(conn, |root| root.id == id)?;
     let tx = crate::Nested::open(conn, "removal_cost")
         .map_err(|e| format!("starting the removal-cost transaction: {e}"))?;
-    let (removal, derived, _carried) = apply_removal(&tx, id)?;
+    let (removal, derived, _carried) = apply_removal(&tx, id, &gone)?;
     // Deliberately not `tx.commit()` — see this function's own doc for why
     // dropping `tx` here, uncommitted, is the rollback.
     drop(tx);
@@ -1826,10 +2008,10 @@ pub fn removal_cost(
 /// with nothing written to disk while that transaction is open. The real,
 /// `Documents::Reconcile` pass — the one that writes and renames hand-metadata
 /// documents — runs here, second, on `conn` directly, only *after* the
-/// transaction above has committed. `derive_with`'s own doc states this is safe
-/// to run twice: "idempotent by construction... running this twice over
-/// unchanged facts writes the same rows a second time rather than a second set
-/// of rows," so the cost is one redundant SQL pass, not a correctness risk. A
+/// transaction above has committed. Twice over unchanged facts `derive_with`
+/// "writes the same rows a second time rather than a second set of rows", so
+/// the rows are right; but this pass counts 0 for an event the first made, a
+/// rekey say, and the answer takes only the marks from the first (O271). A
 /// `Reconcile` pass inside the transaction `Nested` opens below would rename
 /// documents while that transaction is open, and `write_work`'s own comment on
 /// the rename says what that risks: "A rollback that left the file renamed
@@ -1846,18 +2028,18 @@ pub fn removal_cost(
 /// own report, and reporting it dropped and reporting nothing would say
 /// the removal reconciled documents. Its `orphan_documents` ends with each
 /// document the carry left in a `.taiyaku` no root holds now, which no
-/// `reconcile` reads.
+/// `reconcile` reads; its marks count the first pass's ([`with_marks_of`]).
 ///
 /// **[`crate::Nested`], not `unchecked_transaction` directly** — see
 /// [`removal_cost`]'s own doc for why.
 ///
 /// # Errors
 ///
-/// Returns an error if SQLite refuses the transaction, if [`apply_removal`]
-/// fails, if the commit itself is refused, or if the post-commit derive
-/// fails — in which case the removal itself has already committed and only
-/// the reconciliation pass over its aftermath did not complete. Likewise if
-/// SQLite fails, after the commit, while carrying the hand documents of the
+/// Returns an error if SQLite refuses the transaction or the reads before it,
+/// if [`apply_removal`] fails, if the commit is refused, or if the post-commit
+/// derive fails — in which case the removal itself has already committed and
+/// only the reconciliation pass over its aftermath did not complete. Likewise
+/// if SQLite fails, after the commit, while carrying the hand documents of the
 /// works whose members it handed back, deleted or re-pointed: the removal has
 /// committed, the documents not yet carried stay where they were, and the
 /// reconciling derive is not run.
@@ -1865,9 +2047,10 @@ pub fn remove_root(
     conn: &Connection,
     id: i64,
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
+    let gone = gone_from_disk(conn, |root| root.id == id)?;
     let tx = crate::Nested::open(conn, "remove_root")
         .map_err(|e| format!("starting the root-removal transaction: {e}"))?;
-    let (removal, _predicted, carried) = apply_removal(&tx, id)?;
+    let (removal, within, carried) = apply_removal(&tx, id, &gone)?;
     tx.commit()
         .map_err(|e| format!("committing the removal of root {id}: {e}"))?;
     let left = carry_documents(conn, &carried)
@@ -1875,7 +2058,21 @@ pub fn remove_root(
     let mut derived = crate::derive::derive(conn)
         .map_err(|e| format!("reconciling documents after removing root {id}: {e}"))?;
     derived.orphan_documents.extend(left);
-    Ok((removal, derived))
+    Ok((removal, with_marks_of(derived, &within)))
+}
+
+/// `after`, a removal's reconciling derive, counting the works `within`, the
+/// derive inside its transaction, marked missing and found again. That pass
+/// made the marks, so `after` finds them made and counts none: answered alone,
+/// it would tell the administrator that nothing went missing while the
+/// removal hid works, and contradict the dry run, which answers `within`.
+fn with_marks_of(
+    mut after: crate::derive::DeriveReport,
+    within: &crate::derive::DeriveReport,
+) -> crate::derive::DeriveReport {
+    after.marked_missing += within.marked_missing;
+    after.found_again += within.found_again;
+    after
 }
 
 /// The name of each library of `ids`, in order: read inside a removal's
@@ -1902,6 +2099,7 @@ fn names_of(conn: &Connection, ids: &[i64]) -> Result<Vec<String>, String> {
 fn apply_library_removal(
     conn: &Connection,
     library_id: i64,
+    gone: &HashSet<String>,
 ) -> Result<(Removal, Option<crate::derive::DeriveReport>, Carried), String> {
     let (shared, alone): (Vec<Root>, Vec<Root>) = roots(conn)?
         .into_iter()
@@ -1937,7 +2135,7 @@ fn apply_library_removal(
     for dir in alone {
         // As in `apply_removal`. Directories of one library never nest, so a
         // directory given rows is another library's, not removed later here.
-        hand_back(conn, dir.id, &mut carried)?;
+        hand_back(conn, dir.id, gone, &mut carried)?;
         let taken = take_root(conn, dir.id, &mut carried)?;
         total.works += taken.works;
         total.positions += taken.positions;
@@ -1974,9 +2172,10 @@ pub fn library_removal_cost(
     conn: &Connection,
     library_id: i64,
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
+    let gone = gone_from_disk(conn, |root| root.libraries == [library_id])?;
     let tx = crate::Nested::open(conn, "library_removal_cost")
         .map_err(|e| format!("starting the library-removal-cost transaction: {e}"))?;
-    let (removal, derived, _carried) = apply_library_removal(&tx, library_id)?;
+    let (removal, derived, _carried) = apply_library_removal(&tx, library_id, &gone)?;
     // Not committed: dropping `tx` is the rollback, as in `removal_cost`.
     drop(tx);
     Ok((removal, derived.unwrap_or_default()))
@@ -1986,8 +2185,9 @@ pub fn library_removal_cost(
 /// they alone accounted for, its links to the directories another library
 /// holds too, and the library, which migration 19 deletes with its last link.
 /// Where a directory went, derive again with documents reconciled, after the
-/// commit, for [`remove_root`]'s reason, and end its `orphan_documents` with
-/// what the carry left, as that does; where none did, the report is empty.
+/// commit, for [`remove_root`]'s reason, end its `orphan_documents` with what
+/// the carry left and count the first pass's marks, as that does; where none
+/// did, the report is empty.
 ///
 /// # Errors
 ///
@@ -1997,20 +2197,21 @@ pub fn remove_library(
     conn: &Connection,
     library_id: i64,
 ) -> Result<(Removal, crate::derive::DeriveReport), String> {
+    let gone = gone_from_disk(conn, |root| root.libraries == [library_id])?;
     let tx = crate::Nested::open(conn, "remove_library")
         .map_err(|e| format!("starting the library-removal transaction: {e}"))?;
-    let (removal, predicted, carried) = apply_library_removal(&tx, library_id)?;
+    let (removal, within, carried) = apply_library_removal(&tx, library_id, &gone)?;
     tx.commit()
         .map_err(|e| format!("committing the removal of library {library_id}: {e}"))?;
-    if predicted.is_none() {
+    let Some(within) = within else {
         return Ok((removal, crate::derive::DeriveReport::default()));
-    }
+    };
     let left = carry_documents(conn, &carried)
         .map_err(|e| format!("moving hand documents after removing library {library_id}: {e}"))?;
     let mut derived = crate::derive::derive(conn)
         .map_err(|e| format!("reconciling documents after removing library {library_id}: {e}"))?;
     derived.orphan_documents.extend(left);
-    Ok((removal, derived))
+    Ok((removal, with_marks_of(derived, &within)))
 }
 
 // --- exclusion -------------------------------------------------------------
@@ -2093,6 +2294,15 @@ impl Excluder {
     /// child of an excluded parent, which the walk never descends to.
     pub(crate) fn visits(&self, rel: &str, is_dir: bool) -> bool {
         self.keeps_out(rel, is_dir).is_none()
+    }
+
+    /// Whether this root's walk reaches a member at `rel`. `member.format` is
+    /// never written, so its path is asked as a file and as a directory: a
+    /// pattern of either kind may have kept a walk out. A removal's hand-back
+    /// and the grant (`browse::member_under`) both ask it, so they agree on
+    /// which walk could have recorded a member.
+    pub(crate) fn reaches_member(&self, rel: &str) -> bool {
+        self.visits(rel, false) && self.visits(rel, true)
     }
 
     /// Why [`Self::visits`] answers false for `rel`: the first of its two
@@ -2223,11 +2433,11 @@ pub struct ScanReport {
     /// whole of this report's discipline — an admin who adds a pattern and
     /// watches `gone` jump has been told the wrong thing.
     ///
-    /// Nothing about a work, an edition, a member, a reading position or a
-    /// note is destroyed by this: nothing references `scan_entry`
-    /// (`schema/004_auth.sql`), and `derive`'s only `DELETE FROM work` is a
-    /// fold, which needs the material to have a home elsewhere. The works an
-    /// exclusion covers are left standing and stale. See O92's entry.
+    /// Nothing a work, a position or a note needs is destroyed by this: nothing
+    /// references `scan_entry`, and `derive` drops a work only to fold it. A
+    /// nested directory's row, counted too, goes first with its member to the
+    /// directory around that reaches the file (decision 21). A work no
+    /// directory holds is marked missing until a scan records the file (O92).
     pub forgotten_by_exclusion: usize,
     /// Rows taken from the directories around this one: their `scan_entry`
     /// rows at or under it that this scan recorded too (spec §4: each file is
@@ -2235,8 +2445,9 @@ pub struct ScanReport {
     ///
     /// **Never part of [`Self::gone`]**: the files are still on disk, and the
     /// members under them move with the rows. A row around this one that this
-    /// scan did not record is counted as one of its own: `gone`, or
-    /// [`Self::forgotten_by_exclusion`] when this directory's patterns cover it.
+    /// scan did not record is counted `gone`, or forgotten where a pattern here
+    /// covers it, unless the directory around this one reaches its file: that
+    /// one then holds the row and it counts nowhere (decision 21).
     pub taken_over: usize,
 }
 
@@ -2411,15 +2622,20 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
         // Rows under a directory skipped as nested wait for its scan to take
         // them over, and rows under a link to one, which the walk met, are
         // forgotten below: neither makes this directory look unmounted. The
-        // rows this scan would take over count, so an empty read at a nested
-        // directory's first scan cannot drop what the outer holds.
+        // outer's rows this scan would drop count, so an empty read at a nested
+        // directory's first scan cannot drop what the outer holds; those the
+        // outer keeps do not, since no scan here drops them (decision 21), nor
+        // do this directory's rows that go back to the outer.
+        let around = Enclosing::of(&all, root);
         let held = held
-            .keys()
-            .filter(|rel_path| {
-                !under_any(rel_path, &walk.skipped) && !under_any(rel_path, &walk.aliases)
+            .iter()
+            .filter(|(rel_path, entry)| {
+                !under_any(rel_path, &walk.skipped)
+                    && !under_any(rel_path, &walk.aliases)
+                    && outer_holder(around.as_ref(), &excluder, rel_path, entry.is_dir).is_none()
             })
             .count()
-            + takeable(conn, root, &all)?;
+            + takeable(conn, root, &all, &excluder)?;
         if held > 1 {
             // A fourth cause, alongside the three below: this root's own
             // `exclude_globs` can cover everything beneath it just as
@@ -2551,12 +2767,20 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
             &mut report,
         )?;
     }
-    let (gone, forgotten_by_exclusion) =
-        forget_unseen(&tx, root.id, &seen, &held, &excluder, &walk.skipped)?;
+    let mut carried = Carried::new();
+    let (gone, forgotten_by_exclusion) = forget_unseen(
+        &tx,
+        root,
+        &seen,
+        &held,
+        &excluder,
+        &walk.skipped,
+        &mut carried,
+    )?;
     report.gone = gone;
     report.forgotten_by_exclusion = forgotten_by_exclusion;
     let recorded: HashSet<&str> = seen.iter().map(|entry| entry.rel_path.as_str()).collect();
-    let taken = take_over(&tx, root, &recorded, &excluder)?;
+    let taken = take_over(&tx, root, &recorded, &excluder, &mut carried)?;
     report.taken_over = taken.recorded;
     report.gone += taken.gone;
     report.forgotten_by_exclusion += taken.excluded;
@@ -2573,7 +2797,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<ScanReport, String>
     // reports what stays there; a removal of one of them committing before
     // this carry runs can leave a document under no root, and this scan does
     // not list it.
-    carry_documents(conn, &taken.carried).map_err(|e| {
+    carry_documents(conn, &carried).map_err(|e| {
         format!(
             "moving hand documents after the scan of {}: {e}",
             root.path.display()
@@ -2859,19 +3083,19 @@ fn held_for(conn: &Connection, root_id: i64) -> Result<HashMap<String, Held>, St
 /// Drop rows for this root that the walk did not meet, and say how many for
 /// each of two reasons: `.0` genuinely gone from disk, `.1` forgotten only
 /// because a pattern now covers them — see [`ScanReport::forgotten_by_exclusion`]
-/// for why those are not the same number.
+/// for why those are not the same number. A row `root`'s walk no longer
+/// reaches goes first, with its member, to the one [`outer_holder`] names.
 ///
 /// Reached only after the §8.1 refusal above, so "the walk met nothing" can
-/// never arrive here. Iterates `held` — `held_for`'s result, already read
-/// once before the transaction opened — rather than issuing a second
-/// `SELECT` for the same rows.
+/// never arrive here. Iterates `held`, read before the transaction opened.
 fn forget_unseen(
     conn: &Connection,
-    root_id: i64,
+    root: &Root,
     seen: &[Seen],
     held: &HashMap<String, Held>,
     excluder: &Excluder,
     skipped: &[String],
+    carried: &mut Carried,
 ) -> Result<(usize, usize), String> {
     let kept: HashSet<&str> = seen.iter().map(|entry| entry.rel_path.as_str()).collect();
     let mut gone = 0;
@@ -2886,25 +3110,42 @@ fn forget_unseen(
         .filter(|(rel_path, _)| !under_any(rel_path, skipped))
         .map(|(rel_path, held)| (rel_path.as_str(), *held))
         .collect();
+    let all = roots(conn)?;
+    let around = Enclosing::of(&all, root);
+    let failed = |what: &str, e: rusqlite::Error| format!("handing back {what}: {e}");
+    let mut went_to: HashMap<String, i64> = HashMap::new();
     for (rel_path, held) in stale {
-        conn.execute(
-            "DELETE FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
-            rusqlite::params![root_id, rel_path],
-        )
-        .map_err(|e| format!("forgetting {rel_path}: {e}"))?;
-        conn.execute(
-            "DELETE FROM dir_state WHERE root_id = ?1 AND rel_path = ?2",
-            rusqlite::params![root_id, rel_path],
-        )
-        .map_err(|e| format!("forgetting the state of {rel_path}: {e}"))?;
+        let holder = outer_holder(around.as_ref(), excluder, rel_path, held.is_dir);
         // Why it is stale, not merely that it is. A row under a directory
         // the walk never descended into has a path that need not match any
-        // pattern itself, which is what `excludes_with_parents` is for.
-        if excluder.excludes_with_parents(rel_path, held.is_dir) {
+        // pattern itself, which is what `excludes_with_parents` is for. A row
+        // handed back is never gone: the directory around reaches its file.
+        if holder.is_some() || excluder.excludes_with_parents(rel_path, held.is_dir) {
             forgotten_by_exclusion += 1;
         } else {
             gone += 1;
         }
+        // Decision 21: the directory around still reaches the file, so its
+        // accounts keep the work, as when the pattern comes before this
+        // directory's first scan. Copied before the row goes.
+        if let Some((to, to_rel)) = holder {
+            copy_entry(conn, root.id, rel_path, to, &to_rel).map_err(|e| failed(rel_path, e))?;
+            went_to.insert(root.path.join(rel_path).to_string_lossy().into_owned(), to);
+        }
+        conn.execute(
+            "DELETE FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+            rusqlite::params![root.id, rel_path],
+        )
+        .map_err(|e| format!("forgetting {rel_path}: {e}"))?;
+        conn.execute(
+            "DELETE FROM dir_state WHERE root_id = ?1 AND rel_path = ?2",
+            rusqlite::params![root.id, rel_path],
+        )
+        .map_err(|e| format!("forgetting the state of {rel_path}: {e}"))?;
+    }
+    if !went_to.is_empty() {
+        let members = members_of(conn, root.id).map_err(|e| failed("the members", e))?;
+        move_members(conn, &members, &went_to, carried, &failed)?;
     }
     Ok((gone, forgotten_by_exclusion))
 }
@@ -2957,30 +3198,66 @@ fn around<'a>(all: &'a [Root], root: &Root) -> Vec<(&'a Root, String, Vec<String
         .collect()
 }
 
-/// How many `scan_entry` rows [`take_over`] would take from the directories
-/// around `root`, for §8.1's count.
-fn takeable(conn: &Connection, root: &Root, all: &[Root]) -> Result<usize, String> {
+/// `outer`'s `scan_entry` rows, by path and kind, at or beneath `rel` (the
+/// nested directory's path relative to it) but not beneath `inside_rel`: what
+/// [`take_over`] reads and [`takeable`] counts.
+fn held_around(
+    conn: &Connection,
+    outer: &Root,
+    rel: &str,
+    inside_rel: &[String],
+) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut bound: Vec<&dyn rusqlite::ToSql> = vec![&outer.id, &rel];
+    bound.extend(inside_rel.iter().map(|rel| rel as &dyn rusqlite::ToSql));
+    conn.prepare(&format!(
+        "SELECT rel_path, kind FROM scan_entry WHERE root_id = ?1 AND {}",
+        under_but_not("rel_path", 2, inside_rel.len())
+    ))
+    .and_then(|mut stmt| {
+        stmt.query_map(bound.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect()
+    })
+}
+
+/// `rel_path`, which is `rel` or beneath it, relative to `rel`.
+fn relative_to<'a>(rel_path: &'a str, rel: &str) -> &'a str {
+    rel_path
+        .strip_prefix(rel)
+        .map_or(rel_path, |rest| rest.strip_prefix('/').unwrap_or(rest))
+}
+
+/// How many `scan_entry` rows [`take_over`] would drop from the directories
+/// around `root`, for §8.1's count: all it reads but those [`outer_holder`]
+/// gives a directory, which keeps or receives them.
+fn takeable(
+    conn: &Connection,
+    root: &Root,
+    all: &[Root],
+    excluder: &Excluder,
+) -> Result<usize, String> {
     let mut rows = 0;
+    let enclosing = Enclosing::of(all, root);
     for (outer, rel, inside_rel) in around(all, root) {
-        let mut bound: Vec<&dyn rusqlite::ToSql> = vec![&outer.id, &rel];
-        bound.extend(inside_rel.iter().map(|rel| rel as &dyn rusqlite::ToSql));
-        let count: i64 = conn
-            .query_row(
-                &format!(
-                    "SELECT count(*) FROM scan_entry WHERE root_id = ?1 AND {}",
-                    under_but_not("rel_path", 2, inside_rel.len())
-                ),
-                bound.as_slice(),
-                |r| r.get(0),
+        let held = held_around(conn, outer, &rel, &inside_rel).map_err(|e| {
+            format!(
+                "counting what {} holds under {}: {e}",
+                outer.path.display(),
+                root.path.display()
             )
-            .map_err(|e| {
-                format!(
-                    "counting what {} holds under {}: {e}",
-                    outer.path.display(),
-                    root.path.display()
+        })?;
+        rows += held
+            .iter()
+            .filter(|(rel_path, kind)| {
+                let own = relative_to(rel_path, &rel);
+                outer_holder(
+                    enclosing.as_ref(),
+                    excluder,
+                    own,
+                    kind == Kind::Dir.as_str(),
                 )
-            })?;
-        rows += usize::try_from(count).unwrap_or(usize::MAX);
+                .is_none()
+            })
+            .count();
     }
     Ok(rows)
 }
@@ -2990,29 +3267,28 @@ fn takeable(conn: &Connection, root: &Root, all: &[Root]) -> Result<usize, Strin
 struct Taken {
     /// Rows this walk recorded too: [`ScanReport::taken_over`].
     recorded: usize,
+    /// Rows dropped that this directory's patterns cover:
+    /// [`ScanReport::forgotten_by_exclusion`].
+    excluded: usize,
     /// Rows this walk did not meet and its patterns do not cover.
     gone: usize,
-    /// Rows this directory's patterns cover.
-    excluded: usize,
-    /// Each work whose members moved, for the scan to carry its hand document
-    /// once it commits.
-    carried: Carried,
 }
 
 /// Take over what each directory around `root` holds under it: delete its
-/// `scan_entry` and `dir_state` rows at or beneath `root`, and move to `root`
-/// its members of the files this walk recorded.
+/// `dir_state` and `scan_entry` rows at or beneath `root`, and move to `root`
+/// its members of the files this walk recorded. A row `root`'s walk does not
+/// reach stays with, or goes with its member to, the directory [`outer_holder`]
+/// names (decision 21). Each moving work is noted in `carried`.
 ///
-/// Spec §4: each file is scanned once, under the deepest directory that holds
-/// it. Run in the scan's transaction, after its own rows are recorded, so a
-/// file this walk also met is held by one directory or the other at every
-/// commit. A row this walk did not record is dropped by `root`'s rules, and
-/// counted as [`forget_unseen`] counts one of `root`'s own.
+/// Spec §4. Run in the scan's transaction, after its own rows are recorded,
+/// so a file this walk also met is held by one directory or the other at every
+/// commit.
 fn take_over(
     conn: &Connection,
     root: &Root,
     recorded: &HashSet<&str>,
     excluder: &Excluder,
+    carried: &mut Carried,
 ) -> Result<Taken, String> {
     // Read inside the transaction: the directories as they stand at commit.
     let all = roots(conn)?;
@@ -3029,6 +3305,7 @@ fn take_over(
         .iter()
         .map(|rel| root.path.join(rel).to_string_lossy().into_owned())
         .collect();
+    let enclosing = Enclosing::of(&all, root);
     let mut taken = Taken::default();
     for (outer, rel, inside_rel) in around(&all, root) {
         let failed = |what: &str, e: rusqlite::Error| {
@@ -3041,35 +3318,41 @@ fn take_over(
         let rows = under_but_not("rel_path", 2, inside_rel.len());
         let mut bound: Vec<&dyn rusqlite::ToSql> = vec![&outer.id, &rel];
         bound.extend(inside_rel.iter().map(|rel| rel as &dyn rusqlite::ToSql));
-        let held: Vec<(String, String)> = conn
-            .prepare(&format!(
-                "SELECT rel_path, kind FROM scan_entry WHERE root_id = ?1 AND {rows}"
-            ))
-            .and_then(|mut stmt| {
-                stmt.query_map(bound.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))?
-                    .collect()
-            })
-            .map_err(|e| failed("its entries", e))?;
+        let held =
+            held_around(conn, outer, &rel, &inside_rel).map_err(|e| failed("its entries", e))?;
+        // Each member path that moves, and the directory it moves to.
+        let mut went_to: HashMap<String, i64> = HashMap::new();
+        let mut dropped: Vec<&str> = Vec::with_capacity(held.len());
         for (rel_path, kind) in &held {
-            // `rel_path` is `rel` or beneath it, as the query asked.
-            let own = rel_path
-                .strip_prefix(rel.as_str())
-                .map_or(rel_path.as_str(), |rest| {
-                    rest.strip_prefix('/').unwrap_or(rest)
-                });
+            let own = relative_to(rel_path, &rel);
+            let is_dir = kind == Kind::Dir.as_str();
             if recorded.contains(own) {
                 taken.recorded += 1;
-            } else if excluder.excludes_with_parents(own, kind == Kind::Dir.as_str()) {
+            } else if let Some((to, to_rel)) =
+                outer_holder(enclosing.as_ref(), excluder, own, is_dir)
+            {
+                // `outer`'s walk never descends here, so dropped, the missing
+                // mark (O91) would hide a work whose file is on disk.
+                if to == outer.id {
+                    continue;
+                }
+                copy_entry(conn, outer.id, rel_path, to, &to_rel)
+                    .map_err(|e| failed(rel_path, e))?;
+                went_to.insert(root.path.join(own).to_string_lossy().into_owned(), to);
+            } else if excluder.excludes_with_parents(own, is_dir) {
                 taken.excluded += 1;
             } else {
                 taken.gone += 1;
             }
+            dropped.push(rel_path);
         }
-        conn.execute(
-            &format!("DELETE FROM scan_entry WHERE root_id = ?1 AND {rows}"),
-            bound.as_slice(),
-        )
-        .map_err(|e| failed("its entries", e))?;
+        let mut drop = conn
+            .prepare("DELETE FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2")
+            .map_err(|e| failed("its entries", e))?;
+        for rel_path in dropped {
+            drop.execute(rusqlite::params![outer.id, rel_path])
+                .map_err(|e| failed("its entries", e))?;
+        }
         conn.execute(
             &format!("DELETE FROM dir_state WHERE root_id = ?1 AND {rows}"),
             bound.as_slice(),
@@ -3078,42 +3361,32 @@ fn take_over(
         let under = under_but_not("m.path", 2, inside_paths.len());
         let mut bound: Vec<&dyn rusqlite::ToSql> = vec![&outer.id, &here];
         bound.extend(inside_paths.iter().map(|path| path as &dyn rusqlite::ToSql));
-        let members: Vec<(i64, String, i64)> = conn
+        let members: Vec<MemberRow> = conn
             .prepare(&format!(
-                "SELECT m.id, m.path, e.work_id FROM member m JOIN edition e ON e.id = m.edition_id
+                "SELECT m.id, m.path, e.work_id, m.format FROM member m
+                   JOIN edition e ON e.id = m.edition_id
                   WHERE m.root_id = ?1 AND {under}"
             ))
             .and_then(|mut stmt| {
-                stmt.query_map(bound.as_slice(), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-                    .collect()
+                stmt.query_map(bound.as_slice(), |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?
+                .collect()
             })
             .map_err(|e| failed("its members", e))?;
-        // Only the members of files this walk recorded move, a stale edition's
-        // included, since it shares a recorded file's path: a grant of `root`'s
-        // library then reaches the edition the derive keeps beside a renamed
-        // one. A member of a file `root`'s patterns exclude stays with `outer`,
-        // whose accounts saw it, so `root`'s accounts never do and removing
-        // `root` loses nothing of it (spec decision 21).
-        let moving: Vec<&(i64, String, i64)> = members
-            .iter()
-            .filter(|(_, path, _)| recorded_paths.contains(path.as_str()))
-            .collect();
-        // Read before this outer's members are re-pointed: a work met again
-        // under a later outer keeps the address read here.
-        note_addresses(
-            conn,
-            moving.iter().map(|(_, _, work)| *work),
-            &mut taken.carried,
-        )?;
-        // Migration 018's trigger moves only each member's own `member_root`
-        // row; the next derive rewrites its copies' (`write_roots`).
-        for (member, path, _) in moving {
-            conn.execute(
-                "UPDATE member SET root_id = ?1 WHERE id = ?2",
-                rusqlite::params![root.id, member],
-            )
-            .map_err(|e| failed(path, e))?;
+        // Only the members of files this walk recorded move to `root`, a stale
+        // edition's included, since it shares a recorded file's path: a grant
+        // of `root`'s library then reaches the edition the derive keeps beside
+        // a renamed one. A member of a file `root`'s walk does not reach stays
+        // off `root`, with its row where `outer_holder` names a directory and
+        // without one where it names none, so `root`'s accounts never see it
+        // and removing `root` loses nothing of it (spec decision 21).
+        for (_, path, ..) in &members {
+            if recorded_paths.contains(path.as_str()) {
+                went_to.insert(path.clone(), root.id);
+            }
         }
+        move_members(conn, &members, &went_to, carried, &failed)?;
     }
     Ok(taken)
 }

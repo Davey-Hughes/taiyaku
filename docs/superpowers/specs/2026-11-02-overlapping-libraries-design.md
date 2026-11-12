@@ -147,17 +147,67 @@ directory and library pages, and the last three in its whole-branch review.
 20. **A library's card says when a nested library scans what it shows**:
     "Kids is scanning kids/, which Manga shows."
 21. **The hand-over moves only the members of files the nested directory's
-    scan recorded.** A file its own patterns exclude stays with the outer
-    directory: the outer library's accounts keep seeing it, the nested
-    library's never do, and removing the nested directory loses nothing of
-    it. A file the nested directory comes to exclude after its scan took the
-    file over goes back to the outer directory when the nested one is
-    removed, where the outer's patterns admit it. While the nested directory
-    exists the file is not refreshed, as a file an in-root pattern excludes
-    is not (O92). Chosen over the plan's
-    every member moving, which showed the nested library's accounts what its
-    patterns kept out, and deleted that work with its positions when the
-    nested directory was removed.
+    scan recorded.** A file the nested directory's walk does not reach
+    (its patterns exclude it, or it is a whitelisted child of a directory
+    they exclude) belongs to the directory immediately around it, where
+    that directory's walk reaches the file. That directory keeps or
+    receives the file's row and member: its library's accounts keep seeing
+    the file, the nested library's never do, and removing the nested
+    directory loses nothing of it. One rule decides keeping and handing
+    back, so where the file's row ends, whether its work is marked missing
+    and who sees it are the same whether the pattern or the nested scan
+    came first (the owner's ruling of 2026-11-10, "Hand back at once",
+    replacing "goes back to the outer directory when the nested one is
+    removed"). A file the nested directory comes to exclude after its scan
+    took the file over goes back, row and member, at the scan that excludes
+    it, as a removal hands a file back. Where the directory immediately
+    around does not reach the file, no directory holds its row, whichever
+    came first, and its work is marked missing; a directory further out is
+    not asked, though its walk would reach the file. Such a file's member
+    stays where it was: with the outer directory that held it if the
+    pattern came first, with the nested one if its scan did. Only in the
+    second case does removing the nested directory move the member: with
+    no row, to the nearest directory left around the file, its work still
+    marked missing until that directory's walk records the file. No
+    directory's or library's removal, of a nested directory or of the
+    outer one, deletes a work whose file is on disk inside a directory
+    left, but for a share mounted below a directory, at a path that is
+    none of the directories. A row the removed directory held, so that its
+    last walk saw the file, goes with its member where §4's hand-back puts
+    it, and the work is shown. A member with no row copied, because the
+    removed directory's patterns kept the file out or no walk left reaches
+    it, goes with no row to the nearest directory left around the file,
+    the one walk that can record it again; the work stays missing until
+    that walk does, and comes back with its positions and notes. A file
+    counts as vanished, and its work as removed, only where every walk that
+    may last have looked for it reaches it, the removed directory's own and
+    that of each directory nested in it whose tree holds the file, and the
+    disk, asked before the removal's transaction, holds nothing at its path:
+    a pattern lifted with no scan since makes a walk reach a file it never
+    looked for. And only where each directory whose tree holds the file
+    reads present and holds a name a walk visits, §8.1's test for an
+    unmounted share: under one that reads absent or empty, nothing counts as
+    vanished. A share mounted below a directory, at a path that is none of
+    the directories, is not asked, so while it is unmounted its files with
+    no row read as gone. A member records no kind, so its path is asked both
+    as a file and as a directory (the owner's rulings of 2026-11-10, "Never
+    delete on disk", replacing "removing it if they do not", "Cover both"
+    and "Every removal", and of 2026-11-11, "Fix it" and "Add a guard"). A
+    directory further out than the nearest one may admit the file, but no
+    walk reads under the nearest one what its patterns exclude: the work
+    shows once that directory lifts its pattern and scans, or is removed and
+    the walk around it reaches the file. A pattern the outer directory adds
+    over a file it holds for the nested one takes effect at the nested
+    directory's next scan. A pattern the outer directory lifts over a file
+    the nested directory excludes does not bring the file back while the
+    nested directory exists, since no walk reads what a nested directory
+    excludes; lifting the nested directory's pattern and scanning it does,
+    as does removing it and scanning the outer directory. While the nested
+    directory exists the file is not refreshed, as a file an in-root pattern
+    excludes is not (O92). Chosen over the plan's every member moving, which
+    showed the nested library's accounts what its patterns kept out, and
+    deleted that work with its positions when the nested directory was
+    removed.
 22. **A directory's page greys out only what the server refuses, a sibling's
     scan included.** Decision 18's rule is general. While another directory
     of the same library has a scan reserved or running, the page holds
@@ -499,6 +549,16 @@ edition too, which closes O191.
   it, in the same operation: the outer subtree is rescanned before the inner
   root's `member_root` rows go, so nothing the outer directory still holds is
   counted as removed.
+- **Removing the outer directory**, or its library, hands each nested
+  directory what lies in its tree by the same hand-back. A file there that
+  the nested directory's patterns keep out goes with its row to the
+  directory left immediately around the nested one, where that directory's
+  walk reaches the file, and its work stays shown (decision 21). Where that
+  walk does not reach it, or no directory is left around the nested one, it
+  goes to the nested directory with no row, its work kept and marked missing
+  until the nested directory's walk records the file, not removed with what
+  lies outside every nested tree (the owner's ruling of 2026-11-10, "Every
+  removal").
 - **Reach.** `account::access_for` and `browse::library_scope` expand a
   library's directories to every directory nested inside them, by `root.path`
   prefix over the `root` table (canonical paths), leaving out a nested
@@ -546,23 +606,40 @@ rather than ruled (`docs/superpowers/plans/2026-11-04-overlapping-libraries-pr2.
 - **The hand-over moves only the members of files the inner directory's scan
   recorded** (decision 21, replacing the plan's every member moving). A stale
   edition's members share a recorded file's path, so they move too. A file
-  the inner directory's patterns exclude keeps its member with the outer
-  directory, which drops the file's row.
+  the inner directory's walk does not reach keeps its member and its row
+  with the directory immediately around the inner one, where that
+  directory's walk reaches the file, or goes to it from a directory further
+  out (the owner's rulings of 2026-11-10), so the missing mark leaves its
+  work present. One the inner's scan comes to exclude goes back at that scan
+  (decision 21).
 - **The hand-back copies the inner directory's rows rather than walking the
-  disk again**, since a walk cannot run inside the removal's transaction and
-  the rehearsal counts without reading the disk. Each row goes to the
-  directory whose walk would reach it: one nested in the removed directory,
-  by that one's patterns, or else the deepest directory around it, by its
-  own. A file the inner directory's patterns keep out has no row to copy.
-  Kept out by the scan that took the files over, its member never left the
-  outer directory; kept out later, its member goes where a row at its path
-  would.
-  Either way, where the outer's patterns admit the file, the outer's next
-  scan records it again under the work it had. The member of a file gone
-  from the disk while the inner directory's patterns still admit it is
-  counted removed, as before.
+  disk again**, since a walk cannot run inside the removal's transaction;
+  before it, the rehearsal and the removal ask the disk only whether each
+  file with no row is still there and, where it is not, whether each
+  directory holding it reads mounted. Each row goes to the deepest directory
+  left whose tree holds the file, where that one's walk reaches it, or else,
+  where that one was nested in the removed directory, to the directory
+  immediately around it, where its walk does (decision 21); a directory
+  further out is not asked. A file the inner directory's patterns keep out
+  has no row to copy. Kept out by the scan that took the files over, its
+  member never left the outer directory; kept out later, its member goes to
+  the nearest directory left around the file. Either way, where the outer's
+  patterns admit the file, the outer's next scan records it again under the
+  work it had. A member with no row copied, whether no directory left would
+  walk its file or the removed directory's patterns kept the file out, goes
+  with no row to the nearest directory left around the file, and its work is
+  marked missing, not removed, until that directory's walk records the file
+  (the owner's rulings of 2026-11-10, "Never delete on disk", "Cover both"
+  and "Every removal", replacing the removal of a file the outer's patterns
+  exclude). This holds whether the removed directory is the inner one or the
+  outer; a work whose file lies inside no directory left is removed, as
+  before. Inside one, a file is counted removed only where every walk that
+  may last have looked for it reaches it: the removed directory's, and each
+  nested directory's whose tree holds it (decision 21).
 - **An outer directory's file-level pattern governs nothing under a nested
-  directory**, and governs the file again once it is handed back.
+  directory**, and governs the file again once it is handed back: it hides
+  the file's work as missing, and lifting it shows the work again at the
+  outer directory's next scan.
 
 ## 5. PR 3: the same directory in several libraries
 

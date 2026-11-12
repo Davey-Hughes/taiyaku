@@ -1758,6 +1758,94 @@ async fn the_works_feed_names_every_dir_of_a_granted_library() {
     );
 }
 
+/// O91: the works feed names no missing work to an account that sees every
+/// library, which `browse::visible_editions` never filters for it.
+#[tokio::test]
+async fn the_works_feed_leaves_a_missing_work_out_for_an_account_that_sees_every_library() {
+    let (router, state, _fixture, [present, missing, _]) =
+        crate::test_support::router_over_a_live_library_of_two_directories();
+    crate::test_support::mark_missing(&state, &missing);
+
+    assert!(
+        listed_as(&router, "/opds/v1.2/works", &present)
+            .await
+            .is_some(),
+        "the present work"
+    );
+    assert_eq!(
+        listed_as(&router, "/opds/v1.2/works", &missing).await,
+        None,
+        "a missing work is named to an account that sees every library"
+    );
+}
+
+/// O91: nor to a reader granted the directory the missing work is under.
+#[tokio::test]
+async fn the_works_feed_leaves_a_missing_work_out_under_a_grant() {
+    let (router, state, _fixture, [present, missing, withheld]) =
+        crate::test_support::router_over_a_live_library_of_two_directories();
+    crate::test_support::grant_the_scanned_directory(&state);
+    crate::test_support::mark_missing(&state, &missing);
+
+    assert!(
+        listed_as(&router, "/opds/v1.2/works", &present)
+            .await
+            .is_some(),
+        "the present work"
+    );
+    assert_eq!(
+        listed_as(&router, "/opds/v1.2/works", &withheld).await,
+        None,
+        "the grant holds"
+    );
+    assert_eq!(
+        listed_as(&router, "/opds/v1.2/works", &missing).await,
+        None,
+        "a missing work is named under a grant that reaches it"
+    );
+}
+
+/// O91: a missing work's own feed answers 404 with the reader's sentence, in
+/// this module's plain-text form, to an administrator and to a reader whose
+/// grant reaches it, rather than an entry whose links fail wherever its files
+/// are gone. A work the grant hides answers as one that does not exist,
+/// missing or not.
+#[tokio::test]
+async fn a_missing_work_s_own_feed_says_its_files_are_missing() {
+    let (router, state, _fixture, [present, missing, withheld]) =
+        crate::test_support::router_over_a_live_library_of_two_directories();
+    crate::test_support::mark_missing(&state, &missing);
+    crate::test_support::mark_missing(&state, &withheld);
+    let says_missing = format!(
+        "the files of work `{missing}` are missing from every directory that held them; \
+         it opens again once a scan finds them"
+    );
+    let feed = |slug: &str| format!("/opds/v1.2/works/{slug}");
+
+    assert_eq!(
+        fetch(&router, &feed(&missing)).await,
+        (StatusCode::NOT_FOUND, says_missing.clone()),
+        "an administrator"
+    );
+    assert_eq!(
+        fetch(&router, &feed(&present)).await.0,
+        StatusCode::OK,
+        "the present work"
+    );
+
+    crate::test_support::grant_the_scanned_directory(&state);
+    assert_eq!(
+        fetch(&router, &feed(&missing)).await,
+        (StatusCode::NOT_FOUND, says_missing),
+        "a reader whose grant reaches the work"
+    );
+    assert_eq!(
+        fetch(&router, &feed(&withheld)).await,
+        (StatusCode::NOT_FOUND, format!("no work `{withheld}`")),
+        "a work the grant hides answers as one that does not exist, missing or not"
+    );
+}
+
 // --- The Libraries level, by directory and by work. ---
 //
 // Every fixture here numbers its libraries apart from their directories (see

@@ -36,7 +36,7 @@ const root: config.Root = {
  * A whole `DeriveReport`, because the dialog renders one.
  *
  * A `{} as Derived` cast stops being enough the moment a component reads
- * the thirty-one fields.
+ * the thirty-three fields.
  */
 const derived = (over: Partial<config.Derived> = {}): config.Derived => ({
   series: 1,
@@ -77,6 +77,8 @@ const derived = (over: Partial<config.Derived> = {}): config.Derived => ({
   unrecognised_kinds: 0,
   raised: 0,
   root_removed_mid_derive: 0,
+  marked_missing: 0,
+  found_again: 0,
   ...over,
 })
 

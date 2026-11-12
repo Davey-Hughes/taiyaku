@@ -43,4 +43,6 @@ export const emptyDerive: Derived = {
   unrecognised_kinds: 0,
   raised: 0,
   root_removed_mid_derive: 0,
+  marked_missing: 0,
+  found_again: 0,
 }

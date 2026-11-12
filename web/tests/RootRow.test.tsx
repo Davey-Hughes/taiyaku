@@ -1188,6 +1188,8 @@ describe('RootRow', () => {
           unrecognised_kinds: 0,
           raised: 0,
           root_removed_mid_derive: 0,
+          marked_missing: 0,
+          found_again: 0,
         },
       },
       last_scan_at: '2026-09-04 12:00:00',

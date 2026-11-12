@@ -283,6 +283,100 @@ pub(crate) fn add_a_volume_elsewhere(fixture: &Fixture, volume: &str) -> String 
     slug
 }
 
+/// [`router_over_a_live_library`] with two more volumes: `Scanned - v02`
+/// beside the first, and `Elsewhere - v01` under a second directory,
+/// `{fixture}/elsewhere`. Each directory is a library of its own, so
+/// [`grant_the_scanned_directory`] shows the two `Scanned` volumes and
+/// withholds `Elsewhere`. Answers their slugs in that order: v01, v02, then
+/// `Elsewhere`'s. The fixture account is an administrator.
+///
+/// # Panics
+///
+/// As [`add_a_volume_elsewhere`], and if the second directory cannot be
+/// added, scanned or derived, or a volume does not derive to a work of its
+/// own.
+pub(crate) fn router_over_a_live_library_of_two_directories() -> (
+    axum::Router,
+    std::sync::Arc<ServeState>,
+    Fixture,
+    [String; 3],
+) {
+    let (router, state, fixture) = router_over_a_live_library();
+    let second = add_a_volume_elsewhere(&fixture, "Scanned - v02");
+    let elsewhere = fixture.path().join("elsewhere");
+    write_pages(&elsewhere.join("Elsewhere").join("Elsewhere - v01"), 2);
+    let slugs = {
+        let conn = state.library.conn();
+        let root =
+            taiyaku_library::scan::add_root(&conn, &elsewhere).expect("adds the second root");
+        taiyaku_library::scan::scan_root(&conn, &root).expect("scans the second root");
+        taiyaku_library::derive::derive(&conn).expect("derives the second root");
+        let slug_of = |volume: &str| -> String {
+            conn.query_row(
+                "SELECT w.slug FROM work w JOIN edition e ON e.work_id = w.id \
+                 JOIN member m ON m.edition_id = e.id WHERE m.path LIKE ?1",
+                [format!("%{volume}%")],
+                |row| row.get(0),
+            )
+            .expect("the volume derived to a work")
+        };
+        [slug_of("Scanned - v01"), second, slug_of("Elsewhere - v01")]
+    };
+    assert_ne!(
+        slugs[0], slugs[2],
+        "each directory's volume is its own work"
+    );
+    assert_ne!(
+        slugs[1], slugs[2],
+        "each directory's volume is its own work"
+    );
+    state
+        .works
+        .refresh_if_moved(&state.library)
+        .expect("reads the new works");
+    (router, state, fixture, slugs)
+}
+
+/// [`grant_root`] on [`router_over_a_live_library_of_two_directories`]'s
+/// first directory, the one added first, so the fixture account becomes a
+/// reader of the `Scanned` volumes and not of `Elsewhere`.
+///
+/// # Panics
+///
+/// As [`grant_root`], and if the library has no directory.
+pub(crate) fn grant_the_scanned_directory(state: &ServeState) {
+    let conn = state.library.conn();
+    let first = taiyaku_library::scan::roots(&conn)
+        .expect("lists the roots")
+        .iter()
+        .map(|root| root.id)
+        .min()
+        .expect("the fixture's directories");
+    grant_root(&conn, first);
+}
+
+/// Mark `slug` missing as a derive marks it (`work.missing_since`, O91),
+/// then refresh the live registry so it carries the mark.
+///
+/// # Panics
+///
+/// Panics if no work has the slug, or the registry cannot be refreshed.
+pub(crate) fn mark_missing(state: &ServeState, slug: &str) {
+    let marked = state
+        .library
+        .conn()
+        .execute(
+            "UPDATE work SET missing_since = datetime('now') WHERE slug = ?1",
+            [slug],
+        )
+        .expect("marks the work missing");
+    assert_eq!(marked, 1, "one work is marked: `{slug}`");
+    state
+        .works
+        .refresh_if_moved(&state.library)
+        .expect("refreshes the registry");
+}
+
 /// [`router_over_a_file_backed_library`], with the fixture account demoted to
 /// a reader — the same demotion [`router_over_a_single_scanned_work_as_a_reader`]
 /// applies, and for the same reason.

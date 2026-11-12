@@ -372,7 +372,7 @@ export async function listWorks(): Promise<WorkSummary[]> {
 }
 
 /**
- * A 404 from the sidecar read — O179.
+ * A 404 from the sidecar read, unless its JSON says `missing` — O179.
  *
  * **A type, so that the one screen with words of its own for this can ask
  * what was thrown rather than read it.** `ReaderFailed.tsx` says "The
@@ -398,6 +398,40 @@ export class WorkNotFound extends Error {
   }
 }
 
+/**
+ * A 404 from the sidecar read for a work marked missing — O91.
+ *
+ * The server sends it as JSON, `{"error": …, "missing": true}`, and only once
+ * the account's grant shows the work: a work the account may read, whose
+ * files a scan found in no directory that held them. Not a `WorkNotFound`, so
+ * `ReaderFailed.tsx` can say that rather than "no work"; `work` and the
+ * message are as `WorkNotFound`'s are.
+ */
+export class WorkMissing extends Error {
+  readonly work: string
+
+  constructor(work: string, message: string) {
+    super(message)
+    this.name = 'WorkMissing'
+    this.work = work
+  }
+}
+
+/** Whether a 404's body is the server's JSON for a work marked missing. */
+function saysMissing(body: string): boolean {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return false
+  }
+  return (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    (parsed as { missing?: unknown }).missing === true
+  )
+}
+
 export interface FetchedSidecar {
   json: string
   /** Absent only from a server older than the correction route. */
@@ -414,18 +448,20 @@ export interface FetchedSidecar {
  * the sidecar" and not two that have to be kept in step.
  *
  * A non-2xx that reaches here — a 401 does not, `request` throws it as
- * `Unauthenticated` — throws `loading`, the slug, the status and the body in
- * one message; a 404 throws that message as a `WorkNotFound`.
+ * `Unauthenticated` — throws `loading`, the slug, status and body in one
+ * message; a 404 is a `WorkMissing` if its JSON says so, else `WorkNotFound`.
  */
 export async function getSidecarWithEtag(
   work: string,
 ): Promise<FetchedSidecar> {
   const res = await request(`/api/works/${seg(work)}`)
   if (!res.ok) {
-    const message = `loading ${work}: ${res.status} ${await res.text()}`
-    throw res.status === 404
-      ? new WorkNotFound(work, message)
-      : new Error(message)
+    const body = await res.text()
+    const message = `loading ${work}: ${res.status} ${body}`
+    if (res.status !== 404) throw new Error(message)
+    throw saysMissing(body)
+      ? new WorkMissing(work, message)
+      : new WorkNotFound(work, message)
   }
   return { json: await res.text(), etag: res.headers.get('etag') ?? undefined }
 }

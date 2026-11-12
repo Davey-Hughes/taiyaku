@@ -209,7 +209,7 @@ export interface Unreadable {
 /**
  * `derive::DeriveReport` — what derivation made of the walk.
  *
- * **All thirty-one fields, because the server sends all thirty-one.** The
+ * **All thirty-three fields, because the server sends all thirty-three.** The
  * route destructures both reports with no `..` precisely so a field cannot go
  * missing on the way out; a client type that omitted one would undo that at
  * the last step. C4 §3's discipline is that a scan names what it did not do.
@@ -246,6 +246,8 @@ export interface Derived {
   unrecognised_kinds: number
   raised: number
   root_removed_mid_derive: number
+  marked_missing: number
+  found_again: number
 }
 
 /** A scan that ran to the end. */

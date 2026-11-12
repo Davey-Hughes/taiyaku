@@ -7190,7 +7190,9 @@ fn removing_the_directory_of_a_shared_hub_file_folds_its_work_into_the_copys() {
 /// put c002 in Bar beside B's c001, and Foo's edition, c002 alone, is a run
 /// of Bar's rather than the same list, so the fold is refused (O243). Foo
 /// stays its own work, held under B, with its reader's position, and every
-/// derive reports it unfolded until a fold can carry it.
+/// derive reports it unfolded until a fold can carry it. No derive after the
+/// removal writes Foo, and B holds its file, so it is never marked missing
+/// (spec §5).
 #[test]
 fn removing_the_older_directory_of_a_split_volume_leaves_its_work_unfolded() {
     let a_dir = crate::tests::tempdir("derive-unfolded-a");
@@ -7283,6 +7285,16 @@ fn removing_the_older_directory_of_a_split_volume_leaves_its_work_unfolded() {
         0,
         "no member under no directory"
     );
+    let unmarked = {
+        let mut works = vec![(foo, false), (bar, false)];
+        works.sort_unstable();
+        works
+    };
+    assert_eq!(
+        marks(&conn),
+        unmarked,
+        "B holds Foo's c002, so no work is marked, the unfolded Foo included"
+    );
     let positions = || -> Vec<(i64, String, i64)> {
         conn.prepare("SELECT work_id, edition, slot FROM progress")
             .and_then(|mut q| {
@@ -7311,6 +7323,7 @@ fn removing_the_older_directory_of_a_split_volume_leaves_its_work_unfolded() {
             "pass {pass}: reported unfolded again"
         );
         assert_eq!(store_shape(&conn), shape, "pass {pass}: nothing moves");
+        assert_eq!(marks(&conn), unmarked, "pass {pass}: no work is marked");
         assert_eq!(
             positions(),
             [(foo, "raw".to_string(), 4)],
@@ -7325,7 +7338,8 @@ fn removing_the_older_directory_of_a_split_volume_leaves_its_work_unfolded() {
 /// of Foo, while Bar's `en` keeps Bar written, so `derive::superseded` never
 /// weighs it and its `raw`, c002 alone, stays beside Foo's. Both works hold
 /// the file, as O243's ruling keeps them, with the reader's position where it
-/// was and nothing reported but a kept edition.
+/// was and nothing reported but a kept edition, and neither is marked missing
+/// (spec §5).
 #[test]
 fn removing_the_directory_of_one_of_two_editions_keeps_its_stale_edition_beside_the_copys_work() {
     let b_dir = crate::tests::tempdir("derive-two-editions-b");
@@ -7464,6 +7478,16 @@ fn removing_the_directory_of_one_of_two_editions_keeps_its_stale_edition_beside_
         0,
         "no member under no directory"
     );
+    let unmarked = {
+        let mut works = vec![(bar_work, false), (foo_work, false)];
+        works.sort_unstable();
+        works
+    };
+    assert_eq!(
+        marks(&conn),
+        unmarked,
+        "A holds c002 and C holds `en`, so no work is marked"
+    );
     let positions = || -> Vec<(i64, String, i64)> {
         conn.prepare("SELECT work_id, edition, slot FROM progress")
             .and_then(|mut q| {
@@ -7485,6 +7509,7 @@ fn removing_the_directory_of_one_of_two_editions_keeps_its_stale_edition_beside_
         let report = derive::derive(&conn).expect("derives");
         assert_eq!(reported(&report), kept, "pass {pass}: a kept edition again");
         assert_eq!(store_shape(&conn), shape, "pass {pass}: nothing moves");
+        assert_eq!(marks(&conn), unmarked, "pass {pass}: no work is marked");
         assert_eq!(
             positions(),
             [(bar_work, "raw".to_string(), 4)],
@@ -7991,5 +8016,714 @@ fn taking_over_a_nested_directory_leaves_the_rows_an_in_root_rule_edit_leaves() 
             vec!["Bleach".to_string(), "Naruto".to_string()],
             vec!["Naruto".to_string(), "kids".to_string()]
         )
+    );
+}
+
+// --- A work whose files are gone (pre-deploy spec §5) --------------------------
+
+/// `Series/Series v0{n}.cbz` for each volume up to `count`, every one under
+/// one directory, and the path of each.
+fn a_series_of(label: &str, count: usize) -> (crate::tests::TempDir, Vec<std::path::PathBuf>) {
+    let dir = crate::tests::tempdir(label);
+    let paths: Vec<_> = (1..=count)
+        .map(|n| {
+            let path = dir.path().join("Series").join(format!("Series v0{n}.cbz"));
+            write_archive(&path, 2 + n);
+            path
+        })
+        .collect();
+    (dir, paths)
+}
+
+/// The id and slug of the work holding volume `volume`.
+fn volume_work(conn: &Connection, volume: i64) -> (i64, String) {
+    conn.query_row(
+        "SELECT id, slug FROM work WHERE volume = ?1",
+        [volume],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .expect("the volume's work")
+}
+
+/// Whether the work holding volume `volume` is marked missing.
+fn marked(conn: &Connection, volume: i64) -> bool {
+    conn.query_row(
+        "SELECT missing_since IS NOT NULL FROM work WHERE volume = ?1",
+        [volume],
+        |r| r.get(0),
+    )
+    .expect("reads the volume's mark")
+}
+
+/// The mark pass runs after the fold loop: the colour work is marked while its
+/// directory is away, and when it comes back under the fold rule the work is
+/// folded into the base one, so that derive neither marks it nor counts it
+/// found again. Run before the folds, the pass would clear the colour work's
+/// mark and count it found again in the derive that then deletes it.
+#[test]
+fn a_missing_work_folded_away_on_its_return_is_not_counted_found_again() {
+    let tree = crate::tests::tempdir("derive-missing-folded");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let colour = two_works_before_the_fold(&tree, &conn);
+    let root = scan::roots(&conn)
+        .expect("roots")
+        .into_iter()
+        .next()
+        .expect("the fixture's directory");
+    let here = tree.path().join("Series - Full Color");
+    let outside = crate::tests::tempdir("derive-missing-folded-away");
+    let away = outside.path().join("Series - Full Color");
+    std::fs::rename(&here, &away).expect("the colour directory goes");
+    scan::scan_root(&conn, &root).expect("scans without it");
+    let gone = derive::derive(&conn).expect("derives without it");
+    let marked = |id: i64| -> Option<bool> {
+        use rusqlite::OptionalExtension as _;
+        conn.query_row(
+            "SELECT missing_since IS NOT NULL FROM work WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()
+        .expect("reads the mark")
+    };
+    assert_eq!(
+        (gone.marked_missing, marked(colour)),
+        (1, Some(true)),
+        "the fixture: the colour work is marked"
+    );
+    std::fs::rename(&away, &here).expect("the colour directory returns");
+    write_the_fold_rule(&conn);
+    scan::scan_root(&conn, &root).expect("scans with it again");
+
+    let back = derive::derive(&conn).expect("derives with it and the rule");
+
+    assert_eq!(
+        (back.emptied_works, marked(colour)),
+        (1, None),
+        "the fixture: the colour work is folded away"
+    );
+    assert_eq!(
+        (back.marked_missing, back.found_again),
+        (0, 0),
+        "a work folded away is neither marked nor found again"
+    );
+}
+
+/// Part D's central claim: a volume whose file goes is marked missing rather
+/// than deleted, and when the same bytes come back the mark clears on the
+/// same work, so the reading on it survives the gap.
+#[test]
+fn a_volume_whose_file_goes_is_marked_missing_and_returns_with_its_work_position_and_note() {
+    let (dir, paths) = a_series_of("derive-missing-rejoin", 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_in(&conn, dir.path(), "Manga", None);
+    derive::derive(&conn).expect("derives");
+    let (id, slug) = volume_work(&conn, 2);
+    crate::state::put_progress(
+        &conn,
+        id,
+        1,
+        &crate::Progress {
+            edition: "raw".into(),
+            slot: 2,
+        },
+    )
+    .expect("a position");
+    seed_notes(&conn, id, 1, "raw", &["n1"]);
+    let bytes = std::fs::read(&paths[1]).expect("reads volume 2");
+
+    std::fs::remove_file(&paths[1]).expect("volume 2 goes");
+    scan::scan_root(&conn, &root).expect("scans without it");
+    derive::derive(&conn).expect("derives without it");
+    assert_eq!(
+        (marked(&conn, 1), marked(&conn, 2)),
+        (false, true),
+        "volume 2 is marked, volume 1 is not"
+    );
+    std::fs::write(&paths[1], &bytes).expect("volume 2 returns, the same bytes");
+    scan::scan_root(&conn, &root).expect("scans with it again");
+    derive::derive(&conn).expect("derives with it again");
+
+    assert_eq!(
+        (marked(&conn, 1), marked(&conn, 2)),
+        (false, false),
+        "volume 2's mark is cleared"
+    );
+    assert_eq!(volume_work(&conn, 2), (id, slug), "the same work");
+    let positions: Vec<(String, u32)> = crate::state::progress(&conn, id, 1)
+        .expect("reads the positions")
+        .into_iter()
+        .map(|p| (p.edition, p.slot))
+        .collect();
+    assert_eq!(positions, [("raw".to_string(), 2)], "its position");
+    let notes: Vec<String> = crate::state::notes(&conn, id, 1)
+        .expect("reads the notes")
+        .notes
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(notes, ["n1"], "its note");
+}
+
+/// Every work's id with whether it is marked missing, by id.
+fn marks(conn: &Connection) -> Vec<(i64, bool)> {
+    conn.prepare("SELECT id, missing_since IS NOT NULL FROM work ORDER BY id")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })
+        .expect("reads the marks")
+}
+
+/// No scan is the authority for a work whose member was imported (it has no
+/// `member_root` row, O54), nor for a work with no member at all, so neither
+/// is marked. A work a directory held, whose digest no entry there has, is
+/// marked beside them.
+#[test]
+fn an_imported_work_and_a_work_with_no_member_are_never_marked() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
+        .expect("a directory");
+    seed_work(&conn, 1, "scanned", &[("raw", "/r/a.cbz", "aaa")]);
+    seed_work_without_root(&conn, 2, "imported", &[("raw", "/x/b.cbz", "bbb")]);
+    conn.execute(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (3, 'empty', 'empty', 'Empty', 'rtl', 'raw')",
+        [],
+    )
+    .expect("a work with no edition");
+
+    let answer = derive::mark_missing(&conn);
+
+    assert_eq!(
+        (answer, marks(&conn)),
+        (Ok((1, 0)), vec![(1, true), (2, false), (3, false)]),
+        "the scanned work is marked; the imported one and the empty one are not"
+    );
+}
+
+/// One member imported is enough: a work with a member under a directory and
+/// a member under none (O249's leftover, or a directory removed between a
+/// derive's reads and its writes) is never marked, though no directory holds
+/// either. A work whose every member is under a directory is marked beside
+/// it.
+#[test]
+fn a_work_with_one_member_under_no_directory_is_never_marked() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
+        .expect("a directory");
+    seed_work(
+        &conn,
+        1,
+        "mixed",
+        &[("raw", "/r/a.cbz", "aaa"), ("en", "/x/b.cbz", "bbb")],
+    );
+    conn.execute(
+        "UPDATE member SET root_id = NULL WHERE path = '/x/b.cbz'",
+        [],
+    )
+    .expect("one member under no directory");
+    seed_work(&conn, 2, "scanned", &[("raw", "/r/c.cbz", "ccc")]);
+
+    let answer = derive::mark_missing(&conn);
+
+    assert_eq!(
+        (answer, marks(&conn)),
+        (Ok((1, 0)), vec![(1, false), (2, true)]),
+        "the mixed work is not marked; the all-scanned one is"
+    );
+}
+
+/// A `scan_entry` of `sha256` at `rel_path` under directory `root`.
+fn held_under(conn: &Connection, root: i64, rel_path: &str, sha256: &str) {
+    conn.execute(
+        "INSERT INTO scan_entry (root_id, rel_path, kind, size, mtime, sha256)
+         VALUES (?1, ?2, 'file', 1, 0, ?3)",
+        rusqlite::params![root, rel_path, sha256],
+    )
+    .expect("a scan entry");
+}
+
+/// Decision 2: a member is held only by a directory its `member_root` rows
+/// name. Its bytes under another directory do not hold its work, which is
+/// marked; a work whose bytes are under its own directory is not.
+#[test]
+fn a_digest_held_only_under_a_directory_the_member_is_not_under_holds_nothing() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute(
+        "INSERT INTO root (id, path) VALUES (1, '/r'), (2, '/s')",
+        [],
+    )
+    .expect("two directories");
+    seed_work(&conn, 1, "elsewhere", &[("raw", "/r/a.cbz", "aaa")]);
+    seed_work(&conn, 2, "held", &[("raw", "/r/b.cbz", "bbb")]);
+    held_under(&conn, 2, "a.cbz", "aaa");
+    held_under(&conn, 1, "b.cbz", "bbb");
+
+    let answer = derive::mark_missing(&conn);
+
+    assert_eq!(
+        (answer, marks(&conn)),
+        (Ok((1, 0)), vec![(1, true), (2, false)]),
+        "the work whose bytes are only under the other directory is marked; \
+         the one under its own is not"
+    );
+}
+
+/// The owner's ruling "Path counts too" (O91): an entry at a member's path,
+/// under a directory the member is under, holds it whatever its digest, so
+/// work 1, its file replaced in place, is not marked. Work 2 is: its second
+/// `member_root` row names `/s`, whose entry `b.cbz` is `/s/b.cbz`, not the
+/// member's path, though both directories' paths are as long. Work 3 is too:
+/// the entry at its path is `/r/n`'s, a directory it is not under. Each entry
+/// has no page count, as the walk leaves a file whose pages it does not count,
+/// and work 1's still holds it.
+#[test]
+fn an_entry_at_a_members_path_holds_it_whatever_its_digest() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute(
+        "INSERT INTO root (id, path) VALUES (1, '/r'), (2, '/s'), (3, '/r/n')",
+        [],
+    )
+    .expect("three directories");
+    seed_work(&conn, 1, "replaced", &[("raw", "/r/a.cbz", "aaa")]);
+    seed_work(&conn, 2, "beside", &[("raw", "/r/b.cbz", "bbb")]);
+    conn.execute(
+        "INSERT INTO member_root (member_id, root_id)
+         SELECT id, 2 FROM member WHERE path = '/r/b.cbz'",
+        [],
+    )
+    .expect("work 2's member is under `/s` too");
+    seed_work(&conn, 3, "nested", &[("raw", "/r/n/c.cbz", "ccc")]);
+    held_under(&conn, 1, "a.cbz", "new bytes");
+    held_under(&conn, 2, "b.cbz", "other bytes");
+    held_under(&conn, 3, "c.cbz", "more bytes");
+
+    let answer = derive::mark_missing(&conn);
+
+    assert_eq!(
+        (answer, marks(&conn)),
+        (Ok((2, 0)), vec![(1, false), (2, true), (3, true)]),
+        "the work with an entry at its path is not marked; the one whose entry is \
+         at a path as long under another directory, and the one whose path's \
+         entry is under a directory it is not under, are"
+    );
+}
+
+/// The entry must be at the member's path exactly: `a/b.cbz.bak`, which
+/// starts with it, holds nothing at `/r/a/b.cbz`, nor does `a/bb.cbz`, which
+/// ends with its name, at `/s/a/b.cbz`, nor `d.cbz`, which `/r/x/d.cbz` ends
+/// with, so works 1, 2 and 4 are marked. Work 3, beside work 1 with an entry
+/// at its own path, is not.
+#[test]
+fn an_entry_at_a_near_miss_of_a_members_path_holds_nothing() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute(
+        "INSERT INTO root (id, path) VALUES (1, '/r'), (2, '/s')",
+        [],
+    )
+    .expect("two directories");
+    seed_work(&conn, 1, "longer", &[("raw", "/r/a/b.cbz", "aaa")]);
+    seed_work_at(
+        &conn,
+        2,
+        "ends-alike",
+        &[("raw", "/s/a/b.cbz", "bbb")],
+        Some(2),
+    );
+    seed_work(&conn, 3, "exact", &[("raw", "/r/a/c.cbz", "ccc")]);
+    seed_work(&conn, 4, "shorter", &[("raw", "/r/x/d.cbz", "ddd")]);
+    held_under(&conn, 1, "a/b.cbz.bak", "other bytes");
+    held_under(&conn, 2, "a/bb.cbz", "more bytes");
+    held_under(&conn, 1, "a/c.cbz", "new bytes");
+    held_under(&conn, 1, "d.cbz", "still more bytes");
+
+    let answer = derive::mark_missing(&conn);
+
+    assert_eq!(
+        (answer, marks(&conn)),
+        (
+            Ok((3, 0)),
+            vec![(1, true), (2, true), (3, false), (4, true)]
+        ),
+        "the works whose entries only start or end like their paths, or whose \
+         path only ends with its entry's, are marked; the one with an entry at \
+         its path is not"
+    );
+}
+
+/// "Path counts too" (O91) asks for something to read at a member's path: a
+/// folder volume emptied in place leaves its directory, whose entry the walk
+/// keeps and finds empty, and that entry holds nothing, so volume 1 is marked.
+/// Volume 2, whose pages are still there, is not.
+#[test]
+fn a_folder_volume_emptied_in_place_is_marked_missing() {
+    let dir = crate::tests::tempdir("derive-missing-emptied-folder");
+    let volume = dir.path().join("Series").join("Series - v01");
+    write_pages(&volume, 3);
+    write_pages(&dir.path().join("Series").join("Series - v02"), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_in(&conn, dir.path(), "Manga", None);
+    derive::derive(&conn).expect("derives");
+    let before = (marked(&conn, 1), marked(&conn, 2));
+    for page in std::fs::read_dir(&volume).expect("lists volume 1") {
+        std::fs::remove_file(page.expect("a page").path()).expect("a page goes");
+    }
+    // A directory's entry is re-read only when its `mtime` moves, which the
+    // walk compares to the second; see
+    // `a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress`.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+    std::fs::File::open(&volume)
+        .expect("open the emptied folder")
+        .set_times(std::fs::FileTimes::new().set_modified(later))
+        .expect("stamp it as changed");
+
+    scan::scan_root(&conn, &root).expect("rescans");
+    derive::derive(&conn).expect("derives");
+
+    let pages: Option<i64> = conn
+        .query_row(
+            "SELECT pages FROM scan_entry WHERE root_id = ?1 AND rel_path = 'Series/Series - v01'",
+            [root.id],
+            |r| r.get(0),
+        )
+        .expect("the walk keeps the emptied folder's entry");
+    assert_eq!(
+        (before, pages, marked(&conn, 1), marked(&conn, 2)),
+        ((false, false), Some(0), true, false),
+        "both present before; then the emptied folder's entry is kept with no \
+         pages, volume 1 is marked and volume 2 is not"
+    );
+}
+
+/// A scan that hides two works and one that brings one back say so, each
+/// count in its own field.
+#[test]
+fn a_derive_counts_the_works_it_marks_and_the_works_it_finds_again() {
+    let (dir, paths) = a_series_of("derive-missing-counts", 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_in(&conn, dir.path(), "Manga", None);
+    derive::derive(&conn).expect("derives");
+    let bytes = std::fs::read(&paths[1]).expect("reads volume 2");
+
+    std::fs::remove_file(&paths[1]).expect("volume 2 goes");
+    std::fs::remove_file(&paths[2]).expect("volume 3 goes");
+    scan::scan_root(&conn, &root).expect("scans without them");
+    let hidden = derive::derive(&conn).expect("derives without them");
+    std::fs::write(&paths[1], &bytes).expect("volume 2 returns");
+    scan::scan_root(&conn, &root).expect("scans with it again");
+    let found = derive::derive(&conn).expect("derives with it again");
+
+    assert_eq!(
+        (hidden.marked_missing, hidden.found_again),
+        (2, 0),
+        "two works marked, none found again"
+    );
+    assert_eq!(
+        (found.marked_missing, found.found_again),
+        (0, 1),
+        "none marked, one found again"
+    );
+}
+
+/// A pass that changes no mark writes no `work` row: each `UPDATE` would
+/// otherwise re-index the title and bump the structure counter of every
+/// work it matched.
+#[test]
+fn a_pass_that_changes_no_mark_leaves_the_structure_counter_alone() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
+        .expect("a directory");
+    seed_work(&conn, 1, "marked", &[("raw", "/r/a.cbz", "aaa")]);
+    conn.execute(
+        "UPDATE work SET missing_since = '2026-11-01 00:00:00' WHERE id = 1",
+        [],
+    )
+    .expect("marked already");
+    seed_work_without_root(&conn, 2, "imported", &[("raw", "/x/b.cbz", "bbb")]);
+    let before = crate::structure::version(&conn).expect("reads the counter");
+
+    let answer = derive::mark_missing(&conn);
+
+    let since: String = conn
+        .query_row("SELECT missing_since FROM work WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .expect("reads the mark");
+    assert_eq!(
+        (
+            answer,
+            crate::structure::version(&conn).expect("reads the counter"),
+            since.as_str()
+        ),
+        (Ok((0, 0)), before, "2026-11-01 00:00:00"),
+        "nothing changes: the answer, the structure counter and the mark's date"
+    );
+}
+
+/// The mark and the clear commit as one transaction, so a scan another
+/// process commits between them cannot have one work marked and cleared in
+/// one pass. Counted with no transaction open, where each `UPDATE` would
+/// otherwise commit on its own.
+#[test]
+fn the_mark_and_the_clear_commit_as_one_transaction() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
+        .expect("a directory");
+    seed_work(&conn, 1, "gone", &[("raw", "/r/a.cbz", "aaa")]);
+    seed_work(&conn, 2, "back", &[("raw", "/r/b.cbz", "bbb")]);
+    conn.execute(
+        "UPDATE work SET missing_since = '2026-11-01 00:00:00' WHERE id = 2",
+        [],
+    )
+    .expect("marked already");
+    held_under(&conn, 1, "b.cbz", "bbb");
+    let commits = std::sync::Arc::new(AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&commits);
+    conn.commit_hook(Some(move || {
+        counted.fetch_add(1, Ordering::Relaxed);
+        false
+    }))
+    .expect("counts the commits");
+
+    let answer = derive::mark_missing(&conn);
+    conn.commit_hook(None::<fn() -> bool>)
+        .expect("stops counting");
+
+    assert_eq!(
+        (answer, marks(&conn), commits.load(Ordering::Relaxed)),
+        (Ok((1, 1)), vec![(1, true), (2, false)], 1),
+        "one work marked and one cleared, in one commit"
+    );
+}
+
+/// `Foo/Foo v0{n}.cbz` and `Bar/Bar v0{n}.cbz` for volumes 1 and 2, under one
+/// directory: two series of two volumes each.
+fn two_series_of_two(label: &str) -> crate::tests::TempDir {
+    let dir = crate::tests::tempdir(label);
+    for series in ["Foo", "Bar"] {
+        for n in 1..=2 {
+            let name = format!("{series} v0{n}.cbz");
+            write_archive(&dir.path().join(series).join(name), 2 + n);
+        }
+    }
+    dir
+}
+
+/// Every work's series and volume, its id, and whether it is marked missing.
+fn marks_by_series(conn: &Connection) -> Vec<(String, i64, i64, bool)> {
+    conn.prepare(
+        "SELECT s.sort_title, CAST(w.volume AS INTEGER), w.id, w.missing_since IS NOT NULL
+           FROM work w JOIN series s ON s.id = w.series_id
+          ORDER BY s.sort_title, w.volume",
+    )
+    .and_then(|mut stmt| {
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect()
+    })
+    .expect("reads the marks")
+}
+
+/// [`marks_by_series`] with the marks of series `marked` set, the ids kept.
+fn with_marked(works: &[(String, i64, i64, bool)], marked: &str) -> Vec<(String, i64, i64, bool)> {
+    works
+        .iter()
+        .map(|(series, volume, id, _)| (series.clone(), *volume, *id, series == marked))
+        .collect()
+}
+
+/// O48's scenario, a partial mount: one series' directory leaves the tree and
+/// the other stays, so the scan is applied rather than refused, and the derive
+/// marks that series' works and no other. Put back, a scan and a derive clear
+/// the marks on the same works.
+#[test]
+fn a_series_directory_that_leaves_the_tree_is_marked_and_returns_on_the_same_works() {
+    let dir = two_series_of_two("derive-missing-mount");
+    let away = crate::tests::tempdir("derive-missing-mount-away");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_in(&conn, dir.path(), "Manga", None);
+    derive::derive(&conn).expect("derives");
+    let present = marks_by_series(&conn);
+    assert_eq!(
+        present
+            .iter()
+            .map(|(series, volume, _, marked)| (series.as_str(), *volume, *marked))
+            .collect::<Vec<_>>(),
+        [
+            ("Bar", 1, false),
+            ("Bar", 2, false),
+            ("Foo", 1, false),
+            ("Foo", 2, false)
+        ],
+        "the fixture: four works, none marked"
+    );
+
+    std::fs::rename(dir.path().join("Bar"), away.path().join("Bar"))
+        .expect("Bar's directory leaves the tree");
+    let unmounted = scan::scan_root(&conn, &root).expect("scans without it");
+    derive::derive(&conn).expect("derives without it");
+    let hidden = marks_by_series(&conn);
+    std::fs::rename(away.path().join("Bar"), dir.path().join("Bar"))
+        .expect("Bar's directory is back");
+    scan::scan_root(&conn, &root).expect("scans with it again");
+    derive::derive(&conn).expect("derives with it again");
+
+    assert_eq!(unmounted.refused, None, "the scan was applied");
+    assert_eq!(
+        hidden,
+        with_marked(&present, "Bar"),
+        "Bar's works are marked, Foo's are not"
+    );
+    assert_eq!(
+        marks_by_series(&conn),
+        present,
+        "every mark is cleared, on the same works"
+    );
+}
+
+/// Decision 8: the mark is per work. Bar's `raw` edition is under library A
+/// and its `en` edition under library B; when A's `Bar/` leaves the tree, Bar
+/// stays present through B, its `raw` edition kept beside, though one of its
+/// members is held nowhere. Qux, under A alone and gone the same way, is
+/// marked beside it; Baz keeps A's scan from reading as an empty mount.
+#[test]
+fn a_work_whose_files_leave_one_library_stays_present_through_the_other() {
+    let a_dir = crate::tests::tempdir("derive-missing-per-work-a");
+    let b_dir = crate::tests::tempdir("derive-missing-per-work-b");
+    let away = crate::tests::tempdir("derive-missing-per-work-away");
+    for (dir, series, pages) in [
+        (&a_dir, "Bar", 3),
+        (&a_dir, "Baz", 4),
+        (&a_dir, "Qux", 5),
+        (&b_dir, "Bar", 7),
+    ] {
+        let name = format!("{series} v01.cbz");
+        write_archive(&dir.path().join(series).join(name), pages);
+    }
+    let library = libraries_a_and_b();
+    let conn = library.conn();
+    let a = root_in(&conn, a_dir.path(), "A", None);
+    root_in(&conn, b_dir.path(), "B", Some("en"));
+    derive::derive(&conn).expect("derives");
+    let present = marks_by_series(&conn);
+    assert_eq!(
+        (
+            present
+                .iter()
+                .map(|(series, volume, _, marked)| (series.as_str(), *volume, *marked))
+                .collect::<Vec<_>>(),
+            scalar(
+                &conn,
+                "SELECT count(*) FROM edition e JOIN work w ON w.id = e.work_id
+                  JOIN series s ON s.id = w.series_id WHERE s.sort_title = 'Bar'"
+            ),
+        ),
+        (
+            vec![("Bar", 1, false), ("Baz", 1, false), ("Qux", 1, false)],
+            2
+        ),
+        "the fixture: three works, none marked, Bar with an edition per library"
+    );
+
+    for series in ["Bar", "Qux"] {
+        std::fs::rename(a_dir.path().join(series), away.path().join(series))
+            .expect("the series' directory leaves A");
+    }
+    let unmounted = scan::scan_root(&conn, &a).expect("scans without them");
+    let derived = derive::derive(&conn).expect("derives without them");
+
+    assert_eq!(
+        (unmounted.refused, derived.kept_editions),
+        (None, 1),
+        "the fixture: the scan was applied, and Bar's `raw` edition is kept"
+    );
+    assert_eq!(
+        marks_by_series(&conn),
+        with_marked(&present, "Qux"),
+        "Qux is marked; Bar stays present through B, and Baz is untouched"
+    );
+}
+
+/// O92: a pattern covering one series forgets its entries, and the derive
+/// marks its works. Cleared, a scan and a derive clear the marks on the same
+/// works.
+#[test]
+fn an_excluded_series_is_marked_and_returns_when_the_pattern_is_cleared() {
+    let dir = two_series_of_two("derive-missing-exclude");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_in(&conn, dir.path(), "Manga", None);
+    derive::derive(&conn).expect("derives");
+    let present = marks_by_series(&conn);
+    let excluding = |globs: Option<&str>| {
+        scan::update_root(
+            &conn,
+            root.id,
+            &scan::RootPatch {
+                exclude_globs: Some(globs.map(str::to_string)),
+                ..Default::default()
+            },
+        )
+        .expect("sets the pattern");
+        scan::roots(&conn)
+            .expect("lists")
+            .into_iter()
+            .find(|r| r.id == root.id)
+            .expect("the directory")
+    };
+
+    let excluded = scan::scan_root(&conn, &excluding(Some("Bar/"))).expect("scans with it");
+    derive::derive(&conn).expect("derives with it");
+    let hidden = marks_by_series(&conn);
+    scan::scan_root(&conn, &excluding(None)).expect("scans without it");
+    derive::derive(&conn).expect("derives without it");
+
+    assert_eq!(
+        excluded.forgotten_by_exclusion, 3,
+        "Bar's directory and its two volumes"
+    );
+    assert_eq!(
+        hidden,
+        with_marked(&present, "Bar"),
+        "Bar's works are marked, Foo's are not"
+    );
+    assert_eq!(
+        marks_by_series(&conn),
+        present,
+        "every mark is cleared, on the same works"
+    );
+}
+
+/// The pass runs under `Documents::Skip` as under `Reconcile`: a rolled-back
+/// preview predicts the mark as it predicts everything else.
+#[test]
+fn a_derive_that_skips_documents_marks_a_work_whose_file_went() {
+    let (dir, paths) = a_series_of("derive-missing-skip", 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_in(&conn, dir.path(), "Manga", None);
+    derive::derive(&conn).expect("derives");
+    std::fs::remove_file(&paths[1]).expect("volume 2 goes");
+    scan::scan_root(&conn, &root).expect("scans without it");
+
+    let report = derive::derive_with(&conn, derive::Documents::Skip).expect("derives");
+
+    assert_eq!(
+        (report.marked_missing, marked(&conn, 1), marked(&conn, 2)),
+        (1, false, true),
+        "volume 2's work is marked and counted; volume 1's is not"
     );
 }

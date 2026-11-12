@@ -396,6 +396,9 @@ pub(crate) async fn works(
 /// It reads the registry and each work's document, and no library, so a
 /// caller already on the blocking pool with the library's connection held
 /// may call it there.
+///
+/// **A missing work is named in no feed, to any caller** (O91, pre-deploy
+/// spec §5): the registry's `Work::is_missing`.
 fn works_feed(
     state: &ServeState,
     visible: Option<&HashMap<String, HashSet<String>>>,
@@ -408,6 +411,12 @@ fn works_feed(
     let feed_title = title;
     let mut entries = String::new();
     for work in state.works.snapshot().iter() {
+        // First and for every caller: `visible` is `None` for
+        // `Access::Every`, so only the registry's mark leaves a missing work
+        // out for it.
+        if work.is_missing() {
+            continue;
+        }
         // A work absent from `visible`'s keys has no edition inside the
         // grant at all — `visible_editions`'s own contract — so it is
         // skipped entirely rather than named with a count of zero.
@@ -529,6 +538,12 @@ pub(crate) async fn work_feed(
         Ok(view) => view,
         Err(refusal) => return refusal,
     };
+    // After the grant, as `get_sidecar` asks it, so a work the grant hides
+    // answers `no work` missing or not. A missing work's entry would name
+    // links that fail wherever its files are gone (O91).
+    if work.is_missing() {
+        return missing(crate::routes::missing_reason(&id));
+    }
 
     let work_id = escape(&work.id);
     // A slug keeps letters outside ASCII (O262), so the id is percent-encoded

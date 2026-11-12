@@ -18,10 +18,12 @@
 //!
 //! §3 makes hashing lazy: `scan.rs` leaves `sha256` NULL because hashing the
 //! series on every walk is not affordable. A member about to become part of a
-//! work needs its digest — `content_key` is a hash over them — so this module
-//! is where that laziness ends, once per member ever, with the answer written
-//! **back onto `scan_entry`**. That is what makes the *next* derive need no
-//! filesystem at all, which is the property the tests pin.
+//! work needs its digest — `content_key` is a hash over them — as does the
+//! entry of one a work already holds that no rule stages
+//! (`digest_held_members`), so this module is where that laziness ends,
+//! once per member ever, with the answer written **back onto `scan_entry`**.
+//! That is what makes the *next* derive need no filesystem at all, which is
+//! the property the tests pin.
 //!
 //! # One writer per table, and what it writes directly
 //!
@@ -37,7 +39,7 @@
 //! is the one column nothing but a walk can know. `series` and `series_title`
 //! have no importer at all and are written here outright.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension};
@@ -506,6 +508,21 @@ pub struct DeriveReport {
     /// reads as an imported member with no root on record does (O54), and the
     /// next scan that finds it under a surviving root recovers it.
     pub root_removed_mid_derive: usize,
+    /// Works this pass marked missing: none of their members is held by any
+    /// directory they were under ([`mark_missing`]).
+    ///
+    /// **Counted because the mark hides.** A partial mount marks every work
+    /// whose files it left out and takes each out of every listing, so without
+    /// this number one that hides hundreds of works reads as a library that
+    /// is merely smaller.
+    pub marked_missing: usize,
+    /// Marked works this pass cleared: a directory holds a member again, or
+    /// the work now has a member under no directory or no member at all, so
+    /// no scan is the authority for it ([`mark_missing`]).
+    ///
+    /// Counted beside [`Self::marked_missing`] for its reason: the remount
+    /// that brings those works back says how many it brought.
+    pub found_again: usize,
 }
 
 /// Whether a derivation reconciles `<root>/.taiyaku/` or leaves the tree
@@ -781,6 +798,12 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
             }
         }
     }
+
+    // After the folds, so a work folded away this pass is gone rather than
+    // marked or counted found again. Under both `Documents` modes: a
+    // rolled-back preview predicts the mark as it predicts everything else.
+    digest_held_members(conn, &roots, &mut report.unreadable)?;
+    (report.marked_missing, report.found_again) = mark_missing(conn)?;
 
     // After the folds, because a fold is what empties a series — but over the
     // whole library rather than over the works just folded, for the reason
@@ -2497,6 +2520,129 @@ fn is_foreign_key_violation(e: &rusqlite::Error) -> bool {
         rusqlite::Error::SqliteFailure(err, _)
             if err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY
     )
+}
+
+/// Hash each entry a member names that [`classify`] left without a digest,
+/// through [`digest`] as `classify` does. A scan writes none (§3), so the
+/// entry of a member these rules make no member of, such as one a directory
+/// nested in the one that derived it took over and reads no series from its
+/// file's name, would keep none for good. The mark holds such a member by its
+/// path whatever its digest ([`crate::browse::held_by`]), but
+/// `scan::reads_as_one_volume` finds a folder member's entry by its digest
+/// alone, to refuse a directory added inside it (O91).
+fn digest_held_members(
+    conn: &Connection,
+    roots: &[Root],
+    unreadable: &mut Unreadable,
+) -> Result<(), String> {
+    for root in roots {
+        let failed = |e: rusqlite::Error| format!("reading the members of root {}: {e}", root.id);
+        let held: HashSet<String> = conn
+            .prepare(
+                "SELECT m.path FROM member m JOIN member_root mr ON mr.member_id = m.id
+                  WHERE mr.root_id = ?1",
+            )
+            .and_then(|mut stmt| stmt.query_map([root.id], |r| r.get(0))?.collect())
+            .map_err(failed)?;
+        let undigested: Vec<Entry> = conn
+            .prepare(
+                "SELECT rel_path, format, pages, sha256 FROM scan_entry
+                  WHERE root_id = ?1 AND sha256 IS NULL",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([root.id], |r| {
+                    Ok(Entry {
+                        rel_path: r.get(0)?,
+                        format: r.get(1)?,
+                        pages: r.get(2)?,
+                        sha256: r.get(3)?,
+                    })
+                })?
+                .collect()
+            })
+            .map_err(failed)?;
+        for entry in undigested {
+            // Joined as `classify` joins a candidate's path.
+            let path = root.path.join(&entry.rel_path);
+            if !held.contains(path.to_string_lossy().as_ref())
+                || digest(conn, root, &entry)?.is_some()
+            {
+                continue;
+            }
+            // Its entry holds the work by path until the next walk forgets it,
+            // so the report is the one place its going shows; `classify` has
+            // named it already where these rules stage it.
+            let gone = path.display().to_string();
+            if !unreadable.vanished.contains(&gone) {
+                unreadable.vanished.push(gone);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A work none of whose members any directory still holds, over the
+/// statement's own `work` row: it has a member, since no scan could find a
+/// work with none; every member has a `member_root` row, since one without is
+/// imported (O54) and no scan is the authority for it; and no directory its
+/// `member_root` rows name holds a member ([`crate::browse::held_by`]), so a
+/// missing work has nothing to read at its path and no copy of its bytes
+/// there. Every such directory is asked, not only the primary's, so O243's
+/// unfolded works read present while a copy is held.
+fn missing() -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM edition e JOIN member m ON m.edition_id = e.id
+                  WHERE e.work_id = work.id)
+         AND NOT EXISTS (SELECT 1 FROM edition e JOIN member m ON m.edition_id = e.id
+                          WHERE e.work_id = work.id
+                            AND NOT EXISTS (SELECT 1 FROM member_root mr
+                                             WHERE mr.member_id = m.id))
+         AND NOT EXISTS (SELECT 1 FROM edition e JOIN member m ON m.edition_id = e.id
+                           JOIN member_root mr ON mr.member_id = m.id
+                          WHERE e.work_id = work.id AND {})",
+        crate::browse::held_by("m", "mr")
+    )
+}
+
+/// Mark every work [`missing`] holds of, and clear the mark on every marked
+/// work it no longer holds of: the works marked, then the works cleared,
+/// each its statement's own changes, which leave out the triggers' writes.
+///
+/// **Only rows whose mark changes are written.** Every `UPDATE` of `work`
+/// re-indexes its title (`work_au`) and bumps `structure_version`
+/// (`structure_work_upd`, which has no `WHEN`), so without the `IS NULL` and
+/// `IS NOT NULL` guards every derive would re-index each missing work's title
+/// and tell every live registry the structure moved when nothing did.
+pub(crate) fn mark_missing(conn: &Connection) -> Result<(usize, usize), String> {
+    // One scope, so a scan another process commits between the two cannot
+    // have one work marked and cleared, and counted in both, in one pass.
+    let tx = crate::Nested::open(conn, "mark_missing")
+        .map_err(|e| format!("starting the missing-works pass: {e}"))?;
+    let missing = missing();
+    let marked = tx
+        .execute(
+            &format!(
+                "UPDATE work SET missing_since = datetime('now')
+                  WHERE missing_since IS NULL AND {missing}"
+            ),
+            [],
+        )
+        .map_err(|e| format!("marking the works no directory holds: {e}"))?;
+    // The mark's condition negated, not "a member is held again": a marked
+    // work that comes to have a member under no directory is cleared and
+    // shown, as an imported work is.
+    let found = tx
+        .execute(
+            &format!(
+                "UPDATE work SET missing_since = NULL
+                  WHERE missing_since IS NOT NULL AND NOT ({missing})"
+            ),
+            [],
+        )
+        .map_err(|e| format!("clearing the mark of the works a directory holds again: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("committing the missing-works pass: {e}"))?;
+    Ok((marked, found))
 }
 
 /// One edition's candidates in page order.

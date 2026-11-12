@@ -840,9 +840,9 @@ fn unreadable_causes(unreadable: &taiyaku_library::derive::Unreadable) -> String
 /// `unrecognised_kinds`, `emptied_works` (with the counts of what its fold
 /// wrote, what stopped existing, what it dropped as a copy the target already
 /// held identically, and what it discarded), `unfolded_works`,
-/// `unreadable_hand`, `series_holding_no_work`, `repaired_documents`,
-/// `unwritable_documents`, `orphan_documents`, `declined_documents` and
-/// `stale_documents`:
+/// `unreadable_hand`, `marked_missing`, `found_again`,
+/// `series_holding_no_work`, `repaired_documents`, `unwritable_documents`,
+/// `orphan_documents`, `declined_documents` and `stale_documents`:
 /// [`taiyaku_library::derive::DeriveReport`]'s own doc comment is explicit
 /// that each exists because a silent drop, a silent re-key, a silently
 /// orphaned edition, a silent merge, a silently refused edition kind or a
@@ -953,6 +953,12 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
             report.unreadable_hand.len(),
             report.unreadable_hand.join("; ")
         );
+    }
+    if report.marked_missing > 0 {
+        let _ = write!(line, ", {} work(s) marked missing", report.marked_missing);
+    }
+    if report.found_again > 0 {
+        let _ = write!(line, ", {} missing work(s) found again", report.found_again);
     }
     if report.series_holding_no_work > 0 {
         let _ = write!(

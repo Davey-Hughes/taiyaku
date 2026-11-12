@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   Unauthenticated,
+  WorkMissing,
   WorkNotFound,
   getJson,
   getNotes,
@@ -158,6 +159,46 @@ describe('network calls', () => {
       'loading no such: 404 no work `no such`',
     )
     expect((failure as WorkNotFound).work).toBe('no such')
+  })
+
+  /**
+   * O91: a 404 whose JSON says `missing: true` is a work whose files a scan
+   * found in no directory, a type of its own and not a `WorkNotFound`. A
+   * plain body, JSON that is no object, or one whose `missing` is false, is
+   * still a `WorkNotFound`.
+   */
+  it('getSidecarWithEtag rejects a 404 that says missing as a WorkMissing carrying the slug', async () => {
+    const body =
+      '{"error":"the files of work `no such` are missing","missing":true}'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(body, { status: 404 })),
+    )
+
+    const failure = await getSidecarWithEtag('no such').catch((e: unknown) => e)
+    expect(failure).toBeInstanceOf(WorkMissing)
+    expect(failure).not.toBeInstanceOf(WorkNotFound)
+    expect((failure as WorkMissing).message).toBe(
+      `loading no such: 404 ${body}`,
+    )
+    expect((failure as WorkMissing).work).toBe('no such')
+  })
+
+  it('getSidecarWithEtag rejects any other 404 as a WorkNotFound', async () => {
+    for (const body of [
+      'no work `nope`',
+      'null',
+      '{"error":"no work `nope`","missing":false}',
+    ]) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(new Response(body, { status: 404 })),
+      )
+
+      const failure = await getSidecarWithEtag('nope').catch((e: unknown) => e)
+      expect(failure, body).toBeInstanceOf(WorkNotFound)
+      expect(failure, body).not.toBeInstanceOf(WorkMissing)
+    }
   })
 
   it('getSidecarWithEtag leaves any other non-2xx a plain Error, status and body in its message', async () => {

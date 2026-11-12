@@ -921,6 +921,173 @@ fn visible_members_flags_each_member_of_a_merged_edition_in_ordinal_order() {
     );
 }
 
+/// The owner's rulings "Narrow the grant" and "Path counts too" (O91): a
+/// member with no entry under a directory whose walk misses its path is
+/// outside that directory's grant, and one with an entry of its bytes or at
+/// its path is inside it whatever the patterns. Volume 1 has a copy in `a`
+/// (Manga's) and `b` (Comics'); `a` comes to exclude it and its scan forgets
+/// `a`'s entry with no derive after, so both `member_root` rows stay. Each
+/// pattern is asked as `a`'s walk asks, Manga holds it ([`held_in`]) by the
+/// same rule, and a row whose directory its path is not under counts as before.
+#[test]
+fn a_member_with_no_entry_is_outside_the_grant_of_a_directory_whose_walk_misses_it() {
+    let a = crate::tests::tempdir("browse-reach-a");
+    let b = crate::tests::tempdir("browse-reach-b");
+    let volume = |dir: &crate::tests::TempDir| dir.path().join("Series").join("Series - v01");
+    write_pages(&volume(&a), 2);
+    // The same bytes, so the two are one member with a copy in each.
+    std::fs::create_dir_all(volume(&b)).expect("mkdir");
+    for page in std::fs::read_dir(volume(&a)).expect("lists `a`'s pages") {
+        let page = page.expect("a page").path();
+        std::fs::copy(&page, volume(&b).join(page.file_name().expect("a name")))
+            .expect("copies a page");
+    }
+    // Something `a` still reads once `Series/` is excluded, so its scan is
+    // not refused as an empty read (§8.1).
+    write_pages(&a.path().join("Other").join("Other - v01"), 2);
+    let library = Library::open_in_memory().expect("in-memory");
+    let conn = library.conn();
+    let ra = scan::add_root_in(&conn, a.path(), scan::InLibrary::Named("Manga")).expect("adds a");
+    let rb = scan::add_root_in(&conn, b.path(), scan::InLibrary::Named("Comics")).expect("adds b");
+    scan::scan_root(&conn, &ra).expect("scans a");
+    scan::scan_root(&conn, &rb).expect("scans b");
+    derive::derive(&conn).expect("derives");
+    let (slug, key, primary, held): (String, String, i64, i64) = conn
+        .query_row(
+            "SELECT w.slug, e.key, m.root_id,
+                    (SELECT count(*) FROM member_root mr WHERE mr.member_id = m.id)
+               FROM work w JOIN edition e ON e.work_id = w.id
+               JOIN member m ON m.edition_id = e.id
+              WHERE m.path = ?1",
+            [ra.path
+                .join("Series")
+                .join("Series - v01")
+                .to_string_lossy()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .expect("the fixture: volume 1's member names its copy in `a`");
+    assert_eq!(
+        (primary, held),
+        (ra.id, 2),
+        "the fixture: held in `a` and `b`"
+    );
+    let set = |globs: Option<&str>| {
+        conn.execute(
+            "UPDATE root SET exclude_globs = ?1 WHERE id = ?2",
+            rusqlite::params![globs, ra.id],
+        )
+        .expect("sets `a`'s patterns");
+    };
+    let manga: i64 = conn
+        .query_row(
+            "SELECT library_id FROM library_root WHERE root_id = ?1",
+            [ra.id],
+            |r| r.get(0),
+        )
+        .expect("Manga, `a`'s library");
+    let seen = |label: &str| {
+        let sees = |access: Access| sees_edition(&conn, &access, &slug, &key);
+        (
+            label.to_owned(),
+            [
+                sees(Access::roots(vec![ra.id])),
+                sees(Access::roots(vec![rb.id])),
+                sees(Access::roots(vec![ra.id, rb.id])),
+                sees(Access::Every),
+                held_in(&conn, manga)
+                    .expect("reads Manga's")
+                    .contains(&slug),
+            ],
+        )
+    };
+
+    set(Some("Series/"));
+    let mut table = vec![seen("an entry, excluded")];
+    // As a derive leaves `a`'s entry once the volume is replaced in place by
+    // other bytes and its rules make no member of them.
+    let replaced = |sha256: &str| {
+        conn.execute(
+            "UPDATE scan_entry SET sha256 = ?1
+              WHERE root_id = ?2 AND rel_path = 'Series/Series - v01'",
+            rusqlite::params![sha256, ra.id],
+        )
+        .expect("sets `a`'s entry's digest")
+    };
+    let digest: String = conn
+        .query_row(
+            "SELECT sha256 FROM scan_entry
+              WHERE root_id = ?1 AND rel_path = 'Series/Series - v01'",
+            [ra.id],
+            |r| r.get(0),
+        )
+        .expect("`a`'s entry");
+    assert_eq!(replaced("other bytes"), 1, "the fixture: `a`'s entry");
+    table.push(seen("an entry of other bytes at its path, excluded"));
+    replaced(&digest);
+    let excluding = scan::roots(&conn)
+        .expect("roots")
+        .into_iter()
+        .find(|root| root.id == ra.id)
+        .expect("`a`");
+    let report = scan::scan_root(&conn, &excluding).expect("scans `a` excluding `Series/`");
+    assert!(report.refused.is_none(), "{report:?}");
+    let entries = |root: i64| -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM scan_entry se JOIN member m ON m.sha256 = se.sha256
+              WHERE se.root_id = ?1 AND m.path LIKE '%Series - v01'",
+            [root],
+            |r| r.get(0),
+        )
+        .expect("counts the volume's entries")
+    };
+    assert_eq!(
+        (entries(ra.id), entries(rb.id)),
+        (0, 1),
+        "the fixture: `a`'s scan forgot its entry and `b` keeps one"
+    );
+    table.push(seen("no entry, its directory excluded"));
+    set(Some("Series/Series - v01/"));
+    table.push(seen("no entry, excluded as a directory"));
+    set(Some("Other/"));
+    table.push(seen("no entry, a pattern elsewhere"));
+    set(None);
+    table.push(seen("no entry, no pattern"));
+    set(Some("Series/"));
+    // As a scan of `b` that found its copy gone would leave it.
+    conn.execute("DELETE FROM scan_entry WHERE root_id = ?1", [rb.id])
+        .expect("forgets `b`'s entries");
+    table.push(seen("no entry in either, `a` excluded"));
+    let row = |label: &str, cells: [bool; 5]| (label.to_owned(), cells);
+    assert_eq!(
+        table,
+        [
+            row("an entry, excluded", [true, true, true, true, true]),
+            row(
+                "an entry of other bytes at its path, excluded",
+                [true, true, true, true, true]
+            ),
+            row(
+                "no entry, its directory excluded",
+                [false, true, true, true, false]
+            ),
+            row(
+                "no entry, excluded as a directory",
+                [false, true, true, true, false]
+            ),
+            row(
+                "no entry, a pattern elsewhere",
+                [true, true, true, true, true]
+            ),
+            row("no entry, no pattern", [true, true, true, true, true]),
+            row(
+                "no entry in either, `a` excluded",
+                [false, true, true, true, false]
+            ),
+        ],
+        "[a, b, a and b, every, held in Manga]"
+    );
+}
+
 /// A work whose every edition sits outside the grant is invisible to the page
 /// routes too — the check that makes per-root sharing a boundary rather than a
 /// browse filter.
@@ -3493,5 +3660,293 @@ fn a_series_asked_for_in_a_library_that_holds_none_of_it_is_not_found() {
     assert!(
         !found(&both, s.foo, Some(999)),
         "a library that does not exist"
+    );
+}
+
+// --- A missing work is in no listing (pre-deploy spec §5) --------------------
+
+/// Marks work `work_id` missing, as a derive does once no directory holds any
+/// of its members.
+fn mark_missing_by_hand(conn: &Connection, work_id: i64) {
+    conn.execute(
+        "UPDATE work SET missing_since = datetime('now') WHERE id = ?1",
+        [work_id],
+    )
+    .expect("marks the work missing");
+}
+
+/// The ids of `works`, in the order listed.
+fn card_ids(works: &[WorkCard]) -> Vec<i64> {
+    works.iter().map(|w| w.id).collect()
+}
+
+/// A position on `work_id`'s `raw` edition for reader 1, finished or not.
+fn position_on(conn: &Connection, work_id: i64, completed: bool) {
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot, updated, completed_at)
+         VALUES (1, ?1, 'raw', 0, '2026-08-19T00:00:00Z',
+                 CASE WHEN ?2 THEN '2026-08-19T00:00:00Z' END)",
+        rusqlite::params![work_id, completed],
+    )
+    .expect("a position");
+}
+
+/// One directory holding `Series` in two volumes and `Other` in one.
+fn series_and_other() -> (Library, crate::tests::TempDir) {
+    let dir = crate::tests::tempdir("browse-missing-two-series");
+    write_pages(&dir.path().join("Series").join("Series - v01"), 2);
+    write_pages(&dir.path().join("Series").join("Series - v02"), 2);
+    write_pages(&dir.path().join("Other").join("Other - v01"), 2);
+    let library = Library::open_in_memory().expect("in-memory");
+    {
+        let conn = library.conn();
+        let root = scan::add_root(&conn, dir.path()).expect("adds the root");
+        scan::scan_root(&conn, &root).expect("scans");
+        derive::derive(&conn).expect("derives");
+    }
+    (library, dir)
+}
+
+/// A series' card counts only its present works, and a series whose one
+/// volume is missing is not listed, while the series beside it is.
+#[test]
+fn the_grid_counts_no_missing_work_and_lists_no_series_of_missing_works_only() {
+    let (library, _dir) = series_and_other();
+    let conn = library.conn();
+    let in_series = |sort_title: &str, volume: f64| -> i64 {
+        conn.query_row(
+            "SELECT w.id FROM work w JOIN series s ON s.id = w.series_id
+              WHERE s.sort_title = ?1 AND w.volume = ?2",
+            rusqlite::params![sort_title, volume],
+            |row| row.get(0),
+        )
+        .expect("the volume's work")
+    };
+    mark_missing_by_hand(&conn, in_series("Series", 2.0));
+    mark_missing_by_hand(&conn, in_series("Other", 1.0));
+
+    let grid: Vec<(String, i64)> = series(&conn, &Access::Every, 1, None)
+        .expect("lists series")
+        .into_iter()
+        .map(|card| (card.title, card.works))
+        .collect();
+
+    assert_eq!(
+        grid,
+        [("Series".to_string(), 1)],
+        "Series with its one present volume; Other, whose only volume is missing, is gone"
+    );
+}
+
+/// A hand-set cover on a missing work gives way to the series' present
+/// volume, in the grid as in the `307`.
+#[test]
+fn a_hand_set_cover_on_a_missing_work_gives_way_to_a_present_one() {
+    let (library, root_id, _dir) = two_volume_library();
+    let conn = library.conn();
+    let series_id = the_series(&conn);
+    let (v1, v2) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
+    hand_set_cover(&conn, series_id, v2);
+    mark_missing_by_hand(&conn, v2);
+
+    for access in [Access::Every, Access::roots(vec![root_id])] {
+        assert_grid_covers(&conn, &access, &[(series_id, Some((v1, "raw")))]);
+    }
+}
+
+/// A series page lists its present volume and not its missing one.
+#[test]
+fn a_series_page_lists_no_missing_work() {
+    let (library, _, _dir) = two_volume_library();
+    let conn = library.conn();
+    let series_id = the_series(&conn);
+    let (v1, v2) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
+    mark_missing_by_hand(&conn, v2);
+
+    let (_card, works) = one_series(&conn, &Access::Every, 1, series_id, None)
+        .expect("reads the series")
+        .expect("the series is listed");
+
+    assert_eq!(card_ids(&works), [v1], "volume 1 only");
+}
+
+/// A series whose every work is missing has no page: `one_series` answers
+/// `None`, as for a series that does not exist, while the series beside it
+/// still has one. Before the mark, both have a page.
+#[test]
+fn a_series_of_missing_works_only_has_no_page() {
+    let (library, _dir) = series_and_other();
+    let conn = library.conn();
+    let id_of = |sort_title: &str| -> i64 {
+        conn.query_row(
+            "SELECT id FROM series WHERE sort_title = ?1",
+            [sort_title],
+            |row| row.get(0),
+        )
+        .expect("the series")
+    };
+    let (series_id, other_id) = (id_of("Series"), id_of("Other"));
+    let has_page = |id: i64| {
+        one_series(&conn, &Access::Every, 1, id, None)
+            .expect("reads the series")
+            .is_some()
+    };
+    assert_eq!(
+        (has_page(series_id), has_page(other_id)),
+        (true, true),
+        "the fixture"
+    );
+    let other_work: i64 = conn
+        .query_row(
+            "SELECT id FROM work WHERE series_id = ?1",
+            [other_id],
+            |row| row.get(0),
+        )
+        .expect("Other's one work");
+
+    mark_missing_by_hand(&conn, other_work);
+
+    assert_eq!(
+        (has_page(series_id), has_page(other_id)),
+        (true, false),
+        "Series keeps its page; Other, whose only work is missing, has none"
+    );
+}
+
+/// The unfiled works leave a missing one out. No derive marks an imported
+/// work, so the mark here is by hand (the lane plan's Spec gaps, 3).
+#[test]
+fn the_unfiled_works_list_no_missing_work() {
+    let library = Library::open_in_memory().expect("in-memory");
+    import_a_work(&library, "Kept", "/kept/taiyaku.json");
+    import_a_work(&library, "Gone", "/gone/taiyaku.json");
+    let conn = library.conn();
+    let gone: i64 = conn
+        .query_row("SELECT id FROM work WHERE title = 'Gone'", [], |row| {
+            row.get(0)
+        })
+        .expect("the work to mark");
+    mark_missing_by_hand(&conn, gone);
+
+    let titles: Vec<String> = unfiled(&conn, &Access::Every, 1, None)
+        .expect("lists the unfiled works")
+        .into_iter()
+        .map(|w| w.title)
+        .collect();
+
+    assert_eq!(titles, ["Kept"], "the present work only");
+}
+
+/// A missing work with an open position is not in `continuing`.
+#[test]
+fn continuing_lists_no_missing_work() {
+    let (library, _, _dir) = two_volume_library();
+    let conn = library.conn();
+    let (v1, v2) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
+    position_on(&conn, v1, false);
+    position_on(&conn, v2, false);
+    mark_missing_by_hand(&conn, v2);
+
+    let home = home(&conn, &Access::Every, 1, None).expect("reads home");
+
+    assert_eq!(card_ids(&home.continuing), [v1], "volume 1 only");
+}
+
+/// A missing work with a finished position is not in `read`.
+#[test]
+fn read_lists_no_missing_work() {
+    let (library, _, _dir) = two_volume_library();
+    let conn = library.conn();
+    let (v1, v2) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
+    position_on(&conn, v1, true);
+    position_on(&conn, v2, true);
+    mark_missing_by_hand(&conn, v2);
+
+    let home = home(&conn, &Access::Every, 1, None).expect("reads home");
+
+    assert_eq!(card_ids(&home.read), [v1], "volume 1 only");
+}
+
+/// A missing work, however new, is not in `added`.
+#[test]
+fn added_lists_no_missing_work() {
+    let (library, _, _dir) = two_volume_library();
+    let conn = library.conn();
+    let (v1, v2) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
+    mark_missing_by_hand(&conn, v2);
+
+    let home = home(&conn, &Access::Every, 1, None).expect("reads home");
+
+    assert_eq!(card_ids(&home.added), [v1], "volume 1 only");
+}
+
+/// A missing work's title finds no series, by the index or by `LIKE`, while
+/// the present work's still finds its own. Before the mark, both queries
+/// find the series, so neither empty answer is the fixture's.
+#[test]
+fn a_missing_works_title_finds_no_series() {
+    let (library, _, _dir) = two_volume_library();
+    let conn = library.conn();
+    let series_id = the_series(&conn);
+    let (v1, v2) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
+    for (id, title) in [(v1, "Alpha"), (v2, "Zebra")] {
+        conn.execute(
+            "UPDATE work SET title = ?1 WHERE id = ?2",
+            rusqlite::params![title, id],
+        )
+        .expect("titles the work");
+    }
+    let found = |q: &str| -> Vec<i64> {
+        search(&conn, &Access::Every, 1, q, None)
+            .expect("searches")
+            .series
+            .into_iter()
+            .map(|card| card.id)
+            .collect()
+    };
+    assert_eq!(
+        (found("Zebra"), found("Ze")),
+        (vec![series_id], vec![series_id]),
+        "the fixture: before the mark, both queries find the series"
+    );
+
+    mark_missing_by_hand(&conn, v2);
+
+    assert_eq!(found("Zebra"), Vec::<i64>::new(), "by the index");
+    assert_eq!(found("Ze"), Vec::<i64>::new(), "by `LIKE`");
+    assert_eq!(found("Alpha"), [series_id], "the present work's title");
+}
+
+/// `visible_editions` names no missing work, for every access, while it names
+/// the present one.
+#[test]
+fn visible_editions_names_no_missing_work() {
+    let (library, root_id, _dir) = two_volume_library();
+    let conn = library.conn();
+    let (v1, v2) = (work_of_volume(&conn, 1.0), work_of_volume(&conn, 2.0));
+    let slug = |id: i64| -> String {
+        conn.query_row("SELECT slug FROM work WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .expect("the work's slug")
+    };
+    mark_missing_by_hand(&conn, v2);
+
+    let named: Vec<Vec<String>> = [Access::Every, Access::roots(vec![root_id])]
+        .iter()
+        .map(|access| {
+            let mut slugs: Vec<String> = visible_editions(&conn, access)
+                .expect("lists editions")
+                .into_keys()
+                .collect();
+            slugs.sort();
+            slugs
+        })
+        .collect();
+
+    assert_eq!(
+        named,
+        [[slug(v1)], [slug(v1)]],
+        "volume 1 only, for every access and for a grant"
     );
 }

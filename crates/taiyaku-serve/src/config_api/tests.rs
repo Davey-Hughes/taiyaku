@@ -2535,6 +2535,26 @@ fn the_derive_report_renders_every_unreadable_cause_under_its_own_key() {
     );
 }
 
+/// The two counts of the missing mark, each under its own key: a `json!` key
+/// misspelt or given the other's value compiles, and the web's fixtures are
+/// written by hand, so only this reads the keys the scan report draws.
+#[test]
+fn the_derive_report_renders_the_works_marked_missing_and_found_again() {
+    let report = taiyaku_library::derive::DeriveReport {
+        marked_missing: 3,
+        found_again: 5,
+        ..Default::default()
+    };
+
+    let json = crate::config_api::derive_report_json(&report);
+
+    assert_eq!(
+        (&json["marked_missing"], &json["found_again"]),
+        (&serde_json::json!(3), &serde_json::json!(5)),
+        "{json}"
+    );
+}
+
 /// C4 §3 requires a scan already running is not startable twice, and the
 /// refusal names which root is already running rather than queueing a
 /// second walk of the same tree.
@@ -4118,6 +4138,295 @@ async fn a_dir_is_not_removed_while_a_scan_around_or_inside_it_is_reserved() {
                 "inner_removed={inner_removed} {query}: nothing was removed"
             );
         }
+    }
+}
+
+/// A file of Kids' directory that a removal of Kids leaves on disk and that no
+/// directory left would walk.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum KeptOnDisk {
+    /// Kids and Manga both came to exclude it after Kids took it over.
+    BothExclude,
+    /// Kids holds it; Manga excludes it.
+    OuterExcludes,
+    /// Kids holds it; Little, nested in Kids and added after its scan,
+    /// excludes it, and Manga admits it.
+    InnermostExcludes,
+    /// As `InnermostExcludes`, and Manga excludes it too.
+    InnermostAndOuterExclude,
+    /// As `InnermostExcludes`, but Kids came to exclude it too, so Little's
+    /// next scan dropped Kids' row, and then Kids lifted its pattern.
+    InnermostExcludesKidsRowDropped,
+}
+
+/// The owner's rulings of 2026-11-10, "Never delete on disk", "Cover both"
+/// and "Every removal", as the removal dialogs count them. Kids took Kids
+/// Book over at its first scan, and a position and a note are on its work. In
+/// every layout of [`KeptOnDisk`] removing Kids' directory or Kids' library
+/// would remove nothing of it: both rehearsals count no work, no position and
+/// no note.
+#[tokio::test]
+async fn the_removal_dialogs_count_nothing_for_a_file_kept_on_disk() {
+    for case in [
+        KeptOnDisk::BothExclude,
+        KeptOnDisk::OuterExcludes,
+        KeptOnDisk::InnermostExcludes,
+        KeptOnDisk::InnermostAndOuterExclude,
+        KeptOnDisk::InnermostExcludesKidsRowDropped,
+    ] {
+        let n = test_support::router_over_a_library_nested_in_another();
+        {
+            let conn = n.state.library.conn();
+            let set = |id: i64, globs: Option<&str>| {
+                conn.execute(
+                    "UPDATE root SET exclude_globs = ?1 WHERE id = ?2",
+                    rusqlite::params![globs, id],
+                )
+                .expect("sets the patterns");
+            };
+            let kids = taiyaku_library::scan::roots(&conn)
+                .expect("roots")
+                .into_iter()
+                .find(|root| root.id == n.m_kids)
+                .expect("Kids' directory");
+            let book = kids.path.join("Kids Book").join("Kids Book - v01");
+            let book = book.to_string_lossy();
+            let work: i64 = conn
+                .query_row(
+                    "SELECT e.work_id FROM member m JOIN edition e ON e.id = m.edition_id
+                      WHERE m.path = ?1",
+                    [&book],
+                    |r| r.get(0),
+                )
+                .expect("Kids Book's work");
+            let reader: i64 = conn
+                .query_row("SELECT id FROM user WHERE name = 'kids'", [], |r| r.get(0))
+                .expect("Kids' reader");
+            conn.execute(
+                "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (?1, ?2, 'raw', 1)",
+                [reader, work],
+            )
+            .expect("a position");
+            conn.execute(
+                "INSERT INTO note (user_id, id, work_id, edition, slot, body, created, updated)
+                 VALUES (?1, 'n', ?2, 'raw', 1, 'a note', 'now', 'now')",
+                [reader, work],
+            )
+            .expect("a note");
+            if matches!(
+                case,
+                KeptOnDisk::BothExclude
+                    | KeptOnDisk::OuterExcludes
+                    | KeptOnDisk::InnermostAndOuterExclude
+            ) {
+                set(n.m, Some("kids/Kids Book/"));
+            }
+            if case == KeptOnDisk::BothExclude {
+                set(n.m_kids, Some("Kids Book/"));
+                // Something Kids still reads, so its scan is not refused as an
+                // empty read (§8.1).
+                test_support::write_pages(
+                    &kids.path.join("Other Book").join("Other Book - v01"),
+                    2,
+                );
+                let kids = taiyaku_library::scan::roots(&conn)
+                    .expect("roots")
+                    .into_iter()
+                    .find(|root| root.id == n.m_kids)
+                    .expect("Kids' directory");
+                let report = taiyaku_library::scan::scan_root(&conn, &kids).expect("scans Kids");
+                assert!(report.refused.is_none(), "{case:?}: {report:?}");
+                taiyaku_library::derive::derive(&conn).expect("derives");
+            }
+            if matches!(
+                case,
+                KeptOnDisk::InnermostExcludes
+                    | KeptOnDisk::InnermostAndOuterExclude
+                    | KeptOnDisk::InnermostExcludesKidsRowDropped
+            ) {
+                let mut little = taiyaku_library::scan::add_root_checked_in(
+                    &conn,
+                    &kids.path.join("Kids Book"),
+                    taiyaku_library::scan::InLibrary::Named("Little"),
+                )
+                .expect("adds Little")
+                .root;
+                set(little.id, Some("Kids Book - v01/"));
+                little.exclude_globs = Some("Kids Book - v01/".to_string());
+                if case == KeptOnDisk::InnermostExcludesKidsRowDropped {
+                    // Something Little reads, so its scan is not refused as an
+                    // empty read (§8.1).
+                    test_support::write_pages(
+                        &kids.path.join("Kids Book").join("Kids Book - v02"),
+                        2,
+                    );
+                    let scan_little = || {
+                        let report =
+                            taiyaku_library::scan::scan_root(&conn, &little).expect("scans Little");
+                        assert!(report.refused.is_none(), "{case:?}: {report:?}");
+                    };
+                    scan_little();
+                    set(n.m_kids, Some("Kids Book/Kids Book - v01/"));
+                    scan_little();
+                    set(n.m_kids, None);
+                    taiyaku_library::derive::derive(&conn).expect("derives");
+                }
+            }
+            let fixture: (Option<i64>, bool) = conn
+                .query_row(
+                    "SELECT m.root_id, w.missing_since IS NOT NULL
+                       FROM member m JOIN edition e ON e.id = m.edition_id
+                       JOIN work w ON w.id = e.work_id
+                      WHERE m.path = ?1",
+                    [&book],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .expect("Kids Book's member");
+            assert_eq!(
+                fixture,
+                (
+                    Some(n.m_kids),
+                    matches!(
+                        case,
+                        KeptOnDisk::BothExclude | KeptOnDisk::InnermostExcludesKidsRowDropped
+                    )
+                ),
+                "{case:?}: the fixture, Kids Book's member is Kids', and its work is missing \
+                 only where Kids' row was dropped"
+            );
+        }
+
+        for path in [
+            format!("/api/library/roots/{}?dry_run=true", n.m_kids),
+            format!("/api/library/libraries/{}?dry_run=true", n.kids),
+        ] {
+            let response = send_json(&n.admin, Method::DELETE, &path, &serde_json::json!({})).await;
+            assert_eq!(response.status(), StatusCode::OK, "{case:?} {path}");
+            let body: serde_json::Value =
+                serde_json::from_str(&test_support::body_string(response).await).expect("JSON");
+            let removed = &body["removed"];
+            assert_eq!(
+                (
+                    removed["works"].as_u64(),
+                    removed["positions"].as_u64(),
+                    removed["notes"].as_u64()
+                ),
+                (Some(0), Some(0), Some(0)),
+                "{case:?} {path}: {body}"
+            );
+        }
+    }
+}
+
+/// The owner's ruling of 2026-11-11, "Narrow the grant" (O91): removing Kids'
+/// directory hands Kids Book, with no row, to Manga's, whose `kids/` keeps
+/// Manga's walk out of it. Manga's reader is answered on its page, card and
+/// sidecar as for a slug no work holds, before the removal and after it; an
+/// administrator still reads it, and once Manga lifts the pattern so does
+/// Manga's reader. With no pattern, Manga's reader reads it throughout.
+#[tokio::test]
+async fn a_removal_hands_no_work_into_a_grant_whose_walk_misses_its_file() {
+    for excluded in [true, false] {
+        let n = test_support::router_over_a_library_nested_in_another();
+        let set = |globs: Option<&str>| {
+            n.state
+                .library
+                .conn()
+                .execute(
+                    "UPDATE root SET exclude_globs = ?1 WHERE id = ?2",
+                    rusqlite::params![globs, n.m],
+                )
+                .expect("sets Manga's patterns");
+        };
+        let (slug, key): (String, String) = n
+            .state
+            .library
+            .conn()
+            .query_row(
+                "SELECT w.slug, e.key FROM work w JOIN edition e ON e.work_id = w.id
+                   JOIN member m ON m.edition_id = e.id
+                  WHERE m.root_id = ?1",
+                [n.m_kids],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("Kids Book's work");
+        if excluded {
+            set(Some("kids/"));
+        }
+        let answers = |router: axum::Router, slug: String| {
+            let key = key.clone();
+            async move {
+                let mut out = Vec::new();
+                for uri in [
+                    format!("/api/works/{slug}/{key}/pages/0"),
+                    format!("/api/library/works/{slug}"),
+                    format!("/api/works/{slug}"),
+                ] {
+                    let response = test_support::get(&router, &uri).await;
+                    let status = response.status();
+                    let body = test_support::body_string(response)
+                        .await
+                        .replace(&slug, "{slug}");
+                    out.push((
+                        status,
+                        if status == StatusCode::OK {
+                            None
+                        } else {
+                            Some(body)
+                        },
+                    ));
+                }
+                out
+            }
+        };
+        let nowhere = answers(n.manga_reader.clone(), "no-such-work".to_owned()).await;
+        let read = vec![(StatusCode::OK, None); 3];
+        let before = answers(n.manga_reader.clone(), slug.clone()).await;
+
+        let response = send_json(
+            &n.admin,
+            Method::DELETE,
+            &format!("/api/library/roots/{}", n.m_kids),
+            &serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "excluded={excluded}");
+        let held: (Option<i64>, bool) = n
+            .state
+            .library
+            .conn()
+            .query_row(
+                "SELECT m.root_id, w.missing_since IS NOT NULL
+                   FROM work w JOIN edition e ON e.work_id = w.id
+                   JOIN member m ON m.edition_id = e.id
+                  WHERE w.slug = ?1",
+                [&slug],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("Kids Book's member");
+        assert_eq!(
+            held,
+            (Some(n.m), excluded),
+            "the fixture: Manga holds Kids Book, missing only where its walk misses it"
+        );
+        let after = answers(n.manga_reader.clone(), slug.clone()).await;
+        let admin = answers(n.admin.clone(), slug.clone()).await;
+        set(None);
+        let lifted = answers(n.manga_reader.clone(), slug.clone()).await;
+
+        let expected = if excluded { &nowhere } else { &read };
+        assert_eq!(
+            (&before, &after),
+            (expected, expected),
+            "excluded={excluded}: Manga's reader before and after the removal, \
+             [page, card, sidecar]"
+        );
+        assert_eq!(
+            (&admin[..2], &lifted),
+            (&read[..2], &read),
+            "excluded={excluded}: the administrator's page and card, and Manga's \
+             reader once Manga's walk reaches the file"
+        );
     }
 }
 

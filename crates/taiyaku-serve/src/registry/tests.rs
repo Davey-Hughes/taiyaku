@@ -151,6 +151,101 @@ fn a_held_work_keeps_its_identity_and_takes_the_new_document() {
     assert_eq!(held.sidecar().work.title, "Retitled");
 }
 
+/// O91: a work a derive marks missing, and one a scan finds again, is the
+/// same `Work` each time, so its notes and correction locks survive both.
+#[test]
+fn a_held_work_takes_the_missing_mark_and_its_clearing_in_place() {
+    let fixture = Fixture::new("registry-missing-held");
+    let (library, db) = file_library(&fixture);
+    let (id, slug) = import_elsewhere(&db, "Marked", "m1");
+    let works = Works::library(&library).expect("projects the library");
+    let held = works.get(&slug).expect("served");
+    assert!(!held.is_missing(), "an unmarked work is served present");
+
+    write_elsewhere(
+        &db,
+        "UPDATE work SET missing_since = datetime('now') WHERE id = ?1",
+        id,
+    );
+    works.refresh_if_moved(&library).expect("refreshes");
+    let marked = works.get(&slug).expect("a missing work is still held");
+    assert!(
+        Arc::ptr_eq(&held, &marked),
+        "a mark must not mint a second `Work` over one row"
+    );
+    assert!(marked.is_missing(), "the held work carries the mark");
+
+    write_elsewhere(
+        &db,
+        "UPDATE work SET missing_since = NULL WHERE id = ?1",
+        id,
+    );
+    works.refresh_if_moved(&library).expect("refreshes");
+    let found = works.get(&slug).expect("still held");
+    assert!(
+        Arc::ptr_eq(&held, &found),
+        "a work found again must not mint a second `Work` over one row"
+    );
+    assert!(!found.is_missing(), "the held work loses the mark");
+}
+
+/// A work first read already marked is served marked: the startup read and
+/// a work a refresh reads for the first time.
+#[test]
+fn a_work_first_read_marked_is_served_missing() {
+    let fixture = Fixture::new("registry-missing-new");
+    let (library, db) = file_library(&fixture);
+    let (id, slug) = import_elsewhere(&db, "Marked", "m1");
+    write_elsewhere(
+        &db,
+        "UPDATE work SET missing_since = datetime('now') WHERE id = ?1",
+        id,
+    );
+    let works = Works::library(&library).expect("projects the library");
+    assert!(
+        works
+            .get(&slug)
+            .expect("a missing work is held")
+            .is_missing(),
+        "the startup read carries the mark"
+    );
+    assert!(
+        crate::works::from_library(&library)
+            .expect("projects the library")
+            .iter()
+            .find(|work| work.id == slug)
+            .expect("projected")
+            .is_missing(),
+        "`from_library` carries the mark"
+    );
+}
+
+/// A marked work whose rows will not project is kept as it was read last,
+/// and takes the mark all the same: the mark comes from the `work` row,
+/// which reads whatever the document does.
+#[test]
+fn a_work_whose_rows_will_not_project_still_takes_the_mark() {
+    let fixture = Fixture::new("registry-missing-kept");
+    let (library, db) = file_library(&fixture);
+    let (id, slug) = import_elsewhere(&db, "Steady", "s1");
+    let works = Works::library(&library).expect("projects the library");
+
+    write_elsewhere(
+        &db,
+        "UPDATE work SET reading = 'sideways', missing_since = datetime('now') WHERE id = ?1",
+        id,
+    );
+    let refreshed = works.refresh_if_moved(&library).expect("refreshes");
+    assert!(
+        matches!(&refreshed, Refresh::Refreshed { kept } if kept.len() == 1),
+        "the work is kept as it was: {refreshed:?}"
+    );
+    assert!(
+        works.get(&slug).expect("still served").is_missing(),
+        "a kept work carries the mark its row has"
+    );
+}
+
 #[test]
 fn a_write_that_lands_while_a_refresh_reads_is_read_by_the_next_one() {
     let fixture = Fixture::new("registry-ordering");

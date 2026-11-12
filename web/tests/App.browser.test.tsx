@@ -1,7 +1,7 @@
 import { act } from 'react'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
-import { WorkNotFound } from '../src/api'
+import { WorkMissing, WorkNotFound } from '../src/api'
 import { fakeResolver, whole } from './support/fixtures'
 import '../src/index.css'
 import { paintedBox } from '../src/notes'
@@ -1276,6 +1276,26 @@ describe('O176: a work that fails to load, in a browser', () => {
     const alerts = page.getByRole('alert').elements()
     expect(alerts.map((el) => el.textContent)).toEqual([
       `The server found no work named ${slug}.`,
+    ])
+    const codes = [...alerts[0].querySelectorAll('code')]
+    expect(codes.map((el) => el.textContent)).toEqual([slug])
+    expect(codes[0].getBoundingClientRect().width).toBeLessThanOrEqual(
+      main.getBoundingClientRect().width,
+    )
+    expect(doc.scrollWidth).toBeLessThanOrEqual(doc.clientWidth)
+    expect(main.scrollWidth).toBeLessThanOrEqual(main.clientWidth)
+  })
+
+  /** O91's sentence for a `WorkMissing`, measured as the case above is. */
+  it('says a missing work’s files are missing, the long slug in a code no wider than the screen', async () => {
+    const slug = 'x'.repeat(160)
+    const { doc, main } = await failedInItsRoute(
+      new WorkMissing(slug, `loading ${slug}: 404 {"missing":true}`),
+      slug,
+    )
+    const alerts = page.getByRole('alert').elements()
+    expect(alerts.map((el) => el.textContent)).toEqual([
+      `The files of ${slug} are missing from every directory that held them. It opens again once a scan finds them.`,
     ])
     const codes = [...alerts[0].querySelectorAll('code')]
     expect(codes.map((el) => el.textContent)).toEqual([slug])

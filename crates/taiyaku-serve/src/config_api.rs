@@ -1459,6 +1459,8 @@ pub(crate) fn derive_report_json(report: &derive::DeriveReport) -> serde_json::V
         unrecognised_kinds,
         raised,
         root_removed_mid_derive,
+        marked_missing,
+        found_again,
     } = report;
     serde_json::json!({
         "series": series,
@@ -1492,6 +1494,8 @@ pub(crate) fn derive_report_json(report: &derive::DeriveReport) -> serde_json::V
         "unrecognised_kinds": unrecognised_kinds,
         "raised": raised,
         "root_removed_mid_derive": root_removed_mid_derive,
+        "marked_missing": marked_missing,
+        "found_again": found_again,
     })
 }
 

@@ -311,9 +311,9 @@ impl IntoResponse for NoProgress {
     }
 }
 
-/// Every work this caller's grant admits, as `GET /api/works` answers it:
-/// slug, title, series, volume, editions and a cover URL — see
-/// `works::WorkSummary` for where each of those six comes from.
+/// Every work this caller's grant admits and no work marked missing (O91),
+/// as `GET /api/works` answers it: slug, title, series, volume, editions and
+/// a cover URL; `works::WorkSummary` says where each of the six comes from.
 ///
 /// **Applies the caller's grant.** A list that answered every work the server
 /// held would hand a restricted account the id, title, series and volume of
@@ -368,6 +368,9 @@ async fn list_works(
         };
         let held = state.works.snapshot();
         held.iter()
+            // Before the grant, because `Access::Every` asks no grant and
+            // only the registry's mark leaves a missing work out for it.
+            .filter(|w| !w.is_missing())
             // A work absent from `visible`'s keys has no edition inside the
             // grant at all — `browse::visible_editions` never mints an entry
             // for one — so it is dropped here, and a work present in it always
@@ -593,6 +596,15 @@ pub(crate) fn filter_sidecar_editions(
     filtered
 }
 
+/// The work's document as this account is sent it ([`crate::view::View`]),
+/// with an `ETag` over that document.
+///
+/// **A missing work answers 404 with a reason** (O91): JSON,
+/// `{"error": <sentence>, "missing": true}`, so the reader tells it from a
+/// work that does not exist and says its files are gone. Asked only after
+/// `view::of_work`'s grant check, so a work outside the grant answers
+/// `` no work `{slug}` `` as before, missing or not, and the reason never
+/// tells a reader a hidden work exists.
 async fn get_sidecar(
     State(state): State<Arc<ServeState>>,
     AxPath(id): AxPath<String>,
@@ -603,6 +615,9 @@ async fn get_sidecar(
         Ok(view) => view,
         Err(refusal) => return refusal,
     };
+    if state.works.get(&id).is_some_and(|work| work.is_missing()) {
+        return missing_work(&id);
+    }
     let sidecar = view.sidecar();
     // The `ETag` is over the document this account is sent (spec §3.8): two
     // accounts sent different documents must not revalidate each other's
@@ -620,6 +635,28 @@ async fn get_sidecar(
         sidecar.to_json(),
     )
         .into_response()
+}
+
+/// [`get_sidecar`]'s answer for a work marked missing.
+fn missing_work(slug: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({
+            "error": missing_reason(slug),
+            "missing": true,
+        })),
+    )
+        .into_response()
+}
+
+/// Why a work marked missing will not open (O91). One sentence for every
+/// route that refuses it: [`get_sidecar`] sends it in JSON, and the OPDS
+/// work feed as its own plain-text 404.
+pub(crate) fn missing_reason(slug: &str) -> String {
+    format!(
+        "the files of work `{slug}` are missing from every directory that held them; \
+         it opens again once a scan finds them"
+    )
 }
 
 /// The optional `?w=` on a page request: the long edge, in device pixels, the

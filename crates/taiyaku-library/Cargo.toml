@@ -51,7 +51,9 @@ rand = "0.10.2"
 # behaviour. "Accept a user regex" is normally a ReDoS hazard; the reason it is
 # not one here is a property of this dependency rather than of the design.
 regex = "1.13"
-rusqlite = { version = "0.38", features = ["backup"] }
+# `functions`: the grant asks a directory's exclude patterns inside its SQL
+# (`browse::member_under`, O91), and gitignore's language has no SQL form.
+rusqlite = { version = "0.38", features = ["backup", "functions"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"

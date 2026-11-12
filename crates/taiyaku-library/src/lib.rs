@@ -374,6 +374,9 @@ impl Library {
         // in this module's `tests.rs`.
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(|e| format!("enabling foreign keys: {e}"))?;
+        // Every grant names it (`browse::member_under`).
+        browse::register_walk_reaches(conn)
+            .map_err(|e| format!("adding the grant's pattern test: {e}"))?;
         // **Before the pragma most likely to meet another process**, which is
         // the next one. See `set_wal` for why the timeout does not on its own
         // save that one, and `BUSY_TIMEOUT` for the five seconds.
