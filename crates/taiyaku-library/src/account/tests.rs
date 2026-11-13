@@ -621,6 +621,7 @@ fn promotion_reaches_the_seeded_row_and_keeps_what_hangs_off_it() {
                 created: "2026-08-18T00:00:00Z".to_string(),
                 updated: "2026-08-18T00:00:00Z".to_string(),
                 stale: false,
+                at: None,
             }],
         },
     )

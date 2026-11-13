@@ -40,7 +40,7 @@ export interface NotePanelProps {
   draft: Note | undefined
   /** Every note on the work, with where each lands here — `notes.ts`'s `reviewList`. */
   entries: ReviewEntry[]
-  /** What export writes out: exactly the document the server holds. */
+  /** What export writes out: the server's document, less what a read adds. */
   doc: NotesDoc
   work: string
   /** The edition being read, which is what "reachable from here" is relative to. */
@@ -76,9 +76,9 @@ export interface NotePanelProps {
  * Disabled rather than clickable-and-inert, so the reason is visible before
  * the click rather than discovered by nothing happening after it.
  *
- * Export is a download of exactly what the server holds (`notesJson`), built
- * from an object URL and revoked immediately — a note is a reader's own
- * writing, and getting it out of this tool must not require this tool.
+ * Export is a download of the server's document less each note's `at` and
+ * `stale` (`notesJson`), from an object URL revoked at once. A note is a
+ * reader's own writing, and getting it out must not require this tool.
  */
 export function NotePanel({
   mode,
@@ -165,6 +165,13 @@ export function NotePanel({
             {draft.edition} slot {draft.slot} ·{' '}
             {draft.region ? 'region' : 'whole page'}
           </p>
+          {draft.stale && (
+            <p className="reader-muted" style={{ margin: 0 }}>
+              The page this note was written on is no longer in {draft.edition},
+              so it is shown where it was stored. Marking a region moves it onto
+              the page shown.
+            </p>
+          )}
           <textarea
             ref={bodyRef}
             value={draft.body}
@@ -334,6 +341,7 @@ export function NotePanel({
                   : entry.note.edition === viewing
                     ? ''
                     : ` · ${viewing} slot ${entry.here}`}
+                {entry.note.stale && ' · no longer on its page'}
               </span>
               <span>{entry.note.body || <em>empty</em>}</span>
             </button>

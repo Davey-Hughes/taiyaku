@@ -97,8 +97,8 @@ pub struct Progress {
 /// **Separate from [`Progress`], which is the write shape.** `Progress` is the
 /// body of `PUT /api/works/{work}/progress`, where `updated` is the store's to
 /// set: putting it on `Progress` would ask a client to invent a timestamp the
-/// server then ignores. The two are one field apart and that field is the
-/// whole distinction.
+/// server then ignores. Beside `at`, which only serve's read fills, the two
+/// are one field apart and that field is the whole distinction.
 ///
 /// **A sibling `taiyaku.progress.json` is the one place a time arrives from
 /// outside the store**, and it arrives as this crate's own export of these
@@ -122,6 +122,13 @@ pub struct Position {
     pub edition: String,
     pub slot: u32,
     pub updated: String,
+    /// The page the row names, as stored, whether or not it is found: a wire
+    /// field like [`Note::stale`], filled by `state::progress_anchored_in` for
+    /// serve alone (O240). Every other read leaves it out, so an export
+    /// carries none, and an import ignores it: a write derives the page from
+    /// the slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<taiyaku_core::MemberPage>,
 }
 
 /// A rectangle on one slot, in fractions of that slot's own width and height.
@@ -182,6 +189,13 @@ pub struct Note {
     /// echoes what it read.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
+    /// The page the row names, as stored, whether or not it is found: a wire
+    /// field like `stale`, filled by `state::notes_anchored_in` for serve
+    /// alone, so a reader echoes the page it read (O240). Every other read
+    /// leaves it out, so an export carries none, and an import ignores it: a
+    /// write derives the page from the slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<taiyaku_core::MemberPage>,
 }
 
 impl Note {
@@ -242,14 +256,15 @@ impl Notes {
         taiyaku_core::refuse_newer("taiyaku_notes", declared, NOTES_VERSION)
     }
 
-    /// Every note unmarked. [`Note::stale`] is set on a read's answer and
-    /// never stored, so a document is compared or written out without it: a
-    /// note a reader echoes would otherwise differ from the one held by the
-    /// mark alone, and an exported file would carry a mark the store does
-    /// not hold (O244).
-    pub fn clear_stale(&mut self) {
+    /// Every note without [`Note::stale`] and [`Note::at`], the two fields a
+    /// read adds and a write never takes, so a document is compared or written
+    /// out without them: a note a reader echoes would otherwise differ from
+    /// the one held by them alone, and an exported file would carry what the
+    /// store does not take back from it (O240, O244).
+    pub fn clear_wire_fields(&mut self) {
         for note in &mut self.notes {
             note.stale = false;
+            note.at = None;
         }
     }
 }

@@ -1417,8 +1417,8 @@ fn migration_20_adds_missing_since_leaving_existing_works_present() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_twenty_one() {
-    assert_eq!(SCHEMA_VERSION, 21);
+fn the_schema_version_is_twenty_two() {
+    assert_eq!(SCHEMA_VERSION, 22);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -3075,7 +3075,7 @@ fn migration_21_gives_progress_and_note_a_page_beside_the_slot() {
         .map(|table| rows_of(&conn, &format!("SELECT * FROM {table}")))
         .collect();
 
-    migrate(&conn).expect("migrates to 21");
+    migrate_with(&conn, &MIGRATIONS[..21]).expect("migrates to 21");
 
     assert_eq!(version(&conn).expect("reads the version"), 21);
     for (table, before) in ["progress", "note"].iter().zip(before) {
@@ -3122,6 +3122,68 @@ fn migration_21_gives_progress_and_note_a_page_beside_the_slot() {
         ),
         vec![vec!["Text(\"note\")".to_string()]],
         "note_by_work stands"
+    );
+}
+
+/// **Migration 22 gives a stamp a memory of the digests it moved** (O240):
+/// `stamp_alias`, one row per work, edition and old `(digest, occurrence)`,
+/// which a work's removal takes with it.
+#[test]
+fn migration_22_gives_a_stamp_a_memory_of_the_digests_it_moved() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..21]).expect("migrates to 21");
+    conn.execute(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (1, 'k', 's', 'T', 'rtl', 'raw')",
+        [],
+    )
+    .expect("seeds a schema-21 work");
+
+    migrate(&conn).expect("migrates to 22");
+
+    assert_eq!(version(&conn).expect("reads the version"), 22);
+    assert_eq!(
+        columns_of(&conn, "stamp_alias"),
+        [
+            "work_id",
+            "edition",
+            "was_sha256",
+            "was_nth",
+            "now_sha256",
+            "now_nth"
+        ],
+        "stamp_alias's six columns, in order"
+    );
+    let alias = "INSERT INTO stamp_alias
+                   (work_id, edition, was_sha256, was_nth, now_sha256, now_nth)
+                 VALUES (1, 'raw', 'aa', 0, ?1, ?2)";
+    assert_eq!(
+        conn.execute(alias, rusqlite::params!["bb", 0]),
+        Ok(1),
+        "an alias inserts"
+    );
+    let refused = conn
+        .execute(alias, rusqlite::params!["cc", 1])
+        .expect_err("a second alias of the same digest and occurrence is refused");
+    assert!(
+        refused.to_string().contains(
+            "UNIQUE constraint failed: stamp_alias.work_id, stamp_alias.edition, \
+             stamp_alias.was_sha256, stamp_alias.was_nth"
+        ),
+        "refused by the primary key: {refused}"
+    );
+
+    assert_eq!(
+        conn.execute("DELETE FROM work WHERE id = 1", []),
+        Ok(1),
+        "the work is deleted"
+    );
+    assert_eq!(
+        rows_of(&conn, "SELECT * FROM stamp_alias"),
+        Vec::<Vec<String>>::new(),
+        "its alias went with it"
     );
 }
 

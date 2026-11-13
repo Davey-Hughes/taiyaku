@@ -2087,6 +2087,44 @@ fn every_slot_names_its_member_page_and_that_page_names_the_slot() {
     );
 }
 
+/// O240: a whole page's anchor crosses the wire with no `half` key at all,
+/// since the web copies the object it is handed onto the wire unchanged.
+#[test]
+fn a_whole_page_anchor_crosses_the_wire_without_a_half() {
+    let whole = page_of("ab", 1, 2, None);
+    let text = serde_json::to_string(&whole).expect("serialises");
+    assert_eq!(text, r#"{"sha256":"ab","nth":1,"page":2}"#);
+    assert_eq!(
+        serde_json::from_str::<MemberPage>(&text).expect("parses"),
+        whole
+    );
+}
+
+/// O240: a half crosses the wire in the store's spelling.
+#[test]
+fn a_half_anchor_crosses_the_wire_naming_its_half() {
+    let left = page_of("ab", 1, 2, Some(Half::Left));
+    let text = serde_json::to_string(&left).expect("serialises");
+    assert_eq!(text, r#"{"sha256":"ab","nth":1,"page":2,"half":"left"}"#);
+    assert_eq!(
+        serde_json::from_str::<MemberPage>(&text).expect("parses"),
+        left
+    );
+}
+
+/// O240: a field the wire does not define is refused, not dropped, so a
+/// client that sends one learns its anchor was not read.
+#[test]
+fn an_anchor_with_a_field_the_wire_does_not_define_is_refused() {
+    let refused =
+        serde_json::from_str::<MemberPage>(r#"{"sha256":"ab","nth":1,"page":2,"slot":3}"#)
+            .expect_err("an unknown field is refused");
+    assert!(
+        refused.to_string().contains("unknown field `slot`"),
+        "the refusal names the field: {refused}"
+    );
+}
+
 /// One archive can stand twice in an edition, so a page names which copy it
 /// is on, counting only the members with its digest.
 #[test]

@@ -69,6 +69,7 @@ fn export_writes_the_versioned_form_only() {
         edition: "raw".into(),
         slot: 11,
         updated: "2026-08-27 09:00:00".into(),
+        at: None,
     }])
     .expect("serialising");
     assert!(json.contains("\"taiyaku_progress\": 1"), "got: {json}");

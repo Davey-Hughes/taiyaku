@@ -449,3 +449,50 @@ fn a_work_with_a_sidecar_path_keeps_it_and_has_a_document() {
     assert_eq!(works[0].path, PathBuf::from("/x/taiyaku.json"));
     assert!(works[0].has_document());
 }
+
+/// A stamp keeps every page, a joined spread's halves too, so an `at` on a
+/// half is forwarded on that half. Read right to left, page 1's left half is
+/// slot 2; the page alone would not place a note (pre-deploy decision 6).
+#[test]
+fn a_forwarded_at_keeps_its_half() {
+    let sidecar = std::sync::Arc::new(
+        Sidecar::from_json(
+            r#"{"taiyaku":1,"work":{"title":"Z","reading":"rtl"},
+            "editions":{"raw":{"label":"Raw","members":[
+              {"path":"z.cbz","sha256":"z","pages":3}],"spreads":[1]}},
+            "hub":"raw","alignments":[]}"#,
+        )
+        .expect("parses"),
+    );
+    let library = taiyaku_library::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work = crate::Work::new(
+        "z".to_string(),
+        PathBuf::from("/corpus/z/taiyaku.json"),
+        (*sidecar).clone(),
+    );
+    let work_id = row_id_for_write(&conn, &work, Mint::Bridge).expect("mints z's row");
+    taiyaku_library::stamp::remember_moves(
+        &conn,
+        work_id,
+        "raw",
+        &std::collections::BTreeMap::from([(("y".to_string(), 0), ("z".to_string(), 0))]),
+    )
+    .expect("remembers y as z");
+    let view = crate::view::View::build(sidecar, None).expect("Access::Every");
+    let on_the_left = |sha256: &str| MemberPage {
+        sha256: sha256.into(),
+        nth: 0,
+        page: 1,
+        half: Some(taiyaku_core::Half::Left),
+    };
+
+    let forwarded = past_stamps(&conn, Some(work_id), &view, "raw", &on_the_left("y"))
+        .expect("reads the alias");
+    assert_eq!(forwarded, on_the_left("z"));
+    assert_eq!(
+        view.slot_of_anchor("raw", &forwarded),
+        Some(taiyaku_core::SlotOf::Exact(2)),
+        "page 1's left half"
+    );
+}

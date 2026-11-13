@@ -1787,6 +1787,14 @@ async fn a_dry_run_delete_costs_without_removing_and_a_real_one_then_still_can()
     assert_eq!(dry["dry_run"], true, "{dry}");
     let dry_works = dry["removed"]["works"].as_u64().expect("a work count");
     assert!(dry_works > 0, "{dry}");
+    assert_eq!(
+        (
+            dry["removed"]["positions_page_gone"].as_u64(),
+            dry["removed"]["notes_page_gone"].as_u64()
+        ),
+        (Some(0), Some(0)),
+        "the rehearsal counts the pages it takes from works it keeps: {dry}"
+    );
 
     // Nothing was actually removed: the root row is still there.
     {
@@ -2687,6 +2695,26 @@ fn the_derive_report_renders_the_works_marked_missing_and_found_again() {
     assert_eq!(
         (&json["marked_missing"], &json["found_again"]),
         (&serde_json::json!(3), &serde_json::json!(5)),
+        "{json}"
+    );
+}
+
+/// The two counts of pages a removal takes, each under its own key and each a
+/// different number, so a key given the other's value fails (O244). Every
+/// route fixture's removal takes no page from a kept work, so only this does.
+#[test]
+fn a_removal_renders_each_count_of_pages_taken_under_its_own_key() {
+    let removal = taiyaku_library::scan::Removal {
+        positions_page_gone: 1,
+        notes_page_gone: 2,
+        ..Default::default()
+    };
+
+    let json = crate::config_api::removal_json(&removal);
+
+    assert_eq!(
+        (&json["positions_page_gone"], &json["notes_page_gone"]),
+        (&serde_json::json!(1), &serde_json::json!(2)),
         "{json}"
     );
 }

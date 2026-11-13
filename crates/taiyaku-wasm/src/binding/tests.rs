@@ -180,6 +180,71 @@ fn slot_at_refuses_an_index_past_the_end_and_an_unknown_edition() {
     assert_eq!(b.slot_at("nope", 0), None);
 }
 
+/// O240: a page's anchor is the core's, in the document's reading order, so
+/// the web never derives one itself. The two copies' pages differ only in
+/// `nth`.
+#[test]
+fn member_page_names_the_copy_and_the_half_as_the_core_does() {
+    let b = Binding::from_json(TWICE_FIXTURE).expect("parses");
+    let s = Sidecar::from_json(TWICE_FIXTURE).expect("parses");
+    let core = &s.editions["twice"];
+    let at = |sha256: &str, nth, page, half| MemberPage {
+        sha256: sha256.into(),
+        nth,
+        page,
+        half,
+    };
+
+    for (slot, expected, what) in [
+        (2, at("0a", 0, 2, None), "a whole page of the first copy"),
+        (8, at("0a", 1, 2, None), "the same page of the second copy"),
+        (4, at("0b", 0, 1, Some(Half::Right)), "right half, first"),
+        (5, at("0b", 0, 1, Some(Half::Left)), "left half, second"),
+    ] {
+        let bound = b.member_page("twice", slot);
+        assert_eq!(bound, Some(expected), "slot {slot}: {what}");
+        assert_eq!(
+            bound,
+            core.member_page(slot, s.work.reading),
+            "slot {slot}: {what}, as the core answers"
+        );
+    }
+    assert_eq!(b.slot_count("twice"), Some(9));
+    assert_eq!(b.member_page("twice", 9), None, "one past the end");
+    assert_eq!(b.member_page("nope", 0), None, "an unknown edition");
+}
+
+/// The document's reading direction is the one input `member_page` and
+/// `slot_at` add to the core's call: read left to right, a spread's left half
+/// comes first, so an anchor taken in `rtl` order names the other half.
+#[test]
+fn member_page_and_slot_at_take_a_spreads_halves_in_reading_order() {
+    let b = Binding::from_json(LTR_FIXTURE).expect("parses");
+    for (slot, half, what) in [
+        (1, Half::Left, "the left half first"),
+        (2, Half::Right, "then the right"),
+    ] {
+        assert_eq!(
+            b.slot_at("ltr", slot),
+            Some(Slot {
+                page: 1,
+                half: Some(half)
+            }),
+            "slot_at {slot}: {what}"
+        );
+        assert_eq!(
+            b.member_page("ltr", slot),
+            Some(MemberPage {
+                sha256: "0c".into(),
+                nth: 0,
+                page: 1,
+                half: Some(half)
+            }),
+            "member_page {slot}: {what}"
+        );
+    }
+}
+
 /// The two are inverses over every slot of every edition. This is the
 /// property the reader depends on: a swap converts index → pair → resolve →
 /// pair → index, and a mismatch anywhere silently moves the reader.

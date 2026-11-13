@@ -26,7 +26,7 @@
 /// other is meant.
 pub use taiyaku_library::{Note, Notes, Region};
 
-use taiyaku_core::{Direction, Edition, FromFull, Sidecar};
+use taiyaku_core::{Direction, Edition, FromFull, Sidecar, SlotOf};
 use taiyaku_library::Library;
 use taiyaku_library::state::Numbering;
 
@@ -224,8 +224,63 @@ fn seen_at(note: &Note, view: &View) -> Option<u32> {
     }
 }
 
+/// Each note of `incoming` placed by its `at`, which wins over its slot
+/// (O240). In order: an `at` equal to its held note's keeps the slot that
+/// note is sent at, compared first as a stale note's `nth` cannot be
+/// translated; one found exactly sets the slot, a page alone never does
+/// (pre-deploy decision 6); one on an edition the account lacks is left to
+/// [`validate_against`]; an untouched echo is kept, as `validate_against`
+/// exempts an unmoved anchor, so one note never refuses every later write.
+/// Any other is `Invalid::Missing`, saying to reload. No `at` keeps the slot.
+pub(crate) fn placed(
+    incoming: &mut Notes,
+    current: &Notes,
+    view: &View,
+    work: &str,
+) -> Result<(), Invalid> {
+    for note in &mut incoming.notes {
+        let Some(at) = &note.at else {
+            continue;
+        };
+        let held = current.notes.iter().find(|held| held.id == note.id);
+        if let Some(held) =
+            held.filter(|held| held.edition == note.edition && held.at.as_ref() == Some(at))
+        {
+            if let Some(slot) = seen_at(held, view) {
+                note.slot = slot;
+            }
+            continue;
+        }
+        if let Some(SlotOf::Exact(slot)) = view.slot_of_anchor(&note.edition, at) {
+            note.slot = slot;
+            continue;
+        }
+        let lacked = !view.sidecar().editions.contains_key(&note.edition);
+        if lacked || held.is_some_and(|held| untouched(note, held, view)) {
+            continue;
+        }
+        return Err(Invalid::Missing(format!(
+            "note `{}` names a page that `{}` of work `{work}` does not have now. Reload the \
+             page to see the notes as they are.",
+            note.id, note.edition
+        )));
+    }
+    Ok(())
+}
+
+/// Whether `note` is `held` as `view`'s account is sent it, `at` and `stale`
+/// aside: a tab's echo of a note it has not changed.
+fn untouched(note: &Note, held: &Note, view: &View) -> bool {
+    let bare = |note: &Note| Note {
+        stale: false,
+        at: None,
+        ..note.clone()
+    };
+    seen_at(held, view).is_some_and(|slot| bare(note) == Note { slot, ..bare(held) })
+}
+
 /// `stored` as `view`'s account is sent it (spec §3.8): the notes it is sent,
-/// in its numbering.
+/// in its numbering, each slot's page too (O240).
 pub(crate) fn as_seen(stored: &Notes, view: &View) -> Notes {
     let notes = stored
         .notes
@@ -234,6 +289,7 @@ pub(crate) fn as_seen(stored: &Notes, view: &View) -> Notes {
             let slot = seen_at(note, view)?;
             Some(Note {
                 slot,
+                at: view.anchor_sent(&note.edition, slot, note.at.as_ref(), !note.stale),
                 ..note.clone()
             })
         })
@@ -366,8 +422,8 @@ pub fn to_json(notes: &Notes) -> Result<String, String> {
 /// their last note is not the same as a reader who never wrote one, and
 /// whether to collapse the two is the caller's call (both routes do).
 ///
-/// Each slot is in `numbered`, the document the reader's view was numbered
-/// from (O244).
+/// Each slot is in `numbered`, the view's whole document (O244), and each note
+/// its stored page, which a read tags, and sends as `View::anchor_sent` says.
 ///
 /// # Errors
 ///
@@ -385,8 +441,13 @@ pub fn load(
     let Some(work_id) = works::find_row(&conn, work)? else {
         return Ok(None);
     };
-    taiyaku_library::state::notes_in(&conn, work_id, user_id, Numbering::Document(numbered))
-        .map(Some)
+    taiyaku_library::state::notes_anchored_in(
+        &conn,
+        work_id,
+        user_id,
+        Numbering::Document(numbered),
+    )
+    .map(Some)
 }
 
 /// Replace the notes, inside one transaction.

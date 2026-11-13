@@ -309,7 +309,7 @@ async fn progress_round_trips_through_the_api() {
 
     // Pin the exact shape at both levels: the top-level object carries
     // exactly `positions`, and each element of it carries exactly edition,
-    // slot and updated — no other top-level field, and no field leaking
+    // slot, updated and at — no other top-level field, and no field leaking
     // into (or missing from) an element.
     let top_keys: std::collections::HashSet<_> = doc
         .as_object()
@@ -331,13 +331,19 @@ async fn progress_round_trips_through_the_api() {
         std::collections::HashSet::from_iter(vec![
             "edition".to_string(),
             "slot".to_string(),
-            "updated".to_string()
+            "updated".to_string(),
+            "at".to_string()
         ]),
-        "each position must have exactly edition, slot and updated fields"
+        "each position must have exactly edition, slot, updated and at fields"
     );
 
     assert_eq!(entry["edition"].as_str().unwrap(), "raw");
     assert_eq!(entry["slot"].as_u64().unwrap(), 3);
+    assert_eq!(
+        entry["at"],
+        serde_json::json!({ "sha256": "y", "nth": 0, "page": 1 }),
+        "slot 3 is c2's second page"
+    );
 }
 
 /// Every edition the reader holds a position in comes back, newest first.
@@ -616,7 +622,7 @@ async fn no_works_route_stalls_the_runtime() {
     );
     assert_eq!(response.status(), StatusCode::OK);
 
-    let position: crate::Progress =
+    let position: crate::progress::Body =
         serde_json::from_str(r#"{"edition":"raw","slot":1}"#).expect("a position");
     let (stalled, response) = the_runtime_stalls_on(
         &library,
@@ -1021,7 +1027,7 @@ async fn no_grant_check_stalls_the_runtime() {
         headers
     };
 
-    let position: crate::Progress =
+    let position: crate::progress::Body =
         serde_json::from_str(r#"{"edition":"raw","slot":1}"#).expect("a position");
     let (stalled, response) = the_runtime_stalls_on(
         &library,
@@ -1094,7 +1100,7 @@ async fn no_grant_check_stalls_the_runtime() {
     let response = get_notes(State(Arc::clone(&state)), granted(), w(), HeaderMap::new()).await;
     let notes_tag = tag_of(&response);
     let notes = crate::test_support::body_string(response).await;
-    let position: crate::Progress =
+    let position: crate::progress::Body =
         serde_json::from_str(r#"{"edition":"raw","slot":1}"#).expect("a position");
     type Call = std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>;
     let calls: Vec<(&str, Call)> = vec![
@@ -3311,6 +3317,7 @@ async fn stored_notes_are_served_and_change_the_validator() {
                 created: "2026-08-05T10:00:00Z".into(),
                 updated: "2026-08-05T10:00:00Z".into(),
                 stale: false,
+                at: None,
             }],
         },
         &state.works.snapshot()[0].sidecar(),
@@ -6249,6 +6256,7 @@ async fn a_new_note_on_an_edition_outside_the_grant_is_refused_and_a_held_one_is
                 created: "2026-08-05T10:00:00Z".into(),
                 updated: "2026-08-05T10:00:00Z".into(),
                 stale: false,
+                at: None,
             }],
         },
         &found.sidecar(),
@@ -6300,6 +6308,15 @@ async fn a_new_note_on_an_edition_outside_the_grant_is_refused_and_a_held_one_is
     assert_eq!(ids(), [held("01HELD", "raw"), held("01OWN", "en")]);
 }
 
+/// `notes` without the page each row names, which a note these tests build
+/// carries none of.
+fn unanchored(mut notes: crate::notes::Notes) -> crate::notes::Notes {
+    for note in &mut notes.notes {
+        note.at = None;
+    }
+    notes
+}
+
 /// **A notes write read before the account's grant widened is refused with
 /// 412, and stores nothing** (spec §3.8, decision 11). Under the stored
 /// document's tag alone it would pass `If-Match`, and `01HELD`, now seen and
@@ -6322,6 +6339,7 @@ async fn a_notes_write_read_before_the_grant_widened_is_refused() {
         created: "2026-08-05T10:00:00Z".into(),
         updated: "2026-08-05T10:00:00Z".into(),
         stale: false,
+        at: None,
     };
     let found = state.find_blocking(&slug).expect("the work");
     let held = crate::notes::Notes {
@@ -6344,7 +6362,7 @@ async fn a_notes_write_read_before_the_grant_widened_is_refused() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let mut sent: crate::notes::Notes = serde_json::from_str(&body).expect("a notes document");
     assert_eq!(
-        sent.notes,
+        unanchored(sent.clone()).notes,
         [note("01OWN", "en")],
         "the fixture: `raw` is hidden"
     );
@@ -6362,9 +6380,11 @@ async fn a_notes_write_read_before_the_grant_widened_is_refused() {
     .await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{body}");
     assert_eq!(
-        crate::notes::load(&state.library, &found, 1, &found.sidecar())
-            .expect("reads the notes")
-            .expect("notes are held"),
+        unanchored(
+            crate::notes::load(&state.library, &found, 1, &found.sidecar())
+                .expect("reads the notes")
+                .expect("notes are held")
+        ),
         held,
         "nothing is stored"
     );
@@ -8161,6 +8181,7 @@ mod narrowing {
             created: "2026-11-03T10:00:00Z".into(),
             updated: "2026-11-03T10:00:00Z".into(),
             stale: false,
+            at: None,
         }
     }
 
@@ -8292,7 +8313,7 @@ mod narrowing {
         let (status, _, answered) = put(&merged, Reader::MangaOnly, &uri, Some(&tag), body).await;
         assert_eq!(status, StatusCode::OK, "{answered}");
         assert_eq!(
-            held_notes(&merged, Reader::MangaOnly),
+            unanchored(held_notes(&merged, Reader::MangaOnly)),
             mangas_notes(&merged)
         );
     }
@@ -8325,7 +8346,7 @@ mod narrowing {
             put(&merged, Reader::MangaOnly, &uri, tag.as_deref(), body).await;
         assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{answered}");
         assert_eq!(
-            held_notes(&merged, Reader::MangaOnly),
+            unanchored(held_notes(&merged, Reader::MangaOnly)),
             mangas_notes(&merged),
             "nothing is stored"
         );
@@ -8752,7 +8773,7 @@ mod narrowing {
         .await;
         assert_eq!(status, StatusCode::OK, "{answered}");
         assert_eq!(
-            held_notes(&merged, Reader::MangaOnly),
+            unanchored(held_notes(&merged, Reader::MangaOnly)),
             crate::notes::Notes {
                 taiyaku_notes: taiyaku_library::NOTES_VERSION,
                 work: merged.slug.clone(),
@@ -8803,7 +8824,7 @@ mod narrowing {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert!(body.contains("`n2`"), "the refusal names the note: {body}");
         assert_eq!(
-            held_notes(&merged, Reader::MangaOnly),
+            unanchored(held_notes(&merged, Reader::MangaOnly)),
             mangas_notes(&merged),
             "nothing is stored"
         );
@@ -8900,11 +8921,26 @@ mod narrowing {
                 notes: vec![note("n2", "raw", 3)],
             },
         );
+        let page = |file: &str, page| taiyaku_core::MemberPage {
+            sha256: digest(&merged, file),
+            nth: 0,
+            page,
+            half: None,
+        };
+        let (part1, part2) = (
+            page("m/Foo v01 part1.cbz", 0),
+            page("k/Foo v01 part2.cbz", 1),
+        );
         remove_kids_directory(&merged);
         reread(&merged);
         let n2 = crate::notes::Note {
             stale: true,
+            at: Some(part2),
             ..note("n2", "raw", 3)
+        };
+        let n5 = crate::notes::Note {
+            at: Some(part1),
+            ..note("n5", "raw", 0)
         };
         let uri = notes_uri(&merged);
         let (_, tag, body) = fetched(&merged, Reader::Administrator, &uri, None).await;
@@ -8933,11 +8969,7 @@ mod narrowing {
         );
         assert_eq!(answered, next, "the answer is what is sent next");
         let answered: crate::notes::Notes = serde_json::from_str(&answered).expect("notes");
-        assert_eq!(
-            answered.notes,
-            [n2, note("n5", "raw", 0)],
-            "n2 is answered stale"
-        );
+        assert_eq!(answered.notes, [n2, n5], "n2 is answered stale");
     }
 
     fn hold_position(merged: &EditionMergedFromTwoLibraries, reader: Reader, slot: u32) {
@@ -9602,6 +9634,1652 @@ mod narrowing {
             written(&merged, &view, held.clone()),
             Ok(held.to_json()),
             "raw's entry as it was"
+        );
+    }
+
+    /// The digest of the one member whose path ends `/{file}`, `file` naming
+    /// its directory too, as `en` and `fr` share a file name.
+    fn digest(merged: &EditionMergedFromTwoLibraries, file: &str) -> String {
+        let digests: Vec<String> = merged
+            .state
+            .library
+            .conn()
+            .prepare("SELECT sha256 FROM member WHERE path LIKE '%/' || ?1")
+            .and_then(|mut stmt| stmt.query_map([file], |r| r.get(0))?.collect())
+            .unwrap_or_else(|e| panic!("{file}'s digest: {e}"));
+        assert_eq!(digests.len(), 1, "one member is `{file}`: {digests:?}");
+        digests.into_iter().next().expect("one digest")
+    }
+
+    /// Each note of a notes body as sent, by id.
+    fn sent_notes(body: &str) -> HashMap<String, serde_json::Value> {
+        let doc: serde_json::Value = serde_json::from_str(body).expect("a notes document");
+        doc["notes"]
+            .as_array()
+            .expect("a notes array")
+            .iter()
+            .map(|note| {
+                (
+                    note["id"].as_str().expect("an id").to_string(),
+                    note.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// O240: a note is sent the page it stands on, part3's second, beside
+    /// its slot: whole, and to Manga alone at its slot 3.
+    #[tokio::test]
+    async fn the_notes_read_sends_each_notes_page() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let part3 = serde_json::json!({
+            "sha256": digest(&merged, "m/Foo v01 part3.cbz"),
+            "nth": 0,
+            "page": 1,
+        });
+        let uri = notes_uri(&merged);
+        for (reader, slot) in [(Reader::Administrator, 6), (Reader::MangaOnly, 3)] {
+            hold_notes(
+                &merged,
+                reader,
+                &crate::notes::Notes {
+                    taiyaku_notes: taiyaku_library::NOTES_VERSION,
+                    work: merged.slug.clone(),
+                    notes: vec![note("n", "raw", 6)],
+                },
+            );
+            let (status, _, body) = fetched(&merged, reader, &uri, None).await;
+            assert_eq!(status, StatusCode::OK, "{reader:?}: {body}");
+            assert_eq!(anchors(&body), [anchor("n", "raw", slot)], "{reader:?}");
+            assert_eq!(sent_notes(&body)["n"]["at"], part3, "{reader:?}: {body}");
+        }
+    }
+
+    /// Spec §6 decision 5: a `stale` note is sent the page its row names, as
+    /// stored, though Kids alone's `raw` is narrowed and its slot translated.
+    #[tokio::test]
+    async fn a_stale_notes_read_sends_its_stored_anchor() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(
+            &merged,
+            Reader::KidsOnly,
+            &crate::notes::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
+                work: merged.slug.clone(),
+                notes: vec![note("k1", "raw", 2)],
+            },
+        );
+        merged
+            .state
+            .library
+            .conn()
+            .execute(
+                "UPDATE note SET at_sha256 = 'held-by-no-member' \
+                  WHERE id = 'k1' AND user_id = ?1",
+                [merged.user_id(Reader::KidsOnly)],
+            )
+            .expect("loses k1's page");
+
+        let (status, _, body) = fetched(&merged, Reader::KidsOnly, &notes_uri(&merged), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(anchors(&body), [anchor("k1", "raw", 0)], "{body}");
+        let k1 = &sent_notes(&body)["k1"];
+        assert_eq!(k1["stale"], true, "the fixture: k1's page is gone: {body}");
+        assert_eq!(
+            k1["at"],
+            serde_json::json!({ "sha256": "held-by-no-member", "nth": 0, "page": 0 }),
+            "{body}"
+        );
+    }
+
+    /// Spec gap 8: a `stale` note whose row names part2, a member Manga
+    /// alone is not sent, is sent no page, as the digest would hand Manga a
+    /// key its notes tag is hashed under. Page 9 is past part2's end.
+    #[tokio::test]
+    async fn a_stale_note_on_a_hidden_member_is_sent_no_anchor() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(
+            &merged,
+            Reader::MangaOnly,
+            &crate::notes::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
+                work: merged.slug.clone(),
+                notes: vec![note("n", "raw", 1)],
+            },
+        );
+        let part2 = digest(&merged, "k/Foo v01 part2.cbz");
+        merged
+            .state
+            .library
+            .conn()
+            .execute(
+                "UPDATE note SET at_sha256 = ?1, at_nth = 0, at_page = 9 \
+                  WHERE id = 'n' AND user_id = ?2",
+                rusqlite::params![part2, merged.user_id(Reader::MangaOnly)],
+            )
+            .expect("names part2's page 9");
+
+        let (status, _, body) =
+            fetched(&merged, Reader::MangaOnly, &notes_uri(&merged), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(anchors(&body), [anchor("n", "raw", 1)], "{body}");
+        let n = &sent_notes(&body)["n"];
+        assert_eq!(n["stale"], true, "the fixture: n's page is gone: {body}");
+        assert_eq!(n.get("at"), None, "{body}");
+        assert!(!body.contains(&part2), "part2's digest is not sent: {body}");
+    }
+
+    /// The notes body `reader` is sent over its one note `n` on `edition`'s
+    /// `slot`, its row naming `page` of copy 0 of the member of digest
+    /// `sha256`, or no page.
+    async fn sent_naming(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        (edition, slot): (&str, u32),
+        page: Option<(&str, u32)>,
+    ) -> String {
+        hold_notes(
+            merged,
+            reader,
+            &crate::notes::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
+                work: merged.slug.clone(),
+                notes: vec![note("n", edition, slot)],
+            },
+        );
+        let (sha256, page) = page.unzip();
+        merged
+            .state
+            .library
+            .conn()
+            .execute(
+                "UPDATE note SET at_sha256 = ?1, at_nth = ?2, at_page = ?3, at_half = NULL \
+                  WHERE id = 'n' AND user_id = ?4",
+                rusqlite::params![sha256, sha256.map(|_| 0), page, merged.user_id(reader)],
+            )
+            .expect("names the page");
+        let (status, _, body) = fetched(merged, reader, &notes_uri(merged), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    /// Spec gap 8 across editions: Kids alone is not sent `en`, so a `stale`
+    /// note on `raw` naming `en`'s member is sent no page.
+    #[tokio::test]
+    async fn a_stale_note_naming_an_edition_kids_is_not_sent_is_sent_no_anchor() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let en = digest(&merged, "m-en/Foo v01.cbz");
+        let body = sent_naming(&merged, Reader::KidsOnly, ("raw", 2), Some((&en, 0))).await;
+        assert_eq!(anchors(&body), [anchor("n", "raw", 0)], "{body}");
+        let n = &sent_notes(&body)["n"];
+        assert_eq!(n["stale"], true, "the fixture: n's page is gone: {body}");
+        assert_eq!(n.get("at"), None, "{body}");
+        assert!(!body.contains(&en), "en's digest is not sent: {body}");
+    }
+
+    /// Spec gap 8 on an edition sent whole: Manga alone sees `en` whole, and a
+    /// `stale` note there naming part2, which it is not sent, is sent no page.
+    #[tokio::test]
+    async fn a_stale_note_on_an_edition_sent_whole_naming_a_hidden_member_is_sent_no_anchor() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let part2 = digest(&merged, "k/Foo v01 part2.cbz");
+        let body = sent_naming(&merged, Reader::MangaOnly, ("en", 1), Some((&part2, 9))).await;
+        assert_eq!(anchors(&body), [anchor("n", "en", 1)], "{body}");
+        let n = &sent_notes(&body)["n"];
+        assert_eq!(n["stale"], true, "the fixture: n's page is gone: {body}");
+        assert_eq!(n.get("at"), None, "{body}");
+        assert!(!body.contains(&part2), "part2's digest is not sent: {body}");
+    }
+
+    /// A row naming no page is sent none, narrowed or not, as a position is:
+    /// the page its slot shows is not a page it was written with.
+    #[tokio::test]
+    async fn an_anchorless_note_on_a_narrowed_edition_is_sent_no_anchor() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let body = sent_naming(&merged, Reader::MangaOnly, ("raw", 6), None).await;
+        assert_eq!(anchors(&body), [anchor("n", "raw", 3)], "{body}");
+        let n = &sent_notes(&body)["n"];
+        assert_eq!(n.get("stale"), None, "the fixture: n is not stale: {body}");
+        assert_eq!(n.get("at"), None, "{body}");
+    }
+
+    /// A note's or a position's row: its slot and its four `at_` columns,
+    /// as stored.
+    type Row = (
+        u32,
+        Option<String>,
+        Option<u32>,
+        Option<u32>,
+        Option<String>,
+    );
+
+    /// `reader`'s row for note `id`, read by SQL, or `None` where it has none.
+    fn row(merged: &EditionMergedFromTwoLibraries, reader: Reader, id: &str) -> Option<Row> {
+        use rusqlite::OptionalExtension as _;
+        merged
+            .state
+            .library
+            .conn()
+            .query_row(
+                "SELECT slot, at_sha256, at_nth, at_page, at_half FROM note \
+                  WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![id, merged.user_id(reader)],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()
+            .unwrap_or_else(|e| panic!("{id}'s row: {e}"))
+    }
+
+    /// A row on `slot`, anchored on `page` of copy 0 of the member `sha256`.
+    fn on(slot: u32, sha256: &str, page: u32) -> Option<Row> {
+        Some((slot, Some(sha256.to_string()), Some(0), Some(page), None))
+    }
+
+    /// `page` of copy 0 of the member `sha256`, whole.
+    fn page_of(sha256: &str, page: u32) -> taiyaku_core::MemberPage {
+        taiyaku_core::MemberPage {
+            sha256: sha256.into(),
+            nth: 0,
+            page,
+            half: None,
+        }
+    }
+
+    /// `body`, a notes document as read, with `note` added.
+    fn with(body: &str, note: crate::notes::Note) -> String {
+        let mut doc: crate::notes::Notes = serde_json::from_str(body).expect("notes");
+        doc.notes.push(note);
+        serde_json::to_string(&doc).unwrap()
+    }
+
+    /// The refusal of note `id`'s page on `raw`, written out.
+    fn refused_page(merged: &EditionMergedFromTwoLibraries, id: &str) -> String {
+        format!(
+            "note `{id}` names a page that `raw` of work `{}` does not have now. Reload the \
+             page to see the notes as they are.",
+            merged.slug
+        )
+    }
+
+    /// O240: once Kids' directory is gone, slot 5 shows part3's fourth page,
+    /// where in the numbering the note was written in it showed part3's
+    /// first. Its `at` places it on that first page, slot 2.
+    #[tokio::test]
+    async fn a_note_written_with_an_old_slot_lands_on_the_page_its_at_names() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let part3 = digest(&merged, "m/Foo v01 part3.cbz");
+        remove_kids_directory(&merged);
+        reread(&merged);
+        let uri = notes_uri(&merged);
+        let (_, tag, body) = fetched(&merged, Reader::Administrator, &uri, None).await;
+
+        let n = crate::notes::Note {
+            at: Some(page_of(&part3, 0)),
+            ..note("n", "raw", 5)
+        };
+        let (status, _, answered) = put(
+            &merged,
+            Reader::Administrator,
+            &uri,
+            tag.as_deref(),
+            with(&body, n),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(
+            row(&merged, Reader::Administrator, "n"),
+            on(2, &part3, 0),
+            "part3's first page"
+        );
+    }
+
+    /// Spec §6 decision 5: part2 is no member Manga alone is sent, so a new
+    /// note on its page is refused, though the work holds it.
+    #[tokio::test]
+    async fn a_note_anchored_on_a_page_the_account_is_not_sent_is_refused() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let part2 = digest(&merged, "k/Foo v01 part2.cbz");
+        let uri = notes_uri(&merged);
+        let (_, tag, body) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+        let before = stored_notes(&merged, Reader::MangaOnly);
+
+        let m = crate::notes::Note {
+            at: Some(page_of(&part2, 0)),
+            ..note("m", "raw", 0)
+        };
+        let (status, _, answered) = put(
+            &merged,
+            Reader::MangaOnly,
+            &uri,
+            tag.as_deref(),
+            with(&body, m),
+        )
+        .await;
+        assert_eq!(
+            (status, answered),
+            (StatusCode::NOT_FOUND, refused_page(&merged, "m"))
+        );
+        assert_eq!(
+            stored_notes(&merged, Reader::MangaOnly),
+            before,
+            "the store is unchanged"
+        );
+    }
+
+    /// Part1 has two pages, so its page 9 is no page: refused, not read by
+    /// the slot sent beside it.
+    #[tokio::test]
+    async fn an_at_past_its_members_end_is_refused() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let part1 = digest(&merged, "m/Foo v01 part1.cbz");
+        let uri = notes_uri(&merged);
+        let (_, tag, body) = fetched(&merged, Reader::Administrator, &uri, None).await;
+
+        let n = crate::notes::Note {
+            at: Some(page_of(&part1, 9)),
+            ..note("n", "raw", 0)
+        };
+        let (status, _, answered) = put(
+            &merged,
+            Reader::Administrator,
+            &uri,
+            tag.as_deref(),
+            with(&body, n),
+        )
+        .await;
+        assert_eq!(
+            (status, answered),
+            (StatusCode::NOT_FOUND, refused_page(&merged, "n"))
+        );
+        assert_eq!(row(&merged, Reader::Administrator, "n"), None);
+    }
+
+    /// Spec §6 decision 8: an edit keeps a `stale` note's anchor. Kids alone
+    /// changes k1's words alone and sends back the page it read, which no
+    /// member holds: k1 stays `stale` on its stored slot and page.
+    #[tokio::test]
+    async fn an_edited_stale_note_keeps_its_stored_anchor() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(
+            &merged,
+            Reader::KidsOnly,
+            &crate::notes::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
+                work: merged.slug.clone(),
+                notes: vec![note("k1", "raw", 2)],
+            },
+        );
+        merged
+            .state
+            .library
+            .conn()
+            .execute(
+                "UPDATE note SET at_sha256 = 'held-by-no-member' \
+                  WHERE id = 'k1' AND user_id = ?1",
+                [merged.user_id(Reader::KidsOnly)],
+            )
+            .expect("loses k1's page");
+        let held = row(&merged, Reader::KidsOnly, "k1");
+        assert_eq!(held, on(2, "held-by-no-member", 0), "the fixture");
+        let uri = notes_uri(&merged);
+        let (_, tag, body) = fetched(&merged, Reader::KidsOnly, &uri, None).await;
+        let mut doc: crate::notes::Notes = serde_json::from_str(&body).expect("notes");
+        assert_eq!(
+            doc.notes,
+            [crate::notes::Note {
+                stale: true,
+                at: Some(page_of("held-by-no-member", 0)),
+                ..note("k1", "raw", 0)
+            }],
+            "the fixture: k1 is sent stale, on Kids' slot 0"
+        );
+        doc.notes[0].body = "k1's new words".into();
+
+        let (status, _, answered) = put(
+            &merged,
+            Reader::KidsOnly,
+            &uri,
+            tag.as_deref(),
+            serde_json::to_string(&doc).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(
+            stored_notes(&merged, Reader::KidsOnly).notes,
+            [crate::notes::Note {
+                body: "k1's new words".into(),
+                stale: true,
+                ..note("k1", "raw", 2)
+            }]
+        );
+        assert_eq!(
+            row(&merged, Reader::KidsOnly, "k1"),
+            held,
+            "its slot and page as stored"
+        );
+    }
+
+    /// Review Focus 2: Kids alone is not sent `en`, and echoes k3 there with
+    /// the page its row names, then with another, as a tab that read it
+    /// before a stamp re-keyed the row would. `at` is cleared on both sides
+    /// before `as_stored` compares k3 with the note held, so each is kept.
+    #[tokio::test]
+    async fn an_echo_of_a_note_the_account_is_not_sent_carrying_an_at_is_accepted() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(
+            &merged,
+            Reader::KidsOnly,
+            &crate::notes::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
+                work: merged.slug.clone(),
+                notes: vec![note("k1", "raw", 2), note("k3", "en", 1)],
+            },
+        );
+        let held = row(&merged, Reader::KidsOnly, "k3");
+        let Some((1, Some(sha256), Some(nth), Some(page), None)) = held.clone() else {
+            panic!("the fixture: k3 is anchored on a whole page of en: {held:?}");
+        };
+        let stored = taiyaku_core::MemberPage {
+            sha256,
+            nth,
+            page,
+            half: None,
+        };
+        let uri = notes_uri(&merged);
+
+        for at in [
+            stored.clone(),
+            taiyaku_core::MemberPage {
+                sha256: "re-keyed-since".into(),
+                ..stored
+            },
+        ] {
+            let (_, tag, body) = fetched(&merged, Reader::KidsOnly, &uri, None).await;
+            assert_eq!(
+                anchors(&body),
+                [anchor("k1", "raw", 0)],
+                "the fixture: k3 is not sent"
+            );
+            let k3 = crate::notes::Note {
+                at: Some(at.clone()),
+                ..note("k3", "en", 1)
+            };
+            let (status, _, answered) = put(
+                &merged,
+                Reader::KidsOnly,
+                &uri,
+                tag.as_deref(),
+                with(&body, k3),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{at:?}: {answered}");
+            assert_eq!(row(&merged, Reader::KidsOnly, "k3"), held, "{at:?}");
+            assert!(
+                stored_notes(&merged, Reader::KidsOnly)
+                    .notes
+                    .contains(&note("k3", "en", 1)),
+                "k3 as it was, {at:?}"
+            );
+        }
+    }
+
+    /// Spec §6 decision 5: a body without `at` is read by its slot. Once
+    /// Kids' directory is gone, slot 2 shows part3's first page.
+    #[tokio::test]
+    async fn a_note_sent_without_an_at_is_read_by_its_slot() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let part3 = digest(&merged, "m/Foo v01 part3.cbz");
+        remove_kids_directory(&merged);
+        reread(&merged);
+        let uri = notes_uri(&merged);
+        let (_, tag, body) = fetched(&merged, Reader::Administrator, &uri, None).await;
+
+        let (status, _, answered) = put(
+            &merged,
+            Reader::Administrator,
+            &uri,
+            tag.as_deref(),
+            with(&body, note("n", "raw", 2)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(row(&merged, Reader::Administrator, "n"), on(2, &part3, 0));
+    }
+
+    /// Spec §6 decision 4: n is read on part3's second page, slot 6, and
+    /// Kids' directory then goes. After the 412 the tab sends n as it read
+    /// it, slot 6 and all, past the six slots `raw` has now. Its `at` keeps
+    /// it on part3's second page, now slot 3.
+    #[tokio::test]
+    async fn an_untouched_note_echoed_after_a_renumbering_keeps_its_page() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(
+            &merged,
+            Reader::Administrator,
+            &crate::notes::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
+                work: merged.slug.clone(),
+                notes: vec![note("n", "raw", 6)],
+            },
+        );
+        let part3 = digest(&merged, "m/Foo v01 part3.cbz");
+        let uri = notes_uri(&merged);
+        let (_, read_tag, read) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        assert_eq!(
+            sent_notes(&read)["n"]["at"],
+            serde_json::json!({ "sha256": part3, "nth": 0, "page": 1 }),
+            "the fixture: {read}"
+        );
+        remove_kids_directory(&merged);
+        reread(&merged);
+
+        let (status, _, _) = put(
+            &merged,
+            Reader::Administrator,
+            &uri,
+            read_tag.as_deref(),
+            read.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "the old tag");
+        let (_, tag, _) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        let mut by_slot: crate::notes::Notes = serde_json::from_str(&read).expect("notes");
+        by_slot.clear_wire_fields();
+        let (status, _, _) = put(
+            &merged,
+            Reader::Administrator,
+            &uri,
+            tag.as_deref(),
+            serde_json::to_string(&by_slot).unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "the fixture: by its slot alone, n is past raw's end"
+        );
+
+        let (status, _, answered) =
+            put(&merged, Reader::Administrator, &uri, tag.as_deref(), read).await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(
+            row(&merged, Reader::Administrator, "n"),
+            on(3, &part3, 1),
+            "part3's second page"
+        );
+    }
+
+    /// The owner's ruling "Stamp remembers fingerprints": a stamp of part3
+    /// re-keys n2's row to part3's new digest, and the tab, after the stamp's
+    /// 412, sends n2 as it read it, naming the old one. That is forwarded to
+    /// the new digest, n2's stored anchor, so n2 is kept as held, and n1
+    /// beside it.
+    #[tokio::test]
+    async fn untouched_notes_echoed_after_a_stamp_are_kept() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(
+            &merged,
+            Reader::Administrator,
+            &crate::notes::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
+                work: merged.slug.clone(),
+                notes: vec![note("n1", "raw", 1), note("n2", "raw", 6)],
+            },
+        );
+        let part1 = digest(&merged, "m/Foo v01 part1.cbz");
+        let uri = notes_uri(&merged);
+        let (_, read_tag, read) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        let (_, new) = stamp_part3(&merged);
+        let (_, _, fresh) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        assert_eq!(
+            anchors(&fresh),
+            [anchor("n1", "raw", 1), anchor("n2", "raw", 6)],
+            "the fixture: {fresh}"
+        );
+        assert_eq!(
+            sent_notes(&fresh)["n2"]["at"],
+            serde_json::json!({ "sha256": new, "nth": 0, "page": 1 }),
+            "the fixture: n2 is sent the new digest"
+        );
+        let stamped = row(&merged, Reader::Administrator, "n2");
+        assert_eq!(stamped, on(6, &new, 1), "the fixture");
+
+        let (status, _, _) = put(
+            &merged,
+            Reader::Administrator,
+            &uri,
+            read_tag.as_deref(),
+            read.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "the stamp's 412");
+        let (_, tag, _) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        let (status, _, answered) =
+            put(&merged, Reader::Administrator, &uri, tag.as_deref(), read).await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(
+            row(&merged, Reader::Administrator, "n2"),
+            stamped,
+            "n2's row as the stamp left it"
+        );
+        assert_eq!(row(&merged, Reader::Administrator, "n1"), on(1, &part1, 1));
+        assert!(!answered.contains("stale"), "nothing is stale: {answered}");
+    }
+
+    /// The owner's ruling "Server keeps echoes" stops at a note another
+    /// device moved: tab 2 marks a region on n, whose page is gone, which
+    /// anchors it on part1's second page. Tab 1, after the 412, sends n as it
+    /// read it, and is refused in words that say to reload.
+    #[tokio::test]
+    async fn a_stale_note_another_device_moved_is_refused_with_reload_words() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(
+            &merged,
+            Reader::Administrator,
+            &crate::notes::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
+                work: merged.slug.clone(),
+                notes: vec![note("n", "raw", 1)],
+            },
+        );
+        merged
+            .state
+            .library
+            .conn()
+            .execute(
+                "UPDATE note SET at_sha256 = 'held-by-no-member' \
+                  WHERE id = 'n' AND user_id = ?1",
+                [merged.user_id(Reader::Administrator)],
+            )
+            .expect("loses n's page");
+        let part1 = digest(&merged, "m/Foo v01 part1.cbz");
+        let uri = notes_uri(&merged);
+        let (_, first_tag, first) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        assert_eq!(sent_notes(&first)["n"]["stale"], true, "the fixture");
+
+        let (_, tag, body) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        let region = crate::notes::Region {
+            x: 0.1,
+            y: 0.2,
+            w: 0.3,
+            h: 0.4,
+        };
+        let mut doc: crate::notes::Notes = serde_json::from_str(&body).expect("notes");
+        doc.notes = vec![crate::notes::Note {
+            region: Some(region),
+            at: Some(page_of(&part1, 1)),
+            ..note("n", "raw", 1)
+        }];
+        let (status, _, answered) = put(
+            &merged,
+            Reader::Administrator,
+            &uri,
+            tag.as_deref(),
+            serde_json::to_string(&doc).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "tab 2's move: {answered}");
+
+        let (status, _, _) = put(
+            &merged,
+            Reader::Administrator,
+            &uri,
+            first_tag.as_deref(),
+            first.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "tab 1's old tag");
+        let (_, tag, _) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        let (status, _, answered) =
+            put(&merged, Reader::Administrator, &uri, tag.as_deref(), first).await;
+        assert_eq!(
+            (status, answered),
+            (StatusCode::NOT_FOUND, refused_page(&merged, "n"))
+        );
+        assert_eq!(
+            stored_notes(&merged, Reader::Administrator).notes,
+            [crate::notes::Note {
+                region: Some(region),
+                ..note("n", "raw", 1)
+            }],
+            "the store holds tab 2's n"
+        );
+        assert_eq!(
+            row(&merged, Reader::Administrator, "n"),
+            on(1, &part1, 1),
+            "on part1's second page"
+        );
+    }
+
+    /// Part3 stamped as `stamp::record_rows` stamps it: a new digest on its
+    /// member, every row anchored on the old one moved to it, and the move
+    /// remembered; then the server re-reads the work. Answers the old digest
+    /// and the new.
+    fn stamp_part3(merged: &EditionMergedFromTwoLibraries) -> (String, String) {
+        let old = digest(merged, "m/Foo v01 part3.cbz");
+        // Hashed from the old, so a second stamp names a third digest.
+        let new = crate::notes::etag_for(&old).trim_matches('"').to_string();
+        {
+            let conn = merged.state.library.conn();
+            let stamped = conn
+                .execute(
+                    "UPDATE member SET sha256 = ?1 WHERE path LIKE '%/m/Foo v01 part3.cbz'",
+                    [&new],
+                )
+                .expect("stamps part3");
+            assert_eq!(stamped, 1, "the fixture: one member is part3");
+            for table in ["note", "progress"] {
+                conn.execute(
+                    &format!("UPDATE {table} SET at_sha256 = ?1 WHERE at_sha256 = ?2"),
+                    [&new, &old],
+                )
+                .expect("moves the rows on part3 to its new digest");
+            }
+            let work_id: i64 = conn
+                .query_row("SELECT id FROM work", [], |r| r.get(0))
+                .expect("the one work");
+            taiyaku_library::stamp::remember_moves(
+                &conn,
+                work_id,
+                "raw",
+                &std::collections::BTreeMap::from([((old.clone(), 0), (new.clone(), 0))]),
+            )
+            .expect("remembers the move");
+        }
+        reread(merged);
+        (old, new)
+    }
+
+    /// The administrator holds n2 on part3's second page, raw slot 6, and a
+    /// tab reads it: the tab's body, n2 naming part3's digest as it is now.
+    async fn n2_as_read(merged: &EditionMergedFromTwoLibraries) -> String {
+        hold_notes(
+            merged,
+            Reader::Administrator,
+            &crate::notes::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
+                work: merged.slug.clone(),
+                notes: vec![note("n2", "raw", 6)],
+            },
+        );
+        let part3 = digest(merged, "m/Foo v01 part3.cbz");
+        let (_, _, read) = fetched(merged, Reader::Administrator, &notes_uri(merged), None).await;
+        assert_eq!(
+            sent_notes(&read)["n2"]["at"],
+            serde_json::json!({ "sha256": part3, "nth": 0, "page": 1 }),
+            "the fixture: {read}"
+        );
+        read
+    }
+
+    /// `body` written as `reader` under the tag a read gives now, as a tab
+    /// writes after a 412: the status and the answer.
+    async fn written_now(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        body: String,
+    ) -> (StatusCode, String) {
+        let uri = notes_uri(merged);
+        let (_, tag, _) = fetched(merged, reader, &uri, None).await;
+        let (status, _, answered) = put(merged, reader, &uri, tag.as_deref(), body).await;
+        (status, answered)
+    }
+
+    /// The owner's ruling "Stamp remembers fingerprints": an edit keeps the
+    /// `at` it was read with, so a tab from before part3's stamp sends n2's
+    /// new words on the old digest, which is forwarded to the new one.
+    #[tokio::test]
+    async fn a_body_edit_from_before_a_stamp_saves() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let read = n2_as_read(&merged).await;
+        let (_, new) = stamp_part3(&merged);
+
+        let mut doc: crate::notes::Notes = serde_json::from_str(&read).expect("notes");
+        doc.notes[0].body = "n2's new words".into();
+        let (status, answered) = written_now(
+            &merged,
+            Reader::Administrator,
+            serde_json::to_string(&doc).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(
+            stored_notes(&merged, Reader::Administrator).notes,
+            [crate::notes::Note {
+                body: "n2's new words".into(),
+                ..note("n2", "raw", 6)
+            }]
+        );
+        assert_eq!(row(&merged, Reader::Administrator, "n2"), on(6, &new, 1));
+    }
+
+    /// As [`a_body_edit_from_before_a_stamp_saves`], for n2's colour.
+    #[tokio::test]
+    async fn a_colour_edit_from_before_a_stamp_saves() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let read = n2_as_read(&merged).await;
+        let (_, new) = stamp_part3(&merged);
+
+        let mut doc: crate::notes::Notes = serde_json::from_str(&read).expect("notes");
+        doc.notes[0].color = Some("yellow".into());
+        let (status, answered) = written_now(
+            &merged,
+            Reader::Administrator,
+            serde_json::to_string(&doc).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(
+            stored_notes(&merged, Reader::Administrator).notes,
+            [crate::notes::Note {
+                color: Some("yellow".into()),
+                ..note("n2", "raw", 6)
+            }]
+        );
+        assert_eq!(row(&merged, Reader::Administrator, "n2"), on(6, &new, 1));
+    }
+
+    /// A new note takes the page the tab shows, from its sidecar read
+    /// before part3's stamp: part3's first page, by the old digest.
+    #[tokio::test]
+    async fn a_new_note_from_before_a_stamp_saves() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let read = n2_as_read(&merged).await;
+        let (old, new) = stamp_part3(&merged);
+
+        let m = crate::notes::Note {
+            at: Some(page_of(&old, 0)),
+            ..note("m", "raw", 5)
+        };
+        let (status, answered) = written_now(&merged, Reader::Administrator, with(&read, m)).await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(row(&merged, Reader::Administrator, "m"), on(5, &new, 0));
+    }
+
+    /// A region marked re-anchors n2 from the tab's sidecar read before
+    /// part3's stamp: part3's second page, by the old digest.
+    #[tokio::test]
+    async fn a_region_move_from_before_a_stamp_saves() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let read = n2_as_read(&merged).await;
+        let (old, new) = stamp_part3(&merged);
+
+        let region = crate::notes::Region {
+            x: 0.1,
+            y: 0.2,
+            w: 0.3,
+            h: 0.4,
+        };
+        let mut doc: crate::notes::Notes = serde_json::from_str(&read).expect("notes");
+        doc.notes = vec![crate::notes::Note {
+            region: Some(region),
+            at: Some(page_of(&old, 1)),
+            ..note("n2", "raw", 6)
+        }];
+        let (status, answered) = written_now(
+            &merged,
+            Reader::Administrator,
+            serde_json::to_string(&doc).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(
+            stored_notes(&merged, Reader::Administrator).notes,
+            [crate::notes::Note {
+                region: Some(region),
+                ..note("n2", "raw", 6)
+            }]
+        );
+        assert_eq!(row(&merged, Reader::Administrator, "n2"), on(6, &new, 1));
+    }
+
+    /// Manga alone reads n2 at its slot 3. Part3 is then stamped and Manga
+    /// granted Kids, so n2 is slot 6. A grant, not a removal: a removal
+    /// derives, which puts the old digest back (O270). Forwarded, n2's old
+    /// digest finds the held note; unforwarded, its slot is not the one
+    /// held.
+    #[tokio::test]
+    async fn an_untouched_note_after_a_stamp_and_a_renumbering_saves() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        hold_notes(
+            &merged,
+            Reader::MangaOnly,
+            &crate::notes::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
+                work: merged.slug.clone(),
+                notes: vec![note("n2", "raw", 6)],
+            },
+        );
+        let part3 = digest(&merged, "m/Foo v01 part3.cbz");
+        let (_, _, read) = fetched(&merged, Reader::MangaOnly, &notes_uri(&merged), None).await;
+        assert_eq!(anchors(&read), [anchor("n2", "raw", 3)], "the fixture");
+        assert_eq!(
+            sent_notes(&read)["n2"]["at"],
+            serde_json::json!({ "sha256": part3, "nth": 0, "page": 1 }),
+            "the fixture: {read}"
+        );
+        let (_, new) = stamp_part3(&merged);
+        taiyaku_library::account::grant_library(
+            &merged.state.library.conn(),
+            merged.user_id(Reader::MangaOnly),
+            80,
+        )
+        .expect("grants Kids");
+        let (whole, _) = document(&merged, Reader::MangaOnly).await;
+        assert_eq!(
+            members(&whole, "raw").len(),
+            3,
+            "the fixture: Manga now sees `raw` whole: {whole}"
+        );
+
+        let (status, answered) = written_now(&merged, Reader::MangaOnly, read).await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(row(&merged, Reader::MangaOnly, "n2"), on(6, &new, 1));
+    }
+
+    /// A second stamp of part3 redirects the first's alias, so a tab from
+    /// before both forwards in one step to the digest part3 holds now.
+    #[tokio::test]
+    async fn a_body_edit_from_before_two_stamps_saves() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let read = n2_as_read(&merged).await;
+        let (_, mid) = stamp_part3(&merged);
+        let (was, new) = stamp_part3(&merged);
+        assert_eq!(was, mid, "the fixture: the second stamp moves the first's");
+
+        let mut doc: crate::notes::Notes = serde_json::from_str(&read).expect("notes");
+        doc.notes[0].body = "n2's new words".into();
+        let (status, answered) = written_now(
+            &merged,
+            Reader::Administrator,
+            serde_json::to_string(&doc).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(
+            stored_notes(&merged, Reader::Administrator).notes,
+            [crate::notes::Note {
+                body: "n2's new words".into(),
+                ..note("n2", "raw", 6)
+            }]
+        );
+        assert_eq!(row(&merged, Reader::Administrator, "n2"), on(6, &new, 1));
+    }
+
+    /// Only a digest a stamp moved is forwarded: one nothing names is
+    /// refused, though an alias of another digest on its occurrence stands.
+    #[tokio::test]
+    async fn a_digest_no_stamp_recorded_is_still_refused() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let read = n2_as_read(&merged).await;
+        let (_, new) = stamp_part3(&merged);
+
+        let m = crate::notes::Note {
+            at: Some(page_of("never-stamped", 0)),
+            ..note("m", "raw", 5)
+        };
+        let (status, answered) = written_now(&merged, Reader::Administrator, with(&read, m)).await;
+        assert_eq!(
+            (status, answered),
+            (StatusCode::NOT_FOUND, refused_page(&merged, "m"))
+        );
+        assert_eq!(row(&merged, Reader::Administrator, "m"), None);
+        assert_eq!(
+            row(&merged, Reader::Administrator, "n2"),
+            on(6, &new, 1),
+            "the store is unchanged"
+        );
+    }
+
+    /// Review Focus 9, O270: a derive before the next scan puts part3's
+    /// old digest back on its member, and the alias stays. A new note on
+    /// the old digest is on a page the document sent shows, so it is placed
+    /// there, not forwarded off it.
+    #[tokio::test]
+    async fn a_digest_the_member_still_shows_is_not_forwarded() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let read = n2_as_read(&merged).await;
+        let (old, new) = stamp_part3(&merged);
+        {
+            let conn = merged.state.library.conn();
+            let restored = conn
+                .execute(
+                    "UPDATE member SET sha256 = ?1 WHERE path LIKE '%/m/Foo v01 part3.cbz'",
+                    [&old],
+                )
+                .expect("puts part3's old digest back");
+            assert_eq!(restored, 1, "the fixture: one member is part3");
+            let work_id: i64 = conn
+                .query_row("SELECT id FROM work", [], |r| r.get(0))
+                .expect("the one work");
+            assert_eq!(
+                taiyaku_library::stamp::alias_of(&conn, work_id, "raw", &old, 0),
+                Ok(Some((new, 0))),
+                "the fixture: the alias stays"
+            );
+        }
+        reread(&merged);
+        let (doc, _) = document(&merged, Reader::Administrator).await;
+        assert_eq!(
+            doc["editions"]["raw"]["members"][2]["sha256"], old,
+            "the fixture: part3 is sent by its old digest: {doc}"
+        );
+
+        let m = crate::notes::Note {
+            at: Some(page_of(&old, 0)),
+            ..note("m", "raw", 5)
+        };
+        let (status, answered) = written_now(&merged, Reader::Administrator, with(&read, m)).await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(row(&merged, Reader::Administrator, "m"), on(5, &old, 0));
+    }
+
+    /// The owner's ruling "Server keeps echoes", where nothing forwards: a
+    /// fold or an edition rename leaves no alias of part3's stamp. The tab's
+    /// untouched n2, naming the old digest, is kept as held; its own edit is
+    /// refused in words that say to reload.
+    #[tokio::test]
+    async fn an_untouched_echo_no_alias_forwards_is_kept_and_an_edit_is_refused() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let read = n2_as_read(&merged).await;
+        let (_, new) = stamp_part3(&merged);
+        let forgotten = merged
+            .state
+            .library
+            .conn()
+            .execute("DELETE FROM stamp_alias", [])
+            .expect("forgets the stamp's aliases");
+        assert_eq!(forgotten, 1, "the fixture: the stamp's one alias");
+
+        let (status, answered) = written_now(&merged, Reader::Administrator, read.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(
+            row(&merged, Reader::Administrator, "n2"),
+            on(6, &new, 1),
+            "n2's row as the stamp left it"
+        );
+
+        let mut doc: crate::notes::Notes = serde_json::from_str(&read).expect("notes");
+        doc.notes[0].body = "n2's new words".into();
+        let (status, answered) = written_now(
+            &merged,
+            Reader::Administrator,
+            serde_json::to_string(&doc).unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (status, answered),
+            (StatusCode::NOT_FOUND, refused_page(&merged, "n2"))
+        );
+        assert_eq!(
+            stored_notes(&merged, Reader::Administrator).notes,
+            [note("n2", "raw", 6)],
+            "n2's words as held"
+        );
+    }
+
+    /// An alias read that fails is the library's failure, answered without
+    /// the store's words, and nothing is written.
+    #[tokio::test]
+    async fn a_failed_alias_read_is_answered_as_the_librarys_failure() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let read = n2_as_read(&merged).await;
+        let (_, new) = stamp_part3(&merged);
+        merged
+            .state
+            .library
+            .conn()
+            .execute("DROP TABLE stamp_alias", [])
+            .expect("fails every alias read");
+
+        let (status, answered) = written_now(&merged, Reader::Administrator, read).await;
+        assert_eq!(
+            (status, answered.as_str()),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the library could not answer this request; the server's log says why"
+            )
+        );
+        assert_eq!(row(&merged, Reader::Administrator, "n2"), on(6, &new, 1));
+    }
+
+    /// Pre-deploy decisions 2 and 3: part3 is made a copy of part1, so `raw`
+    /// holds one digest twice, and n is written on the second copy. A stamp of
+    /// the first alone moves n's row onto the pair the first copy held before,
+    /// and the second copy is then lost. n's echo names its own stored anchor,
+    /// which is not forwarded onto the stamped copy: n stays where it was.
+    #[tokio::test]
+    async fn a_lost_copys_stale_note_is_not_forwarded_onto_the_stamped_copy() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let copied = digest(&merged, "m/Foo v01 part1.cbz");
+        let set_part = |file: &str, sha256: &str| {
+            let set = merged
+                .state
+                .library
+                .conn()
+                .execute(
+                    "UPDATE member SET sha256 = ?1 WHERE path LIKE '%/m/Foo v01 ' || ?2",
+                    [sha256, file],
+                )
+                .expect("sets a member's digest");
+            assert_eq!(set, 1, "the fixture: one member is {file}");
+        };
+        set_part("part3.cbz", &copied);
+        reread(&merged);
+        hold_notes(
+            &merged,
+            Reader::Administrator,
+            &crate::notes::Notes {
+                taiyaku_notes: taiyaku_library::NOTES_VERSION,
+                work: merged.slug.clone(),
+                notes: vec![note("n", "raw", 5)],
+            },
+        );
+        assert_eq!(
+            row(&merged, Reader::Administrator, "n"),
+            Some((5, Some(copied.clone()), Some(1), Some(0), None)),
+            "the fixture: n on the second copy's first page"
+        );
+
+        let stamped = "5a".repeat(32);
+        set_part("part1.cbz", &stamped);
+        {
+            let conn = merged.state.library.conn();
+            conn.execute("UPDATE note SET at_nth = 0 WHERE id = 'n'", [])
+                .expect("moves n as the stamp's re-keying does");
+            let work_id: i64 = conn
+                .query_row("SELECT id FROM work", [], |r| r.get(0))
+                .expect("the one work");
+            taiyaku_library::stamp::remember_moves(
+                &conn,
+                work_id,
+                "raw",
+                &std::collections::BTreeMap::from([
+                    ((copied.clone(), 0), (stamped, 0)),
+                    ((copied.clone(), 1), (copied.clone(), 0)),
+                ]),
+            )
+            .expect("remembers the stamp's moves");
+        }
+        set_part("part3.cbz", "lost-since");
+        reread(&merged);
+        let held = row(&merged, Reader::Administrator, "n");
+        assert_eq!(
+            held,
+            on(5, &copied, 0),
+            "the fixture: n's row names the first copy's old pair"
+        );
+        let (_, _, read) = fetched(&merged, Reader::Administrator, &notes_uri(&merged), None).await;
+        assert_eq!(sent_notes(&read)["n"]["stale"], true, "the fixture: {read}");
+
+        let (status, answered) = written_now(&merged, Reader::Administrator, read).await;
+        assert_eq!(status, StatusCode::OK, "{answered}");
+        assert_eq!(
+            row(&merged, Reader::Administrator, "n"),
+            held,
+            "its slot and page as stored"
+        );
+    }
+
+    /// The refusal of a position's page on `raw`, written out.
+    fn refused_position(merged: &EditionMergedFromTwoLibraries) -> String {
+        format!(
+            "this position names a page that `raw` of work `{}` does not have",
+            merged.slug
+        )
+    }
+
+    /// `reader`'s position on `edition` as stored: its slot and its four
+    /// `at_` columns, read by SQL, or `None` where it has none.
+    fn position_row(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        edition: &str,
+    ) -> Option<Row> {
+        use rusqlite::OptionalExtension as _;
+        merged
+            .state
+            .library
+            .conn()
+            .query_row(
+                "SELECT slot, at_sha256, at_nth, at_page, at_half FROM progress \
+                  WHERE edition = ?1 AND user_id = ?2",
+                rusqlite::params![edition, merged.user_id(reader)],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()
+            .unwrap_or_else(|e| panic!("the position on {edition}: {e}"))
+    }
+
+    /// `body` written as `reader`'s position: the status and the answer.
+    async fn put_position(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+        body: &serde_json::Value,
+    ) -> (StatusCode, String) {
+        let (status, _, answered) = put(
+            merged,
+            reader,
+            &progress_uri(merged),
+            None,
+            body.to_string(),
+        )
+        .await;
+        (status, answered)
+    }
+
+    /// `reader`'s positions as it is sent them, whole.
+    async fn sent_positions(
+        merged: &EditionMergedFromTwoLibraries,
+        reader: Reader,
+    ) -> (Vec<serde_json::Value>, String) {
+        let (status, _, body) = fetched(merged, reader, &progress_uri(merged), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let doc: serde_json::Value = serde_json::from_str(&body).expect("a progress document");
+        let positions = doc["positions"].as_array().expect("an array").clone();
+        (positions, body)
+    }
+
+    /// Settled call 9a: once Kids' directory is gone, slot 5 shows part3's
+    /// fourth page, where in the numbering the turn was made in it showed
+    /// part3's first. Its `at` places it on that first page, slot 2.
+    #[tokio::test]
+    async fn a_position_written_with_an_old_slot_lands_on_the_page_its_at_names() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let part3 = digest(&merged, "m/Foo v01 part3.cbz");
+        remove_kids_directory(&merged);
+        reread(&merged);
+
+        let (status, answered) = put_position(
+            &merged,
+            Reader::Administrator,
+            &serde_json::json!({
+                "edition": "raw",
+                "slot": 5,
+                "at": { "sha256": part3, "nth": 0, "page": 0 }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{answered}");
+        assert_eq!(
+            positions(&merged, Reader::Administrator).await,
+            Some(vec![("raw".to_string(), 2)]),
+            "part3's first page, after part1's two"
+        );
+    }
+
+    /// Spec §6 decision 5: part2 is not in the document Manga alone is sent,
+    /// so a position on one of its pages is refused, and nothing is written.
+    #[tokio::test]
+    async fn a_position_anchored_on_a_page_the_account_is_not_sent_is_refused() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let part2 = digest(&merged, "k/Foo v01 part2.cbz");
+
+        let (status, answered) = put_position(
+            &merged,
+            Reader::MangaOnly,
+            &serde_json::json!({
+                "edition": "raw",
+                "slot": 1,
+                "at": { "sha256": part2, "nth": 0, "page": 1 }
+            }),
+        )
+        .await;
+        assert_eq!(
+            (status, answered),
+            (StatusCode::NOT_FOUND, refused_position(&merged))
+        );
+        assert_eq!(position_row(&merged, Reader::MangaOnly, "raw"), None);
+    }
+
+    /// Settled call 16: a tab from before part3's stamp turns to part3's
+    /// second page, naming the digest the stamp replaced, which is forwarded
+    /// to the new one.
+    #[tokio::test]
+    async fn a_page_turn_from_before_a_stamp_saves() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let (old, new) = stamp_part3(&merged);
+
+        let (status, answered) = put_position(
+            &merged,
+            Reader::Administrator,
+            &serde_json::json!({
+                "edition": "raw",
+                "slot": 6,
+                "at": { "sha256": old, "nth": 0, "page": 1 }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{answered}");
+        assert_eq!(
+            position_row(&merged, Reader::Administrator, "raw"),
+            on(6, &new, 1)
+        );
+    }
+
+    /// As [`a_page_turn_from_before_a_stamp_saves`], by a reader already on
+    /// part3's first page, a row the stamp re-keyed: a turn naming another
+    /// page is still forwarded.
+    #[tokio::test]
+    async fn a_page_turn_from_before_a_stamp_saves_over_a_row_held_on_the_edition() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        put_raw_as_the_administrator(&merged, 5).await;
+        let (old, new) = stamp_part3(&merged);
+        assert_eq!(
+            position_row(&merged, Reader::Administrator, "raw"),
+            on(5, &new, 0),
+            "the fixture: the row is on the new digest"
+        );
+
+        let (status, answered) = put_position(
+            &merged,
+            Reader::Administrator,
+            &serde_json::json!({
+                "edition": "raw",
+                "slot": 6,
+                "at": { "sha256": old, "nth": 0, "page": 1 }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{answered}");
+        assert_eq!(
+            position_row(&merged, Reader::Administrator, "raw"),
+            on(6, &new, 1)
+        );
+    }
+
+    /// Settled call 9b: the administrator stands on part2's second page, and
+    /// Kids' directory goes. A turn naming that page leaves the row as it is:
+    /// written, it would be anchored on the page its slot shows now.
+    #[tokio::test]
+    async fn a_position_naming_its_own_lost_page_is_left_as_it_is() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let part2 = digest(&merged, "k/Foo v01 part2.cbz");
+        put_raw_as_the_administrator(&merged, 3).await;
+        remove_kids_directory(&merged);
+        reread(&merged);
+        let held = position_row(&merged, Reader::Administrator, "raw");
+        assert_eq!(
+            held,
+            on(3, &part2, 1),
+            "the fixture: on part2's second page"
+        );
+
+        let (status, answered) = put_position(
+            &merged,
+            Reader::Administrator,
+            &serde_json::json!({
+                "edition": "raw",
+                "slot": 3,
+                "at": { "sha256": part2, "nth": 0, "page": 1 }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{answered}");
+        assert_eq!(
+            position_row(&merged, Reader::Administrator, "raw"),
+            held,
+            "its slot and page as stored"
+        );
+    }
+
+    /// Settled call 9d: a turn with no `at` is read by its slot in the
+    /// document sent, and range-checked there in O3's words.
+    #[tokio::test]
+    async fn a_position_sent_without_an_at_is_read_by_its_slot() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        remove_kids_directory(&merged);
+        reread(&merged);
+
+        let (status, answered) = put_position(
+            &merged,
+            Reader::Administrator,
+            &serde_json::json!({ "edition": "raw", "slot": 2 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{answered}");
+        assert_eq!(
+            positions(&merged, Reader::Administrator).await,
+            Some(vec![("raw".to_string(), 2)])
+        );
+
+        let (status, answered) = put_position(
+            &merged,
+            Reader::Administrator,
+            &serde_json::json!({ "edition": "raw", "slot": 99 }),
+        )
+        .await;
+        assert_eq!(
+            (status, answered),
+            (
+                StatusCode::NOT_FOUND,
+                format!(
+                    "`raw` has 6 slots in work `{}`; there is no slot 99",
+                    merged.slug
+                )
+            )
+        );
+    }
+
+    /// Settled call 10: a position is sent the page it stands on; one on a
+    /// page Manga alone is not sent, its fallback's page; one whose page is
+    /// gone, the page as stored beside its clamped slot; and one naming a
+    /// member Manga alone is not sent, no page (spec gap 8).
+    #[tokio::test]
+    async fn the_progress_read_sends_each_positions_page() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let part2 = digest(&merged, "k/Foo v01 part2.cbz");
+        let part3 = digest(&merged, "m/Foo v01 part3.cbz");
+
+        put_raw_as_the_administrator(&merged, 6).await;
+        let (sent, body) = sent_positions(&merged, Reader::Administrator).await;
+        assert_eq!(
+            (&sent[0]["slot"], &sent[0]["at"]),
+            (
+                &serde_json::json!(6),
+                &serde_json::json!({ "sha256": part3, "nth": 0, "page": 1 })
+            ),
+            "part3's second page: {body}"
+        );
+
+        let part1 = digest(&merged, "m/Foo v01 part1.cbz");
+        hold_position(&merged, Reader::MangaOnly, 3);
+        let (sent, body) = sent_positions(&merged, Reader::MangaOnly).await;
+        assert_eq!(
+            (&sent[0]["slot"], &sent[0]["at"]),
+            (
+                &serde_json::json!(1),
+                &serde_json::json!({ "sha256": part1, "nth": 0, "page": 1 })
+            ),
+            "part2's second page is hidden; its fallback is part1's second: {body}"
+        );
+        assert!(!body.contains(&part2), "part2's digest is not sent: {body}");
+
+        hold_position(&merged, Reader::MangaOnly, 1);
+        let changed = merged
+            .state
+            .library
+            .conn()
+            .execute(
+                "UPDATE progress SET at_sha256 = ?1, at_page = 9 WHERE user_id = ?2",
+                rusqlite::params![part2, merged.user_id(Reader::MangaOnly)],
+            )
+            .expect("names part2's page 9");
+        assert_eq!(changed, 1, "the fixture: Manga's one position");
+        let (sent, body) = sent_positions(&merged, Reader::MangaOnly).await;
+        assert_eq!(sent[0]["slot"], 1, "the fixture: {body}");
+        assert_eq!(sent[0].get("at"), None, "{body}");
+        assert!(!body.contains(&part2), "part2's digest is not sent: {body}");
+
+        put_raw_as_the_administrator(&merged, 3).await;
+        remove_kids_directory(&merged);
+        reread(&merged);
+        let (sent, body) = sent_positions(&merged, Reader::Administrator).await;
+        assert_eq!(
+            (&sent[0]["slot"], &sent[0]["at"]),
+            (
+                &serde_json::json!(3),
+                &serde_json::json!({ "sha256": part2, "nth": 0, "page": 1 })
+            ),
+            "part2's second page, as stored: {body}"
+        );
+    }
+
+    /// Spec gap 4: a turn back to the page a row already names is written,
+    /// so the edition turned in last is the one resumed. The rows' times
+    /// are set apart by SQL, as writes in one second tie.
+    #[tokio::test]
+    async fn a_position_turned_back_to_in_one_edition_is_the_one_resumed() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let part3 = digest(&merged, "m/Foo v01 part3.cbz");
+        let turn = serde_json::json!({
+            "edition": "raw",
+            "slot": 6,
+            "at": { "sha256": part3, "nth": 0, "page": 1 }
+        });
+        for body in [&turn, &serde_json::json!({ "edition": "en", "slot": 0 })] {
+            let (status, answered) = put_position(&merged, Reader::Administrator, body).await;
+            assert_eq!(status, StatusCode::NO_CONTENT, "{answered}");
+        }
+        for (edition, updated) in [
+            ("raw", "2026-01-01 00:00:00"),
+            ("en", "2026-01-02 00:00:00"),
+        ] {
+            let set = merged
+                .state
+                .library
+                .conn()
+                .execute(
+                    "UPDATE progress SET updated = ?1 WHERE edition = ?2 AND user_id = ?3",
+                    rusqlite::params![updated, edition, merged.user_id(Reader::Administrator)],
+                )
+                .expect("sets the row's time");
+            assert_eq!(set, 1, "the fixture: one row on {edition}");
+        }
+        assert_eq!(
+            positions(&merged, Reader::Administrator).await,
+            Some(vec![("en".to_string(), 0), ("raw".to_string(), 6)]),
+            "the fixture: en is the newer"
+        );
+
+        let (status, answered) = put_position(&merged, Reader::Administrator, &turn).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{answered}");
+        assert_eq!(
+            positions(&merged, Reader::Administrator).await,
+            Some(vec![("raw".to_string(), 6), ("en".to_string(), 0)]),
+            "raw, turned in last"
+        );
+    }
+
+    /// As [`a_lost_copys_stale_note_is_not_forwarded_onto_the_stamped_copy`],
+    /// for the administrator's position on the second copy's first page: a
+    /// turn re-sending the page its row stores is not forwarded onto the
+    /// stamped copy, and the row stays as it is.
+    #[tokio::test]
+    async fn a_lost_copys_position_is_not_forwarded_onto_the_stamped_copy() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let copied = digest(&merged, "m/Foo v01 part1.cbz");
+        let set_part = |file: &str, sha256: &str| {
+            let set = merged
+                .state
+                .library
+                .conn()
+                .execute(
+                    "UPDATE member SET sha256 = ?1 WHERE path LIKE '%/m/Foo v01 ' || ?2",
+                    [sha256, file],
+                )
+                .expect("sets a member's digest");
+            assert_eq!(set, 1, "the fixture: one member is {file}");
+        };
+        set_part("part3.cbz", &copied);
+        reread(&merged);
+        put_raw_as_the_administrator(&merged, 5).await;
+        assert_eq!(
+            position_row(&merged, Reader::Administrator, "raw"),
+            Some((5, Some(copied.clone()), Some(1), Some(0), None)),
+            "the fixture: on the second copy's first page"
+        );
+
+        set_part("part1.cbz", &"5a".repeat(32));
+        {
+            let conn = merged.state.library.conn();
+            conn.execute(
+                "UPDATE progress SET at_nth = 0 WHERE user_id = ?1",
+                [merged.user_id(Reader::Administrator)],
+            )
+            .expect("moves the row as the stamp's re-keying does");
+            let work_id: i64 = conn
+                .query_row("SELECT id FROM work", [], |r| r.get(0))
+                .expect("the one work");
+            taiyaku_library::stamp::remember_moves(
+                &conn,
+                work_id,
+                "raw",
+                &std::collections::BTreeMap::from([
+                    ((copied.clone(), 0), ("5a".repeat(32), 0)),
+                    ((copied.clone(), 1), (copied.clone(), 0)),
+                ]),
+            )
+            .expect("remembers the stamp's moves");
+        }
+        set_part("part3.cbz", "lost-since");
+        reread(&merged);
+        let held = position_row(&merged, Reader::Administrator, "raw");
+        assert_eq!(
+            held,
+            on(5, &copied, 0),
+            "the fixture: the row names the first copy's old pair"
+        );
+        let (sent, body) = sent_positions(&merged, Reader::Administrator).await;
+        let stored = serde_json::json!({ "sha256": copied, "nth": 0, "page": 0 });
+        assert_eq!(sent[0]["at"], stored, "the fixture: {body}");
+
+        let (status, answered) = put_position(
+            &merged,
+            Reader::Administrator,
+            &serde_json::json!({ "edition": "raw", "slot": 5, "at": stored }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{answered}");
+        assert_eq!(
+            position_row(&merged, Reader::Administrator, "raw"),
+            held,
+            "its slot and page as stored"
         );
     }
 }

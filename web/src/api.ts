@@ -6,6 +6,7 @@
  * fetching them into memory first would defeat both.
  */
 import type { NotesDoc } from './notes'
+import type { At } from './resolver'
 import type { TruthDoc } from './truth'
 
 const seg = (s: string) => encodeURIComponent(s)
@@ -474,6 +475,13 @@ export async function getSidecar(work: string): Promise<string> {
 export interface StoredProgress {
   edition: string
   slot: number
+  /**
+   * The page `slot` showed when the position was recorded: the server places
+   * the position by it ahead of `slot`, so a renumbering before the write
+   * cannot move it (O240). Sent, never read back: `getProgress` answers the
+   * slot alone.
+   */
+  at?: At
 }
 
 /** One position per edition, as the server stores them. */

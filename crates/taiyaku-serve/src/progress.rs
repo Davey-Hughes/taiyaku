@@ -12,10 +12,12 @@
 //! slug — to the numeric `work_id` those functions need
 //! (`works::find_row`, `works::row_id_for_write`).
 
-use taiyaku_core::Sidecar;
+use serde::Deserialize;
+use taiyaku_core::{MemberPage, Sidecar, SlotOf};
 use taiyaku_library::state::{self, Arrival, Numbering};
 use taiyaku_library::{Library, Position, Progress};
 
+use crate::view::View;
 use crate::works::{self, Mint, NoRow, Work};
 
 /// Every position this reader holds on this work, newest first.
@@ -28,7 +30,7 @@ use crate::works::{self, Mint, NoRow, Work};
 /// touching `progress` at all: `works::find_row` never creates a row.
 ///
 /// Each slot is in `numbered`, the document the reader's view was numbered
-/// from (O244).
+/// from (O244), and each `at` the page its row names, found or not (O240).
 ///
 /// # Errors
 ///
@@ -46,7 +48,7 @@ pub fn load(
     let Some(work_id) = works::find_row(&conn, work)? else {
         return Ok(Vec::new());
     };
-    taiyaku_library::state::progress_in(&conn, work_id, user_id, Numbering::Document(numbered))
+    state::progress_anchored_in(&conn, work_id, user_id, Numbering::Document(numbered))
 }
 
 /// Record where the reader got to, unless a save of theirs on this work that
@@ -85,6 +87,47 @@ pub fn store(
     )
     .map_err(NoRow::Failed)?;
     Ok(())
+}
+
+/// A position as a reader's `PUT` sends it: [`Progress`] and the page the
+/// slot showed in the reader's layout (O240). Serve's own, so `Progress`
+/// stays the library's write shape; unknown keys are ignored, as there.
+#[derive(Debug, Deserialize)]
+pub(crate) struct Body {
+    pub(crate) edition: String,
+    pub(crate) slot: u32,
+    #[serde(default)]
+    pub(crate) at: Option<MemberPage>,
+}
+
+/// What a position's `at` decides (settled call 9).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Placed {
+    /// Write it on this slot, in the account's numbering.
+    Slot(u32),
+    /// Leave the stored row as it is.
+    Kept,
+    /// Refuse it: a page the account is not sent, and not the row's.
+    Refused,
+}
+
+/// Where a position's `at` puts it on `edition` as `view` sends it, `stored`
+/// the page its row there names. A page found wins over the slot sent, a
+/// half no longer held going to its page's first slot (pre-deploy decision
+/// 6). Equality decides only a page not found, and writes nothing, since the
+/// writer would tie the row to the page its slot shows now. Asked first, it
+/// would skip the write that makes this edition the one resumed (spec gap 4).
+pub(crate) fn place(
+    view: &View,
+    edition: &str,
+    at: &MemberPage,
+    stored: Option<&MemberPage>,
+) -> Placed {
+    match view.slot_of_anchor(edition, at) {
+        Some(SlotOf::Exact(slot) | SlotOf::PageOnly(slot)) => Placed::Slot(slot),
+        None if stored == Some(at) => Placed::Kept,
+        None => Placed::Refused,
+    }
 }
 
 #[cfg(test)]

@@ -35,6 +35,7 @@ fn notes_doc(entries: &[(&str, &str, &str)]) -> Notes {
                 created: (*updated).to_string(),
                 updated: (*updated).to_string(),
                 stale: false,
+                at: None,
             })
             .collect(),
     }
@@ -129,6 +130,7 @@ fn a_note_with_a_region_round_trips() {
             created: "2026-08-14T10:00:00Z".to_string(),
             updated: "2026-08-14T10:00:00Z".to_string(),
             stale: false,
+            at: None,
         }],
     };
 
@@ -1744,6 +1746,7 @@ fn a_raw_note(id: &str, slot: u32) -> Note {
         created: "2026-11-10T10:00:00Z".into(),
         updated: "2026-11-10T10:00:00Z".into(),
         stale: false,
+        at: None,
     }
 }
 
@@ -2133,6 +2136,36 @@ fn stamp_the_volume(volume: &crate::tests::VolumeAcrossTwoDirectories) {
     crate::stamp::apply(&conn, volume.work_id, 1, &planned).expect("stamps");
 }
 
+/// A stamp remembers each archive's digest before it and after it, on the
+/// work and edition it moved the anchors on, so a save from a tab that read
+/// before the stamp can be forwarded (O240); a digest it moved to is no alias.
+#[test]
+fn a_stamp_remembers_each_digest_it_moved() {
+    let volume = crate::tests::a_volume_across_two_directories();
+    let was: Vec<String> = ["c001", "c002"]
+        .iter()
+        .map(|chapter| digest_of(&volume.conn(), chapter))
+        .collect();
+
+    stamp_the_volume(&volume);
+
+    let conn = volume.conn();
+    for (chapter, was) in ["c001", "c002"].iter().zip(&was) {
+        let now = digest_of(&conn, chapter);
+        assert_ne!(&now, was, "the fixture: the stamp moved {chapter}'s digest");
+        assert_eq!(
+            crate::stamp::alias_of(&conn, volume.work_id, "raw", was, 0),
+            Ok(Some((now, 0))),
+            "{chapter}'s digest before the stamp names its digest after it"
+        );
+    }
+    assert_eq!(
+        crate::stamp::alias_of(&conn, volume.work_id, "raw", &digest_of(&conn, "c001"), 0),
+        Ok(None),
+        "a digest no stamp moved names nothing"
+    );
+}
+
 /// Both directories scanned again and the library derived, which records
 /// each stamped archive's new digest.
 fn rescan_the_volume(volume: &crate::tests::VolumeAcrossTwoDirectories) {
@@ -2211,5 +2244,105 @@ fn a_derive_between_a_stamp_and_the_next_scan_leaves_the_rows_on_their_page() {
             vec![("raw".to_string(), 1)]
         ),
         "c002's second page, now slot 1"
+    );
+}
+
+/// The volume with a note `n` and a position on c002's second page (slot 4),
+/// then the directory `gone` picks removed; beside it the page both rows were
+/// written with, read before the directory went.
+fn on_c002s_second_page_then_without(
+    gone: fn(&crate::tests::VolumeAcrossTwoDirectories) -> i64,
+) -> (crate::tests::VolumeAcrossTwoDirectories, MemberPage) {
+    let volume = crate::tests::a_volume_across_two_directories();
+    put_raw(&volume.conn(), volume.work_id, 1, 4);
+    hold_notes(&volume.conn(), volume.work_id, vec![a_raw_note("n", 4)]);
+    let page = an_anchor(&digest_of(&volume.conn(), "c002"), 0, 1, None);
+    crate::scan::remove_root(&volume.conn(), gone(&volume)).expect("removes the directory");
+    (volume, page)
+}
+
+type NoteAt = (u32, bool, Option<MemberPage>);
+
+/// One of `state::`'s reads of one reader's rows on one work.
+type Read<T> = fn(&Connection, i64, i64, Numbering<'_>) -> Result<T, String>;
+
+/// Each note's slot, `stale` and `at` as `read` answers them.
+fn notes_at(volume: &crate::tests::VolumeAcrossTwoDirectories, read: Read<Notes>) -> Vec<NoteAt> {
+    read(&volume.conn(), volume.work_id, 1, Numbering::Store)
+        .expect("reads the notes")
+        .notes
+        .into_iter()
+        .map(|note| (note.slot, note.stale, note.at))
+        .collect()
+}
+
+/// Each position's edition, slot and `at` as `read` answers them.
+fn positions_at(
+    volume: &crate::tests::VolumeAcrossTwoDirectories,
+    read: Read<Vec<Position>>,
+) -> Vec<(String, u32, Option<MemberPage>)> {
+    read(&volume.conn(), volume.work_id, 1, Numbering::Store)
+        .expect("reads the positions")
+        .into_iter()
+        .map(|position| (position.edition, position.slot, position.at))
+        .collect()
+}
+
+/// The anchored read answers a note's page as stored, found or not (O240).
+/// With B gone the note is stale at slot 4, past c001's three slots, so no
+/// page derived from its slot could be the one answered.
+#[test]
+fn the_anchored_notes_read_answers_each_notes_stored_page() {
+    let (volume, page) = on_c002s_second_page_then_without(|volume| volume.a.id);
+    assert_eq!(
+        notes_at(&volume, notes_anchored_in),
+        vec![(1, false, Some(page))],
+        "c002's second page, now slot 1"
+    );
+
+    let (volume, page) = on_c002s_second_page_then_without(|volume| volume.b.id);
+    assert_eq!(
+        notes_at(&volume, notes_anchored_in),
+        vec![(4, true, Some(page))],
+        "stale at its stored slot, its page as stored"
+    );
+}
+
+/// The anchored read answers a position's page as stored, found or not
+/// (O240). With B gone the position is clamped to c001's last slot (2),
+/// whose own page is c001's, not the one answered.
+#[test]
+fn the_anchored_progress_read_answers_each_positions_stored_page() {
+    let (volume, page) = on_c002s_second_page_then_without(|volume| volume.a.id);
+    assert_eq!(
+        positions_at(&volume, progress_anchored_in),
+        vec![("raw".to_string(), 1, Some(page))],
+        "c002's second page, now slot 1"
+    );
+
+    let (volume, page) = on_c002s_second_page_then_without(|volume| volume.b.id);
+    assert_eq!(
+        positions_at(&volume, progress_anchored_in),
+        vec![("raw".to_string(), 2, Some(page))],
+        "clamped to c001's last slot, its page as stored"
+    );
+}
+
+/// The plain reads answer no `at` for the same rows: an export and every
+/// other caller but serve read through them (O240).
+#[test]
+fn the_plain_reads_answer_no_page() {
+    let (volume, _) = on_c002s_second_page_then_without(|volume| volume.a.id);
+    assert_eq!(notes_at(&volume, notes_in), vec![(1, false, None)]);
+    assert_eq!(
+        positions_at(&volume, progress_in),
+        vec![("raw".to_string(), 1, None)]
+    );
+
+    let (volume, _) = on_c002s_second_page_then_without(|volume| volume.b.id);
+    assert_eq!(notes_at(&volume, notes_in), vec![(4, true, None)]);
+    assert_eq!(
+        positions_at(&volume, progress_in),
+        vec![("raw".to_string(), 2, None)]
     );
 }

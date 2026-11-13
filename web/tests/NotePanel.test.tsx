@@ -119,6 +119,30 @@ describe('NotePanel, editing', () => {
     )
   })
 
+  it('says, under the anchor line, that a note whose page is gone is shown where it was stored', () => {
+    const host = mount(
+      <NotePanel
+        {...baseProps({ draft: note({ edition: 'raw', stale: true }) })}
+      />,
+    )
+    const anchorLine = host.querySelector('p')
+    expect(anchorLine?.textContent).toBe('raw slot 3 · whole page')
+    const under = anchorLine?.nextElementSibling
+    expect(under?.matches('p.reader-muted')).toBe(true)
+    expect(under?.textContent).toBe(
+      'The page this note was written on is no longer in raw, so it is shown where it was stored. Marking a region moves it onto the page shown.',
+    )
+  })
+
+  it('says nothing of a gone page for a note still on its page', () => {
+    const host = mount(
+      <NotePanel {...baseProps({ draft: note({ edition: 'raw' }) })} />,
+    )
+    expect([...host.querySelectorAll('p')].map((p) => p.textContent)).toEqual([
+      'raw slot 3 · whole page',
+    ])
+  })
+
   it('shows the body, focuses it, and puts the caret at the end', () => {
     const host = mount(
       <NotePanel {...baseProps({ draft: note({ body: 'hello there' }) })} />,
@@ -483,7 +507,7 @@ describe('NotePanel, reviewing', () => {
     expect(btn.disabled).toBe(true)
   })
 
-  it('exports exactly the document the server holds, named for the work', () => {
+  it('exports the notes document as a download named for the work', () => {
     const doc: NotesDoc = { work: 'gotoubun-v01', notes: [note()] }
     let capturedHref = ''
     let capturedDownload = ''
@@ -584,6 +608,39 @@ describe('NotePanel, reviewing', () => {
     expect(row?.disabled).toBe(false)
     expect(row?.textContent).not.toContain('not reachable')
     expect((row?.textContent?.match(/slot/g) ?? []).length).toBe(1)
+  })
+
+  it('ends the row of a note whose page is gone by saying so, and no other row', () => {
+    const gone = entry({
+      here: 3,
+      note: note({ id: 'gone', edition: 'en-mono', slot: 3, stale: true }),
+    })
+    const travelledGone = entry({
+      here: 7,
+      note: note({ id: 'far', edition: 'raw', slot: 5, stale: true }),
+    })
+    const kept = entry({
+      here: 4,
+      note: note({ id: 'kept', edition: 'en-mono', slot: 4 }),
+    })
+    const host = mount(
+      <NotePanel
+        {...baseProps({
+          mode: 'review',
+          draft: undefined,
+          entries: [gone, travelledGone, kept],
+          viewing: 'en-mono',
+        })}
+      />,
+    )
+    const meta = entryRows(host).map(
+      (row) => row.querySelector('.reader-meta')?.textContent,
+    )
+    expect(meta).toEqual([
+      'en-mono slot 3 · no longer on its page',
+      'raw slot 5 · en-mono slot 7 · no longer on its page',
+      'en-mono slot 4',
+    ])
   })
 
   it('shows a note body, or a marker for an empty one', () => {

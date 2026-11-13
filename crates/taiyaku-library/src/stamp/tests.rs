@@ -1738,6 +1738,7 @@ fn a_stamp_whose_new_address_is_taken_rekeys_the_document_where_it_stands_and_le
 
 /// A stamp that fails after renaming its archives, here in the transaction
 /// that records their digests, has stamped those files whatever the rows say.
+/// The rows roll back, the aliases of the digests it moved among them (O240).
 /// The document follows the files as on a cut, so the rescan that records the
 /// digests carries a document that names them, and a rebuild keeps the chapter.
 #[test]
@@ -1750,6 +1751,10 @@ fn a_stamp_whose_transaction_fails_after_the_renames_still_rekeys_the_hand_docum
         (
             "recording the new content key",
             "BEFORE UPDATE OF content_key ON work",
+        ),
+        (
+            "remembering the digests the stamp moved",
+            "BEFORE INSERT ON stamp_alias",
         ),
     ] {
         let fixture = one_work();
@@ -1793,6 +1798,11 @@ fn a_stamp_whose_transaction_fails_after_the_renames_still_rekeys_the_hand_docum
             .query_row("SELECT sha256 FROM member", [], |r| r.get(0))
             .expect("the member's digest");
         assert_eq!(row, old, "and the rows were rolled back");
+        let aliases: i64 = fixture
+            .conn()
+            .query_row("SELECT COUNT(*) FROM stamp_alias", [], |r| r.get(0))
+            .expect("counts the aliases");
+        assert_eq!(aliases, 0, "and no alias stands ({statement})");
         let document = document_at_address(&fixture);
         assert!(
             document.contains(&new) && !document.contains(&old),
@@ -2308,6 +2318,7 @@ fn a_note(id: &str, edition: &str, slot: u32) -> crate::Note {
         created: "2026-11-10T10:00:00Z".into(),
         updated: "2026-11-10T10:00:00Z".into(),
         stale: false,
+        at: None,
     }
 }
 
@@ -2876,5 +2887,140 @@ fn a_stamp_moves_each_editions_rows_to_its_own_copy() {
         position_anchors(&conn, work_id),
         digests,
         "each edition's position on its own copy's digest"
+    );
+}
+
+/// Works 1 and 2 and nothing else: the aliases' foreign key needs the works.
+fn two_works() -> crate::Library {
+    let library = crate::Library::open_in_memory().expect("an in-memory library opens");
+    library
+        .conn()
+        .execute_batch(
+            "INSERT INTO work (id, content_key, slug, title, reading, hub)
+             VALUES (1, 'k1', 's1', 'One', 'rtl', 'raw'), (2, 'k2', 's2', 'Two', 'rtl', 'raw');",
+        )
+        .expect("seeds two works");
+    library
+}
+
+type Pair<'a> = (&'a str, u32);
+
+/// `pairs` as [`rekey_anchors`] hands them over, before and after.
+fn moves(pairs: &[(Pair<'_>, Pair<'_>)]) -> BTreeMap<(String, u32), (String, u32)> {
+    pairs
+        .iter()
+        .map(|((was, was_nth), (now, now_nth))| {
+            (
+                ((*was).to_string(), *was_nth),
+                ((*now).to_string(), *now_nth),
+            )
+        })
+        .collect()
+}
+
+/// One stamp's moves on work 1's `raw`.
+fn remember_on_raw(conn: &Connection, pairs: &[(Pair<'_>, Pair<'_>)]) {
+    remember_moves(conn, 1, "raw", &moves(pairs)).expect("remembers the moves");
+}
+
+/// What work 1's `raw` forwards `(sha256, nth)` to.
+fn raw_alias(conn: &Connection, (sha256, nth): Pair<'_>) -> Option<(String, u32)> {
+    alias_of(conn, 1, "raw", sha256, nth).expect("reads the alias")
+}
+
+fn to((sha256, nth): Pair<'_>) -> Option<(String, u32)> {
+    Some((sha256.to_string(), nth))
+}
+
+/// A second stamp of a stamped archive forwards the first stamp's digest to
+/// the newest as well, so one lookup reaches the member as it is now.
+#[test]
+fn a_second_stamp_forwards_the_first_ones_digest_to_the_newest() {
+    let library = two_works();
+    let conn = library.conn();
+    remember_on_raw(&conn, &[(("A", 0), ("B", 0))]);
+    remember_on_raw(&conn, &[(("B", 0), ("C", 0))]);
+
+    assert_eq!(
+        raw_alias(&conn, ("A", 0)),
+        to(("C", 0)),
+        "the first stamp's digest names the newest"
+    );
+    assert_eq!(
+        raw_alias(&conn, ("B", 0)),
+        to(("C", 0)),
+        "the second stamp's digest names it too"
+    );
+}
+
+/// A stamp that gives an archive back a digest it had leaves no alias from
+/// that digest: a member holds it again, so it names nothing to forward.
+#[test]
+fn a_digest_a_stamp_gives_back_is_no_alias() {
+    let library = two_works();
+    let conn = library.conn();
+    remember_on_raw(&conn, &[(("A", 0), ("B", 0))]);
+    remember_on_raw(&conn, &[(("B", 0), ("A", 0))]);
+
+    assert_eq!(raw_alias(&conn, ("A", 0)), None, "no alias to itself");
+    assert_eq!(
+        raw_alias(&conn, ("B", 0)),
+        to(("A", 0)),
+        "the digest it left names the one it has"
+    );
+}
+
+/// A copy the stamp does not rewrite moves its occurrence when a copy before
+/// it leaves the digest. Each move is remembered as it is: the pair one copy
+/// leaves is the pair the other takes, and is not forwarded again.
+#[test]
+fn an_occurrence_that_moves_without_its_digest_is_remembered_beside_the_digest() {
+    let library = two_works();
+    let conn = library.conn();
+    remember_on_raw(&conn, &[(("X", 0), ("Y", 0)), (("X", 1), ("X", 0))]);
+
+    assert_eq!(
+        raw_alias(&conn, ("X", 0)),
+        to(("Y", 0)),
+        "the rewritten copy"
+    );
+    assert_eq!(
+        raw_alias(&conn, ("X", 1)),
+        to(("X", 0)),
+        "the copy after it, now the digest's first"
+    );
+}
+
+/// An alias is one work's and one edition's: a digest can stand in two works,
+/// and an occurrence counts one edition's members. A stamp on another work or
+/// edition neither reads nor replaces it.
+#[test]
+fn an_alias_is_its_own_works_and_editions_alone() {
+    let library = two_works();
+    let conn = library.conn();
+    remember_on_raw(&conn, &[(("A", 0), ("B", 0))]);
+
+    assert_eq!(
+        alias_of(&conn, 2, "raw", "A", 0),
+        Ok(None),
+        "work 2's raw has no alias"
+    );
+    assert_eq!(
+        alias_of(&conn, 1, "en", "A", 0),
+        Ok(None),
+        "work 1's en has no alias"
+    );
+
+    let elsewhere = moves(&[(("C", 0), ("D", 0))]);
+    remember_moves(&conn, 2, "raw", &elsewhere).expect("remembers work 2's stamp");
+    remember_moves(&conn, 1, "en", &elsewhere).expect("remembers work 1's en stamp");
+    assert_eq!(
+        (
+            raw_alias(&conn, ("A", 0)),
+            alias_of(&conn, 2, "raw", "A", 0),
+            alias_of(&conn, 1, "en", "A", 0),
+        ),
+        (to(("B", 0)), Ok(None), Ok(None)),
+        "work 1's raw keeps its alias, and lends it to neither"
     );
 }

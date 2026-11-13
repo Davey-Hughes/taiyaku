@@ -11,6 +11,7 @@ import {
   patchAlignment,
   putNotes,
   putProgress,
+  type StoredProgress,
 } from './api'
 import {
   alignedBreaksCached,
@@ -1007,7 +1008,10 @@ function App({ work, onLeave }: AppProps) {
       // pure, and a clock and a random source are neither.
       const id = ulid(Date.now(), cryptoRandom)
       const now = new Date().toISOString()
-      setEditing((open) => newNote(open, shown, hereRef.current, id, now))
+      const anchor = current.resolver.memberPage(shown.edition, shown.slot)
+      setEditing((open) =>
+        newNote(open, shown, hereRef.current, id, now, anchor),
+      )
       setNotesNotice(undefined)
     }
     /**
@@ -1162,9 +1166,22 @@ function App({ work, onLeave }: AppProps) {
   // built value straight to `useRef` is the wrong shape — and a test that
   // watches it not rebuild.
   const writeProgress = useConstant(() =>
-    debounce<[string, { edition: string; slot: number }]>((work, position) => {
+    debounce<[string, StoredProgress]>((work, position) => {
       putProgress(work, position).catch((err: unknown) => console.error(err))
     }, PROGRESS_DEBOUNCE_MS),
+  )
+  // The page a turn lands on is named here, as the turn is recorded, and not
+  // when the debounce fires: by then a correction's re-read may have swapped
+  // the resolver, and the new layout can show another page at the same slot
+  // (O240). `sessionRef`'s effect is declared above `useProgressWrite`'s, so
+  // in the same commit it has already run and holds this slot's session.
+  // Built once, since `useProgressWrite` re-runs its effect when it changes.
+  const recordProgress = useConstant(
+    () => (work: string, position: { edition: string; slot: number }) => {
+      const { edition, slot } = position
+      const at = sessionRef.current?.resolver.memberPage(edition, slot)
+      writeProgress(work, { edition, slot, at })
+    },
   )
 
   /**
@@ -1211,7 +1228,7 @@ function App({ work, onLeave }: AppProps) {
     session?.work,
     session?.state.authority,
     session?.state.slot,
-    writeProgress,
+    recordProgress,
   )
 
   // The reading-time readout's raw material — when this session started, the
@@ -2350,8 +2367,10 @@ function App({ work, onLeave }: AppProps) {
     )
     const id = started.noteId ?? draft.id
     const now = new Date().toISOString()
+    const anchorOf = (edition: string, slot: number) =>
+      sessionRef.current?.resolver.memberPage(edition, slot)
     setEditing((open) => {
-      const next = anchorNote(open, id, anchor, now)
+      const next = anchorNote(open, id, anchor, now, anchorOf)
       // The same draft back means this session never had that note to anchor,
       // so there is nothing to write either.
       if (next === open) return open

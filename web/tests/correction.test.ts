@@ -45,6 +45,8 @@ function offsetResolver(): Resolver {
       return page >= 0 && page < 10 ? { page, via: 'direct' } : undefined
     },
     chapterAt: () => undefined,
+    memberPage: (edition, index) =>
+      index < 10 ? { sha256: edition, nth: 0, page: index } : undefined,
     credits: () => [],
   }
 }

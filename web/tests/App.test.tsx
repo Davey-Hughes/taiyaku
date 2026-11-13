@@ -2379,7 +2379,7 @@ describe('correcting a pairing', () => {
     })
   })
 
-  it('a landed write installs the new resolver, frees the old one, and moves the reader', async () => {
+  it('a landed write installs the new resolver, frees the old one, and moves the reader on a page the new one names', async () => {
     // `resolve` held open rather than resolved immediately: call-count
     // assertions alone cannot tell "freed after the replacement exists" from
     // "freed before it does" when both land in the same microtask flush, so
@@ -2406,7 +2406,16 @@ describe('correcting a pairing', () => {
     // wire — no replacement resolver exists yet, so the outgoing one must
     // still be intact.
     expect(first.dispose).not.toHaveBeenCalled()
-    const landedResolver = disposable()
+    // Its layout shows the next page at every slot, so the move's `at` says
+    // which resolver named it: the freed one is the wrong answer (O240).
+    const landedResolver: ReturnType<typeof disposable> = {
+      ...disposable(),
+      memberPage: (edition, index) => ({
+        sha256: edition,
+        nth: 0,
+        page: index + 1,
+      }),
+    }
     releaseResolve(landedResolver)
     await settle()
     // The outgoing resolver's wasm sidecar would otherwise be stranded — and it
@@ -2417,6 +2426,13 @@ describe('correcting a pairing', () => {
     await settle()
     expect(pages(host)).toEqual([expect.stringContaining('/vol-01/en/pages/3')])
     expect(host.textContent).not.toContain('Pick the')
+    await advance(400)
+    expect(ports.putProgress).toHaveBeenCalledTimes(1)
+    expect(ports.putProgress).toHaveBeenCalledWith(WORK, {
+      edition: 'en',
+      slot: 3,
+      at: { sha256: 'en', nth: 0, page: 4 },
+    })
   })
 
   it('a stale validator re-reads the document and keeps the assertion', async () => {
@@ -3553,6 +3569,7 @@ describe('the panels, driven by pointer rather than key', () => {
     expect(ports.putProgress).toHaveBeenCalledWith(WORK, {
       edition: 'raw',
       slot: 4,
+      at: { sha256: 'raw', nth: 0, page: 4 },
     })
   })
 
@@ -3672,6 +3689,180 @@ describe('a notes read whose response carried no ETag', () => {
   })
 })
 
+// ---- the page each write names (O240) ----------------------------------------
+
+/**
+ * A note and a position are each sent with the page they were made on (`at`),
+ * which the server places them by ahead of the slot. `fakeResolver`'s
+ * `memberPage` names the edition as the digest and the slot's own page.
+ */
+describe('the page each write names — O240', () => {
+  /**
+   * A key pressed with no `act` around it, as a reader's is: the turn and the
+   * effects that record it run when React schedules them, not when `act`
+   * flushes them. The flag is off for the press only, so React does not
+   * report the update as unwrapped.
+   */
+  async function turnPage(key: string) {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = false
+    try {
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }),
+      )
+      await new Promise((resolve) => realSetTimeout(resolve, 0))
+    } finally {
+      globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    }
+    await settle()
+  }
+
+  it('sends a new note with the page it was made on', async () => {
+    const host = await open()
+    press('n')
+    type(host.querySelector('textarea') as HTMLTextAreaElement, 'a word')
+    await advance(700)
+    expect(ports.putNotes).toHaveBeenCalledTimes(1)
+    const sent = writeAt(0)[2].notes
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toEqual(
+      expect.objectContaining({ edition: 'raw', slot: 2, body: 'a word' }),
+    )
+    expect(sent[0].at).toEqual({ sha256: 'raw', nth: 0, page: 2 })
+  })
+
+  it('moves a note whose page is gone onto the page its slot shows, once a region is drawn on it', async () => {
+    ports.getNotes.mockResolvedValue({
+      doc: {
+        work: WORK,
+        notes: [
+          {
+            id: 'gone-1',
+            edition: 'raw',
+            slot: 2,
+            body: 'its page went',
+            created: '2026-01-01T00:00:00.000Z',
+            updated: '2026-01-01T00:00:00.000Z',
+            at: { sha256: 'removed', nth: 1, page: 9 },
+            stale: true,
+          },
+        ],
+      },
+      etag: 'n1',
+    })
+    const host = await open()
+    press('r')
+    click(
+      host.querySelector(
+        '[aria-label="Notes on this page"] button',
+      ) as HTMLButtonElement,
+    )
+    expect(host.querySelector('textarea')?.value).toBe('its page went')
+    expect(dialog(host, 'Note')?.textContent).toContain(
+      'The page this note was written on is no longer in raw',
+    )
+    const page = [...host.querySelectorAll('img')].find((img) =>
+      (img.getAttribute('src') ?? '').includes('/raw/pages/2'),
+    ) as HTMLImageElement
+    pointer(page, 'pointerdown', { x: 10, y: 10 })
+    pointer(page, 'pointermove', { x: 40, y: 60 })
+    pointer(page, 'pointerup', { x: 40, y: 60 })
+    expect(dialog(host, 'Note')?.textContent).not.toContain(
+      'The page this note was written on is no longer in raw',
+    )
+    await advance(700)
+    expect(ports.putNotes).toHaveBeenCalledTimes(1)
+    const sent = writeAt(0)[2].notes.find((n) => n.id === 'gone-1')
+    expect(sent?.region).toBeDefined()
+    expect(sent?.at).toEqual({ sha256: 'raw', nth: 0, page: 2 })
+    expect(sent).not.toHaveProperty('stale')
+  })
+
+  it('sends a turn with the page it lands on', async () => {
+    const host = await open()
+    await turnPage('ArrowRight')
+    expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/1')])
+    expect(ports.putProgress).not.toHaveBeenCalled()
+    await advance(400)
+    expect(ports.putProgress).toHaveBeenCalledTimes(1)
+    expect(ports.putProgress).toHaveBeenCalledWith(WORK, {
+      edition: 'raw',
+      slot: 1,
+      at: { sha256: 'raw', nth: 0, page: 1 },
+    })
+  })
+
+  /**
+   * A turn's page is named by the layout it was made in (O240). A correction's
+   * 412 re-read installs a new resolver and keeps the slot, so it can land
+   * inside a turn's wait. Its layout shows the next page at every slot, as a
+   * renumbering would; the old one is freed.
+   */
+  it('names the page by the layout the turn was made in, though the resolver changes before the write leaves', async () => {
+    ports.patchAlignment.mockRejectedValue(
+      new Error('correcting vol-01: 412 this work changed since you read it'),
+    )
+    const reread: ReturnType<typeof disposable> = {
+      ...disposable(),
+      memberPage: (edition, index) => ({
+        sha256: edition,
+        nth: 0,
+        page: index + 1,
+      }),
+    }
+    const first = resolver
+    const host = await open()
+    ports.getSidecarWithEtag.mockResolvedValue({
+      json: sidecarJson('fragmented'),
+      etag: 's9',
+    })
+    ports.wasmResolver.mockImplementation(async () => reread)
+    await turnPage('ArrowRight')
+    press('c')
+    pick(host, 3)
+    const confirm = button(host, 'Confirm')
+    await act(async () => {
+      confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await new Promise((resolve) => realSetTimeout(resolve, 0))
+    })
+    expect(first.dispose).toHaveBeenCalledTimes(1)
+    expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/1')])
+    expect(ports.putProgress).not.toHaveBeenCalled()
+    await advance(400)
+    expect(ports.putProgress).toHaveBeenCalledTimes(1)
+    expect(ports.putProgress).toHaveBeenLastCalledWith(WORK, {
+      edition: 'raw',
+      slot: 1,
+      at: { sha256: 'raw', nth: 0, page: 1 },
+    })
+    // The next turn is named by the re-read's layout, so the swap was in
+    // place before the first write left.
+    press('Escape')
+    await turnPage('ArrowRight')
+    expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/0')])
+    await advance(400)
+    expect(ports.putProgress).toHaveBeenCalledTimes(2)
+    expect(ports.putProgress).toHaveBeenLastCalledWith(WORK, {
+      edition: 'raw',
+      slot: 0,
+      at: { sha256: 'raw', nth: 0, page: 1 },
+    })
+  })
+
+  it('sends two turns inside one wait as one write, naming the last page', async () => {
+    const host = await open()
+    await turnPage('ArrowRight')
+    await turnPage('ArrowRight')
+    expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/0')])
+    await advance(400)
+    expect(ports.putProgress).toHaveBeenCalledTimes(1)
+    expect(ports.putProgress).toHaveBeenCalledWith(WORK, {
+      edition: 'raw',
+      slot: 0,
+      at: { sha256: 'raw', nth: 0, page: 0 },
+    })
+  })
+})
+
 // ---- what leaves the tab ----------------------------------------------------
 
 describe('what survives the tab going away', () => {
@@ -3698,6 +3889,7 @@ describe('what survives the tab going away', () => {
     expect(ports.putProgress).toHaveBeenCalledWith(WORK, {
       edition: 'raw',
       slot: 1,
+      at: { sha256: 'raw', nth: 0, page: 1 },
     })
   })
 
@@ -3708,6 +3900,7 @@ describe('what survives the tab going away', () => {
     expect(ports.putProgress).toHaveBeenCalledWith(WORK, {
       edition: 'raw',
       slot: 1,
+      at: { sha256: 'raw', nth: 0, page: 1 },
     })
   })
 

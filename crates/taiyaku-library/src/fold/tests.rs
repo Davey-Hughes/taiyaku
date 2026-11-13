@@ -118,6 +118,7 @@ fn seed_note(conn: &Connection, work_id: i64, edition: &str, slot: u32) {
                 created: "2026-08-27T09:00:00Z".to_string(),
                 updated: "2026-08-27T09:00:00Z".to_string(),
                 stale: false,
+                at: None,
             }],
         },
     )
@@ -1425,6 +1426,7 @@ fn the_stranded_message_pairs_each_count_with_the_table_it_came_from() {
                     created: "2026-08-27T09:00:00Z".to_string(),
                     updated: "2026-08-27T09:00:00Z".to_string(),
                     stale: false,
+                    at: None,
                 })
                 .collect(),
         },
@@ -1520,6 +1522,7 @@ fn the_shared_note_refusal_counts_the_ids_and_shows_a_few() {
                         created: "2026-08-27T09:00:00Z".to_string(),
                         updated: "2026-08-27T09:00:00Z".to_string(),
                         stale: false,
+                        at: None,
                     })
                     .collect(),
             },
@@ -1566,6 +1569,7 @@ fn shared_note(edition: &str) -> Note {
         created: "2026-08-27T09:00:00Z".to_string(),
         updated: "2026-08-27T09:00:00Z".to_string(),
         stale: false,
+        at: None,
     }
 }
 
@@ -3601,6 +3605,7 @@ fn note_copies_are_one_note_by_the_slot_each_answers_whatever_their_anchors() {
             created: "2026-09-15T00:00:00Z".to_string(),
             updated: "2026-09-15T00:00:00Z".to_string(),
             stale: false,
+            at: None,
         }],
     );
     join_spread(&conn, 2, "colour", 1);

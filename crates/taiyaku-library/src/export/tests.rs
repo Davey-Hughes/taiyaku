@@ -68,6 +68,7 @@ fn a_work_with_notes_and_progress(conn: &rusqlite::Connection, dir: &TempDir) ->
                 created: "2026-08-14T10:00:00Z".to_string(),
                 updated: "2026-08-14T10:00:00Z".to_string(),
                 stale: false,
+                at: None,
             }],
         },
     )
@@ -593,6 +594,7 @@ fn a_note_whose_page_is_gone_is_exported_at_its_slot_without_stale() {
                 created: "2026-11-10T10:00:00Z".to_string(),
                 updated: "2026-11-10T10:00:00Z".to_string(),
                 stale: false,
+                at: None,
             }],
         },
     )
@@ -627,6 +629,98 @@ fn a_note_whose_page_is_gone_is_exported_at_its_slot_without_stale() {
             "updated": "2026-11-10T10:00:00Z",
         }]),
         "{text}"
+    );
+}
+
+/// An export carries no page and no `stale` (O240, spec §6 decision 7): an
+/// import derives each row's page from its slot, and an older build's `Note`
+/// refuses a key it does not know. A note on `a`, one on `b` that `b`'s
+/// going leaves stale, and a position on `b`, each written with its page.
+#[test]
+fn an_export_carries_no_page_and_no_stale_mark() {
+    let dir = tempdir();
+    let library = crate::Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let path = dir.path().join("taiyaku.json");
+    let of = |members: &str| {
+        Sidecar::from_json(&format!(
+            r#"{{"taiyaku":1,"work":{{"title":"T","reading":"rtl"}},
+                 "editions":{{"raw":{{"label":"R","members":[{members}]}}}},
+                 "hub":"raw","alignments":[]}}"#
+        ))
+        .expect("parses")
+    };
+    let a = r#"{"path":"raw/a.cbz","sha256":"aa","pages":3}"#;
+    let b = r#"{"path":"raw/b.cbz","sha256":"bb","pages":4}"#;
+    let id = crate::import::sidecar(&conn, &of(&format!("{a},{b}")), &path).expect("import");
+    let note = |id: &str, slot: u32| crate::Note {
+        id: id.to_string(),
+        edition: "raw".to_string(),
+        slot,
+        region: None,
+        color: None,
+        body: format!("{id}'s words"),
+        created: "2026-11-10T10:00:00Z".to_string(),
+        updated: "2026-11-10T10:00:00Z".to_string(),
+        stale: false,
+        at: None,
+    };
+    crate::state::put_notes(
+        &conn,
+        id,
+        THE_READER,
+        &crate::Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
+            work: "t".to_string(),
+            notes: vec![note("01H", 1), note("02H", 4)],
+        },
+    )
+    .expect("put_notes");
+    crate::state::put_progress(
+        &conn,
+        id,
+        THE_READER,
+        &crate::Progress {
+            edition: "raw".to_string(),
+            slot: 4,
+        },
+    )
+    .expect("put_progress");
+    crate::import::sidecar(&conn, &of(a), &path).expect("imports without b");
+    let numbering = crate::state::Numbering::Store;
+    let notes = crate::state::notes_anchored_in(&conn, id, THE_READER, numbering)
+        .expect("reads the notes")
+        .notes;
+    assert_eq!(
+        notes
+            .iter()
+            .map(|note| (note.stale, note.at.as_ref().map(|at| at.sha256.as_str())))
+            .collect::<Vec<_>>(),
+        [(false, Some("aa")), (true, Some("bb"))],
+        "the fixture: each note has a page, and 02H is stale"
+    );
+    let positions = crate::state::progress_anchored_in(&conn, id, THE_READER, numbering)
+        .expect("reads the positions");
+    assert_eq!(
+        positions
+            .iter()
+            .map(|position| position.at.as_ref().map(|at| at.sha256.as_str()))
+            .collect::<Vec<_>>(),
+        [Some("bb")],
+        "the fixture: the position has a page"
+    );
+
+    work(&conn, id, THE_READER, Some(dir.path())).expect("export");
+    let read = |name: &str| std::fs::read_to_string(dir.path().join("t").join(name)).expect(name);
+    let notes_json = read("taiyaku.notes.json");
+    let progress_json = read("taiyaku.progress.json");
+    for (name, text) in [("notes", &notes_json), ("progress", &progress_json)] {
+        assert!(!text.contains("\"at\""), "{name} carries no `at`: {text}");
+        assert!(!text.contains("sha256"), "{name} carries no digest: {text}");
+    }
+    assert!(
+        !notes_json.contains("\"stale\""),
+        "notes carry no `stale`: {notes_json}"
     );
 }
 
@@ -1117,6 +1211,7 @@ fn note_for(conn: &rusqlite::Connection, work_id: i64, user_id: i64, id: &str, b
                 created: "2026-08-18T00:00:00Z".to_string(),
                 updated: "2026-08-18T00:00:00Z".to_string(),
                 stale: false,
+                at: None,
             }],
         },
     )

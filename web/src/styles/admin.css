@@ -1633,6 +1633,14 @@
   max-width: 60ch;
 }
 
+/* A position or note on a work that stays losing its page is a cost the
+   counts do not show either (O244), so it is drawn as strongly as they are. */
+.remove-root .pages-gone,
+.remove-library .pages-gone {
+  font-weight: 600;
+  max-width: 60ch;
+}
+
 .remove-root .irreversible,
 .unlink-root .kept,
 .remove-user .irreversible,

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use taiyaku_core::{Edition, FromFull, Member, Narrowed, Sidecar};
+use taiyaku_core::{Edition, FromFull, Member, MemberPage, Narrowed, Sidecar, SlotOf};
 use taiyaku_library::account::Access;
 use taiyaku_library::browse::SeenMember;
 
@@ -234,6 +234,53 @@ impl View {
             Some(narrowed) => narrowed.slot_to_full(slot, self.sidecar.work.reading),
             None => Some(slot),
         }
+    }
+
+    /// The page sent beside sent `slot` of `edition` (O240), `stored` the
+    /// one its row names and `resolves` whether that is found. A row naming
+    /// none is sent none, as the page its slot shows is not one it was written
+    /// with. Narrowed, a found page is the one `slot` shows as sent, its copy
+    /// counted among the members sent. Any other goes as stored, so its echo
+    /// matches the row (spec §6 decision 5), unless [`Self::hides`] its digest.
+    pub(crate) fn anchor_sent(
+        &self,
+        edition: &str,
+        slot: u32,
+        stored: Option<&MemberPage>,
+        resolves: bool,
+    ) -> Option<MemberPage> {
+        let stored = stored?;
+        if resolves && let Some(narrowed) = self.narrowed(edition) {
+            return narrowed
+                .edition()
+                .member_page(slot, self.sidecar.work.reading);
+        }
+        (!self.hides(&stored.sha256)).then(|| stored.clone())
+    }
+
+    /// Whether `sha256` is a member's this account is not sent, in any
+    /// edition, and no member's it is sent: the digests its tag is keyed by
+    /// ([`Self::etag_naming_numbering`]), so that the tag cannot be enumerated
+    /// (spec gap 8). Never for `Access::Every`, which is sent every member.
+    fn hides(&self, sha256: &str) -> bool {
+        let carries = |sidecar: &Sidecar| {
+            sidecar
+                .editions
+                .values()
+                .flat_map(|edition| &edition.members)
+                .any(|member| member.sha256 == sha256)
+        };
+        self.visible.is_some() && carries(&self.full) && !carries(&self.sidecar)
+    }
+
+    /// Where `at`, a page in this account's numbering, stands in `edition` as
+    /// it is sent: the slot a write's `at` places a note or a position on
+    /// (O240). `None` for an edition not sent, or a page or copy it lacks.
+    pub(crate) fn slot_of_anchor(&self, edition: &str, at: &MemberPage) -> Option<SlotOf> {
+        self.sidecar
+            .editions
+            .get(edition)?
+            .slot_of(at, self.sidecar.work.reading)
     }
 }
 

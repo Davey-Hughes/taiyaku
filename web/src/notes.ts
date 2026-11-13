@@ -1,6 +1,6 @@
 import type { ArtworkHug } from './modules/fit'
 import { nextColour } from './palette'
-import type { Resolver } from './resolver'
+import type { At, Resolver } from './resolver'
 
 /**
  * A rectangle marked on a note's slot, in fractions of the **page** that slot
@@ -59,6 +59,20 @@ export interface Note {
   body: string
   created: string
   updated: string
+  /**
+   * The page the note was made on, in the account's numbering: the server
+   * places the note by it ahead of `slot`, so a renumbering between read and
+   * write cannot move it (O240). As read, or from `Resolver.memberPage` where
+   * this tab makes or moves the note; an untouched note keeps the one it was
+   * read with. Never exported (`notesJson`).
+   */
+  at?: At
+  /**
+   * The server's mark for a note whose page is no longer in its edition: it
+   * is drawn at its stored slot. A body or colour edit keeps it; a region
+   * marked re-anchors the note and drops it (`anchorNote`). Never exported.
+   */
+  stale?: boolean
 }
 
 export interface NotesDoc {
@@ -801,9 +815,9 @@ export function shownNote(draft: Draft): Note | undefined {
  * rather than from the whole work, since telling one note from another only
  * matters where they are drawn together.
  *
- * `id` and `now` are arguments rather than minted here: a rule that reaches
- * for a clock and a random source is a rule that cannot be tested for anything
- * except not crashing.
+ * `id`, `now` and `anchor` are arguments rather than minted here: a clock and
+ * a random source would leave the rule testable for nothing but not crashing,
+ * and this module holds no resolver to name the page `at` shows.
  */
 export function newNote(
   draft: Draft,
@@ -811,6 +825,7 @@ export function newNote(
   here: NoteHere[],
   id: string,
   now: string,
+  anchor: At | undefined,
 ): Draft {
   const fresh: Note = {
     id,
@@ -820,6 +835,7 @@ export function newNote(
     body: '',
     created: now,
     updated: now,
+    at: anchor,
   }
   return {
     panel: 'edit',
@@ -886,18 +902,24 @@ export function grabNote(draft: Draft, note: Note): Draft {
  * always the one the panel was showing when it began. A note this session has
  * not touched is not anchored: the same draft comes back, since the drag had
  * nothing to write onto.
+ *
+ * The note is put on the page its slot shows now (`anchorOf`), so a `stale`
+ * note marked here is stale no more.
  */
 export function anchorNote(
   draft: Draft,
   id: string,
   region: Region,
   now: string,
+  anchorOf: (edition: string, slot: number) => At | undefined,
 ): Draft {
   const note = draft.edits[id]
   if (!note) return draft
+  const { stale: _dropped, ...kept } = note
+  const at = anchorOf(note.edition, note.slot)
   return {
     ...draft,
-    edits: { ...draft.edits, [id]: { ...note, region, updated: now } },
+    edits: { ...draft.edits, [id]: { ...kept, region, updated: now, at } },
   }
 }
 
@@ -1004,12 +1026,14 @@ export function listPlacement(
 /**
  * The exported document, formatted to be read by a person as well as parsed.
  *
- * Exactly what the server holds — the same shape, not a rendering — so an
- * export can be put back. A prose rendering would be a second format to keep
- * in step with the first, and this one is already the interchange format.
+ * The server's own shape, not a rendering, so an export can be put back. It
+ * stays anchor-free (spec decision 7): `at` and `stale` are what a read adds,
+ * and an older build's `library import` refuses a field it does not know. A
+ * prose rendering would be a second format to keep in step with the first.
  */
 export function notesJson(doc: NotesDoc): string {
-  return JSON.stringify(doc, null, 2)
+  const notes = doc.notes.map(({ at: _at, stale: _stale, ...kept }) => kept)
+  return JSON.stringify({ ...doc, notes }, null, 2)
 }
 
 /** What an exported file is called: the work's own id, plus the server's suffix. */

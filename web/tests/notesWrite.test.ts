@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest'
 import type { FetchedNotes } from '../src/api'
 import { mergeOver, type Note, type NotesDoc } from '../src/notes'
 import { saveNotes, writeGate, type NotesPorts } from '../src/notesWrite'
+import type { At } from '../src/resolver'
 
 const WORK = 'gotoubun'
 const T = '2026-08-09T10:00:00.000Z'
@@ -302,6 +303,45 @@ describe('saveNotes', () => {
       note('only-theirs'),
       note('only-ours'),
     ])
+  })
+
+  // A renumbering moves the slots and mints a new validator, so the retry is
+  // the write that has to carry each note's page (O240): this reader's notes
+  // with the page each was given, the other device's with the page the
+  // re-read sent.
+  it('sends each note’s anchor on the retry, mine and theirs', async () => {
+    const page = (sha256: string, n: number): At => ({
+      sha256,
+      nth: 0,
+      page: n,
+    })
+    const s = server([note('a')])
+    const mine = s.etag
+    const doc = s.doc
+    s.elsewhere([
+      { ...note('a', 'theirs'), at: page('t', 1) },
+      { ...note('only-theirs'), at: page('t', 2), stale: true },
+    ])
+    const ours: Note[] = [
+      { ...note('a', 'ours'), at: page('m', 3) },
+      { ...note('only-ours'), at: { ...page('m', 4), half: 'left' } },
+    ]
+
+    await saveNotes(WORK, mine, doc, ours, s.ports)
+
+    expect(s.puts).toHaveLength(2)
+    const sent = s.puts[1].doc.notes
+    const byId = (id: string) => sent.find((n) => n.id === id)
+    expect(sent).toHaveLength(3)
+    expect(byId('a')?.body).toBe('ours')
+    expect(byId('a')?.at).toEqual({ sha256: 'm', nth: 0, page: 3 })
+    expect(byId('only-ours')?.at).toEqual({
+      sha256: 'm',
+      nth: 0,
+      page: 4,
+      half: 'left',
+    })
+    expect(byId('only-theirs')?.at).toEqual({ sha256: 't', nth: 0, page: 2 })
   })
 
   // 8 — a control. Anything that is not a stale validator is not retried.

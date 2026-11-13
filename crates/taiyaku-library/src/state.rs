@@ -31,15 +31,15 @@
 //! different kind of thing, and where its merge rule actually lives.
 //!
 //! **A position or a note names the page it was written on, beside its
-//! slot** (O244): the member's digest, which copy of it, the page within it
-//! and the half. [`put_progress_at`] and [`put_notes_in`] write them from the
-//! layout the slot is numbered in, and [`progress_in`] and [`notes_in`]
-//! resolve them against the layout the slot is read in, so a change to the
-//! members or spread flags around the page leaves the row on it, unless an
-//! earlier copy of its archive in the edition goes and the copies renumber
-//! (`Edition::slot_of`). The stored slot is the fallback, for a row that
-//! names no page or whose page is gone; `resolve_position` and
-//! `resolve_note` hold the rules.
+//! slot** (O244): the member's digest, which copy, the page and the half.
+//! [`put_progress_at`] and [`put_notes_in`] write them from the layout the
+//! slot is numbered in, and [`progress_in`] and [`notes_in`] resolve them
+//! against the layout the slot is read in, so a change to the members or
+//! spread flags around the page leaves the row on it, unless an earlier copy
+//! of its archive goes and the copies renumber (`Edition::slot_of`). The
+//! stored slot is the fallback, for a row whose page is gone or unnamed
+//! (`resolve_position`, `resolve_note`). Only [`progress_anchored_in`] and
+//! [`notes_anchored_in`] answer the stored page too, as `at`, for serve (O240).
 //!
 //! **One layout per request** ([`Numbering`]). A server numbers its reader's
 //! slots in its own copy of the work, which trails the store's for a moment
@@ -51,6 +51,7 @@
 //! validation all stay in `taiyaku-serve`.** This module is rows in, rows out.
 
 use std::borrow::Cow;
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
@@ -96,6 +97,37 @@ pub fn progress_in(
     user_id: i64,
     numbering: Numbering<'_>,
 ) -> Result<Vec<Position>, String> {
+    read_progress(conn, work_id, user_id, numbering, |position, _| position)
+}
+
+/// [`progress_in`], each position's `at` the page its row names, as stored,
+/// whether or not `numbering` holds it: what serve sends a reader to echo
+/// (O240). No other read fills `at`, so an export carries none.
+///
+/// # Errors
+///
+/// As [`progress`].
+pub fn progress_anchored_in(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    numbering: Numbering<'_>,
+) -> Result<Vec<Position>, String> {
+    read_progress(conn, work_id, user_id, numbering, |position, at| Position {
+        at,
+        ..position
+    })
+}
+
+/// Each position resolved in `numbering`, handed to `answer` with the page
+/// its row names.
+fn read_progress(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    numbering: Numbering<'_>,
+    answer: fn(Position, Option<MemberPage>) -> Position,
+) -> Result<Vec<Position>, String> {
     let mut statement = conn
         .prepare(
             "SELECT edition, slot, updated, at_sha256, at_nth, at_page, at_half FROM progress
@@ -110,6 +142,7 @@ pub fn progress_in(
                     edition: row.get(0)?,
                     slot: row.get(1)?,
                     updated: row.get(2)?,
+                    at: None,
                 },
                 AtColumns {
                     sha256: row.get(3)?,
@@ -141,7 +174,7 @@ pub fn progress_in(
                 position.slot,
                 at.as_ref(),
             );
-            Ok(position)
+            Ok(answer(position, at))
         })
         .collect()
 }
@@ -489,6 +522,153 @@ pub(crate) fn resolve_note(
     }
 }
 
+/// A row by its primary key: `(user_id, work_id, edition)` for a position,
+/// `(user_id, work_id, id)` for a note.
+type RowKey = (i64, i64, String);
+
+/// Whether each anchored position and note resolves in the store's layout:
+/// what a removal reads before its deletes and after its derive, to count the
+/// rows on works it keeps whose page it takes (O244).
+pub(crate) struct Resolving {
+    positions: HashMap<RowKey, bool>,
+    notes: HashMap<RowKey, bool>,
+}
+
+impl Resolving {
+    /// The positions and notes that resolved in `before` and stand here
+    /// unresolved, by key. A row `before` holds and this does not is not
+    /// counted: its work went, and the removal counts it with that work, or a
+    /// fold carried it to another work. A carried note takes a new key, which
+    /// nothing counts; a carried position takes that work's key for its
+    /// edition, so where that work already held a position there, the newer of
+    /// the two stands under a key `before` holds and is counted where the row
+    /// `before` held there resolved and it does not. Both are rare (O244).
+    pub(crate) fn lost_since(&self, before: &Resolving) -> (usize, usize) {
+        (
+            lost(&self.positions, &before.positions),
+            lost(&self.notes, &before.notes),
+        )
+    }
+}
+
+fn lost(after: &HashMap<RowKey, bool>, before: &HashMap<RowKey, bool>) -> usize {
+    after
+        .iter()
+        .filter(|&(key, &resolves)| !resolves && before.get(key) == Some(&true))
+        .count()
+}
+
+/// Every anchored position and note in the store, and whether its page is in
+/// its edition's layout by the rule its read follows: a position's on any
+/// slot of the page ([`resolve_position`]), a note's only on its own half
+/// ([`resolve_note`]). Each edition's layout is read once.
+///
+/// # Errors
+///
+/// Returns an error if SQLite fails, if a work's stored reading direction is
+/// not one this crate writes, or if a row's anchor is one [`at_from_columns`]
+/// refuses.
+pub(crate) fn resolving(conn: &Connection) -> Result<Resolving, String> {
+    let positions = anchored(
+        conn,
+        "SELECT user_id, work_id, edition, edition, at_sha256, at_nth, at_page, at_half
+           FROM progress",
+        "position",
+    )?;
+    let notes = anchored(
+        conn,
+        "SELECT user_id, work_id, id, edition, at_sha256, at_nth, at_page, at_half FROM note",
+        "note",
+    )?;
+    let mut layouts = StoreLayouts::new();
+    Ok(Resolving {
+        positions: resolved(conn, positions, &mut layouts, position_resolves)?,
+        notes: resolved(conn, notes, &mut layouts, note_resolves)?,
+    })
+}
+
+/// One row whose anchor is set: its key, its edition and the page it names.
+struct Anchored {
+    key: RowKey,
+    edition: String,
+    at: MemberPage,
+}
+
+/// The rows `sql` reads that name a page. `sql` selects the key's three
+/// columns, the edition, then the four `at_` columns.
+fn anchored(conn: &Connection, sql: &str, what: &str) -> Result<Vec<Anchored>, String> {
+    let failed = |e: rusqlite::Error| format!("reading every {what}'s anchor: {e}");
+    let rows = conn
+        .prepare(sql)
+        .map_err(failed)?
+        .query_map([], |row| {
+            Ok((
+                (row.get(0)?, row.get(1)?, row.get(2)?),
+                row.get(3)?,
+                AtColumns {
+                    sha256: row.get(4)?,
+                    nth: row.get(5)?,
+                    page: row.get(6)?,
+                    half: row.get(7)?,
+                },
+            ))
+        })
+        .and_then(Iterator::collect::<rusqlite::Result<Vec<(RowKey, String, AtColumns)>>>)
+        .map_err(failed)?;
+    let mut answer = Vec::new();
+    for (key, edition, columns) in rows {
+        let at = at_from_columns(columns).map_err(|e| {
+            let (user_id, work_id, name) = &key;
+            format!("the {what} `{name}` of user {user_id} on work {work_id} has {e}")
+        })?;
+        if let Some(at) = at {
+            answer.push(Anchored { key, edition, at });
+        }
+    }
+    Ok(answer)
+}
+
+/// Each `(work_id, edition key)`'s layout in the store.
+type StoreLayouts = HashMap<(i64, String), Option<(Cow<'static, Edition>, Direction)>>;
+
+/// Each row's key, and whether `resolves` finds its page in its edition's
+/// layout, read into `layouts` where it is not there yet.
+fn resolved(
+    conn: &Connection,
+    rows: Vec<Anchored>,
+    layouts: &mut StoreLayouts,
+    resolves: fn(Option<(&Edition, Direction)>, &MemberPage) -> bool,
+) -> Result<HashMap<RowKey, bool>, String> {
+    let mut answer = HashMap::with_capacity(rows.len());
+    for Anchored { key, edition, at } in rows {
+        let layout = match layouts.entry((key.1, edition)) {
+            Entry::Occupied(held) => held.into_mut(),
+            Entry::Vacant(unread) => {
+                let read = layout_in(conn, key.1, &unread.key().1, Numbering::Store)?;
+                unread.insert(read)
+            }
+        };
+        let layout = layout
+            .as_ref()
+            .map(|(edition, reading)| (edition.as_ref(), *reading));
+        answer.insert(key, resolves(layout, &at));
+    }
+    Ok(answer)
+}
+
+/// [`resolve_position`]'s rule: any slot of the page, a half the layout no
+/// longer holds included.
+fn position_resolves(layout: Option<(&Edition, Direction)>, at: &MemberPage) -> bool {
+    layout.is_some_and(|(edition, reading)| edition.slot_of(at, reading).is_some())
+}
+
+/// [`resolve_note`]'s rule: the page and half the note was written on.
+fn note_resolves(layout: Option<(&Edition, Direction)>, at: &MemberPage) -> bool {
+    layout.is_some_and(|(edition, reading)| {
+        matches!(edition.slot_of(at, reading), Some(SlotOf::Exact(_)))
+    })
+}
+
 // --- notes ---------------------------------------------------------------
 
 /// One `note` row before its four region columns have been reassembled into
@@ -570,6 +750,38 @@ pub fn notes_in(
     user_id: i64,
     numbering: Numbering<'_>,
 ) -> Result<Notes, String> {
+    read_notes(conn, work_id, user_id, numbering, |note, _| note)
+}
+
+/// [`notes_in`], each note's `at` the page its row names, as stored, whether
+/// or not `numbering` holds it, so a `stale` note keeps naming its own page:
+/// what serve sends a reader to echo (O240). No other read fills `at`, so an
+/// export carries none.
+///
+/// # Errors
+///
+/// As [`notes`].
+pub fn notes_anchored_in(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    numbering: Numbering<'_>,
+) -> Result<Notes, String> {
+    read_notes(conn, work_id, user_id, numbering, |note, at| Note {
+        at,
+        ..note
+    })
+}
+
+/// Each note resolved in `numbering`, handed to `answer` with the page its
+/// row names.
+fn read_notes(
+    conn: &Connection,
+    work_id: i64,
+    user_id: i64,
+    numbering: Numbering<'_>,
+    answer: fn(Note, Option<MemberPage>) -> Note,
+) -> Result<Notes, String> {
     let work = work_slug(conn, work_id)?;
     let held = held_notes(conn, work_id, user_id)?;
     let layouts = layouts_in(
@@ -582,7 +794,7 @@ pub fn notes_in(
         .into_iter()
         .map(|(mut note, at)| {
             resolve(&mut note, at.as_ref(), &layouts);
-            note
+            answer(note, at)
         })
         .collect();
     Ok(Notes {
@@ -652,6 +864,7 @@ fn note_from_row(row: NoteRow) -> Result<(Note, Option<MemberPage>), String> {
         created: row.created,
         updated: row.updated,
         stale: false,
+        at: None,
     };
     Ok((note, at))
 }

@@ -42,6 +42,7 @@ import {
   type Draft,
   type Note,
 } from '../src/notes'
+import type { At } from '../src/resolver'
 
 const note = (
   id: string,
@@ -736,6 +737,20 @@ describe('editsToWrite', () => {
       stored[1],
     ])
   })
+
+  // A pin: the page an edited note was read with goes out with it, so the
+  // server places it there whatever renumbering came first (O240).
+  it('carries the anchor an edited note was read with', () => {
+    const read: Note = {
+      ...stored[1],
+      at: { sha256: 'a', nth: 1, page: 9 },
+      stale: true,
+    }
+    const written = editsToWrite([stored[0], read], {
+      edited: { ...read, body: 'changed' },
+    })
+    expect(written[1].at).toEqual({ sha256: 'a', nth: 1, page: 9 })
+  })
 })
 
 describe('mergeOver', () => {
@@ -769,10 +784,36 @@ describe('export', () => {
     expect(exportName('go-toubun-v01')).toBe('go-toubun-v01.notes.json')
   })
 
-  it('exports exactly what the server holds, formatted to be read', () => {
+  it("exports the document's own shape, formatted to be read", () => {
     const doc = { work: 'w', notes: [note('1', 'a', 0)] }
     expect(JSON.parse(notesJson(doc))).toEqual(doc)
     expect(notesJson(doc)).toContain('\n  ')
+  })
+
+  // `at` and `stale` are what a read adds to a note, not part of the document:
+  // an export stays anchor-free, so any build's `library import` reads it
+  // (spec decision 7).
+  it("leaves out each note's anchor and staleness, and keeps the rest", () => {
+    const marked = {
+      ...note('1', 'a', 0, { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }),
+      color: 'teal',
+    }
+    const plain = note('2', 'b', 3)
+    const doc = {
+      work: 'w',
+      notes: [
+        { ...marked, at: { sha256: 'a', nth: 0, page: 0 }, stale: true },
+        { ...plain, at: { sha256: 'b', nth: 0, page: 2, half: 'left' } },
+      ] satisfies Note[],
+    }
+    const written = JSON.parse(notesJson(doc))
+    expect(written.work).toBe('w')
+    expect(written.notes).toHaveLength(2)
+    expect(written.notes[0]).not.toHaveProperty('at')
+    expect(written.notes[0]).not.toHaveProperty('stale')
+    expect(written.notes[0]).toEqual(marked)
+    expect(written.notes[1]).not.toHaveProperty('at')
+    expect(written.notes[1]).toEqual(plain)
   })
 })
 
@@ -806,7 +847,14 @@ describe('newNote', () => {
   const at = { edition: 'a', slot: 4 }
 
   it('opens the editor on a note anchored where the reader is standing', () => {
-    const draft = newNote(NOTHING_OPEN, at, [], 'fresh', '2026-08-09T00:00:00Z')
+    const draft = newNote(
+      NOTHING_OPEN,
+      at,
+      [],
+      'fresh',
+      '2026-08-09T00:00:00Z',
+      undefined,
+    )
     expect(draft.panel).toBe('edit')
     expect(draft.currentId).toBe('fresh')
     expect(shownNote(draft)).toEqual({
@@ -824,15 +872,35 @@ describe('newNote', () => {
   // already there would make a second note on a page impossible.
   it('keeps the notes this session already touched', () => {
     const held = note('held', 'a', 4)
-    const draft = newNote(editing(held), at, [], 'fresh', 'now')
+    const draft = newNote(editing(held), at, [], 'fresh', 'now', undefined)
     expect(Object.keys(draft.edits).sort()).toEqual(['fresh', 'held'])
   })
 
   // Two notes on one page come out different without a reader choosing.
   it('takes the next colour nobody on this page is using', () => {
     const used = { ...note('used', 'a', 4), color: 'amber' }
-    const draft = newNote(NOTHING_OPEN, at, here(used), 'fresh', 'now')
+    const draft = newNote(
+      NOTHING_OPEN,
+      at,
+      here(used),
+      'fresh',
+      'now',
+      undefined,
+    )
     expect(shownNote(draft)?.color).not.toBe('amber')
+  })
+
+  // The page shown when `n` was pressed, as the core names it, so the server
+  // places the note there whatever renumbering comes before the write (O240).
+  it('anchors the fresh note on the page it is given', () => {
+    const anchor: At = { sha256: 'a', nth: 0, page: 4, half: 'right' }
+    const draft = newNote(NOTHING_OPEN, at, [], 'fresh', 'now', anchor)
+    expect(shownNote(draft)?.at).toEqual({
+      sha256: 'a',
+      nth: 0,
+      page: 4,
+      half: 'right',
+    })
   })
 })
 
@@ -869,6 +937,19 @@ describe('changeShown', () => {
     expect(draft.edits.other).toEqual(other)
   })
 
+  // A pin: an edit of the words does not move the note, so it keeps the page
+  // it was read with and stays drawn as no longer on it.
+  it('keeps the anchor and staleness of a note whose words change', () => {
+    const lost: Note = {
+      ...note('lost', 'a', 1),
+      at: { sha256: 'gone', nth: 0, page: 7 },
+      stale: true,
+    }
+    const draft = changeShown(editing(lost), (n) => ({ ...n, body: 'typed' }))
+    expect(shownNote(draft)?.at).toEqual({ sha256: 'gone', nth: 0, page: 7 })
+    expect(shownNote(draft)?.stale).toBe(true)
+  })
+
   // Identity is how the caller tells a real change from a no-op, and it is the
   // caller that schedules the write.
   it('hands the same draft back when nothing is on show', () => {
@@ -902,6 +983,13 @@ describe('grabNote', () => {
 
 describe('anchorNote', () => {
   const region = { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }
+  /** Names its own arguments, so an anchor taken for the wrong slot shows. */
+  const anchorOf = (edition: string, slot: number): At => ({
+    sha256: edition,
+    nth: 0,
+    page: slot,
+  })
+  const old: At = { sha256: 'gone', nth: 2, page: 40 }
 
   // The note a drag ends on is not always the one the panel was showing when
   // it began.
@@ -913,18 +1001,36 @@ describe('anchorNote', () => {
       'dragged',
       region,
       'later',
+      anchorOf,
     )
     expect(draft.edits.dragged).toEqual({
       ...dragged,
       region,
       updated: 'later',
+      at: { sha256: 'a', nth: 0, page: 0 },
     })
     expect(draft.edits.shown).toEqual(shown)
     expect(draft.currentId).toBe('shown')
   })
 
+  // Marking a region on a note drawn as no longer on its page puts it on the
+  // page shown, so the server stores it there and it is no longer stale.
+  it('moves a stale note onto the page its slot shows, and it is stale no more', () => {
+    const lost: Note = { ...note('lost', 'b', 3), at: old, stale: true }
+    const draft = anchorNote(editing(lost), 'lost', region, 'later', anchorOf)
+    expect(draft.edits.lost.at).toEqual({ sha256: 'b', nth: 0, page: 3 })
+    expect(draft.edits.lost).not.toHaveProperty('stale')
+  })
+
+  it('re-anchors a note that is not stale by the same rule', () => {
+    const kept: Note = { ...note('kept', 'a', 5), at: old }
+    const draft = anchorNote(editing(kept), 'kept', region, 'later', anchorOf)
+    expect(draft.edits.kept.at).toEqual({ sha256: 'a', nth: 0, page: 5 })
+    expect(draft.edits.kept).not.toHaveProperty('stale')
+  })
+
   it('hands the same draft back for a note this session never had', () => {
-    expect(anchorNote(NOTHING_OPEN, 'nobody', region, 'later')).toBe(
+    expect(anchorNote(NOTHING_OPEN, 'nobody', region, 'later', anchorOf)).toBe(
       NOTHING_OPEN,
     )
   })

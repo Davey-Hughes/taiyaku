@@ -312,6 +312,19 @@ export interface Removal {
   positions: number
   notes: number
   /**
+   * The in-progress positions on works this removal keeps whose page it
+   * takes: each whose stored page the layout holds before the removal and
+   * not after its re-derive. One on a work that goes is in `positions`
+   * instead.
+   */
+  positions_page_gone: number
+  /**
+   * `positions_page_gone` for notes, which resolve only on the page and half
+   * they were written on: a note whose half is gone counts here, where a
+   * position on it would not.
+   */
+  notes_page_gone: number
+  /**
    * The accounts, by name, every one of whose grants is of a library this
    * removal deletes (`libraries_removed`), and who will see no library after
    * it. Empty where no library goes. An administrator is never named: it sees

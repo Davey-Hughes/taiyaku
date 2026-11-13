@@ -3752,6 +3752,7 @@ fn seed_notes(conn: &Connection, work_id: i64, user_id: i64, edition: &str, ids:
                     created: "2026-08-27T09:00:00Z".to_string(),
                     updated: "2026-08-27T09:00:00Z".to_string(),
                     stale: false,
+                    at: None,
                 })
                 .collect(),
         },

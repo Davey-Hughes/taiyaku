@@ -293,6 +293,7 @@ fn a_notes_json_beside_the_sidecar_migrates_every_note_id_body_and_region() {
                 created: "2026-08-14T10:00:00Z".to_string(),
                 updated: "2026-08-14T10:00:00Z".to_string(),
                 stale: false,
+                at: None,
             },
             Note {
                 id: "01H2".to_string(),
@@ -309,6 +310,7 @@ fn a_notes_json_beside_the_sidecar_migrates_every_note_id_body_and_region() {
                 created: "2026-08-14T10:01:00Z".to_string(),
                 updated: "2026-08-14T10:01:00Z".to_string(),
                 stale: false,
+                at: None,
             },
         ],
         "every note's id, body and region must survive exactly"
@@ -338,6 +340,7 @@ fn notes_already_held_are_not_overwritten_by_the_file() {
                 created: "2026-08-15T00:00:00Z".to_string(),
                 updated: "2026-08-15T00:00:00Z".to_string(),
                 stale: false,
+                at: None,
             }],
         },
     )

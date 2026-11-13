@@ -88,6 +88,8 @@ const answer = (over: Partial<config.Removal> = {}): config.RemovalAnswer => ({
     works: 412,
     positions: 3,
     notes: 27,
+    positions_page_gone: 0,
+    notes_page_gone: 0,
     left_with_no_library: [],
     libraries_removed: [],
     kept: [],
@@ -157,6 +159,43 @@ describe('RemoveRoot', () => {
     expect((await settle()).textContent).toContain(
       'This removes 412 works, 3 in-progress positions and 27 notes.',
     )
+  })
+
+  it('says under the counts how many positions and notes on works that stay it takes the page of (O244)', async () => {
+    vi.mocked(config.removalCost).mockResolvedValue(
+      answer({ positions_page_gone: 2, notes_page_gone: 1 }),
+    )
+    const host = await settle()
+    expect(host.querySelector('.pages-gone')?.textContent).toBe(
+      'On works that stay, this takes the page of 2 in-progress positions and 1 note.',
+    )
+    expect(host.querySelector('.counts + .pages-gone')).not.toBeNull()
+  })
+
+  // The (2, 1) case draws under `&&` too, and under a guard on one figure
+  // alone: these two are what tell "either above 0" from "both".
+  it.each([
+    [0, 1, 'On works that stay, this takes the page of 1 note.'],
+    [
+      1,
+      0,
+      'On works that stay, this takes the page of 1 in-progress position.',
+    ],
+  ])(
+    'draws the sentence at positions_page_gone %i and notes_page_gone %i: either figure alone is enough (O244)',
+    async (positions, notes, sentence) => {
+      vi.mocked(config.removalCost).mockResolvedValue(
+        answer({ positions_page_gone: positions, notes_page_gone: notes }),
+      )
+      const host = await settle()
+      expect(host.querySelector('.pages-gone')?.textContent).toBe(sentence)
+    },
+  )
+
+  it('says nothing of pages taken where it takes none', async () => {
+    const host = await settle()
+    expect(host.querySelector('.counts')).not.toBeNull()
+    expect(host.querySelector('.pages-gone')).toBeNull()
   })
 
   it('says a removal takes only what no other directory holds, changes no archive, and says where a staying work’s documents go (O256)', async () => {
@@ -522,6 +561,8 @@ describe('RemoveRoot', () => {
         works: 412,
         positions: 3,
         notes: 27,
+        positions_page_gone: 0,
+        notes_page_gone: 0,
         left_with_no_library: [],
         libraries_removed: [],
         kept: [],
@@ -561,6 +602,8 @@ describe('RemoveRoot', () => {
         works: 1,
         positions: 1,
         notes: 1,
+        positions_page_gone: 0,
+        notes_page_gone: 0,
         left_with_no_library: [],
         libraries_removed: [],
         kept: [],
@@ -579,6 +622,8 @@ describe('RemoveRoot', () => {
         works: 0,
         positions: 0,
         notes: 0,
+        positions_page_gone: 0,
+        notes_page_gone: 0,
         left_with_no_library: [],
         libraries_removed: [],
         kept: [],

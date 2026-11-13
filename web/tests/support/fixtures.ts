@@ -1,4 +1,4 @@
-import type { Chapter, Position, Resolver } from '../../src/resolver'
+import type { At, Chapter, Position, Resolver } from '../../src/resolver'
 
 /**
  * A fake resolver over an explicit slot table.
@@ -43,6 +43,16 @@ export function fakeResolver(
       return landed && { ...landed, via: 'direct' }
     },
     chapterAt: (edition, index) => chapters[chapterKey(edition, index)],
+    // Derived: the edition's name as the digest, and the slot's own page and
+    // half. Two slots never share an anchor, so one taken for the wrong slot
+    // is an `at` a test can tell apart.
+    memberPage: (edition, index) => {
+      const slot = slots[edition]?.[index]
+      if (!slot) return undefined
+      const at: At = { sha256: edition, nth: 0, page: slot.page }
+      if (slot.half) at.half = slot.half === 'L' ? 'left' : 'right'
+      return at
+    },
     credits: (edition) => credits[edition] ?? [],
   }
 }

@@ -942,6 +942,7 @@ fn a_second_import_does_not_overwrite_state_changed_since_the_first() {
                     created: "2026-08-15T00:00:00Z".to_string(),
                     updated: "2026-08-15T00:00:00Z".to_string(),
                     stale: false,
+                    at: None,
                 }],
             },
         )
@@ -1207,6 +1208,7 @@ fn round_trip_export_wipe_the_database_and_reimport_recovers_the_same_state() {
                     created: "2026-08-14T10:00:00Z".to_string(),
                     updated: "2026-08-14T10:00:00Z".to_string(),
                     stale: false,
+                    at: None,
                 }],
             },
         )

@@ -317,6 +317,28 @@ describe('network calls', () => {
     })
   })
 
+  // The server places a position by the page it names ahead of its slot, so a
+  // renumbering between the turn and the write cannot move it (O240).
+  it('putProgress sends the page a position was recorded on', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await putProgress('taiyaku', {
+      edition: 'en-mono',
+      slot: 12,
+      at: { sha256: 'd1', nth: 1, page: 5, half: 'right' },
+    })
+
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(sent).toEqual({
+      edition: 'en-mono',
+      slot: 12,
+      at: { sha256: 'd1', nth: 1, page: 5, half: 'right' },
+    })
+  })
+
   it('putProgress rejects with the server body on a non-2xx', async () => {
     vi.stubGlobal(
       'fetch',

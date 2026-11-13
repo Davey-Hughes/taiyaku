@@ -1191,7 +1191,7 @@ async fn get_notes(
     }
 }
 
-/// Replace a work's notes.
+/// Replace a work's notes, a valid `at` placing a note over its slot (O240).
 ///
 /// A whole-document `PUT` rather than a route per note, because the document is
 /// small, a reader edits it from one place at a time, and `If-Match` over the
@@ -1225,9 +1225,6 @@ async fn put_notes(
         Ok(notes) => notes,
         Err(why) => return bad_request(format!("these are not notes: {why}")),
     };
-    // A reader echoes what it read, `stale` included, or leaves it out; it is
-    // never stored, so either is the note as it was (O244).
-    incoming.clear_stale();
 
     let user_id = match reader(&extensions) {
         Ok(id) => id,
@@ -1257,9 +1254,9 @@ async fn put_notes(
         let mut current = crate::notes::load(&state.library, &found, user_id, view.full())
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
-        // Over the document as read, `stale` marks and all, as `get_notes`
-        // tags it: taken after the marks are cleared below, it would refuse
-        // every write over a lost note.
+        // Over the document as read, `stale` marks and `at`s and all, as
+        // `get_notes` tags it: taken after they are cleared below, it would
+        // refuse every write over a note that names a page or has lost one.
         let tag =
             view.etag_naming_numbering(&crate::notes::to_json(&current).map_err(NoNotes::Failed)?);
         match if_match_hits(&headers, &tag) {
@@ -1283,10 +1280,43 @@ async fn put_notes(
             Some(true) => {}
         }
 
-        // Compared unmarked, as `incoming` is: `as_stored` refuses a note the
-        // account is not sent unless it comes back equal to the one held, and
-        // a held note marked `stale` would differ from every copy sent back.
-        current.clear_stale();
+        // Before `placed`, whose first case compares an `at` with the held
+        // note's stored anchor, which a stamp re-keyed: a tab read before the
+        // stamp names the digest it replaced (O240).
+        {
+            let conn = state.library.conn();
+            let work_id = crate::works::find_row(&conn, &found).map_err(NoNotes::Failed)?;
+            for note in &mut incoming.notes {
+                let Some(at) = &note.at else {
+                    continue;
+                };
+                // An `at` its held note stores is numbered after the stamp, where
+                // a copy the stamp left out takes the stamped copy's old pair:
+                // forwarded, a lost copy's note would move onto the stamped one,
+                // so it is not (O244). A new note made on such a copy after the
+                // stamp, and saved once it is lost, still is: its `at` carries
+                // nothing to tell the two apart.
+                let held_there = current.notes.iter().any(|held| {
+                    held.id == note.id
+                        && held.edition == note.edition
+                        && held.at.as_ref() == Some(at)
+                });
+                if held_there {
+                    continue;
+                }
+                let forwarded = crate::works::past_stamps(&conn, work_id, &view, &note.edition, at)
+                    .map_err(NoNotes::Failed)?;
+                note.at = Some(forwarded);
+            }
+        }
+        crate::notes::placed(&mut incoming, &current, &view, &found.id)?;
+        // A write takes neither `stale` nor `at`, and `as_stored` compares
+        // whole notes: a note the account is not sent is refused unless it
+        // comes back as held, which an echo carrying either would not.
+        incoming.clear_wire_fields();
+        // And a held note carrying either would differ from every copy sent
+        // back.
+        current.clear_wire_fields();
 
         // In the stored numbering, with the notes this account is not sent
         // kept (spec §3.8).
@@ -1314,9 +1344,9 @@ async fn put_notes(
             crate::works::Mint::of(&state.works),
         )?;
         // The answer is read back rather than built from `merged`, so its
-        // `ETag` is the next read's: `merged` carries no `stale` marks, which
-        // a read sets on a note whose page is gone (O244), and lists notes in
-        // the client's order, where a read lists them by id.
+        // `ETag` is the next read's: `merged` carries no `at` (O240) and no
+        // `stale` mark, which a read sets on a note whose page is gone (O244),
+        // and lists notes in the client's order, where a read lists them by id.
         let stored = crate::notes::load(&state.library, &found, user_id, view.full())
             .map_err(NoNotes::Failed)?
             .unwrap_or_else(|| crate::notes::empty(&found.id));
@@ -1594,13 +1624,23 @@ async fn get_progress(
                 // the nearest page before it (spec §3.8). With none left the
                 // answer below is 204, nothing recorded.
                 positions.retain_mut(|position| {
-                    match view.slot_from_full(&position.edition, position.slot) {
-                        Some(FromFull::Visible(slot) | FromFull::Hidden { fallback: slot }) => {
-                            position.slot = slot;
-                            true
-                        }
-                        Some(FromFull::Outside) | None => false,
-                    }
+                    let slot = match view.slot_from_full(&position.edition, position.slot) {
+                        Some(FromFull::Visible(slot) | FromFull::Hidden { fallback: slot }) => slot,
+                        Some(FromFull::Outside) | None => return false,
+                    };
+                    // Found in the numbering the stored slot was resolved in
+                    // (settled call 10).
+                    let full = view.full();
+                    let resolves = full
+                        .editions
+                        .get(&position.edition)
+                        .zip(position.at.as_ref())
+                        .and_then(|(edition, at)| edition.slot_of(at, full.work.reading))
+                        .is_some();
+                    position.at =
+                        view.anchor_sent(&position.edition, slot, position.at.as_ref(), resolves);
+                    position.slot = slot;
+                    true
                 });
                 positions
             })
@@ -1628,11 +1668,15 @@ async fn get_progress(
     }
 }
 
+/// Record a reader's position. A body with `at`, the page its slot showed
+/// the reader, is placed by that page and its slot is not read
+/// (`progress::place`, O240); one without is read by its slot, range-checked
+/// in the document sent (O3).
 async fn put_progress(
     State(state): State<Arc<ServeState>>,
     extensions: axum::http::Extensions,
     AxPath(id): AxPath<String>,
-    axum::Json(progress): axum::Json<crate::Progress>,
+    axum::Json(body): axum::Json<crate::progress::Body>,
 ) -> Response {
     // Before anything this handler awaits, so that one reader's saves are
     // ordered as they reached it, after the auth layer and the body's read,
@@ -1644,7 +1688,7 @@ async fn put_progress(
     };
 
     // O60, as `get_notes` asks it. The view is kept for the edition check
-    // below.
+    // and the placement below.
     let view = match crate::view::of_work(&state, &extensions, &id).await {
         Ok(view) => view,
         Err(refusal) => return refusal,
@@ -1660,9 +1704,44 @@ async fn put_progress(
         // grant is refused just below as one the work does not have, and a
         // narrowed one's slots are counted as this caller numbers them.
         let sidecar = view.sidecar();
-        let edition = sidecar.editions.get(&progress.edition).ok_or_else(|| {
-            NoProgress::NotFound(format!("no edition `{}` in work `{id}`", progress.edition))
+        let edition = sidecar.editions.get(&body.edition).ok_or_else(|| {
+            NoProgress::NotFound(format!("no edition `{}` in work `{id}`", body.edition))
         })?;
+        let sent = match &body.at {
+            Some(at) => {
+                let held = crate::progress::load(&state.library, &found, user_id, view.full())
+                    .map_err(NoProgress::Failed)?;
+                let stored = held
+                    .iter()
+                    .find(|position| position.edition == body.edition)
+                    .and_then(|position| position.at.as_ref());
+                // Before `place`, which finds `at` in the document sent and
+                // compares it with the row a stamp re-keyed: a tab read
+                // before the stamp names the digest it replaced (O240). Not
+                // the row's own `at`, numbered after the stamp, which a lost
+                // copy shares with the stamped copy's old pair (O244).
+                let at = if stored == Some(at) {
+                    at.clone()
+                } else {
+                    let conn = state.library.conn();
+                    let work_id =
+                        crate::works::find_row(&conn, &found).map_err(NoProgress::Failed)?;
+                    crate::works::past_stamps(&conn, work_id, &view, &body.edition, at)
+                        .map_err(NoProgress::Failed)?
+                };
+                match crate::progress::place(&view, &body.edition, &at, stored) {
+                    crate::progress::Placed::Slot(slot) => slot,
+                    crate::progress::Placed::Kept => return Ok(()),
+                    crate::progress::Placed::Refused => {
+                        return Err(NoProgress::NotFound(format!(
+                            "this position names a page that `{}` of work `{id}` does not have",
+                            body.edition
+                        )));
+                    }
+                }
+            }
+            None => body.slot,
+        };
         // Counted in slots rather than pages, because that is what a position
         // is: `progress.rs` records slots so a spread cannot lose which half
         // was reached, and an edition that joins spreads has more slots than
@@ -1682,15 +1761,18 @@ async fn put_progress(
         )]
         let slots = edition.slots(sidecar.work.reading).len() as u32;
         let slot = view
-            .slot_to_full(&progress.edition, progress.slot)
-            .filter(|_| progress.slot < slots)
+            .slot_to_full(&body.edition, sent)
+            .filter(|_| sent < slots)
             .ok_or_else(|| {
                 NoProgress::NotFound(format!(
-                    "`{}` has {slots} slots in work `{id}`; there is no slot {}",
-                    progress.edition, progress.slot
+                    "`{}` has {slots} slots in work `{id}`; there is no slot {sent}",
+                    body.edition
                 ))
             })?;
-        let progress = crate::Progress { slot, ..progress };
+        let progress = crate::Progress {
+            edition: body.edition,
+            slot,
+        };
         crate::progress::store(
             &state.library,
             &found,

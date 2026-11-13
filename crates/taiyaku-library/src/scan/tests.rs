@@ -2698,6 +2698,325 @@ fn removing_a_root_reports_the_works_positions_and_notes_it_will_take() {
     assert!(predicted.works > 0 && predicted.positions > 0);
 }
 
+/// A note of user 1's on the volume's `raw` edition, its anchor derived from
+/// `slot` when written.
+fn a_raw_note(id: &str, slot: u32) -> crate::Note {
+    crate::Note {
+        id: id.into(),
+        edition: "raw".into(),
+        slot,
+        region: None,
+        color: None,
+        body: format!("{id}'s words"),
+        created: "2026-11-13T10:00:00Z".into(),
+        updated: "2026-11-13T10:00:00Z".into(),
+        stale: false,
+        at: None,
+    }
+}
+
+fn hold(conn: &Connection, work_id: i64, notes: Vec<crate::Note>) {
+    crate::state::put_notes(
+        conn,
+        work_id,
+        1,
+        &crate::Notes {
+            taiyaku_notes: crate::NOTES_VERSION,
+            work: "foo".into(),
+            notes,
+        },
+    )
+    .expect("writes the notes");
+}
+
+/// The volume across two directories, read by user 1 on both: a position on
+/// c002's first page (slot 3), notes on c002's second and last pages (slots 4
+/// and 6), one on c001's second page (slot 1), and one whose page was gone
+/// before any removal. c002 holds one position and two notes, so a count that
+/// swaps the two shows.
+fn a_volume_read_on_both_directories() -> crate::tests::VolumeAcrossTwoDirectories {
+    let volume = crate::tests::a_volume_across_two_directories();
+    {
+        let conn = volume.conn();
+        crate::state::put_progress(
+            &conn,
+            volume.work_id,
+            1,
+            &crate::Progress {
+                edition: "raw".into(),
+                slot: 3,
+            },
+        )
+        .expect("writes the position");
+        hold(
+            &conn,
+            volume.work_id,
+            vec![
+                a_raw_note("on-c002", 4),
+                a_raw_note("also-on-c002", 6),
+                a_raw_note("on-c001", 1),
+                a_raw_note("already-stale", 5),
+            ],
+        );
+        conn.execute(
+            "UPDATE note SET at_sha256 = 'held-by-no-member' WHERE id = 'already-stale'",
+            [],
+        )
+        .expect("names a page no member holds");
+        let anchored: i64 = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM progress WHERE at_sha256 IS NOT NULL)
+                      + (SELECT count(*) FROM note WHERE at_sha256 IS NOT NULL)",
+                [],
+                |r| r.get(0),
+            )
+            .expect("counts the anchored rows");
+        assert_eq!(anchored, 5, "the fixture: every row names its page");
+        let read: Vec<(String, u32, bool)> = crate::state::notes(&conn, volume.work_id, 1)
+            .expect("reads the notes")
+            .notes
+            .into_iter()
+            .map(|note| (note.id, note.slot, note.stale))
+            .collect();
+        assert_eq!(
+            read,
+            vec![
+                ("already-stale".to_string(), 5, true),
+                ("also-on-c002".to_string(), 6, false),
+                ("on-c001".to_string(), 1, false),
+                ("on-c002".to_string(), 4, false),
+            ],
+            "the fixture: only the one note is stale before any removal"
+        );
+    }
+    volume
+}
+
+/// O244: a removal counts the positions and notes on a work it keeps whose
+/// page it takes, and no other. Removing b takes c002's pages. Removing a
+/// takes c001's and moves c002's down three slots, where they still resolve.
+/// The note whose page was gone already is counted by neither.
+#[test]
+fn a_removal_counts_the_rows_on_a_kept_work_whose_page_it_takes() {
+    let volume = a_volume_read_on_both_directories();
+    let conn = volume.conn();
+
+    let (b, _) = removal_cost(&conn, volume.b.id).expect("costs b");
+    assert_eq!(
+        (b.works, b.positions_page_gone, b.notes_page_gone),
+        (0, 1, 2),
+        "b: c002's position and two notes"
+    );
+    let (a, _) = removal_cost(&conn, volume.a.id).expect("costs a");
+    assert_eq!(
+        (a.works, a.positions_page_gone, a.notes_page_gone),
+        (0, 0, 1),
+        "a: c001's note"
+    );
+    let (removed, _) = remove_root(&conn, volume.b.id).expect("removes b");
+    assert_eq!(removed, b, "the removal answers what its rehearsal said");
+}
+
+/// A row on a work the removal takes is not a page taken from a kept work:
+/// [`Removal::positions`] and [`Removal::notes`] count it.
+#[test]
+fn a_removal_counts_no_page_taken_on_a_work_it_removes() {
+    let fixture = crate::tests::library_with_two_roots_and_a_reading_position();
+    let conn = fixture.conn();
+    let b = roots(&conn)
+        .expect("lists the roots")
+        .into_iter()
+        .find(|root| root.path.ends_with("root-b"))
+        .expect("root b");
+    let beta = work_under(&conn, b.id);
+    crate::state::put_progress(
+        &conn,
+        beta,
+        1,
+        &crate::Progress {
+            edition: "raw".into(),
+            slot: 2,
+        },
+    )
+    .expect("writes the position on a page beta has");
+    hold(&conn, beta, vec![a_raw_note("on-beta", 1)]);
+    let anchored: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM progress WHERE work_id = ?1 AND at_sha256 IS NOT NULL),
+                    (SELECT count(*) FROM note WHERE work_id = ?1 AND at_sha256 IS NOT NULL)",
+            [beta],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("counts the anchored rows");
+    assert_eq!(
+        anchored,
+        (1, 1),
+        "the fixture: root b's position and note name their pages"
+    );
+
+    let (cost, _) = removal_cost(&conn, b.id).expect("costs b");
+
+    assert_eq!(
+        (
+            cost.positions,
+            cost.notes,
+            cost.positions_page_gone,
+            cost.notes_page_gone
+        ),
+        (1, 1, 0, 0)
+    );
+}
+
+/// A library's removal counts the same as a directory's: b, moved into a
+/// library of its own, goes with that library and takes c002's pages.
+#[test]
+fn a_librarys_removal_counts_the_rows_on_a_kept_work_whose_page_it_takes() {
+    let volume = a_volume_read_on_both_directories();
+    let conn = volume.conn();
+    crate::relocate::move_root(
+        &conn,
+        volume.b.id,
+        volume.b.libraries[0],
+        crate::relocate::Target::New("Kids"),
+    )
+    .expect("moves b into a library of its own");
+    let kids = library_called(&conn, "Kids");
+
+    let (cost, _) = library_removal_cost(&conn, kids).expect("costs Kids");
+    let (removed, _) = remove_library(&conn, kids).expect("removes Kids");
+
+    let stands: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM work WHERE id = ?1",
+            [volume.work_id],
+            |r| r.get(0),
+        )
+        .expect("reads the work");
+    assert_eq!(
+        (stands, cost.removed.clone()),
+        (1, vec![volume.b.id]),
+        "the fixture: Kids' removal takes b, and the volume's work stays with a"
+    );
+    assert_eq!(
+        (cost.works, cost.positions_page_gone, cost.notes_page_gone),
+        (0, 1, 2),
+        "c002's position and two notes"
+    );
+    assert_eq!(removed, cost, "the removal answers what its rehearsal said");
+}
+
+/// A position on a half the layout no longer holds still finds its page, and
+/// a note there does not (`resolve_position`, `resolve_note`), so a removal
+/// that leaves the page whole counts the note and not the position. c002's
+/// second page is a spread, flagged as edition page 4, and the flag stays on
+/// page 4 when removing a moves c002's pages down three.
+#[test]
+fn a_removal_that_leaves_a_half_whole_counts_its_note_and_not_its_position() {
+    let volume = crate::tests::a_volume_across_two_directories();
+    let conn = volume.conn();
+    conn.execute(
+        "INSERT INTO page_flag (edition_id, kind, page)
+         SELECT id, 'spread', 4 FROM edition WHERE work_id = ?1 AND key = 'raw'",
+        [volume.work_id],
+    )
+    .expect("makes c002's second page a spread");
+    crate::state::put_progress(
+        &conn,
+        volume.work_id,
+        1,
+        &crate::Progress {
+            edition: "raw".into(),
+            slot: 5,
+        },
+    )
+    .expect("writes the position on a half");
+    hold(&conn, volume.work_id, vec![a_raw_note("on-a-half", 5)]);
+    let halves: Vec<(u32, Option<String>)> = conn
+        .prepare(
+            "SELECT at_page, at_half FROM progress UNION ALL SELECT at_page, at_half FROM note",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })
+        .expect("reads the anchors");
+    assert_eq!(
+        halves,
+        vec![(1, Some("left".to_string())), (1, Some("left".to_string()))],
+        "the fixture: both on the left half of c002's second page"
+    );
+
+    let (cost, _) = removal_cost(&conn, volume.a.id).expect("costs a");
+
+    assert_eq!(
+        (cost.works, cost.positions_page_gone, cost.notes_page_gone),
+        (0, 0, 1),
+        "the note's half is gone; the position's page is not"
+    );
+}
+
+/// Two works with one edition key, each read on a page directory b takes:
+/// each row is found in its own work's layout, so all four count.
+#[test]
+fn a_removal_counts_the_pages_it_takes_from_two_works_with_one_edition_key() {
+    let volume = crate::tests::a_volume_across_two_directories();
+    let conn = volume.conn();
+    write_archive(&volume.a.path.join("Bar").join("Bar - v01 - c001.cbz"), 2);
+    write_archive(&volume.b.path.join("Bar").join("Bar - v01 - c002.cbz"), 2);
+    scan_root(&conn, &volume.a).expect("scans a again");
+    scan_root(&conn, &volume.b).expect("scans b again");
+    crate::derive::derive(&conn).expect("derives Bar beside Foo");
+    let bar: i64 = conn
+        .query_row(
+            "SELECT DISTINCT e.work_id FROM member m JOIN edition e ON e.id = m.edition_id
+              WHERE m.path LIKE '%Bar - v01 - c002.cbz'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("Bar's work");
+    let mut shape: Vec<(i64, String, i64)> = conn
+        .prepare(
+            "SELECT e.work_id, e.key, count(*) FROM member m JOIN edition e ON e.id = m.edition_id
+              GROUP BY e.work_id, e.key",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect()
+        })
+        .expect("lists the editions");
+    shape.sort_unstable();
+    let mut wanted = vec![
+        (volume.work_id, "raw".to_string(), 2),
+        (bar, "raw".to_string(), 2),
+    ];
+    wanted.sort_unstable();
+    assert_eq!(
+        shape, wanted,
+        "the fixture: Foo and Bar, each a `raw` edition of two chapters"
+    );
+    for (work, position, note) in [(volume.work_id, 3, 4), (bar, 2, 3)] {
+        crate::state::put_progress(
+            &conn,
+            work,
+            1,
+            &crate::Progress {
+                edition: "raw".into(),
+                slot: position,
+            },
+        )
+        .expect("writes a position on c002");
+        hold(&conn, work, vec![a_raw_note(&format!("on-{work}"), note)]);
+    }
+
+    let (cost, _) = removal_cost(&conn, volume.b.id).expect("costs b");
+
+    assert_eq!(
+        (cost.works, cost.positions_page_gone, cost.notes_page_gone),
+        (0, 2, 2),
+        "each work's c002 position and note"
+    );
+}
+
 /// A bare DELETE would leave the works standing with `member.root_id` NULL —
 /// which O54 records as the value that excludes a member from *every* root
 /// grant. Removal is delete-plus-derive, in one transaction.
@@ -11121,6 +11440,8 @@ fn removing_a_library_unlinks_its_shared_dirs_and_removes_the_rest() {
         works: 1,
         positions: 1,
         notes: 2,
+        positions_page_gone: 0,
+        notes_page_gone: 0,
         left_with_no_library: Vec::new(),
         libraries_removed: vec!["Kids".to_string()],
         kept: vec![Kept {

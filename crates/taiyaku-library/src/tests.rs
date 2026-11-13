@@ -2031,6 +2031,7 @@ fn a_note() -> Note {
         created: "2026-08-05T10:00:00Z".into(),
         updated: "2026-08-05T10:00:00Z".into(),
         stale: false,
+        at: None,
     }
 }
 

@@ -21,6 +21,16 @@ fn a_half_crosses_the_boundary_as_l_or_r() {
     );
 }
 
+/// O240: an anchor's half crosses in the wire's spelling, so the web sends
+/// what it is handed; a side swapped here would anchor every note made on a
+/// spread to its other half.
+#[test]
+fn an_anchor_half_crosses_the_boundary_as_left_or_right() {
+    assert_eq!(half_to_wire(Some(taiyaku_core::Half::Left)), Some("left"));
+    assert_eq!(half_to_wire(Some(taiyaku_core::Half::Right)), Some("right"));
+    assert_eq!(half_to_wire(None), None);
+}
+
 /// The shell forwards four positional arguments and copies three fields. The
 /// agreement test in `binding` sits one layer below this and cannot see a
 /// transposed `from`/`to` or a wrong field copied into `WasmSlot`.
@@ -130,6 +140,45 @@ fn slot_at_and_index_of_are_inverses_across_the_boundary() {
     // `the_shell_forwards_its_arguments_and_copies_every_field` suggests.
     // `a_half_crosses_the_boundary_as_l_or_r` pins that refusal one layer
     // down, in `half_from_str`, which is ordinary Rust and can be asked.
+}
+
+/// O240: `memberPage` copies all four fields of the binding's anchor. Slot 8
+/// is the second copy's page 2, so `nth` and `page` are distinct and neither
+/// is 0, and a field copied into the wrong place shows.
+#[allow(clippy::ok_expect)]
+#[test]
+fn member_page_copies_every_field_across_the_boundary() {
+    let s = WasmSidecar::from_json(crate::binding::TWICE_FIXTURE)
+        .ok()
+        .expect("the fixture parses");
+
+    let second = s.member_page("twice", 8).expect("the last slot");
+    assert_eq!(
+        (
+            second.sha256.as_str(),
+            second.nth,
+            second.page,
+            second.half.as_deref()
+        ),
+        ("0a", 1, 2, None),
+        "the second copy's page 2, a whole page"
+    );
+    let left = s.member_page("twice", 5).expect("the spread's second slot");
+    assert_eq!(
+        (
+            left.sha256.as_str(),
+            left.nth,
+            left.page,
+            left.half.as_deref()
+        ),
+        ("0b", 0, 1, Some("left")),
+        "the spread's left half, second reading rtl"
+    );
+    assert!(s.member_page("twice", 9).is_none(), "past the end");
+    assert!(
+        s.member_page("no-such-edition", 0).is_none(),
+        "an unknown edition has no pages"
+    );
 }
 
 /// The one piece of judgement this shell adds for `chapterAt`: `usize`

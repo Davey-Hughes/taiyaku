@@ -1098,6 +1098,18 @@ pub struct Removal {
     pub works: usize,
     pub positions: usize,
     pub notes: usize,
+    /// The anchored in-progress positions on works this removal keeps whose
+    /// page it takes: each that resolves in the store's layout before its
+    /// deletes and not after its derive (`state::Resolving`). Taken inside the
+    /// transaction, so the dry run and the removal answer the same measured
+    /// figure. A row on a work that goes is in [`Removal::positions`] instead.
+    /// One a fold carries to another work, which is rare, is in neither, unless
+    /// it replaces a position that work held on its edition: it is counted
+    /// when that one resolved and it does not (O244).
+    pub positions_page_gone: usize,
+    /// [`Removal::positions_page_gone`] for notes, which resolve only on the
+    /// page and half they were written on.
+    pub notes_page_gone: usize,
     /// The accounts, by name, that see no library once this removal deletes
     /// every library they are granted: [`only_grant_holders`] of
     /// [`Removal::libraries_removed`], asked before anything is deleted. Empty
@@ -1956,6 +1968,7 @@ fn apply_removal(
     let emptied = emptied_by_removing(conn, id)?;
     let left_with_no_library = only_grant_holders(conn, &emptied)?;
     let libraries_removed = names_of(conn, &emptied)?;
+    let before = crate::state::resolving(conn)?;
     // Spec §4: the directories around and inside `id` keep the files they
     // would walk, so `take_root` counts only what none of them holds, and the
     // rehearsal, which runs this function too, counts what the removal does.
@@ -1965,12 +1978,14 @@ fn apply_removal(
     removal.left_with_no_library = left_with_no_library;
     removal.libraries_removed = libraries_removed;
     let derived = crate::derive::derive_with(conn, crate::derive::Documents::Skip)?;
+    (removal.positions_page_gone, removal.notes_page_gone) =
+        crate::state::resolving(conn)?.lost_since(&before);
 
     Ok((removal, derived, carried))
 }
 
-/// What removing root `id` would cost, found by actually doing it — inside a
-/// transaction this function rolls back before returning.
+/// What removing root `id` would cost, the pages it takes from works it keeps
+/// included, found by doing it inside a transaction this rolls back.
 ///
 /// [`crate::preview::preview`]'s own shape, reused rather than a second
 /// mechanism for "what would this change do": open a transaction, make the
@@ -2021,9 +2036,9 @@ pub fn removal_cost(
     Ok((removal, derived))
 }
 
-/// Remove root `id` for real: delete it, delete every work that lived
-/// entirely under it, re-derive, and reconcile `<root>/.taiyaku/` on every
-/// root that remains, as [`fn@crate::derive::derive`] does everywhere else.
+/// Remove root `id`: delete it and every work that lived entirely under it,
+/// re-derive, and reconcile `<root>/.taiyaku/` on every remaining root, as
+/// [`fn@crate::derive::derive`] does. Pages taken are counted as in a dry run.
 ///
 /// **Two derive passes, not one.** [`apply_removal`] always derives under
 /// [`crate::derive::Documents::Skip`] (see that function's own doc), so the
@@ -2153,7 +2168,12 @@ fn apply_library_removal(
             libraries: names_of(conn, &others)?,
         });
     }
-    let removes_a_dir = !alone.is_empty();
+    // Only a directory's removal can take a page: an unlink derives nothing.
+    let before = if alone.is_empty() {
+        None
+    } else {
+        Some(crate::state::resolving(conn)?)
+    };
     let mut carried = Carried::new();
     for dir in alone {
         // As in `apply_removal`. Directories of one library never nest, so a
@@ -2174,19 +2194,21 @@ fn apply_library_removal(
     }
     // A derive reads no link or grant, so a removal that only unlinks changes
     // nothing a derive or its reconcile pass reads.
-    let derived = if removes_a_dir {
-        Some(crate::derive::derive_with(
-            conn,
-            crate::derive::Documents::Skip,
-        )?)
-    } else {
-        None
+    let derived = match before {
+        Some(before) => {
+            let derived = crate::derive::derive_with(conn, crate::derive::Documents::Skip)?;
+            (total.positions_page_gone, total.notes_page_gone) =
+                crate::state::resolving(conn)?.lost_since(&before);
+            Some(derived)
+        }
+        None => None,
     };
     Ok((total, derived, carried))
 }
 
-/// What removing library `library_id` would cost, found by doing it inside a
-/// transaction this rolls back: [`removal_cost`], for a library.
+/// What removing library `library_id` would cost, the pages it takes from
+/// works it keeps included, found by doing it inside a transaction this rolls
+/// back: [`removal_cost`], for a library.
 ///
 /// # Errors
 ///
@@ -2210,7 +2232,7 @@ pub fn library_removal_cost(
 /// Where a directory went, derive again with documents reconciled, after the
 /// commit, for [`remove_root`]'s reason, end its `orphan_documents` with what
 /// the carry left and count the first pass's marks, as that does; where none
-/// did, the report is empty.
+/// did, the report is empty. Its pages taken are counted as the dry run's are.
 ///
 /// # Errors
 ///

@@ -551,6 +551,21 @@ export function noLibrarySentence(names: string[], what: string): string {
   return `${who} can see only ${what}. After this, ${after} will see no library until an administrator grants one.`
 }
 
+/**
+ * What a removal's rehearsal says, under its counts, of the positions and
+ * notes on works it keeps whose page it takes (O244). A figure of 0 is left
+ * out, and the dialogs draw this only where one figure is above 0.
+ */
+export function pagesGoneSentence(positions: number, notes: number): string {
+  const parts: string[] = []
+  if (positions > 0)
+    parts.push(
+      count(positions, 'in-progress position', 'in-progress positions'),
+    )
+  if (notes > 0) parts.push(count(notes, 'note', 'notes'))
+  return `On works that stay, this takes the page of ${parts.join(' and ')}.`
+}
+
 /** `POST /api/library/roots/{id}/move`'s answer, a rehearsal's or a move's. */
 export interface MoveAnswer {
   moved: Moved

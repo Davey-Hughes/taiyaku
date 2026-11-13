@@ -389,7 +389,8 @@ hand, before it is trusted.
      resolve as before. Where the edit empties the work, the fold carries the
      rows instead.
 4. **The web sends anchors in a follow-up PR** (ruled 2026-11-10), which closes
-   O240. This lane changes no client behaviour.
+   O240. This lane changes no client behaviour. *Done in go-public lane 4
+   (`2026-11-12-go-public-design.md`, §6), which closed O240.*
 5. **The notes document gets a version**, `taiyaku_notes: 1` (ruled
    2026-11-10, moved here from lane 1: it changes the same files).
 6. **A half the layout no longer holds** (the spec's own call). A position
@@ -400,10 +401,16 @@ hand, before it is trusted.
    spec's own call). The follow-up puts them on the wire and settles the
    documents' shape with it. An import computes each row's anchor from its
    slot, through the store's own write path. `stale` stays out of the exported
-   `notes.json` too.
+   `notes.json` too. *The wire half was done in go-public lane 4, which puts
+   them on the wire as `at` (`2026-11-12-go-public-design.md`, §6, decision
+   3). The export half stands: the exported documents stay anchor-free, and
+   `taiyaku_notes` stays 1 (its decision 7).*
 8. **The removal rehearsal's counts are unchanged** (the spec's own call).
    Counting the rows whose anchor would stop resolving goes with the
    follow-up, which has a screen to show it. O244 is narrowed to that count.
+   *Done in go-public lane 4 (`2026-11-12-go-public-design.md`, §6): a
+   removal counts them, and the two Remove dialogs show the count; that
+   closed O244.*
 9. **The fold plans from resolved slots** (the spec's own call). It reads
    each row's slot as `state::` answers it, not the stored number, so a stored
    slot gone stale neither refuses a fold nor is re-placed as the wrong page.
@@ -553,7 +560,8 @@ Resolution lives in the core alone. Serve's `View` does not resolve.
 
 - The web half is a follow-up PR: anchors on the wire, the server preferring a
   valid anchor and refusing one that names a member the account is not sent,
-  and `stale` drawn. It closes O240.
+  and `stale` drawn. It closes O240. *Done in go-public lane 4
+  (`2026-11-12-go-public-design.md`, §6), which closed O240.*
 - `page_flag`, `run` and `truth_page` are keyed by page and drift the same
   way. A scan-only library holds no flags or alignments, and holds
   `truth_page` rows only where someone labels pages (`PUT
@@ -1288,7 +1296,8 @@ regeneration, and nothing else.
   exist yet, and it costs the tests that pin the chain. Dead columns, such as
   `member.format` (O69), go in an ordinary migration later.
 - **The web half of O244**: anchors on the wire, O240, and `stale` drawn. A
-  follow-up PR after lane 2.
+  follow-up PR after lane 2. *Done in go-public lane 4
+  (`2026-11-12-go-public-design.md`, §6), which closed O240 and O244.*
 - **The watcher**: Part C's three-state probe kept in memory, `root.watch`, and
   the recursive watch. After the NAS measurement.
 - **NAS setup**: the proxy's block and `TAIYAKU_TRUSTED_PROXY`, the WUD labels,

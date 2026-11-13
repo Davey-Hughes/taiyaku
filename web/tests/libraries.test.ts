@@ -10,6 +10,7 @@ import {
   moveCost,
   moveDir,
   noLibrarySentence,
+  pagesGoneSentence,
   removeLibrary,
   renameLibrary,
   startLibraryScan,
@@ -233,6 +234,26 @@ describe('noLibrarySentence', () => {
       noLibrarySentence(['alice', 'bob', 'carol'], "this directory's library"),
     ).toBe(
       "alice, bob and carol can see only this directory's library. After this, they will see no library until an administrator grants one.",
+    )
+  })
+})
+
+describe('pagesGoneSentence', () => {
+  it('names the positions, then the notes, joined by "and"', () => {
+    expect(pagesGoneSentence(2, 1)).toBe(
+      'On works that stay, this takes the page of 2 in-progress positions and 1 note.',
+    )
+  })
+
+  it('names only the notes where it takes no position’s page', () => {
+    expect(pagesGoneSentence(0, 1)).toBe(
+      'On works that stay, this takes the page of 1 note.',
+    )
+  })
+
+  it('names only the positions where it takes no note’s page, one in the singular', () => {
+    expect(pagesGoneSentence(1, 0)).toBe(
+      'On works that stay, this takes the page of 1 in-progress position.',
     )
   })
 })

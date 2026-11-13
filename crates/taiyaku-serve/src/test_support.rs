@@ -4,6 +4,26 @@ use crate::{ServeState, Work};
 // The library crate's, so both crates' fixtures file a planted root alike.
 pub(crate) use taiyaku_library::test_support::{library_of_root, link, plant_root};
 
+/// `raw` of Z, three pages read right to left, page 1 a joined spread, as
+/// `Access::Every` sees it.
+pub(crate) fn z_with_a_spread() -> crate::view::View {
+    let sidecar = taiyaku_core::Sidecar::from_json(
+        r#"{
+          "taiyaku": 1,
+          "work": { "title": "T", "reading": "rtl" },
+          "editions": {
+            "raw": { "label": "Raw", "members": [
+              { "path": "z.cbz", "sha256": "z", "pages": 3 }
+            ], "spreads": [1] }
+          },
+          "hub": "raw",
+          "alignments": []
+        }"#,
+    )
+    .unwrap();
+    crate::view::View::build(std::sync::Arc::new(sidecar), None).expect("Access::Every")
+}
+
 /// A work of two cbz members, four pages, on disk under `root` — a directory
 /// the caller's [`Fixture`] owns, so the files go when the test ends.
 ///

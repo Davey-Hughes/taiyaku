@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use rusqlite::OptionalExtension;
-use taiyaku_core::Sidecar;
+use taiyaku_core::{MemberPage, Sidecar};
 
 /// One work the server can serve, and where its sidecar came from.
 ///
@@ -386,6 +386,39 @@ fn find_row_by_slug(conn: &rusqlite::Connection, slug: &str) -> Result<Option<i6
     })
     .optional()
     .map_err(|e| format!("looking up work `{slug}` in the library: {e}"))
+}
+
+/// `at`, a page a save names on `edition` of the work `work_id`, forwarded
+/// to the digest and occurrence the stamps moved it to, its page and half
+/// kept, as a stamp keeps every page (O240). Only where `at` names nothing in
+/// the document `view` sends: a derive before the next scan puts a stamped
+/// member's old digest back (O270), and an `at` naming it stays. An alias's
+/// occurrence is the full edition's and `at`'s the account's, which agree: a
+/// stamp rewrites a member under one directory, and derive gives every copy
+/// of its digest a file there. No answer sends an alias.
+///
+/// # Errors
+///
+/// Returns an error if the stamps' aliases cannot be read.
+pub(crate) fn past_stamps(
+    conn: &rusqlite::Connection,
+    work_id: Option<i64>,
+    view: &crate::view::View,
+    edition: &str,
+    at: &MemberPage,
+) -> Result<MemberPage, String> {
+    let Some(work_id) = work_id.filter(|_| view.slot_of_anchor(edition, at).is_none()) else {
+        return Ok(at.clone());
+    };
+    let alias = taiyaku_library::stamp::alias_of(conn, work_id, edition, &at.sha256, at.nth)?;
+    Ok(alias.map_or_else(
+        || at.clone(),
+        |(sha256, nth)| MemberPage {
+            sha256,
+            nth,
+            ..at.clone()
+        },
+    ))
 }
 
 /// Whether a write may mint the `work` row it finds missing (O184).

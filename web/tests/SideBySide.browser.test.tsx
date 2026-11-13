@@ -467,6 +467,8 @@ const REMOVAL: config.RemovalAnswer = {
     works: 1,
     positions: 0,
     notes: 0,
+    positions_page_gone: 0,
+    notes_page_gone: 0,
     left_with_no_library: [],
     libraries_removed: [],
     kept: [],

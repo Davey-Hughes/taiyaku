@@ -46,6 +46,19 @@ pub struct WasmPosition {
     pub half: Option<String>,
 }
 
+/// One page of one member: the anchor a note or a position is written with (O240).
+#[wasm_bindgen]
+#[derive(Debug, Clone)]
+pub struct WasmAt {
+    #[wasm_bindgen(getter_with_clone)]
+    pub sha256: String,
+    pub nth: u32,
+    pub page: u32,
+    /// `"left"`, `"right"`, or absent for a whole page: the wire's spelling.
+    #[wasm_bindgen(getter_with_clone)]
+    pub half: Option<String>,
+}
+
 /// Which chapter a slot falls in: `member`'s zero-based index among `of`
 /// members, and the member's path as the sidecar records it.
 ///
@@ -139,6 +152,17 @@ impl WasmSidecar {
         self.inner.slot_at(edition, index).map(|slot| WasmPosition {
             page: slot.page,
             half: half_to_str(slot.half).map(str::to_string),
+        })
+    }
+
+    /// The anchor of the page a flat slot index shows, or `undefined`.
+    #[wasm_bindgen(js_name = memberPage)]
+    pub fn member_page(&self, edition: &str, index: u32) -> Option<WasmAt> {
+        self.inner.member_page(edition, index).map(|at| WasmAt {
+            sha256: at.sha256,
+            nth: at.nth,
+            page: at.page,
+            half: half_to_wire(at.half).map(str::to_string),
         })
     }
 
@@ -241,6 +265,18 @@ fn half_to_str(half: Option<Half>) -> Option<&'static str> {
     match half {
         Some(Half::Left) => Some("L"),
         Some(Half::Right) => Some("R"),
+        None => None,
+    }
+}
+
+/// An anchor's half as the notes and progress wire spells it, the core's
+/// `Half` serde spelling. It is not `half_to_str`'s `"L"`/`"R"`, which
+/// `resolveSlot` and `indexOf` read back, so the web copies a `WasmAt`'s
+/// fields onto the wire and never converts its half.
+fn half_to_wire(half: Option<Half>) -> Option<&'static str> {
+    match half {
+        Some(Half::Left) => Some("left"),
+        Some(Half::Right) => Some("right"),
         None => None,
     }
 }

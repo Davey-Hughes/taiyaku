@@ -57,6 +57,7 @@ interface FakeSidecar {
   indexOf: ReturnType<typeof vi.fn>
   resolveSlot: ReturnType<typeof vi.fn>
   chapterAt: ReturnType<typeof vi.fn>
+  memberPage: ReturnType<typeof vi.fn>
   credits: ReturnType<typeof vi.fn>
   free: ReturnType<typeof vi.fn>
 }
@@ -74,6 +75,7 @@ function fakeSidecar(overrides: Partial<FakeSidecar> = {}): FakeSidecar {
     indexOf: vi.fn(() => undefined),
     resolveSlot: vi.fn(() => undefined),
     chapterAt: vi.fn(() => undefined),
+    memberPage: vi.fn(() => undefined),
     credits: vi.fn(() => new Uint32Array()),
     free: vi.fn(),
     ...overrides,
@@ -101,6 +103,36 @@ const fakeChapter = (member: number, of: number, path: string) => ({
   path,
   free: vi.fn(),
 })
+// Unlike the three above, built the way `taiyaku_wasm.js` builds a `WasmAt`:
+// `__wbg_ptr` is its one own property, and the fields and `free` are on the
+// prototype. So a copy of the handle's own properties carries the pointer,
+// not the page, as it would in the browser, and a read after `free` throws.
+const fakeAt = (sha256: string, nth: number, page: number, half?: string) => {
+  class Handle {
+    __wbg_ptr = 1
+    get sha256() {
+      return this.live(sha256)
+    }
+    get nth() {
+      return this.live(nth)
+    }
+    get page() {
+      return this.live(page)
+    }
+    get half() {
+      return this.live(half)
+    }
+    free() {
+      this.__wbg_ptr = 0
+    }
+    live<T>(value: T): T {
+      if (this.__wbg_ptr === 0) throw new Error('read after free')
+      return value
+    }
+  }
+  vi.spyOn(Handle.prototype, 'free')
+  return new Handle()
+}
 
 beforeEach(() => {
   hoisted.init.mockClear()
@@ -301,6 +333,43 @@ describe('wasmResolver', () => {
       const chapter = resolver.chapterAt('en-mono', 40)
       expect(chapter).toEqual({ member: 2, of: 5, path: 'v01/c03.zip' })
       expect(c.free).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('memberPage', () => {
+    it('is undefined, with nothing to free, where the sidecar has no page', async () => {
+      hoisted.fromJson.mockReturnValue(fakeSidecar())
+      const resolver = await wasmResolver('{}')
+      expect(resolver.memberPage('en-mono', 999)).toBeUndefined()
+    })
+
+    // The wasm hands `half` over in the wire's spelling, so the `At` goes
+    // onto the wire as read: a conversion to `Position`'s `L`/`R` here would
+    // send a half the server does not read.
+    it('reads the four fields into a plain At and frees the handle', async () => {
+      const a = fakeAt('d1', 1, 6, 'right')
+      const memberPage = vi.fn((edition: string, index: number) =>
+        edition === 'en-mono' && index === 9 ? a : undefined,
+      )
+      hoisted.fromJson.mockReturnValue(fakeSidecar({ memberPage }))
+      const resolver = await wasmResolver('{}')
+      const at = resolver.memberPage('en-mono', 9)
+      expect(at).toEqual({ sha256: 'd1', nth: 1, page: 6, half: 'right' })
+      expect(JSON.stringify(at)).toBe(
+        '{"sha256":"d1","nth":1,"page":6,"half":"right"}',
+      )
+      expect(a.free).toHaveBeenCalledTimes(1)
+    })
+
+    it('carries no half for a whole page', async () => {
+      const a = fakeAt('d1', 0, 2, undefined)
+      hoisted.fromJson.mockReturnValue(
+        fakeSidecar({ memberPage: vi.fn(() => a) }),
+      )
+      const resolver = await wasmResolver('{}')
+      expect(JSON.stringify(resolver.memberPage('en-mono', 2))).toBe(
+        '{"sha256":"d1","nth":0,"page":2}',
+      )
     })
   })
 

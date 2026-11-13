@@ -85,6 +85,8 @@ export const counted = (works = 5): RemovalAnswer => ({
     works,
     positions: 2,
     notes: 0,
+    positions_page_gone: 0,
+    notes_page_gone: 0,
     left_with_no_library: [],
     libraries_removed: [],
     kept: [],

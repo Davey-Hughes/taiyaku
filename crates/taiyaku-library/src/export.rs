@@ -248,7 +248,7 @@ pub fn work(
     let mut notes = crate::state::notes(conn, work_id, user_id)?;
     // A lost note is written at its stored slot, unmarked (O244): the mark
     // says what this store's layout holds now, and is not part of the note.
-    notes.clear_stale();
+    notes.clear_wire_fields();
     let progress = crate::state::progress(conn, work_id, user_id)?;
     let other_users = readers_left_behind(conn, work_id, user_id)?;
     let truth = crate::state::truth(conn, work_id)?;

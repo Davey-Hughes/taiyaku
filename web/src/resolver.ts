@@ -30,6 +30,20 @@ export interface Landed extends Position {
   via: 'identity' | 'direct' | 'inverted' | 'hub'
 }
 
+/**
+ * One page of one member, as the wire carries it (O240).
+ *
+ * The anchor a note or a position is written with, in the core's
+ * `MemberPage` wire form: `half` is `left`/`right`, not `Position`'s `L`/`R`,
+ * so the object goes onto the wire as it is and is never converted.
+ */
+export interface At {
+  sha256: string
+  nth: number
+  page: number
+  half?: 'left' | 'right'
+}
+
 /** Which chapter a slot falls in: `member`'s zero-based index among `of`. */
 export interface Chapter {
   member: number
@@ -59,6 +73,13 @@ export interface Resolver {
   indexOf(edition: string, at: Position): number | undefined
   resolve(from: string, to: string, at: Position): Landed | undefined
   chapterAt(edition: string, index: number): Chapter | undefined
+  /**
+   * The page a slot shows, as the member, occurrence and page that hold it:
+   * the anchor the server places a note or a position by, whatever
+   * renumbering comes before the write. Computed by the core
+   * (`Edition::member_page`), never in TypeScript.
+   */
+  memberPage(edition: string, index: number): At | undefined
   /**
    * The edition's credit pages, as **page** indices — the sidecar's own
    * `credits` field, which is the page-sequence kind like `spreads`.
@@ -118,8 +139,8 @@ const ensureWasmInit = once(init)
  * calls the outgoing resolver's `dispose?.()` at both of those call sites,
  * before installing the new one.
  *
- * `slotAt` and `resolveSlot` each return a fresh `WasmPosition`/`WasmSlot` —
- * unlike `sc`, these are called once per resolution rather than once per
+ * `slotAt`, `resolveSlot`, `chapterAt` and `memberPage` each return a fresh
+ * handle — unlike `sc`, called once per resolution rather than once per
  * session, so a reader loop would otherwise leak one per keypress. Their
  * fields are read into a plain object and the wasm-side handle is freed
  * immediately after, before returning.
@@ -158,6 +179,20 @@ export async function wasmResolver(json: string): Promise<Resolver> {
       const chapter: Chapter = { member: c.member, of: c.of, path: c.path }
       c.free()
       return chapter
+    },
+    // Copied field by field: the handle itself stringifies to its pointer,
+    // so it cannot go on the wire.
+    memberPage: (edition, index) => {
+      const a = sc.memberPage(edition, index)
+      if (a === undefined) return undefined
+      const at: At = {
+        sha256: a.sha256,
+        nth: a.nth,
+        page: a.page,
+        half: a.half as At['half'],
+      }
+      a.free()
+      return at
     },
     credits: (edition) => Array.from(sc.credits(edition)),
     dispose: () => sc.free(),

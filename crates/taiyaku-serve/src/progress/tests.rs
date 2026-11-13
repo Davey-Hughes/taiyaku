@@ -145,3 +145,41 @@ fn loading_progress_for_an_unregistered_work_creates_no_row() {
     assert_eq!(loaded, Vec::new());
     assert_eq!(row, None, "a GET must not write");
 }
+
+/// Settled call 9a–c over a page whose half the layout no longer holds:
+/// found, a position goes to the page's first slot; not found, it is kept
+/// only where it names the page its row stores.
+#[test]
+fn a_position_is_placed_by_its_page_and_kept_only_on_its_own_lost_one() {
+    let view = crate::test_support::z_with_a_spread();
+    let page = |sha256: &str, page, half| taiyaku_core::MemberPage {
+        sha256: sha256.into(),
+        nth: 0,
+        page,
+        half,
+    };
+    let left = Some(taiyaku_core::Half::Left);
+
+    assert_eq!(
+        place(&view, "raw", &page("z", 1, left), None),
+        Placed::Slot(2),
+        "page 1's left half"
+    );
+    assert_eq!(
+        place(&view, "raw", &page("z", 0, left), None),
+        Placed::Slot(0),
+        "page 0 is not a spread, so its first slot"
+    );
+    let gone = page("gone", 0, None);
+    assert_eq!(
+        place(&view, "raw", &gone, Some(&gone)),
+        Placed::Kept,
+        "the page its row stores"
+    );
+    assert_eq!(
+        place(&view, "raw", &gone, Some(&page("z", 0, None))),
+        Placed::Refused,
+        "another page"
+    );
+    assert_eq!(place(&view, "raw", &gone, None), Placed::Refused, "no row");
+}

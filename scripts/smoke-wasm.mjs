@@ -44,6 +44,13 @@ const halved = sc.slotAt('b', 2)
 check('slotAt b 2', { page: halved.page, half: halved.half }, { page: 2, half: 'R' })
 check('indexOf b (2,R)', sc.indexOf('b', 2, 'R'), 2)
 
+// The four fields are copied out because `JSON.stringify` of a wasm-bindgen
+// handle gives its pointer; the half is the wire's spelling, not `slotAt`'s.
+const at = sc.memberPage('b', 2)
+const atFields = { sha256: at.sha256, nth: at.nth, page: at.page, half: at.half }
+at.free()
+check('memberPage b 2', atFields, { sha256: '01', nth: 0, page: 2, half: 'right' })
+
 const landed = sc.resolveSlot('a', 'b', 1, undefined)
 check('resolveSlot a1 to b', { page: landed.page, half: landed.half }, { page: 0, half: undefined })
 

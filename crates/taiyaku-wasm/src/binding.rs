@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 
-use taiyaku_core::{ChapterAt, Half, Route, Sidecar, Slot, Via, route};
+use taiyaku_core::{ChapterAt, Half, MemberPage, Route, Sidecar, Slot, Via, route};
 
 /// A parsed sidecar, held so a reader can ask it many questions without
 /// re-parsing the document.
@@ -189,6 +189,18 @@ impl Binding {
             .slots(reading)
             .get(index as usize)
             .copied()
+    }
+
+    /// The page of one member that a flat slot index shows, or `None` for an
+    /// unknown edition or an index past the end: the anchor a note or a
+    /// position is written with (O240), from the core so the web never
+    /// derives one itself.
+    pub fn member_page(&self, edition: &str, index: u32) -> Option<MemberPage> {
+        let reading = self.sidecar.work.reading;
+        self.sidecar
+            .editions
+            .get(edition)?
+            .member_page(index, reading)
     }
 
     /// The flat index of a `(page, half)` pair, or `None` where this edition
@@ -417,6 +429,38 @@ pub(crate) const SIDECAR_WITH_CREDITS: &str = r#"{
     }
   },
   "hub": "fan",
+  "alignments": []
+}"#;
+
+/// One archive (`0a`) standing twice around `0b`, whose second page is a
+/// spread: rtl slots are `0a` 0-2, `0b` 0, 1R, 1L, then `0a` again 0-2.
+#[cfg(test)]
+pub(crate) const TWICE_FIXTURE: &str = r#"{
+  "taiyaku": 1,
+  "work": { "title": "T", "reading": "rtl" },
+  "editions": {
+    "twice": { "label": "T", "members": [
+      { "path": "a1.cbz", "sha256": "0a", "pages": 3 },
+      { "path": "b.cbz", "sha256": "0b", "pages": 2 },
+      { "path": "a2.cbz", "sha256": "0a", "pages": 3 }
+    ], "spreads": [4] }
+  },
+  "hub": "twice",
+  "alignments": []
+}"#;
+
+/// One archive whose second page is a spread, read left to right: slots are
+/// 0, 1L, 1R, 2, where `rtl` would put the right half first.
+#[cfg(test)]
+pub(crate) const LTR_FIXTURE: &str = r#"{
+  "taiyaku": 1,
+  "work": { "title": "T", "reading": "ltr" },
+  "editions": {
+    "ltr": { "label": "L", "members": [
+      { "path": "c.cbz", "sha256": "0c", "pages": 3 }
+    ], "spreads": [1] }
+  },
+  "hub": "ltr",
   "alignments": []
 }"#;
 

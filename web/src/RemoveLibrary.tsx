@@ -31,6 +31,7 @@ import {
   libraryRemovalCost,
   namesOf,
   noLibrarySentence,
+  pagesGoneSentence,
   removeLibrary,
 } from './libraries'
 import { messageOf, sentenceOf } from './message'
@@ -225,6 +226,15 @@ export function RemoveLibrary({
             )}
             .
           </p>
+          {(cost.removed.positions_page_gone > 0 ||
+            cost.removed.notes_page_gone > 0) && (
+            <p className="pages-gone">
+              {pagesGoneSentence(
+                cost.removed.positions_page_gone,
+                cost.removed.notes_page_gone,
+              )}
+            </p>
+          )}
           {cost.removed.left_with_no_library.length > 0 && (
             <p className="left-with-no-library">
               {noLibrarySentence(

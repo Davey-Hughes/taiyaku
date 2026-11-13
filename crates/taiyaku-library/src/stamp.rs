@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension as _};
 
 /// The entry a stamp writes. Matched case-insensitively when replacing, and
 /// written under exactly this spelling.
@@ -385,8 +385,9 @@ fn move_document(
 }
 
 /// [`record`]'s transaction: each stamped member's new digest, the rows
-/// anchored on the members of the editions it holds ([`rekey_anchors`]), and
-/// the work's key where the hub's digests moved it. Answers that moved key.
+/// anchored on the members of the editions it holds and the aliases of their
+/// old digests ([`rekey_anchors`]), and the work's key where the hub's digests
+/// moved it. Answers that moved key.
 fn record_rows(
     conn: &Connection,
     work_id: i64,
@@ -485,6 +486,7 @@ fn occurrences(members: &[(i64, String)]) -> Vec<(String, u32)> {
 /// stamp does not rewrite moves too when a copy before it leaves its digest.
 /// A derive before the next scan of the archive's directory puts the old
 /// digest back on the member; O270 says what the rows read until then.
+/// Then [`remember_moves`] keeps the moves, for a tab read before it (O240).
 fn rekey_anchors(
     tx: &Connection,
     work_id: i64,
@@ -561,7 +563,95 @@ fn rekey_anchors(
             .map_err(failed)?;
         }
     }
+    remember_moves(tx, work_id, key, &moves)
+}
+
+/// Remember one stamp's `moves` on `edition` of `work_id`, each `(digest,
+/// occurrence)` before it and after, for a save that names the old pair
+/// (O240). A stored alias whose target moves follows it, so one lookup
+/// reaches the member as it is now; an alias back to its own source is
+/// dropped, as a member holds that pair again. The moves are not composed
+/// with each other, as in [`rekey_anchors`]. Run on the stamp's transaction,
+/// so a stamp that rolls back leaves no alias; `pub` so serve's tests can
+/// shape a stamp as [`record_rows`] makes one.
+///
+/// # Errors
+///
+/// Returns an error if the edition's aliases cannot be read or written.
+pub fn remember_moves(
+    conn: &Connection,
+    work_id: i64,
+    edition: &str,
+    moves: &BTreeMap<(String, u32), (String, u32)>,
+) -> Result<(), String> {
+    let failed =
+        |e: rusqlite::Error| format!("remembering the digests the stamp moved on `{edition}`: {e}");
+    let stored: Vec<((String, u32), (String, u32))> = conn
+        .prepare(
+            "SELECT was_sha256, was_nth, now_sha256, now_nth FROM stamp_alias
+              WHERE work_id = ?1 AND edition = ?2",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map(rusqlite::params![work_id, edition], |row| {
+                    Ok(((row.get(0)?, row.get(1)?), (row.get(2)?, row.get(3)?)))
+                })?
+                .collect()
+        })
+        .map_err(failed)?;
+    let mut aliases: BTreeMap<(String, u32), (String, u32)> = stored
+        .into_iter()
+        .map(|(was, now)| {
+            let now = moves.get(&now).cloned().unwrap_or(now);
+            (was, now)
+        })
+        .collect();
+    aliases.extend(moves.iter().map(|(was, now)| (was.clone(), now.clone())));
+    aliases.retain(|was, now| was != now);
+
+    conn.execute(
+        "DELETE FROM stamp_alias WHERE work_id = ?1 AND edition = ?2",
+        rusqlite::params![work_id, edition],
+    )
+    .map_err(failed)?;
+    let mut insert = conn
+        .prepare(
+            "INSERT INTO stamp_alias
+               (work_id, edition, was_sha256, was_nth, now_sha256, now_nth)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .map_err(failed)?;
+    for ((was, was_nth), (now, now_nth)) in &aliases {
+        insert
+            .execute(rusqlite::params![
+                work_id, edition, was, was_nth, now, now_nth
+            ])
+            .map_err(failed)?;
+    }
     Ok(())
+}
+
+/// The `(digest, occurrence)` the stamps on `edition` of `work_id` moved
+/// `(sha256, nth)` to, or `None` where no stamp moved it ([`remember_moves`]).
+///
+/// # Errors
+///
+/// Returns an error if the alias cannot be read.
+pub fn alias_of(
+    conn: &Connection,
+    work_id: i64,
+    edition: &str,
+    sha256: &str,
+    nth: u32,
+) -> Result<Option<(String, u32)>, String> {
+    conn.query_row(
+        "SELECT now_sha256, now_nth FROM stamp_alias
+          WHERE work_id = ?1 AND edition = ?2 AND was_sha256 = ?3 AND was_nth = ?4",
+        rusqlite::params![work_id, edition, sha256, nth],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(|e| format!("reading what the stamps on `{edition}` moved `{sha256}` to: {e}"))
 }
 
 /// `e`, saying that `rewritten` of the work's archives are stamped and their

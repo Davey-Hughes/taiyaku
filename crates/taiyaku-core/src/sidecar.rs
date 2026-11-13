@@ -341,14 +341,20 @@ impl Edition {
 
 /// Where a reading position or a note stands: a page of one member of an
 /// edition, held by the member's digest so the members around it can change.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// It is also the wire's `at`, the anchor a note or a position is sent and
+/// written with (O240). An unknown field is refused: a misspelt `half` would
+/// otherwise be dropped, and the anchor read as a whole page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemberPage {
     pub sha256: String,
     /// Which of the edition's members with this digest, from 0 in member order.
     pub nth: u32,
     /// The page within that member, from 0.
     pub page: u32,
-    /// The half of a spread; `None` for a whole page.
+    /// The half of a spread; `None` for a whole page, left off the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub half: Option<Half>,
 }
 

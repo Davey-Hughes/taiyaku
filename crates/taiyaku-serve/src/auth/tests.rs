@@ -2611,6 +2611,7 @@ async fn every_route_declares_its_grant_posture() {
             created: "c".into(),
             updated: "u".into(),
             stale: false,
+            at: None,
         };
         let notes = crate::notes::Notes {
             taiyaku_notes: taiyaku_library::NOTES_VERSION,
@@ -2915,6 +2916,7 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
         created: "c".into(),
         updated: "u".into(),
         stale: false,
+        at: None,
     };
     crate::notes::store(
         &merged.state.library,

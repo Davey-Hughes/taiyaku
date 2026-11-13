@@ -1350,6 +1350,8 @@ pub(crate) fn removal_json(removal: &scan::Removal) -> serde_json::Value {
         works,
         positions,
         notes,
+        positions_page_gone,
+        notes_page_gone,
         left_with_no_library,
         libraries_removed,
         kept,
@@ -1360,6 +1362,8 @@ pub(crate) fn removal_json(removal: &scan::Removal) -> serde_json::Value {
         "works": works,
         "positions": positions,
         "notes": notes,
+        "positions_page_gone": positions_page_gone,
+        "notes_page_gone": notes_page_gone,
         "left_with_no_library": left_with_no_library,
         "libraries_removed": libraries_removed,
         "kept": kept

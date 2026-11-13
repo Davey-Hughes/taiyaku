@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::z_with_a_spread;
 
 /// A fresh in-memory library, good for nothing but bridging the fixture
 /// `Work` this module's tests build — `progress/tests.rs`'s own `library()`,
@@ -19,6 +20,7 @@ fn note(id: &str, slot: u32, region: Option<Region>) -> Note {
         created: "2026-08-05T10:00:00Z".into(),
         updated: "2026-08-05T10:00:00Z".into(),
         stale: false,
+        at: None,
     }
 }
 
@@ -97,7 +99,10 @@ fn a_note_round_trips_with_and_without_a_region() {
     // written as `null`, in exactly the bytes a client would be sent.
     let serialised = to_json(read_back.as_ref().expect("just stored")).unwrap();
 
-    assert_eq!(read_back, Some(stored));
+    let mut stored = stored;
+    stored.notes[0].at = Some(page_of("y", 0, 1));
+    stored.notes[1].at = Some(page_of("x", 0, 0));
+    assert_eq!(read_back, Some(stored), "each with the page its slot shows");
     assert!(
         !serialised.contains("null"),
         "a note with no region must omit the field, not write null: {serialised}"
@@ -163,6 +168,7 @@ fn a_stale_anchor_already_stored_does_not_refuse_the_writes_that_follow_it() {
         created: "2026-08-05T10:00:00Z".into(),
         updated: "2026-08-05T10:00:00Z".into(),
         stale: false,
+        at: None,
     });
     let alongside = validate(&both, &work, &stale);
 
@@ -306,6 +312,7 @@ fn on(edition: &str, slot: u32, region: Option<Region>) -> Notes {
             created: "2026-08-05T10:00:00Z".into(),
             updated: "2026-08-05T10:00:00Z".into(),
             stale: false,
+            at: None,
         }],
     }
 }
@@ -503,4 +510,358 @@ fn a_region_that_runs_off_the_bottom_is_refused_like_one_that_runs_off_the_side(
         matches!(result, Err(Invalid::Refused(_))),
         "y + h is 1.3, which is off the page: {result:?}"
     );
+}
+
+/// `sha256`'s copy `nth`, its whole `page`.
+fn page_of(sha256: &str, nth: u32, page: u32) -> taiyaku_core::MemberPage {
+    taiyaku_core::MemberPage {
+        sha256: sha256.into(),
+        nth,
+        page,
+        half: None,
+    }
+}
+
+/// `raw` of X, Y, X again (one archive standing twice) and H, two pages
+/// each, left to right, and the view of an account sent Y and the second X.
+fn x_twice() -> (std::sync::Arc<Sidecar>, View) {
+    let sidecar = std::sync::Arc::new(
+        Sidecar::from_json(
+            r#"{
+              "taiyaku": 1,
+              "work": { "title": "T", "reading": "ltr" },
+              "editions": {
+                "raw": { "label": "Raw", "members": [
+                  { "path": "x1.cbz", "sha256": "x", "pages": 2 },
+                  { "path": "y.cbz", "sha256": "y", "pages": 2 },
+                  { "path": "x2.cbz", "sha256": "x", "pages": 2 },
+                  { "path": "h.cbz", "sha256": "h", "pages": 2 }
+                ], "spreads": [] }
+              },
+              "hub": "raw",
+              "alignments": []
+            }"#,
+        )
+        .unwrap(),
+    );
+    let seen = |sha256: &str, path: &str, visible| taiyaku_library::browse::SeenMember {
+        sha256: sha256.into(),
+        path: path.into(),
+        visible,
+    };
+    let flags = std::collections::HashMap::from([(
+        "raw".to_string(),
+        vec![
+            seen("x", "x1.cbz", false),
+            seen("y", "y.cbz", true),
+            seen("x", "x2.cbz", true),
+            seen("h", "h.cbz", false),
+        ],
+    )]);
+    let view = View::build(std::sync::Arc::clone(&sidecar), Some(&flags)).expect("raw is sent");
+    (sidecar, view)
+}
+
+/// O240: on a narrowed edition the copy is counted among the members sent,
+/// so the second X, the only one sent, is copy 0 on the wire.
+#[test]
+fn a_narrowed_editions_anchor_counts_the_members_the_account_is_sent() {
+    let (sidecar, view) = x_twice();
+    assert_eq!(
+        view.slot_from_full("raw", 5),
+        Some(FromFull::Visible(3)),
+        "the fixture: the second X's page 1 is sent as slot 3"
+    );
+
+    assert_eq!(
+        view.anchor_sent("raw", 3, Some(&page_of("x", 1, 1)), true),
+        Some(page_of("x", 0, 1))
+    );
+    assert_eq!(
+        [
+            view.slot_of_anchor("raw", &page_of("x", 0, 1)),
+            view.slot_of_anchor("raw", &page_of("x", 1, 1)),
+        ],
+        [Some(taiyaku_core::SlotOf::Exact(3)), None],
+        "the account's document holds X once, its page 1 at slot 3"
+    );
+    let stored = Notes {
+        taiyaku_notes: taiyaku_library::NOTES_VERSION,
+        work: "t".into(),
+        notes: vec![Note {
+            at: Some(page_of("x", 1, 1)),
+            ..note("n", 5, None)
+        }],
+    };
+    assert_eq!(
+        as_seen(&stored, &view).notes,
+        [Note {
+            slot: 3,
+            at: Some(page_of("x", 0, 1)),
+            ..note("n", 5, None)
+        }]
+    );
+
+    assert_eq!(
+        view.anchor_sent("raw", 3, Some(&page_of("h", 0, 9)), false),
+        None,
+        "H is not sent, so neither is its digest"
+    );
+    assert_eq!(
+        view.anchor_sent("raw", 3, Some(&page_of("x", 0, 9)), false),
+        Some(page_of("x", 0, 9)),
+        "X's digest is a sent member's too"
+    );
+
+    let every = View::build(sidecar, None).expect("Access::Every sees the work");
+    for resolves in [true, false] {
+        for stored in [page_of("x", 1, 1), page_of("h", 0, 9)] {
+            assert_eq!(
+                every.anchor_sent("raw", 5, Some(&stored), resolves),
+                Some(stored.clone()),
+                "Access::Every, resolving {resolves}"
+            );
+        }
+    }
+}
+
+/// A page whose half the layout no longer holds is found as the page alone,
+/// not as nothing, so a write can tell it from a page that is gone. Read
+/// right to left, page 1's first slot is its right half.
+#[test]
+fn a_half_the_layout_no_longer_holds_is_found_on_its_page_only() {
+    let view = z_with_a_spread();
+    let at = |page, half| taiyaku_core::MemberPage {
+        half,
+        ..page_of("z", 0, page)
+    };
+    let left = Some(taiyaku_core::Half::Left);
+
+    assert_eq!(
+        view.slot_of_anchor("raw", &at(1, left)),
+        Some(taiyaku_core::SlotOf::Exact(2)),
+        "page 1's left half"
+    );
+    assert_eq!(
+        view.slot_of_anchor("raw", &at(0, left)),
+        Some(taiyaku_core::SlotOf::PageOnly(0)),
+        "page 0 is not a spread"
+    );
+    assert_eq!(
+        view.slot_of_anchor("raw", &at(1, None)),
+        Some(taiyaku_core::SlotOf::PageOnly(1)),
+        "page 1 is"
+    );
+}
+
+/// Spec gap 8 over the whole work: a page not found is sent as stored unless
+/// its digest is a member's the account is not sent, in any edition, and no
+/// member's it is sent. `raw` is sent X, not H; `en` (E) not at all; `fr`
+/// whole, with H filed under it too. A row naming no page is sent none.
+#[test]
+fn a_digest_is_sent_only_where_a_member_sent_carries_it() {
+    let sidecar = std::sync::Arc::new(
+        Sidecar::from_json(
+            r#"{
+              "taiyaku": 1,
+              "work": { "title": "T", "reading": "ltr" },
+              "editions": {
+                "raw": { "label": "Raw", "members": [
+                  { "path": "x.cbz", "sha256": "x", "pages": 2 },
+                  { "path": "h.cbz", "sha256": "h", "pages": 2 }
+                ], "spreads": [] },
+                "en": { "label": "En", "members": [
+                  { "path": "e.cbz", "sha256": "e", "pages": 2 }
+                ], "spreads": [] },
+                "fr": { "label": "Fr", "members": [
+                  { "path": "f.cbz", "sha256": "f", "pages": 2 },
+                  { "path": "fr-h.cbz", "sha256": "h", "pages": 2 }
+                ], "spreads": [] }
+              },
+              "hub": "raw",
+              "alignments": []
+            }"#,
+        )
+        .unwrap(),
+    );
+    let seen = |edition: &str, visible: &[bool]| {
+        let members = &sidecar.editions[edition].members;
+        let flags = members.iter().zip(visible);
+        let flags = flags.map(|(m, &visible)| taiyaku_library::browse::SeenMember {
+            sha256: m.sha256.clone(),
+            path: m.path.clone(),
+            visible,
+        });
+        (edition.to_string(), flags.collect())
+    };
+    let flags = std::collections::HashMap::from([
+        seen("raw", &[true, false]),
+        seen("en", &[false]),
+        seen("fr", &[true, true]),
+    ]);
+    let view = View::build(std::sync::Arc::clone(&sidecar), Some(&flags)).expect("raw and fr");
+    assert!(
+        view.narrowed("raw").is_some() && view.sees_whole("fr") && !view.sees_whole("en"),
+        "the fixture: raw narrowed, fr whole, en hidden"
+    );
+    let sent = |edition, stored: &taiyaku_core::MemberPage| {
+        view.anchor_sent(edition, 0, Some(stored), false)
+    };
+
+    assert_eq!(sent("raw", &page_of("e", 0, 9)), None, "E only in en");
+    assert_eq!(sent("fr", &page_of("e", 0, 9)), None, "fr is sent whole");
+    assert_eq!(
+        sent("raw", &page_of("h", 0, 9)),
+        Some(page_of("h", 0, 9)),
+        "fr's H is sent"
+    );
+    assert_eq!(
+        sent("fr", &page_of("gone", 0, 0)),
+        Some(page_of("gone", 0, 0)),
+        "no member's digest"
+    );
+    assert_eq!(view.anchor_sent("raw", 0, None, true), None, "no page");
+
+    let every = View::build(sidecar, None).expect("Access::Every sees the work");
+    assert_eq!(
+        every.anchor_sent("fr", 0, Some(&page_of("e", 0, 9)), false),
+        Some(page_of("e", 0, 9)),
+        "Access::Every is sent every member"
+    );
+}
+
+/// Pre-deploy decision 6 (O240): a note is never moved to a page it was not
+/// written on, so page 0's left half, which the layout does not hold, places
+/// no new note. A held note anchored there, its words changed, keeps its
+/// stored slot whatever slot it is sent at, as its `at` is the one stored.
+#[test]
+fn a_note_on_a_half_the_layout_no_longer_holds_is_not_placed() {
+    let view = z_with_a_spread();
+    let gone = taiyaku_core::MemberPage {
+        half: Some(taiyaku_core::Half::Left),
+        ..page_of("z", 0, 0)
+    };
+    assert_eq!(
+        view.slot_of_anchor("raw", &gone),
+        Some(taiyaku_core::SlotOf::PageOnly(0)),
+        "the fixture: page 0 is there and its left half is not"
+    );
+    let document = |notes: Vec<Note>| Notes {
+        taiyaku_notes: taiyaku_library::NOTES_VERSION,
+        work: "t".into(),
+        notes,
+    };
+
+    let mut new = document(vec![Note {
+        at: Some(gone.clone()),
+        ..note("n", 0, None)
+    }]);
+    match placed(&mut new, &document(Vec::new()), &view, "t") {
+        Err(Invalid::Missing(why)) => assert_eq!(
+            why,
+            "note `n` names a page that `raw` of work `t` does not have now. Reload the page \
+             to see the notes as they are."
+        ),
+        other => panic!("a new note on a gone half is refused: {other:?}"),
+    }
+
+    let held = Note {
+        stale: true,
+        at: Some(gone),
+        ..note("n", 1, None)
+    };
+    let mut edited = document(vec![Note {
+        slot: 0,
+        body: "new words".into(),
+        ..held.clone()
+    }]);
+    placed(&mut edited, &document(vec![held]), &view, "t").expect("an edit keeps its anchor");
+    assert_eq!(edited.notes[0].slot, 1, "its stored slot");
+}
+
+/// The owner's ruling "Server keeps echoes" keeps an echo only where it is
+/// the held note as the account is sent it, `at` and `stale` aside. Over
+/// [`x_twice`], n is held on the second X's page 1, stored slot 5 and sent
+/// as slot 3. Its echo names that page under a digest no member carries, as
+/// a tab that read it before a stamp would, so neither equality nor `slot_of`
+/// places it: each field below decides alone.
+#[test]
+fn an_echo_is_kept_only_where_it_is_the_held_note_as_sent() {
+    let (_, view) = x_twice();
+    let document = |notes: Vec<Note>| Notes {
+        taiyaku_notes: taiyaku_library::NOTES_VERSION,
+        work: "t".into(),
+        notes,
+    };
+    let held = Note {
+        at: Some(page_of("x-stamped", 0, 1)),
+        ..note("n", 5, None)
+    };
+    let echo = Note {
+        slot: 3,
+        stale: true,
+        at: Some(page_of("x-before-the-stamp", 0, 1)),
+        ..held.clone()
+    };
+    let current = document(vec![held]);
+
+    let mut kept = document(vec![echo.clone()]);
+    placed(&mut kept, &current, &view, "t").expect("untouched, at the slot it is sent at");
+    assert_eq!(kept.notes, std::slice::from_ref(&echo), "kept as it came");
+
+    let changed = [
+        (
+            "its body",
+            Note {
+                body: "a body edit".into(),
+                ..echo.clone()
+            },
+        ),
+        (
+            "its colour",
+            Note {
+                color: Some("amber".into()),
+                ..echo.clone()
+            },
+        ),
+        (
+            "its region",
+            Note {
+                region: Some(Region {
+                    x: 0.1,
+                    y: 0.1,
+                    w: 0.2,
+                    h: 0.2,
+                }),
+                ..echo.clone()
+            },
+        ),
+        (
+            "when it was made",
+            Note {
+                created: "2026-11-01T10:00:00Z".into(),
+                ..echo.clone()
+            },
+        ),
+        (
+            "when it was changed",
+            Note {
+                updated: "2026-11-01T10:00:00Z".into(),
+                ..echo.clone()
+            },
+        ),
+        ("its slot", Note { slot: 2, ..echo }),
+    ];
+    for (what, note) in changed {
+        let mut sent = document(vec![note]);
+        match placed(&mut sent, &current, &view, "t") {
+            Err(Invalid::Missing(why)) => assert_eq!(
+                why,
+                "note `n` names a page that `raw` of work `t` does not have now. Reload the \
+                 page to see the notes as they are.",
+                "{what}"
+            ),
+            other => panic!("an echo changing {what} is refused: {other:?}"),
+        }
+    }
 }
