@@ -885,7 +885,7 @@ pub(crate) fn refuse_a_device_credential(extensions: &axum::http::Extensions) ->
 /// **Both shared-document writes open with this gate** (O58): `put_truth` and
 /// `patch_alignments` rewrite a document every account that may open the work
 /// is served, so only an administrator writes one, and never by a key; a key
-/// still reads both.
+/// still reads both. A route shaping its body by this asks [`administers`].
 pub(crate) fn administering_or_forbidden(
     principal: &crate::auth::Principal,
     extensions: &axum::http::Extensions,
@@ -894,6 +894,20 @@ pub(crate) fn administering_or_forbidden(
         return Some((StatusCode::FORBIDDEN, "this route is an administrator's").into_response());
     }
     refuse_a_device_credential(extensions)
+}
+
+/// Whether [`administering_or_forbidden`] admits the request's caller, for a
+/// route that shapes what it sends by the answer rather than refusing (O280).
+///
+/// **Asks the gate and drops its refusal**, so shaping and refusing cannot
+/// drift apart: a role check here would send an administrator's API key what
+/// only a browser session or the password is sent. A request with no
+/// principal is no administrator, as `auth::access_of` reads it as seeing
+/// nothing.
+pub(crate) fn administers(extensions: &axum::http::Extensions) -> bool {
+    extensions
+        .get::<crate::auth::Principal>()
+        .is_some_and(|principal| administering_or_forbidden(principal, extensions).is_none())
 }
 
 /// Everything the account screen reads and writes.

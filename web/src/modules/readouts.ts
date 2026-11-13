@@ -105,7 +105,7 @@ export function spokenPosition({
 }
 
 /**
- * The chapter code a member's stored path names, stripped of its directory
+ * The chapter code a member's path names, stripped of its directory
  * and extension and taken from after the last ` - ` separator if the
  * filename has one.
  *

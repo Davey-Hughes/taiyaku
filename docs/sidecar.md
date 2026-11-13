@@ -270,7 +270,10 @@ side; both sides flatten before anything else happens, so volume-against-chapter
 is not a special case. A member is a volume, a chapter file, or a directory of
 pages — an edition is however many of them the work spans.
 
-- `path` is relative to the sidecar.
+- `path` is relative to the sidecar. The server sends it as stored only to an
+  administrator signed in by browser or password; anyone else, an
+  administrator's API key included, is sent each member's file name in its
+  place (O280).
 - `sha256` is over the member file, so a reader can tell the archive was replaced
   and the alignment is stale. This is not hypothetical: the library contains two
   files both claiming to be volume 1 of the same work, only one of which is.

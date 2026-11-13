@@ -7753,7 +7753,7 @@ mod narrowing {
     #[tokio::test]
     async fn manga_alone_is_sent_raw_as_part1_and_part3() {
         let merged = test_support::router_over_an_edition_merged_from_two_libraries();
-        let whole = the_administrators_document(&merged).await;
+        let whole = as_file_names(&the_administrators_document(&merged).await);
         let (doc, _) = document(&merged, Reader::MangaOnly).await;
         assert_eq!(
             members(&doc, "raw"),
@@ -7791,7 +7791,11 @@ mod narrowing {
         let merged = test_support::router_over_an_edition_merged_from_two_libraries();
         let whole = the_administrators_document(&merged).await;
         let (doc, _) = document(&merged, Reader::Both).await;
-        assert_eq!(doc, whole, "an account granted every library holding it");
+        assert_eq!(
+            doc,
+            as_file_names(&whole),
+            "an account granted every library holding it"
+        );
     }
 
     /// The tag is over the document sent, so an account narrowed out of part
@@ -7813,6 +7817,336 @@ mod narrowing {
             let (status, _, _) = fetched(&merged, reader, &uri, Some(other)).await;
             assert_eq!(status, StatusCode::OK, "{reader:?}, the other's tag");
         }
+    }
+
+    /// `doc` with each member's `path` as its file name, which is what an
+    /// account the gate does not admit is sent of it (O280).
+    fn as_file_names(doc: &serde_json::Value) -> serde_json::Value {
+        let mut doc = doc.clone();
+        let editions = doc["editions"].as_object_mut().expect("an editions object");
+        for edition in editions.values_mut() {
+            for member in edition["members"].as_array_mut().expect("a members array") {
+                let file = std::path::Path::new(member["path"].as_str().expect("a path"))
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("a file name")
+                    .to_string();
+                member["path"] = file.into();
+            }
+        }
+        doc
+    }
+
+    /// Each member's `path` in `doc`'s `edition` as the body spells it, not
+    /// through [`members`], which maps it to its file name.
+    fn sent_paths(doc: &serde_json::Value, edition: &str) -> Vec<String> {
+        doc["editions"][edition]["members"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no edition `{edition}` in {doc}"))
+            .iter()
+            .map(|member| member["path"].as_str().expect("a path").to_string())
+            .collect()
+    }
+
+    fn paths_by_edition(
+        doc: &serde_json::Value,
+    ) -> std::collections::BTreeMap<String, Vec<String>> {
+        editions(doc)
+            .into_iter()
+            .map(|key| {
+                let paths = sent_paths(doc, &key);
+                (key, paths)
+            })
+            .collect()
+    }
+
+    fn named(editions: &[(&str, &[&str])]) -> std::collections::BTreeMap<String, Vec<String>> {
+        editions
+            .iter()
+            .map(|(key, paths)| {
+                let paths = paths.iter().map(|path| (*path).to_string()).collect();
+                ((*key).to_string(), paths)
+            })
+            .collect()
+    }
+
+    /// `GET uri` with the fixture administrator's API key, and with
+    /// `If-None-Match` when given.
+    async fn fetched_by_key(
+        merged: &EditionMergedFromTwoLibraries,
+        uri: &str,
+        if_none_match: Option<&str>,
+    ) -> (StatusCode, Option<String>, String) {
+        let mut request = Request::get(uri);
+        if let Some(tag) = if_none_match {
+            request = request.header(header::IF_NONE_MATCH, tag);
+        }
+        answered_with_tag(
+            &test_support::key_authenticating(crate::build_router(merged.state.clone())),
+            request.body(Body::empty()).unwrap(),
+        )
+        .await
+    }
+
+    /// Every edition a `user` is sent names each member by its file name,
+    /// and nothing of where the server keeps it (O280).
+    #[tokio::test]
+    async fn a_readers_document_names_each_member_by_its_file_name() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let whole = the_administrators_document(&merged).await;
+        let part1 = sent_paths(&whole, "raw").remove(0);
+        let part1 = std::path::Path::new(&part1);
+        assert!(
+            part1.is_absolute(),
+            "the fixture stores a scanned member's whole path: {}",
+            part1.display()
+        );
+        let dir = part1
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("part1 sits two levels below the fixture's directory");
+        let dir_name = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("the fixture's directory has a name");
+        let dir = dir.display().to_string();
+        let uri = format!("/api/works/{}", merged.slug);
+        let readers = [Reader::MangaOnly, Reader::KidsOnly, Reader::Both];
+        let mut sent = Vec::new();
+        let mut told_the_directory = Vec::new();
+        for reader in readers {
+            let (status, _, body) = fetched(&merged, reader, &uri, None).await;
+            assert_eq!(status, StatusCode::OK, "{reader:?}: {body}");
+            let doc: serde_json::Value = serde_json::from_str(&body).expect("the document is JSON");
+            sent.push((reader, paths_by_edition(&doc)));
+            if body.contains(&dir) || body.contains(dir_name) {
+                told_the_directory.push(reader);
+            }
+        }
+        assert_eq!(
+            sent,
+            [
+                (
+                    Reader::MangaOnly,
+                    named(&[
+                        ("en", &["Foo v01.cbz"]),
+                        ("fr", &["Foo v01.cbz"]),
+                        ("raw", &["Foo v01 part1.cbz", "Foo v01 part3.cbz"]),
+                    ]),
+                ),
+                (Reader::KidsOnly, named(&[("raw", &["Foo v01 part2.cbz"])])),
+                (
+                    Reader::Both,
+                    named(&[
+                        ("en", &["Foo v01.cbz"]),
+                        ("fr", &["Foo v01.cbz"]),
+                        (
+                            "raw",
+                            &[
+                                "Foo v01 part1.cbz",
+                                "Foo v01 part2.cbz",
+                                "Foo v01 part3.cbz",
+                            ],
+                        ),
+                    ]),
+                ),
+            ]
+        );
+        assert_eq!(
+            told_the_directory,
+            [],
+            "the readers sent {dir} or {dir_name}"
+        );
+    }
+
+    /// An administrator by browser session or by password is sent where the
+    /// server keeps each member, the same bytes either way.
+    #[tokio::test]
+    async fn the_administrator_by_session_or_password_is_sent_the_stored_paths() {
+        use base64::Engine as _;
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let uri = format!("/api/works/{}", merged.slug);
+        let (status, _, by_session) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "by session: {by_session}");
+        let basic = base64::engine::general_purpose::STANDARD.encode(
+            format!(
+                "{}:{}",
+                test_support::FIXTURE_NAME,
+                test_support::FIXTURE_PASSWORD
+            )
+            .as_bytes(),
+        );
+        let (status, _, by_password) = answered_with_tag(
+            &crate::build_router(merged.state.clone()),
+            Request::get(&uri)
+                .header(header::AUTHORIZATION, format!("Basic {basic}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "by password: {by_password}");
+        for (by, body) in [("session", &by_session), ("password", &by_password)] {
+            let doc: serde_json::Value = serde_json::from_str(body).expect("the document is JSON");
+            let raw = sent_paths(&doc, "raw");
+            assert_eq!(raw.len(), 3, "by {by}: {raw:?}");
+            for (path, end) in raw.iter().zip([
+                "m/Foo v01 part1.cbz",
+                "k/Foo v01 part2.cbz",
+                "m/Foo v01 part3.cbz",
+            ]) {
+                let path = std::path::Path::new(path);
+                assert!(path.is_absolute(), "by {by}: {}", path.display());
+                assert!(path.ends_with(end), "by {by}: {} for {end}", path.display());
+            }
+        }
+        assert_eq!(
+            by_session, by_password,
+            "the session's bytes and the password's"
+        );
+    }
+
+    /// The gate admits no key, so an administrator's key is sent file names,
+    /// the same document as an account granted every library holding the work.
+    #[tokio::test]
+    async fn an_administrators_key_is_sent_file_names() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let uri = format!("/api/works/{}", merged.slug);
+        let (status, _, by_key) = fetched_by_key(&merged, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{by_key}");
+        let doc: serde_json::Value = serde_json::from_str(&by_key).expect("the document is JSON");
+        assert_eq!(editions(&doc), ["en", "fr", "raw"], "{doc}");
+        for key in editions(&doc) {
+            for path in sent_paths(&doc, &key) {
+                let file = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("a file name");
+                assert_eq!(path, file, "a member of `{key}`, by key");
+            }
+        }
+        let (status, _, both) = fetched(&merged, Reader::Both, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{both}");
+        assert_eq!(by_key, both, "the key's bytes and Both's");
+    }
+
+    /// Each caller's `ETag` is the SHA-256 of the bytes it is sent, so here,
+    /// where the stored paths are whole, neither copy revalidates the other.
+    #[tokio::test]
+    async fn each_document_is_tagged_over_the_bytes_it_is_sent() {
+        use sha2::{Digest, Sha256};
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let uri = format!("/api/works/{}", merged.slug);
+        let over = |body: &str| {
+            let hex: String = Sha256::digest(body.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            format!("\"{hex}\"")
+        };
+        let (status, both_tag, both) = fetched(&merged, Reader::Both, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{both}");
+        let (status, admin_tag, admin) = fetched(&merged, Reader::Administrator, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{admin}");
+        let (status, key_tag, by_key) = fetched_by_key(&merged, &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{by_key}");
+        for (who, tag, body) in [
+            ("Both", &both_tag, &both),
+            ("the administrator", &admin_tag, &admin),
+            ("the key", &key_tag, &by_key),
+        ] {
+            assert_eq!(
+                tag.as_deref(),
+                Some(over(body).as_str()),
+                "{who}'s tag, over the bytes it is sent"
+            );
+        }
+        let both_tag = both_tag.expect("Both's tag");
+        let admin_tag = admin_tag.expect("the administrator's tag");
+        let key_tag = key_tag.expect("the key's tag");
+
+        let (status, _, _) = fetched(&merged, Reader::Both, &uri, Some(&both_tag)).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "Both, its own tag");
+        let (status, _, _) = fetched(&merged, Reader::Administrator, &uri, Some(&admin_tag)).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_MODIFIED,
+            "the administrator, its own tag"
+        );
+        let (status, _, _) = fetched_by_key(&merged, &uri, Some(&key_tag)).await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "the key, its own tag");
+
+        let (status, _, _) = fetched(&merged, Reader::Both, &uri, Some(&admin_tag)).await;
+        assert_eq!(status, StatusCode::OK, "Both, the administrator's tag");
+        let (status, _, _) = fetched(&merged, Reader::Administrator, &uri, Some(&both_tag)).await;
+        assert_eq!(status, StatusCode::OK, "the administrator, Both's tag");
+    }
+
+    #[test]
+    fn with_file_names_keeps_only_each_paths_last_part() {
+        let given = Sidecar::from_json(
+            r#"{
+              "taiyaku": 1,
+              "work": { "title": "Foo", "reading": "rtl" },
+              "editions": {
+                "en": { "label": "English", "members": [
+                  { "path": "/srv/Manga/Foo en/Foo v01.cbz", "sha256": "sha-of-en-v01", "pages": 4 }
+                ], "spreads": [2] },
+                "raw": { "label": "Raw", "members": [
+                  { "path": "/srv/Manga/Foo/Foo v01.cbz", "sha256": "sha-of-v01", "pages": 4 },
+                  { "path": "../../Manga/Foo v02.cbz", "sha256": "sha-of-v02", "pages": 3 },
+                  { "path": "Foo v03.cbz", "sha256": "sha-of-v03", "pages": 2 },
+                  { "path": "/", "sha256": "sha-of-a-root", "pages": 1 },
+                  { "path": "..", "sha256": "sha-of-a-parent", "pages": 1 }
+                ], "spreads": [] }
+              },
+              "hub": "en",
+              "alignments": [
+                { "from": "raw", "to": "en", "by": "solver", "runs": [{ "a": "0-3", "b": "0-3" }] }
+              ]
+            }"#,
+        )
+        .expect("the literal parses");
+        assert_eq!(
+            given.alignments.len(),
+            1,
+            "the literal carries an alignment"
+        );
+
+        let sent = with_file_names(&given);
+        let paths = |doc: &Sidecar| -> std::collections::BTreeMap<String, Vec<String>> {
+            doc.editions
+                .iter()
+                .map(|(key, edition)| {
+                    let paths = edition.members.iter().map(|member| member.path.clone());
+                    (key.clone(), paths.collect())
+                })
+                .collect()
+        };
+        assert_eq!(
+            paths(&sent),
+            named(&[
+                ("en", &["Foo v01.cbz"]),
+                (
+                    "raw",
+                    &["Foo v01.cbz", "Foo v02.cbz", "Foo v03.cbz", "", ""]
+                ),
+            ])
+        );
+        let blanked = |doc: &Sidecar| {
+            let mut doc = doc.clone();
+            for edition in doc.editions.values_mut() {
+                for member in &mut edition.members {
+                    member.path.clear();
+                }
+            }
+            doc.to_json()
+        };
+        assert_eq!(
+            blanked(&sent),
+            blanked(&given),
+            "every field but the paths is as given"
+        );
     }
 
     /// A note `id` on `edition`'s `slot`, its words its own.
@@ -8269,19 +8603,19 @@ mod narrowing {
         );
     }
 
-    /// Manga alone cannot search what it is sent for the tag it is sent under:
-    /// the hidden slots before each member it sees are a few small numbers, so
-    /// a tag over them and over what it is sent alone would give part2's size
-    /// away (spec §3.8, decision 11). Each guess is hashed in the layout
-    /// `View::etag_naming_numbering` gives what the account is sent, from the
-    /// work document and the notes body, whichever editions are narrowed, and
-    /// with and without raw's count of hidden members after them, as a tag
-    /// naming what is hidden by anything but its hashes would.
+    /// Manga alone cannot find its notes tag by searching what it is sent: the
+    /// hidden slots before each member it sees are a few small numbers, so a
+    /// tag over them and what it is sent alone would give part2's size away
+    /// (spec §3.8, decision 11). Each guess has `View::etag_naming_numbering`'s
+    /// layout over the work document and the notes body, each member's path as
+    /// stored (the tag hashes it: the strongest guess), whichever editions are
+    /// narrowed, and with and without raw's count of hidden members after them,
+    /// as a tag naming what is hidden by anything but its hashes would.
     #[tokio::test]
     async fn manga_alones_notes_tag_cannot_be_found_from_what_it_is_sent() {
         use sha2::{Digest, Sha256};
         let merged = test_support::router_over_an_edition_merged_from_two_libraries();
-        the_administrators_document(&merged).await;
+        let whole = the_administrators_document(&merged).await;
         let (doc, _) = document(&merged, Reader::MangaOnly).await;
         assert_eq!(
             members(&doc, "raw"),
@@ -8296,6 +8630,16 @@ mod narrowing {
 
         let mut keys = editions(&doc);
         keys.sort();
+        let stored = |key: &str, sha256: &str| -> String {
+            whole["editions"][key]["members"]
+                .as_array()
+                .expect("members")
+                .iter()
+                .find(|member| member["sha256"] == sha256)
+                .and_then(|member| member["path"].as_str())
+                .unwrap_or_else(|| panic!("`{key}` stores no member {sha256}"))
+                .to_string()
+        };
         let guess = |narrowed: usize, hidden: [u64; 2], counted: Option<u64>| {
             let mut hasher = Sha256::new();
             let mut field = |bytes: &[u8]| {
@@ -8312,8 +8656,9 @@ mod narrowing {
                 field(&(sent.len() as u64).to_le_bytes());
                 let mut pages = Vec::new();
                 for member in sent {
-                    field(member["sha256"].as_str().expect("a sha256").as_bytes());
-                    field(member["path"].as_str().expect("a path").as_bytes());
+                    let sha256 = member["sha256"].as_str().expect("a sha256");
+                    field(sha256.as_bytes());
+                    field(stored(key, sha256).as_bytes());
                     pages.push(member["pages"].as_u64().expect("pages"));
                 }
                 // Raw's guesses are the hidden pages before each member; any

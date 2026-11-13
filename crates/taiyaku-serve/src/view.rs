@@ -195,9 +195,11 @@ impl View {
             }
         }
         // Keyed by the `sha256` of every member the account is not sent. All
-        // else hashed is what it is sent and small numbers, the full slots and
-        // a stored document's entries on pages it does not see, which an
-        // unkeyed tag would let it enumerate to a hidden member's size.
+        // else hashed is what it is sent, save each sent member's stored path
+        // (a non-administrator is sent only its file name, O280), and small
+        // numbers, the full slots and a stored document's entries on pages it
+        // does not see, which an unkeyed tag would let it enumerate to a hidden
+        // member's size.
         let mut editions: Vec<(&String, &Edition)> = self.full.editions.iter().collect();
         editions.sort_by_key(|(key, _)| *key);
         for (key, edition) in editions {

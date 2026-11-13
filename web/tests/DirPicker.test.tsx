@@ -226,22 +226,41 @@ describe('DirPicker, browsing', () => {
     expect(onPick).toHaveBeenCalledWith('/media/Manga')
   })
 
-  it('tells onPath each text the box holds: typed, browsed to, and emptied by a pick', async () => {
+  it('tells onPath each text the box holds: typed, browsed to, and emptied by a pick, and nothing on mount', async () => {
     const onPath = vi.fn()
     const host = mount(
       <DirPicker action="Add directory" onPick={vi.fn()} onPath={onPath} />,
     )
-    expect(onPath).toHaveBeenLastCalledWith('')
+    expect(onPath).not.toHaveBeenCalled()
 
     await typeInto(box(host), '/srv/typed')
-    expect(onPath).toHaveBeenLastCalledWith('/srv/typed')
+    expect(onPath.mock.calls).toEqual([['/srv/typed']])
 
     await press(browse(host))
     await press(entries(host)[0])
-    expect(onPath).toHaveBeenLastCalledWith('/media')
+    expect(onPath.mock.calls).toEqual([['/srv/typed'], ['/media']])
 
     await press(pick(host))
-    expect(onPath).toHaveBeenLastCalledWith('')
+    expect(onPath.mock.calls).toEqual([['/srv/typed'], ['/media'], ['']])
+  })
+
+  it('tells onPath nothing when a pick is taken after the box was typed in again', async () => {
+    const held = deferred<void>()
+    const onPath = vi.fn()
+    const host = mount(
+      <DirPicker
+        action="Add directory"
+        onPick={vi.fn().mockReturnValue(held.promise)}
+        onPath={onPath}
+      />,
+    )
+    await typeInto(box(host), '/srv/first')
+    await press(pick(host))
+    await typeInto(box(host), '/srv/next')
+
+    await flush(() => held.resolve())
+    expect(box(host).value).toBe('/srv/next')
+    expect(onPath.mock.calls).toEqual([['/srv/first'], ['/srv/next']])
   })
 
   it('goes up to the parent, and from a prefix to the prefixes', async () => {

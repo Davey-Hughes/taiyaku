@@ -7,9 +7,9 @@
  *
  * **Without an `action` it is a field and no button.** The form that makes a
  * library takes one directory, so its own submit is what sends the path, read
- * from the box, and Enter submits that form. `onPath` reports what the box
- * holds a render after it changes, which is soon enough to hold a button and
- * too late for an Enter pressed straight after a keystroke.
+ * from the box, and Enter submits that form. `onPath` is told in the handler
+ * that changes the box, not in an effect: a caller's setState would commit
+ * twice a keystroke, and a burst outrun React's nested-update limit (O281).
  *
  * **The box empties when the pick was taken, and not before.** The caller
  * adds the directory and answers a promise; a refusal rejects it, and the typed
@@ -63,8 +63,8 @@ export interface DirPickerProps {
   onEdit?: () => void
   /**
    * The text in the box, each time it changes: typed, browsed to, or emptied
-   * once a pick was taken. A caller with a button of its own holds it from
-   * this while the box is empty.
+   * once a pick was taken. Not on mount: the box starts empty. A caller with a
+   * button of its own holds it from this while the box is empty.
    */
   onPath?: (path: string) => void
   /**
@@ -88,13 +88,17 @@ export function DirPicker({
   ids,
 }: DirPickerProps) {
   const [path, setPath] = useState('')
-  // In a ref, so a caller's new closure on each render does not count as a
-  // change of path.
-  const told = useRef(onPath)
-  told.current = onPath
-  useEffect(() => {
-    told.current?.(path)
-  }, [path])
+  /**
+   * The text last put in the box, ahead of the render that draws it, so a
+   * pick taken after more typing reads that typing and leaves it.
+   */
+  const boxText = useRef('')
+  /** Every change to the box goes through here, so the caller hears each. */
+  const changePath = (next: string) => {
+    boxText.current = next
+    setPath(next)
+    onPath?.(next)
+  }
   const [picking, setPicking] = useState(false)
   /** A ref as well as `picking`: two presses before a render both read false. */
   const inFlight = useRef(false)
@@ -122,7 +126,7 @@ export function DirPicker({
         settle()
         // Only the path that was taken is emptied: whatever was typed while
         // the pick was pending is the next one.
-        setPath((typed) => (typed === picked ? '' : typed))
+        if (boxText.current === picked) changePath('')
       },
       () => {
         // The caller drew the refusal. The path stays to be corrected.
@@ -177,7 +181,7 @@ export function DirPicker({
         // A path typed while the listing was being read is the person's.
         if (answer.path !== null && !typed.current) {
           onEdit?.()
-          setPath(answer.path)
+          changePath(answer.path)
         }
       })
       .catch((err: unknown) => {
@@ -225,7 +229,7 @@ export function DirPicker({
       onChange={(e) => {
         typed.current = true
         onEdit?.()
-        setPath(e.target.value)
+        changePath(e.target.value)
       }}
       onKeyDown={(e) => {
         if (e.key !== 'Enter' || action === undefined) return

@@ -1838,6 +1838,46 @@ describe('Libraries, making one', () => {
     expect(regime(host)).toContain('probe failed: no events')
   })
 
+  it('keeps every character of a burst typed into the directory path, and logs and throws nothing (O281)', async () => {
+    const host = await at(NEW_LIBRARY)
+    const box = pathBox(host)
+    const setValue = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set
+    const want = `${'abcdefghijklmnopqrstuvwxyz'.repeat(4)}abcdefghijklmnop`
+    expect(want).toHaveLength(120)
+    const thrown: unknown[] = []
+    const onError = (e: ErrorEvent) => {
+      thrown.push(e.error ?? e.message)
+    }
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const actEnvironment = globalThis.IS_REACT_ACT_ENVIRONMENT
+    window.addEventListener('error', onError)
+    try {
+      // One task of input events with no `act` around them, as a
+      // paste-by-keys tool sends them: an update the picker reports from
+      // an effect then nests in the next, past React's limit.
+      globalThis.IS_REACT_ACT_ENVIRONMENT = false
+      box.focus()
+      for (let n = 1; n <= 120; n++) {
+        setValue?.call(box, want.slice(0, n))
+        box.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      await new Promise((done) => {
+        setTimeout(done, 0)
+      })
+    } finally {
+      globalThis.IS_REACT_ACT_ENVIRONMENT = actEnvironment
+      window.removeEventListener('error', onError)
+    }
+    const said = logged.mock.calls.map((call) => String(call[0]))
+    logged.mockRestore()
+    expect(box.value).toBe(want)
+    expect(thrown).toEqual([])
+    expect(said).toEqual([])
+  })
+
   it('puts focus on the made library’s heading, and only once', async () => {
     const made = library(1, 'Manga', ['/media/Manga'])
     vi.mocked(api.createLibrary).mockResolvedValue({ library: made, added: [] })

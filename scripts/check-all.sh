@@ -122,6 +122,13 @@ if [ -n "${hidden_rust}" ]; then
   exit 1
 fi
 
+# --- a coverage build another rustc made, which is not a CI job ---
+# Checked before the lint job, so a stale build is refused in seconds rather
+# than after it and a full instrumented build. Local only: CI starts from an empty
+# target directory, so it never has a build to compare. Under the same tool
+# condition as the coverage run below, since without the tools nothing measures.
+if command -v cargo-llvm-cov >/dev/null 2>&1 && command -v cargo-nextest >/dev/null 2>&1; then run scripts/coverage-build-guard.sh; fi
+
 # --- the `lint` job ---
 run cargo fmt --all -- --check
 run cargo clippy --workspace --all-targets --all-features -- -D warnings

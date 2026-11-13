@@ -634,8 +634,28 @@ pub(crate) fn filter_sidecar_editions(
     filtered
 }
 
-/// The work's document as this account is sent it ([`crate::view::View`]),
-/// with an `ETag` over that document.
+/// A copy of `sidecar` with each member's `path` cut to its file name: what
+/// [`get_sidecar`] sends a caller [`crate::session::administers`] does not
+/// admit (O280). Where the server keeps a member is not theirs to know, and
+/// the reader's chapter readout reads only the file name.
+///
+/// **A path with no file name (`/`, `..`, empty) is sent as `""`**, never as
+/// itself, which would send what this withholds. Every edition is mapped, a
+/// relative path too: a document-backed work's paths name folders.
+fn with_file_names(sidecar: &taiyaku_core::Sidecar) -> taiyaku_core::Sidecar {
+    let mut sent = sidecar.clone();
+    for member in sent.editions.values_mut().flat_map(|e| &mut e.members) {
+        member.path = std::path::Path::new(&member.path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string();
+    }
+    sent
+}
+
+/// The work's document as this account is sent it ([`crate::view::View`],
+/// and [`with_file_names`] for a non-administrator), with an `ETag` over it.
 ///
 /// **A missing work answers 404 with a reason** (O91): JSON,
 /// `{"error": <sentence>, "missing": true}`, so the reader tells it from a
@@ -656,11 +676,20 @@ async fn get_sidecar(
     if state.works.get(&id).is_some_and(|work| work.is_missing()) {
         return missing_work(&id);
     }
-    let sidecar = view.sidecar();
+    let stored = view.sidecar();
+    let file_names;
+    let sidecar = if crate::session::administers(&request_extensions) {
+        &**stored
+    } else {
+        file_names = with_file_names(stored);
+        &file_names
+    };
     // The `ETag` is over the document this account is sent (spec §3.8): two
     // accounts sent different documents must not revalidate each other's
     // copies, and a withheld edition changing must not change this one's tag.
-    // `patch_alignments` compares `If-Match` with the same view's tag.
+    // Only a caller `administers` admits reaches `patch_alignments`, and it is
+    // sent the view's own document, whose tag that route checks `If-Match`
+    // against.
     let tag = sidecar_etag(sidecar);
     if if_none_match_hits(&headers, &tag) {
         return not_modified(&tag, None);

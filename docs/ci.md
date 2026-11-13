@@ -1087,6 +1087,13 @@ the image ships (see "Toolchain note").
 **Bumping the toolchain is a pull request of its own.** Measure the same commit
 on both toolchains, with the same tests and the same commands, then move the
 pin. Re-set the floor only if the counting changed, as it did here.
+`scripts/check-all.sh` records the rustc it measures with beside
+`target/llvm-cov-target`, in `target/llvm-cov-target.rustc`, and refuses to
+measure over that folder while the record names another rustc, naming the
+folder to delete and both versions; it deletes nothing itself. A folder with no
+record is trusted, and a `cargo llvm-cov` run by hand is not recorded, so
+measure the other toolchain in a folder of its own
+(`CARGO_LLVM_COV_TARGET_DIR`).
 
 ## The other half: `scripts/coverage-floor.mjs`
 

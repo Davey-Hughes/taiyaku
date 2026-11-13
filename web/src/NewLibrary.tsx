@@ -110,11 +110,10 @@ export function NewLibrary({
 
   const submit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
-    // The box itself, not `path`: the picker reports a keystroke a render
-    // after it draws it, so an Enter pressed at once would send the path as
-    // it stood before that keystroke. Without one box of that name nothing
-    // is sent: `path` could be that stale value, and a library made at the
-    // wrong directory is worse than a press that does nothing.
+    // The box itself, not `path`: what is sent is the text the person sees
+    // in the box. Without one box of that name nothing is sent: there is no
+    // one text they see, and a library made at the wrong directory is worse
+    // than a press that does nothing.
     const box = e.currentTarget.elements.namedItem(PICKER_BOX)
     if (!(box instanceof HTMLInputElement)) return
     const dir = box.value.trim()
