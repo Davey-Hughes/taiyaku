@@ -6,9 +6,9 @@
  * line, since they are the one a person must not miss before pressing; the
  * other three are behind "How backups work":
  *
- * - **Restore is out of band.** Stop the server, move the file, start it. C4
- *   §5 declines an in-server restore, so there is no button and the screen
- *   says what to do instead of leaving a person hunting for one.
+ * - **Restore is out of band**, by the README's steps, `-wal` and `-shm` moved
+ *   aside. C4 §5 declines an in-server restore, so there is no button and the
+ *   screen says what to do instead of leaving a person hunting for one.
  * - **A backup is the whole database, password hashes included.**
  *   `backup_api`'s own module doc says this is worth naming because "the admin
  *   screen has a download button" does not, on its face, look like "the admin
@@ -178,11 +178,16 @@ export function Backup() {
               administrator-only.
             </p>
             <p>
-              <strong>Restore is out of band.</strong> Stop the server, move the
-              file into place, start it again. There is no restore button: a
-              restore through a running server would have to quiesce every
-              writer in the process, and that is not worth the failure modes it
-              brings.
+              <strong>Restore is out of band.</strong> Stop the server; move{' '}
+              <code>library.db</code>, and any <code>library.db-wal</code> and{' '}
+              <code>library.db-shm</code>, aside, since a <code>-wal</code> left
+              beside a restored file can be applied over it; move the backup in
+              as <code>library.db</code>, owned by the account the server runs
+              as; start it again. There is no restore button: a restore through
+              a running server would have to quiesce every writer in the
+              process, and that is not worth the failure modes it brings. One
+              taken before a migration needs an image from before it as well;
+              the README’s “Running it on a server” gives the steps.
             </p>
             <p>
               <strong>A sidecar export is not a backup.</strong> It writes five

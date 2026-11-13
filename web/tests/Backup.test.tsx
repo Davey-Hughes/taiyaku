@@ -388,6 +388,11 @@ describe('Backup', () => {
     )
     const told = behind?.textContent ?? ''
     expect(told).toContain('Stop the server')
+    expect(told).toContain('and any library.db-wal and library.db-shm, aside')
+    expect(told).toContain('owned by the account the server runs as')
+    expect(told).toContain(
+      'One taken before a migration needs an image from before it as well',
+    )
     expect(told).toContain('A sidecar export is not a backup')
     expect(told).toContain('taiyaku library backup')
     expect(told).toContain('--keep')

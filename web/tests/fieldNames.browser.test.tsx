@@ -447,13 +447,18 @@ describe('the name Chromium gives a control under a field label — O175', () =>
   })
 
   it('names the make-a-library form’s boxes as written', async () => {
-    // The make page, whose form's two boxes are the only ones on it.
+    // The make page, whose form's three boxes are the only ones on it.
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries: [] })
     const host = await shown(librariesAt('/config/new-library'))
-    expect(rowWords(host)).toEqual(['Name', 'Directory path'])
+    expect(rowWords(host)).toEqual([
+      'Name',
+      'Directory path',
+      'Don’t scan yet (schedule Off)',
+    ])
     expect(await rowControls()).toEqual([
       ['textbox', 'Name'],
       ['textbox', 'Directory path'],
+      ['checkbox', 'Don’t scan yet (schedule Off)'],
     ])
   })
 

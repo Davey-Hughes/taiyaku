@@ -47,7 +47,7 @@ use taiyaku_library::{libraries, relocate, scan};
 
 use crate::config_api::{
     AdminAnswer, DryRunQuery, added_json, admin_panicked, derive_report_json, removal_json,
-    root_json, roots_with_last_scan,
+    root_json, roots_with_last_scan, scan_interval_from_json,
 };
 use crate::{ServeState, auth::Principal};
 
@@ -308,8 +308,20 @@ pub(crate) async fn list_split_editions(
     }
 }
 
-/// `name` and `dirs`, as [`create_library`]'s body is read.
-fn new_library_from_json(body: &serde_json::Value) -> Result<(String, Vec<PathBuf>), AdminAnswer> {
+/// The schedule an add asks for, `scan_interval_secs` read and refused as
+/// the `PATCH` reads and refuses it. Absent and null both ask for Automatic,
+/// as an add has no stored value to leave alone (spec §3 decision 2).
+fn asked_interval(body: &serde_json::Value) -> Result<Option<i64>, AdminAnswer> {
+    scan_interval_from_json(body)
+        .map(Option::flatten)
+        .map_err(AdminAnswer::Unusable)
+}
+
+/// `name`, `dirs` and `scan_interval_secs`, as [`create_library`]'s body is
+/// read.
+fn new_library_from_json(
+    body: &serde_json::Value,
+) -> Result<(String, Vec<PathBuf>, Option<i64>), AdminAnswer> {
     let name = name_from_json(body, "a library needs a `name`, a string")?;
     let listed = body
         .get("dirs")
@@ -323,7 +335,7 @@ fn new_library_from_json(body: &serde_json::Value) -> Result<(String, Vec<PathBu
             AdminAnswer::Unusable("a library's `dirs` must be an array of paths".to_string())
         })?)?);
     }
-    Ok((name, dirs))
+    Ok((name, dirs, asked_interval(body)?))
 }
 
 /// `POST /api/library/libraries`: a library and its directories, all of them or
@@ -341,14 +353,15 @@ pub(crate) async fn create_library(
     if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
         return refusal;
     }
-    let (name, dirs) = match json_body(&body).and_then(|body| new_library_from_json(&body)) {
-        Ok(read) => read,
-        Err(why) => return why.into_response(),
-    };
+    let (name, dirs, interval) =
+        match json_body(&body).and_then(|body| new_library_from_json(&body)) {
+            Ok(read) => read,
+            Err(why) => return why.into_response(),
+        };
 
     let created = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(AdminAnswer::Failed)?;
-        let made = scan::create_library(&working, &name, &dirs).map_err(added_error)?;
+        let made = scan::create_library(&working, &name, &dirs, interval).map_err(added_error)?;
         let waiting = crate::scan_jobs::waiting_for_a_lock(&state);
         created_json(&working, &made, &waiting)
     })
@@ -443,19 +456,19 @@ fn absolute_dir(raw: &str) -> Result<PathBuf, AdminAnswer> {
     }
 }
 
-/// `path`, as [`add_dir`]'s body is read.
-fn dir_path_from_json(body: &serde_json::Value) -> Result<PathBuf, AdminAnswer> {
+/// `path` and `scan_interval_secs`, as [`add_dir`]'s body is read.
+fn new_dir_from_json(body: &serde_json::Value) -> Result<(PathBuf, Option<i64>), AdminAnswer> {
     let raw = body
         .get("path")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
             AdminAnswer::Unusable("adding a directory needs a `path`, a string".to_string())
         })?;
-    absolute_dir(raw)
+    Ok((absolute_dir(raw)?, asked_interval(body)?))
 }
 
 /// `POST /api/library/libraries/{id}/dirs`: add a directory to this library,
-/// through [`scan::add_root_checked_in`]'s validations.
+/// through [`scan::add_root_checked_with`]'s validations.
 pub(crate) async fn add_dir(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -468,9 +481,9 @@ pub(crate) async fn add_dir(
     }
     let read = library_id(&id).and_then(|id| {
         let body = json_body(&body)?;
-        Ok((id, dir_path_from_json(&body)?))
+        Ok((id, new_dir_from_json(&body)?))
     });
-    let (id, path) = match read {
+    let (id, (path, interval)) = match read {
         Ok(read) => read,
         Err(why) => return why.into_response(),
     };
@@ -478,7 +491,7 @@ pub(crate) async fn add_dir(
     let added = tokio::task::spawn_blocking(move || {
         let working = state.library.working().map_err(AdminAnswer::Failed)?;
         dirs_of(&working, id)?;
-        let added = scan::add_root_checked_in(&working, &path, scan::InLibrary::Id(id))
+        let added = scan::add_root_checked_with(&working, &path, scan::InLibrary::Id(id), interval)
             .map_err(added_error)?;
         Ok::<_, AdminAnswer>(added_json(&added))
     })

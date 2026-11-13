@@ -86,6 +86,7 @@ import {
 import { NavLink, useLocation } from 'react-router'
 import {
   type Added,
+  keptSchedule,
   lastScan,
   POLL_MISSES_ALLOWED,
   type RemovalAnswer,
@@ -112,6 +113,7 @@ import {
   type RemovalHold,
   removalHold,
   renameLibrary,
+  SCAN_OFF_WORDS,
   startLibraryScan,
 } from './libraries'
 import { linkedPlace } from './linkedPlace'
@@ -169,7 +171,7 @@ export interface LibraryPageProps {
    * A directory New library linked as it made this library, which other
    * libraries held, by name: the page says so as an add's link is said.
    */
-  linkedAtMaking?: { path: string; also_in: string[] }
+  linkedAtMaking?: { path: string; also_in: string[]; schedule?: string }
   /** The page has taken `linkedAtMaking`, which is not said a second time. */
   onLinkedAtMakingTaken?: () => void
   /** A directory was added here: its probe is the screen's to keep. */
@@ -391,15 +393,27 @@ function placeLinked(line: HTMLElement | null, room: HTMLElement | null) {
 const overFocus = (line: HTMLElement | null) =>
   line?.hasChildNodes() === true && focusUnder(line)
 
-/** What the line says of a link: the directory, and who else holds it. */
-function LinkedWords({ path, also_in }: { path: string; also_in: string[] }) {
+/**
+ * What the line says of a link: the directory, who else holds it, and the
+ * shared schedule it kept where the add asked for another (`keptSchedule`).
+ */
+function LinkedWords({
+  path,
+  also_in,
+  schedule,
+}: {
+  path: string
+  also_in: string[]
+  schedule?: string
+}) {
   return (
     <>
       <code>
         <PathWithBreaks path={path} />
       </code>{' '}
       is also a directory of {namesOf(also_in)}. It keeps the settings it has
-      there.
+      there
+      {schedule !== undefined && `, and its scan schedule stays ${schedule}`}.
     </>
   )
 }
@@ -516,6 +530,12 @@ export function LibraryPage({
   }, [library?.name])
   const [adding, setAdding] = useState(false)
   /**
+   * Don’t scan yet (schedule Off), unticked as the picker opens so that no
+   * directory is added Off for a tick left from the add before (O275), and
+   * kept through a refusal, as the typed path is.
+   */
+  const [scanOff, setScanOff] = useState(false)
+  /**
    * The directory the last add, or the making of the library, linked, which
    * other libraries held; the room the line saying so is drawn in, until it
    * is measured; and whether the list has held the directory since, after
@@ -525,6 +545,7 @@ export function LibraryPage({
     | {
         path: string
         also_in: string[]
+        schedule?: string
         room?: number
         held: boolean
         /** Taken away by a press, its room still kept. */
@@ -1151,7 +1172,7 @@ export function LibraryPage({
   /** Rejects on a refusal, which is what keeps the picker's typed path. */
   const add = (path: string) => {
     setAddFailure(undefined)
-    return addDir(library.id, path).then(
+    return addDir(library.id, path, scanOff).then(
       (added) => {
         setLinked(
           added.also_in.length === 0
@@ -1159,6 +1180,7 @@ export function LibraryPage({
             : {
                 path: added.root.path,
                 also_in: added.also_in,
+                schedule: keptSchedule(added),
                 room: roomOf(addRoot.current),
                 held: false,
               },
@@ -1475,12 +1497,31 @@ export function LibraryPage({
               name="add-dir"
               onClick={() => {
                 setLinked(undefined)
+                setScanOff(false)
                 setAdding(true)
               }}
               disabled={removing}
             >
               Add directory…
             </button>
+          )}
+          {/* No help line: the add's room is measured for the link's line
+              (`roomOf`), and New library's help says what Off does. O175:
+              the `aria-label` is the label's words as written. */}
+          {adding && (
+            <label className="scan-off">
+              <input
+                type="checkbox"
+                name="scan-off"
+                aria-label={SCAN_OFF_WORDS}
+                checked={scanOff}
+                onChange={(e) => {
+                  setAddFailure(undefined)
+                  setScanOff(e.target.checked)
+                }}
+              />
+              {SCAN_OFF_WORDS}
+            </label>
           )}
           {/* Drawn empty while nothing is said, picker open or not, so that
               a screen reader reads it as it fills. */}
@@ -1493,12 +1534,20 @@ export function LibraryPage({
             onClick={() => setLinked(quieted)}
           >
             {said !== undefined && (
-              <LinkedWords path={said.path} also_in={said.also_in} />
+              <LinkedWords
+                path={said.path}
+                also_in={said.also_in}
+                schedule={said.schedule}
+              />
             )}
           </p>
           {unsaid !== undefined && (
             <p className="linked" data-room="" aria-hidden="true">
-              <LinkedWords path={unsaid.path} also_in={unsaid.also_in} />
+              <LinkedWords
+                path={unsaid.path}
+                also_in={unsaid.also_in}
+                schedule={unsaid.schedule}
+              />
             </p>
           )}
           {addFailure !== undefined && <Refusal>{addFailure}</Refusal>}

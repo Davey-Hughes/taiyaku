@@ -689,6 +689,7 @@ describe('LibraryPage', () => {
       watch_reason: null,
       interval_secs: 86400,
       also_in: [],
+      schedule_kept: false,
     }
     vi.mocked(api.addDir).mockResolvedValue(added)
     const { host, onAdded, onChanged } = await shown()
@@ -700,7 +701,7 @@ describe('LibraryPage', () => {
     )
     await press(picker.querySelector('button[name="pick"]') as Element)
 
-    expect(api.addDir).toHaveBeenCalledWith(7, '/media/Manga/Extras')
+    expect(api.addDir).toHaveBeenCalledWith(7, '/media/Manga/Extras', false)
     expect(onAdded).toHaveBeenCalledWith([added])
     expect(onChanged).toHaveBeenCalled()
   })
@@ -932,6 +933,7 @@ describe('LibraryPage', () => {
       watch_reason: null,
       interval_secs: 86400,
       also_in: [],
+      schedule_kept: false,
     }
     vi.mocked(api.addDir)
       .mockRejectedValueOnce(
@@ -1048,7 +1050,7 @@ describe('LibraryPage, a library and its directories', () => {
     expect(holdOf(button(host, 'remove-library'))).toBe('free')
   })
 
-  it('draws a Directories table: a row per directory, its path a link to the directory’s page, how often it is scanned and when it last was', async () => {
+  it('draws a Directories table: a row per directory, its path a link to the directory’s page, how often it is scanned and when it last was, and that one Off and never scanned waits for a press', async () => {
     const { host } = await shown(
       manga({
         dirs: [
@@ -1100,7 +1102,12 @@ describe('LibraryPage, a library and its directories', () => {
       },
       {
         links: [['/media/Manga/Oneshots', '/config/libraries/Manga/dirs/5']],
-        cells: ['/media/Manga/Oneshots', 'off', 'Never', ''],
+        cells: [
+          '/media/Manga/Oneshots',
+          'off',
+          'Never\u00a0·\u00a0until Scan is pressed',
+          '',
+        ],
       },
       {
         links: [['/media/Manga/Doujin', '/config/libraries/Manga/dirs/6']],
@@ -1201,6 +1208,27 @@ describe('LibraryPage, a library and its directories', () => {
     expect(lastScans(host)).toEqual(['Scanning…', 'Scanning…'])
   })
 
+  it('says Scanning… and no "until Scan is pressed" for its Off directory never scanned while the scan pressed here runs (O275)', async () => {
+    const offNever = manga({
+      dirs: [
+        { ...dir(1, '/media/Manga/Volumes'), scan_interval_secs: 0 },
+        dir(2, '/media/Manga/Chapters'),
+      ],
+    })
+    vi.mocked(api.startLibraryScan).mockResolvedValue(started)
+    const { host } = await shown(offNever)
+    expect(lastScans(host)).toEqual(['Never · until Scan is pressed', 'Never'])
+
+    // The list the cells come from is not read again until the scan ends.
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(
+      scanningIn(offNever, 1, 2),
+    )
+    await press(button(host, 'scan-library'))
+    expect(lastScans(host)).toEqual(['Scanning…', 'Scanning…'])
+    await tick()
+    expect(lastScans(host)).toEqual(['Scanning…', 'Scanning…'])
+  })
+
   it('draws one Add directory…, and the picker only once it is pressed', async () => {
     const { host } = await shown()
     expect(host.querySelectorAll('button[name="add-dir"]')).toHaveLength(1)
@@ -1234,7 +1262,7 @@ describe('LibraryPage, a library and its directories', () => {
     ) as HTMLButtonElement
     act(() => pick.focus())
     await press(pick)
-    expect(api.addDir).toHaveBeenCalledWith(7, '/media/x')
+    expect(api.addDir).toHaveBeenCalledWith(7, '/media/x', false)
     expect(pick.disabled).toBe(true)
     expect(document.activeElement).toBe(box)
 
@@ -1259,6 +1287,7 @@ describe('LibraryPage, a library and its directories', () => {
       watch_reason: null,
       interval_secs: 86400,
       also_in: [],
+      schedule_kept: false,
     }
     vi.mocked(api.addDir).mockResolvedValue(added)
     const before = manga()
@@ -2341,6 +2370,7 @@ describe('LibraryPage, scans and removals of a library and its directories exclu
       watch_reason: null,
       interval_secs: 86400,
       also_in: [],
+      schedule_kept: false,
     })
     const { host } = await shown()
     expect(host.querySelector('.library-page > .scanning')).not.toBeNull()
@@ -2362,7 +2392,7 @@ describe('LibraryPage, scans and removals of a library and its directories exclu
       '/media/Manga/Extras',
     )
     await press(picker.querySelector('button[name="pick"]') as Element)
-    expect(api.addDir).toHaveBeenCalledWith(7, '/media/Manga/Extras')
+    expect(api.addDir).toHaveBeenCalledWith(7, '/media/Manga/Extras', false)
   })
 })
 
@@ -2447,6 +2477,108 @@ describe('LibraryPage, what a refusal outlasts', () => {
       (picker.querySelector('input[name="path"]') as HTMLInputElement).value,
     ).toBe('/media')
     expect(picker.querySelector('[role="alert"]')).toBeNull()
+  })
+})
+
+describe('LibraryPage, Don’t scan yet (schedule Off) beside Add directory — O275', () => {
+  const extras: config.Added = {
+    root: dir(3, '/media/Manga/Extras'),
+    watching: true,
+    watch_reason: null,
+    interval_secs: 86400,
+    also_in: [],
+    schedule_kept: false,
+  }
+  /** The add's box, found by its label's words; `undefined` while not drawn. */
+  const scanOffBox = (host: HTMLElement) =>
+    [...host.querySelectorAll<HTMLLabelElement>('.add-root label')].find(
+      (label) => label.textContent === 'Don’t scan yet (schedule Off)',
+    )?.control as HTMLInputElement | undefined
+  const pathBox = (picker: HTMLElement) =>
+    picker.querySelector('input[name="path"]') as HTMLInputElement
+  const pick = (picker: HTMLElement) =>
+    press(picker.querySelector('button[name="pick"]') as Element)
+
+  it('draws the box only while the picker is open, and unticked as it opens', async () => {
+    const { host } = await shown()
+    expect(scanOffBox(host)).toBeUndefined()
+    await openPicker(host)
+    const box = scanOffBox(host)
+    expect([box?.type, box?.name, box?.checked]).toEqual([
+      'checkbox',
+      'scan-off',
+      false,
+    ])
+  })
+
+  it.each([
+    { ticked: false, sent: false },
+    { ticked: true, sent: true },
+  ])(
+    'adds the directory with the box ticked $ticked, and asks for the schedule Off $sent',
+    async ({ ticked, sent }) => {
+      vi.mocked(api.addDir).mockResolvedValue(extras)
+      const { host } = await shown()
+      const picker = await openPicker(host)
+      if (ticked) await press(scanOffBox(host) as Element)
+      expect(scanOffBox(host)?.checked).toBe(ticked)
+      await typeInto(pathBox(picker), '/media/Manga/Extras')
+      await pick(picker)
+      expect(api.addDir).toHaveBeenCalledWith(7, '/media/Manga/Extras', sent)
+    },
+  )
+
+  it('draws the box unticked again when Add directory… is pressed after a ticked add', async () => {
+    vi.mocked(api.addDir).mockResolvedValue(extras)
+    const { host } = await shown()
+    const picker = await openPicker(host)
+    await press(scanOffBox(host) as Element)
+    await typeInto(pathBox(picker), '/media/Manga/Extras')
+    await pick(picker)
+    expect(api.addDir).toHaveBeenCalledWith(7, '/media/Manga/Extras', true)
+    expect(scanOffBox(host)).toBeUndefined()
+
+    await openPicker(host)
+    expect(scanOffBox(host)?.checked).toBe(false)
+  })
+
+  it('draws the box unticked again when Add directory… is pressed after Cancel', async () => {
+    const { host } = await shown()
+    await openPicker(host)
+    await press(scanOffBox(host) as Element)
+    expect(scanOffBox(host)?.checked).toBe(true)
+    await press(button(host, 'cancel-add'))
+    expect(scanOffBox(host)).toBeUndefined()
+
+    await openPicker(host)
+    expect(scanOffBox(host)?.checked).toBe(false)
+  })
+
+  it('keeps the box ticked through a refused add, and a tick or an untick takes the refusal away', async () => {
+    vi.mocked(api.addDir).mockRejectedValue(
+      new Error('/api/library/libraries/7/dirs: 400 {"error":"nope"}'),
+    )
+    const { host } = await shown()
+    const picker = await openPicker(host)
+    const refused = () => picker.querySelector('[role="alert"]')
+    await press(scanOffBox(host) as Element)
+    await typeInto(pathBox(picker), '/media/typo')
+    await pick(picker)
+    expect(api.addDir).toHaveBeenLastCalledWith(7, '/media/typo', true)
+    expect(refused()?.textContent).toBe('nope')
+    expect(scanOffBox(host)?.checked).toBe(true)
+    expect(pathBox(picker).value).toBe('/media/typo')
+
+    await press(scanOffBox(host) as Element)
+    expect(scanOffBox(host)?.checked).toBe(false)
+    expect(refused()).toBeNull()
+
+    await pick(picker)
+    expect(api.addDir).toHaveBeenLastCalledWith(7, '/media/typo', false)
+    expect(refused()?.textContent).toBe('nope')
+    await press(scanOffBox(host) as Element)
+    expect(scanOffBox(host)?.checked).toBe(true)
+    expect(refused()).toBeNull()
   })
 })
 
@@ -3257,13 +3389,24 @@ describe('LibraryPage, a directory another library holds too', () => {
   /** Kids before the add: its own directory alone. */
   const kidsAlone = () =>
     manga({ id: 3, name: 'Kids', dirs: [dir(5, '/media/Kids', [KIDS])] })
-  /** The add's answer for `path`, held before by the libraries named. */
-  const answer = (path: string, also_in: string[]): config.Added => ({
-    root: dir(9, path, [...(also_in.length > 0 ? [MANGA] : []), KIDS]),
+  /**
+   * The add's answer for `path`, held before by the libraries named, and the
+   * shared schedule a link kept where the add asked for another.
+   */
+  const answer = (
+    path: string,
+    also_in: string[],
+    kept?: number | null,
+  ): config.Added => ({
+    root: {
+      ...dir(9, path, [...(also_in.length > 0 ? [MANGA] : []), KIDS]),
+      ...(kept === undefined ? {} : { scan_interval_secs: kept }),
+    },
     watching: also_in.length > 0 ? null : true,
     watch_reason: null,
     interval_secs: also_in.length > 0 ? null : 86400,
     also_in,
+    schedule_kept: kept !== undefined,
   })
   /** Kids once the list is read again after the add of `/m`. */
   const kidsHolding = () =>
@@ -3272,8 +3415,8 @@ describe('LibraryPage, a directory another library holds too', () => {
       name: 'Kids',
       dirs: [dir(9, '/m', [MANGA, KIDS]), dir(5, '/media/Kids', [KIDS])],
     })
-  async function added(path: string, also_in: string[]) {
-    vi.mocked(api.addDir).mockResolvedValue(answer(path, also_in))
+  async function added(path: string, also_in: string[], kept?: number | null) {
+    vi.mocked(api.addDir).mockResolvedValue(answer(path, also_in, kept))
     const shownPage = await shown(kidsAlone())
     const picker = await openPicker(shownPage.host)
     await typeInto(
@@ -3305,6 +3448,20 @@ describe('LibraryPage, a directory another library holds too', () => {
     const { host } = await added('/m', ['Manga', 'Comics'])
     expect(linkLine(host)?.textContent).toBe(
       '/m is also a directory of Manga and Comics. It keeps the settings it has there.',
+    )
+  })
+
+  it('says the shared schedule a link kept where the add asked for another', async () => {
+    const { host } = await added('/m', ['Manga'], null)
+    expect(linkLine(host)?.textContent).toBe(
+      '/m is also a directory of Manga. It keeps the settings it has there, and its scan schedule stays automatic.',
+    )
+  })
+
+  it('says a link kept a shared schedule of Off, so that an add that asked for a scan is not left waiting for one (O275)', async () => {
+    const { host } = await added('/m', ['Manga'], 0)
+    expect(linkLine(host)?.textContent).toBe(
+      '/m is also a directory of Manga. It keeps the settings it has there, and its scan schedule stays off.',
     )
   })
 

@@ -151,12 +151,14 @@ taiyaku serve taiyaku.json --addr 127.0.0.1:8484 --trusted-proxy 10.0.0.0/8
 # --trusted-proxy tells taiyaku to believe them, and a proxy that does not
 # write them forwards whatever the *client* sent under the same names:
 #
-#   proxy_set_header Host              $host;
-#   proxy_set_header X-Forwarded-Host  $host;
+#   proxy_set_header Host              $http_host;
+#   proxy_set_header X-Forwarded-Host  $http_host;
 #   proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
 #
 # without the first two, nginx's default rewrites Host to the upstream and
 # taiyaku's CSRF check compares two different authorities — every login 403s.
+# they take $http_host because it keeps the port, as "Running it on a server"
+# explains under Nginx Proxy Manager.
 # with --trusted-proxy but no X-Forwarded-Host of the proxy's own, a client can
 # supply one. if TLS terminates at the proxy and nothing is forwarded, use
 # --secure-cookies alone.
@@ -223,7 +225,10 @@ taiyaku library backup --keep 7           # ...and delete all but the seven newe
 # there as a hidden .library-<stamp>-before-v<N>.db.partial, never listed or
 # pruned; delete it by hand.
 #
-# restore is out of band on purpose: stop the server, move the file, start it.
+# restore is out of band on purpose: stop the server; move library.db, and
+# any library.db-wal and library.db-shm, aside; move the backup in as
+# library.db, owned by the account the server runs as; start it. "Running it
+# on a server" gives the container's steps, and why the -wal goes too.
 
 # the same import, without starting a server — for a library `serve` has
 # already populated, or a one-off migration
@@ -507,6 +512,10 @@ services:
       - /mnt/user/appdata/taiyaku/config:/config
       - /mnt/user/appdata/taiyaku-cache:/cache
       - "/mnt/user/media 1:/media"
+    labels:
+      - wud.watch=true
+      - wud.watch.digest=true
+      - wud.trigger.include=docker.redeploy
 ```
 
 `/config` and `/cache` must be writable by 99:100. Create them before the first
@@ -546,7 +555,10 @@ page sets: Automatic, every 15 minutes; Every, at least 5 minutes; or Off, only
 when Scan directory or Scan library is pressed. A choice is saved at once.
 Every saves the last Every interval the page has read or saved, at least 5
 minutes, or 24 hours where there is none, and the count and unit beside it
-change that.
+change that. A directory added on Configuration → Libraries, which no other
+library holds, starts its first scan at the scheduler's next tick, within about
+30 seconds of the add, unless it was added Off (below); while another scan
+runs, it reads `waiting` until its turn.
 
 Give the first account a password from the host:
 
@@ -564,6 +576,15 @@ their volume joins that volume's work: as another edition where the two
 directories' edition keys differ, and as more pages of the volume's edition
 where they share a key, as both do by default (`raw`). Scan library on a
 library's page walks each directory the library shows and derives once.
+
+To set a new directory's edition key or patterns on its page before its first
+scan, tick "Don’t scan yet (schedule Off)" as you add it, on New library or
+with Add directory…. It is then added with its schedule Off, so the server
+scans it only when Scan directory or Scan library is pressed, and it stays Off
+after that press until its schedule is changed. A host `library scan` follows no
+schedule, and walks an Off directory as it walks any other it reaches. A
+directory another library already holds keeps the schedule it shares, ticked or
+not.
 
 `TAIYAKU_DIRS` is a `:`-separated list, because a directory's path can hold a
 space or a comma. `taiyaku serve --dirs DIR`, repeatable, sets the same
@@ -682,7 +703,20 @@ writes `backups/library-<stamp>-before-v<N>.db` beside the database, where `N`
 is the version it migrated to, and refuses to migrate if that backup fails. The
 file holds the database as it stood, so an image whose schema version is below
 `N`, and at least the version the file holds, can open it. `--keep` never
-deletes one; delete them by hand. A migration that fails also restarts the
+deletes one; delete them by hand. To restore one:
+
+1. Pin an image that can open it, as above, and stop the container.
+2. In `/mnt/user/appdata/taiyaku/config/taiyaku/`, where the compose block's
+   `/config` mapping puts `library.db` and `backups/`, move `library.db`, and
+   any `library.db-wal` and `library.db-shm`, aside. The `-wal` goes because
+   one left beside a restored file can be applied over it.
+3. Move the chosen `backups/library-<stamp>-before-v<N>.db` in as `library.db`,
+   and run `chown 99:100 library.db`, the account the container runs as.
+4. Recreate the container on the pinned image (Compose Up, or
+   `docker compose up -d`): a plain `docker start` runs the image it was
+   created from.
+
+A migration that fails also restarts the
 container in a loop, and each start tries it again; a start takes no new
 backup while the database file and its `-wal` are unchanged since the newest
 `-before-v<N>` backup and that backup opens at the database's version, so the

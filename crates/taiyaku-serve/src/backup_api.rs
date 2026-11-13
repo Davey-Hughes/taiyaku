@@ -8,10 +8,10 @@
 //! naming because "the admin screen has a download button" does not, on its
 //! face, look like "the admin screen hands out the password file".
 //!
-//! **No restore route.** C4 §5 puts restore deliberately out of band — stop
-//! the server, move the file, start it — because a restore through a running
-//! server would have to quiesce every writer in the process, and the value of
-//! that over "stop the server" is not worth the failure modes it introduces.
+//! **No restore route.** C4 §5 puts restore deliberately out of band, by the
+//! README's steps, because a restore through a running server would have to
+//! quiesce every writer in the process, and the value of that over "stop the
+//! server" is not worth the failure modes it introduces.
 //!
 //! **No schedule.** The C4 build design §1 declines an in-server timer; a cron
 //! entry runs `taiyaku library backup`.

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Unauthenticated } from '../src/api'
 import {
   humanInterval,
+  keptSchedule,
   lastScan,
   listRoots,
   patchRoot,
@@ -117,7 +118,7 @@ describe('regimeFacts', () => {
     ])
   })
 
-  it('says off for an interval below zero, as the scheduler reads one', () => {
+  it('says off for an interval below zero, as the scheduler reads one, and that a directory never scanned waits for a press', () => {
     const below = root({
       scan_interval_secs: -1,
       last_scan_at: null,
@@ -125,6 +126,20 @@ describe('regimeFacts', () => {
       next_scan_at: null,
     })
     expect(regimeFacts(below).slice(1)).toEqual([
+      { label: 'scan every', value: 'off' },
+      { label: 'last scan', value: 'never\u00a0·\u00a0until Scan is pressed' },
+      { label: 'next scan', value: 'off' },
+    ])
+  })
+
+  it('says a directory set to Off and never scanned whose pressed scan waits for the job lock never, as Scan was pressed', () => {
+    const waiting = root({
+      scan_interval_secs: 0,
+      last_scan_at: null,
+      last_scan_status: 'waiting',
+      next_scan_at: null,
+    })
+    expect(regimeFacts(waiting).slice(1)).toEqual([
       { label: 'scan every', value: 'off' },
       { label: 'last scan', value: 'never' },
       { label: 'next scan', value: 'off' },
@@ -233,6 +248,49 @@ describe('lastScan', () => {
       '2026-11-10 12:00:00 UTC\u00a0·\u00a0interrupted',
       '2026-11-10 12:00:00 UTC\u00a0·\u00a0deriving',
       '2026-11-10 12:00:00 UTC\u00a0·\u00a0waiting',
+    ])
+  })
+
+  it('says a directory set to Off and never scanned waits for a press, and any other never-scanned one Never', () => {
+    const never = { last_scan_at: null, last_scan_status: null }
+    expect(lastScan({ ...never, scan_interval_secs: 0 })).toBe(
+      'Never\u00a0·\u00a0until Scan is pressed',
+    )
+    expect(lastScan({ ...never, scan_interval_secs: null })).toBe('Never')
+    expect(lastScan({ ...never, scan_interval_secs: 86400 })).toBe('Never')
+    expect(lastScan(never)).toBe('Never')
+  })
+
+  it('says Never of a directory set to Off and never scanned whose pressed scan waits for the job lock, as Scan was pressed', () => {
+    expect(
+      lastScan({
+        last_scan_at: null,
+        last_scan_status: 'waiting',
+        scan_interval_secs: 0,
+      }),
+    ).toBe('Never')
+  })
+})
+
+describe('keptSchedule', () => {
+  const kept = (scan_interval_secs: number | null, schedule_kept = true) =>
+    keptSchedule({ schedule_kept, root: root({ scan_interval_secs }) })
+
+  it('says nothing of an add that kept no schedule, whatever the directory’s', () => {
+    expect([null, 0, 3600].map((secs) => kept(secs, false))).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ])
+  })
+
+  it('names the schedule a link kept as the line says it', () => {
+    expect([null, 0, -1, 3600, 5400].map((secs) => kept(secs))).toEqual([
+      'automatic',
+      'off',
+      'off',
+      'every 1h',
+      'every 90m',
     ])
   })
 })

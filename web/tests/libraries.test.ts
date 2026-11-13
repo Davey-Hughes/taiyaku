@@ -167,6 +167,39 @@ describe('the libraries client', () => {
     },
   )
 
+  it.each([
+    [
+      'createLibrary',
+      { name: 'Manga', dirs: ['/media/a'] },
+      () => createLibrary('Manga', ['/media/a'], true),
+      () => createLibrary('Manga', ['/media/a'], false),
+      () => createLibrary('Manga', ['/media/a']),
+    ],
+    [
+      'addDir',
+      { path: '/media/c' },
+      () => addDir(7, '/media/c', true),
+      () => addDir(7, '/media/c', false),
+      () => addDir(7, '/media/c'),
+    ],
+  ])(
+    '%s asks for the schedule Off when ticked, and sends no schedule when not — O275',
+    async (_name, body, ticked, unticked, leftOut) => {
+      const off = answering({})
+      await ticked()
+      expect(sent(off).body).toEqual({ ...body, scan_interval_secs: 0 })
+      for (const [said, call] of [
+        ['unticked', unticked],
+        ['left out', leftOut],
+      ] as const) {
+        const none = answering({})
+        await call()
+        expect(sent(none).body, said).not.toHaveProperty('scan_interval_secs')
+        expect(sent(none).body, said).toEqual(body)
+      }
+    },
+  )
+
   it('refuses an empty 204 where a body was expected', async () => {
     vi.stubGlobal(
       'fetch',

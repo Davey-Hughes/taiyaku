@@ -448,6 +448,7 @@ async fn a_library_is_created_with_its_dirs_and_then_listed() {
                 "also_in",
                 "interval_secs",
                 "root",
+                "schedule_kept",
                 "watch_reason",
                 "watching"
             ],
@@ -473,6 +474,93 @@ async fn a_library_is_created_with_its_dirs_and_then_listed() {
         "nothing is scanned by making one"
     );
     assert_eq!(made["library"]["books"], 0);
+}
+
+/// Directory `id`'s stored `scan_interval_secs`. The shared connection is
+/// released on return: the in-memory library's working connection takes the
+/// same lock, so a test holding it across a request would hang.
+fn stored_interval(state: &crate::ServeState, id: i64) -> Option<i64> {
+    state
+        .library
+        .conn()
+        .query_row(
+            "SELECT scan_interval_secs FROM root WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .expect("reads the directory's interval")
+}
+
+/// Each directory the scheduler scans, with whether it is due now, read
+/// as [`stored_interval`] is.
+fn the_schedule(state: &crate::ServeState) -> Vec<(i64, bool)> {
+    let conn = state.library.conn();
+    let now = taiyaku_library::schedule::now(&conn).expect("reads the store's clock");
+    taiyaku_library::schedule::scheduled(&conn, &now)
+        .expect("reads the schedule")
+        .into_iter()
+        .map(|one| (one.root.id, one.due))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_library_made_off_stores_off_in_each_dir_and_leaves_them_out_of_the_schedule() {
+    let (router, state, _held) = test_support::router_over_a_single_scanned_work();
+    let fixture = test_support::Fixture::new("create-library-off");
+    let dirs = [
+        a_dir_of(&fixture, "Volumes", "Alpha"),
+        a_dir_of(&fixture, "Chapters", "Beta"),
+    ];
+
+    let (status, made) = answered(
+        &router,
+        Method::POST,
+        "/api/library/libraries",
+        &serde_json::json!({ "name": "Off", "dirs": dirs, "scan_interval_secs": 0 }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let added = made["added"].as_array().expect("added");
+    assert_eq!(added.len(), 2, "{made}");
+    let mut off = Vec::new();
+    for one in added {
+        assert_eq!(one["root"]["scan_interval_secs"], 0, "{made}");
+        assert_eq!(one["schedule_kept"], false, "{made}");
+        // An Off add probes too: a probe is not a scan.
+        assert!(one["watching"].is_boolean(), "{made}");
+        assert!(one["interval_secs"].is_number(), "{made}");
+        let id = one["root"]["id"].as_i64().expect("an id");
+        assert_eq!(stored_interval(&state, id), Some(0), "{made}");
+        off.push(id);
+    }
+    let schedule = the_schedule(&state);
+    for id in &off {
+        assert!(
+            schedule.iter().all(|(scheduled, _)| scheduled != id),
+            "{id} is Off: {schedule:?}"
+        );
+    }
+
+    // The same make with no field: Automatic, and due, as never scanned.
+    let (status, made) = answered(
+        &router,
+        Method::POST,
+        "/api/library/libraries",
+        &serde_json::json!({ "name": "Automatic", "dirs": [a_dir_of(&fixture, "Third", "Gamma")] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let one = &made["added"][0];
+    assert!(one["root"]["scan_interval_secs"].is_null(), "{made}");
+    assert_eq!(one["schedule_kept"], false, "{made}");
+    let id = one["root"]["id"].as_i64().expect("an id");
+    assert_eq!(stored_interval(&state, id), None, "{made}");
+    assert!(
+        the_schedule(&state).contains(&(id, true)),
+        "{:?}",
+        the_schedule(&state)
+    );
 }
 
 #[tokio::test]
@@ -716,6 +804,7 @@ async fn a_dir_is_added_to_a_library_by_the_librarys_id() {
             "also_in",
             "interval_secs",
             "root",
+            "schedule_kept",
             "watch_reason",
             "watching"
         ],
@@ -834,6 +923,321 @@ async fn a_dir_is_added_to_a_library_by_the_librarys_id() {
         "the answer is the row as listed: {listed}"
     );
     assert_eq!(linked["root"]["last_scan_status"], "ok", "{linked}");
+}
+
+#[tokio::test]
+async fn a_dir_added_off_stores_off_and_is_left_out_of_the_schedule() {
+    let (router, state, _held) = test_support::state_with_two_scanned_roots();
+    let fixture = test_support::Fixture::new("add-dir-off");
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let into = format!(
+        "/api/library/libraries/{}/dirs",
+        the_library(&listed, "root-b")["id"]
+            .as_i64()
+            .expect("an id")
+    );
+
+    let (status, added) = answered(
+        &router,
+        Method::POST,
+        &into,
+        &serde_json::json!({ "path": a_dir_of(&fixture, "Extra", "Gamma"), "scan_interval_secs": 0 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{added}");
+    assert_eq!(added["root"]["scan_interval_secs"], 0, "{added}");
+    assert_eq!(added["schedule_kept"], false, "{added}");
+    // An Off add probes too: a probe is not a scan.
+    assert!(added["watching"].is_boolean(), "{added}");
+    assert!(added["interval_secs"].is_number(), "{added}");
+    let id = added["root"]["id"].as_i64().expect("an id");
+    assert_eq!(stored_interval(&state, id), Some(0), "{added}");
+    let schedule = the_schedule(&state);
+    assert!(
+        schedule.iter().all(|(scheduled, _)| *scheduled != id),
+        "{id} is Off: {schedule:?}"
+    );
+
+    // The same add with no field: Automatic, and due, as never scanned.
+    let (status, added) = answered(
+        &router,
+        Method::POST,
+        &into,
+        &serde_json::json!({ "path": a_dir_of(&fixture, "Other", "Delta") }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{added}");
+    assert!(added["root"]["scan_interval_secs"].is_null(), "{added}");
+    assert_eq!(added["schedule_kept"], false, "{added}");
+    let id = added["root"]["id"].as_i64().expect("an id");
+    assert_eq!(stored_interval(&state, id), None, "{added}");
+    assert!(
+        the_schedule(&state).contains(&(id, true)),
+        "{:?}",
+        the_schedule(&state)
+    );
+}
+
+#[tokio::test]
+async fn both_adds_refuse_an_interval_the_patch_refuses_in_its_words() {
+    let (router, state, _held) = test_support::state_with_two_scanned_roots();
+    let fixture = test_support::Fixture::new("add-interval-refused");
+    let dir = a_dir_of(&fixture, "Extra", "Gamma");
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let into = format!(
+        "/api/library/libraries/{}/dirs",
+        the_library(&listed, "root-b")["id"]
+            .as_i64()
+            .expect("an id")
+    );
+    let stored = the_store(&state);
+    let range = "the directory's `scan_interval_secs` must be null (automatic), 0 (off) or at \
+                 least 300 (5 minutes)";
+    let not_a_number = "the directory's `scan_interval_secs` must be a number or null";
+
+    for (asked, says) in [
+        (serde_json::json!(299), range),
+        (serde_json::json!(-1), range),
+        (serde_json::json!("0"), not_a_number),
+        (serde_json::json!(0.5), not_a_number),
+    ] {
+        for (route, body) in [
+            (
+                "/api/library/libraries",
+                serde_json::json!({ "name": "Manga", "dirs": [dir], "scan_interval_secs": asked }),
+            ),
+            (
+                into.as_str(),
+                serde_json::json!({ "path": dir, "scan_interval_secs": asked }),
+            ),
+        ] {
+            let (status, refused) = answered(&router, Method::POST, route, &body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{route} {body}: {refused}");
+            assert_eq!(
+                refused,
+                serde_json::json!({ "error": says }),
+                "{route} {body}"
+            );
+            assert_eq!(the_store(&state), stored, "{route} {body} added nothing");
+        }
+    }
+}
+
+#[tokio::test]
+async fn both_adds_store_automatic_and_five_minutes() {
+    let (router, state, _held) = test_support::state_with_two_scanned_roots();
+    let fixture = test_support::Fixture::new("add-interval-stored");
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let into = format!(
+        "/api/library/libraries/{}/dirs",
+        the_library(&listed, "root-b")["id"]
+            .as_i64()
+            .expect("an id")
+    );
+
+    for (name, asked, stores) in [
+        ("Automatic", serde_json::Value::Null, None),
+        ("Five", serde_json::json!(300), Some(300)),
+    ] {
+        let (status, made) = answered(
+            &router,
+            Method::POST,
+            "/api/library/libraries",
+            &serde_json::json!({
+                "name": name,
+                "dirs": [a_dir_of(&fixture, &format!("{name} made"), "Alpha")],
+                "scan_interval_secs": asked,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{name}: {made}");
+        let made = &made["added"][0];
+        assert_eq!(made["root"]["scan_interval_secs"], asked, "{name}: {made}");
+        let id = made["root"]["id"].as_i64().expect("an id");
+        assert_eq!(stored_interval(&state, id), stores, "{name}: {made}");
+
+        let (status, added) = answered(
+            &router,
+            Method::POST,
+            &into,
+            &serde_json::json!({
+                "path": a_dir_of(&fixture, &format!("{name} added"), "Beta"),
+                "scan_interval_secs": asked,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{name}: {added}");
+        assert_eq!(
+            added["root"]["scan_interval_secs"], asked,
+            "{name}: {added}"
+        );
+        let id = added["root"]["id"].as_i64().expect("an id");
+        assert_eq!(stored_interval(&state, id), stores, "{name}: {added}");
+    }
+}
+
+#[tokio::test]
+async fn a_link_keeps_its_shared_schedule_and_says_so_when_the_add_asked_for_another() {
+    let (router, state, _held) = test_support::state_with_two_scanned_roots();
+    let fixture = test_support::Fixture::new("link-keeps-schedule");
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a");
+    let b = the_library(&listed, "root-b");
+    let a_dir = a["dirs"][0]["path"].as_str().expect("a path").to_owned();
+    let a_id = a["dirs"][0]["id"].as_i64().expect("an id");
+    let b_dir = b["dirs"][0]["path"].as_str().expect("a path").to_owned();
+    let b_id = b["dirs"][0]["id"].as_i64().expect("an id");
+    assert_eq!(
+        stored_interval(&state, a_id),
+        None,
+        "the fixture's is Automatic"
+    );
+    assert_eq!(
+        stored_interval(&state, b_id),
+        None,
+        "the fixture's is Automatic"
+    );
+
+    let (status, linked) = answered(
+        &router,
+        Method::POST,
+        &format!(
+            "/api/library/libraries/{}/dirs",
+            b["id"].as_i64().expect("an id")
+        ),
+        &serde_json::json!({ "path": a_dir, "scan_interval_secs": 0 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    assert_eq!(linked["schedule_kept"], true, "{linked}");
+    assert!(linked["root"]["scan_interval_secs"].is_null(), "{linked}");
+    assert_eq!(linked["also_in"], serde_json::json!(["root-a"]), "{linked}");
+    assert_eq!(stored_interval(&state, a_id), None, "root-a's scans go on");
+
+    let (status, made) = answered(
+        &router,
+        Method::POST,
+        "/api/library/libraries",
+        &serde_json::json!({
+            "name": "Mixed",
+            "dirs": [a_dir_of(&fixture, "New", "Gamma"), a_dir],
+            "scan_interval_secs": 0,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let new = &made["added"][0];
+    assert_eq!(new["schedule_kept"], false, "{made}");
+    let new_id = new["root"]["id"].as_i64().expect("an id");
+    assert_eq!(stored_interval(&state, new_id), Some(0), "{made}");
+    let held = &made["added"][1];
+    assert_eq!(held["root"]["id"], a_id, "{made}");
+    assert_eq!(held["schedule_kept"], true, "{made}");
+    assert!(held["root"]["scan_interval_secs"].is_null(), "{made}");
+    assert_eq!(stored_interval(&state, a_id), None, "{made}");
+
+    // Automatic asked, Automatic kept: nothing to say.
+    let (status, linked) = answered(
+        &router,
+        Method::POST,
+        &format!(
+            "/api/library/libraries/{}/dirs",
+            made["library"]["id"].as_i64().expect("an id")
+        ),
+        &serde_json::json!({ "path": b_dir }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    assert_eq!(linked["also_in"], serde_json::json!(["root-b"]), "{linked}");
+    assert_eq!(linked["schedule_kept"], false, "{linked}");
+    assert_eq!(stored_interval(&state, b_id), None, "{linked}");
+}
+
+/// An add with no field asks for Automatic, so a link of a
+/// directory another library set Off keeps Off and says so, or the person
+/// waits for a scan that never comes.
+#[tokio::test]
+async fn a_link_added_with_no_schedule_keeps_an_off_shared_one_and_says_so() {
+    let (router, state, _held) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a");
+    let a_dir = a["dirs"][0]["path"].as_str().expect("a path").to_owned();
+    let a_id = a["dirs"][0]["id"].as_i64().expect("an id");
+    let into_b = format!(
+        "/api/library/libraries/{}/dirs",
+        the_library(&listed, "root-b")["id"]
+            .as_i64()
+            .expect("an id")
+    );
+    let response = send_json(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/roots/{a_id}"),
+        &serde_json::json!({ "scan_interval_secs": 0 }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let (status, linked) = answered(
+        &router,
+        Method::POST,
+        &into_b,
+        &serde_json::json!({ "path": a_dir }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    assert_eq!(linked["also_in"], serde_json::json!(["root-a"]), "{linked}");
+    assert_eq!(linked["schedule_kept"], true, "{linked}");
+    assert_eq!(linked["root"]["scan_interval_secs"], 0, "{linked}");
+    assert_eq!(stored_interval(&state, a_id), Some(0), "{linked}");
+}
+
+#[tokio::test]
+async fn an_off_dir_is_scanned_by_scan_library_and_stays_off() {
+    let (router, state, fixture) = test_support::router_over_a_single_scanned_work();
+    let (status, made) = answered(
+        &router,
+        Method::POST,
+        "/api/library/libraries",
+        &serde_json::json!({
+            "name": "Off",
+            "dirs": [a_dir_of(&fixture, "Volumes", "Alpha")],
+            "scan_interval_secs": 0,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let id = made["library"]["id"].as_i64().expect("an id");
+    let dir = made["added"][0]["root"]["id"].as_i64().expect("an id");
+    assert_eq!(stored_interval(&state, dir), Some(0), "{made}");
+
+    let (status, started) = answered(
+        &router,
+        Method::POST,
+        &the_scan_of(id),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    until_the_library_scan_ends(&router, id).await;
+
+    let listed = get_json(&router, "/api/library/libraries").await;
+    assert_eq!(
+        the_library(&listed, "Off")["dirs"][0]["last_scan_status"],
+        "ok",
+        "{listed}"
+    );
+    assert_eq!(
+        stored_interval(&state, dir),
+        Some(0),
+        "a press does not turn it on"
+    );
+    let schedule = the_schedule(&state);
+    assert!(
+        schedule.iter().all(|(scheduled, _)| *scheduled != dir),
+        "{dir} is Off: {schedule:?}"
+    );
 }
 
 #[tokio::test]
@@ -5345,7 +5749,8 @@ fn a_library_removed_before_its_answer_is_drawn_is_refused_not_failed() {
     std::fs::create_dir_all(&m).expect("mkdir");
     let library = taiyaku_library::Library::open_in_memory().expect("a library");
     let conn = library.conn();
-    let made = taiyaku_library::scan::create_library(&conn, "Kids", &[m]).expect("makes Kids");
+    let made =
+        taiyaku_library::scan::create_library(&conn, "Kids", &[m], None).expect("makes Kids");
     taiyaku_library::scan::remove_library(&conn, made.library_id).expect("removes Kids");
 
     match super::created_json(&conn, &made, &std::collections::HashSet::new()) {

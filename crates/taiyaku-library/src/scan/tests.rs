@@ -1211,7 +1211,7 @@ fn a_dir_inside_or_around_another_librarys_dir_is_added_every_way() {
                     add_root_checked_in(&conn, second, InLibrary::Named("Kids")).map(|a| a.root)
                 }
                 "of its own" => add_root_checked_in(&conn, second, InLibrary::Own).map(|a| a.root),
-                _ => create_library(&conn, "Comics", std::slice::from_ref(second))
+                _ => create_library(&conn, "Comics", std::slice::from_ref(second), None)
                     .map(|made| made.dirs[0].root.clone()),
             }
             .unwrap_or_else(|why| panic!("{way}, inner first {inner_first}: {why}"));
@@ -1369,7 +1369,7 @@ fn a_dir_two_libraries_hold_is_refused_again_by_the_library_it_is_sent_to() {
         .expect("Kids holds a")
         .root
         .libraries[0];
-    let manga = create_library(&conn, "Manga", std::slice::from_ref(&a))
+    let manga = create_library(&conn, "Manga", std::slice::from_ref(&a), None)
         .expect("Manga links a")
         .library_id;
     assert!(kids < manga, "the fixture: Kids is a's lowest link");
@@ -2128,9 +2128,9 @@ fn a_library_is_not_made_under_a_name_another_holds_in_another_case() {
     }
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
-    create_library(&conn, "Manga", std::slice::from_ref(&first)).expect("makes Manga");
+    create_library(&conn, "Manga", std::slice::from_ref(&first), None).expect("makes Manga");
 
-    let why = create_library(&conn, "\tMANGA ", std::slice::from_ref(&second))
+    let why = create_library(&conn, "\tMANGA ", std::slice::from_ref(&second), None)
         .expect_err("the name is taken in another case");
 
     assert_eq!(
@@ -2402,7 +2402,7 @@ fn own_library_clash_refuses_exactly_what_the_trigger_cannot_name() {
     }
     let refused_by_the_add = |candidate: &str| -> bool {
         conn.execute_batch("SAVEPOINT trial").expect("savepoint");
-        let refused = insert_root(&conn, Path::new(candidate), InLibrary::Own).is_err();
+        let refused = insert_root(&conn, Path::new(candidate), InLibrary::Own, None).is_err();
         conn.execute_batch("ROLLBACK TO trial; RELEASE trial")
             .expect("rolls back");
         refused
@@ -3604,6 +3604,7 @@ fn a_library_removed_across_two_dirs(order: [usize; 2], an_edition_per_dir: bool
         &conn,
         "Manga",
         &[dirs[order[0]].clone(), dirs[order[1]].clone()],
+        None,
     )
     .expect("creates");
     if an_edition_per_dir {
@@ -4004,8 +4005,8 @@ fn a_library_removal_reports_the_derive_that_follows_it() {
             .join("Gone - v01.cbz"),
         2,
     );
-    let kept = create_library(&conn, "Kept", &[parent.path().join("kept")]).expect("creates");
-    let gone = create_library(&conn, "Gone", &[parent.path().join("gone")]).expect("creates");
+    let kept = create_library(&conn, "Kept", &[parent.path().join("kept")], None).expect("creates");
+    let gone = create_library(&conn, "Gone", &[parent.path().join("gone")], None).expect("creates");
     for root in roots(&conn).expect("lists") {
         scan_root(&conn, &root).expect("scans");
     }
@@ -4037,8 +4038,8 @@ fn removing_a_library_repairs_a_surviving_documents_gap_and_its_cost_does_not() 
         3,
     );
     write_archive(&dir.path().join("b").join("Beta").join("Beta - v01.cbz"), 3);
-    let kept = create_library(&conn, "Kept", &[dir.path().join("a")]).expect("creates");
-    let doomed = create_library(&conn, "Doomed", &[dir.path().join("b")]).expect("creates");
+    let kept = create_library(&conn, "Kept", &[dir.path().join("a")], None).expect("creates");
+    let doomed = create_library(&conn, "Doomed", &[dir.path().join("b")], None).expect("creates");
     conn.execute(
         "UPDATE root SET keeps_documents = 1 WHERE id = ?1",
         [kept.dirs[0].root.id],
@@ -4927,7 +4928,7 @@ fn a_library_is_made_with_each_of_its_dirs() {
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
 
-    let made = create_library(&conn, " Manga ", &[a.clone(), b.clone()]).expect("creates");
+    let made = create_library(&conn, " Manga ", &[a.clone(), b.clone()], None).expect("creates");
 
     assert_eq!(made.name, "Manga", "the name as stored");
     assert_eq!(
@@ -4980,7 +4981,7 @@ fn a_library_is_refused_whole_for_one_bad_dir() {
         (vec![a.clone(), a.clone()], "overlap"),
         (Vec::new(), "at least one directory"),
     ] {
-        let why = create_library(&conn, "Manga", &paths).expect_err("refuses");
+        let why = create_library(&conn, "Manga", &paths, None).expect_err("refuses");
         assert!(
             matches!(&why, AddRootError::Unusable(text) if text.contains(says)),
             "{why:?}"
@@ -4992,7 +4993,7 @@ fn a_library_is_refused_whole_for_one_bad_dir() {
         );
     }
     assert!(matches!(
-        create_library(&conn, "  ", std::slice::from_ref(&b)),
+        create_library(&conn, "  ", std::slice::from_ref(&b), None),
         Err(AddRootError::Unusable(why)) if why.contains("needs a name")
     ));
     assert_eq!(libraries_and_roots(&conn), (0, 0));
@@ -5008,7 +5009,7 @@ fn a_library_called_one_dot_is_not_made_with_its_dir() {
     let conn = library.conn();
     for name in [".", " . "] {
         assert_eq!(
-            create_library(&conn, name, &[dir.path().to_path_buf()]),
+            create_library(&conn, name, &[dir.path().to_path_buf()], None),
             Err(AddRootError::Unusable(crate::NO_ADDRESS.to_string())),
             "{name:?}"
         );
@@ -5023,7 +5024,7 @@ fn a_library_called_two_dots_is_not_made_with_its_dir() {
     let conn = library.conn();
     for name in ["..", "\t.."] {
         assert_eq!(
-            create_library(&conn, name, &[dir.path().to_path_buf()]),
+            create_library(&conn, name, &[dir.path().to_path_buf()], None),
             Err(AddRootError::Unusable(crate::NO_ADDRESS.to_string())),
             "{name:?}"
         );
@@ -5046,7 +5047,7 @@ fn a_library_whose_second_dir_fails_at_the_insert_leaves_nothing() {
     )
     .expect("plants the refusal");
 
-    let why = create_library(&conn, "Manga", &[a, b]).expect_err("refuses");
+    let why = create_library(&conn, "Manga", &[a, b], None).expect_err("refuses");
 
     assert!(
         matches!(&why, AddRootError::Failed(text) if text.contains("planted")),
@@ -5078,7 +5079,7 @@ fn a_library_is_not_made_under_a_name_already_taken() {
     )
     .expect("sets Manga's interval for a");
 
-    let made = create_library(&conn, "Other", std::slice::from_ref(&a)).expect("links a");
+    let made = create_library(&conn, "Other", std::slice::from_ref(&a), None).expect("links a");
     let [linked] = &made.dirs[..] else {
         panic!("one directory: {made:?}")
     };
@@ -5086,6 +5087,7 @@ fn a_library_is_not_made_under_a_name_already_taken() {
     assert_eq!((&linked.probe, linked.interval), (&None, None));
     assert_eq!(linked.root.id, held.id);
     assert_eq!(linked.root.scan_interval_secs, Some(4242));
+    assert!(linked.schedule_kept, "Automatic was asked: {linked:?}");
     assert_eq!(
         linked.root.libraries,
         vec![held.libraries[0], made.library_id]
@@ -5097,7 +5099,7 @@ fn a_library_is_not_made_under_a_name_already_taken() {
     // not sent to add it there.
     for name in ["Manga", " manga "] {
         assert_eq!(
-            create_library(&conn, name, std::slice::from_ref(&a)).map(|made| made.library_id),
+            create_library(&conn, name, std::slice::from_ref(&a), None).map(|made| made.library_id),
             Err(AddRootError::Unusable(format!(
                 "{} is already a directory of the library `Manga`",
                 a.canonicalize().unwrap().display()
@@ -5106,13 +5108,43 @@ fn a_library_is_not_made_under_a_name_already_taken() {
         );
     }
     for name in ["Manga", " Manga "] {
-        let why = create_library(&conn, name, std::slice::from_ref(&b)).expect_err("refuses");
+        let why = create_library(&conn, name, std::slice::from_ref(&b), None).expect_err("refuses");
         assert!(
             matches!(&why, AddRootError::Unusable(text) if text.contains("already called `Manga`")),
             "{why:?}"
         );
     }
     assert_eq!(libraries_and_roots(&conn), (2, 1));
+}
+
+/// A link asked for Automatic, over a directory held at an Every of
+/// Automatic's own length, keeps that Every and says so: `schedule::every`
+/// reads the two alike, but they are different settings.
+#[test]
+fn a_link_asked_automatic_over_an_every_of_its_length_says_the_schedule_is_kept() {
+    let parent = crate::tests::tempdir("link-kept-every");
+    let (a, _) = two_dirs(parent.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let automatic = crate::watch::UNWATCHED_INTERVAL.as_secs().cast_signed();
+    let held = add_root_checked_in(&conn, &a, InLibrary::Named("Manga"))
+        .expect("Manga exists")
+        .root;
+    update_root(
+        &conn,
+        held.id,
+        &RootPatch {
+            scan_interval_secs: Some(Some(automatic)),
+            ..Default::default()
+        },
+    )
+    .expect("sets Manga's interval for a");
+
+    let linked = add_root_checked_with(&conn, &a, InLibrary::Named("Other"), None).expect("links");
+
+    assert_eq!(linked.also_in, ["Manga"]);
+    assert_eq!(linked.root.scan_interval_secs, Some(automatic));
+    assert!(linked.schedule_kept, "Automatic was asked: {linked:?}");
 }
 
 #[test]
@@ -10719,7 +10751,7 @@ fn every_writer_leaves_every_directory_in_a_library() {
     unlinked("add_root_checked_in, named");
     let checked_own = add_root_checked(&conn, &dir("checked-own")).expect("adds checked-own");
     unlinked("add_root_checked, of its own");
-    let d = create_library(&conn, "D", &[dir("d1"), dir("d2")]).expect("makes D");
+    let d = create_library(&conn, "D", &[dir("d1"), dir("d2")], None).expect("makes D");
     unlinked("create_library");
     add_root_checked_in(&conn, &a.path, InLibrary::Id(c.root.libraries[0])).expect("links a");
     unlinked("add_root_checked_in, linking");

@@ -135,6 +135,12 @@ export interface Added {
   interval_secs: number | null
   /** The libraries, by name, that held it before this add: none for a new one. */
   also_in: string[]
+  /**
+   * The add asked for a schedule other than the one the row keeps: only a
+   * link's can, as its directory's schedule is shared by every library that
+   * holds it (O275).
+   */
+  schedule_kept: boolean
 }
 
 /**
@@ -451,6 +457,38 @@ export function scanEvery(root: Pick<Root, 'scan_interval_secs'>): string {
 }
 
 /**
+ * The schedule a link kept where its add asked for another, as a sentence
+ * ends with it, or `undefined` where it kept none. An unticked add asked for
+ * Automatic, so it is said there too: a shared Off means no scan comes (O275).
+ */
+export function keptSchedule(
+  added: Pick<Added, 'schedule_kept' | 'root'>,
+): string | undefined {
+  if (!added.schedule_kept) return undefined
+  const every = scanEvery(added.root)
+  const secs = added.root.scan_interval_secs
+  return secs !== null && secs > 0 ? `every ${every}` : every
+}
+
+/**
+ * What a never-scanned directory set to Off says after "never": neither the
+ * scheduler nor startup scans it, so a bare "never" would read as a first
+ * scan still to come (O275). Nothing while a pressed scan waits or runs: its
+ * status is `waiting`, as that scan waits only for the job lock, or the page
+ * draws its scan running (`scanning`) beside words read before the press.
+ */
+const untilPressed = (
+  root: Pick<Root, 'last_scan_status'> &
+    Partial<Pick<Root, 'scan_interval_secs'>>,
+  scanning = false,
+) =>
+  isOff(root.scan_interval_secs ?? null) &&
+  !scanning &&
+  root.last_scan_status !== 'waiting'
+    ? `${JOINING_DOT}until Scan is pressed`
+    : ''
+
+/**
  * When a directory is next scanned: `off`, `due` where the server sends no
  * time for a directory it scans, or the time.
  *
@@ -469,9 +507,10 @@ export function nextScan(
  * scan went well, and its outcome after it where it did not.
  */
 export function lastScan(
-  root: Pick<Root, 'last_scan_at' | 'last_scan_status'>,
+  root: Pick<Root, 'last_scan_at' | 'last_scan_status'> &
+    Partial<Pick<Root, 'scan_interval_secs'>>,
 ) {
-  if (root.last_scan_at === null) return 'Never'
+  if (root.last_scan_at === null) return `Never${untilPressed(root)}`
   return root.last_scan_status === 'ok'
     ? inUtc(root.last_scan_at)
     : `${inUtc(root.last_scan_at)}${JOINING_DOT}${root.last_scan_status ?? 'outcome unrecorded'}`
@@ -503,6 +542,7 @@ export function lastScan(
 export function regimeFacts(
   root: Root,
   probe?: Probe,
+  scanning = false,
 ): Array<{ label: string; value: string }> {
   const watch =
     probe === undefined
@@ -515,7 +555,7 @@ export function regimeFacts(
 
   const last =
     root.last_scan_at === null
-      ? 'never'
+      ? `never${untilPressed(root, scanning)}`
       : `${inUtc(root.last_scan_at)}${JOINING_DOT}${root.last_scan_status ?? 'outcome unrecorded'}`
 
   return [

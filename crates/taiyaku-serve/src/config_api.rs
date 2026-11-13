@@ -1244,10 +1244,10 @@ pub(crate) fn root_json(
     })
 }
 
-/// The success body for a directory added, in `libraries_api`: the row
-/// [`scan::add_root_checked_in`] minted or linked, plus the watch probe it ran
-/// and the interval that probe implies — [`scan::Added`]'s fields, over the
-/// wire — and `also_in`, the names of the libraries that already held it.
+/// The success body for a directory added, in `libraries_api`: [`scan::Added`]
+/// over the wire — the row an add minted or linked, its watch probe and the
+/// interval that implies, `also_in`, the libraries that already held it, and
+/// `schedule_kept` ([`scan::Added::schedule_kept`]).
 ///
 /// **A link runs no probe**, so `watching`, `watch_reason` and `interval_secs`
 /// are `null` for one. Its scan columns are the ones the add read inside its
@@ -1264,6 +1264,7 @@ pub(crate) fn added_json(added: &scan::Added) -> serde_json::Value {
         "watch_reason": added.probe.as_ref().and_then(|probe| probe.reason.as_deref()),
         "interval_secs": added.interval.map(|interval| interval.as_secs()),
         "also_in": added.also_in,
+        "schedule_kept": added.schedule_kept,
     })
 }
 
@@ -1300,6 +1301,25 @@ fn root_patch_from_json(body: &serde_json::Value) -> Result<scan::RootPatch, Str
     if let Some(Some(patterns)) = &exclude_globs {
         scan::check_exclude_globs(patterns)?;
     }
+    let scan_interval_secs = scan_interval_from_json(body)?;
+    Ok(scan::RootPatch {
+        edition_key: patch_nullable_text(body, "edition_key", "directory")?,
+        default_kind: patch_nullable_text(body, "default_kind", "directory")?,
+        default_language: patch_nullable_text(body, "default_language", "directory")?,
+        exclude_globs,
+        scan_interval_secs,
+        keeps_documents: patch_bool(body, "keeps_documents", "directory")?,
+    })
+}
+
+/// `body`'s `scan_interval_secs`, three ways as [`patch_nullable_i64`] reads
+/// it: absent `None`, null (Automatic) `Some(None)`, a number `Some(Some(n))`.
+///
+/// **One check for the patch and both adds** (O275), so an add cannot store a
+/// schedule the patch would refuse, and each refuses it in the same words.
+pub(crate) fn scan_interval_from_json(
+    body: &serde_json::Value,
+) -> Result<Option<Option<i64>>, String> {
     // Null is Automatic and 0 is Off. Every has a floor because each scan
     // holds the job lock through a whole-store derive (spec §4, Decision 3).
     let scan_interval_secs = patch_nullable_i64(body, "scan_interval_secs", "directory")?;
@@ -1314,14 +1334,7 @@ fn root_patch_from_json(body: &serde_json::Value) -> Result<scan::RootPatch, Str
             schedule::MIN_INTERVAL_SECS / 60
         ));
     }
-    Ok(scan::RootPatch {
-        edition_key: patch_nullable_text(body, "edition_key", "directory")?,
-        default_kind: patch_nullable_text(body, "default_kind", "directory")?,
-        default_language: patch_nullable_text(body, "default_language", "directory")?,
-        exclude_globs,
-        scan_interval_secs,
-        keeps_documents: patch_bool(body, "keeps_documents", "directory")?,
-    })
+    Ok(scan_interval_secs)
 }
 
 /// What one [`scan::Removal`] costs, over the wire — [`delete_root`]'s body,

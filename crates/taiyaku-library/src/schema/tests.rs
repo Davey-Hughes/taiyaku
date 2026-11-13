@@ -2201,6 +2201,7 @@ fn a_root_written_without_a_library_is_filed_under_one_of_its_own() {
             &conn,
             std::path::Path::new(path),
             crate::scan::InLibrary::Own,
+            None,
         )
         .unwrap_or_else(|e| panic!("{path}: {e}"));
     }
@@ -2231,6 +2232,7 @@ fn a_root_written_without_a_library_is_named_without_white_space_or_a_case_clash
             &conn,
             std::path::Path::new(path),
             crate::scan::InLibrary::Own,
+            None,
         )
         .unwrap_or_else(|e| panic!("a root at {path:?}: {e}"));
     };

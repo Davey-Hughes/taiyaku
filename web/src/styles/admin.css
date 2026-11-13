@@ -1713,6 +1713,17 @@
   margin: 0;
 }
 
+/* Don’t scan yet (schedule Off) (O275) on a line of its own beneath the
+   picker's, so it reads as how the directory is added and not as a fourth
+   button; its words are a sentence beside the box, as `.checks` draws one. */
+.add-root > .scan-off {
+  flex-basis: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-ui);
+}
+
 /* The room the add form took as a link was said, which `LibraryPage.tsx`
    keeps as the box's height whatever the window does after, so that
    nothing below it moves. Its lines start at the room's top. */
@@ -2583,8 +2594,8 @@
    has two `min-height: 24px` controls of its own, `.volumes a.get` and
    `.volumes .panel-open`; they are tile controls rather than checkboxes, so
    they are a precedent for the number and not for the shape.) Where a
-   `.checks` label is beside the box, that row is the tappable target and
-   takes the 44.
+   `.checks` label or `.add-root > .scan-off` is beside the box, it is the
+   tappable target and takes the 44.
 
    **The box rule is keyed on that treatment and not on a container**, which
    is why it names `input[type="checkbox"]` under those two roots rather than
@@ -2730,7 +2741,8 @@
     padding-block: 2.5px 5.5px;
   }
 
-  .proposals .checks label {
+  .proposals .checks label,
+  .add-root > .scan-off {
     min-height: 44px;
     align-items: center;
   }

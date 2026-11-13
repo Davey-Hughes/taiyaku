@@ -474,6 +474,57 @@ describe('RootRow', () => {
     expect(host.querySelector('.scanning')?.textContent).toBe('Scanning…')
   })
 
+  it('says its Off directory never scanned waits for no press while the scan pressed here is drawn running (O275)', async () => {
+    vi.mocked(config.scanStatus)
+      .mockResolvedValueOnce({
+        root_id: 3,
+        running: false,
+        report: null,
+        last_scan_at: null,
+        last_scan_status: null,
+      })
+      .mockResolvedValue({
+        root_id: 3,
+        running: true,
+        elapsed_secs: 2,
+        report: null,
+        last_scan_at: null,
+        last_scan_status: null,
+      })
+    const host = await settle({ scan_interval_secs: 0 })
+    const facts = () =>
+      [...host.querySelectorAll('.regime > div')].map((one) => [
+        one.querySelector('dt')?.textContent,
+        one.querySelector('dd')?.textContent,
+      ])
+    expect(facts().slice(1)).toEqual([
+      ['scan every', 'off'],
+      ['last scan', 'never · until Scan is pressed'],
+      ['next scan', 'off'],
+    ])
+
+    // The list the facts come from is not read again until the scan ends.
+    await act(async () => {
+      press(host, 'Scan directory').click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning…')
+    expect(facts().slice(1)).toEqual([
+      ['scan every', 'off'],
+      ['last scan', 'never'],
+      ['next scan', 'off'],
+    ])
+
+    await act(async () => {
+      vi.advanceTimersByTime(config.SCAN_POLL_MS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 2s')
+    expect(facts()[2]).toEqual(['last scan', 'never'])
+  })
+
   describe('Move…', () => {
     const library = { id: 5, name: 'Chapters' }
     const moveTo = [{ id: 7, name: 'Manga' }]

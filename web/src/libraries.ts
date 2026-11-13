@@ -338,10 +338,29 @@ export const deriveStatus = () => getJson<DeriveStatus>('/api/library/derive')
 export const listLibraries = () =>
   getJson<{ libraries: Library[] }>('/api/library/libraries')
 
+/** The words of the box on both add forms whose tick is `scanOff` (O275). */
+export const SCAN_OFF_WORDS = 'Don’t scan yet (schedule Off)'
+
+/**
+ * What an add asks of the schedule: Off, in the `PATCH`'s words, or no key at
+ * all, which the server reads as Automatic. A directory another library holds
+ * keeps the schedule it has either way.
+ */
+const scheduleAsked = (scanOff: boolean) =>
+  scanOff ? { scan_interval_secs: 0 } : {}
+
 /** A library and its directories: all of them, or a refusal and nothing made. */
-export const createLibrary = (name: string, dirs: string[]): Promise<Created> =>
+export const createLibrary = (
+  name: string,
+  dirs: string[],
+  scanOff = false,
+): Promise<Created> =>
   expectBody(
-    sendJson<Created>('/api/library/libraries', 'POST', { name, dirs }),
+    sendJson<Created>('/api/library/libraries', 'POST', {
+      name,
+      dirs,
+      ...scheduleAsked(scanOff),
+    }),
   )
 
 /** Answers the name as stored, which is the name sent with its spaces stripped. */
@@ -354,9 +373,16 @@ export const renameLibrary = (id: number, name: string) =>
     ),
   )
 
-export const addDir = (id: number, path: string): Promise<Added> =>
+export const addDir = (
+  id: number,
+  path: string,
+  scanOff = false,
+): Promise<Added> =>
   expectBody(
-    sendJson<Added>(`/api/library/libraries/${id}/dirs`, 'POST', { path }),
+    sendJson<Added>(`/api/library/libraries/${id}/dirs`, 'POST', {
+      path,
+      ...scheduleAsked(scanOff),
+    }),
   )
 
 /** What removing library `id` would cost. `?dry_run=true`, spelt exactly. */

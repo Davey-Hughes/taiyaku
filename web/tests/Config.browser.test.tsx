@@ -527,9 +527,11 @@ describe('the Libraries screen, with real keys and a real pointer', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
     expect(librariesApi.createLibrary).toHaveBeenCalledTimes(1)
-    expect(librariesApi.createLibrary).toHaveBeenCalledWith('Manga', [
-      '/srv/manga',
-    ])
+    expect(librariesApi.createLibrary).toHaveBeenCalledWith(
+      'Manga',
+      ['/srv/manga'],
+      false,
+    )
   })
 
   it.each([390, 1280])(
@@ -2165,6 +2167,7 @@ describe('the Configuration screens at 390px', () => {
           watch_reason: reason,
           interval_secs: 3600,
           also_in: [],
+          schedule_kept: false,
         },
       ],
     })
@@ -3425,6 +3428,7 @@ describe('a library page’s lines for a directory another library holds too', (
         watch_reason: null,
         interval_secs: null,
         also_in,
+        schedule_kept: false,
       })
       await new Promise((resolve) => setTimeout(resolve, 120))
     })
@@ -3445,6 +3449,13 @@ describe('a library page’s lines for a directory another library holds too', (
   const EACH = SIZES.flatMap(([width, height]) =>
     PATHS.map((path) => [width, height, path] as const),
   )
+
+  /**
+   * Libraries enough that the line for `PATHS[0]` at 390 px is too tall to
+   * lie under Add directory… in the room the picker took, Don’t scan yet
+   * (schedule Off) included, and short enough to lie over the button there.
+   */
+  const OVER_THE_BUTTON = ['Kids', 'Comics', 'Teens', 'Seinen', 'Light novels']
 
   /**
    * Where a link's line lies in its box: `foot`, how far its foot is above
@@ -3539,7 +3550,7 @@ describe('a library page’s lines for a directory another library holds too', (
         390,
         844,
         '/home/davey/temp/manga-test/Kids',
-        ['Kids', 'Comics'],
+        OVER_THE_BUTTON,
       )
       const box = line.closest('.settings-box') as HTMLElement
       const beneath = [
@@ -3613,12 +3624,24 @@ describe('a library page’s lines for a directory another library holds too', (
    * hold, as the app draws it: the make is sent outside `act`, which would
    * draw only the last of its changes. `seen` is how far below the add form
    * the Removal section was, and what the line said, at each change to the
-   * page from the make on.
+   * page from the make on. `kept` is the shared schedule the answer says the
+   * directory kept.
    */
-  async function madeAt(width: number, height: number, path: string) {
+  async function madeAt(
+    width: number,
+    height: number,
+    path: string,
+    kept?: number,
+  ) {
     await page.viewport(width, height)
     const made: librariesApi.Library = {
-      ...holding(root({ id: 4, path })).libraries[0],
+      ...holding(
+        root({
+          id: 4,
+          path,
+          ...(kept === undefined ? {} : { scan_interval_secs: kept }),
+        }),
+      ).libraries[0],
       id: 5,
       name: 'Extras',
     }
@@ -3631,6 +3654,7 @@ describe('a library page’s lines for a directory another library holds too', (
           watch_reason: null,
           interval_secs: null,
           also_in: ['Kids', 'Comics'],
+          schedule_kept: kept !== undefined,
         },
       ],
     })
@@ -3725,6 +3749,30 @@ describe('a library page’s lines for a directory another library holds too', (
     },
   )
 
+  it.each(SIZES)(
+    'says a link New library made with the shared schedule it kept at %ipx×%ipx in a room the page has from its first paint, inside its box, moving nothing below it as the line says it',
+    async (width, height) => {
+      const { host, line, seen } = await madeAt(width, height, PATHS[1], 3600)
+      expect(line.textContent).toBe(
+        '/home/davey/temp/manga-test/Collections/Shonen Jump/Weekly/Extras/Kids is also a directory of Kids and Comics. It keeps the settings it has there, and its scan schedule stays every 1h.',
+      )
+      expect(seen.length).toBeGreaterThan(0)
+      for (const one of seen) {
+        expect(one.reach, `${one.said === '' ? 'empty' : 'said'}`).toBeCloseTo(
+          seen[0].reach,
+          0,
+        )
+      }
+      const place = linePlace(host, line)
+      expect(place.covers).toEqual([])
+      expect(place.foot).toBeGreaterThanOrEqual(-0.5)
+      expect(place.clear).toBeGreaterThan(0)
+      expect(place.halves).toEqual([])
+      expect(place.onTop).toBe(true)
+      assertNoSidewaysScroll(host)
+    },
+  )
+
   it.each([
     [390, 1280],
     [1280, 390],
@@ -3759,7 +3807,16 @@ describe('a library page’s lines for a directory another library holds too', (
       390,
       844,
       PATHS[1],
-      ['Kids', 'Comics', 'Teens', 'Light novels'],
+      [
+        'Kids',
+        'Comics',
+        'Teens',
+        'Light novels',
+        'Seinen',
+        'Webtoons',
+        'Shojo',
+        'Josei',
+      ],
     )
     const room = addRoot()
     const roomAt = room.getBoundingClientRect()
@@ -3846,10 +3903,12 @@ describe('a library page’s lines for a directory another library holds too', (
   })
 
   it('takes the focus ring off a link’s line as focus leaves Add directory… beneath it: by a real Tab onward, and by a real click on nothing that takes focus, at 390px', async () => {
-    const { host, addRoot, line } = await linkedAt(390, 844, PATHS[0], [
-      'Kids',
-      'Comics',
-    ])
+    const { host, addRoot, line } = await linkedAt(
+      390,
+      844,
+      PATHS[0],
+      OVER_THE_BUTTON,
+    )
     const add = addRoot().querySelector('button[name="add-dir"]') as HTMLElement
     const rows = host.querySelectorAll<HTMLElement>(
       '.library-page .dir-table .row-link',
@@ -3888,10 +3947,12 @@ describe('a library page’s lines for a directory another library holds too', (
   })
 
   it('draws the focus ring on a link’s line where a real Tab reaches Add directory… beneath it at 390px, and a real Enter there still opens the picker', async () => {
-    const { host, addRoot, line } = await linkedAt(390, 844, PATHS[0], [
-      'Kids',
-      'Comics',
-    ])
+    const { host, addRoot, line } = await linkedAt(
+      390,
+      844,
+      PATHS[0],
+      OVER_THE_BUTTON,
+    )
     const add = addRoot().querySelector('button[name="add-dir"]') as HTMLElement
     expect(liesOver(line, add)).toBe(true)
     const rows = host.querySelectorAll<HTMLElement>(
@@ -4724,14 +4785,14 @@ describe('the way up from a page beneath a table', () => {
  * **A checkbox row's first line is a finger's 44 px tall under a coarse
  * pointer, and all of it is the target** (spec 2026-09-17 §7.1): an
  * account's three permissions, each library it is limited to, and a
- * directory's Keeps documents under .taiyaku/, every check row these pages
- * draw. The label takes the line, the gap and the box's column included,
- * and the box is centred on it. Hit testing along the label's middle row
- * and column (`pressArea`) finds it from its start to the box, and a press
- * a pixel inside the top and the bottom of the 44 px, under the words and
- * above and below the box, one just above the box and one in the gap, each
- * sends one write. Per row, since one row's help can be taller than
- * another's.
+ * directory's Keeps documents under .taiyaku/, every check row but New
+ * library's Don’t scan yet (schedule Off), whose press writes nothing to count.
+ * The label takes the line, the gap and the box's column included, and the
+ * box is centred on it. Hit testing along the label's middle row and column
+ * (`pressArea`) finds it from its start to the box, and a press a pixel inside
+ * the top and the bottom of the 44 px, under the words and above and below
+ * the box, one just above the box and one in the gap, each sends one write.
+ * Per row, since one row's help can be taller than another's.
  */
 describe('a checkbox row under a coarse pointer', () => {
   const sam = user({

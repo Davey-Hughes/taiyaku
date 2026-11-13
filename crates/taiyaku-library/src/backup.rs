@@ -9,8 +9,8 @@
 //! none of the cross-work data — collections, tags, external ids, users, read
 //! history — so somebody who exported their library still needs this.
 //!
-//! **Restore is deliberately out-of-band**: stop the server, move the file,
-//! start it. C4 §5 declines an in-server restore; nothing here does one.
+//! **Restore is out of band** (C4 §5; nothing here does one), by the README's
+//! steps, which move the `-wal` and `-shm` aside and give the server's owner.
 //!
 //! **The open takes one before every migration** (O263), tagged `-before-v<N>`
 //! for the version it migrates to, and [`prune`] neither counts nor deletes it.

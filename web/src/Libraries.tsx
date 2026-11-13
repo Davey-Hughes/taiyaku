@@ -88,7 +88,13 @@ import {
   useNavigate,
   useParams,
 } from 'react-router'
-import type { Added, Derived, Probe, RemovalAnswer } from './config'
+import {
+  type Added,
+  type Derived,
+  keptSchedule,
+  type Probe,
+  type RemovalAnswer,
+} from './config'
 import {
   byName,
   LIBRARIES,
@@ -364,7 +370,8 @@ export function Libraries() {
    * that library's page to say, once.
    */
   const [madeLink, setMadeLink] = useState<
-    { libraryId: number; path: string; also_in: string[] } | undefined
+    | { libraryId: number; path: string; also_in: string[]; schedule?: string }
+    | undefined
   >()
   const madeLinkTaken = useCallback(() => setMadeLink(undefined), [])
 
@@ -399,6 +406,7 @@ export function Libraries() {
                   libraryId: created.library.id,
                   path: link.root.path,
                   also_in: link.also_in,
+                  schedule: keptSchedule(link),
                 },
           )
           setArrival(libraryPath(created.library.name))

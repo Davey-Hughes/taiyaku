@@ -1250,7 +1250,7 @@ export function RootRow({
         description={
           <>
             <dl ref={factEnds} className="regime">
-              {regimeFacts(root, probe).map(({ label, value }) => (
+              {regimeFacts(root, probe, running).map(({ label, value }) => (
                 <div key={label}>
                   <dt>{label}</dt>
                   <dd>{value}</dd>

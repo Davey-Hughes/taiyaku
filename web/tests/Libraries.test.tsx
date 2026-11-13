@@ -253,6 +253,12 @@ const boxMarks = (host: HTMLElement) => [
   nameBox(host).getAttribute('aria-describedby'),
 ]
 
+/** The make form's box that asks for the schedule Off, found by its label's words. */
+const scanOffBox = (host: HTMLElement) =>
+  [...form(host).querySelectorAll('label')].find(
+    (label) => label.textContent === 'Don’t scan yet (schedule Off)',
+  )?.control as HTMLInputElement
+
 /** Fills the make page's form with `name` and `path` and sends it. */
 async function makeOne(host: HTMLElement, name: string, path: string) {
   await typeInto(nameBox(host), name)
@@ -1805,6 +1811,7 @@ describe('Libraries, making one', () => {
           watch_reason: 'no events',
           interval_secs: 3600,
           also_in: [],
+          schedule_kept: false,
         },
       ],
     })
@@ -1819,9 +1826,11 @@ describe('Libraries, making one', () => {
     await submit(form(host))
     await flush()
 
-    expect(api.createLibrary).toHaveBeenCalledWith('Manga', [
-      '/media/Manga/Volumes',
-    ])
+    expect(api.createLibrary).toHaveBeenCalledWith(
+      'Manga',
+      ['/media/Manga/Volumes'],
+      false,
+    )
     expect(here()).toBe('/config/libraries/Manga')
     expect(libraryTitle(host)).toBe('Manga')
     expect(paths(host)).toEqual(['/media/Manga/Volumes'])
@@ -1964,7 +1973,11 @@ describe('Libraries, making one', () => {
       )
     })
     expect(api.createLibrary).toHaveBeenCalledTimes(1)
-    expect(api.createLibrary).toHaveBeenCalledWith('Trial', ['/media/Trial-a'])
+    expect(api.createLibrary).toHaveBeenCalledWith(
+      'Trial',
+      ['/media/Trial-a'],
+      false,
+    )
   })
 
   it('sends nothing, and keeps the form as it is, when the form holds no box by the picker’s name', async () => {
@@ -2109,7 +2122,11 @@ describe('Libraries, making one', () => {
     vi.mocked(api.createLibrary).mockResolvedValue({ library: made, added: [] })
     const host = await at(NEW_LIBRARY)
     await makeOne(host, 'Manga', '  /media/Manga \t')
-    expect(api.createLibrary).toHaveBeenCalledWith('Manga', ['/media/Manga'])
+    expect(api.createLibrary).toHaveBeenCalledWith(
+      'Manga',
+      ['/media/Manga'],
+      false,
+    )
   })
 
   it('holds Make the library, and says nothing of why, while the name or the directory box is empty', async () => {
@@ -2365,6 +2382,68 @@ describe('Libraries, making one', () => {
     expect(form(host).querySelector('[role="alert"]')).toBeNull()
   })
 
+  it('draws Don’t scan yet (schedule Off) as a box, unticked on arrival — O275', async () => {
+    const host = await at(NEW_LIBRARY)
+    const box = scanOffBox(host)
+    expect([box.type, box.name, box.checked]).toEqual([
+      'checkbox',
+      'scan-off',
+      false,
+    ])
+  })
+
+  it.each([
+    { ticked: false, sent: false },
+    { ticked: true, sent: true },
+  ])(
+    'makes the library with the box ticked $ticked, and asks for the schedule Off $sent — O275',
+    async ({ ticked, sent }) => {
+      const made = library(1, 'Manga', ['/media/Manga/Volumes'])
+      vi.mocked(api.createLibrary).mockResolvedValue({
+        library: made,
+        added: [],
+      })
+      const host = await at(NEW_LIBRARY)
+      await typeInto(nameBox(host), 'Manga')
+      await typeInto(pathBox(host), '/media/Manga/Volumes')
+      if (ticked) await press(scanOffBox(host))
+      expect(scanOffBox(host).checked).toBe(ticked)
+      vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [made] })
+      await submit(form(host))
+      await flush()
+      expect(api.createLibrary).toHaveBeenCalledWith(
+        'Manga',
+        ['/media/Manga/Volumes'],
+        sent,
+      )
+      expect(here()).toBe('/config/libraries/Manga')
+    },
+  )
+
+  it('clears a create refusal when Don’t scan yet (schedule Off) is ticked or unticked — O275', async () => {
+    vi.mocked(api.createLibrary).mockRejectedValue(
+      new Error('/api/library/libraries: 400 {"error":"refused"}'),
+    )
+    const host = await at(NEW_LIBRARY)
+    const refused = () => form(host).querySelector('[role="alert"]')
+    await makeOne(host, 'Manga', '/media/a')
+    expect(refused()?.textContent).toBe('refused')
+    await press(scanOffBox(host))
+    expect(scanOffBox(host).checked).toBe(true)
+    expect(refused()).toBeNull()
+
+    await submit(form(host))
+    expect(refused()?.textContent).toBe('refused')
+    expect(api.createLibrary).toHaveBeenLastCalledWith(
+      'Manga',
+      ['/media/a'],
+      true,
+    )
+    await press(scanOffBox(host))
+    expect(scanOffBox(host).checked).toBe(false)
+    expect(refused()).toBeNull()
+  })
+
   it('clears a create refusal when the name or the directory’s path is edited', async () => {
     vi.mocked(api.createLibrary).mockRejectedValue(
       new Error('/api/library/libraries: 400 {"error":"refused"}'),
@@ -2501,13 +2580,14 @@ describe('Libraries, making one', () => {
     expect(labelled.map(({ written }) => written)).toEqual([
       'Name',
       'Directory path',
+      'Don’t scan yet (schedule Off)',
     ])
     for (const { written, control } of labelled) {
       expect(control?.getAttribute('aria-label'), written ?? '').toBe(written)
     }
   })
 
-  it('draws the make form as one box of Name and Directory path, with Make the library and Cancel at its foot', async () => {
+  it('draws the make form as one box of Name, Directory path and Don’t scan yet (schedule Off), with Make the library and Cancel at its foot', async () => {
     const host = await at(NEW_LIBRARY)
     const page = host.querySelector('.new-library') as HTMLElement
     expect(page.querySelector('.page-header .page-title')?.textContent).toBe(
@@ -2528,6 +2608,7 @@ describe('Libraries, making one', () => {
     expect(parts).toEqual([
       'Name',
       'Directory path',
+      'Don’t scan yet (schedule Off)',
       ['Make the library', 'Cancel'],
       { says: '' },
     ])
@@ -2555,6 +2636,11 @@ describe('Libraries, making one', () => {
     expect(helpOf(row(page, 'Directory path'))?.textContent).toBe(
       'The server checks that it can read the directory. It may be another library’s directory too, or sit inside or around one.',
     )
+    expect(
+      helpOf(row(page, 'Don’t scan yet (schedule Off)'))?.textContent,
+    ).toBe(
+      'A directory no other library holds is then scheduled Off: the server scans it only when Scan library or Scan directory is pressed, so its edition key and patterns can be set before its first scan. One another library holds keeps its schedule.',
+    )
     expect(page.querySelector('.why')).toBeNull()
   })
 })
@@ -2574,6 +2660,7 @@ describe('Libraries, a probe', () => {
             watch_reason: 'inotify limit reached',
             interval_secs: 900,
             also_in: [],
+            schedule_kept: false,
           },
         ],
       }
@@ -2664,6 +2751,7 @@ describe('Libraries, a probe', () => {
           watch_reason: 'inotify limit reached',
           interval_secs: 900,
           also_in: [],
+          schedule_kept: false,
         },
       ],
     })
@@ -2691,6 +2779,7 @@ describe('Libraries, a probe', () => {
       watch_reason: 'inotify limit reached',
       interval_secs: 900,
       also_in: [],
+      schedule_kept: false,
     })
     const host = await at('/config/libraries/Manga')
     vi.mocked(api.listLibraries).mockResolvedValue({
@@ -2730,6 +2819,7 @@ describe('Libraries, a directory another library holds too', () => {
       watch_reason: null,
       interval_secs: null,
       also_in: ['Manga'],
+      schedule_kept: false,
     })
     const host = await at('/config/libraries/Kids')
     vi.mocked(api.listLibraries).mockResolvedValue({
@@ -2779,6 +2869,7 @@ describe('Libraries, a library made over a directory another library holds', () 
           watch_reason: null,
           interval_secs: null,
           also_in: ['Manga'],
+          schedule_kept: false,
         },
       ],
     })
@@ -2805,6 +2896,50 @@ describe('Libraries, a library made over a directory another library holds', () 
     expect(line()?.textContent).toBe('')
   })
 
+  it('says on the made library’s page the shared schedule the directory kept where the make asked for another', async () => {
+    const shared = {
+      ...dir(10, '/media/Manga', [
+        { id: 1, name: 'Manga' },
+        { id: 3, name: 'Extras' },
+      ]),
+      scan_interval_secs: 3600,
+    }
+    const made: api.Library = {
+      id: 3,
+      name: 'Extras',
+      works: 0,
+      books: 0,
+      dirs: [shared],
+    }
+    vi.mocked(api.createLibrary).mockResolvedValue({
+      library: made,
+      added: [
+        {
+          root: shared,
+          watching: null,
+          watch_reason: null,
+          interval_secs: null,
+          also_in: ['Manga'],
+          schedule_kept: true,
+        },
+      ],
+    })
+    const host = await at(NEW_LIBRARY)
+    vi.mocked(api.listLibraries).mockResolvedValue({
+      libraries: [library(1, 'Manga', ['/media/Manga']), made],
+    })
+    await makeOne(host, 'Extras', '/media/Manga')
+    await flush()
+    expect(here()).toBe('/config/libraries/Extras')
+    expect(
+      section(host, 'Directories').querySelector(
+        ':scope > .settings-box > .add-root > .linked',
+      )?.textContent,
+    ).toBe(
+      '/media/Manga is also a directory of Manga. It keeps the settings it has there, and its scan schedule stays every 1h.',
+    )
+  })
+
   it('says nothing of a link on the page of a library made over a new directory', async () => {
     const made = library(3, 'Extras', ['/media/Extras'])
     vi.mocked(api.createLibrary).mockResolvedValue({
@@ -2816,6 +2951,7 @@ describe('Libraries, a library made over a directory another library holds', () 
           watch_reason: null,
           interval_secs: 900,
           also_in: [],
+          schedule_kept: false,
         },
       ],
     })
@@ -3663,6 +3799,7 @@ describe('Libraries, one directory in several libraries', () => {
           watch_reason: null,
           interval_secs: null,
           also_in: ['Manga', 'Kids', 'Teens'],
+          schedule_kept: false,
         },
       ],
     })
@@ -3787,6 +3924,7 @@ describe('Libraries, a report and the next write on its library’s page', () =>
     watch_reason: null,
     interval_secs: null,
     also_in: ['Manga'],
+    schedule_kept: false,
   })
 
   it('takes the report away at the answer to an add on that page, at once while the list cannot be read', async () => {
@@ -3795,7 +3933,7 @@ describe('Libraries, a report and the next write on its library’s page', () =>
     await addOn(host, '/media/Shared')
     await flush()
 
-    expect(api.addDir).toHaveBeenCalledWith(2, '/media/Shared')
+    expect(api.addDir).toHaveBeenCalledWith(2, '/media/Shared', false)
     expect(host.querySelector('.linked')?.textContent).toBe(
       '/media/Shared is also a directory of Manga. It keeps the settings it has there.',
     )
@@ -3824,7 +3962,7 @@ describe('Libraries, a report and the next write on its library’s page', () =>
     vi.mocked(api.addDir).mockReturnValue(add.promise)
     const host = await at('/config/libraries/Manga')
     await addOn(host, '/media/Extras')
-    expect(api.addDir).toHaveBeenCalledWith(1, '/media/Extras')
+    expect(api.addDir).toHaveBeenCalledWith(1, '/media/Extras', false)
     await go('/config/libraries/Kids/dirs/30')
     vi.mocked(api.listLibraries).mockRejectedValue(locked())
     await unlinkDrawnDir(host, 'Kids')
@@ -3898,7 +4036,7 @@ describe('Libraries, a report and the next write on its library’s page', () =>
     const add = deferred<config.Added>()
     vi.mocked(api.addDir).mockReturnValue(add.promise)
     await addOn(host, '/media/Extras')
-    expect(api.addDir).toHaveBeenCalledWith(2, '/media/Extras')
+    expect(api.addDir).toHaveBeenCalledWith(2, '/media/Extras', false)
     const report = host.querySelector(
       '.dir-page .removal-report',
     ) as HTMLElement
@@ -3950,7 +4088,7 @@ describe('Libraries, a report and the next write on its library’s page', () =>
     vi.mocked(api.addDir).mockReturnValue(add.promise)
     const host = await at('/config/libraries/Kids')
     await addOn(host, '/media/Extras')
-    expect(api.addDir).toHaveBeenCalledWith(2, '/media/Extras')
+    expect(api.addDir).toHaveBeenCalledWith(2, '/media/Extras', false)
     // Alone where the two do not fit, so Kids' page goes as it opens and is
     // drawn afresh on the way back.
     await follow(host, '/media/Shared')
@@ -3996,7 +4134,7 @@ describe('Libraries, a report and the next write on its library’s page', () =>
     vi.mocked(api.addDir).mockReturnValue(add.promise)
     const host = await at('/config/libraries/Kids')
     await addOn(host, '/media/Extras')
-    expect(api.addDir).toHaveBeenCalledWith(2, '/media/Extras')
+    expect(api.addDir).toHaveBeenCalledWith(2, '/media/Extras', false)
     await follow(host, '/media/Shared')
     vi.mocked(api.listLibraries).mockRejectedValue(locked())
     await unlinkDrawnDir(host, 'Kids')
@@ -4676,9 +4814,11 @@ describe('Libraries, addressed by name', () => {
     const host = await at(NEW_LIBRARY)
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: [made] })
     await makeOne(host, ' Light novels ', '/media/Light novels')
-    expect(api.createLibrary).toHaveBeenCalledWith(' Light novels ', [
-      '/media/Light novels',
-    ])
+    expect(api.createLibrary).toHaveBeenCalledWith(
+      ' Light novels ',
+      ['/media/Light novels'],
+      false,
+    )
     expect(here()).toBe(`${TABLE}/Light%20novels`)
     expect(libraryTitle(host)).toBe('Light novels')
     expect(document.activeElement).toBe(libraryHeading(host))
@@ -4817,6 +4957,7 @@ describe('Libraries, a directory write and the roots Rules draws', () => {
           watch_reason: null,
           interval_secs: 900,
           also_in: [],
+          schedule_kept: false,
         })
         await press(host.querySelector('button[name="add-dir"]') as Element)
         const picker = section(host, 'Directories').querySelector(
@@ -4853,6 +4994,7 @@ describe('Libraries, a directory write and the roots Rules draws', () => {
               watch_reason: null,
               interval_secs: 900,
               also_in: [],
+              schedule_kept: false,
             },
           ],
         })

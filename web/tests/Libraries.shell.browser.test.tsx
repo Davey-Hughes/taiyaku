@@ -3658,7 +3658,7 @@ describe('a library’s page in a real browser, when an add holds Add directory'
     expect(document.activeElement).toBe(pick)
     await keys('{Enter}')
     await settle()
-    expect(librariesApi.addDir).toHaveBeenCalledWith(1, '/media/x')
+    expect(librariesApi.addDir).toHaveBeenCalledWith(1, '/media/x', false)
     expect(pick.disabled).toBe(true)
     expect(document.activeElement).toBe(box)
 

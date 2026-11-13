@@ -6,6 +6,10 @@
  * directories are added on the library's own page, one at a time, each meeting
  * the same refusals.
  *
+ * **Don’t scan yet (schedule Off) starts unticked** (O275). Ticked, a
+ * directory no other library holds is added Off, so its edition key and
+ * patterns can be set before its first scan.
+ *
  * **The refusal is drawn in the form**, beside the button that was pressed,
  * and stays until what the form holds changes or the next attempt. A refusal
  * that comes once the form has gone is handed to the screen, which says it
@@ -15,7 +19,12 @@ import { type ReactNode, useId, useRef, useState } from 'react'
 import { LIBRARIES, libraryNameClash } from './configAddress'
 import { DirPicker } from './DirPicker'
 import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
-import { type Created, createLibrary, type Library } from './libraries'
+import {
+  type Created,
+  createLibrary,
+  type Library,
+  SCAN_OFF_WORDS,
+} from './libraries'
 import { sentenceOf } from './message'
 import { NameClash } from './NameClash'
 import { Refusal } from './Refusal'
@@ -65,6 +74,7 @@ export function NewLibrary({
 }: NewLibraryProps) {
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
+  const [scanOff, setScanOff] = useState(false)
   const [creating, setCreating] = useState(false)
   const creatingDrawn = useDrawnWait(creating)
   /** Why the last library was not made. */
@@ -114,7 +124,7 @@ export function NewLibrary({
     inFlight.current = true
     setCreating(true)
     setFailure(undefined)
-    createLibrary(name, [dir])
+    createLibrary(name, [dir], scanOff)
       .then((made) => {
         inFlight.current = false
         setCreating(false)
@@ -170,6 +180,26 @@ export function NewLibrary({
                 onPath={(typed) => {
                   setFailure(undefined)
                   setPath(typed)
+                }}
+              />
+            )}
+          </Row>
+          <Row
+            check
+            label={SCAN_OFF_WORDS}
+            help="A directory no other library holds is then scheduled Off: the server scans it only when Scan library or Scan directory is pressed, so its edition key and patterns can be set before its first scan. One another library holds keeps its schedule."
+          >
+            {(ids) => (
+              <input
+                type="checkbox"
+                id={ids.control}
+                name="scan-off"
+                aria-label={SCAN_OFF_WORDS}
+                aria-describedby={ids.help}
+                checked={scanOff}
+                onChange={(e) => {
+                  setFailure(undefined)
+                  setScanOff(e.target.checked)
                 }}
               />
             )}

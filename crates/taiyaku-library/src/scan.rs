@@ -172,12 +172,12 @@ pub enum InLibrary<'a> {
     Own,
     /// The library with this name, created if there is none.
     Named(&'a str),
-    /// The library with this id. [`add_root_checked_in`] refuses an id no
+    /// The library with this id. [`add_root_checked_with`] refuses an id no
     /// library holds; [`add_root_in`] does not ask whether one does.
     Id(i64),
 }
 
-/// [`add_root`], filing the directory under `library`.
+/// [`add_root`], filing the directory under `library`. The row is Automatic.
 ///
 /// **A named library that does not exist yet is created here, in the same
 /// transaction as the directory**, so a refused insert leaves no empty library
@@ -190,16 +190,22 @@ pub fn add_root_in(conn: &Connection, path: &Path, library: InLibrary<'_>) -> Re
     let canonical = path
         .canonicalize()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    insert_root(conn, &canonical, library)
+    insert_root(conn, &canonical, library, None)
 }
 
 /// [`add_root_in`] for a path already canonical, so crate-only: the directory,
 /// a library made for it, and their link, in one transaction, since the store
 /// cannot refuse a directory committed with no library (migration 19).
+///
+/// **`scan_interval_secs` is written by the `INSERT` itself** (O275): an add
+/// and then a write of its schedule could lose to a scheduler tick between
+/// them. It is written as handed: the server checks its range, as it does for
+/// [`update_root`], which checks nothing either.
 pub(crate) fn insert_root(
     conn: &Connection,
     canonical: &Path,
     library: InLibrary<'_>,
+    scan_interval_secs: Option<i64>,
 ) -> Result<Root, String> {
     let tx = crate::Nested::open(conn, "add_root")
         .map_err(|e| format!("starting to add root {}: {e}", canonical.display()))?;
@@ -212,8 +218,8 @@ pub(crate) fn insert_root(
         InLibrary::Id(id) => Some(id),
     };
     tx.execute(
-        "INSERT INTO root (path) VALUES (?1)",
-        [canonical.to_string_lossy()],
+        "INSERT INTO root (path, scan_interval_secs) VALUES (?1, ?2)",
+        rusqlite::params![canonical.to_string_lossy(), scan_interval_secs],
     )
     .map_err(|e| format!("adding root {}: {e}", canonical.display()))?;
     let id = tx.last_insert_rowid();
@@ -250,7 +256,7 @@ pub(crate) fn insert_root(
         default_kind: None,
         default_language: None,
         exclude_globs: None,
-        scan_interval_secs: None,
+        scan_interval_secs,
         keeps_documents,
         libraries: vec![library_id],
     })
@@ -287,7 +293,7 @@ pub fn file_under_its_own_library(conn: &Connection, root_id: i64) -> Result<i64
 }
 
 /// Why a directory at `canonical` cannot be a library of its own, if it
-/// cannot: [`own_library_name`]'s refusal, which [`add_root_checked_in`] asks
+/// cannot: [`own_library_name`]'s refusal, which [`add_root_checked_with`] asks
 /// before anything is written, so it is this caller's to fix rather than a
 /// store fault from inside the add.
 fn own_library_clash(conn: &Connection, canonical: &Path) -> Result<Option<String>, String> {
@@ -365,10 +371,10 @@ fn own_library_name(conn: &Connection, canonical: &Path) -> Result<Result<String
 /// ever changes, this one should change with it.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// What [`add_root_checked`] built: the row [`add_root_in`] inserted, or the
-/// row another library holds, now linked; the watch experiment run against a
-/// new row immediately, and the interval that experiment implies, which is
-/// reported and not stored.
+/// What [`add_root_checked_with`] or [`create_library`] built: the row it
+/// inserted, or the row another library holds, now linked; the watch
+/// experiment run against a new row immediately, and the interval that
+/// experiment implies, which is reported and not stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Added {
     pub root: Root,
@@ -376,7 +382,14 @@ pub struct Added {
     /// directory was probed when it was first added.
     pub probe: Option<crate::watch::Probe>,
     /// The interval [`Added::probe`] implies, `None` where it did not run.
+    /// Reported, not written: the row stores the schedule the add asked for.
     pub interval: Option<Duration>,
+    /// Whether a link kept a schedule other than the one the add asked for.
+    /// The row, and so its schedule, is shared by every library holding it,
+    /// so a link does not write the one asked, as that would start or stop
+    /// another library's scans (O275); the answer says so instead. Always
+    /// `false` for a new directory, which stores what was asked.
+    pub schedule_kept: bool,
     /// The names of the other libraries that already held the directory,
     /// ascending by id, read inside the add's transaction while they stand:
     /// empty for a directory new to the store.
@@ -415,7 +428,7 @@ pub enum AddRootError {
     /// given overlapping.
     Unusable(String),
     /// The store itself failed: opening or committing the transaction, [`vetted`]'s
-    /// own reads, the library-name lookup, or the insert inside [`add_root_in`] or
+    /// own reads, the library-name lookup, or the insert of a directory or
     /// of a link.
     Failed(String),
 }
@@ -439,9 +452,23 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
     add_root_checked_in(conn, path, InLibrary::Own)
 }
 
-/// Add a new scan root at `path`, filed under `library`, having run C4 §2's
-/// three validations that [`add_root`] itself does not — "because the
-/// failures are silent otherwise."
+/// [`add_root_checked_with`], asking for Automatic: a new directory's row
+/// stores NULL.
+///
+/// # Errors
+///
+/// As [`add_root_checked_with`].
+pub fn add_root_checked_in(
+    conn: &Connection,
+    path: &Path,
+    library: InLibrary<'_>,
+) -> Result<Added, AddRootError> {
+    add_root_checked_with(conn, path, library, None)
+}
+
+/// Add a new scan root at `path`, filed under `library` and scheduled as
+/// `scan_interval_secs` asks, having run C4 §2's three validations that
+/// [`add_root`] itself does not — "because the failures are silent otherwise."
 ///
 /// 1. **Readable, by this process, not merely present.** `path.canonicalize`
 ///    answers "does it exist" and nothing else: it succeeds against a
@@ -459,14 +486,14 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 ///    the comparison, and [`Path::starts_with`] compares whole components, so
 ///    `/srv/manga2` is not inside `/srv/manga`. **A directory another library
 ///    holds is linked** (overlapping-libraries spec §5): one `library_root`
-///    row, its shared settings as they stand.
+///    row, its shared settings, schedule included, as they stand.
 /// 3. **The watcher probe, run now rather than left for the first scan**, for
 ///    a new directory only, as the probe writes a file into the directory.
 ///    [`crate::watch::probe`] answers whether this root can be watched at
 ///    all — spec B §8's experiment. The interval
 ///    [`crate::watch::interval_for`] derives from that answer is reported in
-///    [`Added::interval`], not written: the row stays Automatic
-///    ([`crate::schedule::every`]).
+///    [`Added::interval`], not written: the row stores `scan_interval_secs`
+///    as asked. An Off directory is probed too, as a probe is not a scan.
 ///
 /// **And the library it joins can be named**, checked in the same
 /// transaction, before anything is written: an [`InLibrary::Named`] needs a name
@@ -474,8 +501,8 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 /// name [`own_library_name`] can give it. Otherwise each would surface as a
 /// store fault from inside the add, though both are this caller's to fix.
 ///
-/// **The library is created only once every validation has passed**, by
-/// [`add_root_in`], so a refused path names no library into being.
+/// **The library is created only once every validation has passed**, with
+/// the directory or its link, so a refused path names no library into being.
 ///
 /// [`add_root`] and [`add_root_in`] validate nothing: a great many
 /// fixtures call them directly, and a validation that runs inside every
@@ -488,23 +515,23 @@ pub fn add_root_checked(conn: &Connection, path: &Path) -> Result<Added, AddRoot
 ///
 /// Returns [`AddRootError::Unusable`] if `path` cannot be canonicalised (it
 /// must exist), if the canonical path cannot be read as a directory, if
-/// [`vetted`] refuses it, or if the library it would
-/// join cannot be named (an [`InLibrary::Id`] no library holds is one) —
-/// every one of those is this caller's own mistake,
-/// an `error` a person can act on. A path the library already holds is
-/// refused as one, `<path> is already a directory of the library `<name>``,
-/// and not as inside itself, which is what the nesting check alone would say
-/// of an equal path; so is a path another library holds, sent as
-/// [`InLibrary::Own`], naming every library that holds it.
+/// [`vetted`] refuses it, or if the library it would join cannot be named (an
+/// [`InLibrary::Id`] no library holds is one) — every one of those is this
+/// caller's own mistake, an `error` a person can act on. A path the library
+/// already holds is refused as one, `<path> is already a directory of the
+/// library `<name>``, and not as inside itself, which is what the nesting
+/// check alone would say of an equal path; so is a path another library
+/// holds, sent as [`InLibrary::Own`], naming every library that holds it.
 ///
 /// Returns [`AddRootError::Failed`] if the store itself refuses along the
 /// way — opening or committing the transaction, [`vetted`]'s own reads, the
-/// library-name lookup, the insert ([`add_root_in`]) or the link — none of
+/// library-name lookup, the insert ([`insert_root`]) or the link — none of
 /// which is this caller's mistake to fix.
-pub fn add_root_checked_in(
+pub fn add_root_checked_with(
     conn: &Connection,
     path: &Path,
     library: InLibrary<'_>,
+    scan_interval_secs: Option<i64>,
 ) -> Result<Added, AddRootError> {
     let canonical = readable_dir(path)?;
 
@@ -543,9 +570,10 @@ pub fn add_root_checked_in(
     let held = roots(&tx).map_err(AddRootError::Failed)?;
     let placed = match vetted(&tx, &held, &canonical, joins).map_err(AddRootError::Failed)? {
         Vetted::Refused(why) => return Err(AddRootError::Unusable(why)),
-        Vetted::New => {
-            Placed::New(add_root_in(&tx, &canonical, library).map_err(AddRootError::Failed)?)
-        }
+        Vetted::New => Placed::New(
+            insert_root(&tx, &canonical, library, scan_interval_secs)
+                .map_err(AddRootError::Failed)?,
+        ),
         Vetted::Link(held) => {
             let into = match library {
                 // No library is named to link it into, and a library of its
@@ -563,7 +591,9 @@ pub fn add_root_checked_in(
                     None => crate::libraries::create(&tx, name).map_err(AddRootError::Failed)?,
                 },
             };
-            Placed::Linked(linked(&tx, into, held).map_err(AddRootError::Failed)?)
+            Placed::Linked(
+                linked(&tx, into, held, scan_interval_secs).map_err(AddRootError::Failed)?,
+            )
         }
     };
     tx.commit().map_err(|e| {
@@ -586,7 +616,9 @@ enum Placed {
 /// inside the caller's transaction: one `library_root` row and nothing else,
 /// as the settings, scans and documents are the directory's, not a library's.
 /// Its scan columns are read there too, for [`Added::last_scan_at`]'s reason.
-fn linked(conn: &Connection, into: i64, held: Root) -> Result<Added, String> {
+/// `asked` is the schedule the add asked for, which is not written:
+/// [`Added::schedule_kept`] says when the shared one differs.
+fn linked(conn: &Connection, into: i64, held: Root, asked: Option<i64>) -> Result<Added, String> {
     conn.execute(
         "INSERT INTO library_root (library_id, root_id) VALUES (?1, ?2)",
         [into, held.id],
@@ -603,10 +635,14 @@ fn linked(conn: &Connection, into: i64, held: Root) -> Result<Added, String> {
     let mut libraries = held.libraries.clone();
     libraries.push(into);
     libraries.sort_unstable();
+    // Raw values, not `schedule::every`'s reading: Automatic and an Every of
+    // the same length are different settings, and only one was asked for.
+    let schedule_kept = held.scan_interval_secs != asked;
     Ok(Added {
         root: Root { libraries, ..held },
         probe: None,
         interval: None,
+        schedule_kept,
         also_in,
         last_scan_at,
         last_scan_status,
@@ -614,7 +650,7 @@ fn linked(conn: &Connection, into: i64, held: Root) -> Result<Added, String> {
 }
 
 /// `path` in canonical form, having checked that it exists and that this
-/// process can list it: [`add_root_checked_in`]'s first validation. Disk only,
+/// process can list it: [`add_root_checked_with`]'s first validation. Disk only,
 /// so it runs before any transaction rather than holding the write lock
 /// across a slow mount.
 fn readable_dir(path: &Path) -> Result<PathBuf, AddRootError> {
@@ -808,9 +844,9 @@ fn reads_as_one_volume(conn: &Connection, root_id: i64, rel_path: &str) -> Resul
     .map_err(|e| format!("reading whether {rel_path} is read as one volume: {e}"))
 }
 
-/// [`add_root_checked_in`]'s third step, for a root just inserted: the watch
-/// probe, reported and not written, so the row stays Automatic
-/// ([`crate::schedule::every`]).
+/// [`add_root_checked_with`]'s third step, for a root just inserted: the
+/// watch probe, reported and not written, so the row keeps the schedule its
+/// insert stored.
 fn probed(root: Root) -> Added {
     let probe = crate::watch::probe(&root.path, PROBE_TIMEOUT);
     let interval = crate::watch::interval_for(&probe);
@@ -818,6 +854,7 @@ fn probed(root: Root) -> Added {
         root,
         probe: Some(probe),
         interval: Some(interval),
+        schedule_kept: false,
         also_in: Vec::new(),
         last_scan_at: None,
         last_scan_status: None,
@@ -849,12 +886,13 @@ pub struct Created {
 ///
 /// Returns [`AddRootError::Unusable`] for no path, a name
 /// [`crate::libraries::usable_name`] refuses or that a library already holds,
-/// a path [`add_root_checked_in`] would refuse, or two of the paths
+/// a path [`add_root_checked_with`] would refuse, or two of the paths
 /// overlapping. Returns [`AddRootError::Failed`] if the store refuses.
 pub fn create_library(
     conn: &Connection,
     name: &str,
     paths: &[PathBuf],
+    scan_interval_secs: Option<i64>,
 ) -> Result<Created, AddRootError> {
     if paths.is_empty() {
         return Err(AddRootError::Unusable(
@@ -924,11 +962,14 @@ pub fn create_library(
     let mut placed = Vec::with_capacity(held.len());
     for (path, held) in held {
         placed.push(match held {
-            Some(root) => {
-                Placed::Linked(linked(&tx, library_id, root).map_err(AddRootError::Failed)?)
-            }
+            // A link keeps the shared row's schedule, as in `add_root_checked_with`:
+            // one library must not start or stop another's scans.
+            Some(root) => Placed::Linked(
+                linked(&tx, library_id, root, scan_interval_secs).map_err(AddRootError::Failed)?,
+            ),
             None => Placed::New(
-                add_root_in(&tx, path, InLibrary::Id(library_id)).map_err(AddRootError::Failed)?,
+                insert_root(&tx, path, InLibrary::Id(library_id), scan_interval_secs)
+                    .map_err(AddRootError::Failed)?,
             ),
         });
     }

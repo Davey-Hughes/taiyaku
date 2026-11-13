@@ -34,6 +34,35 @@ function declared(body: string, property: string): string | undefined {
   return m?.[1].trim()
 }
 
+/** `css` with every at-rule block taken out, braces counted. */
+const unconditional = (css: string) => {
+  let out = ''
+  let i = 0
+  while (i < css.length) {
+    const at = css.indexOf('@', i)
+    if (at === -1) return out + css.slice(i)
+    const open = css.indexOf('{', at)
+    const semi = css.indexOf(';', at)
+    if (open === -1 || (semi !== -1 && semi < open)) {
+      out += css.slice(i, semi === -1 ? css.length : semi + 1)
+      i = semi === -1 ? css.length : semi + 1
+      continue
+    }
+    out += css.slice(i, at)
+    let depth = 0
+    let j = open
+    for (; j < css.length; j++) {
+      if (css[j] === '{') depth += 1
+      else if (css[j] === '}') {
+        depth -= 1
+        if (depth === 0) break
+      }
+    }
+    i = j + 1
+  }
+  return out
+}
+
 /**
  * **The two rows are drawn as two different kinds of control, and that is the
  * whole of O150.** What stops the state row (`.proposal-states`) and the kind
@@ -319,6 +348,9 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // `:where()`, because it carries `align-items` as well and the rule it
     // has to beat for that is (0, 2, 1).
     '.proposals .checks label',
+    // Add directory…'s Don’t scan yet (schedule Off), a box and its words
+    // (O275), named as its base rule is, whose `align-items` it has to beat.
+    '.add-root > .scan-off',
     // The box itself, scoped to the admin roots rather than to `.checks`.
     // `.checks` holds one of these boxes and not all of them — see `scopes the
     // box to the admin roots` below, which is the half of this that a second,
@@ -338,9 +370,9 @@ describe('admin.css carries a coarse-pointer floor', () => {
     // The two radios of an account's Sees choice, a box and its words.
     '.settings-choices label',
     // The checkbox rows `Row check` draws: an account's permissions, each
-    // library it is limited to, and a directory's Keeps documents under
-    // .taiyaku/. Their label takes the whole first line, 44px tall, and all of
-    // it is the target.
+    // library it is limited to, a directory's Keeps documents under
+    // .taiyaku/, and New library's Don’t scan yet (schedule Off). Their label
+    // takes the whole first line, 44px tall, and all of it is the target.
     '.settings-row-check .settings-row-label',
     // The row's text drawn as no box of its own, so that its label and its
     // help are the grid's items and the label can take a line of its own.
@@ -531,6 +563,18 @@ describe('admin.css carries a coarse-pointer floor', () => {
     expect(coarse).toMatch(inRule(label, 'align-items:\\s*center'))
   })
 
+  it('gives Add directory…’s box and its words a centred 44px row of their own — O275', () => {
+    // Per declaration, as for `.checks` above. The base rule's `display: flex`
+    // is what lets `align-items` centre the box on the row, and its
+    // `flex-basis` puts the row on a line of its own beneath the picker's.
+    const label = '.add-root > .scan-off'
+    expect(coarse).toMatch(inRule(label, 'min-height:\\s*44px'))
+    expect(coarse).toMatch(inRule(label, 'align-items:\\s*center'))
+    const sheet = unconditional(withoutComments(adminSource))
+    expect(sheet).toMatch(inRule(label, 'display:\\s*flex;'))
+    expect(sheet).toMatch(inRule(label, 'flex-basis:\\s*100%'))
+  })
+
   it('gives the two link-shaped actions a centred 44px row', () => {
     // §7.1 is about links *and* controls, not controls alone.
     //
@@ -717,35 +761,6 @@ describe('admin.css carries a coarse-pointer floor', () => {
  * block that a desk never matches, which is the defect back.
  */
 describe('the rule-enable label leaves the desktop box where it was', () => {
-  /** `css` with every at-rule block taken out, braces counted. */
-  const unconditional = (css: string) => {
-    let out = ''
-    let i = 0
-    while (i < css.length) {
-      const at = css.indexOf('@', i)
-      if (at === -1) return out + css.slice(i)
-      const open = css.indexOf('{', at)
-      const semi = css.indexOf(';', at)
-      if (open === -1 || (semi !== -1 && semi < open)) {
-        out += css.slice(i, semi === -1 ? css.length : semi + 1)
-        i = semi === -1 ? css.length : semi + 1
-        continue
-      }
-      out += css.slice(i, at)
-      let depth = 0
-      let j = open
-      for (; j < css.length; j++) {
-        if (css[j] === '{') depth += 1
-        else if (css[j] === '}') {
-          depth -= 1
-          if (depth === 0) break
-        }
-      }
-      i = j + 1
-    }
-    return out
-  }
-
   const enable = rules(adminSource).filter(
     ({ prelude }) => prelude === '.rule-row .enable',
   )
