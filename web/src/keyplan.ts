@@ -27,12 +27,12 @@ import type { ReadingIntent } from './session'
 /**
  * What the handler must know that the event does not carry.
  *
- * **Three of them are gates rather than state** — `zoomable`, `creditsPanel`,
- * `helpEnabled` — and are decided here rather than left inline in the module
- * switch, where they would make the residual dispatch guarded cases rather
- * than one-line calls. Each is a decision about whether a key does anything,
- * which is the one thing this module is for; a guard left in `App.tsx` is a
- * branch nothing can reach.
+ * **Four of them are gates rather than state** — `zoomable`, `creditsPanel`,
+ * `helpEnabled`, `mayCorrect` — and are decided here rather than left inline
+ * in the module switch, where they would make the residual dispatch guarded
+ * cases rather than one-line calls. Each is a decision about whether a key
+ * does anything, which is the one thing this module is for; a guard left in
+ * `App.tsx` is a branch nothing can reach.
  */
 export interface Guards {
   /** The help overlay is up. It closes first, ahead of everything else. */
@@ -75,6 +75,8 @@ export interface Guards {
   creditsPanel: boolean
   /** `helpPrefs.enabled` — the same, for `?` and `h`. */
   helpEnabled: boolean
+  /** The account is an administrator, the only one whose correction the server takes (O58). */
+  mayCorrect: boolean
 }
 
 export type KeyAction =
@@ -297,6 +299,8 @@ export function keyPlan(
     return { action: { kind: 'leave-reader' }, preventDefault: true }
   }
   if (intent.kind === 'correct') {
+    // O58: for anyone else `c` is not the reader's key, so the browser keeps it.
+    if (!guards.mayCorrect) return undefined
     // Not while a correction is already on the wire. Without this, a `c` press
     // mid-write would silently replace the pending correction the completion
     // handler is about to resolve. Nothing else stops it: a button keeps only

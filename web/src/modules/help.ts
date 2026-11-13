@@ -149,8 +149,8 @@ export interface HelpGroup {
  * descriptions of a single action, and the one that loses is the later one.
  *
  * **`reader` is a parameter with a default** rather than a straight import of
- * `READER_KEYS`, so the tests can feed a table of their own and check the
- * derivation instead of only the current data. Every caller uses the default.
+ * `READER_KEYS`, so a test can check the derivation over a table of its own,
+ * and `Help` can leave out `c`'s row for an account that may not correct (O58).
  *
  * A module declaring no keys is skipped rather than given an empty heading —
  * `motion`, `prefetch`, `readouts` and `fit`, among others, are tuned in

@@ -111,7 +111,7 @@ describe('UnlinkRoot', () => {
     expect(words(host)).toEqual([
       [
         'counts',
-        'Removing this directory from Manga: no account will lose sight of it.',
+        'Removing this directory from Manga: no account will lose sight of it or a directory inside it.',
       ],
       [
         'kept',
@@ -138,7 +138,7 @@ describe('UnlinkRoot', () => {
     expect(words(host)).toEqual([
       [
         'counts',
-        'Removing this directory from Manga: alice and bob will lose sight of it.',
+        'Removing this directory from Manga: alice and bob will lose sight of it or a directory inside it.',
       ],
       [
         'last-dir',

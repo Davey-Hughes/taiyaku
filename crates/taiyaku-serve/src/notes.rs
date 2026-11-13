@@ -31,7 +31,7 @@ use taiyaku_library::Library;
 use taiyaku_library::state::Numbering;
 
 use crate::view::View;
-use crate::works::{self, Work};
+use crate::works::{self, Mint, NoRow, Work};
 
 /// How far outside `[0, 1]` a region may stray before it is refused.
 ///
@@ -392,7 +392,7 @@ pub fn load(
 /// Replace the notes, inside one transaction.
 ///
 /// The library row bridging `work`'s slug to a numeric `work_id` is minted
-/// here on first write if none exists yet — see `works::row_id_for_write`.
+/// here if none exists and `mint` allows it — see `works::row_id_for_write`.
 /// `notes.work` is not written: `taiyaku_library::state::notes` rebuilds it
 /// from `work_id`'s own slug, which is `work.id`, and
 /// `notes::validate_against` has already refused a document where it differs.
@@ -402,20 +402,22 @@ pub fn load(
 ///
 /// # Errors
 ///
-/// Returns an error if SQLite fails — including a `UNIQUE` violation on a
+/// [`NoRow::Gone`] if the work's row is gone and `mint` mints none.
+/// [`NoRow::Failed`] if SQLite fails — including a `UNIQUE` violation on a
 /// note `id` repeated in `notes.notes`, since this module's own
 /// `validate_against` is what is relied on to have refused that already — or
 /// if a note already held cannot be read, as
 /// `taiyaku_library::state::put_notes`'s own `# Errors` says.
-pub fn store(
+pub(crate) fn store(
     library: &Library,
     work: &Work,
     user_id: i64,
     notes: &Notes,
     numbered: &Sidecar,
-) -> Result<(), String> {
-    let conn = library.saving()?;
-    let work_id = works::row_id_for_write(&conn, work)?;
+    mint: Mint,
+) -> Result<(), NoRow> {
+    let conn = library.saving().map_err(NoRow::Failed)?;
+    let work_id = works::row_id_for_write(&conn, work, mint)?;
     taiyaku_library::state::put_notes_in(
         &conn,
         work_id,
@@ -423,6 +425,7 @@ pub fn store(
         notes,
         Numbering::Document(numbered),
     )
+    .map_err(NoRow::Failed)
 }
 
 /// The `ETag` of a notes or truth document as `Access::Every` is sent it: a

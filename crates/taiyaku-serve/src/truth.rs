@@ -16,7 +16,7 @@ use taiyaku_core::{TruthDoc, TruthEdition};
 use taiyaku_library::Library;
 
 use crate::view::View;
-use crate::works::{self, Work};
+use crate::works::{self, Mint, NoRow, Work};
 
 /// Why a truth document was not written for an account with grant limits.
 #[derive(Debug)]
@@ -68,18 +68,19 @@ pub fn load(library: &Library, work: &Work) -> Result<Option<TruthDoc>, String> 
 /// Replace the whole truth document for a work, inside one transaction.
 ///
 /// The library row bridging `work`'s slug to a numeric `work_id` is minted
-/// here on first write if none exists yet — see `works::row_id_for_write`. A
+/// here if none exists and `mint` allows it — see `works::row_id_for_write`. A
 /// labelling session represents hours of irreplaceable human work; the
 /// transaction `taiyaku_library::state::put_truth` wraps its delete-then-
 /// reinsert in is what makes the replacement atomic.
 ///
 /// # Errors
 ///
-/// Returns an error if SQLite fails.
-pub fn store(library: &Library, work: &Work, doc: &TruthDoc) -> Result<(), String> {
-    let conn = library.saving()?;
-    let work_id = works::row_id_for_write(&conn, work)?;
-    taiyaku_library::state::put_truth(&conn, work_id, doc)
+/// [`NoRow::Gone`] if the work's row is gone and `mint` mints none, and
+/// [`NoRow::Failed`] if SQLite fails.
+pub fn store(library: &Library, work: &Work, doc: &TruthDoc, mint: Mint) -> Result<(), NoRow> {
+    let conn = library.saving().map_err(NoRow::Failed)?;
+    let work_id = works::row_id_for_write(&conn, work, mint)?;
+    taiyaku_library::state::put_truth(&conn, work_id, doc).map_err(NoRow::Failed)
 }
 
 /// `stored` as `view`'s account is sent it: the editions it sees whole

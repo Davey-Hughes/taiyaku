@@ -28,6 +28,7 @@ fn absent_progress_is_not_the_same_as_slot_zero() {
         },
         &work.sidecar(),
         Arrival::next(),
+        crate::works::Mint::Bridge,
     )
     .unwrap();
     let after = load(&library, &work, 1, &work.sidecar()).unwrap();
@@ -61,6 +62,7 @@ fn progress_is_written_to_the_library_not_into_the_sidecar() {
         },
         &work.sidecar(),
         Arrival::next(),
+        crate::works::Mint::Bridge,
     )
     .unwrap();
 
@@ -94,6 +96,7 @@ fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_im
         },
         &work.sidecar(),
         Arrival::next(),
+        crate::works::Mint::Bridge,
     )
     .unwrap();
     let first_id = crate::works::find_row(&library.conn(), &work)
@@ -110,6 +113,7 @@ fn storing_progress_mints_exactly_one_bridge_row_for_a_work_the_library_never_im
         },
         &work.sidecar(),
         Arrival::next(),
+        crate::works::Mint::Bridge,
     )
     .unwrap();
     let second_id = crate::works::find_row(&library.conn(), &work)

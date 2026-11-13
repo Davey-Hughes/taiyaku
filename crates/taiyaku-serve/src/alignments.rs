@@ -1,11 +1,10 @@
 //! A hand correction, into the rows the next request is answered from.
 //!
-//! The fourth bridge beside `progress.rs`, `notes.rs` and `truth.rs`, and the
-//! shortest, because two of the three things those modules own do not apply
-//! here: the serialisation is `Sidecar::to_json`'s and the validator is
-//! `routes::sidecar_etag`'s. What is left is the bridge itself — `work: &Work`,
-//! keyed by slug, to the numeric `work_id`
-//! `taiyaku_library::state::put_alignments` needs.
+//! The fourth writer beside `progress.rs`, `notes.rs` and `truth.rs`, and the
+//! shortest: the serialisation is `Sidecar::to_json`'s, the validator is
+//! `routes::sidecar_etag`'s, and the caller resolves the numeric `work_id`
+//! (`works::row_id_for_document`) before it writes the work's file, so a work
+//! whose row is gone writes neither (O184). What is left is the rows.
 //!
 //! **There is no `load` here, deliberately.** The other three read their
 //! document out of the rows on every request; the alignment document is held
@@ -29,16 +28,12 @@
 use rusqlite::Connection;
 use taiyaku_core::Sidecar;
 
-use crate::works::{self, Work};
-
-/// Replace the work's stored alignments with `doc`'s.
+/// Replace the stored alignments of the work `work_id` names with `doc`'s.
 ///
-/// The library row bridging `work`'s slug to a numeric `work_id` is minted
-/// here on first write if none exists yet, exactly as it is for progress,
-/// notes and truth — see `works::row_id_for_document`. In production it is
-/// never minted: every `Work` `taiyaku serve` builds came out of an import
-/// and already has its row. The path that mints is this crate's own fixtures
-/// and `corpus.rs`, which pair a hand-built `Work` with an empty library.
+/// The caller resolves `work_id` as progress, notes and truth do. A fixed
+/// registry still mints a missing row (`works::Mint::Bridge`):
+/// `test_support::state`'s fixtures and `corpus.rs` pair a fixed registry with
+/// an empty library. A live registry never does.
 ///
 /// `doc` is the *replacement* document — the corrected one — not the one the
 /// work currently holds, because the caller is inside `Work::update` and has
@@ -47,7 +42,6 @@ use crate::works::{self, Work};
 /// # Errors
 ///
 /// Returns an error if SQLite fails.
-pub fn store(conn: &Connection, work: &Work, doc: &Sidecar) -> Result<(), String> {
-    let work_id = works::row_id_for_document(conn, &work.id, doc, &work.path)?;
+pub fn store(conn: &Connection, work_id: i64, doc: &Sidecar) -> Result<(), String> {
     taiyaku_library::state::put_alignments(conn, work_id, doc)
 }

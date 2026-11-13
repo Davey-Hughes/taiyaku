@@ -530,6 +530,8 @@ async fn the_last_slot_of_a_spread_carrying_edition_is_in_range() {
 /// check, and the watchdog measures a call's first wait, so it would measure
 /// the check rather than the closures this test is for. The check has its own
 /// test, `no_grant_check_stalls_the_runtime`.
+///
+/// **By a browser session**, for both shared-document writes' gate (O58).
 fn as_the_fixture_account() -> axum::http::Extensions {
     let mut extensions = axum::http::Extensions::new();
     extensions.insert(crate::auth::Principal {
@@ -540,6 +542,7 @@ fn as_the_fixture_account() -> axum::http::Extensions {
         can_stamp: false,
         access: Access::Every,
     });
+    extensions.insert(crate::auth::By::Cookie);
     extensions
 }
 
@@ -845,15 +848,14 @@ async fn assert_answered(handler: &str, response: Response, expected: StatusCode
 /// [`neither_opds_feed_asks_a_grant_on_the_async_worker`] holds it
 /// beside `opds::works`.
 ///
-/// **And progress, notes and truth**, read and write, which ask
-/// `view::of_work` before their own closure.
+/// **Progress and notes, read and write, and the truth read** ask
+/// `view::of_work` first. The truth write and the correction, an
+/// administrator's (O58), ask none.
 ///
 /// **The watchdog measures each call's first wait on the library's mutex**:
 /// [`crate::test_support::the_runtime_stalls_on`] holds it once and lets it go
 /// when the canary runs. For every handler here that first wait is the grant
-/// check, and a second wait on the async worker after it would pass. That is
-/// why `patch_alignments` asks its three questions, the work and then each
-/// side of the correction, in one trip rather than three.
+/// check, and a second wait on the async worker after it would pass.
 ///
 /// **Every call is asserted to succeed**, because a handler refused before its
 /// check reached the library would be free for the wrong reason. Root 1 holds
@@ -942,33 +944,6 @@ async fn no_grant_check_stalls_the_runtime() {
     }
     assert_answered("get_thumb at a cover size", response, StatusCode::OK).await;
 
-    let tag = sidecar_etag(
-        &state
-            .find_blocking("w")
-            .expect("the fixture work")
-            .sidecar(),
-    );
-    let mut if_match = HeaderMap::new();
-    if_match.insert(
-        header::IF_MATCH,
-        tag.parse().expect("an ETag is a header value"),
-    );
-    let (stalled, response) = the_runtime_stalls_on(
-        &library,
-        patch_alignments(
-            State(Arc::clone(&state)),
-            w(),
-            if_match,
-            granted(),
-            Bytes::from_static(br#"{"from":"raw","to":"en","a":"2","b":"1","note":"checked"}"#),
-        ),
-    )
-    .await;
-    if stalled {
-        stalled_on.push("patch_alignments");
-    }
-    assert_answered("patch_alignments", response, StatusCode::OK).await;
-
     let (stalled, response) = the_runtime_stalls_on(
         &library,
         crate::opds::stream_page(
@@ -1024,9 +999,9 @@ async fn no_grant_check_stalls_the_runtime() {
     }
     assert_answered("download::member", response, StatusCode::OK).await;
 
-    // O60: progress, notes and truth ask the grant too. Ordered as
+    // O60: progress, notes and the truth read ask the grant too. Ordered as
     // `no_works_route_stalls_the_runtime` orders them, so each can succeed:
-    // the progress write before its read, each document read before the write
+    // the progress write before its read, the notes read before the write
     // that sends its `ETag` back.
     let tag_of = |response: &Response| {
         response
@@ -1109,43 +1084,16 @@ async fn no_grant_check_stalls_the_runtime() {
     if stalled {
         stalled_on.push("get_truth");
     }
-    assert_eq!(response.status(), StatusCode::OK, "get_truth");
-    let tag = tag_of(&response);
-    let truth = crate::test_support::body_string(response).await;
-
-    let (stalled, response) = the_runtime_stalls_on(
-        &library,
-        put_truth(
-            State(Arc::clone(&state)),
-            granted(),
-            w(),
-            with_tag(&tag),
-            Bytes::from(truth),
-        ),
-    )
-    .await;
-    if stalled {
-        stalled_on.push("put_truth");
-    }
-    assert_answered("put_truth", response, StatusCode::OK).await;
+    assert_answered("get_truth", response, StatusCode::OK).await;
 
     // Every handler again, for a reader granted nothing. Each request is the
     // one granted root 1 just answered, with the validators it holds now, so
     // the 404 is the access's: the hidden-work refusal comes before any
     // precondition or body is read.
     let nothing = || as_a_reader_granted(Vec::new());
-    let sidecar_tag = sidecar_etag(
-        &state
-            .find_blocking("w")
-            .expect("the fixture work")
-            .sidecar(),
-    );
     let response = get_notes(State(Arc::clone(&state)), granted(), w(), HeaderMap::new()).await;
     let notes_tag = tag_of(&response);
     let notes = crate::test_support::body_string(response).await;
-    let response = get_truth(State(Arc::clone(&state)), granted(), w(), HeaderMap::new()).await;
-    let truth_tag = tag_of(&response);
-    let truth = crate::test_support::body_string(response).await;
     let position: crate::Progress =
         serde_json::from_str(r#"{"edition":"raw","slot":1}"#).expect("a position");
     type Call = std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>;
@@ -1187,16 +1135,6 @@ async fn no_grant_check_stalls_the_runtime() {
                 Query(vec![("w".to_string(), "256".to_string())]),
                 HeaderMap::new(),
                 nothing(),
-            )),
-        ),
-        (
-            "patch_alignments, granted nothing",
-            Box::pin(patch_alignments(
-                State(Arc::clone(&state)),
-                w(),
-                with_tag(&sidecar_tag),
-                nothing(),
-                Bytes::from_static(br#"{"from":"raw","to":"en","a":"2","b":"1","note":"checked"}"#),
             )),
         ),
         (
@@ -1273,16 +1211,6 @@ async fn no_grant_check_stalls_the_runtime() {
                 nothing(),
                 w(),
                 HeaderMap::new(),
-            )),
-        ),
-        (
-            "put_truth, granted nothing",
-            Box::pin(put_truth(
-                State(Arc::clone(&state)),
-                nothing(),
-                w(),
-                with_tag(&truth_tag),
-                Bytes::from(truth),
             )),
         ),
     ];
@@ -1454,38 +1382,6 @@ async fn a_hidden_work_is_refused_before_its_validator_is_answered() {
         .await;
         assert_answered(
             &format!("opds::stream_page, granted root {root}"),
-            response,
-            expected,
-        )
-        .await;
-    }
-}
-
-/// **A hidden work is refused before its correction is read.**
-/// `patch_alignments` parses the body before it asks the grant, to lend the
-/// check the two editions a correction names, and refuses a body that did not
-/// parse only once the grant has answered. So a reader granted a root holding
-/// nothing of the work is told the work does not exist rather than that its
-/// body is malformed. Granted root 1, which holds the work, the same body is
-/// refused as malformed, which shows the body is one the handler refuses.
-#[tokio::test]
-async fn a_hidden_work_is_refused_before_its_correction_is_read() {
-    use axum::body::Bytes;
-    use axum::extract::{Path as AxPath, State};
-    use axum::http::HeaderMap;
-
-    let (state, _fixture) = crate::test_support::state_whose_grant_waits_on_the_library();
-    for (root, expected) in [(1, StatusCode::BAD_REQUEST), (2, StatusCode::NOT_FOUND)] {
-        let response = patch_alignments(
-            State(Arc::clone(&state)),
-            AxPath("w".to_string()),
-            HeaderMap::new(),
-            as_a_reader_granted(vec![root]),
-            Bytes::from_static(b"not a correction"),
-        )
-        .await;
-        assert_answered(
-            &format!("patch_alignments, granted root {root}"),
             response,
             expected,
         )
@@ -2175,6 +2071,10 @@ async fn a_thumb_route_answers_a_jpeg_and_404s_a_page_that_does_not_exist() {
         .await
         .unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        crate::test_support::body_string(missing).await,
+        "`a` has 1 pages; there is no page 9999"
+    );
 }
 
 /// O1: every route whose bytes are fixed by a member's content says how
@@ -3414,6 +3314,7 @@ async fn stored_notes_are_served_and_change_the_validator() {
             }],
         },
         &state.works.snapshot()[0].sidecar(),
+        crate::works::Mint::Bridge,
     )
     .unwrap();
     let empty_tag = notes_etag(&crate::notes::to_json(&crate::notes::empty("t")).unwrap());
@@ -4529,7 +4430,7 @@ async fn what_it_shows(call: &str, response: Response, shows: &Shows) -> usize {
 
 /// The `GET` [`an_account_granted_only_a_library_with_no_dir_sees_nothing`]
 /// sends for a route [`grant_postures`] says reads the grant, and how it counts
-/// the answer, or `None` for the one such route a `GET` cannot ask.
+/// the answer.
 ///
 /// **Classified by the path's shape rather than listed**, so a route added to
 /// the table is driven with no edit here: an `/api/` path with no parameter is
@@ -4537,12 +4438,7 @@ async fn what_it_shows(call: &str, response: Response, shows: &Shows) -> usize {
 /// names one thing. A route the shape misreads fails one of the test's two
 /// passes, a route a `GET` cannot ask answers 405 and fails both, and a path
 /// parameter this does not fill panics, naming the route.
-fn get_for(pattern: &str, held_library: i64) -> Option<(String, Shows)> {
-    // `PATCH` alone. `no_grant_check_stalls_the_runtime` sends it for a
-    // reader granted nothing.
-    if pattern == "/api/works/{work}/alignments" {
-        return None;
-    }
+fn get_for(pattern: &str, held_library: i64) -> (String, Shows) {
     let shows = if pattern.starts_with("/opds/") && !pattern.contains("{edition}") {
         Shows::Entries
     } else if pattern.starts_with("/api/") && !pattern.contains('{') {
@@ -4569,7 +4465,7 @@ fn get_for(pattern: &str, held_library: i64) -> Option<(String, Shows)> {
     } else {
         uri
     };
-    Some((uri, shows))
+    (uri, shows)
 }
 
 /// **An account granted only a library with no directory sees nothing**, through
@@ -4604,7 +4500,7 @@ async fn an_account_granted_only_a_library_with_no_dir_sees_nothing() {
     let routes: Vec<(String, Shows)> = grant_postures()
         .into_iter()
         .filter(|(_, posture)| !matches!(posture, GrantPosture::GrantIndependent { .. }))
-        .filter_map(|(pattern, _)| get_for(pattern, held_library))
+        .map(|(pattern, _)| get_for(pattern, held_library))
         .collect();
 
     let mut wrong = Vec::new();
@@ -5094,10 +4990,8 @@ async fn the_reader_s_read_of_a_missing_work_says_its_files_are_missing() {
 }
 
 // ---------------------------------------------------------------------------
-// The grant on `patch_alignments`: a restricted account may neither read the
-// sidecar this handler returns nor write shared `alignment`/`run` rows for a
-// work outside every root it holds. An alignment is shared library truth
-// rather than per-account state.
+// A restricted account's correction: shared `alignment`/`run` rows are an
+// administrator's to write (O58), whatever the account's grant holds.
 // ---------------------------------------------------------------------------
 
 /// A router over a work with two editions and a solved alignment edge
@@ -5182,13 +5076,12 @@ fn router_over_a_scanned_work_under_a_withheld_root(
 }
 
 /// A restricted account's correction to a work outside every root it holds
-/// is refused as a missing work and writes no shared `alignment`/`run` rows —
-/// library truth every other reader sees.
+/// is refused by the administrator's gate (O58) and writes no shared
+/// `alignment`/`run` rows — library truth every other reader sees.
 ///
-/// Both the response and the rows are checked, not only the status: a 404
-/// that still let the write through, or a 200 that happened not to change
-/// anything, would each be a colour change rather than evidence that the
-/// grant was actually consulted.
+/// The rows check is a backstop: gate or no gate, the grant refuses this
+/// account before any write, so only the status and body tell the gate's
+/// refusal from the grant's.
 #[tokio::test]
 async fn a_restricted_account_cannot_patch_alignments_on_a_work_in_a_withheld_root() {
     let tmp = crate::test_support::Fixture::new("routes-grant-alignments-write");
@@ -5217,15 +5110,10 @@ async fn a_restricted_account_cannot_patch_alignments_on_a_work_in_a_withheld_ro
     };
 
     assert_eq!(
-        status,
-        StatusCode::NOT_FOUND,
+        (status, body.as_str()),
+        (StatusCode::FORBIDDEN, "this route is an administrator's"),
         "a restricted account must not be able to correct a work outside every \
-         root it holds: {body}"
-    );
-    assert_eq!(
-        body,
-        format!("no work `{slug}`"),
-        "refused by the grant, in `get_sidecar`'s own words, not by some other 404"
+         root it holds"
     );
     assert_eq!(
         hand_writes, 0,
@@ -5749,7 +5637,7 @@ async fn a_download_only_account_keeps_its_covers_with_a_matching_version_and_st
 
 // ---------------------------------------------------------------------------
 // O60: progress, notes and truth ask the grant. A work outside it is answered
-// on those six routes as a slug no work holds is.
+// on those routes as a slug no work holds is.
 // ---------------------------------------------------------------------------
 
 /// One request through a fixture router, answered as its status and its body.
@@ -5787,7 +5675,7 @@ async fn answered(
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// One of the six requests O60 names, as [`the_six_requests`] builds it.
+/// One of the five requests [`the_five_requests`] builds.
 struct Asked {
     handler: &'static str,
     method: axum::http::Method,
@@ -5798,27 +5686,23 @@ struct Asked {
     seen: StatusCode,
 }
 
-/// The six requests O60 names, against `slug`: each one this server carries
-/// out for a caller who may see the work, in an order each can succeed in.
+/// The requests O60 names that an account a grant limits may make, against
+/// `slug`, in an order each can succeed in. Not the truth write: O58 makes it
+/// an administrator's, and no grant limits an administrator.
 ///
-/// The two tags are the ones a work nobody has written on answers with. Every
+/// The tag is the one a work nobody has written on answers with. Every
 /// request here is one the server carries out, so each write carries the tag
 /// it needs; the writes that fail a check of their own, a missing or stale tag
 /// among them, are sent by
 /// [`a_write_to_a_hidden_work_is_refused_before_its_own_checks_are_made`].
-fn the_six_requests(slug: &str) -> Vec<Asked> {
+fn the_five_requests(slug: &str) -> Vec<Asked> {
     use axum::http::Method;
 
     let notes_tag = notes_etag(&crate::notes::to_json(&crate::notes::empty(slug)).unwrap());
-    let truth_tag = notes_etag(&crate::truth::to_json(&taiyaku_core::TruthDoc::new()));
     let note = format!(
         r#"{{"work":"{slug}","notes":[{{"id":"01J8","edition":"raw","slot":1,"body":"kept",
                "created":"2026-08-05T10:00:00Z","updated":"2026-08-05T10:00:00Z"}}]}}"#
     );
-    let truth = r#"{"taiyaku_truth":1,"editions":{"raw":{
-        "members":[{"sha256":"labelled"}],
-        "pages":{"0":[{"x":0.1,"y":0.2,"w":0.3,"h":0.4,"axis":"v",
-                       "kind":"dialogue","ignore":false,"text":"a"}]}}}}"#;
     vec![
         Asked {
             handler: "put_progress",
@@ -5860,30 +5744,22 @@ fn the_six_requests(slug: &str) -> Vec<Asked> {
             body: None,
             seen: StatusCode::OK,
         },
-        Asked {
-            handler: "put_truth",
-            method: Method::PUT,
-            uri: format!("/api/works/{slug}/truth"),
-            if_match: Some(truth_tag),
-            body: Some(truth.to_string()),
-            seen: StatusCode::OK,
-        },
     ]
 }
 
-/// **O60: a work outside the grant is a slug no work holds**, on the six
-/// handlers that read and write a work's progress, notes and truth.
+/// **O60: a work outside the grant is a slug no work holds**, on the five
+/// handlers that read and write progress and notes and read truth.
 ///
 /// Each request is sent twice by one account, granted `Shelf` alone: against
 /// the work under `Other`, and against a slug no work holds. The two answers
 /// are compared with each other, status and body, with the slug each names
 /// put aside. Neither is compared with a sentence written here.
 ///
-/// **Then the grant is lifted and the same six are sent again**, against the
+/// **Then the grant is lifted and the same five are sent again**, against the
 /// same work, and each is carried out. That half is what shows the requests
-/// are ones this server accepts: six malformed requests would be refused
-/// alike for any slug. Between the two halves the three documents are read,
-/// and nothing a refused write carried is in them.
+/// are ones this server accepts: five malformed requests would be refused
+/// alike for any slug. Between the two halves the two documents written are
+/// read, and nothing a refused write carried is in them.
 #[tokio::test]
 async fn progress_notes_and_truth_answer_a_hidden_work_as_a_slug_no_work_holds() {
     use axum::http::Method;
@@ -5901,9 +5777,9 @@ async fn progress_notes_and_truth_answer_a_hidden_work_as_a_slug_no_work_holds()
         .expect("the slug of the work under `Other`");
     let unknown = "no-work-is-called-this";
 
-    for (asked, nowhere) in the_six_requests(&hidden)
+    for (asked, nowhere) in the_five_requests(&hidden)
         .into_iter()
-        .zip(the_six_requests(unknown))
+        .zip(the_five_requests(unknown))
     {
         let (status, body) = answered(
             &router,
@@ -5947,14 +5823,8 @@ async fn progress_notes_and_truth_answer_a_hidden_work_as_a_slug_no_work_holds()
         !notes.contains("01J8"),
         "the refused note reached the store: {notes}"
     );
-    let (status, truth) = answered(&router, Method::GET, &read("truth"), None, None).await;
-    assert_eq!(status, StatusCode::OK, "{truth}");
-    assert!(
-        !truth.contains("labelled"),
-        "the refused truth document reached the store: {truth}"
-    );
 
-    for asked in the_six_requests(&hidden) {
+    for asked in the_five_requests(&hidden) {
         let (status, body) = answered(
             &router,
             asked.method.clone(),
@@ -5969,11 +5839,6 @@ async fn progress_notes_and_truth_answer_a_hidden_work_as_a_slug_no_work_holds()
             asked.handler
         );
     }
-    let (_, truth) = answered(&router, Method::GET, &read("truth"), None, None).await;
-    assert!(
-        truth.contains("labelled"),
-        "the truth write an account with no limits made did not land: {truth}"
-    );
 }
 
 /// **Every guarded route that names a work answers a hidden one as it answers
@@ -5986,11 +5851,11 @@ async fn progress_notes_and_truth_answer_a_hidden_work_as_a_slug_no_work_holds()
 /// A body the handler will not parse is part of what O60 decided: it is
 /// answered alike for both.
 ///
-/// **And on each path some request must tell a granted work from a hidden
-/// one.** Without that a path could pass by never reaching its handler, and
-/// the fixture would be one where right and wrong answer the same. The
-/// granted work is asked last, so nothing it does can change what the other
-/// two are answered.
+/// **And on each path but the correction's some request must tell a granted
+/// work from a hidden one.** Without that a path could pass by never reaching
+/// its handler, and the fixture would be one where right and wrong answer the
+/// same. The granted work is asked last, so nothing it does can change what
+/// the other two are answered.
 ///
 /// The count is typed, as `auth::tests::every_route_refuses_an_anonymous_request`
 /// types its list. A route added later is walked without being named here;
@@ -6063,8 +5928,11 @@ async fn every_route_naming_a_work_answers_a_hidden_one_as_a_slug_no_work_holds(
                 told_apart |= said[2] != said[0];
             }
         }
+        // O58: the correction is an administrator's, and an administrator
+        // holds no grant, so no request from this account reaches its grant.
+        let asks_this_account_the_grant = pattern != "/api/works/{work}/alignments";
         assert!(
-            told_apart,
+            told_apart || !asks_this_account_the_grant,
             "{pattern}: no request told a granted work from a hidden one, so this fixture \
              cannot show the route asks the grant at all"
         );
@@ -6162,13 +6030,13 @@ async fn a_position_and_a_note_outlive_the_grant_and_come_back_with_it() {
 }
 
 /// **A document that does not parse is refused as that, whatever work it
-/// names**: a granted work, a hidden one and a slug no work holds are all
-/// answered 400 in the same words.
+/// names**: a notes write to a granted work, a hidden one and a slug no work
+/// holds is answered 400 in the same words each time.
 ///
-/// The two document writes parse their body before they look the work up,
-/// and the grant is asked where the work is looked up. `patch_alignments`
-/// asks first, and its own test says why it must: a correction lends the
-/// grant the two editions it names. These two lend it nothing.
+/// The notes write parses its body before it looks the work up, where the
+/// grant is asked, and a notes body lends the grant nothing. The truth write
+/// refuses this account before its body is read, alike for all three: it is an
+/// administrator's (O58).
 #[tokio::test]
 async fn a_document_that_does_not_parse_is_refused_before_the_grant_is_asked() {
     use axum::http::Method;
@@ -6200,7 +6068,10 @@ async fn a_document_that_does_not_parse_is_refused_before_the_grant_is_asked() {
         "the fixture: `{hidden}` is hidden from the account: {body}"
     );
 
-    for document in ["notes", "truth"] {
+    for (document, refused) in [
+        ("notes", StatusCode::BAD_REQUEST),
+        ("truth", StatusCode::FORBIDDEN),
+    ] {
         let mut said = Vec::new();
         for slug in [granted.as_str(), hidden.as_str(), "no-work-is-called-this"] {
             let (status, body) = answered(
@@ -6211,17 +6082,19 @@ async fn a_document_that_does_not_parse_is_refused_before_the_grant_is_asked() {
                 Some("not a document"),
             )
             .await;
-            assert_eq!(
-                status,
-                StatusCode::BAD_REQUEST,
-                "PUT {document} on `{slug}`: {body}"
-            );
+            assert_eq!(status, refused, "PUT {document} on `{slug}`: {body}");
             said.push(body);
         }
         assert!(
             said.iter().all(|body| body == &said[0]),
             "PUT {document}: the three refusals differ: {said:?}"
         );
+        if document == "truth" {
+            assert_eq!(
+                said[0], "this route is an administrator's",
+                "PUT truth is refused by the administrator's gate"
+            );
+        }
     }
 }
 
@@ -6285,6 +6158,7 @@ async fn a_position_read_leaves_out_an_edition_outside_the_grant() {
             },
             &found.sidecar(),
             taiyaku_library::state::Arrival::next(),
+            crate::works::Mint::Bridge,
         )
         .expect("stores a position");
     };
@@ -6378,6 +6252,7 @@ async fn a_new_note_on_an_edition_outside_the_grant_is_refused_and_a_held_one_is
             }],
         },
         &found.sidecar(),
+        crate::works::Mint::Bridge,
     )
     .expect("stores the note held from before");
 
@@ -6454,8 +6329,15 @@ async fn a_notes_write_read_before_the_grant_widened_is_refused() {
         work: slug.clone(),
         notes: vec![note("01HELD", "raw"), note("01OWN", "en")],
     };
-    crate::notes::store(&state.library, &found, 1, &held, &found.sidecar())
-        .expect("stores the notes");
+    crate::notes::store(
+        &state.library,
+        &found,
+        1,
+        &held,
+        &found.sidecar(),
+        crate::works::Mint::Bridge,
+    )
+    .expect("stores the notes");
 
     let tag = etag_of(&router, &uri).await;
     let (status, body) = answered(&router, Method::GET, &uri, None, None).await;
@@ -6494,12 +6376,459 @@ async fn a_notes_write_read_before_the_grant_widened_is_refused() {
     );
 }
 
-/// **A truth read leaves out an edition the account cannot see, and a write
-/// of what was read keeps its entry** (O191). A body that changes the entry
-/// is refused in the words, and with the status, a body naming an edition the
-/// work does not have is refused in.
+/// `request`'s status, `ETag` and body, as the router answers it.
+async fn answered_with_tag(
+    router: &axum::Router,
+    request: Request<Body>,
+) -> (StatusCode, Option<String>, String) {
+    let response = router.clone().oneshot(request).await.expect("answers");
+    let tag = response
+        .headers()
+        .get(header::ETAG)
+        .map(|tag| tag.to_str().expect("an ETag is text").to_string());
+    let status = response.status();
+    (
+        status,
+        tag,
+        crate::test_support::body_string(response).await,
+    )
+}
+
+/// A `GET` of `uri`, with `authorization` as its credential when given; with
+/// none the router's own session answers it.
+fn get_as(uri: &str, authorization: Option<&str>) -> Request<Body> {
+    let mut request = Request::get(uri);
+    if let Some(credential) = authorization {
+        request = request.header(header::AUTHORIZATION, credential);
+    }
+    request.body(Body::empty()).unwrap()
+}
+
+/// A router signed in as a new `user` that sees every library, so a refusal
+/// it gets is its role's and not its grant's.
+fn a_user_who_sees_every_library(state: &Arc<ServeState>) -> axum::Router {
+    let reader = {
+        let conn = state.library.conn();
+        let id = taiyaku_library::account::add(&conn, "reader", "pw", "user").expect("adds");
+        taiyaku_library::account::set_every_library(&conn, id).expect("sees every library");
+        let every: bool = conn
+            .query_row(
+                "SELECT every_library FROM user WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("reads the account");
+        assert!(every, "the fixture: `reader` sees every library");
+        id
+    };
+    crate::test_support::authenticating_as(
+        crate::build_router(state.clone()),
+        &state.library,
+        reader,
+    )
+}
+
+/// **Only an administrator, and never by a key, writes a work's truth
+/// document** (O58). Every account that may open the work is served it, so a
+/// write changes what every reader is shown.
+///
+/// The administrator's own API key reads it and is refused the write for its
+/// credential. A `user` that sees every library reads it and is refused for
+/// its role, so the refusal is not the grant's. Neither refusal moves the
+/// store, and the administrator's browser session then writes the same body.
 #[tokio::test]
-async fn a_truth_write_keeps_the_entry_of_an_edition_the_account_cannot_see() {
+async fn only_an_administrators_browser_session_writes_the_truth_document() {
+    let (router, state, _fixture) = crate::test_support::router_over_a_live_library();
+    let slug = state.works.snapshot()[0].id.clone();
+    let found = state.find_blocking(&slug).expect("the work");
+    let uri = format!("/api/works/{slug}/truth");
+    let edition = found
+        .sidecar()
+        .editions
+        .keys()
+        .next()
+        .expect("the work has an edition")
+        .clone();
+    let mut labelled = taiyaku_core::TruthDoc::new();
+    labelled.editions.insert(
+        edition,
+        taiyaku_core::TruthEdition {
+            members: Vec::new(),
+            pages: std::collections::BTreeMap::from([(
+                0,
+                vec![taiyaku_core::TruthRegion {
+                    x: 0.1,
+                    y: 0.2,
+                    w: 0.3,
+                    h: 0.4,
+                    axis: None,
+                    kind: taiyaku_core::Kind::Dialogue,
+                    ignore: false,
+                    text: Some("labelled".into()),
+                }],
+            )]),
+        },
+    );
+    let body = labelled.to_json();
+    let read = |authorization: Option<&str>| get_as(&uri, authorization);
+    let write = |authorization: Option<&str>, tag: &str| {
+        let mut request = Request::put(&uri)
+            .header(header::IF_MATCH, tag)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(credential) = authorization {
+            request = request.header(header::AUTHORIZATION, credential);
+        }
+        request.body(Body::from(body.clone())).unwrap()
+    };
+    let stored = || {
+        crate::truth::load(&state.library, &found)
+            .expect("reads the truth")
+            .map(|doc| doc.to_json())
+    };
+    let before = stored();
+
+    let key = crate::test_support::fixture_authorization();
+    let (status, tag, said) = answered_with_tag(&router, read(Some(&key))).await;
+    assert_eq!(status, StatusCode::OK, "the key's read: {said}");
+    let tag = tag.expect("the key's read carries an ETag");
+    let (status, _, said) = answered_with_tag(&router, write(Some(&key), &tag)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "the key's write: {said}");
+    assert!(
+        said.contains("API key"),
+        "the key's write is refused for its credential: {said}"
+    );
+    assert_eq!(stored(), before, "the key's write moved the store");
+
+    let readers = a_user_who_sees_every_library(&state);
+    let (status, tag, said) = answered_with_tag(&readers, read(None)).await;
+    assert_eq!(status, StatusCode::OK, "the user's read: {said}");
+    let tag = tag.expect("the user's read carries an ETag");
+    let (status, _, said) = answered_with_tag(&readers, write(None, &tag)).await;
+    assert_eq!(
+        (status, said.as_str()),
+        (StatusCode::FORBIDDEN, "this route is an administrator's"),
+        "the user's write"
+    );
+    assert_eq!(stored(), before, "the user's write moved the store");
+
+    let (status, tag, said) = answered_with_tag(&router, read(None)).await;
+    assert_eq!(status, StatusCode::OK, "the administrator's read: {said}");
+    let tag = tag.expect("the administrator's read carries an ETag");
+    let (status, _, said) = answered_with_tag(&router, write(None, &tag)).await;
+    assert_eq!(status, StatusCode::OK, "the administrator's write: {said}");
+    assert_eq!(
+        stored(),
+        Some(body.clone()),
+        "the administrator's write is stored"
+    );
+}
+
+/// **Only an administrator, and never by a key, corrects a work's
+/// alignments** (O58). An alignment is shared: every account that opens the
+/// work is served it.
+///
+/// The administrator's own API key reads the work and is refused the
+/// correction for its credential. A `user` that sees every library is refused
+/// for its role, so the refusal is not the grant's. Neither refusal moves the
+/// `run` rows, and the administrator's browser session then makes the same
+/// correction.
+#[tokio::test]
+async fn only_an_administrators_browser_session_corrects_an_alignment() {
+    let (router, state, _fixture, slug) =
+        crate::test_support::router_over_a_live_library_with_an_edge();
+    let uri = format!("/api/works/{slug}");
+    let read = |authorization: Option<&str>| get_as(&uri, authorization);
+    let correct = |authorization: Option<&str>, tag: &str| {
+        let mut request = Request::patch(format!("{uri}/alignments"))
+            .header(header::IF_MATCH, tag)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(credential) = authorization {
+            request = request.header(header::AUTHORIZATION, credential);
+        }
+        request
+            .body(Body::from(r#"{"from":"raw","to":"en","a":"1","b":"0"}"#))
+            .unwrap()
+    };
+    // A side a run pairs with nothing is NULL.
+    type Run = (Option<i64>, Option<i64>, Option<i64>, Option<i64>);
+    let runs = || -> Vec<Run> {
+        let conn = state.library.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT a_start_page, a_end_page, b_start_page, b_end_page FROM run \
+                 ORDER BY alignment_id, ordinal",
+            )
+            .expect("prepares");
+        statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .expect("reads the runs")
+            .collect::<Result<_, _>>()
+            .expect("reads the runs")
+    };
+    let before = runs();
+
+    let key = crate::test_support::fixture_authorization();
+    let (status, tag, said) = answered_with_tag(&router, read(Some(&key))).await;
+    assert_eq!(status, StatusCode::OK, "the key's read: {said}");
+    let tag = tag.expect("the key's read carries an ETag");
+    let (status, _, said) = answered_with_tag(&router, correct(Some(&key), &tag)).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the key's correction: {said}"
+    );
+    assert!(
+        said.contains("API key"),
+        "the key's correction is refused for its credential: {said}"
+    );
+    assert_eq!(runs(), before, "the key's correction moved the runs");
+
+    let readers = a_user_who_sees_every_library(&state);
+    let (status, tag, said) = answered_with_tag(&readers, read(None)).await;
+    assert_eq!(status, StatusCode::OK, "the user's read: {said}");
+    let tag = tag.expect("the user's read carries an ETag");
+    let (status, _, said) = answered_with_tag(&readers, correct(None, &tag)).await;
+    assert_eq!(
+        (status, said.as_str()),
+        (StatusCode::FORBIDDEN, "this route is an administrator's"),
+        "the user's correction"
+    );
+    assert_eq!(runs(), before, "the user's correction moved the runs");
+
+    let (status, tag, said) = answered_with_tag(&router, read(None)).await;
+    assert_eq!(status, StatusCode::OK, "the administrator's read: {said}");
+    let tag = tag.expect("the administrator's read carries an ETag");
+    let (status, _, said) = answered_with_tag(&router, correct(None, &tag)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the administrator's correction: {said}"
+    );
+    assert_ne!(
+        runs(),
+        before,
+        "the administrator's correction is stored in the runs"
+    );
+}
+
+/// How many `work` rows the store holds: a write that minted one moves it.
+fn work_rows(state: &ServeState) -> i64 {
+    state
+        .library
+        .conn()
+        .query_row("SELECT count(*) FROM work", [], |row| row.get(0))
+        .expect("counts the works")
+}
+
+/// `slug`'s row, deleted behind a live registry's back (O184). Nothing
+/// refreshes after it and a lookup that finds the work does not refresh, so
+/// the next write reaches the store with the work held and its row gone.
+fn delete_the_row_of(state: &ServeState, slug: &str) {
+    assert!(state.works.is_live(), "the fixture: a live registry");
+    let deleted = state
+        .library
+        .conn()
+        .execute("DELETE FROM work WHERE slug = ?1", [slug])
+        .expect("deletes the work's row");
+    assert_eq!(deleted, 1, "the fixture: `{slug}` had a row");
+    assert!(
+        state.works.get(slug).is_some(),
+        "the registry still holds `{slug}`"
+    );
+}
+
+/// The live fixture's work and the key of its first edition.
+fn the_live_work(state: &ServeState) -> (String, String) {
+    let work = Arc::clone(&state.works.snapshot()[0]);
+    let edition = work
+        .sidecar()
+        .editions
+        .keys()
+        .next()
+        .expect("the work has an edition")
+        .clone();
+    (work.id.clone(), edition)
+}
+
+/// **A position saved for a work whose row is gone answers 404 from a live
+/// registry and mints no row** (O184): a minted `bridge:` row would bring the
+/// deleted work back, with no editions, at the next refresh. Sent as the
+/// administrator, `Access::Every`, since under a grant the view finds no
+/// visible member for the deleted row and refuses before the store.
+#[tokio::test]
+async fn a_position_saved_after_its_works_row_is_gone_answers_404_and_mints_no_row() {
+    let (router, state, _fixture) = crate::test_support::router_over_a_live_library();
+    let (slug, edition) = the_live_work(&state);
+    delete_the_row_of(&state, &slug);
+    let rows = work_rows(&state);
+
+    let request = Request::put(format!("/api/works/{slug}/progress"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(format!(r#"{{"edition":"{edition}","slot":0}}"#)))
+        .unwrap();
+    let (status, _, said) = answered_with_tag(&router, request).await;
+
+    assert_eq!(
+        (status, said),
+        (StatusCode::NOT_FOUND, format!("no work `{slug}`"))
+    );
+    assert_eq!(work_rows(&state), rows, "the save minted a work row");
+}
+
+/// As [`a_position_saved_after_its_works_row_is_gone_answers_404_and_mints_no_row`],
+/// for a note.
+#[tokio::test]
+async fn notes_saved_after_their_works_row_is_gone_answer_404_and_mint_no_row() {
+    let (router, state, _fixture) = crate::test_support::router_over_a_live_library();
+    let (slug, edition) = the_live_work(&state);
+    let uri = format!("/api/works/{slug}/notes");
+    delete_the_row_of(&state, &slug);
+    let (status, tag, said) = answered_with_tag(&router, get_as(&uri, None)).await;
+    assert_eq!(status, StatusCode::OK, "the notes read: {said}");
+    let tag = tag.expect("the notes read carries an ETag");
+    let rows = work_rows(&state);
+
+    let request = Request::put(&uri)
+        .header(header::IF_MATCH, tag)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(format!(
+            r#"{{"work":"{slug}","notes":[{{"id":"01J8","edition":"{edition}","slot":0,
+               "body":"kept","created":"2026-08-05T10:00:00Z","updated":"2026-08-05T10:00:00Z"}}]}}"#
+        )))
+        .unwrap();
+    let (status, _, said) = answered_with_tag(&router, request).await;
+
+    assert_eq!(
+        (status, said),
+        (StatusCode::NOT_FOUND, format!("no work `{slug}`"))
+    );
+    assert_eq!(work_rows(&state), rows, "the save minted a work row");
+}
+
+/// As [`a_position_saved_after_its_works_row_is_gone_answers_404_and_mints_no_row`],
+/// for a truth document.
+#[tokio::test]
+async fn truth_saved_after_its_works_row_is_gone_answers_404_and_mints_no_row() {
+    let (router, state, _fixture) = crate::test_support::router_over_a_live_library();
+    let (slug, edition) = the_live_work(&state);
+    let uri = format!("/api/works/{slug}/truth");
+    delete_the_row_of(&state, &slug);
+    let (status, tag, said) = answered_with_tag(&router, get_as(&uri, None)).await;
+    assert_eq!(status, StatusCode::OK, "the truth read: {said}");
+    let tag = tag.expect("the truth read carries an ETag");
+    let rows = work_rows(&state);
+    let mut looked_at = taiyaku_core::TruthDoc::new();
+    looked_at.editions.insert(
+        edition,
+        taiyaku_core::TruthEdition {
+            members: Vec::new(),
+            pages: std::collections::BTreeMap::from([(0, Vec::new())]),
+        },
+    );
+
+    let request = Request::put(&uri)
+        .header(header::IF_MATCH, tag)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(looked_at.to_json()))
+        .unwrap();
+    let (status, _, said) = answered_with_tag(&router, request).await;
+
+    assert_eq!(
+        (status, said),
+        (StatusCode::NOT_FOUND, format!("no work `{slug}`"))
+    );
+    assert_eq!(work_rows(&state), rows, "the save minted a work row");
+}
+
+/// **A correction asking a change of a work whose row is gone answers 404,
+/// mints no row and leaves its `taiyaku.json` as it was** (O184). The row
+/// is resolved first, or the file would keep a correction no row holds.
+///
+/// The control is the same correction with the row in place: it writes the
+/// file, so the body asks a change (`raw` 1 to `en` 0, where the edge pairs 1
+/// with 1) and the work has a file to write.
+#[tokio::test]
+async fn a_correction_after_its_works_row_is_gone_answers_404_and_writes_no_row_or_file() {
+    let correct = |slug: &str, tag: &str| {
+        Request::patch(format!("/api/works/{slug}/alignments"))
+            .header(header::IF_MATCH, tag)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"from":"raw","to":"en","a":"1","b":"0"}"#))
+            .unwrap()
+    };
+    let tag_of = |router: &axum::Router, slug: &str| {
+        let request = get_as(&format!("/api/works/{slug}"), None);
+        let router = router.clone();
+        async move {
+            let (status, tag, said) = answered_with_tag(&router, request).await;
+            assert_eq!(status, StatusCode::OK, "the work's read: {said}");
+            tag.expect("the work's read carries an ETag")
+        }
+    };
+    {
+        let (router, state, _fixture, slug) =
+            crate::test_support::router_over_a_live_library_with_a_document();
+        let file = state.find_blocking(&slug).expect("the work").path.clone();
+        let before = std::fs::read_to_string(&file).expect("reads the document");
+        let tag = tag_of(&router, &slug).await;
+        let (status, _, said) = answered_with_tag(&router, correct(&slug, &tag)).await;
+        assert_eq!(status, StatusCode::OK, "the control's correction: {said}");
+        assert_ne!(
+            std::fs::read_to_string(&file).expect("reads the document"),
+            before,
+            "the control's correction writes the file"
+        );
+    }
+
+    let (router, state, _fixture, slug) =
+        crate::test_support::router_over_a_live_library_with_a_document();
+    let runs: Vec<(i64, i64, i64, i64)> = {
+        let conn = state.library.conn();
+        let mut statement = conn
+            .prepare("SELECT a_start_page, a_end_page, b_start_page, b_end_page FROM run")
+            .expect("prepares");
+        statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .expect("reads the runs")
+            .collect::<Result<_, _>>()
+            .expect("reads the runs")
+    };
+    assert_eq!(
+        runs,
+        vec![(0, 3, 0, 3)],
+        "the fixture's edge pairs `raw` 0-3 with `en` 0-3"
+    );
+    let file = state.find_blocking(&slug).expect("the work").path.clone();
+    let before = std::fs::read_to_string(&file).expect("reads the document");
+    let tag = tag_of(&router, &slug).await;
+    delete_the_row_of(&state, &slug);
+    let rows = work_rows(&state);
+
+    let (status, _, said) = answered_with_tag(&router, correct(&slug, &tag)).await;
+
+    assert_eq!(
+        (status, said),
+        (StatusCode::NOT_FOUND, format!("no work `{slug}`"))
+    );
+    assert_eq!(work_rows(&state), rows, "the correction minted a work row");
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("reads the document"),
+        before,
+        "the correction wrote the file"
+    );
+}
+
+/// **A truth read leaves out an edition the account cannot see** (O191), and
+/// every truth write the account sends is refused by the administrator's gate
+/// (O58) and stores nothing: one changing the hidden edition's entry, one
+/// naming an edition the work does not have, and one changing only what it
+/// was sent.
+#[tokio::test]
+async fn a_truth_read_leaves_out_an_edition_the_account_cannot_see_and_a_write_is_refused() {
     use axum::http::Method;
 
     let (router, state, _fixture, slug) =
@@ -6513,7 +6842,8 @@ async fn a_truth_write_keeps_the_entry_of_an_edition_the_account_cannot_see() {
     let mut held = taiyaku_core::TruthDoc::new();
     held.editions.insert("raw".into(), entry(0));
     held.editions.insert("en".into(), entry(0));
-    crate::truth::store(&state.library, &found, &held).expect("stores the truth");
+    crate::truth::store(&state.library, &found, &held, crate::works::Mint::Bridge)
+        .expect("stores the truth");
     let stored = || {
         crate::truth::load(&state.library, &found)
             .expect("reads the truth")
@@ -6532,52 +6862,30 @@ async fn a_truth_write_keeps_the_entry_of_an_edition_the_account_cannot_see() {
         "the fixture: `raw` is hidden, and its entry is not sent"
     );
 
-    let refused = |key: &str| {
+    let changed = |key: &str| {
         let mut doc = sent.clone();
         doc.editions.insert(key.into(), entry(1));
         doc.to_json()
     };
-    let (raw_status, raw_said) = answered(
-        &router,
-        Method::PUT,
-        &uri,
-        Some(&tag),
-        Some(&refused("raw")),
-    )
-    .await;
-    let (none_status, none_said) =
-        answered(&router, Method::PUT, &uri, Some(&tag), Some(&refused("zz"))).await;
-    assert_eq!(
-        (raw_status, raw_said.replace("`raw`", "`{edition}`")),
-        (none_status, none_said.replace("`zz`", "`{edition}`")),
-        "a hidden edition's entry changed, left, and an edition the work does not have, right"
-    );
-    assert_eq!(raw_status, StatusCode::NOT_FOUND, "{raw_said}");
-    assert_eq!(stored(), before, "nothing is stored");
-
+    let (raw, zz) = (changed("raw"), changed("zz"));
     sent.editions
         .get_mut("en")
         .expect("en")
         .pages
         .insert(1, Vec::new());
-    let (status, body) = answered(
-        &router,
-        Method::PUT,
-        &uri,
-        Some(&tag),
-        Some(&sent.to_json()),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let mut expected = held.clone();
-    expected
-        .editions
-        .insert("en".into(), sent.editions["en"].clone());
-    assert_eq!(
-        stored(),
-        expected.to_json(),
-        "en's change stored, raw's entry kept"
-    );
+    for (label, body) in [
+        ("a hidden edition's entry changed", raw),
+        ("an edition the work does not have", zz),
+        ("en's entry changed", sent.to_json()),
+    ] {
+        let (status, said) = answered(&router, Method::PUT, &uri, Some(&tag), Some(&body)).await;
+        assert_eq!(
+            (status, said.as_str()),
+            (StatusCode::FORBIDDEN, "this route is an administrator's"),
+            "{label}"
+        );
+        assert_eq!(stored(), before, "{label}: nothing is stored");
+    }
 }
 
 /// **A position on an edition the work no longer has is sent only to an
@@ -6608,6 +6916,7 @@ async fn a_position_on_an_edition_the_work_no_longer_has_is_sent_only_to_an_acco
             },
             &found.sidecar(),
             taiyaku_library::state::Arrival::next(),
+            crate::works::Mint::Bridge,
         )
         .expect("stores a position");
     }
@@ -6662,7 +6971,8 @@ enum Tag {
 
 /// The writes [`a_write_to_a_hidden_work_is_refused_before_its_own_checks_are_made`]
 /// sends: sent to the work outside the grant, each would fail one check the
-/// handler makes after the work is found.
+/// handler makes after the work is found. The truth write is not one: an
+/// account a grant limits is refused it for its role first (O58).
 fn writes_that_fail_their_own_checks() -> Vec<OwnCheck> {
     vec![
         OwnCheck {
@@ -6713,20 +7023,6 @@ fn writes_that_fail_their_own_checks() -> Vec<OwnCheck> {
             },
             on_a_granted_work: StatusCode::NOT_FOUND,
         },
-        OwnCheck {
-            label: "truth, no If-Match",
-            document: "truth",
-            if_match: Tag::Absent,
-            body: |_, _| r#"{"taiyaku_truth":1,"editions":{}}"#.to_string(),
-            on_a_granted_work: StatusCode::PRECONDITION_REQUIRED,
-        },
-        OwnCheck {
-            label: "truth, a stale If-Match",
-            document: "truth",
-            if_match: Tag::Stale,
-            body: |_, _| r#"{"taiyaku_truth":1,"editions":{}}"#.to_string(),
-            on_a_granted_work: StatusCode::PRECONDITION_FAILED,
-        },
     ]
 }
 
@@ -6734,7 +7030,7 @@ fn writes_that_fail_their_own_checks() -> Vec<OwnCheck> {
 /// handler makes once it has found the work** (O60): by the grant, and not by
 /// the edition, the slot, the precondition or the work the body names.
 ///
-/// [`the_six_requests`] sends each write once, fully valid, so a grant check
+/// [`the_five_requests`] sends each write once, fully valid, so a grant check
 /// that slid later in a handler would still refuse it with the same 404. Here
 /// each write is one its own checks would answer, sent to a work outside the
 /// grant and to a slug no work holds, and the two answers are compared with
@@ -7519,111 +7815,6 @@ mod narrowing {
         }
     }
 
-    /// A correction naming an edition Kids alone does not see is refused as
-    /// a work it does not hold, 404, before its body is: a malformed slot
-    /// against `en` answers what one against a key the work lacks answers,
-    /// in the same words (O60), and only a side Kids sees, `raw`, gets as far
-    /// as the slot's 400.
-    #[tokio::test]
-    async fn a_correction_naming_a_side_kids_does_not_see_is_refused_before_its_body() {
-        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
-        the_administrators_document(&merged).await;
-        let (doc, tag) = document(&merged, Reader::KidsOnly).await;
-        assert_eq!(
-            editions(&doc),
-            ["raw"],
-            "the fixture: Kids sees `raw` alone"
-        );
-        let mut answers = Vec::new();
-        for (from, status) in [
-            ("en", StatusCode::NOT_FOUND),
-            ("no-such-edition", StatusCode::NOT_FOUND),
-            ("raw", StatusCode::BAD_REQUEST),
-        ] {
-            let (answered, _, body) = sent(
-                &merged,
-                Reader::KidsOnly,
-                Request::builder()
-                    .method("PATCH")
-                    .uri(format!("/api/works/{}/alignments", merged.slug))
-                    .header(header::IF_MATCH, &tag)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(format!(
-                        r#"{{"from":"{from}","to":"raw","a":"not a slot","b":"0"}}"#
-                    )))
-                    .unwrap(),
-            )
-            .await;
-            assert_eq!(answered, status, "from `{from}`: {body}");
-            answers.push(body);
-        }
-        assert_eq!(
-            answers[0], answers[1],
-            "a side Kids does not see is answered as a side the work lacks"
-        );
-    }
-
-    /// A correction carries the `ETag` of the document its account was sent,
-    /// and is answered with the document that account would be sent next,
-    /// while the document and rows every account shares stay whole.
-    #[tokio::test]
-    async fn manga_alone_corrects_en_to_fr_with_its_own_documents_etag() {
-        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
-        the_administrators_document(&merged).await;
-        let (_, tag) = document(&merged, Reader::MangaOnly).await;
-        let (status, answered_tag, body) = sent(
-            &merged,
-            Reader::MangaOnly,
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/works/{}/alignments", merged.slug))
-                .header(header::IF_MATCH, &tag)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"from":"en","to":"fr","a":"1","b":"0"}"#))
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let (whole, _) = document(&merged, Reader::Administrator).await;
-        assert_eq!(
-            members(&whole, "raw"),
-            files(&[
-                ("Foo v01 part1.cbz", 2),
-                ("Foo v01 part2.cbz", 3),
-                ("Foo v01 part3.cbz", 4),
-            ]),
-            "the document every account shares keeps part2: {whole}"
-        );
-        assert_eq!(
-            alignments(&whole),
-            BTreeSet::from([pair("raw", "en"), pair("en", "fr")]),
-            "and the alignment touching raw"
-        );
-        let stored: BTreeSet<(String, String)> = merged
-            .state
-            .library
-            .conn()
-            .prepare("SELECT from_key, to_key FROM alignment")
-            .and_then(|mut rows| {
-                rows.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                    .collect()
-            })
-            .expect("reads the alignment rows");
-        assert_eq!(
-            stored,
-            BTreeSet::from([pair("raw", "en"), pair("en", "fr")]),
-            "the rows keep the alignment touching raw"
-        );
-        let (next, next_tag) = document(&merged, Reader::MangaOnly).await;
-        assert_ne!(next_tag, tag, "the correction changed the document");
-        assert_eq!(answered_tag.as_deref(), Some(next_tag.as_str()));
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&body).expect("JSON"),
-            next,
-            "the answer is the document Manga is sent next"
-        );
-    }
-
     /// A note `id` on `edition`'s `slot`, its words its own.
     fn note(id: &str, edition: &str, slot: u32) -> crate::notes::Note {
         crate::notes::Note {
@@ -7666,6 +7857,7 @@ mod narrowing {
             merged.user_id(reader),
             notes,
             &the_sidecar(merged),
+            crate::works::Mint::Bridge,
         )
         .expect("stores the notes");
     }
@@ -8414,6 +8606,7 @@ mod narrowing {
             },
             &the_sidecar(merged),
             taiyaku_library::state::Arrival::next(),
+            crate::works::Mint::Bridge,
         )
         .expect("stores a position");
     }
@@ -8855,8 +9048,13 @@ mod narrowing {
     }
 
     fn hold_truth(merged: &EditionMergedFromTwoLibraries, doc: &taiyaku_core::TruthDoc) {
-        crate::truth::store(&merged.state.library, &the_work(merged), doc)
-            .expect("stores the truth");
+        crate::truth::store(
+            &merged.state.library,
+            &the_work(merged),
+            doc,
+            crate::works::Mint::Bridge,
+        )
+        .expect("stores the truth");
     }
 
     fn held_truth(merged: &EditionMergedFromTwoLibraries) -> String {
@@ -8916,203 +9114,150 @@ mod narrowing {
         assert_eq!(status, StatusCode::NOT_MODIFIED, "Manga's tag hits");
     }
 
-    /// A truth write read before Manga was granted Kids is refused, and
-    /// stores nothing (decision 11).
-    #[tokio::test]
-    async fn a_truth_write_manga_read_before_it_was_granted_kids_is_refused() {
-        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
-        the_administrators_document(&merged).await;
-        hold_truth(&merged, &the_truth(&merged));
-        let stored = held_truth(&merged);
-        let uri = truth_uri(&merged);
-        let (_, tag, body) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
-
-        taiyaku_library::account::grant_library(
-            &merged.state.library.conn(),
-            merged.user_id(Reader::MangaOnly),
-            80,
-        )
-        .expect("grants Kids");
-        let (status, _, answered) =
-            put(&merged, Reader::MangaOnly, &uri, tag.as_deref(), body).await;
-        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{answered}");
-        assert_eq!(held_truth(&merged), stored, "nothing is stored");
+    /// The view of an account whose flags for `raw`'s members are `raw`, with
+    /// `en` and `fr` whole.
+    fn viewing_raw(merged: &EditionMergedFromTwoLibraries, raw: &[bool]) -> crate::view::View {
+        let sidecar = the_sidecar(merged);
+        let listed: Vec<&Member> = sidecar.editions["raw"].members.iter().collect();
+        let flags = with_raw(&sidecar, read_as(&listed, raw));
+        crate::view::View::build(Arc::clone(&sidecar), Some(&flags)).expect("en is visible")
     }
 
-    /// Manga alone writes `en`'s truth back changed: the change is stored,
-    /// `raw`'s entry, which it was not sent, is kept, and the answer is what
-    /// Manga is sent next.
-    #[tokio::test]
-    async fn manga_alones_truth_write_keeps_raws_entry() {
-        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
-        the_administrators_document(&merged).await;
-        let held = the_truth(&merged);
-        hold_truth(&merged, &held);
-        let uri = truth_uri(&merged);
-        let (_, tag, body) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
-        let mut doc = taiyaku_core::TruthDoc::from_json(&body).expect("truth");
+    /// `truth::as_stored` called directly: only an administrator writes truth
+    /// (O58) and is never narrowed, so no route reaches its narrowed path,
+    /// kept for a later per-account capability to label (the go-public
+    /// design's §5, decision 6). Answers the document to store, or the
+    /// refusal's kind and words.
+    fn written(
+        merged: &EditionMergedFromTwoLibraries,
+        view: &crate::view::View,
+        incoming: taiyaku_core::TruthDoc,
+    ) -> Result<String, (&'static str, String)> {
+        crate::truth::as_stored(incoming, &the_truth(merged), view, &merged.slug)
+            .map(|doc| doc.to_json())
+            .map_err(|why| match why {
+                crate::truth::Unwritable::Missing(said) => ("missing", said),
+                crate::truth::Unwritable::PartlyVisible(said) => ("partly visible", said),
+            })
+    }
+
+    /// `doc` with a box added to `en`'s page 4.
+    fn with_ens_page_4_labelled(mut doc: taiyaku_core::TruthDoc) -> taiyaku_core::TruthDoc {
         doc.editions
             .get_mut("en")
             .expect("en")
             .pages
             .insert(4, vec![a_box(0.5)]);
+        doc
+    }
 
-        let (status, answered_tag, answered) = put(
-            &merged,
-            Reader::MangaOnly,
-            &uri,
-            tag.as_deref(),
-            doc.to_json(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{answered}");
+    /// Manga alone writes back what it was sent with `en` changed: the change
+    /// is taken, and `raw`'s entry, which it was not sent, kept.
+    #[tokio::test]
+    async fn manga_alones_truth_keeps_raws_entry_as_stored() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let held = the_truth(&merged);
+        let view = viewing_raw(&merged, &[true, false, true]);
+        let sent = crate::truth::as_seen(&held, &view);
+        assert_eq!(
+            sent.editions.keys().collect::<Vec<_>>(),
+            ["en"],
+            "the fixture: raw is narrowed, and its entry is not sent"
+        );
+
+        let doc = with_ens_page_4_labelled(sent);
         let mut expected = held.clone();
         expected
             .editions
             .insert("en".into(), doc.editions["en"].clone());
         assert_eq!(
-            held_truth(&merged),
-            expected.to_json(),
-            "en's change is stored and raw's entry kept"
+            written(&merged, &view, doc),
+            Ok(expected.to_json()),
+            "en's change taken and raw's entry kept"
         );
-        let (_, next_tag, next) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
-        assert_eq!(
-            answered_tag, next_tag,
-            "the answer's ETag is the next read's"
-        );
-        assert_eq!(answered, next, "the answer is what Manga is sent next");
     }
 
-    /// A body that changes `raw`'s entry is refused, as Manga sees `raw` only
-    /// in part, and stores nothing; one that sends `raw`'s stored entry back
-    /// unchanged is accepted.
+    /// With `raw` hidden, a changed entry for it is refused in the words, and
+    /// the shape, an edition the work does not have is refused in (O60), and
+    /// a write of what was sent keeps raw's entry.
     #[tokio::test]
-    async fn a_truth_write_changing_raw_as_manga_alone_is_refused() {
+    async fn a_hidden_raws_truth_entry_is_refused_as_one_the_work_does_not_have() {
         let merged = test_support::router_over_an_edition_merged_from_two_libraries();
         the_administrators_document(&merged).await;
         let held = the_truth(&merged);
-        hold_truth(&merged, &held);
-        let stored = held_truth(&merged);
-        let uri = truth_uri(&merged);
-        let (_, tag, _) = fetched(&merged, Reader::MangaOnly, &uri, None).await;
+        let view = viewing_raw(&merged, &[false, false, false]);
+        let visible = view.visible().expect("Manga is limited");
+        assert!(!visible.contains("raw"), "the fixture: raw is hidden");
+        let sent = crate::truth::as_seen(&held, &view);
+        assert_eq!(sent.editions.keys().collect::<Vec<_>>(), ["en"]);
 
-        let mut changed = held.clone();
-        changed
+        let mut changed = held.editions["raw"].clone();
+        changed.pages.insert(0, vec![a_box(0.5)]);
+        let refused = |key: &str| {
+            let mut doc = sent.clone();
+            doc.editions.insert(key.into(), changed.clone());
+            written(&merged, &view, doc)
+                .map_err(|(kind, said)| (kind, said.replace(&format!("`{key}`"), "`{edition}`")))
+        };
+        let words = Err((
+            "missing",
+            format!(
+                "this truth document names the edition `{{edition}}`, which work `{}` does \
+                 not have",
+                merged.slug
+            ),
+        ));
+        assert_eq!(refused("raw"), words, "hidden raw's entry changed");
+        assert_eq!(refused("zz"), words, "an edition the work does not have");
+
+        let mut expected = held.clone();
+        let doc = with_ens_page_4_labelled(sent);
+        expected
             .editions
-            .get_mut("raw")
-            .expect("raw")
-            .pages
-            .insert(0, vec![a_box(0.5)]);
-        let (status, _, answered) = put(
-            &merged,
-            Reader::MangaOnly,
-            &uri,
-            tag.as_deref(),
-            changed.to_json(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{answered}");
+            .insert("en".into(), doc.editions["en"].clone());
         assert_eq!(
-            answered,
+            written(&merged, &view, doc),
+            Ok(expected.to_json()),
+            "en's change taken and hidden raw's entry kept"
+        );
+    }
+
+    /// A write changing `raw`'s entry, a page or its members, is refused, as
+    /// Manga sees `raw` only in part; one sending the stored entry back as it
+    /// was, as a client that read it before the grant narrowed does, is taken.
+    #[tokio::test]
+    async fn manga_alones_truth_changing_raws_entry_is_refused() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        the_administrators_document(&merged).await;
+        let held = the_truth(&merged);
+        let view = viewing_raw(&merged, &[true, false, true]);
+        assert!(
+            view.narrowed("raw").is_some(),
+            "the fixture: raw is narrowed"
+        );
+
+        let words = Err((
+            "partly visible",
             format!(
                 "`raw` of `{}` is only partly visible to this account, so its ground truth \
                  cannot be written here",
                 merged.slug
-            )
-        );
-        assert_eq!(held_truth(&merged), stored, "nothing is stored");
+            ),
+        ));
+        let mut a_page = held.clone();
+        let raw = a_page.editions.get_mut("raw").expect("raw");
+        raw.pages.insert(0, vec![a_box(0.5)]);
+        assert_eq!(written(&merged, &view, a_page), words, "a page labelled");
+        let mut members = held.clone();
+        members.editions.get_mut("raw").expect("raw").members.pop();
+        assert_eq!(written(&merged, &view, members), words, "a member left out");
 
-        let (status, _, answered) = put(
-            &merged,
-            Reader::MangaOnly,
-            &uri,
-            tag.as_deref(),
-            held.to_json(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{answered}");
-        assert_eq!(held_truth(&merged), stored, "raw's entry as it was");
-    }
-
-    async fn corrected(
-        merged: &EditionMergedFromTwoLibraries,
-        body: &'static str,
-    ) -> (StatusCode, String) {
-        let (_, tag) = document(merged, Reader::MangaOnly).await;
-        let (status, _, answered) = sent(
-            merged,
-            Reader::MangaOnly,
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/works/{}/alignments", merged.slug))
-                .header(header::IF_MATCH, &tag)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await;
-        (status, answered)
-    }
-
-    /// Correcting `raw` against `en` as Manga alone is refused, as Manga sees
-    /// `raw` only in part, whichever side names it; `en` against `fr` is not.
-    #[tokio::test]
-    async fn correcting_raw_and_en_as_manga_alone_is_refused() {
-        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
-        the_administrators_document(&merged).await;
-        let refusal = format!(
-            "`raw` of `{}` is only partly visible to this account, so its alignments cannot be \
-             corrected here",
-            merged.slug
-        );
-        for body in [
-            r#"{"from":"raw","to":"en","a":"0","b":"0"}"#,
-            r#"{"from":"en","to":"raw","a":"0","b":"0"}"#,
-        ] {
-            let (status, answered) = corrected(&merged, body).await;
-            assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {answered}");
-            assert_eq!(answered, refusal, "{body}");
-        }
-        let (status, answered) =
-            corrected(&merged, r#"{"from":"en","to":"fr","a":"1","b":"0"}"#).await;
-        assert_eq!(status, StatusCode::OK, "{answered}");
-    }
-
-    /// A side the store shows Manga but the view hides, its flags not
-    /// numbering the held document's members, is refused as a hidden side is,
-    /// on either side: correcting it would store slots of a numbering this
-    /// account was never sent.
-    // `Work::update`'s closure is checked by clippy as its own item, as on
-    // `works/tests.rs`'s `a_replaced_sidecar_is_what_the_next_reader_sees`.
-    #[allow(clippy::result_large_err)]
-    #[tokio::test]
-    async fn correcting_a_side_the_view_hides_is_refused_as_a_hidden_work() {
-        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
-        the_administrators_document(&merged).await;
-        the_work(&merged)
-            .update(|current| {
-                let mut next = (**current).clone();
-                let raw = next.editions.get_mut("raw").expect("raw");
-                raw.members.swap(0, 2);
-                Ok((Arc::new(next), ()))
-            })
-            .expect("holds raw with part1 and part3 exchanged");
-        let (doc, _) = document(&merged, Reader::MangaOnly).await;
         assert_eq!(
-            editions(&doc),
-            ["en", "fr"],
-            "the fixture: the store's flags for raw do not number the held members: {doc}"
+            written(&merged, &view, held.clone()),
+            Ok(held.to_json()),
+            "raw's entry as it was"
         );
-        let before = the_sidecar(&merged).alignments.clone();
-        for body in [
-            r#"{"from":"raw","to":"en","a":"1","b":"0"}"#,
-            r#"{"from":"en","to":"raw","a":"0","b":"1"}"#,
-        ] {
-            let (status, answered) = corrected(&merged, body).await;
-            assert_eq!(status, StatusCode::NOT_FOUND, "{body}: {answered}");
-            assert_eq!(answered, format!("no work `{}`", merged.slug), "{body}");
-        }
-        assert_eq!(the_sidecar(&merged).alignments, before, "nothing corrected");
     }
 }
 
@@ -9354,9 +9499,11 @@ mod a_save_waiting_for_the_write_lock {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "the {which} save"
             );
-            assert!(
-                body.ends_with("database is locked"),
-                "the {which} save: {body}"
+            // The lock is named in the log alone (O267): the wait above is
+            // what shows the save failed on it.
+            assert_eq!(
+                body, "the library could not answer this request; the server's log says why",
+                "the {which} save"
             );
         }
         assert!(slowest < NO_WAIT, "the slowest read took {slowest:?}");
@@ -9518,5 +9665,224 @@ mod a_save_waiting_for_the_write_lock {
 
         assert_eq!(statuses, [StatusCode::NO_CONTENT; 3]);
         assert_eq!(positions, [("raw".to_string(), 2)], "the stored position");
+    }
+}
+
+/// O267: a page whose file cannot be read is answered by a sentence naming it,
+/// and the error, which names the server's path, goes to the log alone.
+mod answered_without_a_server_path {
+    use super::*;
+    use crate::test_support::{self, Reader};
+
+    /// `uri`'s status and body, and the fixture's directory, which the body
+    /// must not hold.
+    async fn unreadable(uri: &str) -> (StatusCode, String, String) {
+        let (router, state, fixture) =
+            test_support::router_over_a_scanned_cbz_that_is_not_an_archive();
+        assert_eq!(
+            state.works.snapshot()[0].id,
+            "scanned-v01",
+            "the fixture's slug"
+        );
+        let response = test_support::get(&router, uri).await;
+        let status = response.status();
+        let body = test_support::body_string(response).await;
+        (status, body, fixture.path().display().to_string())
+    }
+
+    #[tokio::test]
+    async fn a_page() {
+        let (status, body, dir) = unreadable("/api/works/scanned-v01/raw/pages/0").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(
+            body,
+            "page 0 of `raw` of `scanned-v01` could not be read; the server's log says why"
+        );
+        assert!(!body.contains(&dir), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_tile() {
+        let (status, body, dir) = unreadable("/api/works/scanned-v01/raw/pages/0/thumb").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(
+            body,
+            "page 0 of `raw` of `scanned-v01` could not be read; the server's log says why"
+        );
+        assert!(!body.contains(&dir), "{body}");
+    }
+
+    /// The cover size, which `serve_page` answers rather than the tile's branch.
+    #[tokio::test]
+    async fn a_cover_sized_thumb() {
+        let (status, body, dir) =
+            unreadable("/api/works/scanned-v01/raw/pages/0/thumb?w=256").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(
+            body,
+            "page 0 of `raw` of `scanned-v01` could not be read; the server's log says why"
+        );
+        assert!(!body.contains(&dir), "{body}");
+    }
+
+    /// Named as the account asked for it: Manga alone's page 2 is `raw`'s
+    /// page 5, part3's first.
+    #[tokio::test]
+    async fn a_narrowed_page_by_the_number_asked() {
+        let merged = test_support::router_over_an_edition_merged_from_two_libraries();
+        let work = merged.state.works.get(&merged.slug).expect("the work");
+        let part3 = std::path::PathBuf::from(
+            &work.sidecar().editions["raw"]
+                .members
+                .iter()
+                .find(|member| member.path.ends_with("part3.cbz"))
+                .expect("part3")
+                .path,
+        );
+        assert!(part3.is_file(), "the fixture's part3: {part3:?}");
+        std::fs::write(&part3, b"not an archive").expect("overwrites part3");
+        let dir = part3
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("the tree");
+        let slug = &merged.slug;
+        for uri in [
+            format!("/api/works/{slug}/raw/pages/2"),
+            format!("/api/works/{slug}/raw/pages/2/thumb"),
+            format!("/opds/v1.2/works/{slug}/raw/pages/2"),
+        ] {
+            let response = merged.get(Reader::MangaOnly, &uri, None).await;
+            let body = String::from_utf8_lossy(response.body()).into_owned();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}: {body}");
+            assert_eq!(
+                body,
+                format!("page 2 of `raw` of `{slug}` could not be read; the server's log says why"),
+                "{uri}"
+            );
+            assert!(!body.contains(&dir.display().to_string()), "{uri}: {body}");
+        }
+    }
+
+    /// An edition the work does not have, asked for by a `user` that sees
+    /// every library: its view is the edition whole, present or not, so
+    /// `locate` is what refuses, and every route answers its words.
+    #[tokio::test]
+    async fn an_edition_the_work_does_not_have() {
+        let tmp = test_support::Fixture::new("no-such-edition");
+        let state = Arc::new(test_support::state(&tmp));
+        let router = a_user_who_sees_every_library(&state);
+        let dir = tmp.path().display().to_string();
+        let uris = [
+            "/api/works/t/nope/pages/0",
+            "/api/works/t/nope/pages/0/thumb",
+            "/api/works/t/nope/pages/0/thumb?w=256",
+            "/opds/v1.2/works/t/nope/pages/0",
+            "/opds/v1.2/works/t/nope/cover",
+        ];
+        let mut answered = Vec::new();
+        for uri in uris {
+            let response = test_support::get(&router, uri).await;
+            let status = response.status();
+            answered.push((uri, status, test_support::body_string(response).await));
+        }
+        let refused = uris.map(|uri| {
+            (
+                uri,
+                StatusCode::NOT_FOUND,
+                "no edition `nope` in `t`".to_string(),
+            )
+        });
+        assert_eq!(answered, refused);
+        assert!(
+            answered.iter().all(|(_, _, body)| !body.contains(&dir)),
+            "{answered:?}"
+        );
+    }
+
+    /// The log line is the answer, then the error it left out, path and all.
+    #[test]
+    fn the_log_line() {
+        let mut out = Vec::new();
+        log_line(
+            &mut out,
+            "page 0 of `raw` of `w` could not be read",
+            "/srv/manga/w.cbz: invalid Zip archive",
+        );
+        assert_eq!(
+            String::from_utf8(out).expect("text"),
+            "taiyaku: page 0 of `raw` of `w` could not be read: /srv/manga/w.cbz: invalid Zip archive\n"
+        );
+    }
+
+    /// The store's directory renamed under a running router: the shared
+    /// connection keeps the file it has open, and a save's own connection
+    /// (`Library::saving`) cannot open one, with an error naming the store.
+    fn move_the_store(fixture: &test_support::Fixture) {
+        let db = fixture.path().join("db");
+        assert!(
+            db.join("library.db").is_file(),
+            "the fixture's store: {db:?}"
+        );
+        std::fs::rename(&db, fixture.path().join("db-moved")).expect("moves the store");
+    }
+
+    #[tokio::test]
+    async fn a_position_the_store_cannot_save() {
+        let (router, state, fixture) = test_support::router_over_a_file_backed_library();
+        let slug = state.works.snapshot()[0].id.clone();
+        move_the_store(&fixture);
+        let response = test_support::send_json(
+            &router,
+            axum::http::Method::PUT,
+            &format!("/api/works/{slug}/progress"),
+            &serde_json::json!({ "edition": "raw", "slot": 0 }),
+        )
+        .await;
+        let status = response.status();
+        let body = test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(
+            body,
+            "the library could not answer this request; the server's log says why"
+        );
+        assert!(
+            !body.contains(&fixture.path().display().to_string()),
+            "{body}"
+        );
+    }
+
+    /// Its `If-Match` is read before the store moves, so the write gets as far
+    /// as the save.
+    #[tokio::test]
+    async fn notes_the_store_cannot_save() {
+        let (router, state, fixture) = test_support::router_over_a_file_backed_library();
+        let slug = state.works.snapshot()[0].id.clone();
+        let uri = format!("/api/works/{slug}/notes");
+        let tag = etag_of(&router, &uri).await;
+        move_the_store(&fixture);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::put(&uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::IF_MATCH, &tag)
+                    .body(Body::from(
+                        serde_json::json!({ "work": slug, "notes": [] }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = test_support::body_string(response).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert_eq!(
+            body,
+            "the library could not answer this request; the server's log says why"
+        );
+        assert!(
+            !body.contains(&fixture.path().display().to_string()),
+            "{body}"
+        );
     }
 }

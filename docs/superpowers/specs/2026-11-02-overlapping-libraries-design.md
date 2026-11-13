@@ -405,7 +405,8 @@ still refuses a subject spread over two directories.
 
 - **Move** becomes relabelling the directory's library. The split, join and
   fold steps of the libraries design §6.2 go, with their counts; Move's dry run
-  says who will gain and lose sight of the directory instead.
+  says who will gain and lose sight of the directory or a directory inside it
+  instead.
 - **Removal** deletes the `member_root` rows of the removed directory, then
   every member left with none, then every work left with no member, as now.
   The dry run counts the same. O220's no-library rule is unchanged.

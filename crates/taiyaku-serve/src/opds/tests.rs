@@ -2611,3 +2611,48 @@ mod narrowing {
         );
     }
 }
+
+/// O267, through a key as OPDS clients send one: a page or a cover whose file
+/// cannot be read is answered by a sentence naming it, never the server's path.
+mod answered_without_a_server_path {
+    use super::*;
+
+    /// `uri`'s status and body, and the fixture's directory, which the body
+    /// must not hold.
+    async fn unreadable(uri: &str) -> (StatusCode, String, String) {
+        let (_router, state, fixture) =
+            crate::test_support::router_over_a_scanned_cbz_that_is_not_an_archive();
+        assert_eq!(
+            state.works.snapshot()[0].id,
+            "scanned-v01",
+            "the fixture's slug"
+        );
+        let router = crate::test_support::key_authenticating(crate::build_router(state));
+        let response = crate::test_support::get(&router, uri).await;
+        let status = response.status();
+        let body = crate::test_support::body_string(response).await;
+        (status, body, fixture.path().display().to_string())
+    }
+
+    #[tokio::test]
+    async fn a_page() {
+        let (status, body, dir) = unreadable("/opds/v1.2/works/scanned-v01/raw/pages/0").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(
+            body,
+            "page 0 of `raw` of `scanned-v01` could not be read; the server's log says why"
+        );
+        assert!(!body.contains(&dir), "{body}");
+    }
+
+    #[tokio::test]
+    async fn the_cover() {
+        let (status, body, dir) = unreadable("/opds/v1.2/works/scanned-v01/raw/cover").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(
+            body,
+            "the cover of `raw` of `scanned-v01` could not be read; the server's log says why"
+        );
+        assert!(!body.contains(&dir), "{body}");
+    }
+}

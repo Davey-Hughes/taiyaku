@@ -443,12 +443,15 @@ export interface Moved {
   /** That library's name. */
   library: string
   /**
-   * The accounts, by name and in name order, that see the directory after the
-   * move and not before. An administrator and an account that sees every
-   * library see it either way, so neither is named.
+   * The accounts, by name and in name order, that see the directory or a
+   * directory inside it after the move and not before. An administrator and
+   * an account that sees every library see it either way, so neither is named.
    */
   gains_sight: string[]
-  /** The accounts that see it before the move and not after, named the same way. */
+  /**
+   * The accounts that see the directory or a directory inside it before the
+   * move and not after, named the same way.
+   */
   loses_sight: string[]
   /** The name of the directory's old library, where the move empties and removes it. */
   library_removed: string | null

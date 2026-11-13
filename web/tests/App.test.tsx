@@ -70,10 +70,9 @@ const ports = vi.hoisted(() => ({
   putProgress: vi.fn(),
   patchAlignment: vi.fn(),
   // Spec A2's `me()`. `App` does not call it: `Gate.tsx` does, once per page
-  // load, above the router, so only the sign-out test below reaches this, and
-  // it reaches it through a real `<Gate>`. Defaulted to "signed in" rather
-  // than set per test, so that gate mounts without every test in this file
-  // having to care.
+  // load, above the router, so only the tests that mount a real `<Gate>`
+  // (`openGated`) reach this. Defaulted to "signed in" rather than set per
+  // test, so that gate mounts without every test in this file having to care.
   me: vi.fn(),
   // The account panel's own calls. `App` renders `<Account>` unconditionally,
   // so any test that opens it reaches these — and an unmocked `logout` leaves
@@ -129,6 +128,7 @@ const { default: App } = await import('../src/App')
 // gate does not touch `resolver.ts`, deliberately (see its own doc), so it has
 // no reason to wait for the two `vi.mock` calls the way `App` does.
 import { Gate } from '../src/Gate'
+import { GateContext, type Gated } from '../src/gate'
 
 // `PageAnnotations` builds a `ResizeObserver` and `Filmstrip`/`useScrollToCurrent`
 // call `scrollIntoView`; jsdom carries neither. Stubbed exactly as
@@ -330,19 +330,37 @@ async function advance(ms: number) {
 /** `onLeave` for a test that has no interest in it. */
 const noop = () => {}
 
+/**
+ * The account `open` mounts the reader as. An administrator, because the
+ * reader offers correcting a pairing to no one else (O58).
+ */
+const administrator: Gated = {
+  who: {
+    user_id: 1,
+    admin: true,
+    can_download: true,
+    can_stream: true,
+    can_stamp: false,
+  },
+  signOut: noop,
+}
+
 async function open(): Promise<HTMLElement> {
-  const host = mount(<App work={WORK} onLeave={noop} />)
+  const host = mount(
+    <GateContext value={administrator}>
+      <App work={WORK} onLeave={noop} />
+    </GateContext>,
+  )
   await settle()
   return host
 }
 
 /**
- * The same reader, under the real sign-in gate.
+ * The same reader, under the real sign-in gate, which asks `ports.me`.
  *
- * **Only the sign-out test needs this.** What signing out does is unmount this
- * component, which cannot be observed from inside it — so the one test about
- * it mounts the thing that does the unmounting. Every other test in this file
- * mounts it bare.
+ * What signing out does is unmount this component, which cannot be observed
+ * from inside it, so the sign-out test mounts the thing that does the
+ * unmounting; the O58 tests reach a `user` account the way the app does.
  */
 async function openGated(): Promise<HTMLElement> {
   const host = mount(
@@ -1182,6 +1200,14 @@ describe('the reader keys', () => {
     expect(dialog(host, 'Keyboard help')).toBeNull()
     press('h')
     expect(dialog(host, 'Keyboard help')).not.toBeNull()
+  })
+
+  it('the help lists correcting a pairing for an administrator — O58', async () => {
+    const host = await open()
+    press('?')
+    expect(dialog(host, 'Keyboard help')?.textContent).toContain(
+      'correct this pairing',
+    )
   })
 
   it('? is inert with the help module switched off', async () => {
@@ -2460,6 +2486,39 @@ describe('correcting a pairing', () => {
     // nothing here has been written.
     expect(host.textContent).toContain('Pair')
     expect(resolver.dispose).not.toHaveBeenCalled()
+  })
+})
+
+// O58: the server refuses a correction from anyone but an administrator, so
+// the reader offers none to a `user` account. Through the real gate, which
+// reads the account from `me` as the app does.
+describe('a `user` account — O58', () => {
+  beforeEach(() => {
+    ports.me.mockResolvedValue({
+      user_id: 2,
+      admin: false,
+      can_download: true,
+      can_stream: true,
+      can_stamp: false,
+    })
+  })
+
+  it('c draws no correction banner and is left to the browser', async () => {
+    const host = await openGated()
+    expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/2')])
+    expect(press('c').defaultPrevented).toBe(false)
+    const banner = [...host.querySelectorAll('[role="status"]')].find((el) =>
+      el.textContent?.includes('Pick the'),
+    )
+    expect(banner).toBeUndefined()
+  })
+
+  it('the help lists no row for correcting a pairing', async () => {
+    const host = await openGated()
+    press('?')
+    const help = dialog(host, 'Keyboard help')
+    expect(help?.textContent).toContain('back to the library')
+    expect(help?.textContent).not.toContain('correct this pairing')
   })
 })
 

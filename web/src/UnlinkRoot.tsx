@@ -157,7 +157,7 @@ export function UnlinkRoot({
             {unlinked.loses_sight.length === 0
               ? 'no account'
               : namesOf(unlinked.loses_sight)}{' '}
-            will lose sight of it.
+            will lose sight of it or a directory inside it.
           </p>
           {removed !== undefined && <p className="last-dir">{removed}</p>}
           {unlinked.left_with_no_library.length > 0 && (

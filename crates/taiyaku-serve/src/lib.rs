@@ -85,17 +85,14 @@ pub use works::{Work, from_library, load_works, work_id};
 /// Everything a request needs: which works exist, and where pages come from.
 #[derive(Debug)]
 pub struct ServeState {
-    /// Where the progress, notes and truth routes (Task 13) read and write
-    /// through — and, since Task 15, the same library `works` below was
-    /// imported into (`taiyaku-cli`'s `serve` opens it, imports every
-    /// sidecar path it was handed through `library::import_canonical`, and
-    /// passes the open library in here), rather than a fresh in-memory one
-    /// this function used to open for itself. That is what makes a bridge
-    /// row `works::row_id_for_write` might still mint (a write reaching a
-    /// work through some path that bypassed import — `test_support::state`'s
-    /// fixtures do this on purpose, to test the bridge in isolation) land on
-    /// the *same* database a later `taiyaku library import` reconciles
-    /// against, rather than one that vanishes with the process.
+    /// Where the progress, notes and truth routes read and write: the library
+    /// `works` below was projected from or imported into (`taiyaku-cli`'s
+    /// `serve` imports every sidecar path it was handed through
+    /// `library::import_canonical`). So a bridge row `works::row_id_for_write`
+    /// mints lands on the database a later `taiyaku library import`
+    /// reconciles against, not one that vanishes with the process. Only a
+    /// fixed registry mints one, for a work that bypassed import as
+    /// `test_support::state`'s fixtures do; a live registry never does (O184).
     pub library: Arc<taiyaku_library::Library>,
     /// The works this process serves through `/api/works`, the reader's
     /// routes and OPDS: a [`Works`] registry, live when the server was
@@ -312,9 +309,9 @@ impl ServeState {
     /// ([`crate::view::EditionView::locate`]).
     ///
     /// Every source and every route — the API, the OPDS stream and the cover
-    /// — arrives here. The failure messages name what was missing, because a
-    /// reader shown a blank page with no explanation is the failure this
-    /// project exists to avoid.
+    /// — arrives here. The failure messages name what was missing, for the
+    /// server's log; a route sends `routes::unreadable`'s sentence instead,
+    /// since a message can name a path on the server (O267).
     ///
     /// # Errors
     ///
@@ -322,14 +319,13 @@ impl ServeState {
     /// at or past its total page count (the message then states how many
     /// pages it has), or if the underlying source (`PageSource::page`) fails
     /// to produce the page it located — a local read failure, or, over Stump,
-    /// a failed fetch. Every case appends the work's path to the source's own
-    /// message.
+    /// a failed fetch. The source's failure appends the work's path, for the
+    /// log.
     ///
-    /// **Both callers in `routes.rs` — `get_page` and `get_thumb` — map every
-    /// `Err` from this function to `404 not_found`, never `500`.** A local
-    /// read failure that has nothing to do with what the client asked for —
-    /// a permission refusal, a corrupted archive — is therefore reported to
-    /// a client identically to a page that genuinely does not exist.
+    /// **Every route answers an `Err` from this function with a `404`, never
+    /// a `500`.** A local read failure that has nothing to do with what the
+    /// client asked for — a permission refusal, a corrupted archive — is
+    /// therefore answered as a page the client cannot have, named without why.
     pub(crate) fn page(
         &self,
         view: &crate::view::EditionView,

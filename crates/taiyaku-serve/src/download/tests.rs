@@ -1633,3 +1633,70 @@ mod narrowing {
         );
     }
 }
+
+/// O267: a download whose file cannot be read is answered by a sentence naming
+/// the edition or the member, and the error, which names the server's path,
+/// goes to the log alone.
+mod answered_without_a_server_path {
+    use axum::http::StatusCode;
+
+    use crate::test_support::{self, Fixture};
+
+    /// `uri`'s status and body, through a session over `state`.
+    async fn answered(
+        state: &std::sync::Arc<crate::ServeState>,
+        uri: &str,
+    ) -> (StatusCode, String) {
+        let router =
+            test_support::authenticating(crate::build_router(state.clone()), &state.library);
+        let response = test_support::get(&router, uri).await;
+        let status = response.status();
+        (status, test_support::body_string(response).await)
+    }
+
+    /// One member that is not a file is not passed through, so the download
+    /// is generated and describing its pages fails.
+    #[tokio::test]
+    async fn an_edition_whose_one_member_is_gone() {
+        let (state, fixture) = test_support::state_with_real_pages();
+        std::fs::remove_file(fixture.path().join("a1.cbz")).expect("removes the member");
+        let (status, body) = answered(&state, "/api/works/w/a/download").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(
+            body,
+            "`a` of `w` could not be read; the server's log says why"
+        );
+        assert!(
+            !body.contains(&fixture.path().display().to_string()),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_edition_one_of_whose_two_members_is_not_an_archive() {
+        let tmp = Fixture::new("download-member-not-an-archive");
+        let state = std::sync::Arc::new(test_support::state(&tmp));
+        std::fs::write(tmp.path().join("c2.cbz"), b"not an archive").expect("overwrites c2");
+        let (status, body) = answered(&state, "/api/works/t/raw/download").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(
+            body,
+            "`raw` of `t` could not be read; the server's log says why"
+        );
+        assert!(!body.contains(&tmp.path().display().to_string()), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_member_whose_file_is_gone() {
+        let tmp = Fixture::new("download-member-gone");
+        let state = std::sync::Arc::new(test_support::state(&tmp));
+        std::fs::remove_file(tmp.path().join("c2.cbz")).expect("removes c2");
+        let (status, body) = answered(&state, "/api/works/t/raw/members/1/download").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(
+            body,
+            "member 1 of `raw` of `t` could not be read; the server's log says why"
+        );
+        assert!(!body.contains(&tmp.path().display().to_string()), "{body}");
+    }
+}

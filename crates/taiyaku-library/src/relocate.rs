@@ -11,10 +11,11 @@
 //! `library_emptied_by_move` removes a library the move empties, and its
 //! grants with it.
 //!
-//! **What changes is who sees the directory**, so that is what a move answers:
-//! the accounts that gain sight of it and the accounts that lose it, each
-//! account's sight read by `account::access_for`'s rule, through the
-//! directories its grants reach, before the move and after it.
+//! **What changes is who sees the directory and the directories nested in
+//! it**, so that is what a move answers: the accounts that gain sight of it or
+//! a directory inside it and the accounts that lose it, each account's sight
+//! read by `account::access_for`'s rule, through the directories its grants
+//! reach, before the move and after it.
 //!
 //! **A move into a library is refused where that library already holds the
 //! directory** (decision 25), **and inside or around one of its directories**
@@ -25,6 +26,7 @@
 //! **A rehearsal is the move, rolled back**, as `scan::removal_cost` is a
 //! removal rolled back.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension as _};
@@ -162,16 +164,19 @@ pub struct Moved {
     /// The library the directory is in afterwards, and its name.
     pub library_id: i64,
     pub library: String,
-    /// The accounts, by name and in name order, that see the directory after
-    /// the move and not before: whose grants reach it afterwards
-    /// ([`crate::account::access_for`]) and did not. An account granted a
-    /// library that reaches this directory from one around it sees it on both
-    /// sides, so it is not named for a grant of either library. An
-    /// administrator and an every-library account see every directory before
-    /// and after, so neither is named, as in `scan::only_grant_holders`.
+    /// The accounts, by name and in name order, that see the directory or a
+    /// directory nested in it after the move and not before: whose grants
+    /// reach it afterwards ([`crate::account::access_for`]) and did not. One
+    /// that keeps the directory through a library around it is named only for
+    /// a directory nested in it (O248). An administrator and an every-library
+    /// account see every directory before and after, so neither is named, as
+    /// in `scan::only_grant_holders`.
     pub gains_sight: Vec<String>,
-    /// The accounts that see the directory before the move and not after.
-    /// Named as `gains_sight` names them.
+    /// The accounts that see the directory or a directory nested in it before
+    /// the move and not after, named as `gains_sight` names them. Never one in
+    /// both: a move only adds one root to an account's libraries or removes
+    /// it, and each root's share of its sight depends only on that root's path
+    /// and patterns, so its sight only grows or only shrinks.
     pub loses_sight: Vec<String>,
     /// The library the directory left, where it was that library's last
     /// directory, and the grants that went with it.
@@ -183,35 +188,65 @@ pub struct Moved {
     pub left_with_no_library: Vec<String>,
 }
 
-/// The accounts that see root `root_id` as the store stands, in name order,
-/// under `scan::only_grant_holders`'s filter: an account whose role is `user`
-/// and that does not see every library, the only kind a grant limits. Each
-/// account's sight is [`crate::account::access_for`]'s, so a move or an
-/// unlink names what the account is then served.
-fn sighted(conn: &Connection, root_id: i64) -> Result<Vec<String>, String> {
-    let failed = |e: rusqlite::Error| format!("reading who sees root {root_id}: {e}");
+/// Which of `roots` each account sees as the store stands, by name, under
+/// `scan::only_grant_holders`'s filter: an account whose role is `user` and
+/// that does not see every library, the only kind a grant limits. Each set is
+/// what [`crate::account::access_for`] allows, so a move or an unlink names
+/// what the account is then served. A set may be empty.
+fn sighted(conn: &Connection, roots: &[i64]) -> Result<BTreeMap<String, BTreeSet<i64>>, String> {
+    let failed = |e: rusqlite::Error| format!("reading who sees directories {roots:?}: {e}");
     let limited: Vec<(i64, String)> = conn
-        .prepare(
-            "SELECT id, name FROM user WHERE role = 'user' AND every_library = 0 ORDER BY name",
-        )
+        .prepare("SELECT id, name FROM user WHERE role = 'user' AND every_library = 0")
         .and_then(|mut stmt| {
             stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<Result<Vec<_>, _>>()
         })
         .map_err(failed)?;
-    let mut seeing = Vec::new();
+    let mut seeing = BTreeMap::new();
     for (id, name) in limited {
-        if crate::account::access_for(conn, id)?.allows(root_id) {
-            seeing.push(name);
-        }
+        let access = crate::account::access_for(conn, id)?;
+        let seen = roots.iter().copied().filter(|root| access.allows(*root));
+        seeing.insert(name, seen.collect());
     }
     Ok(seeing)
 }
 
-/// What taking a directory out of one library does to who sees it, and to
-/// that library where it was its last directory: the half [`Moved`] and
-/// [`crate::scan::Unlinked`] share, under the same names, so a move's dialog
-/// and an unlink's cannot answer differently.
+/// The names, in name order, whose set in `now` holds a directory their set in
+/// `than` lacks. An account `than` does not hold saw none of them there.
+fn seeing_more(
+    now: &BTreeMap<String, BTreeSet<i64>>,
+    than: &BTreeMap<String, BTreeSet<i64>>,
+) -> Vec<String> {
+    let none = BTreeSet::new();
+    now.iter()
+        .filter(|(name, seen)| !seen.is_subset(than.get(*name).unwrap_or(&none)))
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// Root `root_id` and every root nested strictly inside it
+/// ([`crate::reach::nested_in`]): what a move or an unlink of it can give or
+/// take sight of (O248), since an account that keeps it through a library
+/// around it can still lose one nested in it. Read once, before the write,
+/// which changes which library holds a directory and never its path.
+fn and_nested(conn: &Connection, root_id: i64) -> Result<Vec<i64>, String> {
+    let roots = crate::scan::roots(conn)?;
+    let dir = roots
+        .iter()
+        .find(|row| row.id == root_id)
+        .ok_or_else(|| format!("there is no directory {root_id}"))?;
+    Ok(roots
+        .iter()
+        .filter(|row| row.id == root_id || crate::reach::nested_in(&row.path, &dir.path).is_some())
+        .map(|row| row.id)
+        .collect())
+}
+
+/// What taking a directory out of one library does to who sees it or a
+/// directory nested in it, and to that library where it was its last
+/// directory: the half [`Moved`] and [`crate::scan::Unlinked`] share, under
+/// the same names, so a move's dialog and an unlink's cannot answer
+/// differently.
 pub(crate) struct Leaving {
     pub(crate) gains_sight: Vec<String>,
     pub(crate) loses_sight: Vec<String>,
@@ -223,7 +258,8 @@ pub(crate) struct Leaving {
 /// [`Leaving`] for `write`, which takes root `root_id` out of library `from`,
 /// called `from_name`, inside the caller's transaction. All but the sight
 /// lists is read before `write`, while a library it empties and its grants
-/// are still there to read; who sees the directory is read on both sides.
+/// are still there to read; who sees the directory or a directory nested in
+/// it is read on both sides.
 pub(crate) fn leaving(
     conn: &Connection,
     root_id: i64,
@@ -231,7 +267,8 @@ pub(crate) fn leaving(
     write: impl FnOnce() -> Result<(), String>,
 ) -> Result<Leaving, String> {
     let failed = |e: rusqlite::Error| format!("reading what leaving library {from} takes: {e}");
-    let saw = sighted(conn, root_id)?;
+    let dirs = and_nested(conn, root_id)?;
+    let saw = sighted(conn, &dirs)?;
     let last = conn
         .query_row(
             "SELECT NOT EXISTS (SELECT 1 FROM library_root
@@ -256,17 +293,10 @@ pub(crate) fn leaving(
         (0, Vec::new())
     };
     write()?;
-    let sees = sighted(conn, root_id)?;
+    let sees = sighted(conn, &dirs)?;
     Ok(Leaving {
-        gains_sight: sees
-            .iter()
-            .filter(|name| !saw.contains(name))
-            .cloned()
-            .collect(),
-        loses_sight: saw
-            .into_iter()
-            .filter(|name| !sees.contains(name))
-            .collect(),
+        gains_sight: seeing_more(&sees, &saw),
+        loses_sight: seeing_more(&saw, &sees),
         library_removed: last.then_some(from_name),
         grants_removed,
         left_with_no_library,

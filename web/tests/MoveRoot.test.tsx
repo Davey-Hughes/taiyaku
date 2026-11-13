@@ -212,7 +212,7 @@ describe('MoveRoot', () => {
     expect(
       [...host.querySelectorAll('.move-counts > p')].map((p) => p.textContent),
     ).toEqual([
-      'Moving this directory from Chapters to Manga: kim will gain sight of it, and ana will lose sight of it.',
+      'Moving this directory from Chapters to Manga: kim will gain sight of it or a directory inside it, and ana will lose sight of it or a directory inside it.',
     ])
     const dialog = host.querySelector('dialog') as HTMLElement
     expect(dialog.textContent).not.toMatch(/work|undefined|\d/)
@@ -224,7 +224,7 @@ describe('MoveRoot', () => {
     await choose(host, '7')
     await press(see(host))
     expect(host.querySelector('.move-counts')?.textContent).toBe(
-      'Moving this directory from Chapters to Manga: no account will gain or lose sight of it.',
+      'Moving this directory from Chapters to Manga: no account will gain or lose sight of it or a directory inside it.',
     )
     expect(confirm(host)?.textContent).toBe('Move')
   })
@@ -237,7 +237,7 @@ describe('MoveRoot', () => {
     await choose(host, '7')
     await press(see(host))
     expect(host.querySelector('.move-counts')?.textContent).toBe(
-      'Moving this directory from Chapters to Manga: no account will gain sight of it, and ana, bo and cy will lose sight of it.',
+      'Moving this directory from Chapters to Manga: no account will gain sight of it or a directory inside it, and ana, bo and cy will lose sight of it or a directory inside it.',
     )
   })
 
@@ -249,7 +249,7 @@ describe('MoveRoot', () => {
     await choose(host, '7')
     await press(see(host))
     expect(host.querySelector('.move-counts')?.textContent).toBe(
-      'Moving this directory from Chapters to Manga: kim and lee will gain sight of it, and no account will lose sight of it.',
+      'Moving this directory from Chapters to Manga: kim and lee will gain sight of it or a directory inside it, and no account will lose sight of it or a directory inside it.',
     )
   })
 
@@ -263,7 +263,7 @@ describe('MoveRoot', () => {
     expect(
       [...host.querySelectorAll('.move-counts > p')].map((p) => p.textContent),
     ).toEqual([
-      'Moving this directory from Chapters to Manga: no account will gain or lose sight of it.',
+      'Moving this directory from Chapters to Manga: no account will gain or lose sight of it or a directory inside it.',
       'Chapters has no other directory, so it is removed, with 1 grant.',
     ])
   })

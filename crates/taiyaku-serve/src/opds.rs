@@ -734,6 +734,7 @@ pub(crate) async fn stream_page(
     // `…/pages/{pageNumber}?zero_based=true` — it converts *for* PSE. So a
     // server whose PSE stream is 1-based disagrees with Stump, the other
     // implementation of the same feed.
+    let what = crate::routes::page_named(&view, number);
     let index = match view.page_to_full(number) {
         Ok(index) => index,
         Err(e) => return missing(e),
@@ -773,7 +774,7 @@ pub(crate) async fn stream_page(
             page.bytes,
         )
             .into_response(),
-        Ok(Err(e)) => missing(e),
+        Ok(Err(e)) => crate::routes::unreadable(&what, &e),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("page read panicked: {e}"),
@@ -795,18 +796,26 @@ pub(crate) async fn cover(
         Ok(view) => view,
         Err(refusal) => return refusal,
     };
+    let what = format!("the cover of `{}` of `{}`", view.key(), view.work().id);
+    // Located before the read, so a refusal keeps its own words and only a
+    // failed read is answered without them (O267).
+    let first = match view.page_to_full(0) {
+        Ok(first) => first,
+        Err(message) => return missing(message),
+    };
+    // Keyed on whichever member `Edition::locate(0)` actually resolves page 0
+    // to, not `members.first()` unconditionally. `locate` steps over a member
+    // recorded with zero pages, so a first member with none would make
+    // `members.first()` name a different member than the one `state.page`
+    // below actually reads bytes from — caching the generated cover under the
+    // wrong member's hash. A narrowed edition's page 0 is the first page of
+    // its first visible member, so the member's hash still names its cover.
+    let sha256 = match view.locate(first) {
+        Ok((member, _within)) => member.sha256.clone(),
+        Err(message) => return missing(message),
+    };
     let fetched = tokio::task::spawn_blocking(move || {
-        let first = view.page_to_full(0)?;
-        // Keyed on whichever member `Edition::locate(0)` actually resolves
-        // page 0 to, not `members.first()` unconditionally. `locate` steps over
-        // a member recorded with zero pages, so a first member with none would
-        // make `members.first()` name a different member than the one
-        // `state.page` below actually reads bytes from — caching the generated
-        // cover under the wrong member's hash. A narrowed edition's page 0 is
-        // the first page of its first visible member, so the member's hash
-        // still names its cover.
-        let (cover_member, _within) = view.locate(first)?;
-        crate::cover::cached_or_generated(&state.cache_dir, &cover_member.sha256, || {
+        crate::cover::cached_or_generated(&state.cache_dir, &sha256, || {
             state.page(&view, first).map(|p| p.bytes)
         })
     })
@@ -821,7 +830,7 @@ pub(crate) async fn cover(
             bytes,
         )
             .into_response(),
-        Ok(Err(e)) => missing(e),
+        Ok(Err(e)) => crate::routes::unreadable(&what, &e),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("cover generation panicked: {e}"),

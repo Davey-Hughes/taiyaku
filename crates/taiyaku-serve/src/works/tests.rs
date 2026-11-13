@@ -275,8 +275,10 @@ fn two_works_bridged_into_one_library_get_distinct_content_keys() {
         fixture_doc(2, "bb"),
     );
 
-    let alpha_id = crate::works::row_id_for_write(&conn, &alpha).expect("mints alpha's row");
-    let beta_id = crate::works::row_id_for_write(&conn, &beta).expect("mints beta's row");
+    let alpha_id = crate::works::row_id_for_write(&conn, &alpha, crate::works::Mint::Bridge)
+        .expect("mints alpha's row");
+    let beta_id = crate::works::row_id_for_write(&conn, &beta, crate::works::Mint::Bridge)
+        .expect("mints beta's row");
     assert_ne!(
         alpha_id, beta_id,
         "each work must get a row of its own, not share one"
@@ -306,7 +308,8 @@ fn two_works_bridged_into_one_library_get_distinct_content_keys() {
     // IGNORE` path has to be idempotent for the racing-first-writes case its
     // own doc comment describes.
     assert_eq!(
-        crate::works::row_id_for_write(&conn, &beta).expect("looks beta up again"),
+        crate::works::row_id_for_write(&conn, &beta, crate::works::Mint::Bridge)
+            .expect("looks beta up again"),
         beta_id
     );
     let rows: i64 = conn
@@ -329,7 +332,8 @@ fn a_bridged_works_own_untouched_document_can_be_applied_back_over_it() {
         std::path::PathBuf::from("/corpus/alpha/taiyaku.json"),
         fixture_doc(1, "aa"),
     );
-    let work_id = crate::works::row_id_for_write(&conn, &work).expect("mints the bridge row");
+    let work_id = crate::works::row_id_for_write(&conn, &work, crate::works::Mint::Bridge)
+        .expect("mints the bridge row");
 
     let doc = taiyaku_library::librarydoc::of(&conn, work_id).expect("projecting");
     assert_eq!(
@@ -382,7 +386,8 @@ fn a_bridged_row_carries_the_works_own_reading_direction_back_out() {
             std::path::PathBuf::from(format!("/corpus/{slug}/taiyaku.json")),
             fixture_doc_reading(1, sha, reading),
         );
-        let row = crate::works::row_id_for_write(&conn, &work).expect("mints the bridge row");
+        let row = crate::works::row_id_for_write(&conn, &work, crate::works::Mint::Bridge)
+            .expect("mints the bridge row");
 
         let projected = taiyaku_library::project::sidecar(&conn, row).unwrap_or_else(|e| {
             panic!("a bridge row must be projectable, and `{slug}`'s was not: {e}")

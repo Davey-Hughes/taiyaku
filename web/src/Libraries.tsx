@@ -30,7 +30,8 @@
  * comes, if the person is still where they asked, and the report takes focus
  * there: the button that had it went with the page. A removal's report is the
  * one place a lost position or an unwritable document is said; a move derives
- * nothing, so its report says who gained and lost sight of the directory.
+ * nothing, so its report says who gained and lost sight of the directory or
+ * a directory inside it.
  *
  * **An answer that comes once the person has gone to another page of the
  * screen is said on the page they are on**, as `configPages.tsx` says for

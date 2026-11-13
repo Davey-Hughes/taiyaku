@@ -4,7 +4,7 @@
 
 **Goal:** Part D of the deployment spec, as the pre-deploy spec changes it, in two PRs.
 - PR 1 (Part 1): a work none of whose members any directory still holds is marked missing by every derive, hidden from every listing a reader browses and from `/api/works` and OPDS, answered by the reader with a reason, and brought back with its id, positions and notes when a scan finds a member again. Closes O48; narrows O91.
-- PR 2 (Part 2): an administrator lists the missing works (Configuration → Missing works, `GET /api/library/missing`, `taiyaku library missing`) and removes one or all, counted first. A live registry never mints a `bridge:` row (O184). Closes O91 and O184.
+- PR 2 (Part 2): an administrator lists the missing works (Configuration → Missing works, `GET /api/library/missing`, `taiyaku library missing`) and removes one or all, counted first. A live registry never mints a `bridge:` row (O184). Closes O91 and O184. *O184 was closed by go-public lane 3 (`2026-11-12-go-public-lane-3-second-accounts.md`); O91 is still open, and PR 2 closes it alone.*
 
 **Architecture:**
 - Part 1: migration 020 (provisional) adds `work.missing_since`; `derive::mark_missing` marks and clears after the fold loop (Task 1) and is reached by every way a member's files go (Task 2); `browse`'s listings take `missing_since IS NULL` (Task 3); the registry's `Work` carries the mark, `/api/works` and OPDS skip it, `get_sidecar` answers it 404 (Task 4); the reader says so and the scan report shows both counts (Task 5); the closes (Task 6); the Finish.
@@ -356,6 +356,9 @@ Spec §5 PR 2, "The CLI"; decision 6. Model: `proposals` (`crates/taiyaku-cli/sr
 
 ### Part 2, Task 4: A live registry never mints a `bridge:` row (O184)
 
+*Done in go-public lane 3, as that lane's plan's Task 6
+(`2026-11-12-go-public-lane-3-second-accounts.md`), which closed O184.*
+
 Spec §5 PR 2, "O184"; decision 5. O184's row (~1793).
 
 **Files:**
@@ -426,6 +429,8 @@ Spec §5 PR 2 ("Remove one, or remove all, each behind a dialog that shows the c
 ---
 
 ### Part 2, Task 7: The closes in `docs/status.md`, the 3.40.1 run and the gate
+
+*O184 was closed by go-public lane 3 (`2026-11-12-go-public-lane-3-second-accounts.md`); O91 is still open, so this task closes O91 alone and leaves O184's row as that lane wrote it.*
 
 As Part 1 Task 6, for O91 and O184 (row O184 ~1793; O91 as Part 1 left it).
 

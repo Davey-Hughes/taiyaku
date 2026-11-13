@@ -1,5 +1,6 @@
 import { useRef, type CSSProperties } from 'react'
 import { usePanelFocus } from './focus'
+import { READER_KEYS, withoutCorrecting } from './keys'
 import type { Direction } from './modules/direction'
 import { helpGroups } from './modules/help'
 import type { ReaderModule } from './module'
@@ -47,6 +48,11 @@ export interface HelpProps {
    * that function's doc has the rule and what it does not cover.
    */
   modules: ReaderModule<unknown>[]
+  /**
+   * The account is an administrator. For anyone else `c`'s row is left out,
+   * as `keyplan.ts` leaves the key to the browser (O58).
+   */
+  mayCorrect: boolean
   onClose: () => void
 }
 
@@ -81,7 +87,13 @@ export interface HelpProps {
  * `CreditsPanel`'s shape, for the same reason it has that shape. `Escape`
  * closes this panel and `CreditsPanel`, and Settings (spec 2026-09-26 §3.3).
  */
-export function Help({ visible, modules, reading, onClose }: HelpProps) {
+export function Help({
+  visible,
+  modules,
+  reading,
+  mayCorrect,
+  onClose,
+}: HelpProps) {
   const panelRef = useRef<HTMLDivElement>(null)
   usePanelFocus(panelRef, visible)
   if (!visible) return null
@@ -99,7 +111,11 @@ export function Help({ visible, modules, reading, onClose }: HelpProps) {
           Close
         </button>
       </div>
-      {helpGroups(modules, reading).map((group) => (
+      {helpGroups(
+        modules,
+        reading,
+        mayCorrect ? READER_KEYS : withoutCorrecting(READER_KEYS),
+      ).map((group) => (
         <section key={group.heading}>
           <h3 className="reader-panel-heading">{group.heading}</h3>
           <dl style={{ margin: 0 }}>

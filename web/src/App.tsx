@@ -753,6 +753,11 @@ function App({ work, onLeave }: AppProps) {
   // `helpVisibleRef` and `panelModeRef` exist beside it.
   const accountOpenRef = useRef(false)
   accountOpenRef.current = accountOpen
+  // O58: the server takes a correction from an administrator alone, so no one
+  // else is offered `c` or its help row. A ref for `accountOpenRef`'s reason.
+  const mayCorrect = gate?.who.admin === true
+  const mayCorrectRef = useRef(mayCorrect)
+  mayCorrectRef.current = mayCorrect
 
   // The four reads and the order they happen in are `startup.ts`'s
   // `openWork`, which is where the throw, the notes read's own `catch` and
@@ -848,6 +853,7 @@ function App({ work, onLeave }: AppProps) {
           ),
           creditsPanel: creditsPrefsRef.current.panel,
           helpEnabled: helpPrefsRef.current.enabled,
+          mayCorrect: mayCorrectRef.current,
         },
       )
       if (!plan) return
@@ -3072,6 +3078,7 @@ function App({ work, onLeave }: AppProps) {
         visible={helpVisible}
         modules={enabledModules(registry.all(), prefsMap)}
         reading={effectiveReading}
+        mayCorrect={mayCorrect}
         onClose={() => setHelpVisible(false)}
       />
       {/*

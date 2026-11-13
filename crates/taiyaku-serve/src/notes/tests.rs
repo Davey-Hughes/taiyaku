@@ -41,6 +41,7 @@ fn notes_are_written_to_the_library_not_into_the_sidecar() {
             notes: vec![note("01J8", 12, None)],
         },
         &work.sidecar(),
+        crate::works::Mint::Bridge,
     )
     .unwrap();
 
@@ -81,7 +82,15 @@ fn a_note_round_trips_with_and_without_a_region() {
         ],
     };
 
-    store(&library, &work, 1, &stored, &work.sidecar()).unwrap();
+    store(
+        &library,
+        &work,
+        1,
+        &stored,
+        &work.sidecar(),
+        crate::works::Mint::Bridge,
+    )
+    .unwrap();
     let read_back = load(&library, &work, 1, &work.sidecar()).unwrap();
     // `notes::to_json`'s own doc comment is the invariant this is standing in
     // for: the region-less note must serialise with the field omitted, not
@@ -230,12 +239,28 @@ fn storing_notes_mints_exactly_one_bridge_row_for_a_work_the_library_never_impor
         "nothing has been written yet, so no row exists"
     );
 
-    store(&library, &work, 1, &on("raw", 0, None), &work.sidecar()).unwrap();
+    store(
+        &library,
+        &work,
+        1,
+        &on("raw", 0, None),
+        &work.sidecar(),
+        crate::works::Mint::Bridge,
+    )
+    .unwrap();
     let first_id = crate::works::find_row(&library.conn(), &work)
         .unwrap()
         .expect("a row now exists");
 
-    store(&library, &work, 1, &empty("t"), &work.sidecar()).unwrap();
+    store(
+        &library,
+        &work,
+        1,
+        &empty("t"),
+        &work.sidecar(),
+        crate::works::Mint::Bridge,
+    )
+    .unwrap();
     let second_id = crate::works::find_row(&library.conn(), &work)
         .unwrap()
         .expect("still there");

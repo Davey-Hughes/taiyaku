@@ -43,6 +43,7 @@ const CALM: Guards = {
   zoomable: true,
   creditsPanel: true,
   helpEnabled: true,
+  mayCorrect: true,
 }
 
 const guards = (over: Partial<Guards> = {}): Guards => ({ ...CALM, ...over })
@@ -355,6 +356,16 @@ describe('keyPlan, a focused control (spec 2026-09-26 §3.2)', () => {
 describe('keyPlan, correction', () => {
   it('opens correction mode', () => {
     expect(act('c', { kind: 'correct' })).toEqual({ kind: 'begin-correction' })
+  })
+
+  /** O58: the server refuses anyone else's write, so the key is not offered and the browser keeps it. */
+  it('leaves c to the browser for an account that may not correct', () => {
+    expect(
+      keyPlan('c', { kind: 'correct' }, guards({ mayCorrect: false })),
+    ).toBeUndefined()
+    expect(act('c', { kind: 'correct' }, { mayCorrect: true })).toEqual({
+      kind: 'begin-correction',
+    })
   })
 
   /**

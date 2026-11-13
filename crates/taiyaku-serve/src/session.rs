@@ -882,12 +882,10 @@ pub(crate) fn refuse_a_device_credential(extensions: &axum::http::Extensions) ->
 /// No function in this crate answers only the first half, which is the property
 /// `auth::tests::no_module_answers_the_role_question_alone` holds.
 ///
-/// **O58's two routes are deliberately untouched**, and they are not an
-/// exception to the rule: `put_truth` and `patch_alignments` take no
-/// `Principal` at all and are not administrative — any authenticated reader
-/// may write a truth document. What credential kind *should* be allowed to
-/// rewrite a shared document is the question O58 holds open, and it is a
-/// different question from this one.
+/// **Both shared-document writes open with this gate** (O58): `put_truth` and
+/// `patch_alignments` rewrite a document every account that may open the work
+/// is served, so only an administrator writes one, and never by a key; a key
+/// still reads both.
 pub(crate) fn administering_or_forbidden(
     principal: &crate::auth::Principal,
     extensions: &axum::http::Extensions,

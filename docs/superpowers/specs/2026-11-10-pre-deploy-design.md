@@ -908,7 +908,9 @@ written and what its pre-flight settled; everything else is Part D's.
    `/api/works` and OPDS.
 4. **A removal takes the library job lock and answers 409 in O245's words**
    (told to the owner).
-5. **O184 is folded in** (rulings, 2026-11-10), in the second PR.
+5. **O184 is folded in** (rulings, 2026-11-10), in the second PR. *Done in
+   go-public lane 3 instead (`2026-11-12-go-public-design.md`, §5), which
+   closed O184.*
 6. **A removal is one work or all of them, and each row names the libraries
    that reach it** (the spec's own call, from D-4). The libraries column
    stands in for the libraries design's §9 grouping; the tab has no filter. A
@@ -1062,7 +1064,7 @@ written and what its pre-flight settled; everything else is Part D's.
   registry still mints: the CLI's argv mode imports every sidecar before it
   serves, so its works have rows, but `test_support::state`'s fixtures and
   `corpus.rs` pair a fixed registry with an empty library. `alignments::store`'s doc
-  comment says so.
+  comment says so. *Done in go-public lane 3, as decision 5 now says.*
 
 ### Boundaries
 

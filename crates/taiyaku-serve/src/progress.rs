@@ -16,7 +16,7 @@ use taiyaku_core::Sidecar;
 use taiyaku_library::state::{self, Arrival, Numbering};
 use taiyaku_library::{Library, Position, Progress};
 
-use crate::works::{self, Work};
+use crate::works::{self, Mint, NoRow, Work};
 
 /// Every position this reader holds on this work, newest first.
 ///
@@ -54,14 +54,15 @@ pub fn load(
 /// would: the stored position is the newer (`state::put_progress_in_order`).
 ///
 /// The library row bridging `work`'s slug to a numeric `work_id` is minted
-/// here on first write if none exists yet — see `works::row_id_for_write`.
+/// here if none exists and `mint` allows it — see `works::row_id_for_write`.
 ///
 /// The slot is in `numbered`, the document the reader's view was numbered
 /// from, and the page it names there is stored with it (O244).
 ///
 /// # Errors
 ///
-/// Returns an error if SQLite fails.
+/// [`NoRow::Gone`] if the work's row is gone and `mint` mints none, and
+/// [`NoRow::Failed`] if SQLite fails.
 pub fn store(
     library: &Library,
     work: &Work,
@@ -69,9 +70,10 @@ pub fn store(
     progress: &Progress,
     numbered: &Sidecar,
     arrival: Arrival,
-) -> Result<(), String> {
-    let conn = library.saving()?;
-    let work_id = works::row_id_for_write(&conn, work)?;
+    mint: Mint,
+) -> Result<(), NoRow> {
+    let conn = library.saving().map_err(NoRow::Failed)?;
+    let work_id = works::row_id_for_write(&conn, work, mint)?;
     state::put_progress_in_order(
         &conn,
         library.progress_order(),
@@ -80,7 +82,8 @@ pub fn store(
         user_id,
         progress,
         Numbering::Document(numbered),
-    )?;
+    )
+    .map_err(NoRow::Failed)?;
     Ok(())
 }
 

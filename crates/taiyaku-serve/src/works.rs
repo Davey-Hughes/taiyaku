@@ -388,19 +388,46 @@ fn find_row_by_slug(conn: &rusqlite::Connection, slug: &str) -> Result<Option<i6
     .map_err(|e| format!("looking up work `{slug}` in the library: {e}"))
 }
 
-/// The library's own numeric id for a work, minted on first write if this is
-/// the first state anything has recorded against it.
+/// Whether a write may mint the `work` row it finds missing (O184).
 ///
-/// **Bridges two identities.** `ServeState.works` holds `Work`s keyed by slug
-/// (`work.id`, a `String`); `taiyaku-library` keys `progress`, `notes` and
-/// `truth` on the numeric `work.id` row `taiyaku_library::import::sidecar`
-/// assigns. A `Work` built by `taiyaku-cli`'s `serve_work` already has a
-/// matching row, its slug having come from one, so this is a lookup and never
-/// a mint. A `Work` built by `load_works`, which this crate's own fixtures and
-/// `corpus.rs` call, has never been imported, so nothing in `library`'s `work`
-/// table names it. Looked up by slug on every call rather than cached on
-/// `Work`: there is nowhere on it to cache a numeric id, even for the one call
-/// site the answer would save a query on.
+/// A live registry's works were projected out of their rows, so a row missing
+/// now was deleted since, and a minted one would bring the work back with no
+/// editions at the next refresh. A fixed registry may hold a `Work` that was
+/// never imported, as this crate's fixtures and `corpus.rs` do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mint {
+    Bridge,
+    Never,
+}
+
+impl Mint {
+    /// `Never` for a live registry, `Bridge` for a fixed one.
+    pub(crate) fn of(works: &crate::Works) -> Self {
+        if works.is_live() {
+            Self::Never
+        } else {
+            Self::Bridge
+        }
+    }
+}
+
+/// Why a write has no `work` row to write against.
+#[derive(Debug)]
+pub(crate) enum NoRow {
+    /// The row is gone and [`Mint::Never`] mints none: `` no work `{slug}` ``,
+    /// the answer a work this server does not hold gets.
+    Gone(String),
+    Failed(String),
+}
+
+/// The library's own numeric id for a work, which `progress`, `notes`,
+/// `truth` and the alignment rows are keyed on, where `ServeState.works` keys
+/// a `Work` by slug. Looked up by slug on every call: there is nowhere on
+/// `Work` to cache a numeric id.
+///
+/// **A missing row is minted only under [`Mint::Bridge`]**, a fixed
+/// registry's: its `Work` may never have been imported, so nothing in the
+/// `work` table names it. A live registry never mints ([`Mint`] says why).
 ///
 /// A row minted here carries only what the three state tables' foreign keys
 /// need to resolve, plus the columns `work` declares `NOT NULL` —
@@ -421,9 +448,14 @@ fn find_row_by_slug(conn: &rusqlite::Connection, slug: &str) -> Result<Option<i6
 ///
 /// # Errors
 ///
-/// Returns an error if SQLite fails.
-pub(crate) fn row_id_for_write(conn: &rusqlite::Connection, work: &Work) -> Result<i64, String> {
-    row_id_for_document(conn, &work.id, &work.sidecar(), &work.path)
+/// [`NoRow::Gone`] if the row is missing and `mint` is [`Mint::Never`], and
+/// [`NoRow::Failed`] if SQLite fails.
+pub(crate) fn row_id_for_write(
+    conn: &rusqlite::Connection,
+    work: &Work,
+    mint: Mint,
+) -> Result<i64, NoRow> {
+    row_id_for_document(conn, &work.id, &work.sidecar(), &work.path, mint)
 }
 
 /// [`row_id_for_write`] for a caller that already holds the document.
@@ -444,15 +476,19 @@ pub(crate) fn row_id_for_write(conn: &rusqlite::Connection, work: &Work) -> Resu
 ///
 /// # Errors
 ///
-/// Returns an error if SQLite fails.
+/// As [`row_id_for_write`].
 pub(crate) fn row_id_for_document(
     conn: &rusqlite::Connection,
     slug: &str,
     sidecar: &Sidecar,
     path: &Path,
-) -> Result<i64, String> {
-    if let Some(id) = find_row_by_slug(conn, slug)? {
+    mint: Mint,
+) -> Result<i64, NoRow> {
+    if let Some(id) = find_row_by_slug(conn, slug).map_err(NoRow::Failed)? {
         return Ok(id);
+    }
+    if mint == Mint::Never {
+        return Err(NoRow::Gone(format!("no work `{slug}`")));
     }
     conn.execute(
         "INSERT OR IGNORE INTO work
@@ -467,10 +503,14 @@ pub(crate) fn row_id_for_document(
             path.to_string_lossy(),
         ],
     )
-    .map_err(|e| format!("registering work `{slug}` in the library: {e}"))?;
-    find_row_by_slug(conn, slug)?.ok_or_else(|| {
-        format!("work `{slug}` was just registered in the library but cannot be found")
-    })
+    .map_err(|e| NoRow::Failed(format!("registering work `{slug}` in the library: {e}")))?;
+    find_row_by_slug(conn, slug)
+        .map_err(NoRow::Failed)?
+        .ok_or_else(|| {
+            NoRow::Failed(format!(
+                "work `{slug}` was just registered in the library but cannot be found"
+            ))
+        })
 }
 
 /// `taiyaku-library/src/import.rs`'s private `direction_text`, duplicated

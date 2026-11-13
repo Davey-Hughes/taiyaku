@@ -1134,9 +1134,9 @@ pub struct Kept {
 /// unlink changes who sees a directory and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Unlinked {
-    /// The accounts, by name and in name order, that see the directory before
-    /// the unlink and not after, as [`crate::relocate::Moved::loses_sight`]
-    /// names them.
+    /// The accounts, by name and in name order, that see the directory or a
+    /// directory nested in it before the unlink and not after, as
+    /// [`crate::relocate::Moved::loses_sight`] names them.
     pub loses_sight: Vec<String>,
     /// The library the directory left, where it was that library's last
     /// directory, and the grants that went with it.

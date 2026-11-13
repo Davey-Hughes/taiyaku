@@ -14,14 +14,26 @@ const noop = () => {}
 describe('Help', () => {
   it('renders nothing when not visible', () => {
     const host = mount(
-      <Help visible={false} modules={[]} reading="ltr" onClose={noop} />,
+      <Help
+        visible={false}
+        modules={[]}
+        reading="ltr"
+        mayCorrect
+        onClose={noop}
+      />,
     )
     expect(host.firstElementChild).toBeNull()
   })
 
   it('renders a labelled dialog with the Reading group, even with no modules', () => {
     const host = mount(
-      <Help visible={true} modules={[]} reading="ltr" onClose={noop} />,
+      <Help
+        visible={true}
+        modules={[]}
+        reading="ltr"
+        mayCorrect
+        onClose={noop}
+      />,
     )
     const dialog = host.querySelector('[role="dialog"]')
     expect(dialog).not.toBeNull()
@@ -63,7 +75,13 @@ describe('Help', () => {
       },
     ]
     const host = mount(
-      <Help visible={true} modules={modules} reading="ltr" onClose={noop} />,
+      <Help
+        visible={true}
+        modules={modules}
+        reading="ltr"
+        mayCorrect
+        onClose={noop}
+      />,
     )
     const headings = [...host.querySelectorAll('h3')].map((h) => h.textContent)
     expect(headings).toEqual(['Reading', 'Keyboard help'])
@@ -81,10 +99,39 @@ describe('Help', () => {
     )
   })
 
+  // O58: the server refuses a correction from anyone but an administrator, so
+  // the help offers `c` to an administrator alone.
+  it('lists the correcting row only for an account that may correct', () => {
+    const rowsSaid = (mayCorrect: boolean) => {
+      const host = mount(
+        <Help
+          visible={true}
+          modules={[]}
+          reading="ltr"
+          mayCorrect={mayCorrect}
+          onClose={noop}
+        />,
+      )
+      return [...host.querySelectorAll('dl > div dd')].map(
+        (dd) => dd.textContent,
+      )
+    }
+    expect(rowsSaid(true)).toContain('correct this pairing')
+    const without = rowsSaid(false)
+    expect(without).not.toContain('correct this pairing')
+    expect(without).toContain('move into the bars, and on round to the page')
+  })
+
   it('calls onClose when the Close button is pressed', () => {
     const onClose = vi.fn()
     const host = mount(
-      <Help visible={true} modules={[]} reading="ltr" onClose={onClose} />,
+      <Help
+        visible={true}
+        modules={[]}
+        reading="ltr"
+        mayCorrect
+        onClose={onClose}
+      />,
     )
     const button = [...host.querySelectorAll('button')].find(
       (b) => b.textContent === 'Close',
@@ -96,7 +143,13 @@ describe('Help', () => {
 
   it('docks as a panel between the bars, its look in the stylesheet', () => {
     const host = mount(
-      <Help visible={true} modules={[]} reading="ltr" onClose={noop} />,
+      <Help
+        visible={true}
+        modules={[]}
+        reading="ltr"
+        mayCorrect
+        onClose={noop}
+      />,
     )
     const panel = host.querySelector('[role="dialog"]') as HTMLElement
     expect(panel.className).toBe('docked-panel')

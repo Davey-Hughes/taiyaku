@@ -1,7 +1,7 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { FetchedTruth } from '../src/api'
-import { Labeller } from '../src/Labeller'
+import { Unauthenticated, type FetchedTruth, type Me } from '../src/api'
+import { LabelPage, Labeller } from '../src/Labeller'
 import { LABEL_KEYS } from '../src/labelKeys'
 import type { LabelBox } from '../src/labelling'
 import { savePrefs } from '../src/prefs'
@@ -1161,5 +1161,74 @@ describe('Labeller with ports', () => {
     expect(frame.style.height).toBe('200px')
     expect(frame.style.left).toBe('0px')
     expect(frame.style.width).toBe('400px')
+  })
+})
+
+/**
+ * `label.html`'s page: the editor for an administrator alone (O58), since the
+ * server refuses any other account's truth write. Every port is a spy, so "no
+ * call" covers the four, not only the list of works.
+ */
+describe('LabelPage', () => {
+  const account = (admin: boolean): Me => ({
+    user_id: 2,
+    admin,
+    can_download: true,
+    can_stream: true,
+    can_stamp: false,
+  })
+
+  function spiedPorts() {
+    const { ports } = fakePorts()
+    const spied = {
+      works: vi.fn(ports.works),
+      sidecar: vi.fn(ports.sidecar),
+      get: vi.fn(ports.get),
+      put: vi.fn(ports.put),
+    }
+    const calls = () =>
+      Object.values(spied).reduce((n, port) => n + port.mock.calls.length, 0)
+    return { ports: spied satisfies TruthPorts, calls }
+  }
+
+  it('tells an account that is not an administrator why, and asks no port', async () => {
+    const { ports, calls } = spiedPorts()
+    const host = mount(
+      <LabelPage ports={ports} who={() => Promise.resolve(account(false))} />,
+    )
+    await flush()
+    expect(host.querySelector('[role="status"]')?.textContent).toBe(
+      'Only an administrator can label pages: the labels are shared by every account on this server.',
+    )
+    expect(selects(host)).toHaveLength(0)
+    expect(ports.works).not.toHaveBeenCalled()
+    expect(calls()).toBe(0)
+  })
+
+  it('draws the editor for an administrator once the account answers, listing the works once', async () => {
+    const { ports } = spiedPorts()
+    const who = vi.fn(() => Promise.resolve(account(true)))
+    const host = mount(<LabelPage ports={ports} who={who} />)
+    expect(host.innerHTML).toBe('')
+    await flush()
+    expect(who).toHaveBeenCalledOnce()
+    expect(selects(host)[0]?.value).toBe('gotoubun')
+    expect(ports.works).toHaveBeenCalledOnce()
+  })
+
+  it('a signed-out visit says so, draws no editor and asks no port', async () => {
+    const { ports, calls } = spiedPorts()
+    const host = mount(
+      <LabelPage
+        ports={ports}
+        who={() => Promise.reject(new Unauthenticated())}
+      />,
+    )
+    await flush()
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'not signed in',
+    )
+    expect(selects(host)).toHaveLength(0)
+    expect(calls()).toBe(0)
   })
 })

@@ -238,6 +238,57 @@ pub(crate) fn router_over_a_live_library_with_an_edge()
     (router, state, fixture, slug)
 }
 
+/// [`router_over_a_live_library_with_an_edge`]'s work and edge, imported from
+/// a `taiyaku.json` on disk, so a correction writes that file before the rows.
+/// Answers the work's slug.
+///
+/// # Panics
+///
+/// Panics if the document cannot be written, imported or projected.
+pub(crate) fn router_over_a_live_library_with_a_document()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture, String) {
+    let fixture = Fixture::new("live-library-document");
+    let shelf = fixture.path().to_string_lossy().into_owned();
+    let db_dir = fixture.path().join("db");
+    std::fs::create_dir_all(&db_dir).expect("creates the database directory");
+    let library = taiyaku_library::Library::open(&db_dir.join("library.db"))
+        .expect("opens a file-backed library");
+    seed_fixture_account(&library);
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Documented", "reading": "rtl" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/raw/c1.cbz", "sha256": "x", "pages": 2 }},
+              {{ "path": "{shelf}/raw/c2.cbz", "sha256": "y", "pages": 2 }}
+            ], "spreads": [] }},
+            "en": {{ "label": "En", "members": [
+              {{ "path": "{shelf}/en/d1.cbz", "sha256": "p", "pages": 2 }},
+              {{ "path": "{shelf}/en/d2.cbz", "sha256": "q", "pages": 2 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": [
+            {{ "from": "raw", "to": "en", "by": "solver", "runs": [{{ "a": "0-3", "b": "0-3" }}] }}
+          ]
+        }}"#
+    );
+    let path = fixture.path().join("taiyaku.json");
+    std::fs::write(&path, &json).expect("writes the document");
+    let path = std::fs::canonicalize(&path).expect("the document is on disk");
+    {
+        let conn = library.conn();
+        let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
+        taiyaku_library::import::sidecar(&conn, &doc, &path).expect("imports the document");
+    }
+    let library = std::sync::Arc::new(library);
+    let works = crate::Works::library(&library).expect("projects the work");
+    let slug = works.snapshot()[0].id.clone();
+    let (router, state) = router_over(library, works, &fixture);
+    (router, state, fixture, slug)
+}
+
 /// Write `volume` beside the fixture's first volume, then scan and derive it
 /// through a **separate** `Library` over the same file, which is another
 /// process as far as the server's own connections can tell. Answers the
@@ -1481,6 +1532,21 @@ pub(crate) fn router_over_a_scanned_cbz_as_a_reader()
             "the fixture account must actually stop being an administrator"
         );
     }
+    (router, state, fixture)
+}
+
+/// [`router_over_a_scanned_cbz`] once its archive holds bytes no zip reader
+/// opens, so every read of a page fails with an error naming the file (O267).
+///
+/// # Panics
+///
+/// As [`router_over_a_scanned_cbz`], or if the archive cannot be overwritten.
+pub(crate) fn router_over_a_scanned_cbz_that_is_not_an_archive()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let (router, state, fixture) = router_over_a_scanned_cbz();
+    let archive = fixture.path().join("tree/Scanned/Scanned - v01.cbz");
+    assert!(archive.is_file(), "the fixture's archive: {archive:?}");
+    std::fs::write(&archive, b"not an archive").expect("overwrites the archive");
     (router, state, fixture)
 }
 

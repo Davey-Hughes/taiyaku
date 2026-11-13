@@ -4,8 +4,8 @@
  * drift apart.
  *
  * **A move changes only which library holds the directory** (spec §3.5), so
- * what it says is who gains sight of the directory, who loses it, and the
- * library it empties.
+ * what it says is who gains sight of the directory or a directory inside it,
+ * who loses it, and the library it empties.
  *
  * **Both lists are said, an empty one as no account**: a sentence that leaves
  * one out reads as a list that could not be read. Where both are empty, that
@@ -14,17 +14,18 @@
 import { libraryRemovedSentence, type Moved, namesOf } from './libraries'
 
 /**
- * Who gains sight of the directory and who loses it, as one clause with no
- * stop. `none` is "no account" as the clause's first words are written.
+ * Who gains sight of the directory or a directory inside it and who loses it,
+ * as one clause with no stop. `none` is "no account" as the clause's first
+ * words are written.
  */
 function sightOf(moved: Moved, past: boolean, none: string): string {
   const { gains_sight: gains, loses_sight: loses } = moved
   if (gains.length === 0 && loses.length === 0) {
-    return `${none} ${past ? 'gained or lost' : 'will gain or lose'} sight of it`
+    return `${none} ${past ? 'gained or lost' : 'will gain or lose'} sight of it or a directory inside it`
   }
   const gained = gains.length === 0 ? none : namesOf(gains)
   const lost = loses.length === 0 ? 'no account' : namesOf(loses)
-  return `${gained} ${past ? 'gained' : 'will gain'} sight of it, and ${lost} ${past ? 'lost' : 'will lose'} sight of it`
+  return `${gained} ${past ? 'gained' : 'will gain'} sight of it or a directory inside it, and ${lost} ${past ? 'lost' : 'will lose'} sight of it or a directory inside it`
 }
 
 export interface MoveCountsProps {

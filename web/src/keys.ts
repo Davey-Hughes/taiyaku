@@ -115,6 +115,17 @@ export const READER_KEYS: ReaderBinding[] = [
 ]
 
 /**
+ * The reader's keys without the one that corrects a pairing: the help of an
+ * account whose correction the server refuses (O58). Found by what the row
+ * asks for, not by its letter or label, so a rebinding cannot leave it listed.
+ */
+export function withoutCorrecting(bindings: ReaderBinding[]): ReaderBinding[] {
+  return bindings.filter(
+    (b) => b.resolve(b.keys[0] ?? '', [])?.kind !== 'correct',
+  )
+}
+
+/**
  * A keypress, as an intent, or nothing.
  *
  * The alt-tab model: `Space` flips between the current edition and the last

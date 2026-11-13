@@ -543,9 +543,9 @@ steps: a move sets the folder's library, makes the target library where it is
 new and takes a library it empties with its grants, and writes nothing else,
 so nothing is re-filed, split, folded or derived. The rehearsal below counts
 no works, positions or notes, and no move is refused to keep a reader's place;
-it names the accounts that will gain and lose sight of the folder, and still
-says where the library goes with the move and how many grants go with it.
-See `2026-11-02-overlapping-libraries-design.md` §3.5.*
+it names the accounts that will gain and lose sight of the folder or a folder
+inside it, and still says where the library goes with the move and how many
+grants go with it. See `2026-11-02-overlapping-libraries-design.md` §3.5.*
 
 **It is rehearsed before it is done.** The dry run runs the same statements
 and rolls them back, as `scan::removal_cost` does for a removal, and derives

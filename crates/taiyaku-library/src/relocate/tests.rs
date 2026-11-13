@@ -854,6 +854,72 @@ fn an_account_whose_grant_reaches_a_moved_dir_on_both_sides_is_named_in_neither(
     assert_eq!(report.loses_sight, vec!["kids"], "{report:?}");
 }
 
+/// O248: `ann`, granted Manga and Kids, keeps `m/kids` through Manga when it
+/// moves out of Kids, but loses `m/kids/tiny`, which only Kids' `m/kids`
+/// reached. The move names her.
+#[test]
+fn moving_a_directory_names_who_loses_one_nested_in_it() {
+    let top = tempdir("relocate-sight-nested-lost");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let [m, kids, tiny] = scan::tests::three_nested_levels(&conn, top.path());
+    let ann = an_account(&conn, "ann", &[m.libraries[0], kids.libraries[0]]);
+    let sees = |root: i64| {
+        crate::account::access_for(&conn, ann)
+            .expect("reads")
+            .allows(root)
+    };
+    assert!(
+        sees(kids.id) && sees(tiny.id),
+        "the fixture: ann sees m/kids and m/kids/tiny"
+    );
+
+    let report = moved(&conn, &kids, Target::New("Elsewhere"));
+
+    assert_eq!(report.loses_sight, vec!["ann"], "{report:?}");
+    assert_eq!(report.gains_sight, Vec::<String>::new(), "{report:?}");
+    assert!(
+        sees(kids.id) && !sees(tiny.id),
+        "ann keeps m/kids through Manga and loses m/kids/tiny"
+    );
+}
+
+/// O248's mirror: `bo`, granted Manga and Other, sees `m/kids` through Manga
+/// before the move and through Other after it, and gains `m/kids/tiny`, which
+/// Manga's pattern keeps out and Other's `m/kids` reaches. The move names him.
+#[test]
+fn moving_a_directory_names_who_gains_one_nested_in_it() {
+    let top = tempdir("relocate-sight-nested-gained");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let [m, kids, tiny] = scan::tests::three_nested_levels(&conn, top.path());
+    let o = top.path().join("o");
+    write_pages(&o.join("Other Book").join("Other Book - v01"), 2);
+    let other = scan::add_root_checked_in(&conn, &o, InLibrary::Named("Other"))
+        .expect("adds Other's directory")
+        .root
+        .libraries[0];
+    let bo = an_account(&conn, "bo", &[m.libraries[0], other]);
+    let sees = |root: i64| {
+        crate::account::access_for(&conn, bo)
+            .expect("reads")
+            .allows(root)
+    };
+    assert!(
+        sees(kids.id) && !sees(tiny.id),
+        "the fixture: bo sees m/kids through Manga and not m/kids/tiny"
+    );
+
+    let report = moved(&conn, &kids, Target::Library(other));
+
+    assert_eq!(report.gains_sight, vec!["bo"], "{report:?}");
+    assert_eq!(report.loses_sight, Vec::<String>::new(), "{report:?}");
+    assert!(
+        sees(kids.id) && sees(tiny.id),
+        "bo keeps m/kids, now through Other, and gains m/kids/tiny"
+    );
+}
+
 /// After `/c` moves out of Manga, the work has an edition under each
 /// library's directories, so each library counts it and names it, though no
 /// derive has run since.

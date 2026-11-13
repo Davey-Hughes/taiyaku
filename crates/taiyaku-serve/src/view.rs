@@ -337,7 +337,7 @@ impl EditionView {
             .sidecar
             .editions
             .get(key)
-            .ok_or_else(|| format!("no edition `{key}` in {}", self.work.path.display()))?;
+            .ok_or_else(|| format!("no edition `{key}` in `{}`", self.work.id))?;
         let (position, within) = full.locate(index).ok_or_else(|| {
             format!(
                 "`{key}` has {} pages; there is no page {index}",

@@ -314,8 +314,8 @@ from every library that holds it; removing a library leaves such a directory
 to the libraries that still hold it. A directory's page has **Move…**, to another library or a new
 one: a move takes the directory out of this library and puts it in the other,
 and changes nothing else, so before it offers
-the move it names the accounts that will gain and lose sight of the directory,
-and it refuses a move while a scan is queued in either library, or while a scan,
+the move it names the accounts that will gain and lose sight of the directory
+or a directory inside it, and it refuses a move while a scan is queued in either library, or while a scan,
 a rule save, a stamp, another move or a removal from a library is running. A library that already holds
 the directory is not offered. **Scan library** on a library
 walks in turn each directory the library shows — its own, and each nested in

@@ -580,7 +580,7 @@ describe('DirPage, a directory another library holds too', () => {
     await press(control(host, 'Remove from Manga…'))
     expect(api.unlinkCost).toHaveBeenCalledWith(7, 2)
     expect(host.querySelector('.unlink-root .counts')?.textContent).toBe(
-      'Removing this directory from Manga: ana will lose sight of it.',
+      'Removing this directory from Manga: ana will lose sight of it or a directory inside it.',
     )
     await press(host.querySelector('.unlink-root .confirm') as Element)
     expect(api.unlinkDir).toHaveBeenCalledWith(7, 2)

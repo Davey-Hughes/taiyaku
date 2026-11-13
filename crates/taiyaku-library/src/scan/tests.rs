@@ -10810,6 +10810,34 @@ fn a_scanned_dir_in(
     root
 }
 
+/// O248's three levels under `parent`: Manga holds `m` and excludes
+/// `kids/tiny`, Kids holds `m/kids` and Tiny `m/kids/tiny`, a scanned volume
+/// in each. Answers the three directories, outermost first.
+///
+/// **Manga reaches `m/kids` and not `m/kids/tiny`**, so an account that keeps
+/// `m/kids` through Manga can still gain or lose the directory inside it.
+/// Without the pattern, a list that asks about `m/kids` alone would be right.
+pub(crate) fn three_nested_levels(conn: &Connection, parent: &Path) -> [Root; 3] {
+    let m = a_scanned_dir_in(conn, parent, "m", "Manga Book", "Manga");
+    update_root(
+        conn,
+        m.id,
+        &RootPatch {
+            exclude_globs: Some(Some("kids/tiny".to_string())),
+            ..Default::default()
+        },
+    )
+    .expect("Manga keeps out kids/tiny");
+    let kids = a_scanned_dir_in(conn, &m.path, "kids", "Kids Book", "Kids");
+    let tiny = a_scanned_dir_in(conn, &kids.path, "tiny", "Tiny Book", "Tiny");
+    assert_eq!(
+        crate::reach::of_libraries(&roots(conn).expect("lists"), &m.libraries),
+        vec![m.id, kids.id],
+        "the fixture: Manga reaches m/kids and not m/kids/tiny"
+    );
+    [m, kids, tiny]
+}
+
 /// Every reading position and note, as text.
 fn read_and_noted(conn: &Connection) -> Vec<String> {
     let mut rows = Vec::new();
@@ -10893,6 +10921,38 @@ fn unlinking_a_dir_another_library_holds_deletes_nothing_and_only_its_accounts_l
     assert!(sees(kid, k.id), "kid keeps Kids' k");
     assert!(sees(fan, m.id), "fan keeps m through Manga");
     assert!(sees(both, m.id), "both keeps m through Manga");
+}
+
+/// O248: `m/kids` is in Kids and Also, and `ann`, granted Manga and Kids, keeps
+/// it through Manga when it leaves Kids, but loses `m/kids/tiny`, which only
+/// Kids' `m/kids` reached. The unlink names her.
+#[test]
+fn an_unlink_names_who_loses_a_directory_nested_in_it() {
+    let parent = crate::tests::tempdir("scan-unlink-nested");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let [_, kids_dir, tiny] = three_nested_levels(&conn, parent.path());
+    add_root_checked_in(&conn, &kids_dir.path, InLibrary::Named("Also"))
+        .expect("links m/kids into Also");
+    let ann = an_account_granted(&conn, "ann", "user", &["Manga", "Kids"]);
+    let sees = |root: i64| {
+        crate::account::access_for(&conn, ann)
+            .expect("reads")
+            .allows(root)
+    };
+    assert!(
+        sees(kids_dir.id) && sees(tiny.id),
+        "the fixture: ann sees m/kids and m/kids/tiny"
+    );
+
+    let unlinked = unlink(&conn, kids_dir.id, library_called(&conn, "Kids"), false)
+        .expect("unlinks m/kids from Kids");
+
+    assert_eq!(unlinked.loses_sight, vec!["ann"], "{unlinked:?}");
+    assert!(
+        sees(kids_dir.id) && !sees(tiny.id),
+        "ann keeps m/kids through Manga and loses m/kids/tiny"
+    );
 }
 
 /// Kids holds only `m`, which Manga holds too, so unlinking `m` empties Kids,

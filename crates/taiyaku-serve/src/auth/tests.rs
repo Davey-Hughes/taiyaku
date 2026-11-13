@@ -1149,18 +1149,18 @@ fn library_of(state: &ServeState, dir: i64) -> i64 {
 /// each other.
 ///
 /// What every `Refuses` entry in `routes::grant_postures` needs, from a
-/// single fixture: the page, thumb, download, sidecar and alignment routes
-/// address the work by slug; the OPDS mirrors address the same work; the
+/// single fixture: the page, thumb, download and sidecar routes address the
+/// work by slug; the OPDS mirrors address the same work; the
 /// library routes address the work by slug and the series by id.
 ///
 /// **Returns the state too (I8)**, since the four metadata PATCH routes need a
 /// real edition id and member id to address, neither reachable from the slug
 /// alone the way the read routes' own ids are.
 ///
-/// **Real bytes, not placeholders.** `view::of_edition`, `view::of_work` and,
-/// for the alignment route, `routes::visible_members_for_a_correction` answer
-/// 404 before any of these routes opens a member, so the 404 asserted here
-/// must come from that refusal and not from a file read that found nothing.
+/// **Real bytes, not placeholders.** `view::of_edition` and `view::of_work`
+/// answer 404 before any of these routes opens a member, so the 404 asserted
+/// here must come from that refusal and not from a file read that found
+/// nothing.
 /// With real, decodable images in place, a route that opened a member would
 /// find a page there, which makes the loop below a proof rather than a
 /// coincidence. `opds::tests::router_with_a_real_page_under_a_withheld_root`
@@ -1370,14 +1370,8 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
 /// needs: a work that is itself visible, with exactly one of its editions
 /// outside the grant, mirroring `opds::tests::router_with_two_editions_split_across_roots`.
 ///
-/// **Carries one pre-existing `raw` → `en` alignment**, added for
-/// `patch_alignments_refuses_a_correction_naming_a_withheld_edition` (and
-/// reused by `every_route_declares_its_grant_posture`'s own alignments
-/// proof): `Sidecar::correct` only rewrites a *stored* edge or one it can
-/// compose through the hub from stored edges either side, and a document
-/// with `"alignments": []` has neither — a correction from `en` to the hub
-/// (`raw`) on a document with no prior edge answers `NoPath`, not the write
-/// this fixture exists to drive (or refuse).
+/// **Carries one `raw` → `en` alignment**, so a document that kept the
+/// alignments of an edition outside the grant would name `raw` through it.
 ///
 /// **Filed under series id 1**, its only work — added for
 /// `every_route_declares_its_grant_posture`'s split-fixture proof of
@@ -1430,7 +1424,7 @@ fn one_work_two_editions_split_across_roots(
              VALUES (?1, 'raw', 'en', 'hand')",
             [work_id],
         )
-        .expect("seeds a raw-to-en alignment for the correction test to build on");
+        .expect("seeds a raw-to-en alignment");
         let alignment_id = conn.last_insert_rowid();
         conn.execute(
             "INSERT INTO run \
@@ -1484,127 +1478,6 @@ fn one_work_two_editions_split_across_roots(
         .expect("names the series");
         conn.execute("UPDATE work SET series_id = 1, volume = 1.0", [])
             .expect("files the work under the series");
-    }
-    let works = crate::works::from_library(&library).expect("projects the imported work");
-    let state = Arc::new(ServeState {
-        library,
-        works: crate::Works::fixed(works),
-        source: Arc::new(crate::LocalLibrary),
-        cache_dir: root.join("covers"),
-        log: None,
-        auth: crate::session::AuthConfig::default(),
-        scans: Default::default(),
-        library_job: Default::default(),
-        dirs: Vec::new(),
-    });
-    (build_router(state.clone()), state)
-}
-
-/// A router over **one** work with **three** editions: `en` and `fr` filed
-/// under the root the fixture account holds, `raw` under one it does not —
-/// and `raw` is also this work's `hub`. `one_work_two_editions_split_across_roots`
-/// above cannot drive either of Finding 1's two harder properties, because it
-/// keeps only one visible edition: there is no pair of visible editions to
-/// correct between (so a correction's response-filter can never be proven
-/// without also 404ing on a withheld edition first), and its one seeded edge
-/// runs `raw → en`, so a request naming the withheld edition on the `from`
-/// side and a visible one on `to` has no edge to succeed over even if the
-/// guard that refuses it were disabled — a mutation there would still 404,
-/// just for the wrong reason. This fixture keeps two visible editions and
-/// seeds an edge on *each* side of the withheld one so every one of Finding
-/// 1's three assertions has something real to succeed against if its guard
-/// or filter were removed:
-///
-/// - `raw → en`, straight across — lets a correction naming `raw` on the
-///   `from` side actually succeed if the check on `correction.from`
-///   were disabled, rather than failing on `NoPath` regardless.
-/// - `en → fr`, straight across — a correction between two *visible*
-///   editions, so `patch_alignments`'s response-filter can be proven without
-///   the request 404ing before a response is even built.
-///
-/// The withheld hub is deliberate too: `get_sidecar`'s `ETag` is over the
-/// document this reader is sent, which leaves the hub out, and
-/// `patch_alignments` must compare `If-Match` with a tag over that same
-/// document rather than the full one.
-fn one_work_three_editions_hub_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeState>) {
-    let root = dir;
-    let shelf = root.to_string_lossy().into_owned();
-
-    let json = format!(
-        r#"{{
-          "taiyaku": 1,
-          "work": {{ "title": "Triple", "reading": "rtl" }},
-          "editions": {{
-            "raw": {{ "label": "Raw", "members": [
-              {{ "path": "{shelf}/raw/c1.cbz", "sha256": "x", "pages": 2 }}
-            ], "spreads": [] }},
-            "en": {{ "label": "En", "members": [
-              {{ "path": "{shelf}/en/d1.cbz", "sha256": "p", "pages": 2 }}
-            ], "spreads": [] }},
-            "fr": {{ "label": "Fr", "members": [
-              {{ "path": "{shelf}/fr/d1.cbz", "sha256": "q", "pages": 2 }}
-            ], "spreads": [] }}
-          }},
-          "hub": "raw",
-          "alignments": []
-        }}"#
-    );
-
-    let library = crate::test_support::library();
-    {
-        let conn = library.conn();
-        let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
-        let work_id =
-            taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
-        // Seeded by hand, as `one_work_two_editions_split_across_roots` does,
-        // for the identical reason: `import::scanned` runs under
-        // `Scope::Scan`, which never calls `replace_alignments`.
-        let seed_edge = |from: &str, to: &str| {
-            conn.execute(
-                "INSERT INTO alignment (work_id, from_key, to_key, by) VALUES (?1, ?2, ?3, 'hand')",
-                rusqlite::params![work_id, from, to],
-            )
-            .expect("seeds an alignment");
-            let alignment_id = conn.last_insert_rowid();
-            conn.execute(
-                "INSERT INTO run \
-                     (alignment_id, ordinal, a_start_page, a_end_page, b_start_page, b_end_page) \
-                 VALUES (?1, 0, 0, 1, 0, 1)",
-                [alignment_id],
-            )
-            .expect("seeds the run pairing both pages straight across");
-        };
-        seed_edge("raw", "en");
-        seed_edge("en", "fr");
-
-        crate::test_support::plant_root(&conn, 1, "/visible-root");
-        crate::test_support::plant_root(&conn, 2, "/hidden-root");
-        for key in ["en", "fr"] {
-            conn.execute(
-                "UPDATE member SET root_id = 1 WHERE edition_id = \
-                 (SELECT id FROM edition WHERE work_id = ?1 AND key = ?2)",
-                rusqlite::params![work_id, key],
-            )
-            .expect("files a visible edition under the visible root");
-        }
-        conn.execute(
-            "UPDATE member SET root_id = 2 WHERE edition_id = \
-             (SELECT id FROM edition WHERE work_id = ?1 AND key = 'raw')",
-            [work_id],
-        )
-        .expect("files raw — the hub — under the hidden root");
-        // **O86: a grant only restricts a non-admin.** `Principal::from_account`
-        // drops an administrator's roots, so a grant test whose holder is the
-        // seeded admin measures nothing — it would pass against a filter that
-        // had been deleted.
-        conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
-            .expect("a grant restricts a user, never an admin");
-        conn.execute_batch(
-            "INSERT INTO user_library (user_id, library_id)
-             SELECT 1, library_id FROM library_root WHERE root_id = 1;
-             UPDATE user SET every_library = 0 WHERE id = 1;",
-        )
-        .expect("grants only the visible root");
     }
     let works = crate::works::from_library(&library).expect("projects the imported work");
     let state = Arc::new(ServeState {
@@ -1692,8 +1565,8 @@ async fn every_route_declares_its_grant_posture() {
         })
         .count();
     assert_eq!(
-        driven, 26,
-        "26 of the guarded routes must be classified Refuses, Filters or \
+        driven, 25,
+        "25 of the guarded routes must be classified Refuses, Filters or \
          RefusesAndFilters and driven by the proofs below — a route's \
          posture changed without this count moving to match, so a route \
          this suite believes it proves may no longer be one it does. It was \
@@ -1709,11 +1582,14 @@ async fn every_route_declares_its_grant_posture() {
          of the three moved this count, and neither does C4 PR 2's user \
          administration for the same reason. **O60 raised it to 22**: progress, \
          notes and truth refuse a work outside the grant, where they had been \
-         declared and not driven. F3's four OPDS routes raised it to 26"
+         declared and not driven. F3's four OPDS routes raised it to 26, and \
+         the alignments route is one fewer, `GrantIndependent` for O86's \
+         reason: O58 makes it admin-only, so no caller of it holds a grant to \
+         refuse against"
     );
     assert_eq!(
         table.len() - driven,
-        40,
+        41,
         "the remaining guarded routes must be GrantIndependent — \
          see the `driven` assertion just above, which this one is the other \
          half of. A new admin-only route is GrantIndependent: it changes who \
@@ -1725,8 +1601,8 @@ async fn every_route_declares_its_grant_posture() {
 
     // ---- `Refuses`: proven against a work, and the one series it belongs
     // to, both wholly outside the caller's grant. `RefusesAndFilters` shares
-    // this proof for its refuse half — the pattern skip just below still
-    // routes it to its own dedicated block instead. ----
+    // this proof for its refuse half, except where the pattern skip just below
+    // sends a route to its own block. ----
     let tmp = crate::test_support::Fixture::new("grant-posture-refuses");
     let (refuses_router, refuses_state) = router_with_material_under_a_withheld_root(&tmp);
     for (pattern, posture) in &table {
@@ -1736,14 +1612,6 @@ async fn every_route_declares_its_grant_posture() {
         ) {
             continue;
         }
-        // `/api/works/{work}/alignments` is `PATCH`-only and names its two
-        // editions in the JSON body, not the URL — this loop's GET-against-a-
-        // pattern mechanism cannot express either, and a GET against it
-        // would answer 405 from axum's own method dispatch, never reaching
-        // the guard this loop means to prove. Driven in its own dedicated
-        // block below instead, with the body and `If-Match` a correction
-        // actually needs — both its `Refuses` half and its `Filters` half.
-        //
         // **The four `library/{works,series,editions,members}` PATCH routes
         // (I8) are `GrantIndependent`** (O86), so the posture check above
         // already skips them, as it does the two `Filters` `GET`s that share a
@@ -1755,8 +1623,7 @@ async fn every_route_declares_its_grant_posture() {
         // fixture's two libraries.
         if matches!(
             *pattern,
-            "/api/works/{work}/alignments"
-                | "/api/library/works/{slug}"
+            "/api/library/works/{slug}"
                 | "/api/library/series/{id}"
                 | "/api/library/editions/{id}"
                 | "/api/library/members/{id}"
@@ -2068,13 +1935,12 @@ async fn every_route_declares_its_grant_posture() {
         ) {
             continue;
         }
-        // See the identical skip in the wholly-hidden-work loop above:
-        // `PATCH`-only, body-addressed, driven separately below; or addressed
-        // by a library, and driven in their own block above.
+        // See the identical skip in the wholly-hidden-work loop above: the
+        // four metadata routes, or addressed by a library, and driven in their
+        // own block above.
         if matches!(
             *pattern,
-            "/api/works/{work}/alignments"
-                | "/api/library/works/{slug}"
+            "/api/library/works/{slug}"
                 | "/api/library/series/{id}"
                 | "/api/library/editions/{id}"
                 | "/api/library/members/{id}"
@@ -2365,7 +2231,6 @@ async fn every_route_declares_its_grant_posture() {
         .await
         .expect("router answers");
     let sidecar_status = sidecar_response.status();
-    let sidecar_tag = sidecar_response.headers()[header::ETAG].clone();
     let sidecar_body = crate::test_support::body_string(sidecar_response).await;
     assert_eq!(sidecar_status, StatusCode::OK, "{sidecar_body}");
     let sidecar_json: serde_json::Value = serde_json::from_str(&sidecar_body).expect("valid JSON");
@@ -2387,100 +2252,6 @@ async fn every_route_declares_its_grant_posture() {
         "/api/works/{{work}} named the withheld hub: {sidecar_body}"
     );
     proven_filters.insert("/api/works/{work}");
-
-    // `/api/works/{work}/alignments` (`patch_alignments`) — `RefusesAndFilters`.
-    // Its write half is `Refuses`: a correction naming the withheld edition is
-    // refused, like every `Refuses` entry, before either `if_match_hits` or
-    // `Sidecar::correct` runs, and the seeded row is unchanged. Its
-    // *response*-filtering half is proven separately just below, against a
-    // work with two visible editions — this fixture keeps only one, so a
-    // correction between two editions it may see cannot be expressed here.
-    // Proven here (and below) rather than in the generic `Refuses`/`Filters`
-    // loops above (all three explicitly skip this pattern) because a
-    // correction needs a body and `If-Match`, which their GET-only mechanism
-    // cannot send.
-    let seeded_run = |conn: &rusqlite::Connection| -> (i64, i64, i64, i64) {
-        conn.query_row(
-            "SELECT a_start_page, a_end_page, b_start_page, b_end_page FROM run",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .expect("the fixture's seeded run row exists")
-    };
-    let run_before = seeded_run(&split_state.library.conn());
-    let patch_response = split_router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/works/{split_slug}/alignments"))
-                .header("authorization", &credential)
-                .header(header::IF_MATCH, sidecar_tag)
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"from":"en","to":"raw","a":"1","b":"0"}"#))
-                .unwrap(),
-        )
-        .await
-        .expect("router answers");
-    let patch_status = patch_response.status();
-    let patch_body = crate::test_support::body_string(patch_response).await;
-    assert_eq!(
-        patch_status,
-        StatusCode::NOT_FOUND,
-        "/api/works/{{work}}/alignments is classified Refuses, but a \
-         correction naming the withheld edition answered {patch_status}: {patch_body}"
-    );
-    let run_after = seeded_run(&split_state.library.conn());
-    assert_eq!(
-        run_before, run_after,
-        "a correction refused for naming a withheld edition still wrote \
-         shared alignment rows"
-    );
-
-    // `/api/works/{work}/alignments`'s `Filters` half: a correction between
-    // two editions this caller *may* see must still answer with a response
-    // that omits the third, withheld one — `one_work_three_editions_hub_withheld`'s
-    // own doc comment says why `split_router` above cannot drive this case.
-    let tmp4 = crate::test_support::Fixture::new("grant-posture-triple-filters");
-    let (triple_router, triple_state) = one_work_three_editions_hub_withheld(&tmp4);
-    let triple_slug = triple_state.works.snapshot()[0].id.clone();
-    let triple_get = triple_router
-        .clone()
-        .oneshot(
-            Request::get(format!("/api/works/{triple_slug}"))
-                .header("authorization", &credential)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("router answers");
-    let triple_tag = triple_get.headers()[header::ETAG].clone();
-    let triple_patch = triple_router
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/works/{triple_slug}/alignments"))
-                .header("authorization", &credential)
-                .header(header::IF_MATCH, triple_tag)
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"from":"en","to":"fr","a":"1","b":"0"}"#))
-                .unwrap(),
-        )
-        .await
-        .expect("router answers");
-    let triple_status = triple_patch.status();
-    let triple_body = crate::test_support::body_string(triple_patch).await;
-    assert_eq!(
-        triple_status,
-        StatusCode::OK,
-        "a correction between two visible editions must succeed: {triple_body}"
-    );
-    assert!(
-        !triple_body.contains("\"raw\""),
-        "/api/works/{{work}}/alignments is classified RefusesAndFilters but \
-         named the withheld edition in its response: {triple_body}"
-    );
-    proven_filters.insert("/api/works/{work}/alignments");
 
     // `/api/library/works/{slug}` — `library_api::work` reuses `browse::work`;
     // this proves it, rather than merely trusting the read.
@@ -2789,6 +2560,7 @@ async fn every_route_declares_its_grant_posture() {
                 },
                 &split_work.sidecar(),
                 taiyaku_library::state::Arrival::next(),
+                crate::works::Mint::Bridge,
             )
             .expect("stores a position");
         }
@@ -2851,6 +2623,7 @@ async fn every_route_declares_its_grant_posture() {
             1,
             &notes,
             &split_work.sidecar(),
+            crate::works::Mint::Bridge,
         )
         .expect("stores notes");
         let mut truth = taiyaku_core::TruthDoc::new();
@@ -2861,7 +2634,13 @@ async fn every_route_declares_its_grant_posture() {
             };
             truth.editions.insert(edition.to_string(), looked_at);
         }
-        crate::truth::store(&split_state.library, &split_work, &truth).expect("stores truth");
+        crate::truth::store(
+            &split_state.library,
+            &split_work,
+            &truth,
+            crate::works::Mint::Bridge,
+        )
+        .expect("stores truth");
     }
     for (pattern, named) in [
         ("/api/works/{work}/notes", "notes"),
@@ -3052,16 +2831,15 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
             counted(|p| matches!(p, NarrowingPosture::Narrows)),
             counted(|p| matches!(p, NarrowingPosture::Translates)),
             counted(|p| matches!(p, NarrowingPosture::KeepsUnseen)),
-            counted(|p| matches!(p, NarrowingPosture::Refuses)),
         ],
-        [17, 6, 2, 1],
-        "the Narrows, Translates, KeepsUnseen and Refuses routes, each driven below: a route \
+        [18, 6, 1],
+        "the Narrows, Translates and KeepsUnseen routes, each driven below: a route \
          moved between them, or added, without its count moving here is one this suite no \
          longer proves what it was declared to do"
     );
     assert_eq!(
         counted(|p| matches!(p, NarrowingPosture::NoPages { .. })),
-        40,
+        41,
         "the NoPages routes, declared and not driven: a route moved here from a driven posture \
          moves this count and one above, and a new route that reads no pages moves this alone"
     );
@@ -3125,8 +2903,8 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
         text.contains(&part2.sha256) || text.contains("part2")
     };
 
-    // What `KeepsUnseen` reads back: a note and a truth box on part2's page 3,
-    // marked, beside ones Manga is sent.
+    // What `KeepsUnseen` reads back: a note on part2's page 3, marked, beside
+    // ones Manga is sent.
     let note = |id: &str, edition: &str, slot: u32, body: &str| crate::notes::Note {
         id: id.into(),
         edition: edition.into(),
@@ -3153,8 +2931,12 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
             ],
         },
         &work.sidecar(),
+        crate::works::Mint::Bridge,
     )
     .expect("stores notes");
+    // A truth box there too, beside ones Manga is sent: the administrator's
+    // truth read names part2 by it and by its `sha256`, so Manga's read
+    // leaving `raw` out is seen (`Narrows`).
     let boxed = |text: &str| taiyaku_core::TruthRegion {
         x: 0.1,
         y: 0.1,
@@ -3186,24 +2968,25 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
     truth
         .editions
         .insert("en".into(), entry("en", vec![(0, "on en")]));
-    crate::truth::store(&merged.state.library, &work, &truth).expect("stores truth");
-    let held = |pattern: &str| -> String {
-        if pattern.ends_with("/notes") {
-            let notes = crate::notes::load(
-                &merged.state.library,
-                &work,
-                merged.user_id(Reader::MangaOnly),
-                &work.sidecar(),
-            )
-            .expect("reads notes")
-            .expect("notes are held");
-            crate::notes::to_json(&notes).expect("serialises")
-        } else {
-            crate::truth::load(&merged.state.library, &work)
-                .expect("reads truth")
-                .expect("truth is held")
-                .to_json()
-        }
+    crate::truth::store(
+        &merged.state.library,
+        &work,
+        &truth,
+        crate::works::Mint::Bridge,
+    )
+    .expect("stores truth");
+    // Notes alone: they are the only `KeepsUnseen` route, the truth write
+    // being an administrator's (O58).
+    let held = || -> String {
+        let notes = crate::notes::load(
+            &merged.state.library,
+            &work,
+            merged.user_id(Reader::MangaOnly),
+            &work.sidecar(),
+        )
+        .expect("reads notes")
+        .expect("notes are held");
+        crate::notes::to_json(&notes).expect("serialises")
     };
 
     let mut named_by_the_administrator = Vec::new();
@@ -3355,7 +3138,7 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
             // Manga's read sends nothing of part2's pages, and a write of what
             // it sent leaves the store as it was.
             NarrowingPosture::KeepsUnseen => {
-                let before = held(pattern);
+                let before = held();
                 let (status, tag, body) =
                     asked(&merged, Reader::MangaOnly, Method::GET, &manga, None, None).await;
                 let text = String::from_utf8_lossy(&body).into_owned();
@@ -3380,43 +3163,20 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
                     String::from_utf8_lossy(&said)
                 );
                 assert_eq!(
-                    held(pattern),
+                    held(),
                     before,
                     "{pattern}: a write of what Manga was sent changed the store"
                 );
-            }
-            // A correction naming `raw` is refused with 403 naming it.
-            NarrowingPosture::Refuses => {
-                let (_, tag, _) = asked(
-                    &merged,
-                    Reader::MangaOnly,
-                    Method::GET,
-                    &format!("/api/works/{slug}"),
-                    None,
-                    None,
-                )
-                .await;
-                let (status, _, said) = asked(
-                    &merged,
-                    Reader::MangaOnly,
-                    Method::PATCH,
-                    &manga,
-                    tag.as_deref(),
-                    Some(r#"{"from":"raw","to":"en","a":"0","b":"0"}"#.to_string()),
-                )
-                .await;
-                let said = String::from_utf8_lossy(&said);
-                assert_eq!(status, StatusCode::FORBIDDEN, "{pattern}: {said}");
-                assert!(said.contains("`raw`"), "{pattern}: {said}");
             }
         }
     }
     assert_eq!(
         named_by_the_administrator,
-        ["/api/works/{work}"],
+        ["/api/works/{work}", "/api/works/{work}/truth"],
         "the Narrows routes whose administrator's answer names part2, so that Manga's \
-         leaving it out is seen: the work document alone, the others sending counts and covers, \
-         which name no member"
+         leaving it out is seen: the work document, and the truth document, whose `raw` entry \
+         holds part2's `sha256` and the box \"on part2\" and is left out of Manga's; the others \
+         send counts and covers, which name no member"
     );
     assert_eq!(
         alike_for_both,
@@ -3511,243 +3271,6 @@ async fn list_works_names_only_visible_editions_and_cover() {
     assert!(
         !body.contains("/raw/pages/"),
         "GET /api/works built a cover URL from the withheld edition: {body}"
-    );
-}
-
-/// **A correction naming a withheld edition is refused before it is written**,
-/// not merely filtered on the way back out. A reader granted only `en` (`split`
-/// keeps `en`) who submits a correction naming `raw` must get a 404, because an
-/// accepted correction lands in shared `alignment`/`run` state that every other
-/// reader of this work — including one who *can* see `raw` — is served from.
-#[tokio::test]
-async fn patch_alignments_refuses_a_correction_naming_a_withheld_edition() {
-    let tmp = crate::test_support::Fixture::new("patch-write-leak");
-    let (router, state) = one_work_two_editions_split_across_roots(&tmp);
-    let slug = state.works.snapshot()[0].id.clone();
-    let credential = crate::test_support::fixture_authorization();
-
-    let seeded_run = |conn: &rusqlite::Connection| -> (i64, i64, i64, i64) {
-        conn.query_row(
-            "SELECT a_start_page, a_end_page, b_start_page, b_end_page FROM run",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .expect("the fixture's seeded run row exists")
-    };
-    let run_before = seeded_run(&state.library.conn());
-
-    // The `If-Match` a real client would send comes from a real `GET`, the
-    // same route the caller's own reader used.
-    let get_response = router
-        .clone()
-        .oneshot(
-            Request::get(format!("/api/works/{slug}"))
-                .header("authorization", &credential)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("router answers");
-    let tag = get_response.headers()[header::ETAG].clone();
-
-    let response = router
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/works/{slug}/alignments"))
-                .header("authorization", &credential)
-                .header(header::IF_MATCH, tag)
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"from":"en","to":"raw","a":"1","b":"0"}"#))
-                .unwrap(),
-        )
-        .await
-        .expect("router answers");
-    let status = response.status();
-    let body = crate::test_support::body_string(response).await;
-
-    assert_eq!(
-        status,
-        StatusCode::NOT_FOUND,
-        "a correction naming a withheld edition must be refused before it \
-         is written, not merely filtered on the way back out: {body}"
-    );
-
-    let run_after = seeded_run(&state.library.conn());
-    assert_eq!(
-        run_before, run_after,
-        "PATCH /api/works/{{work}}/alignments wrote shared alignment rows \
-         for a correction naming a withheld edition"
-    );
-}
-
-/// Three properties on this path, each proven below against
-/// `one_work_three_editions_hub_withheld` — see that fixture's own doc comment
-/// for why the two-edition split fixture cannot drive any of the three — in its
-/// own test rather than as three assertions of one, **so that one property
-/// failing cannot stop another from being checked at all**: a failure in (a)
-/// would otherwise abort the test before (b) or (c) ever ran, and (c) — the
-/// `from`-side write guard — has no other coverage anywhere.
-///
-/// (a) **`get_sidecar` and `patch_alignments` take the tag over one
-/// document.** A restricted reader's own `GET` → `If-Match` → `PATCH` round
-/// trip — on two editions both inside their grant — must succeed. Taking
-/// either tag over the full document instead makes this assertion fail with
-/// 412: the reader's `GET` hands back a tag over `{en, fr}` alone.
-#[tokio::test]
-async fn a_restricted_readers_own_etag_round_trips_through_a_correction_between_visible_editions() {
-    let tmp = crate::test_support::Fixture::new("grant-posture-triple-etag");
-    let (router, state) = one_work_three_editions_hub_withheld(&tmp);
-    let slug = state.works.snapshot()[0].id.clone();
-    let credential = crate::test_support::fixture_authorization();
-
-    let get_response = router
-        .clone()
-        .oneshot(
-            Request::get(format!("/api/works/{slug}"))
-                .header("authorization", &credential)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("router answers");
-    let tag = get_response.headers()[header::ETAG].clone();
-
-    let patch_response = router
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/works/{slug}/alignments"))
-                .header("authorization", &credential)
-                .header(header::IF_MATCH, tag)
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"from":"en","to":"fr","a":"1","b":"0"}"#))
-                .unwrap(),
-        )
-        .await
-        .expect("router answers");
-    let patch_status = patch_response.status();
-    let patch_body = crate::test_support::body_string(patch_response).await;
-    assert_eq!(
-        patch_status,
-        StatusCode::OK,
-        "a restricted reader's own If-Match, taken from their own GET, must \
-         validate against a correction between two editions they can both \
-         see: {patch_body}"
-    );
-}
-
-/// (b) **`patch_alignments`'s response is filtered**, on a correction
-/// between two *visible* editions (`en`/`fr`) so the request does not 404
-/// before a response is even built. Answering with the unfiltered `json`
-/// instead makes this assertion fail: the 200 body then names `raw`. See the
-/// doc comment above the `(a)` test, just above this one, for why this is its
-/// own test rather than a second assertion tacked onto that one: this
-/// property must still be checked (and reported) even when `(a)` itself is
-/// broken.
-#[tokio::test]
-async fn a_correction_between_visible_editions_omits_the_withheld_one_from_its_response() {
-    let tmp = crate::test_support::Fixture::new("grant-posture-triple-response-filter");
-    let (router, state) = one_work_three_editions_hub_withheld(&tmp);
-    let slug = state.works.snapshot()[0].id.clone();
-    let credential = crate::test_support::fixture_authorization();
-
-    let get_response = router
-        .clone()
-        .oneshot(
-            Request::get(format!("/api/works/{slug}"))
-                .header("authorization", &credential)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("router answers");
-    let tag = get_response.headers()[header::ETAG].clone();
-
-    let patch_response = router
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/works/{slug}/alignments"))
-                .header("authorization", &credential)
-                .header(header::IF_MATCH, tag)
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"from":"en","to":"fr","a":"1","b":"0"}"#))
-                .unwrap(),
-        )
-        .await
-        .expect("router answers");
-    let patch_status = patch_response.status();
-    let patch_body = crate::test_support::body_string(patch_response).await;
-    assert_eq!(
-        patch_status,
-        StatusCode::OK,
-        "a correction between two editions this reader may see must \
-         succeed before its response can be checked for filtering: {patch_body}"
-    );
-    let patch_json: serde_json::Value = serde_json::from_str(&patch_body).expect("valid JSON");
-    let patch_editions: std::collections::BTreeSet<&str> = patch_json["editions"]
-        .as_object()
-        .expect("an editions object")
-        .keys()
-        .map(String::as_str)
-        .collect();
-    assert_eq!(
-        patch_editions,
-        std::collections::BTreeSet::from(["en", "fr"]),
-        "PATCH /api/works/{{work}}/alignments named the withheld edition in \
-         its response: {patch_body}"
-    );
-}
-
-/// (c) **Both write guards are covered**, not only the one every existing
-/// test drove. `patch_alignments_refuses_a_correction_naming_a_withheld_edition`
-/// above only ever sent the withheld edition on `to`; this sends it on
-/// `from` instead. Disabling the check on `correction.from` — the
-/// first of the two per-side checks — makes this assertion fail: `raw → en` is a
-/// real, seeded edge, so the correction would succeed (200) rather than 404.
-/// This has no other coverage anywhere in the suite — which is exactly why
-/// it is its own test rather than a third assertion after `(a)` and `(b)`:
-/// nothing about this guard should depend on either of those passing first.
-#[tokio::test]
-async fn a_correction_naming_the_withheld_edition_on_the_from_side_is_still_refused() {
-    let tmp = crate::test_support::Fixture::new("grant-posture-triple-from-guard");
-    let (router, state) = one_work_three_editions_hub_withheld(&tmp);
-    let slug = state.works.snapshot()[0].id.clone();
-    let credential = crate::test_support::fixture_authorization();
-
-    let get_response = router
-        .clone()
-        .oneshot(
-            Request::get(format!("/api/works/{slug}"))
-                .header("authorization", &credential)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("router answers");
-    let tag = get_response.headers()[header::ETAG].clone();
-
-    let refused_response = router
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/works/{slug}/alignments"))
-                .header("authorization", &credential)
-                .header(header::IF_MATCH, tag)
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"from":"raw","to":"en","a":"1","b":"0"}"#))
-                .unwrap(),
-        )
-        .await
-        .expect("router answers");
-    let refused_status = refused_response.status();
-    let refused_body = crate::test_support::body_string(refused_response).await;
-    assert_eq!(
-        refused_status,
-        StatusCode::NOT_FOUND,
-        "a correction naming the withheld edition on the `from` side must be \
-         refused exactly as one naming it on `to` is: {refused_body}"
     );
 }
 
@@ -3929,6 +3452,8 @@ const CLASSIFIED_ELSEWHERE: &[&str] = &["/api/password"];
 /// would invite leaving the other out. The invariant is about the answer, not
 /// the motive.
 const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
+    "/api/works/{work}/truth",
+    "/api/works/{work}/alignments",
     "/api/keys",
     "/api/keys/{id}",
     "/api/sessions",

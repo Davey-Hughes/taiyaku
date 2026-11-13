@@ -5,7 +5,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { pageUrl } from './api'
+import { pageUrl, type Me } from './api'
 import { debounce } from './debounce'
 import { useConstant, useFlushOnHide, useWindowWidth } from './hooks'
 import {
@@ -116,7 +116,7 @@ export interface LabellerProps {
    * the standalone box editor, no fetch, no picker — the same shape
    * `PageView`'s own `decodeQueue`/`makeImage` default for a caller that has
    * not been wired up, so a test gets the plain behaviour rather than a
-   * network call it never asked for. `label.tsx` is the one real caller and
+   * network call it never asked for. `LabelPage` is the one real caller and
    * always passes the real ports.
    */
   ports?: TruthPorts
@@ -821,4 +821,43 @@ export function Labeller({
       </div>
     </div>
   )
+}
+
+/** What `LabelPage` tells any account but an administrator (O58). */
+const ADMINISTRATORS_ONLY =
+  'Only an administrator can label pages: the labels are shared by every account on this server.'
+
+export interface LabelPageProps {
+  ports: TruthPorts
+  /** `api.ts`'s `me`: who is asking, read once on mount. */
+  who: () => Promise<Me>
+}
+
+/**
+ * `label.html`'s page: the editor for an administrator, and for anyone else
+ * the sentence saying why not, since the server refuses their truth write
+ * (O58). Nothing is drawn and no port is called until `who` answers, so a
+ * visit that cannot say who it is never lists the works.
+ */
+export function LabelPage({ ports, who }: LabelPageProps) {
+  const [account, setAccount] = useState<
+    { me: Me } | { failed: string } | undefined
+  >(undefined)
+  useEffect(() => {
+    let cancelled = false
+    who()
+      .then((me) => {
+        if (!cancelled) setAccount({ me })
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setAccount({ failed: messageOf(err) })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [who])
+  if (account === undefined) return null
+  if ('failed' in account) return <p role="alert">{account.failed}</p>
+  if (!account.me.admin) return <p role="status">{ADMINISTRATORS_ONLY}</p>
+  return <Labeller ports={ports} />
 }

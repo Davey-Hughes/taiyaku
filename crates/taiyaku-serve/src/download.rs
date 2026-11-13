@@ -707,9 +707,14 @@ fn prepare(
         .unwrap_or_else(|_| (None, None, work.sidecar().work.title.clone()))
     };
 
+    // Either read below can fail with an error naming a member's path, which
+    // goes to the log and not to the account (O267).
+    let unreadable =
+        |why: &str| crate::routes::unreadable(&format!("`{edition_key}` of `{slug}`"), why);
+
     if let Some(extension) = passthrough_extension(&paths) {
         let length = std::fs::metadata(&paths[0])
-            .map_err(|e| crate::routes::not_found(format!("{}: {e}", paths[0].display())))?
+            .map_err(|e| unreadable(&format!("{}: {e}", paths[0].display())))?
             .len();
         let content_type = type_for(&extension);
         let name = download_name(series.as_deref(), volume, &title, &found.label, &extension);
@@ -727,7 +732,7 @@ fn prepare(
     // only central directories.
     let mut described: Vec<taiyaku_read::PageEntry> = Vec::new();
     for path in &paths {
-        let entries = taiyaku_read::member_page_entries(path).map_err(crate::routes::not_found)?;
+        let entries = taiyaku_read::member_page_entries(path).map_err(|why| unreadable(&why))?;
         described.extend(entries);
     }
     if described.is_empty() {
@@ -1278,7 +1283,12 @@ fn prepare_member(
         )));
     }
     let length = std::fs::metadata(&path)
-        .map_err(|e| crate::routes::not_found(format!("{}: {e}", path.display())))?
+        .map_err(|e| {
+            crate::routes::unreadable(
+                &format!("member {ordinal} of `{edition_key}` of `{slug}`"),
+                &format!("{}: {e}", path.display()),
+            )
+        })?
         .len();
     let extension = path
         .extension()

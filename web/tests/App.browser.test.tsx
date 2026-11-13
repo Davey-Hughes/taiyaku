@@ -2,6 +2,7 @@ import { act } from 'react'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
 import { WorkMissing, WorkNotFound } from '../src/api'
+import { GateContext, type Gated } from '../src/gate'
 import { fakeResolver, whole } from './support/fixtures'
 import '../src/index.css'
 import { paintedBox } from '../src/notes'
@@ -183,16 +184,30 @@ function hitAtCentreOf(el: Element): HTMLButtonElement | null {
 const overlaps = (a: DOMRect, b: DOMRect) =>
   a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
 
+/** An administrator, the only account the reader offers correcting to (O58). */
+const administrator: Gated = {
+  who: {
+    user_id: 1,
+    admin: true,
+    can_download: true,
+    can_stream: true,
+    can_stamp: false,
+  },
+  signOut: () => {},
+}
+
 /**
- * The reader at `width`×`height`, loaded, the chrome hidden. The wrapper
- * fills the viewport the way `#root` does under `index.css`, so `App`'s
- * `height: 100%` column lays out at the viewport's size.
+ * The reader at `width`×`height`, loaded, the chrome hidden, as `administrator`.
+ * The wrapper fills the viewport the way `#root` does under `index.css`, so
+ * `App`'s `height: 100%` column lays out at the viewport's size.
  */
 async function reader(width: number, height: number) {
   await page.viewport(width, height)
   mount(
     <div style={{ position: 'fixed', inset: 0 }}>
-      <App work={WORK} onLeave={() => {}} />
+      <GateContext value={administrator}>
+        <App work={WORK} onLeave={() => {}} />
+      </GateContext>
     </div>,
   )
   await until(() => document.querySelector('.reader') !== null)

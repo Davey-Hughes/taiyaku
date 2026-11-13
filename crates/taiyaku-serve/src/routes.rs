@@ -32,6 +32,30 @@ pub(crate) fn not_found(message: String) -> Response {
     (StatusCode::NOT_FOUND, message).into_response()
 }
 
+/// `status`, its body `said` and where to look for the rest, and `why` on
+/// stderr (O267): a source's error can name a path on the server, which no
+/// answer a non-administrator can be sent may carry.
+pub(crate) fn answered_and_logged(status: StatusCode, said: String, why: &str) -> Response {
+    log_line(&mut std::io::stderr(), &said, why);
+    (status, format!("{said}; the server's log says why")).into_response()
+}
+
+/// `answered_and_logged`'s line. A failed write is dropped, as `ServeState::find`
+/// drops one: the answer goes out regardless.
+fn log_line(out: &mut impl std::io::Write, said: &str, why: &str) {
+    let _ = writeln!(out, "taiyaku: {said}: {why}");
+}
+
+/// A page, a cover or a download that could not be read: a 404, as a page
+/// this server does not have is (`ServeState::page`).
+pub(crate) fn unreadable(what: &str, why: &str) -> Response {
+    answered_and_logged(
+        StatusCode::NOT_FOUND,
+        format!("{what} could not be read"),
+        why,
+    )
+}
+
 /// A URL that does not address anything, as against one addressing something
 /// this server does not have.
 ///
@@ -302,11 +326,26 @@ enum NoProgress {
     Failed(String),
 }
 
+impl From<crate::works::NoRow> for NoProgress {
+    fn from(why: crate::works::NoRow) -> Self {
+        match why {
+            crate::works::NoRow::Gone(message) => Self::NotFound(message),
+            crate::works::NoRow::Failed(message) => Self::Failed(message),
+        }
+    }
+}
+
 impl IntoResponse for NoProgress {
     fn into_response(self) -> Response {
         match self {
             Self::NotFound(message) => not_found(message),
-            Self::Failed(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
+            // A save's own connection names the store's path when it cannot
+            // open one (O267).
+            Self::Failed(message) => answered_and_logged(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the library could not answer this request".to_string(),
+                &message,
+            ),
         }
     }
 }
@@ -526,8 +565,7 @@ pub(crate) fn refuse_if_cannot_stamp(extensions: &axum::http::Extensions) -> Opt
 /// the correction with no visible member in those flags refused as the work
 /// is, a 404 naming it, so that a refusal tells no one which slugs are real
 /// and the sides are judged by the one answer the view is built from. On the
-/// blocking pool, as `routes::tests::no_grant_check_stalls_the_runtime`
-/// measures, the work first, then `from`, then `to`.
+/// blocking pool, in one trip: the work first, then `from`, then `to`.
 ///
 /// `sides` is `None` for a body that did not parse. The handler refuses that
 /// body only after this has answered, so a hidden work is still refused
@@ -744,6 +782,7 @@ async fn serve_page(
     // `304` without a zip decompression or an HTTP round trip to Stump ever
     // happening — the whole point of sending a validator in the first
     // place.
+    let what = page_named(&view, index);
     let index = match view.page_to_full(index) {
         Ok(index) => index,
         Err(message) => return not_found(message),
@@ -816,13 +855,19 @@ async fn serve_page(
             page.bytes,
         )
             .into_response(),
-        Ok(Err(e)) => not_found(e),
+        Ok(Err(e)) => unreadable(&what, &e),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("page read panicked: {e}"),
         )
             .into_response(),
     }
+}
+
+/// Page `asked` of `view`'s edition, as a path-free answer names it: the
+/// number the account asked for, which `page_to_full` may translate.
+pub(crate) fn page_named(view: &crate::view::EditionView, asked: u32) -> String {
+    format!("page {asked} of `{}` of `{}`", view.key(), view.work().id)
 }
 
 /// The first value of `key` in a query string's pairs, if it has one.
@@ -871,13 +916,11 @@ fn tile_edge(w: Option<&str>) -> Option<u32> {
 /// page route's answer, so a page 0 already within the size is the archive's
 /// own bytes and type.)
 ///
-/// The tile sends `Cache-Control` and **no `ETag`**, which is not an oversight.
-/// `get_page` can answer a `304` before doing any work because
-/// `EditionView::locate` derives the tag from the in-memory sidecar; here the
-/// member `sha256` and offset are found inside `spawn_blocking`, one level in,
-/// so a validator would arrive too late to skip anything a tile costs. Adding
-/// one would mean hoisting the lookup out here, its own change. A library cover
-/// does carry one: it is served by `serve_page`, whose lookup runs out here.
+/// The tile sends `Cache-Control` and **no `ETag`**: none is defined for it.
+/// One would have to name the tile's long edge and `cover::FORMAT_VERSION`,
+/// as `cover::page_key` names a resized page's (O106). Its member and offset
+/// are located before the read, as `serve_page` locates them, so one could
+/// answer a `304` first. A library cover does carry one: `serve_page` serves it.
 ///
 /// **`?w=` makes page 0 a library cover** (O133): at 256, 512 or 768 px on its
 /// long edge (`cover::COVER_LONG_EDGES`) it is served by `serve_page`, exactly
@@ -921,16 +964,21 @@ async fn get_thumb(
     let edge = tile_edge(first_query_value(&query, "w"))
         .filter(|_| can_stream(&request_extensions))
         .unwrap_or(crate::cover::THUMB_LONG_EDGE);
+    let what = page_named(&view, index);
     let index = match view.page_to_full(index) {
         Ok(index) => index,
+        Err(message) => return not_found(message),
+    };
+    // Located before the read, so a page past the end keeps its own words and
+    // only a failed read is answered without them (O267).
+    let (sha, offset) = match view.locate(index) {
+        Ok((member, offset)) => (member.sha256.clone(), offset),
         Err(message) => return not_found(message),
     };
     // Decoding blocks and can allocate up to `MAX_DECODE_ALLOC`; `serve_page`'s
     // reasoning applies unchanged, and so does its reason to locate in the
     // sidecar `view` checked.
     let fetched = tokio::task::spawn_blocking(move || {
-        let (member, offset) = view.locate(index)?;
-        let sha = member.sha256.clone();
         let dir = state.thumb_cache_dir();
         crate::cover::cached_or_generated_thumb(&dir, &sha, offset, edge, || {
             state.page(&view, index).map(|p| p.bytes)
@@ -947,7 +995,7 @@ async fn get_thumb(
             bytes,
         )
             .into_response(),
-        Ok(Err(e)) => not_found(e),
+        Ok(Err(e)) => unreadable(&what, &e),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("thumbnail read panicked: {e}"),
@@ -985,13 +1033,27 @@ impl From<crate::notes::Invalid> for NoNotes {
     }
 }
 
+impl From<crate::works::NoRow> for NoNotes {
+    fn from(why: crate::works::NoRow) -> Self {
+        match why {
+            crate::works::NoRow::Gone(message) => Self::NotFound(message),
+            crate::works::NoRow::Failed(message) => Self::Failed(message),
+        }
+    }
+}
+
 impl IntoResponse for NoNotes {
     fn into_response(self) -> Response {
         match self {
             Self::NotFound(message) => not_found(message),
             Self::Refused(message) => bad_request(message),
             Self::Precondition(status, message) => (status, message).into_response(),
-            Self::Failed(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
+            // As `NoProgress::Failed`: a save's connection can name the store.
+            Self::Failed(message) => answered_and_logged(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the library could not answer this request".to_string(),
+                &message,
+            ),
         }
     }
 }
@@ -1214,8 +1276,14 @@ async fn put_notes(
             &current,
         )?;
 
-        crate::notes::store(&state.library, &found, user_id, &merged, view.full())
-            .map_err(NoNotes::Failed)?;
+        crate::notes::store(
+            &state.library,
+            &found,
+            user_id,
+            &merged,
+            view.full(),
+            crate::works::Mint::of(&state.works),
+        )?;
         // The answer is read back rather than built from `merged`, so its
         // `ETag` is the next read's: `merged` carries no `stale` marks, which
         // a read sets on a note whose page is gone (O244), and lists notes in
@@ -1264,6 +1332,15 @@ impl From<crate::truth::Unwritable> for NoTruth {
         match why {
             crate::truth::Unwritable::Missing(message) => Self::NotFound(message),
             crate::truth::Unwritable::PartlyVisible(message) => Self::Forbidden(message),
+        }
+    }
+}
+
+impl From<crate::works::NoRow> for NoTruth {
+    fn from(why: crate::works::NoRow) -> Self {
+        match why {
+            crate::works::NoRow::Gone(message) => Self::NotFound(message),
+            crate::works::NoRow::Failed(message) => Self::Failed(message),
         }
     }
 }
@@ -1343,9 +1420,10 @@ async fn get_truth(
 /// `patch_alignments` already make — the second is refused and has to re-read
 /// and re-apply rather than being merged.
 ///
-/// `#[allow(clippy::result_large_err)]` for the reason `put_notes` carries it:
-/// the closure below resolves a `Response`-carrying error and clippy checks
-/// each closure as its own item.
+/// **An administrator's route, and never a key's** (O58): every account that
+/// may open the work is served this one document.
+///
+/// `#[allow(clippy::result_large_err)]` for the reason `put_notes` carries it.
 #[allow(clippy::result_large_err)]
 async fn put_truth(
     State(state): State<Arc<ServeState>>,
@@ -1354,6 +1432,17 @@ async fn put_truth(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    // Before the body is read, so a key or a `user` is refused for what it is,
+    // whatever it sends. The view and `truth::as_stored` below stay for a later
+    // per-account capability to label (the go-public design's §5, decision 6):
+    // an administrator is never narrowed, so today they keep the document whole.
+    let Some(principal) = extensions.get::<crate::auth::Principal>() else {
+        return NoPrincipal.into_response();
+    };
+    if let Some(refusal) = crate::session::administering_or_forbidden(principal, &extensions) {
+        return refusal;
+    }
+
     // Taken as `Bytes` and deserialised here rather than through `Json`, so a
     // malformed body is refused in this server's own words — O5's rule, and
     // the shape `put_notes` already follows. `TruthDoc::from_json` already
@@ -1419,7 +1508,12 @@ async fn put_truth(
         // Every entry the account is not sent whole kept, and one it changed
         // refused (spec §3.8, O191).
         let merged = crate::truth::as_stored(incoming, &current, &view, &found.id)?;
-        crate::truth::store(&state.library, &found, &merged).map_err(NoTruth::Failed)?;
+        crate::truth::store(
+            &state.library,
+            &found,
+            &merged,
+            crate::works::Mint::of(&state.works),
+        )?;
         Ok(crate::truth::tagged_for(&merged, &view))
     })
     .await;
@@ -1575,8 +1669,9 @@ async fn put_progress(
             &progress,
             view.full(),
             arrival,
+            crate::works::Mint::of(&state.works),
         )
-        .map_err(NoProgress::Failed)
+        .map_err(NoProgress::from)
     })
     .await;
 
@@ -1718,31 +1813,16 @@ fn one_slot(text: &str, side: &str) -> Result<taiyaku_core::Slot, Response> {
 /// replace an edge wholesale. `If-Match` is what makes "the document this
 /// server holds" and "the document the client was looking at" the same thing.
 ///
-/// **Applies the grant itself.** Resolving its target by slug alone would let
-/// a restricted account both read the sidecar this handler returns and write
-/// shared `alignment`/`run` rows for a work outside every root it held — worse
-/// than a read leak, because an alignment is shared library truth rather than
-/// per-account state.
+/// **An administrator's route, and never a key's** (O58): an
+/// alignment is shared, and every account that may open the work is served it.
 ///
-/// **Filters its response exactly as `get_sidecar` does, and for the same
-/// reason.** A reader granted only `en` on a work also holding a withheld
-/// `raw` passes the work-level check — the work keeps a visible edition — and
-/// would get back a 200 carrying the *whole* corrected sidecar, `raw`
-/// included, if the response were not filtered.
-///
-/// **Refuses a correction that itself names a withheld edition, on either
-/// side.** Filtering the response shapes only what comes back; it would leave
-/// the write open — a reader granted `en` alone could still submit
-/// `{"from":"en","to":"raw",…}` and have it accepted, writing shared
-/// `alignment`/`run` rows for `raw` that every reader who *can* see `raw`
-/// is then served from. That is worse than a response leak: a read leak costs
-/// the caller who triggered it a fact they should not have; this write would
-/// cost every other reader a fact they did not ask this caller to assert.
-/// Each side is asked whether any member of it is visible, the answer
-/// [`crate::view::of_edition`]'s flags give the page and download routes,
-/// before the body is otherwise parsed, in
-/// [`visible_members_for_a_correction`]. A side the caller sees only in part
-/// is refused with 403 once the view is built (spec §3.8).
+/// **The grant halves are kept for a later per-account capability** (the
+/// go-public design's §5, decision 6), and an administrator, always `Every`,
+/// reaches none of them: a correction naming an edition the caller cannot
+/// see, on either side, is refused before the body is otherwise parsed
+/// ([`visible_members_for_a_correction`]); one naming a side the caller sees
+/// only in part is refused with 403 (spec §3.8); and the response and its tag
+/// are the caller's view, as `get_sidecar`'s are.
 ///
 /// **What is stored is never filtered — only what is returned.** `flags`
 /// are read once, before the write, and shape only the response and both
@@ -1766,24 +1846,30 @@ async fn patch_alignments(
     request_extensions: axum::http::Extensions,
     body: axum::body::Bytes,
 ) -> Response {
-    // Parsed before the grant is asked and refused after it, so a hidden work
-    // is still refused before a malformed body: the body lends the grant check
-    // the two editions it names, when it names two.
+    // Before the body is read, so a key or a `user` is refused for what it is,
+    // whatever it sends.
+    let Some(principal) = request_extensions.get::<crate::auth::Principal>() else {
+        return NoPrincipal.into_response();
+    };
+    if let Some(refusal) =
+        crate::session::administering_or_forbidden(principal, &request_extensions)
+    {
+        return refusal;
+    }
+
+    // From here the grant halves (the go-public design's §5, decision 6):
+    // parsed before the grant is asked and refused after it, so a hidden work
+    // is refused before a malformed body, the body lending the grant check the
+    // editions it names.
     let parsed: Result<Correction, _> = serde_json::from_slice(&body);
     let sides = parsed
         .as_ref()
         .ok()
         .map(|correction| (correction.from.clone(), correction.to.clone()));
-    // **The write-authorization half of Finding 1, not merely its response
-    // leak.** `flags` only shape what this handler sends back; on their own
-    // they never ask whether the correction's own `from`/`to` are inside the
-    // grant. A reader granted only `en` on a work that also holds a withheld
-    // `raw` could name `raw` on either side and have it written into the
-    // shared `alignment`/`run` rows every other reader of this work is served
-    // from — worse than a read leak, because the write is not scoped to the
-    // caller who made it. Each side is asked whether any member of it is
-    // visible, in the flags `view::of_edition` reads for the page and
-    // download routes.
+    // Each side is asked whether any member of it is visible, in the flags
+    // `view::of_edition` reads for the page and download routes: `flags`
+    // alone shape only the answer, and a caller granted `en` naming a hidden
+    // `raw` would write the shared rows every reader of `raw` is served from.
     let flags =
         match visible_members_for_a_correction(&state, &request_extensions, &id, sides).await {
             Ok(flags) => flags,
@@ -1952,6 +2038,21 @@ async fn patch_alignments(
             // filtered.
             let json = next.to_json();
             if what != taiyaku_core::Corrected::AlreadyTrue {
+                // Before the file, so a work whose row is gone writes neither
+                // and answers as one this server does not hold (O184).
+                let work_id = crate::works::row_id_for_document(
+                    &held,
+                    &found.id,
+                    &next,
+                    &found.path,
+                    crate::works::Mint::of(&state.works),
+                )
+                .map_err(|missing| match missing {
+                    crate::works::NoRow::Gone(message) => not_found(message),
+                    crate::works::NoRow::Failed(message) => {
+                        (StatusCode::INTERNAL_SERVER_ERROR, message).into_response()
+                    }
+                })?;
                 // **The file, then the rows — unless there is no file.**
                 //
                 // The ordering is argued above and is unchanged for a work
@@ -1983,7 +2084,8 @@ async fn patch_alignments(
                     // write would drop every field it has no name for and
                     // stamp it version 1. Asked before the file, and so before
                     // the rows, in the words a stamp over the file uses, less
-                    // the file's path: any account granted the work calls this.
+                    // the file's path: the caller named the work, whose
+                    // `taiyaku.json` this is, so the version is all it says.
                     if let Some(declared) =
                         taiyaku_library::migrate::declared_version(&found.path, "taiyaku")
                     {
@@ -1996,7 +2098,7 @@ async fn patch_alignments(
                     taiyaku_read::atomic::write(&found.path, json.as_bytes(), "json")
                         .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
                 }
-                crate::alignments::store(&held, &found, &next)
+                crate::alignments::store(&held, work_id, &next)
                     .map_err(|why| (StatusCode::INTERNAL_SERVER_ERROR, why).into_response())?;
                 held.commit().map_err(|e| {
                     (
@@ -2359,10 +2461,9 @@ pub(crate) enum GrantPosture {
     /// simply never be named in the body.
     Filters,
     /// **Both of the above, for a route with two distinct grant-facing
-    /// jobs.** `patch_alignments` refuses a request that itself *names* a
-    /// withheld edition (`Refuses`, on the write) and separately filters the
-    /// response body of a request that does not (`Filters`, on the read) — two
-    /// different questions asked of two different parts of one request, neither
+    /// jobs.** Progress, notes and truth refuse a work outside the grant
+    /// (`Refuses`) and, for a work the caller sees part of, leave out what sits
+    /// on an edition outside it (`Filters`) — two different questions, neither
     /// of which subsumes the other. A second table (refuse-postures crossed
     /// with filter-postures) was rejected: most routes need only one axis, so a
     /// second table would carry an empty column for nearly every entry. A
@@ -2402,28 +2503,20 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         // caller sees part of leaves out a note on an edition outside the
         // grant; a write keeps it (spec §3.8).
         ("/api/works/{work}/notes", RefusesAndFilters),
-        // `get_truth` and `put_truth` refuse a work outside the grant. For a
-        // work the caller sees part of, the read leaves out the entry of an
-        // edition outside the grant, and a write keeps it (spec §3.8, O191).
+        // `get_truth` refuses a work outside the grant, and for a work the
+        // caller sees part of leaves out the entry of an edition outside the
+        // grant. The write is an administrator's (O58), and an administrator
+        // is never limited by a grant.
         ("/api/works/{work}/truth", RefusesAndFilters),
-        // `patch_alignments` filters its response to the visible editions, as
-        // `get_sidecar` does (`Filters`), and refuses outright (404) a
-        // correction that itself names an edition outside the grant, before
-        // `Sidecar::correct` or the write beneath it runs
-        // (`visible_members_for_a_correction`): a reader granted `en` alone
-        // could otherwise write `alignment`/`run` rows for `raw`, shared state
-        // every reader who *can* see `raw` is then served from, which is worse
-        // than a read leak.
-        //
-        // `RefusesAndFilters`: the write half is proven in
-        // `every_route_declares_its_grant_posture`'s own dedicated block
-        // rather than the generic `Refuses` loops (which explicitly skip
-        // this pattern) because a correction needs a body and `If-Match`
-        // that a GET-only mechanism cannot send; the response-filter half is
-        // proven there too, against a correction between two visible
-        // editions, and recorded in `proven_filters` like every other
-        // `Filters`/`RefusesAndFilters` entry.
-        ("/api/works/{work}/alignments", RefusesAndFilters),
+        // The grant halves `patch_alignments` keeps (the go-public design's §5,
+        // decision 6) are unreachable: no caller of this route holds a grant.
+        (
+            "/api/works/{work}/alignments",
+            GrantIndependent {
+                reason: "admin-only (O58), and O86 drops an admin's root grant, so \
+                         no caller of this route holds one to refuse against",
+            },
+        ),
         (
             "/api/me",
             GrantIndependent {
@@ -2858,8 +2951,6 @@ pub(crate) enum NarrowingPosture {
     /// It sends a whole document and takes it back whole, keeping what the
     /// account is not sent.
     KeepsUnseen,
-    /// It refuses a request that names a narrowed edition.
-    Refuses,
     /// It reads no edition's pages; `reason` says why.
     NoPages { reason: &'static str },
 }
@@ -2868,7 +2959,7 @@ pub(crate) enum NarrowingPosture {
 /// [`guarded_routes`], in its order.
 #[cfg(test)]
 pub(crate) fn narrowing_postures() -> Vec<(&'static str, NarrowingPosture)> {
-    use NarrowingPosture::{KeepsUnseen, Narrows, NoPages, Refuses, Translates};
+    use NarrowingPosture::{KeepsUnseen, Narrows, NoPages, Translates};
     const OWN: NarrowingPosture = NoPages {
         reason: "the caller's own account or this build, naming no work",
     };
@@ -2890,8 +2981,10 @@ pub(crate) fn narrowing_postures() -> Vec<(&'static str, NarrowingPosture)> {
         ),
         ("/api/works/{work}/progress", Translates),
         ("/api/works/{work}/notes", KeepsUnseen),
-        ("/api/works/{work}/truth", KeepsUnseen),
-        ("/api/works/{work}/alignments", Refuses),
+        // A narrowed account only reads it: the write is an administrator's
+        // (O58), and an administrator is never narrowed.
+        ("/api/works/{work}/truth", Narrows),
+        ("/api/works/{work}/alignments", ADMIN),
         ("/api/me", OWN),
         ("/api/about", OWN),
         ("/api/keys", OWN),

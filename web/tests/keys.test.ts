@@ -5,6 +5,8 @@ import {
   intentOf,
   isInteractivePress,
   READER_KEYS,
+  type ReaderBinding,
+  withoutCorrecting,
 } from '../src/keys'
 import type { ReaderModule } from '../src/module'
 
@@ -170,6 +172,33 @@ describe('READER_KEYS', () => {
   it('the library key is in the one table the help screen is generated from', () => {
     const row = READER_KEYS.find((b) => b.keys.includes('L'))
     expect(row?.label, 'a label, or Help cannot describe it').toBeTruthy()
+  })
+
+  // O58: the help of an account that may not correct leaves out `c`'s row and
+  // nothing else, in the order the reader answers the keys.
+  it('withoutCorrecting drops the correcting row alone and keeps the rest in order', () => {
+    const kept = withoutCorrecting(READER_KEYS)
+    const labels = READER_KEYS.map((b) => b.label)
+    expect(labels).toContain('correct this pairing')
+    expect(kept.map((b) => b.label)).toEqual(
+      labels.filter((label) => label !== 'correct this pairing'),
+    )
+  })
+
+  // Rebound, the correcting row has neither `c` nor its label, and `c` steps:
+  // the row goes by what it asks for, and `c`'s new row stays.
+  it('withoutCorrecting finds a rebound correcting row by its intent', () => {
+    const steps: ReaderBinding = {
+      keys: ['c'],
+      label: 'next page',
+      resolve: () => ({ kind: 'step', by: 1 }),
+    }
+    const corrects: ReaderBinding = {
+      keys: ['x'],
+      label: 'fix it',
+      resolve: () => ({ kind: 'correct' }),
+    }
+    expect(withoutCorrecting([steps, corrects])).toEqual([steps])
   })
 
   // The property the ordering carries: a module cannot take a reader key,

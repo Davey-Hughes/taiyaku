@@ -3230,7 +3230,7 @@ describe('Libraries, a directory’s move', () => {
     expect([...report.querySelectorAll('p')].map((p) => p.textContent)).toEqual(
       [
         'Moved /media/Manga/Chapters from Manga to Comics.',
-        'kim and lee gained sight of it, and ana lost sight of it.',
+        'kim and lee gained sight of it or a directory inside it, and ana lost sight of it or a directory inside it.',
       ],
     )
     expect(report.querySelector('.derived')).toBeNull()
@@ -3261,7 +3261,7 @@ describe('Libraries, a directory’s move', () => {
   it('says no account gained or lost sight in the kept report where none did', async () => {
     const report = await keptReport('new', { library: 'Extras', library_id: 9 })
     expect(report.querySelector('.move-counts')?.textContent).toBe(
-      'No account gained or lost sight of it.',
+      'No account gained or lost sight of it or a directory inside it.',
     )
   })
 
@@ -3276,7 +3276,7 @@ describe('Libraries, a directory’s move', () => {
         (p) => p.textContent,
       ),
     ).toEqual([
-      'No account gained sight of it, and ana lost sight of it.',
+      'No account gained sight of it or a directory inside it, and ana lost sight of it or a directory inside it.',
       'Manga had no other directory, so it was removed, with 3 grants.',
     ])
   })

@@ -1,8 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { getSidecar, getTruth, listWorks, putTruth } from './api.ts'
+import { getSidecar, getTruth, listWorks, me, putTruth } from './api.ts'
 import './index.css'
-import { Labeller } from './Labeller.tsx'
+import { LabelPage } from './Labeller.tsx'
 import { applyTheme, loadTheme } from './theme.ts'
 import type { TruthPorts } from './truthWrite.ts'
 
@@ -32,6 +32,6 @@ applyTheme(loadTheme(), document.documentElement)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Labeller ports={TRUTH_PORTS} />
+    <LabelPage ports={TRUTH_PORTS} who={me} />
   </StrictMode>,
 )
