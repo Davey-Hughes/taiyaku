@@ -5,7 +5,7 @@
  * **A choice takes effect the moment it is made** — stored, then applied to
  * `<html>` — with nothing to confirm, because a theme is cheap to change back
  * and a preview that needed a Save would only be a second place for the two to
- * disagree. The pre-paint script in `index.html` applies the stored choice on
+ * disagree. The pre-paint script `public/theme.js` applies the stored choice on
  * the next load, before this component exists.
  *
  * Native radios in a `fieldset`, so the group is one tab stop with arrow keys

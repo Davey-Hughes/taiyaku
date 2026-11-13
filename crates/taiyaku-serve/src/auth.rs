@@ -723,14 +723,14 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
     //
     // Checked before the account is looked up, so a locked-out pair costs no
     // argon2 at all.
-    let key = account::attempt_key(&client.to_string(), &name);
+    let key = account::attempt_key(&account::limiter_address(client), &name);
     // **The wider key too, for the same reason the login route takes it**: the
     // pair's name half comes from the `Authorization` header, so a fresh
     // invented name is a fresh counter and the decoy verify below runs against
     // no ceiling at all. `account::address_key` has the reasoning; this route
     // needs it more than the login route does, because it is reachable on every
     // guarded path rather than one.
-    let wide = account::address_key(&client.to_string());
+    let wide = account::address_key(&account::limiter_address(client));
     // Asked twice below, so written once: both reads must ask both keys and
     // fail the same way.
     let locked_out = || {
@@ -797,6 +797,7 @@ fn from_basic(state: &ServeState, header: &str, client: std::net::IpAddr) -> Res
         // the counter that bounds the cost of this exact path.
         let pair = account::note_failure(&conn, &key);
         let address = account::note_failure(&conn, &wide);
+        crate::session::count_wrong_password(&conn, &found);
         if pair.is_err() || address.is_err() {
             return Resolved::TooMany;
         }

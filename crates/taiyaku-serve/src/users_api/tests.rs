@@ -45,6 +45,96 @@ async fn the_user_list_carries_sessions_keys_and_grants() {
     );
 }
 
+/// O279: each row carries its account's wrong passwords in the current window,
+/// and the server's verdict on whether they reached the alarm, so the screen
+/// holds no ceiling of its own. kim at 29 sits under it, sam at exactly 30 and
+/// lee at 31 at and past it; a lapsed window counts nothing and sounds nothing.
+#[tokio::test]
+async fn the_user_list_carries_each_accounts_wrong_passwords_in_this_window() {
+    use taiyaku_library::account::{account_key, note_account_failure};
+
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let reader = a_reader(&router, &state).await;
+    let mut wound = Vec::new();
+    for (name, failures) in [("kim", 29), ("sam", 30), ("lee", 31)] {
+        send_json(
+            &router,
+            Method::POST,
+            "/api/library/users",
+            &serde_json::json!({ "name": name, "password": "hunter2" }),
+        )
+        .await;
+        let id = user_id(&state, name);
+        let conn = state.library.conn();
+        for _ in 0..failures {
+            note_account_failure(&conn, id).expect("notes");
+        }
+        wound.push(id);
+    }
+    let (kim, sam, lee) = (wound[0], wound[1], wound[2]);
+    {
+        let conn = state.library.conn();
+        for _ in 0..3 {
+            note_account_failure(&conn, 1).expect("notes");
+        }
+    }
+
+    let seen = |json: &serde_json::Value| -> Vec<(i64, serde_json::Value, serde_json::Value)> {
+        [1, reader, kim, sam, lee]
+            .into_iter()
+            .map(|id| {
+                let row = json["users"]
+                    .as_array()
+                    .expect("users")
+                    .iter()
+                    .find(|u| u["id"] == id)
+                    .expect("every account is listed");
+                (
+                    id,
+                    row["wrong_passwords"].clone(),
+                    row["wrong_password_alarm"].clone(),
+                )
+            })
+            .collect()
+    };
+    let json = get_json(&router, "/api/library/users").await;
+    assert_eq!(
+        seen(&json),
+        [
+            (1, 3.into(), false.into()),
+            (reader, 0.into(), false.into()),
+            (kim, 29.into(), false.into()),
+            (sam, 30.into(), true.into()),
+            (lee, 31.into(), true.into()),
+        ],
+        "{json}"
+    );
+
+    {
+        let conn = state.library.conn();
+        for id in [1, sam] {
+            conn.execute(
+                "UPDATE login_attempt SET window_start = datetime('now', '-16 minutes')
+                  WHERE key = ?1",
+                [account_key(id)],
+            )
+            .expect("ages the window");
+        }
+    }
+    let json = get_json(&router, "/api/library/users").await;
+    assert_eq!(
+        seen(&json),
+        [
+            (1, 0.into(), false.into()),
+            (reader, 0.into(), false.into()),
+            (kim, 29.into(), false.into()),
+            (sam, 0.into(), false.into()),
+            (lee, 31.into(), true.into()),
+        ],
+        "a lapsed window still counted: {json}"
+    );
+}
+
 /// A created account can log in and is a reader unless the body says
 /// otherwise — `004_auth.sql` defaults the column to `user` because "any
 /// insert that omitted the column minted an administrator".

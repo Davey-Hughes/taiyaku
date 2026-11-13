@@ -2725,6 +2725,36 @@ pub(crate) fn fixture_authorization() -> String {
     format!("Basic {encoded}")
 }
 
+/// The `Content-Security-Policy` go-public spec §4 states, written out rather
+/// than read from `routes::SECURITY_POLICY`, so a change to the code's value
+/// fails the tests instead of moving them with it.
+pub(crate) const THE_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self' data:; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+/// Assert that `headers` carry O277's four security headers, each at its
+/// stated value; `what` names the answer in a failure.
+///
+/// # Panics
+///
+/// Panics when a header is missing or holds anything else.
+pub(crate) fn assert_the_security_headers(headers: &axum::http::HeaderMap, what: &str) {
+    use axum::http::header;
+
+    for (name, value) in [
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::REFERRER_POLICY, "same-origin"),
+        (header::X_FRAME_OPTIONS, "DENY"),
+        (header::CONTENT_SECURITY_POLICY, THE_SECURITY_POLICY),
+    ] {
+        assert_eq!(
+            headers
+                .get(&name)
+                .map(|v| v.to_str().unwrap_or("<not text>")),
+            Some(value),
+            "{what}: {name}"
+        );
+    }
+}
+
 #[cfg(test)]
 /// Grant the fixture account a root, **demoting it to `user` first**.
 ///

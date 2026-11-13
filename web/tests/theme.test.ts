@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import indexHtml from '../index.html?raw'
+import labelHtml from '../label.html?raw'
+import themeJs from '../public/theme.js?raw'
 import tokensCss from '../src/styles/tokens.css?raw'
 import { rules } from './support/css'
 import { fakeStorage } from './support/storage'
@@ -40,8 +42,8 @@ describe('theme', () => {
     vi.stubGlobal('localStorage', storage)
     saveTheme('ink')
     // The literal key, not one built from `NAMESPACE` and `THEME_PREF_ID`:
-    // `index.html`'s pre-paint script spells it out, so a renamed id that
-    // still agreed with itself would strand every stored choice.
+    // the pre-paint script `public/theme.js` spells it out, so a renamed id
+    // that still agreed with itself would strand every stored choice.
     expect(storage.getItem('taiyaku.prefs.theme')).toBe('{"choice":"ink"}')
     expect(loadTheme()).toBe('ink')
   })
@@ -64,9 +66,7 @@ describe('theme', () => {
   })
 })
 
-describe("index.html's pre-paint script", () => {
-  const script = indexHtml.match(/<script>([\s\S]*?)<\/script>/)?.[1]
-
+describe('the pre-paint script, public/theme.js', () => {
   const STORED: Array<[string, string | null]> = [
     ['nothing', null],
     ['paper', '{"choice":"paper"}'],
@@ -80,12 +80,11 @@ describe("index.html's pre-paint script", () => {
   it.each(STORED)(
     'agrees with loadTheme and applyTheme when %s is stored',
     (_, stored) => {
-      if (script === undefined) throw new Error('index.html has no <script>')
       const storage = fakeStorage()
       if (stored !== null) storage.setItem('taiyaku.prefs.theme', stored)
 
       const painted = fakeRoot()
-      new Function('localStorage', 'document', script)(storage, {
+      new Function('localStorage', 'document', themeJs)(storage, {
         documentElement: painted,
       })
 
@@ -97,10 +96,19 @@ describe("index.html's pre-paint script", () => {
     },
   )
 
-  it('comes before the app module, so it runs before first paint', () => {
-    const inline = indexHtml.indexOf('<script>')
-    expect(inline).toBeGreaterThan(-1)
-    expect(inline).toBeLessThan(indexHtml.indexOf('<script type="module"'))
+  it('comes before the app module, in <head>, so it runs before first paint', () => {
+    const tag = indexHtml.indexOf('<script src="/theme.js"></script>')
+    expect(tag).toBeGreaterThan(-1)
+    expect(tag).toBeLessThan(indexHtml.indexOf('<script type="module"'))
+    expect(tag).toBeLessThan(indexHtml.indexOf('</head>'))
+  })
+
+  it("index.html and label.html hold no inline script, which the server's policy refuses", () => {
+    for (const html of [indexHtml, labelHtml]) {
+      const opening = html.match(/<script\b[^>]*>/gi) ?? []
+      expect(opening.length).toBeGreaterThan(0)
+      expect(opening.filter((tag) => !/\ssrc=/i.test(tag))).toEqual([])
+    }
   })
 })
 

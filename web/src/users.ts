@@ -45,6 +45,19 @@ export interface User {
    * nothing else about such an account says so.
    */
   can_log_in: boolean
+  /**
+   * This account's wrong passwords in the current window, from every address
+   * (O279). It refuses nothing: the lockouts are an address-and-name pair's
+   * and an address's, never the account's.
+   */
+  wrong_passwords: number
+  /**
+   * The server's verdict that `wrong_passwords` reached its ceiling; the web
+   * holds no ceiling of its own. The mark it draws says "in 15 minutes",
+   * repeating `LOCKOUT_WINDOW_MINUTES` in
+   * `crates/taiyaku-library/src/account.rs`, the window's length.
+   */
+  wrong_password_alarm: boolean
   sessions: SessionRow[]
   keys: ApiKey[]
   /**

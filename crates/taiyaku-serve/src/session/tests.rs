@@ -2675,7 +2675,8 @@ async fn a_login_for_an_unknown_name_records_its_failure_holding_its_permit() {
     );
 }
 
-/// The same for a real account with a wrong password.
+/// The same for a real account with a wrong password, which records three:
+/// the pair's, the address's and the account's (O279), all under the permit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_login_with_a_wrong_password_records_its_failure_holding_its_permit() {
     let tmp = crate::test_support::Fixture::new("verify-record-login-real");
@@ -2687,9 +2688,9 @@ async fn a_login_with_a_wrong_password_records_its_failure_holding_its_permit() 
     assert_eq!(told, StatusCode::UNAUTHORIZED);
     assert_eq!(
         free,
-        [false, false],
-        "a permit was free while a login's failure was being recorded, so the login \
-         gave its own back before the record"
+        [false, false, false],
+        "the pair's, the address's and the account's records, each made once while the \
+         login held its permit"
     );
 }
 
@@ -2710,7 +2711,8 @@ async fn a_basic_request_for_an_unknown_name_records_its_failure_holding_its_per
     );
 }
 
-/// The same over `Authorization: Basic`, for a real account.
+/// The same over `Authorization: Basic`, for a real account: three records,
+/// the pair's, the address's and the account's (O279), all under the permit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_basic_request_with_a_wrong_password_records_its_failure_holding_its_permit() {
     let tmp = crate::test_support::Fixture::new("verify-record-basic-real");
@@ -2722,9 +2724,9 @@ async fn a_basic_request_with_a_wrong_password_records_its_failure_holding_its_p
     assert_eq!(told, StatusCode::UNAUTHORIZED);
     assert_eq!(
         free,
-        [false, false],
-        "a permit was free while a Basic request's failure was being recorded, so the \
-         request gave its own back before the record"
+        [false, false, false],
+        "the pair's, the address's and the account's records, each made once while the \
+         Basic request held its permit"
     );
 }
 
@@ -3397,5 +3399,372 @@ async fn a_basic_password_request_clears_its_failures_while_the_write_lock_is_fr
         (status, failures_of(&state, &key)),
         (StatusCode::OK, 0),
         "(the answer, the pair's failure rows)"
+    );
+}
+
+/// `request` as if it had come from `peer`, which `auth::client_of` reads as
+/// the client when no trusted proxy is configured.
+fn from_peer(peer: &str, mut request: Request<Body>) -> Request<Body> {
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+            peer.parse().expect("an address"),
+            1234,
+        )));
+    request
+}
+
+/// The failure count `login_attempt` holds under `key`, 0 when it holds no row.
+fn count_under(state: &crate::ServeState, key: &str) -> i64 {
+    state
+        .library
+        .conn()
+        .query_row(
+            "SELECT COALESCE(MAX(count), 0) FROM login_attempt WHERE key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .expect("reads the count")
+}
+
+/// Gives the fixture account [`CHEAP_PHC`], so a wrong password costs these
+/// tests no full argon2 verify.
+fn on_a_cheap_password(state: &crate::ServeState) {
+    state
+        .library
+        .conn()
+        .execute(
+            "UPDATE user SET password_hash = ?1 WHERE id = 1",
+            [CHEAP_PHC],
+        )
+        .expect("sets the password");
+}
+
+/// How the router answers `request` from `peer`.
+async fn status_from(state: &Arc<ServeState>, peer: &str, request: Request<Body>) -> StatusCode {
+    build_router(state.clone())
+        .oneshot(from_peer(peer, request))
+        .await
+        .expect("answers")
+        .status()
+}
+
+/// O278: two addresses in one /64 are one client to the login route, in its
+/// pair and in its address count, and the next /64 is another client.
+#[tokio::test]
+async fn two_addresses_in_one_64_share_a_login_pair_and_an_address_count() {
+    let tmp = crate::test_support::Fixture::new("limiter-64-login");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    on_a_cheap_password(&state);
+    let name = crate::test_support::FIXTURE_NAME;
+
+    for peer in ["2001:db8:1:2::1", "2001:db8:1:2::99"] {
+        for _ in 0..account::LOCKOUT_AFTER / 2 {
+            assert_eq!(
+                status_from(&state, peer, wrong_login(name)).await,
+                StatusCode::UNAUTHORIZED,
+                "a wrong login from {peer}"
+            );
+        }
+    }
+
+    let third = status_from(&state, "2001:db8:1:2::abc", wrong_login(name)).await;
+    let counted = count_under(&state, &account::address_key("2001:db8:1:2::/64"));
+    let next_64 = status_from(&state, "2001:db8:1:3::1", wrong_login(name)).await;
+    assert_eq!(
+        (third, counted, next_64),
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            account::LOCKOUT_AFTER,
+            StatusCode::UNAUTHORIZED
+        ),
+        "(a third address in the /64, the /64's address count, the next /64)"
+    );
+}
+
+/// O278: the same over `Authorization: Basic`.
+#[tokio::test]
+async fn two_addresses_in_one_64_share_a_basic_pair_and_an_address_count() {
+    let tmp = crate::test_support::Fixture::new("limiter-64-basic");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    on_a_cheap_password(&state);
+    let name = crate::test_support::FIXTURE_NAME;
+
+    for peer in ["2001:db8:1:2::1", "2001:db8:1:2::99"] {
+        for _ in 0..account::LOCKOUT_AFTER / 2 {
+            assert_eq!(
+                status_from(&state, peer, wrong_basic(name)).await,
+                StatusCode::UNAUTHORIZED,
+                "a wrong Basic password from {peer}"
+            );
+        }
+    }
+
+    let third = status_from(&state, "2001:db8:1:2::abc", wrong_basic(name)).await;
+    let counted = count_under(&state, &account::address_key("2001:db8:1:2::/64"));
+    let next_64 = status_from(&state, "2001:db8:1:3::1", wrong_basic(name)).await;
+    assert_eq!(
+        (third, counted, next_64),
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            account::LOCKOUT_AFTER,
+            StatusCode::UNAUTHORIZED
+        ),
+        "(a third address in the /64, the /64's address count, the next /64)"
+    );
+}
+
+/// O278: a password change counts its wrong guesses under one key for the
+/// whole /64.
+#[tokio::test]
+async fn two_addresses_in_one_64_share_the_password_change_key() {
+    let tmp = crate::test_support::Fixture::new("limiter-64-change");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    on_a_cheap_password(&state);
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+
+    for peer in ["2001:db8:1:2::1", "2001:db8:1:2::99"] {
+        for _ in 0..account::LOCKOUT_AFTER / 2 {
+            assert_eq!(
+                status_from(&state, peer, wrong_change(&cookie)).await,
+                StatusCode::FORBIDDEN,
+                "a wrong current password from {peer}"
+            );
+        }
+    }
+
+    assert_eq!(
+        status_from(&state, "2001:db8:1:2::abc", wrong_change(&cookie)).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "a third address in the /64 was given a fresh key"
+    );
+}
+
+/// O278: a client a dual-stack listener hands over as `::ffff:a.b.c.d` is the
+/// same client as its plain IPv4 form, and two mapped clients are two.
+#[tokio::test]
+async fn a_mapped_ipv4_client_and_its_plain_form_share_a_login_pair() {
+    let tmp = crate::test_support::Fixture::new("limiter-mapped-login");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    on_a_cheap_password(&state);
+    let name = crate::test_support::FIXTURE_NAME;
+
+    for peer in ["::ffff:203.0.113.9", "203.0.113.9"] {
+        for _ in 0..account::LOCKOUT_AFTER / 2 {
+            assert_eq!(
+                status_from(&state, peer, wrong_login(name)).await,
+                StatusCode::UNAUTHORIZED,
+                "a wrong login from {peer}"
+            );
+        }
+    }
+
+    let again = status_from(&state, "::ffff:203.0.113.9", wrong_login(name)).await;
+    let another = status_from(&state, "::ffff:198.51.100.1", wrong_login(name)).await;
+    assert_eq!(
+        (again, another),
+        (StatusCode::TOO_MANY_REQUESTS, StatusCode::UNAUTHORIZED),
+        "(the mapped form once more, another mapped client)"
+    );
+}
+
+/// The window's count of wrong passwords against the fixture account.
+fn account_count(state: &crate::ServeState) -> i64 {
+    account::account_failures(&state.library.conn(), 1).expect("reads the account's count")
+}
+
+/// O279: thirty wrong passwords for one account from three addresses, each
+/// within its pair's allowance, are counted against the account, and the right
+/// password from another address still signs in, at the login route and over
+/// Basic, the path every OPDS client takes: the alarm locks nothing.
+#[tokio::test]
+async fn thirty_wrong_passwords_from_three_addresses_raise_the_alarm_and_lock_nothing() {
+    let tmp = crate::test_support::Fixture::new("alarm-thirty");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    on_a_cheap_password(&state);
+    let name = crate::test_support::FIXTURE_NAME;
+
+    for peer in ["203.0.113.1", "203.0.113.2", "203.0.113.3"] {
+        for _ in 0..10 {
+            assert_eq!(
+                status_from(&state, peer, wrong_login(name)).await,
+                StatusCode::UNAUTHORIZED,
+                "a wrong login from {peer}"
+            );
+        }
+    }
+    assert_eq!(account_count(&state), 30, "the count after thirty");
+
+    let right = login_as(name, crate::test_support::FIXTURE_PASSWORD);
+    let right = status_from(&state, "203.0.113.4", right).await;
+    assert_eq!(
+        (right, account_count(&state)),
+        (StatusCode::NO_CONTENT, 30),
+        "(the right password from a fourth address, the count after it)"
+    );
+
+    let basic = basic_as(name, crate::test_support::FIXTURE_PASSWORD);
+    let basic = status_from(&state, "203.0.113.6", basic).await;
+    assert_eq!(
+        (basic, account_count(&state)),
+        (StatusCode::OK, 30),
+        "(the right Basic password from a sixth address, the count after it)"
+    );
+
+    let wrong = status_from(&state, "203.0.113.5", wrong_login(name)).await;
+    assert_eq!(
+        (wrong, account_count(&state)),
+        (StatusCode::UNAUTHORIZED, 31),
+        "(a wrong password from a fifth address, the count after it)"
+    );
+}
+
+/// O279: a wrong password over `Authorization: Basic` counts against its
+/// account too, and the right one does not clear it.
+#[tokio::test]
+async fn a_wrong_basic_password_counts_against_its_account() {
+    let tmp = crate::test_support::Fixture::new("alarm-basic");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    on_a_cheap_password(&state);
+    let name = crate::test_support::FIXTURE_NAME;
+
+    let wrong = status_from(&state, "203.0.113.1", wrong_basic(name)).await;
+    assert_eq!(
+        (wrong, account_count(&state)),
+        (StatusCode::UNAUTHORIZED, 1),
+        "(a wrong Basic password, the count after it)"
+    );
+
+    let right = basic_as(name, crate::test_support::FIXTURE_PASSWORD);
+    let right = status_from(&state, "203.0.113.2", right).await;
+    assert_eq!(
+        (right, account_count(&state)),
+        (StatusCode::OK, 1),
+        "(the right Basic password, the count after it)"
+    );
+}
+
+/// O279: the count is keyed by the account's id, so a rename keeps it.
+#[tokio::test]
+async fn a_rename_keeps_the_accounts_count() {
+    let tmp = crate::test_support::Fixture::new("alarm-rename");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    on_a_cheap_password(&state);
+
+    let before = wrong_login(crate::test_support::FIXTURE_NAME);
+    assert_eq!(
+        status_from(&state, "203.0.113.1", before).await,
+        StatusCode::UNAUTHORIZED
+    );
+    state
+        .library
+        .conn()
+        .execute("UPDATE user SET name = 'renamed' WHERE id = 1", [])
+        .expect("renames the account");
+    assert_eq!(
+        status_from(&state, "203.0.113.2", wrong_login("renamed")).await,
+        StatusCode::UNAUTHORIZED
+    );
+
+    assert_eq!(account_count(&state), 2, "the count across the rename");
+}
+
+/// O279: a name nobody holds names no account to count against, so a wrong
+/// login and a wrong Basic request leave only the pair's and the address's rows.
+#[tokio::test]
+async fn an_unknown_name_counts_against_no_account() {
+    let tmp = crate::test_support::Fixture::new("alarm-unknown");
+    let state = Arc::new(crate::test_support::state(&tmp));
+
+    for request in [wrong_login("nobody"), wrong_basic("nobody")] {
+        assert_eq!(
+            status_from(&state, "203.0.113.1", request).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    let conn = state.library.conn();
+    let mut rows = conn
+        .prepare("SELECT key FROM login_attempt ORDER BY key")
+        .expect("prepares");
+    let keys: Vec<String> = rows
+        .query_map([], |row| row.get(0))
+        .expect("reads")
+        .collect::<Result<_, _>>()
+        .expect("reads every key");
+    assert_eq!(
+        keys,
+        [
+            account::address_key("203.0.113.1"),
+            account::attempt_key("203.0.113.1", "nobody"),
+        ]
+    );
+}
+
+/// O279: the password change's caller is signed in, so a wrong current
+/// password is not counted against the account.
+#[tokio::test]
+async fn a_wrong_current_password_counts_against_no_account() {
+    let tmp = crate::test_support::Fixture::new("alarm-change");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    on_a_cheap_password(&state);
+    let cookie = crate::test_support::fixture_session_cookie(&state.library);
+
+    assert_eq!(
+        status_from(&state, "203.0.113.1", wrong_change(&cookie)).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(account_count(&state), 0);
+}
+
+/// O279: the account's count refuses nothing, so a write of it that the store
+/// refuses is dropped and the answer stays the wrong password's.
+#[tokio::test]
+async fn a_refused_count_still_answers_401() {
+    let tmp = crate::test_support::Fixture::new("alarm-refused");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    on_a_cheap_password(&state);
+    let name = crate::test_support::FIXTURE_NAME;
+    state
+        .library
+        .conn()
+        .execute_batch(&format!(
+            "CREATE TRIGGER an_account_count_fault BEFORE INSERT ON login_attempt
+             WHEN NEW.key = '{}'
+             BEGIN SELECT RAISE(ABORT, 'a planted store fault'); END;",
+            account::account_key(1)
+        ))
+        .expect("plants the fault");
+
+    let login = status_from(&state, "203.0.113.1", wrong_login(name)).await;
+    let basic = status_from(&state, "203.0.113.1", wrong_basic(name)).await;
+    assert_eq!(
+        (login, basic),
+        (StatusCode::UNAUTHORIZED, StatusCode::UNAUTHORIZED),
+        "(a wrong login, a wrong Basic request)"
+    );
+    assert_eq!(
+        count_under(&state, &account::attempt_key("203.0.113.1", name)),
+        2,
+        "the pair's count"
+    );
+}
+
+/// O279: the line names the account by its name and id, the name quoted so it
+/// cannot forge or split the line.
+#[test]
+fn the_alarm_line_names_the_account() {
+    assert_eq!(
+        alarm_line("sam", 2),
+        "WARNING: 30 wrong passwords for the account \"sam\" (id 2) in 15 minutes. \
+         Nothing is locked, and the Users screen marks the account until those 15 \
+         minutes are up."
+    );
+
+    let forged = alarm_line("sam\" (id 1) in 15 minutes.\nWARNING: x", 3);
+    assert!(!forged.contains('\n'), "{forged:?} holds a newline");
+    assert!(
+        forged.contains(r#""sam\" (id 1) in 15 minutes.\nWARNING: x""#),
+        "{forged:?} does not hold the name escaped"
     );
 }

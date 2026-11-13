@@ -1075,6 +1075,8 @@ const DAVEY: usersApi.User = {
   can_stream: true,
   can_stamp: true,
   can_log_in: true,
+  wrong_passwords: 0,
+  wrong_password_alarm: false,
   sessions: [],
   keys: [],
   every_library: true,

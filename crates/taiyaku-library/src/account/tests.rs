@@ -387,13 +387,56 @@ fn the_address_is_counted_whatever_names_it_offered() {
 /// name the same row.
 #[test]
 fn the_wide_key_cannot_collide_with_a_pair() {
-    let wide = address_key("203.0.113.9");
-    assert!(!wide.contains('\n'));
     // Whatever name is offered, the pair carries a newline and the address
-    // alone never can — an address here is a rendered `SocketAddr`.
-    for name in ["", "203.0.113.9", "alice\nbob", "\n"] {
-        assert_ne!(attempt_key("203.0.113.9", name), wide);
+    // half never can: it is what `limiter_address` renders, an IPv4 address
+    // whole or an IPv6 one as its /64. Nor can it hold a space, so a key that
+    // holds one is never an address half.
+    for address in [limited("203.0.113.9"), limited("2001:db8:1:2::1")] {
+        let wide = address_key(&address);
+        assert!(!wide.contains('\n'), "{wide:?} holds a newline");
+        assert!(!wide.contains(' '), "{wide:?} holds a space");
+        for name in ["", address.as_str(), "alice\nbob", "\n"] {
+            assert_ne!(attempt_key(&address, name), wide);
+        }
     }
+}
+
+/// What [`limiter_address`] renders for `address`, written as text.
+fn limited(address: &str) -> String {
+    limiter_address(address.parse().expect("an address"))
+}
+
+/// O278: one host holds a whole IPv6 /64 and can rotate through it, so the
+/// /64 is the client; an IPv4 address is one client as it stands.
+#[test]
+fn the_limiter_keys_an_ipv6_client_by_its_64_and_an_ipv4_one_whole() {
+    let rendered = [
+        "2001:db8:1:2::1",
+        "2001:db8:1:2:ffff:ffff:ffff:ffff",
+        "2001:db8:1:3::1",
+        "203.0.113.9",
+        "203.0.113.10",
+    ]
+    .map(limited);
+    assert_eq!(
+        rendered,
+        [
+            "2001:db8:1:2::/64",
+            "2001:db8:1:2::/64",
+            "2001:db8:1:3::/64",
+            "203.0.113.9",
+            "203.0.113.10",
+        ]
+    );
+}
+
+/// O278: a dual-stack listener hands an IPv4 client over as `::ffff:a.b.c.d`.
+/// Read as its plain form it shares a key with the same client over IPv4, and
+/// two of them do not share `::/64`.
+#[test]
+fn a_mapped_ipv4_address_is_keyed_as_its_plain_form() {
+    let rendered = ["::ffff:203.0.113.9", "::ffff:198.51.100.1"].map(limited);
+    assert_eq!(rendered, ["203.0.113.9", "198.51.100.1"]);
 }
 
 /// §7: keyed on the **pair**, so one misconfigured OPDS client retrying hard
@@ -488,6 +531,66 @@ fn the_key_cannot_be_confused_between_pairs() {
         attempt_key("10.0.0.1alice", "")
     );
     assert_ne!(attempt_key("10.0.0.1", "a"), attempt_key("10.0.0.1", "a "));
+}
+
+/// O279: an account's wrong passwords sound the alarm once a window, at the
+/// thirtieth, and lapse with the window as the limiter's keys do.
+#[test]
+fn the_alarm_sounds_once_at_the_thirtieth_wrong_password_in_a_window() {
+    let library = library();
+    let conn = library.conn();
+
+    let sounded: Vec<i64> = (1..=31)
+        .filter(|_| note_account_failure(&conn, 7).expect("notes"))
+        .collect();
+    assert_eq!(
+        sounded,
+        [30],
+        "the failures, counted from 1, that answered true"
+    );
+    assert_eq!(account_failures(&conn, 7).expect("reads"), 31);
+    assert_eq!(
+        account_failures(&conn, 8).expect("reads"),
+        0,
+        "another account's count"
+    );
+
+    conn.execute(
+        "UPDATE login_attempt SET window_start = datetime('now', '-16 minutes')
+          WHERE key = ?1",
+        [account_key(7)],
+    )
+    .expect("ages the window");
+    assert_eq!(
+        account_failures(&conn, 7).expect("reads"),
+        0,
+        "a lapsed window still counted"
+    );
+    assert!(
+        !note_account_failure(&conn, 7).expect("notes"),
+        "the first failure of a fresh window sounded"
+    );
+    assert_eq!(account_failures(&conn, 7).expect("reads"), 1);
+}
+
+/// The account's key shares `login_attempt` with the pair and the address keys,
+/// so it must name none of their rows.
+#[test]
+fn the_account_key_cannot_collide_with_a_pair_or_an_address() {
+    let key = account_key(1);
+    assert!(!key.contains('\n'), "{key:?} holds a newline");
+    assert!(key.contains(' '), "{key:?} holds no space");
+    for address in [
+        limited("203.0.113.9"),
+        limited("2001:db8:1:2::1"),
+        limited("::ffff:203.0.113.9"),
+    ] {
+        assert!(!address.contains(' '), "{address:?} holds a space");
+        assert_ne!(address_key(&address), key);
+        for name in ["", "1", "account 1", key.as_str(), "\n"] {
+            assert_ne!(attempt_key(&address, name), key);
+        }
+    }
 }
 
 /// **§5's constraint, and the one this whole command exists to satisfy.**

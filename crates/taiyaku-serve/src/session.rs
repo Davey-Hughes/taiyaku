@@ -226,6 +226,38 @@ pub(crate) fn verify_holding(permit: &mut VerifyPermit<'_>, password: &str, phc:
     taiyaku_library::credential::verify_password_in(&mut permit.memory, password, phc)
 }
 
+/// Count one wrong password against `account` (O279), and print
+/// [`alarm_line`] when that brings its window to the ceiling.
+///
+/// **It refuses nothing and is never read before a verify**, so O57's bound
+/// holds and O215's reads that can fail open gain none. Tried once without
+/// waiting (O272): a wrong password during a derive's lock goes uncounted. A
+/// success does not clear it; it lapses with its window.
+pub(crate) fn count_wrong_password(
+    conn: &rusqlite::Connection,
+    account: &taiyaku_library::account::Account,
+) {
+    let reached = taiyaku_library::without_waiting(conn, |conn| {
+        taiyaku_library::account::note_account_failure(conn, account.id)
+    });
+    if let Some(Ok(true)) = reached {
+        eprintln!("{}", alarm_line(&account.name, account.id));
+    }
+}
+
+/// The stderr line, once a window, for an account whose wrong passwords reach
+/// [`taiyaku_library::account::ALARM_AFTER`]. The name is written with `{:?}`,
+/// so a quote or a newline in it can neither forge nor split the line.
+pub(crate) fn alarm_line(name: &str, id: i64) -> String {
+    use taiyaku_library::account::{ALARM_AFTER, LOCKOUT_WINDOW_MINUTES};
+
+    format!(
+        "WARNING: {ALARM_AFTER} wrong passwords for the account {name:?} (id {id}) in \
+         {LOCKOUT_WINDOW_MINUTES} minutes. Nothing is locked, and the Users screen marks the \
+         account until those {LOCKOUT_WINDOW_MINUTES} minutes are up."
+    )
+}
+
 /// The `Set-Cookie` value for a new session.
 ///
 /// **`SameSite=Lax` rather than `Strict`.** `Strict` breaks following a link
@@ -488,12 +520,12 @@ pub(crate) async fn login(
         // itself. Checked before the account is even looked up, so a locked-out
         // pair costs no argon2 — which is the other half of what a rate limit
         // is for on a route whose work is deliberately expensive.
-        let key = account::attempt_key(&address.to_string(), &body.name);
+        let key = account::attempt_key(&account::limiter_address(address), &body.name);
         // **The wider key, checked first and before anything expensive.** The
         // pair's name half is supplied by the caller, so a fresh invented name
         // is a fresh counter and the decoy verify below is free to run — see
         // `account::address_key`.
-        let wide = account::address_key(&address.to_string());
+        let wide = account::address_key(&account::limiter_address(address));
         // Asked twice below, so written once: both reads must ask both keys
         // and fail the same way.
         let locked_out = || {
@@ -555,6 +587,7 @@ pub(crate) async fn login(
             // needs it. The decision is taken after both have been recorded.
             let pair = account::note_failure(&conn, &key);
             let address = account::note_failure(&conn, &wide);
+            count_wrong_password(&conn, &found);
             if pair.is_err() || address.is_err() {
                 return Attempt::TooMany;
             }
@@ -1100,7 +1133,7 @@ pub(crate) async fn change_password(
         // could carry this string, so it is a separation of concerns rather
         // than a guarantee.
         let key = account::attempt_key(
-            &address.to_string(),
+            &account::limiter_address(address),
             &format!("  change-password {user_id}"),
         );
         // Asked twice below, so written once.

@@ -60,6 +60,8 @@ const user = (over: Partial<usersApi.User> = {}): usersApi.User => ({
   can_stream: true,
   can_stamp: false,
   can_log_in: true,
+  wrong_passwords: 0,
+  wrong_password_alarm: false,
   sessions: [],
   keys: [],
   every_library: true,
@@ -278,6 +280,54 @@ describe('Users, the table', () => {
     expect(sam?.querySelector('td.lead')?.textContent).toBe(
       'sam\u00a0·\u00a0locked',
     )
+  })
+
+  it('marks the row of an account whose wrong passwords reached the alarm', async () => {
+    // Marked by the server's flag, never by the count: max's count is at the
+    // ceiling and its flag says no. lee's count is not 30, so a figure drawn
+    // in place of the account's own is seen.
+    vi.mocked(usersApi.listUsers).mockResolvedValue({
+      users: [
+        user({
+          id: 2,
+          name: 'sam',
+          role: 'user',
+          wrong_passwords: 30,
+          wrong_password_alarm: true,
+        }),
+        user({
+          id: 3,
+          name: 'kim',
+          role: 'user',
+          wrong_passwords: 29,
+          wrong_password_alarm: false,
+        }),
+        user({
+          id: 4,
+          name: 'lee',
+          role: 'user',
+          can_log_in: false,
+          wrong_passwords: 31,
+          wrong_password_alarm: true,
+        }),
+        user({
+          id: 5,
+          name: 'max',
+          role: 'user',
+          wrong_passwords: 30,
+          wrong_password_alarm: false,
+        }),
+      ],
+    })
+    const host = await at()
+    expect(
+      rows(host).map((tr) => tr.querySelector('td.lead')?.textContent),
+    ).toEqual([
+      'sam\u00a0·\u00a030 wrong passwords in 15 minutes',
+      'kim',
+      'lee\u00a0·\u00a0locked\u00a0·\u00a031 wrong passwords in 15 minutes',
+      'max',
+    ])
   })
 
   it('draws a table of Name, Role, Libraries and Last seen, each row a link to its account’s page through its name', async () => {

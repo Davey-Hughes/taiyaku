@@ -6,10 +6,9 @@ import { Gate } from './Gate.tsx'
 import { AppRoutes } from './Routes.tsx'
 import { applyTheme, loadTheme } from './theme.ts'
 
-// Again here, after `index.html`'s pre-paint script has done it: a
-// Content-Security-Policy that refuses inline scripts would stop that one and
-// not this, and a flash of the OS's theme is a better failure than the wrong
-// theme for the whole session.
+// Again here, after the pre-paint script `/theme.js` has done it: should that
+// file fail to load, what it costs is a flash of the OS's theme, not the
+// wrong theme for the whole session.
 applyTheme(loadTheme(), document.documentElement)
 
 // `Gate` inside `BrowserRouter` and outside `AppRoutes`: the router stays

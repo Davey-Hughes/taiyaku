@@ -2372,6 +2372,74 @@ async fn no_document_a_client_can_change_is_given_a_freshness_lifetime() {
     }
 }
 
+/// O277: with no `--web`, every kind of answer carries the four security
+/// headers — a refusal by the guard, a guarded route reached by a session and
+/// by a key, an open route's refusal, and axum's own 404. A browser that opens
+/// an API or OPDS address directly is held to the same policy as the app.
+///
+/// Each status is asserted too, so a case that stopped reaching its route is
+/// seen rather than passing on whatever answered instead.
+#[tokio::test]
+async fn api_and_opds_answers_carry_the_security_headers() {
+    let tmp = crate::test_support::Fixture::new("routes-security-headers");
+    let state = Arc::new(crate::test_support::state(&tmp));
+    let library = Arc::clone(&state.library);
+    let anonymous = super::build_router(state.clone());
+    let by_session =
+        crate::test_support::authenticating(super::build_router(state.clone()), &library);
+    let by_key = crate::test_support::key_authenticating(super::build_router(state));
+
+    let wrong_password = Request::post("/api/session")
+        .header("content-type", "application/json")
+        // Without a matching `host` and `origin`, `refuse_cross_site`
+        // answers 403 before the password is read.
+        .header("host", "test")
+        .header("origin", "http://test")
+        .body(Body::from(format!(
+            r#"{{"name":"{}","password":"not the password"}}"#,
+            crate::test_support::FIXTURE_NAME
+        )))
+        .unwrap();
+    for (what, app, request, expected) in [
+        (
+            "an anonymous GET /api/me",
+            &anonymous,
+            Request::get("/api/me").body(Body::empty()).unwrap(),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "GET /api/me by a session",
+            &by_session,
+            Request::get("/api/me").body(Body::empty()).unwrap(),
+            StatusCode::OK,
+        ),
+        (
+            "the OPDS catalog by a key",
+            &by_key,
+            Request::get("/opds/v1.2/catalog")
+                .body(Body::empty())
+                .unwrap(),
+            StatusCode::OK,
+        ),
+        (
+            "a login with a wrong password",
+            &anonymous,
+            wrong_password,
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "a path no route matched",
+            &anonymous,
+            Request::get("/nothing-here").body(Body::empty()).unwrap(),
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), expected, "{what}");
+        crate::test_support::assert_the_security_headers(response.headers(), what);
+    }
+}
+
 /// A real request, through the real router, has to produce a real log
 /// line — and that line's `bytes` has to be non-zero.
 ///

@@ -594,22 +594,43 @@ pub const LOCKOUT_AFTER: i64 = 10;
 /// the defence. Keyed on the pair, the misconfigured client locks out only
 /// itself.
 ///
-/// A newline joins them because it cannot appear in either half: an address is
-/// digits, dots and colons, and a username reaching here came out of an HTTP
-/// header. Joining on a character that *could* appear in a name would let two
-/// different pairs collide on one key.
+/// A newline joins them because the address half, what [`limiter_address`]
+/// renders, never holds one, so the first newline always ends it. A username
+/// can hold one (the login route's comes from a JSON body); joining on a
+/// character an address could hold would let two different pairs share a key.
 #[must_use]
 pub fn attempt_key(address: &str, name: &str) -> String {
     format!("{address}\n{name}")
 }
 
+/// The address half of every rate-limiter key (O278): an IPv4 address whole,
+/// and an IPv6 one as its /64, rendered `<network>/64`. One host holds a whole
+/// /64 and may answer from any address in it, so keyed whole, each address
+/// would be a fresh counter and neither ceiling would bound anything.
+///
+/// Canonical first: without it every mapped IPv4 client (`::ffff:a.b.c.d`)
+/// falls in `::/64`, one key for all of them.
+///
+/// Only digits, hex letters, dots, colons and a slash. To keep keys apart,
+/// [`attempt_key`] and [`address_key`] need no newline, [`account_key`] no space.
+#[must_use]
+pub fn limiter_address(address: std::net::IpAddr) -> String {
+    match address.to_canonical() {
+        std::net::IpAddr::V4(v4) => v4.to_string(),
+        std::net::IpAddr::V6(v6) => {
+            let network = std::net::Ipv6Addr::from_bits(v6.to_bits() & (u128::MAX << 64));
+            format!("{network}/64")
+        }
+    }
+}
+
 /// How many failures one **client address** may accumulate in the same window,
 /// whatever names it offered.
 ///
-/// Wider than [`LOCKOUT_AFTER`] on purpose: a household behind one NAT is one
-/// address, and several readers each spending their own allowance must not lock
-/// each other out. Five accounts' worth, which at 11.9 ms a hash bounds one
-/// address to well under a second of argon2 per window.
+/// Wider than [`LOCKOUT_AFTER`] on purpose: a household behind one NAT or on one
+/// /64 is one address, and several readers each spending their own allowance
+/// must not lock each other out. Five accounts' worth, which at 11.9 ms a hash
+/// bounds one address to well under a second of argon2 per window.
 ///
 /// **Behind a reverse proxy this counts the proxy unless `--trusted-proxy` is
 /// set**, in which case every reader shares one budget. That is the same
@@ -640,11 +661,28 @@ const _: () = assert!(
 /// `session::tests::inventing_a_new_name_every_time_does_not_buy_unlimited_hashing`.
 ///
 /// **Cannot collide with an [`attempt_key`]**: that one always contains a
-/// newline and an address never does — an address reaching here is the
-/// rendering of an `IpAddr`.
+/// newline and an address half never does (see [`limiter_address`]).
 #[must_use]
 pub fn address_key(address: &str) -> String {
     address.to_string()
+}
+
+/// How many wrong passwords one **account** draws in a window before the alarm
+/// sounds (O279): three pairs' allowance. A guesser held under it is not seen;
+/// a longer window is the overrule.
+///
+/// **It refuses nothing.** Read as a lockout it would let anybody lock any
+/// account out by naming it, which §7 keys the lockout on the pair to avoid.
+pub const ALARM_AFTER: i64 = 3 * LOCKOUT_AFTER;
+
+/// The key an account's wrong passwords are counted under (O279). By id, so a
+/// rename keeps the count. No newline, which every [`attempt_key`] holds, and a
+/// space, which no address half holds (see [`limiter_address`]), so it is never
+/// a pair's or an address's key. `004_auth.sql` says this table's key is "NOT
+/// the account alone": that is the lockout, and this is a count.
+#[must_use]
+pub fn account_key(id: i64) -> String {
+    format!("account {id}")
 }
 
 /// Record one failed attempt and answer how many are now in the window.
@@ -679,6 +717,16 @@ pub fn note_failure(conn: &Connection, key: &str) -> Result<i64, String> {
     .map_err(|e| format!("reading the attempt count: {e}"))
 }
 
+/// Record one wrong password for account `id`, and answer whether it brings
+/// the window's count to [`ALARM_AFTER`]: true once a window, not again past it.
+///
+/// # Errors
+///
+/// Returns an error if the upsert fails.
+pub fn note_account_failure(conn: &Connection, id: i64) -> Result<bool, String> {
+    note_failure(conn, &account_key(id)).map(|count| count == ALARM_AFTER)
+}
+
 /// Whether this pair has spent its attempts inside the current window.
 ///
 /// # Errors
@@ -698,11 +746,26 @@ pub fn is_address_locked_out(conn: &Connection, key: &str) -> Result<bool, Strin
     spent(conn, key, ADDRESS_LOCKOUT_AFTER)
 }
 
-/// Whether `key` has reached `ceiling` inside the current window.
+/// How many wrong passwords account `id` has drawn in the current window, 0
+/// when it has none or its window has lapsed.
 ///
-/// One implementation for both keys, so the window arithmetic cannot drift
-/// between them — the two differ only in what they count and how far.
+/// # Errors
+///
+/// Returns an error if the query fails.
+pub fn account_failures(conn: &Connection, id: i64) -> Result<i64, String> {
+    window_count(conn, &account_key(id))
+}
+
+/// Whether `key` has reached `ceiling` inside the current window.
 fn spent(conn: &Connection, key: &str, ceiling: i64) -> Result<bool, String> {
+    window_count(conn, key).map(|count| count >= ceiling)
+}
+
+/// The count under `key` inside the current window, 0 when there is none.
+///
+/// One read for every key, so the window arithmetic cannot drift between
+/// them — they differ only in what they count and how far.
+fn window_count(conn: &Connection, key: &str) -> Result<i64, String> {
     conn.query_row(
         "SELECT count FROM login_attempt
           WHERE key = ?1 AND window_start > datetime('now', ?2)",
@@ -711,7 +774,7 @@ fn spent(conn: &Connection, key: &str, ceiling: i64) -> Result<bool, String> {
     )
     .optional()
     .map_err(|e| format!("reading the attempt count: {e}"))
-    .map(|count| count.is_some_and(|count| count >= ceiling))
+    .map(Option::unwrap_or_default)
 }
 
 /// Forget this pair's failures. Called on every success, so a person who

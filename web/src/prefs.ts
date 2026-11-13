@@ -22,7 +22,7 @@
  * that touches `localStorage` at all, and that is worth keeping true: a value
  * stored anywhere else would be the first one whose key nobody thought about,
  * on an origin this reader may share with whatever else is served from it. One
- * *reader* sits outside `web/src`: `index.html`'s pre-paint script reads
+ * *reader* sits outside `web/src`: the pre-paint script `public/theme.js` reads
  * `taiyaku.prefs.theme`, which `theme.ts` writes through this module and
  * `theme.test.ts` holds the script to.
  *

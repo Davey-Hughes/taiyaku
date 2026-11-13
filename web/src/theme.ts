@@ -6,10 +6,10 @@
  * `styles/tokens.css` turns into `color-scheme` — and every colour token is a
  * `light-dark()` pair that `color-scheme` picks a half of.
  *
- * **`index.html` reads the same key before first paint**, in an inline script
- * that cannot import this module. `theme.test.ts` runs that script against
- * `loadTheme` and `applyTheme` for every stored shape, so the two cannot drift
- * apart in silence.
+ * **`public/theme.js` reads the same key before first paint**, a classic script
+ * that `index.html` loads in its `<head>` and that cannot import this module.
+ * `theme.test.ts` runs that script against `loadTheme` and `applyTheme` for
+ * every stored shape, so the two cannot drift apart in silence.
  */
 import { loadPrefs, savePrefs } from './prefs'
 

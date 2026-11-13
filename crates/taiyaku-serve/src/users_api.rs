@@ -91,8 +91,8 @@ fn user_panicked(what: &str, why: &tokio::task::JoinError) -> Response {
 }
 
 /// One account, whole, as C4 §4's screen shows it: the row, whether anybody
-/// can log in as it, whether it sees every library, its sessions, its keys and
-/// the libraries it is granted.
+/// can log in as it, its wrong passwords this window, whether it sees every
+/// library, its sessions, its keys and the libraries it is granted.
 ///
 /// **`every_library` beside `libraries`**, because an empty list is no
 /// library and cannot also say "every library". An administrator's is sent
@@ -104,6 +104,7 @@ fn user_panicked(what: &str, why: &tokio::task::JoinError) -> Response {
 fn user_json(
     account: &Account,
     can_log_in: bool,
+    wrong_passwords: i64,
     every_library: bool,
     sessions: &[SessionSummary],
     keys: &[KeySummary],
@@ -120,6 +121,11 @@ fn user_json(
         // in, and nothing else about it says so — `account::list`'s own doc
         // comment calls this half "the one worth printing".
         "can_log_in": can_log_in,
+        // This window's wrong passwords from every address (O279), with the
+        // verdict beside them, so the ceiling lives only in
+        // `account::ALARM_AFTER` and the screen cannot disagree with the log.
+        "wrong_passwords": wrong_passwords,
+        "wrong_password_alarm": wrong_passwords >= account::ALARM_AFTER,
         "sessions": sessions.iter().map(|s| serde_json::json!({
             "id": s.id,
             "created": s.created,
@@ -165,9 +171,11 @@ fn assembled(
         .map_err(|e| format!("reading which libraries account {} sees: {e}", account.id))?
         == account::Access::Every;
     let libraries = account::granted_libraries(conn, account.id)?;
+    let wrong_passwords = account::account_failures(conn, account.id)?;
     Ok(user_json(
         account,
         can_log_in,
+        wrong_passwords,
         every_library,
         &sessions,
         &keys,

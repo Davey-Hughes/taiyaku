@@ -116,6 +116,12 @@ export function UserTable({
                       {!user.can_log_in && (
                         <span className="mark locked">{JOINING_DOT}locked</span>
                       )}
+                      {user.wrong_password_alarm && (
+                        <span className="mark">
+                          {JOINING_DOT}
+                          {user.wrong_passwords} wrong passwords in 15 minutes
+                        </span>
+                      )}
                     </td>
                     <td>
                       <span className="cell-label">Role: </span>

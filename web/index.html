@@ -3,30 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!--
+      The theme-color pair below follows the OS, not the theme a reader picks,
+      and theme.test.ts holds each to its theme's --bg.
+    -->
     <meta name="theme-color" content="#f3eee3" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#15130f" media="(prefers-color-scheme: dark)" />
     <title>taiyaku</title>
-    <!--
-      The stored theme, before first paint (spec 2026-09-17 §3): a reader who
-      picked Ink on a light-mode OS would otherwise see paper while the modules
-      load. It mirrors theme.ts's loadTheme and applyTheme, and theme.test.ts
-      runs it against them. Being inline, it is the one thing here a strict
-      Content-Security-Policy would stop; main.tsx applies the theme again, so
-      what that would cost is the flash, not the theme. The theme-color pair
-      above follows the OS, not this choice, and theme.test.ts holds each to
-      its theme's --bg. Wrapped in a function called at once, so `choice` is
-      a local rather than a global on `window`.
-    -->
-    <script>
-      (function () {
-        try {
-          var choice = JSON.parse(localStorage.getItem('taiyaku.prefs.theme')).choice
-          if (choice === 'paper' || choice === 'ink') {
-            document.documentElement.setAttribute('data-theme', choice)
-          }
-        } catch (_) {}
-      })()
-    </script>
+    <script src="/theme.js"></script>
   </head>
   <body>
     <div id="root"></div>

@@ -27,6 +27,7 @@ fn built_app(tmp: &Fixture) -> PathBuf {
         "<!doctype html><title>labeller</title>",
     )
     .unwrap();
+    std::fs::write(dist.join("theme.js"), "document.documentElement").unwrap();
     std::fs::write(dist.join("assets/main-Ab12Cd34.js"), "console.log('app')").unwrap();
     std::fs::write(
         dist.join("assets/taiyaku_wasm_bg-Ef56Gh78.wasm"),
@@ -190,6 +191,28 @@ async fn wasm_is_served_as_application_wasm() {
     let (status, headers, _) = get(&tmp, &dist, "/assets/taiyaku_wasm_bg-Ef56Gh78.wasm").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CONTENT_TYPE], "application/wasm");
+}
+
+/// O277: the app's pages, its scripts, a deep link and both kinds of 404 carry
+/// the four security headers. The pages need the policy most, and they are
+/// served by the fallback, which a layer applied too early would not wrap.
+#[tokio::test]
+async fn every_answer_the_app_serves_carries_the_security_headers() {
+    let tmp = Fixture::new("web-security-headers");
+    let dist = built_app(&tmp);
+    for (path, expected) in [
+        ("/", StatusCode::OK),
+        ("/label.html", StatusCode::OK),
+        ("/theme.js", StatusCode::OK),
+        ("/assets/main-Ab12Cd34.js", StatusCode::OK),
+        ("/read/some-work", StatusCode::OK),
+        ("/assets/gone-Zz99Yy88.js", StatusCode::NOT_FOUND),
+        ("/api/nothing-here", StatusCode::NOT_FOUND),
+    ] {
+        let (status, headers, _) = get(&tmp, &dist, path).await;
+        assert_eq!(status, expected, "{path}");
+        crate::test_support::assert_the_security_headers(&headers, path);
+    }
 }
 
 /// `--log-requests` sees what the app served, not only the API.

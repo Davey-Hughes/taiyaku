@@ -670,6 +670,22 @@ Why the whole `location`, and not just the one header taiyaku needs:
   visitor supplies. Run `docker exec <NPM's container> nginx -t` after saving
   (`NginxProxyManager` on this NAS; `docker ps` shows yours).
 
+Taiyaku sends `Content-Security-Policy`, `X-Content-Type-Options`,
+`Referrer-Policy` and `X-Frame-Options` with every answer, so a browser runs
+only scripts and styles served from taiyaku's own address, and fonts from it
+or inlined in its styles, and no other site can show it in a frame. It sends
+no `Strict-Transport-Security`: TLS ends at the proxy, so HSTS is the proxy's
+to send. The policy refuses an inline script, or one from another host, that
+the proxy or Cloudflare adds to the page, but not one served under this host's
+own address, and for some features, such as Zaraz, Cloudflare rewrites the
+policy itself. So leave features that add or rewrite scripts, such as Rocket
+Loader and Zaraz, off for this host.
+
+When one account's wrong passwords reach 30 in one 15-minute window, from
+however many addresses, taiyaku logs one warning naming it and the Users screen
+marks it; nothing is locked, and each address, or an IPv6 client's /64, and
+each address-and-name pair keeps its own allowance.
+
 `TAIYAKU_TRUSTED_PROXY` names the address the proxy's connections arrive from,
 as taiyaku sees it, so there is no value to copy from here. Start with it empty,
 as in the compose block, which starts and trusts nobody (session cookies are not
@@ -684,8 +700,8 @@ marked `Secure` until it is set). Then:
    warning still names an address, that address is not covered by the value you
    set.
 
-Taiyaku prints each of the two warnings once per start, so after step 2 look
-for new lines, not old ones.
+Taiyaku prints each of the two proxy warnings once per start, so after step 2
+look for new lines, not old ones.
 
 Updates arrive through WUD watching `:latest` (labels `wud.watch=true`,
 `wud.watch.digest=true`, `wud.trigger.include=docker.redeploy`). To roll back,

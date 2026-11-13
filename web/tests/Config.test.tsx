@@ -161,6 +161,8 @@ describe('Config', () => {
           can_stream: true,
           can_stamp: false,
           can_log_in: true,
+          wrong_passwords: 0,
+          wrong_password_alarm: false,
           sessions: [],
           keys: [],
           every_library: true,

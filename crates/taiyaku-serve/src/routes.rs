@@ -3001,6 +3001,49 @@ async fn per_reader_by_default(
     response
 }
 
+/// The `Content-Security-Policy` on every answer (O277): a browser runs only
+/// scripts served from this host's own address, so an inline one, or one from
+/// another host, that a proxy adds or that slips past the app's escaping does
+/// not run. No `'unsafe-inline'`: the pre-paint theme script is `/theme.js`.
+/// The reader's alignment module needs `'wasm-unsafe-eval'` to compile. The
+/// build inlines every font file under Vite's inline limit, the mark fonts and
+/// small subsets of the text fonts, as `data:` URLs, so `font-src` needs
+/// `data:`. `frame-ancestors 'none'` is the policy's `X-Frame-Options`.
+const SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self' data:; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+/// O277's four security headers; the policy's reasons are on [`SECURITY_POLICY`].
+/// `nosniff`: a browser takes each answer as its stated type, so an image or a
+/// JSON answer never runs as a script. `same-origin`: a site the app links to
+/// is not sent the address being read. `DENY`: no other site can frame the app
+/// to steer clicks on it, in a browser that predates `frame-ancestors` too.
+///
+/// On every answer, not only the app's pages: a browser that opens an API or
+/// OPDS address directly gets the same policy. OPDS clients are not browsers.
+async fn security_headers(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    use axum::http::HeaderValue;
+
+    let mut response = next.run(request).await;
+    // `insert`, which replaces: a weaker value a handler set must lose.
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(SECURITY_POLICY),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    response
+}
+
 /// Build the router. Separate from `serve` so tests can drive it with
 /// `oneshot` and never open a socket.
 pub fn build_router(state: Arc<ServeState>) -> Router {
@@ -3074,6 +3117,11 @@ pub(crate) fn build_router_serving(
         let web = crate::web::Web::new(dir);
         app = app.fallback(move |request: axum::extract::Request| web.clone().answer(request));
     }
+    // **After the fallback**: `Router::layer` wraps only what is already
+    // registered, so a fallback set after this line would answer the app's
+    // pages without the policy. **Inside the log layer**, which then logs the
+    // answer as it was sent.
+    app = app.layer(axum::middleware::from_fn(security_headers));
 
     app.layer(axum::middleware::from_fn(
         move |request: axum::extract::Request, next: axum::middleware::Next| {
