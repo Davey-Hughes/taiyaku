@@ -95,10 +95,10 @@ jobs:
           git checkout -q FETCH_HEAD
       - name: Use the image's own toolchain
         # cargo-deny compiles nothing; it needs cargo and rustc for `cargo
-        # metadata` and nothing else. `rust-toolchain.toml` names `stable`, which
-        # this image carries under a version number instead (docs/ci.md,
-        # "Toolchain note"), so honouring it would download a second toolchain
-        # with rustfmt, clippy and the wasm32 target, for no use here. The
+        # metadata` and nothing else. `rust-toolchain.toml` pins a version this
+        # floating image need not carry (docs/ci.md, "Toolchain note"), so
+        # honouring it would download a second toolchain whenever the two
+        # differ, and rustfmt, clippy and the wasm32 target, for no use here. The
         # image's toolchain is installed under `$RUST_VERSION` — its Dockerfile
         # sets that variable and installs exactly that name, minimal profile — so
         # `RUSTUP_TOOLCHAIN` points every later step at it and nothing is

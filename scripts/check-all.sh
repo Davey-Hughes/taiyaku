@@ -139,9 +139,9 @@ run env RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
 # Advisory and non-blocking — the `|| true` is the point, not an oversight, and
 # it mirrors `continue-on-error: true` on the same step in ci.yml. See
 # docs/ci.md, "The pedantic lints, and why they are advisory": pedantic stays
-# out of [workspace.lints] so a floating toolchain cannot turn the blocking gate
-# above red, while the per-site #[expect] attributes stay enforced by it, since
-# a stale one is an ordinary rustc lint.
+# out of [workspace.lints] so a new clippy's lints cannot hold red the pull
+# request that moves rust-toolchain.toml's pin, while the blocking gate above
+# still enforces each per-site #[expect], a stale one being a rustc lint.
 #
 # The two halves of that mirror are not equally proven. `|| true` is a shell
 # operator — this script runs it, on this machine, every time, so it is
@@ -191,7 +191,7 @@ cargo clippy --workspace --all-targets --all-features -- -W clippy::pedantic || 
 # accounts for no more covered lines than the slack below.
 #
 # **The current figure is not written down here, it is printed by the run.** `coverage-floor.mjs`
-# derives the slack — `covered - ceil(0.93 * total)` — and the files at or under it from the same
+# derives the slack — `covered - ceil(0.91 * total)` — and the files at or under it from the same
 # report it already walks, and prints both on every invocation below. `docs/ci.md` keeps the
 # derivation and one dated measurement.
 #
@@ -224,7 +224,7 @@ else
   set +e
   run env -u TAIYAKU_CORPUS cargo llvm-cov nextest --workspace --all-features \
     --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
-    --fail-under-lines 93
+    --fail-under-lines 91
   rust_coverage_status=$?
   set -e
   # Guarded the same way the tool above is, and for the same reason: a Rust-only machine without

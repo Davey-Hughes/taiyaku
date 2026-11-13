@@ -1,5 +1,8 @@
 [toolchain]
-channel = "stable"
+# Pinned, not `stable`: a rustc release can change what the coverage gate
+# counts, so moving this is a pull request of its own that measures first.
+# docs/ci.md, "Why the Rust floor is 91, and the toolchain is pinned".
+channel = "1.100.0"
 components = ["rustfmt", "clippy"]
 # The core must keep compiling to WebAssembly so the PWA and a future native
 # shell can share it. CI enforces this; installing the target here means a

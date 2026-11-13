@@ -88,11 +88,11 @@ jobs:
         env:
           RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links
       # Advisory and non-blocking, deliberately. `clippy::pedantic` is not in
-      # [workspace.lints] and must not be: this container is `rust:1-bookworm`
-      # and rust-toolchain.toml says `channel = "stable"`, both of which float,
-      # and clippy adds lints to `pedantic` roughly every six weeks — so in the
-      # blocking gate above, a rustc release would turn an unrelated PR red in a
-      # file its author never touched.
+      # [workspace.lints] and must not be. rust-toolchain.toml pins the
+      # toolchain whatever this floating `rust:1-bookworm` image ships, so a
+      # clippy that adds lints to `pedantic` arrives only with the pull request
+      # that moves the pin; in the blocking gate above, those lints would hold
+      # that bump red in files its author never touched.
       #
       # `continue-on-error: true` is what makes this step advisory rather than
       # blocking, and it is the only place in this file that uses the key.
@@ -158,8 +158,8 @@ jobs:
         # never by copying a value from an issue or a README.
         run: |
           curl -fsSL -o /tmp/llvm-cov.tar.gz \
-            https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.8.7/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz
-          echo "967b5cc996c29d8baa52bbb4595ef1f53af35255af8e2036ddbc6468d7b523c7  /tmp/llvm-cov.tar.gz" | sha256sum -c -
+            https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz
+          echo "3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522  /tmp/llvm-cov.tar.gz" | sha256sum -c -
           tar -xzf /tmp/llvm-cov.tar.gz -C /usr/local/bin
           cargo llvm-cov --version
       - name: Install cargo-nextest
@@ -230,14 +230,14 @@ jobs:
         # fourteen fails the job. They are named with a reason each in
         # docs/ci.md, "The coverage gates".
         #
-        # `--fail-under-lines 93` is the gate. The slack under the threshold is
-        # deliberately small, which keeps the gate strict. docs/ci.md,
-        # "Why the Rust per-file floor exists", carries the arithmetic and says
-        # what to do if it starts costing honest branches. Lines rather than
-        # regions because llvm-cov reports regions far below lines on
-        # `match`-heavy code and the two would need different numbers for no
-        # gain. Keep this in step with scripts/check-all.sh, which runs the
-        # identical command.
+        # `--fail-under-lines 91` is the gate. The slack under the threshold is
+        # deliberately small, which keeps the gate strict. docs/ci.md carries
+        # the arithmetic under "Why the Rust per-file floor exists", and the
+        # figure under "Why the Rust floor is 91, and the toolchain is pinned".
+        # Lines rather than regions because llvm-cov reports regions far below
+        # lines on `match`-heavy code and the two would need different numbers
+        # for no gain. Keep this in step with scripts/check-all.sh, which runs
+        # the identical command.
         #
         # `TAIYAKU_COMMIT` is the commit under test, so `about`'s route test
         # compares `/api/about`'s `commit` with a real 40-character hash on
@@ -251,7 +251,7 @@ jobs:
         run: |
           cargo llvm-cov nextest --workspace --all-features \
             --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
-            --fail-under-lines 93
+            --fail-under-lines 91
       - name: Install node
         if: success() || steps.rust_coverage.outcome == 'failure'
         # This job needs node only for the scripts after this step, which is
@@ -273,7 +273,7 @@ jobs:
         # **The step above is workspace-aggregate and cannot see one module go
         # dark.** A module going entirely dark still passes as long as it
         # accounts for no more covered lines than the slack, which is
-        # `covered - ceil(0.93 * total)`: it widens as coverage rises and
+        # `covered - ceil(0.91 * total)`: it widens as coverage rises and
         # vanishes as it approaches the floor. Whether the blind spot is open is
         # an accident of the margin rather than a property of the check, and the
         # per-file step is the half that does not move with it.

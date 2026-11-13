@@ -18,12 +18,12 @@
 //
 // --- and the Rust side, which has the same hole ------------------------------
 //
-// `cargo llvm-cov --fail-under-lines 93` is workspace-aggregate and has exactly
+// `cargo llvm-cov --fail-under-lines 91` is workspace-aggregate and has exactly
 // the same blind spot: a module could go entirely dark and the aggregate still
 // pass, as long as it accounted for no more covered lines than the slack below.
 //
 // **That slack is derived rather than written down, and this run prints
-// it.** `covered - ceil(93% of total)`, and every file at or under it, come out
+// it.** `covered - ceil(91% of total)`, and every file at or under it, come out
 // of the same report this script already walks — see `reportAggregate` at the
 // bottom of this file, and `docs/ci.md` for what the figure means and one dated
 // measurement of it.
@@ -35,16 +35,16 @@
 // part that does not move with the margin**, which is exactly why the
 // aggregate alone is not enough.
 //
-// The test modules live in their own files, and cargo-llvm-cov 0.8.7 drops a
-// source file from the report when its basename contains `tests`, with no flag
+// The test modules live in their own files, and cargo-llvm-cov drops a source
+// file from the report when its basename contains `tests`, with no flag
 // involved. A `test_support` module has no `s`, so that default exclusion does
 // not see it: those modules are named in the `--ignore-filename-regex` instead.
 //
-// The two-point rule, the measured figure less two points, is not applied to
-// the aggregate threshold of 93: docs/ci.md derives that rule from v8 counting
+// The two-point rule, the measured figure less two points, did not set the
+// aggregate threshold of 91: docs/ci.md derives that rule from v8 counting
 // what a run loaded, so an unrelated import moves the *web* figures by
-// fractions, and the reason does not transfer. If the gate does start costing
-// honest branches their afternoon, 92 is the number the rule would have given.
+// fractions, and the reason does not transfer. docs/ci.md, "Why the Rust floor
+// is 91, and the toolchain is pinned", says what did.
 //
 // **`cargo llvm-cov` has a `--fail-under-file-lines` flag and it is not used.**
 // It works — it exits 1 — but it says *nothing*: it writes the ordinary
@@ -188,7 +188,7 @@ const FORMATS = [
     requireCrates: true,
     // The **aggregate** line threshold, which this script does not enforce —
     // `cargo llvm-cov --fail-under-lines` does, one command earlier. It is here
-    // only to derive the slack printed at the end of a run: `covered - ceil(93%
+    // only to derive the slack printed at the end of a run: `covered - ceil(91%
     // of total)`, the number of covered lines a module could lose with the
     // aggregate still green, and therefore the size of module the aggregate is
     // structurally blind to.
@@ -196,7 +196,7 @@ const FORMATS = [
     // **A mirrored number, and checked rather than trusted** — see
     // `aggregateFloorFrom` below and `assertAggregateFloorMatches`. A run
     // prints the current figures; `docs/ci.md` holds one dated measurement.
-    aggregateFloor: 93,
+    aggregateFloor: 91,
     aggregateFloorFrom: 'scripts/check-all.sh',
     // **Lines only, and the other three are refusals, not oversights.**
     // `branches` is `count: 0` on every file — llvm-cov emits no branch data

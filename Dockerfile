@@ -7,9 +7,10 @@
 #
 # Versions follow what CI already pins: `rust:1-bookworm` and
 # `node:26-bookworm` as its jobs' images, wasm-pack 0.15.0 by checksum as its
-# `wasm` job, pnpm 11.3.0 as its `web` job. `rust-toolchain.toml` floats on
-# `stable`; its install is a layer of its own, so a build reuses the
-# toolchain it last installed until that file changes.
+# `wasm` job, pnpm 11.3.0 as its `web` job. The `rust:1-bookworm` tag floats,
+# but `rust-toolchain.toml` pins the toolchain the build uses; its install is a
+# layer of its own, so a build reuses the toolchain it last installed until
+# that file changes.
 #
 # The two Rust stages build in parallel and share one cargo registry cache, so
 # that mount is `sharing=locked`: with the default, both unpack the same crate

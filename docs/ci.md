@@ -370,7 +370,7 @@ because an unproven gate is indistinguishable from no gate.
 | | aggregate step | per-file step | set in |
 | --- | -------------- | ------------- | ------ |
 | web | four thresholds — `statements`/`branches`/`functions`/`lines` | four floors, and ≥161 files in the report | `web/vite.config.ts`; `scripts/coverage-floor.mjs` |
-| Rust | `--fail-under-lines 93` | one floor, on lines, ≥72 files in the report, and a file for every workspace crate | `ci.yml` and `check-all.sh`; `scripts/coverage-floor.mjs` |
+| Rust | `--fail-under-lines 91` | one floor, on lines, ≥72 files in the report, and a file for every workspace crate | `ci.yml` and `check-all.sh`; `scripts/coverage-floor.mjs` |
 
 Four steps, but **three kinds of failure**, and it is worth being plain about
 which catches what, because each is invisible to the others:
@@ -444,7 +444,7 @@ signal a re-measurement was owed.*
 | web | branches, aggregate | 94.05% | 92 | `web/vite.config.ts` |
 | web | functions, aggregate | 99.16% | 97 | `web/vite.config.ts` |
 | web | lines, aggregate | 99.31% | 97 | `web/vite.config.ts` |
-| Rust | lines, aggregate | 93.64% | 93 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
+| Rust | lines, aggregate | 92.28% (2026-11-12, Rust 1.100.0) | 91 | `--fail-under-lines`, in `ci.yml` **and** `check-all.sh` |
 | Rust | lines, **per file** | 74.48%, `taiyaku-serve/src/lib.rs` | 57 | `scripts/coverage-floor.mjs` |
 | web | **files in the report** | 168 (2026-10-28) | 161 | `scripts/coverage-floor.mjs` |
 | Rust | **files in the report** | 92 (2026-11-02) | 72, and every workspace crate present | `scripts/coverage-floor.mjs` |
@@ -475,6 +475,12 @@ threshold is derived by `scripts/coverage-floor.mjs` from the data rather
 than typed in beside this prose, which is why the prose could go stale
 without anything failing. That is the pattern `docs/status.md` warns about,
 appearing in the document that describes the gate.
+
+*The Rust aggregate row read 93.64% against a threshold of 93 from that
+recomputation until 2026-11-12, when Rust 1.100.0 changed what a line's
+coverage counts. It now carries the 1.100.0 reading and the owner's threshold
+of 91, which is not the two-points rule's figure; see "Why the Rust floor is
+91, and the toolchain is pinned" below.*
 
 The four web per-file floors have their own table under "The other half" below,
 beside the lowest file each was derived from **and the lowest file today**,
@@ -763,7 +769,7 @@ Its failure output is worth knowing: **cargo-llvm-cov prints no message at all.*
 Counted on that same run: **9,165 bytes to stdout, all of it the ordinary
 coverage table, and zero bytes to stderr.** Nothing names the threshold, the
 metric or the shortfall. A CI log will show a red step whose output looks exactly
-like a passing one, so read the `TOTAL` row against the 93 in `ci.yml`. vitest,
+like a passing one, so read the `TOTAL` row against the 91 in `ci.yml`. vitest,
 by contrast, names each unmet threshold explicitly.
 
 That is still true of `--fail-under-lines`, but the Rust half is no longer silent
@@ -778,8 +784,9 @@ the web half uses. Both halves of the Rust gate were therefore observed firing o
 one regression: the aggregate silently, and the floor by name.
 
 **`cargo llvm-cov --fail-under-file-lines` exists and was rejected, measured
-rather than assumed.** The flag is present in the pinned 0.8.7 — `cargo llvm-cov
-report --help` lists it alongside `--fail-under-lines`, `--fail-under-regions`
+rather than assumed.** The flag was present in 0.8.7, pinned when this was
+measured, and is in the 0.9.1 pinned now — `cargo llvm-cov report --help`
+lists it alongside `--fail-under-lines`, `--fail-under-regions`
 and `--fail-under-functions` — so the obvious question is why a script does work
 a flag already does. Run against this tree at `--fail-under-file-lines 80` it
 exits **1** having written **7995 bytes to stdout, all of it the ordinary
@@ -938,8 +945,9 @@ the report cut to 71 files with every crate still present fails the count.
 
 ### Why the Rust per-file floor exists
 
-`--fail-under-lines 93` is workspace-aggregate, and an aggregate cannot see one
-module go dark. Measured against the clean report on 2026-08-14 — 7169 lines,
+`--fail-under-lines` is workspace-aggregate, and an aggregate cannot see one
+module go dark. Measured against the clean report on 2026-08-14, under the
+floor of 93 that stood until 2026-11-12 — 7169 lines,
 6735 covered, 93.95% — the arithmetic is: a module going entirely dark still
 passes as long as it accounts for **67 covered lines or fewer**. That is 17 of
 the 43 files; the other 26 now turn the aggregate red on their own.
@@ -977,7 +985,7 @@ as the derivation it is — the arithmetic is what the section is teaching, and 
 does not change.
 
 **The current figure is derived, and this is the only place it is written
-down.** `scripts/coverage-floor.mjs` computes the margin — `covered - ceil(93%
+down.** `scripts/coverage-floor.mjs` computes the margin — `covered - ceil(91%
 of total)` — and the list of files at or under it from the report it already
 walks, and prints both on every run, so the live answer is one `check-all.sh`
 away and never needs re-deriving by hand. The paragraph above is a **dated
@@ -989,7 +997,7 @@ the drift this repository has already been bitten by twice, in this figure and
 in `docs/status.md`'s test count, and the second of those is why
 `scripts/status-test-count.mjs` exists (delta review M9).
 
-The 93 that arithmetic depends on is mirrored into `coverage-floor.mjs` and
+The 91 that arithmetic depends on is mirrored into `coverage-floor.mjs` and
 **checked against the `--fail-under-lines` in `check-all.sh` on every run**,
 exiting 2 if the two ever disagree — a mirror nobody checks would just be a
 fifth copy of the same problem.
@@ -1008,10 +1016,11 @@ decode. The two runs above are from before that.)*
 
 The two-point rule was not re-applied on top of that, because its stated reason
 above is v8 counting what a run loaded — a different and much larger
-instability than four lines behind a mutex. If the gate starts costing honest
-branches their afternoon rather than catching untested ones, 92 is the number
-the rule would have given, and it would still leave a gate six times tighter
-than the one that stood before 2026-08-14.
+instability than four lines behind a mutex. While the floor was 93, this
+paragraph named 92 as the number to fall back to if the gate started costing
+honest branches their afternoon rather than catching untested ones. Neither
+the rule nor that fallback set the 91 that stands now: it is the owner's
+ruling, under "Why the Rust floor is 91, and the toolchain is pinned" below.
 
 **This section read very differently before 2026-08-14, and no test changed.**
 The report then held 19486 lines at 95.75–97.40%, because every inline
@@ -1041,6 +1050,43 @@ count, `0` on a collapsed report — rather than on `total.lines.pct`, which is 
 field that turns into a string in precisely the case the gate exists for. The
 first attempt sniffed `pct`, and it failed the collapsed report for the wrong
 reason: not "this report is empty" but "this is not an istanbul summary".
+
+### Why the Rust floor is 91, and the toolchain is pinned
+
+**Rust 1.100.0 changed what a line's coverage counts, not what the tests run.**
+Measured 2026-11-12 on one commit, `main` at `28b18b60`, with the same tests and
+the same commands on two toolchains:
+
+| toolchain | lines | covered | lines covered |
+| --------- | ----: | ------: | ------------: |
+| 1.99.1 | 31158 | 29359 | 94.23% |
+| 1.100.0 | 29822 | 27519 | 92.28% |
+
+CI ran whatever `stable` was then, so the second reading failed
+`--fail-under-lines 93` on every pull request.
+
+The cause is upstream: rust-lang/rust#161517, "coverage: Switch over to hybrid
+HIR-aware coverage spans" (<https://github.com/rust-lang/rust/pull/161517>),
+milestone 1.100.0. A method name no longer gets a coverage region of its own,
+so a line that ran, such as `crates/taiyaku-library/src/librarydoc.rs:310`,
+
+    .map_err(|e| format!("reading work {work_id}: {e}"))?;
+
+is credited only with its closure's regions and its `?`'s, and all of them are
+0 on a run where the call succeeds. That line ran 609 times and reads uncovered.
+Crediting lines like it back gives **94.21%**, so the drop is a change in what
+is counted, not testing lost.
+
+**The owner's rulings.** The floor moves from 93 to 91, which keeps about the
+margin 93 had under 1.99.1. `rust-toolchain.toml` pins `channel = "1.100.0"`,
+so a rustc release no longer reaches the gate on its own, and CI's
+cargo-llvm-cov moves from 0.8.7 to 0.9.1, the version the local gate runs. The
+`rust:1-bookworm` image tag still floats; the pin decides the compiler whatever
+the image ships (see "Toolchain note").
+
+**Bumping the toolchain is a pull request of its own.** Measure the same commit
+on both toolchains, with the same tests and the same commands, then move the
+pin. Re-set the floor only if the counting changed, as it did here.
 
 ## The other half: `scripts/coverage-floor.mjs`
 
@@ -1875,8 +1921,8 @@ cold layer cache costs on this runner. `catthehacker/ubuntu` is the closer match
 to a GitHub-style runner if the deciding factor ever becomes action
 compatibility rather than size.
 
-Note that neither image removes the toolchain download described below, since
-`rust-toolchain.toml` pins `stable` regardless of what the image ships.
+Note that neither image removes the toolchain download described below unless
+it ships exactly the version `rust-toolchain.toml` pins.
 
 ## Why the clone is authenticated
 
@@ -2004,16 +2050,20 @@ question every time someone opens it.
 
 ## Toolchain note
 
-`rust-toolchain.toml` pins `channel = "stable"` and requests the `wasm32`
+`rust-toolchain.toml` pins `channel = "1.100.0"` and requests the `wasm32`
 target plus `rustfmt` and `clippy`, which makes a fresh local checkout work with
-no setup.
+no setup. It names a version rather than `stable` because a rustc release can
+change what the coverage gate counts; "Why the Rust floor is 91, and the
+toolchain is pinned" has the measurement and how a bump is done.
 
-The tradeoff is in CI: the `rust:1-bookworm` image installs its toolchain under a
-version-specific name rather than as `stable`, so rustup fetches `stable`
-separately on each job. It works, but costs a download per job. If that becomes
-annoying, either pin `channel` to the image's exact version and bump both
-together, or delete `rust-toolchain.toml` and let CI use the image toolchain as-is
-at the cost of local convenience.
+The tradeoff is in CI. The `rust:1-bookworm` tag still floats, and the image
+installs its toolchain under its own version number. Whenever that version is
+not the pin, rustup fetches the pinned toolchain separately on each job, which
+costs a download per job; when it is the pin, rustup adds whichever of
+`rustfmt`, `clippy` and the `wasm32` target the image lacks. Either way the gate
+jobs compile with the pinned rustc: the floating tag moves the image's system
+packages, not the compiler. Pinning the image to the same version would remove
+the download, at the cost of bumping both together.
 
 ## Mutation testing
 
@@ -2102,11 +2152,17 @@ The blocking gate stays `cargo clippy --workspace --all-targets --all-features
 -- -D warnings`, which sees the two lints that table does set — `todo` and
 `dbg_macro` — and nothing from the pedantic group.
 
-The reason is drift in the toolchain rather than distaste for the lints.
-`rust-toolchain.toml` says `channel = "stable"` and this file's jobs run
-`rust:1-bookworm`; both float, and clippy adds lints to `pedantic` on roughly a
-six-week cadence. A pedantic lint in the blocking gate means a rustc release
-turns an unrelated PR red in a file its author did not touch.
+The reason is drift in the toolchain rather than distaste for the lints, and
+clippy adds lints to `pedantic` on roughly a six-week cadence. When this was
+decided `rust-toolchain.toml` said `channel = "stable"`, so a pedantic lint in
+the blocking gate meant a rustc release turned an unrelated PR red in a file its
+author did not touch. The toolchain is pinned now (see "Why the Rust floor is
+91, and the toolchain is pinned"), so a new clippy reaches the gate only through
+the pull request that moves the pin, and that argument no longer holds as
+written. The decision stands as taken. What keeping the group advisory does
+under the pin is keep that bump from being held red by the lints its clippy
+adds, in files it does not otherwise touch; they show in the advisory step's
+output instead.
 
 The mechanism that makes the step advisory rather than blocking is
 `continue-on-error: true`, on that one step and nowhere else in `ci.yml`.

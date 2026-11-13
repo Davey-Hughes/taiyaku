@@ -863,7 +863,8 @@ alternative that lost.
   the 66 files that existed on 2026-08-14 still measured 93.96%, while the 42
   added since measured 90.91%. See O103, which is also where the per-file
   branches floor turned out to be the tighter of the two. Rust:
-  `--fail-under-lines 93` under a measured **93.64%** with twelve files ignored,
+  `--fail-under-lines 93` under a measured **93.64%** with twelve files ignored
+  (91 since 2026-11-12, by ruling rather than by this rule: the next bullet),
   plus a **per-file floor of 57% lines** under a lowest measured **78.75%**
   (`taiyaku-serve/src/lib.rs`) and a **minimum of 40 files** against **60** in
   the report — all four recomputed from `target/rust-coverage.json` on
@@ -880,8 +881,9 @@ alternative that lost.
   87.59%, 59.44% and 37 while they were inline, over a report of which roughly
   two thirds was test code measuring itself. **The aggregate's margin was 68
   lines on that measurement**, not the 857 it was, and 93 was kept rather than
-  re-derived to 92 — a deliberate tightening, with the arithmetic and the escape
-  hatch in `docs/ci.md`. (That margin moves every commit — 8 lines at one commit
+  re-derived to 92 — a deliberate tightening, with the arithmetic in
+  `docs/ci.md`; under 1.100.0 the floor is 91 (`docs/ci.md`, "Why the Rust
+  floor is 91, and the toolchain is pinned"). (That margin moves every commit — 8 lines at one commit
   on 2026-08-17 and 64 a few commits later — so it is no longer restated here:
   `scripts/coverage-floor.mjs` derives it, and the files at or under it, from the
   report it already walks and prints both on every run, with `docs/ci.md`
@@ -895,11 +897,18 @@ alternative that lost.
   It beat picking a round number up front, which is either unreachable or
   vacuous, and it beat gating Rust regions as well as lines, which needs a second
   number maintained for no extra signal. The Rust per-file floor also beat
-  `cargo llvm-cov --fail-under-file-lines`, which exists in the pinned 0.8.7 and
-  was measured exiting 1 with the ordinary coverage table on stdout and **zero
-  bytes on stderr** — naming neither the file that tripped it nor the threshold,
-  which above a 37-row table is not a gate anyone can act on. Its cost is a node
-  install in a Rust container.
+  `cargo llvm-cov --fail-under-file-lines`, which exists in 0.8.7, pinned then,
+  and in the 0.9.1 pinned now, and was measured exiting 1 with the ordinary
+  coverage table on stdout and **zero bytes on stderr** — naming neither the
+  file that tripped it nor the threshold, which above a 37-row table is not a
+  gate anyone can act on. Its cost is a node install in a Rust container.
+- **The Rust toolchain is pinned to 1.100.0, and the Rust line floor is 91**
+  (2026-11-12). Rust 1.100.0 stopped giving a method name a coverage region of
+  its own, which took one commit from 94.23% to 92.28% lines with the same
+  tests; the owner ruled the floor down from 93 to 91 and the toolchain
+  pinned, so a toolchain bump is a pull request of its own that measures before
+  it moves the pin. `docs/ci.md`, "Why the Rust floor is 91, and the toolchain
+  is pinned", is the record.
 - **The regression proof found a hole in the gate it was proving, and the gate
   grew a second half because of it.** Skipping the whole of `pairing.test.ts`
   takes that file from 100% to 83.58% and the total only 98.03% → 97.49% —
@@ -978,8 +987,11 @@ alternative that lost.
   420 sites measured at `df8cbd9`; 375 fixed or given a per-site
   `#[expect(…, reason = …)]` stating the bound, and 45 in the two one-off
   experiment files covered by a module-level allow, argued at the declaration.
-  It beat a blocking gate, which a floating toolchain turns red on an unrelated
-  PR every six weeks or so; and it beat leaving the lint off, because `as` is
+  It beat a blocking gate, which the toolchain then floating would have turned
+  red on an unrelated PR every six weeks or so; pinned since 2026-11-12, a new
+  clippy arrives only with the pull request that moves the pin, the decision
+  stands, and `docs/ci.md`, "The pedantic lints, and why they are advisory",
+  says what it does under the pin. It beat leaving the lint off, because `as` is
   invisible to every other instrument here — `docs/ci.md` records the debug
   profile as the only one with overflow checks, and overflow checks do not apply
   to `as`. The enforcement that remains is narrow and real: a stale `#[expect]`
