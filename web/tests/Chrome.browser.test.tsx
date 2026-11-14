@@ -740,3 +740,87 @@ describe('the mark on the progress line, laid out', () => {
     )
   })
 })
+
+/** All five readouts on, each at its longest: longer than a phone's row. */
+const LONGEST: Partial<ChromeProps> = {
+  readouts: {
+    position: true,
+    time: true,
+    chapter: true,
+    health: true,
+    notes: true,
+  },
+  position: 'digital-colored-comics slot 188 / 195 · p. 190 · 96%',
+  health: 'fragmented pair · no counterpart here',
+  time: '12m read · ~22m left',
+  chapter: '~c002 · 3 of 7',
+  notes: '12 notes here of 140',
+}
+
+/** The row's side padding, as `Chrome.tsx` sets it. */
+const PADDING_PX = 12
+
+const readoutOf = (host: HTMLElement) =>
+  host.querySelector('.reader-readout') as HTMLElement
+
+/**
+ * The box the row's text is in, checked to be the row's one node: text
+ * straight in the flex row is an anonymous item, which `text-overflow`
+ * cannot reach.
+ */
+function textOf(row: HTMLElement): HTMLElement {
+  expect(row.children.length).toBe(1)
+  expect(row.childNodes.length).toBe(1)
+  return row.children[0] as HTMLElement
+}
+
+describe('O141: the readout row at a phone’s width', () => {
+  it('ends in … inside its padding, on one line, 32 px high', async () => {
+    await page.viewport(390, 844)
+    const row = readoutOf(inReader(LONGEST))
+    const text = textOf(row)
+    // THE FIXTURE TELLS: text longer than its box, which is what the "…" is for.
+    expect(text.scrollWidth).toBeGreaterThan(text.clientWidth)
+    expect(text.textContent).toBe(
+      'digital-colored-comics slot 188 / 195 · p. 190 · 96% · fragmented pair · no counterpart here · 12m read · ~22m left · ~c002 · 3 of 7 · 12 notes here of 140',
+    )
+    // `text-overflow` acts only on a block box's own text: a flex or grid
+    // span would hand its text to an anonymous item, the O141 defect again.
+    expect(getComputedStyle(text).display).toBe('block')
+    expect(getComputedStyle(text).textOverflow).toBe('ellipsis')
+    const rowBox = row.getBoundingClientRect()
+    const box = text.getBoundingClientRect()
+    expect(box.left).toBeGreaterThanOrEqual(rowBox.left + PADDING_PX - 0.5)
+    expect(box.right).toBeLessThanOrEqual(rowBox.right - PADDING_PX + 0.5)
+    expect(box.top).toBeGreaterThanOrEqual(rowBox.top)
+    expect(box.bottom).toBeLessThanOrEqual(rowBox.bottom)
+    expect(rowBox.height).toBe(32)
+  })
+
+  it.each([
+    [390, 844],
+    [1280, 800],
+  ])(
+    'a readout that fits is whole and centred, at %i×%i',
+    async (width, height) => {
+      await page.viewport(width, height)
+      const row = readoutOf(inReader({ position: 'slot 1 / 3' }))
+      const text = textOf(row)
+      expect(text.scrollWidth).toBeLessThanOrEqual(text.clientWidth)
+      // The glyphs, not the box: a box stretched across the row is centred
+      // however its text sits in it.
+      const glyphs = document.createRange()
+      glyphs.selectNodeContents(text)
+      const off =
+        centre(glyphs.getBoundingClientRect()) -
+        centre(row.getBoundingClientRect())
+      expect(Math.abs(off)).toBeLessThanOrEqual(1)
+    },
+  )
+
+  it('is whole at a desktop’s width', async () => {
+    await page.viewport(1280, 800)
+    const text = textOf(readoutOf(inReader(LONGEST)))
+    expect(text.scrollWidth).toBeLessThanOrEqual(text.clientWidth)
+  })
+})

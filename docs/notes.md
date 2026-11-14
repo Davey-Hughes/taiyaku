@@ -22127,6 +22127,8 @@ carries the edition's name and a verdict, and at 390×844 the row overflows:
 `scrollWidth` **402** against `clientWidth` **390**, with the text flush to
 both edges instead of inside its 12 px padding. There is no overflow at 1440.
 The bar is ③'s; ④ found it only because a two-edition work now exists.
+*(This is O141, closed on 2026-11-13 by the phone fixes: its row in
+`docs/status.md` says how the line now ends in "…" inside its padding.)*
 
 ## O140: the chrome's build cost — 2026-09-21
 
@@ -23575,6 +23577,8 @@ brings 14 px text to 16 px, which is what puts it on the editor's textarea —
 the log records no focus events. The textarea inherits `.docked-panel`'s
 14 px, and the reader's 16 px floor for a coarse pointer covers only
 `.reader-dialog-panel`. Older than this branch (O171).
+*(O171 has since closed, on 2026-11-13: its row in `docs/status.md` says
+how the docked panels' text fields take the floor now.)*
 
 Taken down afterwards: `tailscale serve reset` (status: no serve config), both
 processes stopped by PID, the event-reporting build removed and the bundle

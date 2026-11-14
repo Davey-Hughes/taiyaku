@@ -520,6 +520,19 @@
   }
 }
 
+/* The same floor for the docked panels, whose note editor's text box would
+ * otherwise make iOS zoom on focus (O171). A docked panel is not a dialog,
+ * so the floor above never reaches it, and that floor's selector is pinned
+ * exactly by `reader.css.test.ts`, so this is a rule of its own rather than
+ * a wider list there. Its two preludes do the same two jobs as the floor
+ * above's, and it sits after `.reader-field` for the same reason. */
+@media (pointer: coarse) {
+  .docked-panel :where(input, select, textarea),
+  .docked-panel .reader-field {
+    font-size: max(16px, var(--text-ui));
+  }
+}
+
 /* A field that spans the panel, and the label above it: the form shape the
  * account panel needs (spec §12.5). */
 .reader-field-block {

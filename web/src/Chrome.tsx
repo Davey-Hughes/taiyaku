@@ -146,16 +146,12 @@ const previewImgStyle: CSSProperties = {
   objectFit: 'contain',
 }
 
-// The readout row, the bar's last line.
-//
-// `height` alone is not enough to keep the row from reflowing: a row that
-// wraps to two lines grows past a fixed `height` rather than being
-// constrained by it. `whiteSpace: 'nowrap'` forbids the wrap outright, and
-// `overflow: 'hidden'`/`textOverflow: 'ellipsis'` are what happens instead if
-// the joined text ever runs wider than the bar. `readoutRow`
-// (`modules/readouts.ts`) is the other half of this: a fixed segment order, so
-// which readouts are enabled or have something to say right now changes the
-// row's *length*, never the order pieces appear in.
+// The readout row, the bar's last line. Its fixed `height` holds whatever its
+// text does; `readoutTextStyle`'s `nowrap` is what keeps a second line from
+// spilling out of it. `readoutRow` (`modules/readouts.ts`) is the other half
+// of this: a fixed segment order, so which readouts are enabled or have
+// something to say right now changes the row's *length*, never the order
+// pieces appear in.
 const readoutStyle: CSSProperties = {
   height: 'var(--readout-height)',
   display: 'flex',
@@ -163,6 +159,16 @@ const readoutStyle: CSSProperties = {
   justifyContent: 'center',
   gap: 4,
   padding: '0 12px',
+}
+
+// The row's text. The truncation sits on this span, not the row, because
+// `text-overflow` does nothing on a flex container (O141). `nowrap` keeps the
+// row one line high, since wrapped text grows past a fixed `height`, and what
+// runs wider than the bar ends in "…". `overflow: 'hidden'` also makes the
+// span a scroll container, which as a flex item has no automatic minimum
+// width, so it shrinks to the row's padding. Unstretched, it is as wide as its
+// text, so short text stays centred.
+const readoutTextStyle: CSSProperties = {
   whiteSpace: 'nowrap',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
@@ -408,7 +414,7 @@ export function Chrome({
             speaks the position once, and this row would also announce every
             change to the reading-time readout. */}
         <div className="reader-readout" style={readoutStyle}>
-          {row}
+          <span style={readoutTextStyle}>{row}</span>
         </div>
       </div>
     </>

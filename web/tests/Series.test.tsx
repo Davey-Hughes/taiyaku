@@ -482,8 +482,8 @@ describe('Series, the work-level editor', () => {
     })
     expect(host.querySelector('.metadata-editor')).not.toBeNull()
     expect(
-      host.querySelector<HTMLInputElement>(
-        '.metadata-editor input[name="title"]',
+      host.querySelector<HTMLTextAreaElement>(
+        '.metadata-editor textarea[name="title"]',
       )?.value,
     ).toBe('Go-Toubun no Hanayome v01')
   })
@@ -610,8 +610,8 @@ describe('Series, the work-level editor', () => {
       await flush(() => {
         host.querySelector<HTMLButtonElement>('.panel-open')?.click()
       })
-      const box = host.querySelector<HTMLInputElement>(
-        '.metadata-editor input[name="title"]',
+      const box = host.querySelector<HTMLTextAreaElement>(
+        '.metadata-editor textarea[name="title"]',
       )
       if (!box) throw new Error('no title box')
       await typeInto(box, renamed)
@@ -702,7 +702,7 @@ describe('Series, the work-level editor', () => {
           ?.textContent,
       ).toBe('Go-Toubun no Hanayome v01')
       expect(
-        host.querySelector('.metadata-editor input[name="title"]'),
+        host.querySelector('.metadata-editor textarea[name="title"]'),
       ).not.toBeNull()
       expect(host.querySelector('.metadata-editor .current')?.textContent).toBe(
         renamed,

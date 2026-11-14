@@ -1,8 +1,6 @@
 import { expect } from 'vitest'
 
-// Shared by the browser tests that measure a coarse pointer's rules:
-// `Shell.browser.test.tsx`'s, `About.browser.test.tsx`'s,
-// `Licence.browser.test.tsx`'s and `Config.browser.test.tsx`'s.
+// Shared by the browser tests that switch a coarse pointer's rules on.
 
 /**
  * Every `@media (pointer: coarse)` block in the page's stylesheets, switched

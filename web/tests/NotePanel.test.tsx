@@ -107,7 +107,7 @@ describe('NotePanel, editing', () => {
         })}
       />,
     )
-    expect(host.querySelector('p')?.textContent).toBe('raw slot 7 · region')
+    expect(host.querySelector('p')?.textContent).toBe('raw slot 8 · region')
   })
 
   it('labels a whole-page note distinctly from a region', () => {
@@ -115,7 +115,7 @@ describe('NotePanel, editing', () => {
       <NotePanel {...baseProps({ draft: note({ region: undefined }) })} />,
     )
     expect(host.querySelector('p')?.textContent).toBe(
-      'en-mono slot 3 · whole page',
+      'en-mono slot 4 · whole page',
     )
   })
 
@@ -126,7 +126,7 @@ describe('NotePanel, editing', () => {
       />,
     )
     const anchorLine = host.querySelector('p')
-    expect(anchorLine?.textContent).toBe('raw slot 3 · whole page')
+    expect(anchorLine?.textContent).toBe('raw slot 4 · whole page')
     const under = anchorLine?.nextElementSibling
     expect(under?.matches('p.reader-muted')).toBe(true)
     expect(under?.textContent).toBe(
@@ -139,7 +139,7 @@ describe('NotePanel, editing', () => {
       <NotePanel {...baseProps({ draft: note({ edition: 'raw' }) })} />,
     )
     expect([...host.querySelectorAll('p')].map((p) => p.textContent)).toEqual([
-      'raw slot 3 · whole page',
+      'raw slot 4 · whole page',
     ])
   })
 
@@ -567,8 +567,9 @@ describe('NotePanel, reviewing', () => {
     )
     const [row] = entryRows(host)
     expect(row?.disabled).toBe(true)
-    expect(row?.textContent).toContain('raw slot 5')
-    expect(row?.textContent).toContain('not reachable from en-mono')
+    expect(row?.querySelector('.reader-meta')?.textContent).toBe(
+      'raw slot 6 · not reachable from en-mono',
+    )
   })
 
   it('names where a travelled note lands here, when it is reachable', () => {
@@ -588,8 +589,9 @@ describe('NotePanel, reviewing', () => {
     )
     const [row] = entryRows(host)
     expect(row?.disabled).toBe(false)
-    expect(row?.textContent).toContain('raw slot 5')
-    expect(row?.textContent).toContain('en-mono slot 7')
+    expect(row?.querySelector('.reader-meta')?.textContent).toBe(
+      'raw slot 6 · en-mono slot 8',
+    )
   })
 
   it('adds no extra location text for a note already on the edition being read', () => {
@@ -637,9 +639,9 @@ describe('NotePanel, reviewing', () => {
       (row) => row.querySelector('.reader-meta')?.textContent,
     )
     expect(meta).toEqual([
-      'en-mono slot 3 · no longer on its page',
-      'raw slot 5 · en-mono slot 7 · no longer on its page',
-      'en-mono slot 4',
+      'en-mono slot 4 · no longer on its page',
+      'raw slot 6 · en-mono slot 8 · no longer on its page',
+      'en-mono slot 5',
     ])
   })
 

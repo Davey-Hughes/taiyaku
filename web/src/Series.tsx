@@ -491,6 +491,8 @@ export function Series() {
   // undefined`, and seeding that with a placeholder would change what the
   // panel shows while the real request is still outstanding.
   const pending = useRef<Set<string>>(new Set())
+  /** The open volume's panel: its alignment detail and its editor. */
+  const openPanel = useRef<HTMLDivElement>(null)
 
   // **Both attachments are grid-only, by decision rather than accident.** The
   // selector's job is "which edition's cover do I see", and the table shows
@@ -614,6 +616,18 @@ export function Series() {
                     onMouseEnter={
                       panel === 'on-select'
                         ? () => {
+                            // Not while focus is in the open panel: a pointer
+                            // passing by, or left on this tile as the Title
+                            // box closed from over it, would unmount the panel
+                            // and what is typed in it (O274). Focus moving to
+                            // this tile is a choice, and still reveals it.
+                            if (
+                              openPanel.current?.contains(
+                                document.activeElement,
+                              )
+                            ) {
+                              return
+                            }
                             reveal(w.slug)
                           }
                         : undefined
@@ -699,27 +713,32 @@ export function Series() {
                       </button>
                     )}
                     {open === w.slug && (
-                      <AlignmentPanel
-                        editionCount={w.editions.length}
-                        state={detail[w.slug]}
-                      />
-                    )}
-                    {open === w.slug && mayEdit && (
-                      // **In the panel, not beside the title** — C3 §5's
-                      // "contextual, from the thing being corrected": the
-                      // correction is prompted by looking at a volume, and
-                      // this is the surface a volume already opens. There is
-                      // no metadata screen to navigate to, by design.
-                      //
-                      // A save reads the series again (`saveWork`), so the
-                      // tile's title follows it; the editor shows the
-                      // server's re-projected title itself meanwhile.
-                      <MetadataEditor
-                        slug={w.slug}
-                        title={w.title}
-                        onPatch={saveWork}
-                        canStamp={mayStamp}
-                      />
+                      // One block around the open panel, so that a pointer's
+                      // reveal can ask whether focus is in it. With no
+                      // margin, border or padding, it moves none of its parts.
+                      <div ref={openPanel}>
+                        <AlignmentPanel
+                          editionCount={w.editions.length}
+                          state={detail[w.slug]}
+                        />
+                        {mayEdit && (
+                          // **In the panel, not beside the title** — C3 §5's
+                          // "contextual, from the thing being corrected": the
+                          // correction is prompted by looking at a volume,
+                          // and this is the surface a volume already opens.
+                          // There is no metadata screen to navigate to.
+                          //
+                          // A save reads the series again (`saveWork`), so
+                          // the tile's title follows it; the editor shows the
+                          // server's re-projected title itself meanwhile.
+                          <MetadataEditor
+                            slug={w.slug}
+                            title={w.title}
+                            onPatch={saveWork}
+                            canStamp={mayStamp}
+                          />
+                        )}
+                      </div>
                     )}
                   </li>
                 )

@@ -36,7 +36,7 @@
  * reserved for the one path that really did lose the edit: a thrown
  * 409/404/403 from a hard failure.
  */
-import { type FormEvent, useId, useRef, useState } from 'react'
+import { type FormEvent, useId, useLayoutEffect, useRef, useState } from 'react'
 import { humanBytes } from './bytes'
 import { statusOf } from './config'
 import { JOB_WAITS, useDeriveHold, useOwnRequests } from './deriveHold'
@@ -50,6 +50,7 @@ import {
   stampPlan,
 } from './stamp'
 import { messageOf } from './message'
+import { PathWithBreaks } from './PathWithBreaks'
 
 /**
  * How many archives, as one phrase. A helper rather than an inline ternary at
@@ -220,6 +221,65 @@ const confirmablePlan = (phase: StampPhase): StampPlan | undefined => {
   }
 }
 
+/** A title is one line: each line break a paste brings becomes a space. */
+const oneLine = (typed: string) => typed.replace(/\r\n|\r|\n/g, ' ')
+
+/** The left and right of `area`'s content box. */
+const contentSpan = (area: Element) => {
+  const box = area.getBoundingClientRect()
+  const style = getComputedStyle(area)
+  const left = box.left + area.clientLeft
+  return {
+    start: left + parseFloat(style.paddingLeft),
+    end: left + area.clientWidth - parseFloat(style.paddingRight),
+  }
+}
+
+/**
+ * Lays the open Title box, `box` as it is at rest, over the tiles beside
+ * and below its own (O274): two tiles and the gap between them wide, or the
+ * page area's width where that is less; from its tile's left edge, or back
+ * from its tile's right edge, which only the row's last column needs, and
+ * never left of the area; as tall as its title, up to five lines.
+ * Read from the layout: only the grid knows which column a tile fell in.
+ */
+function layOpen(box: HTMLTextAreaElement) {
+  const grid = box.closest('.volumes')
+  const tiled = box.closest('.volumes > li')
+  const area = box.closest('.library > main')
+  // Only a volume's tile on a page has columns to open across.
+  if (grid === null || tiled === null || area === null) return
+  const rest = box.getBoundingClientRect()
+  const tile = tiled.getBoundingClientRect()
+  const gap = parseFloat(getComputedStyle(grid).columnGap)
+  const { start, end } = contentSpan(area)
+  const width = Math.min(2 * tile.width + gap, end - start)
+  // Held to the area's left edge: when the box is as wide as the area the
+  // rightward test is exact, and a tile a fraction right of the area's
+  // start fails it, which would open the box a whole tile past the left
+  // edge.
+  const left =
+    tile.left + width <= end ? tile.left : Math.max(start, tile.right - width)
+  const style = getComputedStyle(box)
+  const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+  const line = box.clientHeight - padding
+  const border = rest.height - box.clientHeight
+  box.style.left = `${left - rest.left}px`
+  box.style.width = `${width}px`
+  box.style.maxWidth = 'none'
+  // Read at the open width, where the title takes fewer lines, and with no
+  // scrollbar, which a box one line tall would draw beside them and which
+  // would narrow them.
+  box.style.overflowY = 'hidden'
+  const height = Math.min(box.scrollHeight, 5 * line + padding) + border
+  box.style.overflowY = ''
+  box.style.height = `${height}px`
+  // Margins that give back what it grew by: its line, and all after it,
+  // stays where it was at rest.
+  box.style.marginRight = `${rest.width - width}px`
+  box.style.marginBottom = `${rest.height - height}px`
+}
+
 export function MetadataEditor({
   slug,
   title,
@@ -253,6 +313,13 @@ export function MetadataEditor({
   const [value, setValue] = useState(title)
   const [current, setCurrent] = useState(title)
   const [saving, setSaving] = useState(false)
+  const [open, setOpen] = useState(false)
+  const titleBox = useRef<HTMLTextAreaElement>(null)
+  /**
+   * What Escape puts back: the title the box held when it took focus or at
+   * its last save that succeeded, whichever came later.
+   */
+  const held = useRef(title)
   // Three states, not two. `undefined` means "nothing to say" — either
   // nothing has been saved yet, or the last save reached disk cleanly. `[]`
   // means the last save succeeded but did not reach `<stem>.library.json`
@@ -476,11 +543,74 @@ export function MetadataEditor({
         // for what it actually holds now.
         setCurrent(result.title ?? value)
         setUnwritten(result.persisted ? undefined : reasons(result))
+        held.current = value
       })
       .catch((err: unknown) => {
         setSaving(false)
         setFailure(messageOf(err))
       })
+  }
+
+  // The Title box opens while it is edited (O274).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `value` is a trigger: the title's length sets the open box's height.
+  useLayoutEffect(() => {
+    const box = titleBox.current
+    if (!open || box === null) return
+    const lay = () => {
+      box.removeAttribute('style')
+      layOpen(box)
+    }
+    lay()
+    // A turned phone or a resized window moves the tiles under it.
+    window.addEventListener('resize', lay)
+    // So does a page area that changes width alone, as when it gains a
+    // scrollbar. jsdom has no observer and lays nothing out to follow.
+    const area = box.closest('.library > main')
+    let moved: ResizeObserver | undefined
+    if (area !== null && typeof ResizeObserver !== 'undefined') {
+      moved = new ResizeObserver(lay)
+      moved.observe(area)
+    }
+    return () => {
+      window.removeEventListener('resize', lay)
+      moved?.disconnect()
+      box.removeAttribute('style')
+    }
+  }, [open, value])
+
+  const titleKeys = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // An Enter or an Escape that ends an input method's composition is
+    // that method's: Japanese titles are typed through one. Safari sends
+    // it once the composition has ended, marked only by keyCode 229.
+    const { isComposing, keyCode } = event.nativeEvent
+    if (isComposing || keyCode === 229) return
+    if (event.key === 'Enter') {
+      // As Save does, which is held while a save is out.
+      event.preventDefault()
+      if (!saving) event.currentTarget.form?.requestSubmit()
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      setValue(held.current)
+      setOpen(false)
+    }
+  }
+
+  /** A title typed or pasted after Escape opens the box again. */
+  const edit = (line: string) => {
+    setValue(line)
+    setOpen(true)
+  }
+
+  const titlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = event.clipboardData.getData('text')
+    const line = oneLine(pasted)
+    if (line === pasted) return
+    // Put in here, where the caret can be left after it: a value changed
+    // through the render puts the caret at the end.
+    event.preventDefault()
+    const box = event.currentTarget
+    box.setRangeText(line, box.selectionStart, box.selectionEnd, 'end')
+    edit(box.value)
   }
 
   const phase = phaseOf({
@@ -603,7 +733,9 @@ export function MetadataEditor({
       <ul className="archives">
         {shown.archives.map((archive: Archive) => (
           <li className="archive" key={archive.member_id}>
-            <span className="path">{archive.path}</span>{' '}
+            <span className="path">
+              <PathWithBreaks path={archive.path} />
+            </span>{' '}
             <span className="size">{humanBytes(archive.bytes)}</span>
           </li>
         ))}
@@ -740,12 +872,30 @@ export function MetadataEditor({
       <form className="metadata-editor" onSubmit={submit}>
         <label className="field title">
           <span>Title</span>
-          <input
-            type="text"
+          {/* A textarea, so the title can wrap while it is edited; at rest
+              it is drawn as one line (`library.css`). */}
+          <textarea
+            ref={titleBox}
             name="title"
+            rows={1}
+            // Firefox spellchecks a textarea, as it does not an input, and
+            // would underline a romaji title. Enter saves, and says so.
+            spellCheck={false}
+            enterKeyHint="done"
             value={value}
+            data-open={open ? '' : undefined}
+            onFocus={(event) => {
+              held.current = event.currentTarget.value
+              setOpen(true)
+            }}
+            onBlur={() => {
+              setOpen(false)
+            }}
+            onKeyDown={titleKeys}
+            onPaste={titlePaste}
             onChange={(event) => {
-              setValue(event.target.value)
+              // A line break that comes another way, such as a drop.
+              edit(oneLine(event.target.value))
             }}
           />
         </label>

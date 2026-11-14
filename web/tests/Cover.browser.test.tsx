@@ -168,6 +168,66 @@ async function measured(
   ]
 }
 
+/**
+ * A series page's volume tiles draw their own title in the title face at
+ * 600, in a link and in O62's `tile-unreadable` box alike. `library.css`
+ * names that title by where it sits, so the metadata editor's Title field in
+ * the same tile is left out (`MetadataEditor.browser.test.tsx`); this holds
+ * the tiles the rule must still reach.
+ */
+describe('a volume tile’s own title', () => {
+  it('is in the title face at 600, linked or unreadable', async () => {
+    const gone = work(2, 'Files gone', LOADS)
+    vi.mocked(library.oneSeries).mockResolvedValue({
+      series: { ...series(1, 'Series', LOADS), titles: [] },
+      works: [
+        work(1, 'Readable', LOADS),
+        {
+          ...gone,
+          editions: gone.editions.map((e) => ({ ...e, missing: 1 })),
+        },
+      ],
+    })
+    const host = await at('/series/1', 1280)
+    const titleOf = (name: string) =>
+      [...host.querySelectorAll('.volumes > li .title')].find(
+        (el) => el.textContent === name,
+      )
+    await expect
+      .poll(() =>
+        [titleOf('Readable'), titleOf('Files gone')].includes(undefined),
+      )
+      .toBe(false)
+    const linked = titleOf('Readable') as Element
+    const unreadable = titleOf('Files gone') as Element
+    const tile = linked.closest('li') as Element
+    // The face named: a probe set in `--font-title`, in the tile it reads.
+    const probe = document.createElement('span')
+    probe.style.fontFamily = 'var(--font-title)'
+    tile.append(probe)
+    const titleFace = getComputedStyle(probe).fontFamily
+    probe.remove()
+    const face = (el: Element) => {
+      const style = getComputedStyle(el)
+      return { family: style.fontFamily, weight: style.fontWeight }
+    }
+
+    // The fixture tells: one tile of each kind, and the tile's own text in
+    // another face and weight, which a title the rule missed would take.
+    expect(linked.parentElement?.tagName).toBe('A')
+    expect(
+      unreadable.parentElement?.classList.contains('tile-unreadable'),
+    ).toBe(true)
+    expect(face(tile).family).not.toBe(titleFace)
+    expect(face(tile).weight).not.toBe('600')
+
+    expect({ linked: face(linked), unreadable: face(unreadable) }).toEqual({
+      linked: { family: titleFace, weight: '600' },
+      unreadable: { family: titleFace, weight: '600' },
+    })
+  })
+})
+
 describe.each([1280, 390])('a failed cover’s tile at %i px', (width) => {
   it.each([
     ['/', '.grid'],

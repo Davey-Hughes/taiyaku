@@ -127,6 +127,7 @@ const HOOKS: Record<string, string[]> = {
   // `rename-library` is the form holding the name's box in the title's
   // place; the box is drawn by its own class, and the form by none.
   './LibraryPage.test.tsx': ['rename-library'],
+  './MetadataEditor.browser.test.tsx': ['archives', 'unwritten'],
   './MetadataEditor.test.tsx': [
     'archive',
     'asking',
@@ -138,12 +139,11 @@ const HOOKS: Record<string, string[]> = {
     'key-held',
     'key-moved',
     'key-moved-alone',
-    'metadata-editor',
     'nothing',
+    'path',
     'rewrote',
     'sidecar',
     'skipped',
-    'stamp-comicinfo',
     'stamp-state',
     'stamped',
     'total',
@@ -190,21 +190,18 @@ const ELSEWHERE: Record<string, string> = {
  * element's tag or an ancestor may still draw it; this test does not look.
  */
 const UNREAD = [
-  'archives',
   'complaint',
   'impact',
   'labeller-readout',
   'options',
   'overrides',
   'overrides-lead',
-  'path',
   'plan-failure',
   'preview-body',
   'save-mismatch',
   'scan-notice',
   'series-count',
   'stamp-failure',
-  'unwritten',
   'verdict',
   'walk',
   'you',

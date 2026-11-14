@@ -160,9 +160,12 @@ export function NotePanel({
         <>
           {/* Where the note is anchored, stated before it is written: a note
               is anchored to a slot of one edition, and a reader who swapped a
-              moment ago should not have to remember which. */}
+              moment ago should not have to remember which. The stored slot
+              counts from 0 and is printed counting from 1, as the readout's
+              `positionLine` prints it, so the two name the same page alike
+              (O172). */}
           <p className="reader-meta" style={{ margin: 0 }}>
-            {draft.edition} slot {draft.slot} ·{' '}
+            {draft.edition} slot {draft.slot + 1} ·{' '}
             {draft.region ? 'region' : 'whole page'}
           </p>
           {draft.stale && (
@@ -180,7 +183,7 @@ export function NotePanel({
             aria-label="Note body"
             placeholder="Drag on the page to mark a region."
             className="reader-field"
-            style={{ width: '100%', resize: 'vertical', font: 'inherit' }}
+            style={{ width: '100%', resize: 'vertical' }}
           />
           {/*
             The colours, as swatches rather than a dropdown: the choice *is*
@@ -335,12 +338,14 @@ export function NotePanel({
                     background: noteColour(entry.note.color).tab,
                   }}
                 />
-                {entry.note.edition} slot {entry.note.slot}
+                {/* Printed counting from 1, as the editor's heading is; `here`
+                    stays zero-based, since `onGo` hands it to `goToSlot`. */}
+                {entry.note.edition} slot {entry.note.slot + 1}
                 {entry.here === undefined
                   ? ` · not reachable from ${viewing}`
                   : entry.note.edition === viewing
                     ? ''
-                    : ` · ${viewing} slot ${entry.here}`}
+                    : ` · ${viewing} slot ${entry.here + 1}`}
                 {entry.note.stale && ' · no longer on its page'}
               </span>
               <span>{entry.note.body || <em>empty</em>}</span>

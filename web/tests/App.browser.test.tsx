@@ -9,6 +9,7 @@ import { paintedBox } from '../src/notes'
 import { focused } from './support/focused'
 import { mount } from './support/mount'
 import { mouse } from './support/mouse'
+import { coarseRulesOn } from './support/pointer'
 
 /**
  * The reader's two bars and what docks between them, laid out in a real
@@ -719,6 +720,30 @@ describe('O166: a key pressed on a Settings select', () => {
     })
     expect(ports.putProgress).not.toHaveBeenCalled()
   })
+})
+
+describe('O171: the note editor’s text box against the iOS zoom floor', () => {
+  it.each([
+    ['coarse', '16px'],
+    ['fine', '14px'],
+  ])(
+    'O171: the note editor’s text box under a %s pointer is %s',
+    async (pointer, size) => {
+      if (pointer === 'coarse') onTestFinished(coarseRulesOn())
+      await reader(390, 844)
+      press('n')
+      const editor = () =>
+        document.querySelector<HTMLElement>(
+          '[role="dialog"][aria-label="Note"]',
+        )
+      await until(() => editor()?.querySelector('textarea') != null)
+      // The panel is 14px under either pointer, so a box left to inherit it
+      // would read 14px too: 16px under a coarse pointer is the floor's doing.
+      expect(getComputedStyle(editor()!).fontSize).toBe('14px')
+      const body = editor()!.querySelector('textarea')!
+      expect(getComputedStyle(body).fontSize).toBe(size)
+    },
+  )
 })
 
 /**

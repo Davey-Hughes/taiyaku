@@ -5,7 +5,7 @@ import { MetadataEditor } from '../src/MetadataEditor'
 import * as stamp from '../src/stamp'
 import { holdOf } from './support/held'
 import { tick } from './support/libraries'
-import { mount } from './support/mount'
+import { mount, rerender } from './support/mount'
 
 // `AcceptForm.test.tsx`'s shape, for the reason its own comment gives.
 // `humanBytes` is deliberately not mocked: `bytes.test.ts` pins it, and
@@ -29,10 +29,10 @@ vi.mock('../src/libraries', async (importOriginal) => ({
  * the `input` event dispatched right after can fire with React believing
  * nothing changed.
  */
-async function typeInto(el: HTMLInputElement, value: string) {
+async function typeInto(el: HTMLTextAreaElement, value: string) {
   await act(async () => {
     Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
+      Object.getPrototypeOf(el),
       'value',
     )?.set?.call(el, value)
     el.dispatchEvent(new Event('input', { bubbles: true }))
@@ -52,7 +52,7 @@ const submitButton = (host: HTMLElement) =>
   host.querySelector('button[type="submit"]') as HTMLButtonElement
 
 const titleField = (host: HTMLElement) =>
-  host.querySelector<HTMLInputElement>("input[name='title']")
+  host.querySelector<HTMLTextAreaElement>("[name='title']")
 
 const planButton = (host: HTMLElement) =>
   host.querySelector<HTMLButtonElement>("button[name='plan-stamp']")
@@ -289,6 +289,291 @@ describe('MetadataEditor', () => {
   })
 })
 
+/** A keydown of `key` in `el`; whether its default action was left to run. */
+const keyDown = async (el: Element, key: string, init?: KeyboardEventInit) => {
+  let runs = true
+  await act(async () => {
+    runs = el.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key,
+        bubbles: true,
+        cancelable: true,
+        ...init,
+      }),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+  return runs
+}
+
+const focusOn = async (el: HTMLElement) => {
+  await act(async () => {
+    el.focus()
+  })
+}
+
+const blurFrom = async (el: HTMLElement) => {
+  await act(async () => {
+    el.blur()
+  })
+}
+
+/**
+ * Paste `text` into `el` at its selection as a browser does: the `paste`
+ * event, then, unless a handler took it, the text put in and an `input`.
+ */
+const pasteInto = async (el: HTMLTextAreaElement, text: string) => {
+  await act(async () => {
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(paste, 'clipboardData', {
+      value: { getData: () => text },
+    })
+    if (el.dispatchEvent(paste)) {
+      el.setRangeText(text, el.selectionStart, el.selectionEnd, 'end')
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    await Promise.resolve()
+  })
+}
+
+describe('MetadataEditor, the Title box’s keys (O274)', () => {
+  it('saves on Enter what the box holds, as Save does, and puts no line break in it', async () => {
+    const patch = vi
+      .fn()
+      .mockResolvedValue({ title: 'Volume 1', persisted: true })
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await focusOn(field)
+    await typeInto(field, 'Volume 1')
+
+    const runs = await keyDown(field, 'Enter')
+
+    expect(patch.mock.calls).toEqual([['w', { title: 'Volume 1' }]])
+    expect(runs, 'the Enter’s own line break').toBe(false)
+  })
+
+  it('sends no second save for an Enter while one is out, as Save, held, sends none', async () => {
+    const out = deferred<{ title: string; persisted: boolean }>()
+    const patch = vi.fn().mockReturnValue(out.promise)
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await focusOn(field)
+    await keyDown(field, 'Enter')
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(submitButton(host).disabled).toBe(true)
+
+    await keyDown(field, 'Enter')
+
+    expect(patch).toHaveBeenCalledTimes(1)
+    out.settle({ title: 'old', persisted: true })
+    await drain()
+  })
+
+  it('leaves an Enter or an Escape that ends an input method’s composition to that method', async () => {
+    const patch = vi
+      .fn()
+      .mockResolvedValue({ title: '鏡の国', persisted: true })
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await focusOn(field)
+    await typeInto(field, '鏡の国')
+
+    const enter = await keyDown(field, 'Enter', { isComposing: true })
+    const escaped = await keyDown(field, 'Escape', { isComposing: true })
+
+    // One comparison: each key's default left to run, no save, no restore.
+    expect({
+      enter,
+      escape: escaped,
+      saves: patch.mock.calls.length,
+      value: field.value,
+    }).toEqual({ enter: true, escape: true, saves: 0, value: '鏡の国' })
+
+    // The pair: the same Enter, the composition over, saves.
+    await keyDown(field, 'Enter')
+    expect(patch.mock.calls).toEqual([['w', { title: '鏡の国' }]])
+  })
+
+  it('leaves to the input method the Enter Safari sends once its composition has ended, keyCode 229', async () => {
+    const patch = vi
+      .fn()
+      .mockResolvedValue({ title: '鏡の国', persisted: true })
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await focusOn(field)
+    await typeInto(field, '鏡の国')
+
+    const runs = await keyDown(field, 'Enter', { keyCode: 229 })
+
+    expect({ runs, saves: patch.mock.calls.length }).toEqual({
+      runs: true,
+      saves: 0,
+    })
+    // The pair: an Enter of its own saves.
+    await keyDown(field, 'Enter', { keyCode: 13 })
+    expect(patch.mock.calls).toEqual([['w', { title: '鏡の国' }]])
+  })
+
+  it('puts back on Escape the title the box held when it took focus, and keeps the focus', async () => {
+    const host = mount(
+      <MetadataEditor slug="w" title="old" onPatch={vi.fn()} />,
+    )
+    const field = titleField(host)!
+    await focusOn(field)
+    await typeInto(field, 'held')
+    await blurFrom(field)
+    await focusOn(field)
+    await typeInto(field, 'typed')
+
+    await keyDown(field, 'Escape')
+
+    expect(field.value).toBe('held')
+    expect(document.activeElement).toBe(field)
+  })
+
+  it('puts back on Escape the title last saved, where the save came after the box took focus', async () => {
+    const patch = vi.fn().mockResolvedValue({ title: 'saved', persisted: true })
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await focusOn(field)
+    await typeInto(field, 'saved')
+    await keyDown(field, 'Enter')
+    await drain()
+    expect(patch.mock.calls).toEqual([['w', { title: 'saved' }]])
+    await typeInto(field, 'saved, then typed')
+
+    await keyDown(field, 'Escape')
+
+    expect(field.value).toBe('saved')
+  })
+
+  it('puts a pasted title in at the caret, each line break a space, and leaves the caret after it', async () => {
+    const patch = vi.fn().mockResolvedValue({ title: 'x', persisted: true })
+    const host = mount(
+      <MetadataEditor slug="w" title="Kagami Volume 1" onPatch={patch} />,
+    )
+    const field = titleField(host)!
+    await focusOn(field)
+    field.setSelectionRange(7, 7)
+
+    await pasteInto(field, 'no\nKuni ')
+
+    expect({ value: field.value, caret: field.selectionStart }).toEqual({
+      value: 'Kagami no Kuni Volume 1',
+      caret: 'Kagami no Kuni '.length,
+    })
+    await click(submitButton(host))
+    expect(patch.mock.calls).toEqual([
+      ['w', { title: 'Kagami no Kuni Volume 1' }],
+    ])
+  })
+
+  it('turns each line break that reaches the box another way, such as a drop, into one space', async () => {
+    const patch = vi.fn().mockResolvedValue({ title: 'x', persisted: true })
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await focusOn(field)
+
+    await typeInto(field, 'Kagami no Kuni\nno Harisugawa\r\nVolume 1')
+
+    expect(field.value).toBe('Kagami no Kuni no Harisugawa Volume 1')
+    await click(submitButton(host))
+    expect(patch.mock.calls).toEqual([
+      ['w', { title: 'Kagami no Kuni no Harisugawa Volume 1' }],
+    ])
+  })
+
+  it('keeps the typed title when focus leaves the box', async () => {
+    const patch = vi.fn()
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await focusOn(field)
+    await typeInto(field, 'typed')
+
+    await blurFrom(field)
+
+    expect(field.value).toBe('typed')
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('asks for no spellcheck, which a textarea gets by default and a romaji title does not want, and labels Enter as done', () => {
+    const host = mount(
+      <MetadataEditor slug="w" title="old" onPatch={vi.fn()} />,
+    )
+    const field = titleField(host)!
+
+    expect({
+      spellcheck: field.getAttribute('spellcheck'),
+      enterkeyhint: field.getAttribute('enterkeyhint'),
+    }).toEqual({ spellcheck: 'false', enterkeyhint: 'done' })
+  })
+})
+
+describe('MetadataEditor, the open Title box’s watch on its page area (O274)', () => {
+  /** jsdom has no `ResizeObserver`; this one records what it is asked. */
+  class Watch {
+    static made: Watch[] = []
+    observed: Element[] = []
+    disconnected = false
+    constructor() {
+      Watch.made.push(this)
+    }
+    observe(el: Element) {
+      this.observed.push(el)
+    }
+    unobserve() {}
+    disconnect() {
+      this.disconnected = true
+    }
+  }
+
+  beforeEach(() => {
+    Watch.made = []
+    vi.stubGlobal('ResizeObserver', Watch)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const watches = () =>
+    Watch.made.map(({ observed, disconnected }) => ({ observed, disconnected }))
+
+  it('watches the page area only while the box is open, and lets it go when the box closes and when the editor goes', async () => {
+    const host = mount(
+      <div className="library">
+        <main>
+          <MetadataEditor slug="w" title="old" onPatch={vi.fn()} />
+        </main>
+      </div>,
+    )
+    const main = host.querySelector('.library > main')
+    const field = titleField(host)!
+    expect(watches(), 'at rest').toEqual([])
+
+    await focusOn(field)
+    expect(watches(), 'open').toEqual([
+      { observed: [main], disconnected: false },
+    ])
+
+    await blurFrom(field)
+    expect(watches(), 'closed').toEqual([
+      { observed: [main], disconnected: true },
+    ])
+
+    await focusOn(field)
+    rerender(
+      <div className="library">
+        <main />
+      </div>,
+    )
+    expect(watches(), 'open, then gone').toEqual([
+      { observed: [main], disconnected: true },
+      { observed: [main], disconnected: true },
+    ])
+  })
+})
+
 describe('MetadataEditor, the ComicInfo stamp', () => {
   const noop = vi.fn().mockResolvedValue({ title: 't', persisted: true })
 
@@ -406,6 +691,28 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
     expect(rows[0]?.textContent).toContain('512.0 MiB')
     expect(rows[1]?.textContent).toContain('/lib/Series - v02.cbz')
     expect(rows[1]?.textContent).toContain('1.5 GiB')
+  })
+
+  // O274: a path holds no space, so without these breaks a phone's narrow
+  // tile can only break it where `overflow-wrap` runs out of line.
+  it('draws each path with a break after each / and -, its text whole', async () => {
+    vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
+    const host = mount(
+      <MetadataEditor slug="w" title="t" onPatch={noop} canStamp />,
+    )
+
+    await click(planButton(host)!)
+
+    const rows = archiveRows(host)
+    expect(rows).toHaveLength(PLAN.archives.length)
+    PLAN.archives.forEach((archive, i) => {
+      // The fixture tells: each path has places to break, so a path drawn
+      // plain has fewer breaks than it should.
+      expect(archive.path.match(/[/-]/g)).toHaveLength(3)
+      const path = rows[i]?.querySelector('.path')
+      expect(path?.textContent).toBe(archive.path)
+      expect(path?.querySelectorAll('.path-break')).toHaveLength(3)
+    })
   })
 
   it('states the count and the total before anything starts', async () => {

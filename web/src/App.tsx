@@ -754,6 +754,21 @@ function App({ work, onLeave }: AppProps) {
   // `helpVisibleRef` and `panelModeRef` exist beside it.
   const accountOpenRef = useRef(false)
   accountOpenRef.current = accountOpen
+  /**
+   * Replaces Settings with the account panel (O229), one modal at a time. It
+   * reads no state, only setters, so a frozen closure may call it.
+   *
+   * **It moves no focus.** Both setters land in one commit, and React runs a
+   * commit's effect clean-ups before its new effects. So Settings'
+   * `usePanelFocus` first hands focus where closing Settings puts it (spec
+   * 2026-09-26 §3.3), and the account panel then records that as its opener.
+   * Focusing anything here, or opening the panel in a commit before Settings
+   * closes, makes it record the wrong opener.
+   */
+  function openAccount() {
+    setSettingsVisible(false)
+    setAccountOpen(true)
+  }
   // O58: the server takes a correction from an administrator alone, so no one
   // else is offered `c` or its help row. A ref for `accountOpenRef`'s reason.
   const mayCorrect = gate?.who.admin === true
@@ -869,7 +884,7 @@ function App({ work, onLeave }: AppProps) {
         case 'ring':
           return ringMove(event.target, event.shiftKey)
         case 'open-account':
-          return setAccountOpen(true)
+          return openAccount()
         case 'close-account':
           return setAccountOpen(false)
         case 'close-settings':
@@ -3066,6 +3081,7 @@ function App({ work, onLeave }: AppProps) {
         onChange={handleSettingChange}
         onReset={handleSettingReset}
         onClose={() => setSettingsVisible(false)}
+        onAccount={openAccount}
       />
       <CreditsPanel
         visible={creditsVisible}

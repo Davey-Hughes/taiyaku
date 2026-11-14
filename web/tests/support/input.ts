@@ -8,10 +8,13 @@ import { flush } from './async'
  * value on the element and ignores an assignment that goes through its own
  * override.
  */
-export async function typeInto(box: HTMLInputElement, value: string) {
+export async function typeInto(
+  box: HTMLInputElement | HTMLTextAreaElement,
+  value: string,
+) {
   await act(async () => {
     Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
+      Object.getPrototypeOf(box),
       'value',
     )?.set?.call(box, value)
     box.dispatchEvent(new Event('input', { bubbles: true }))

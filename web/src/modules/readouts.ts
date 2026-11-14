@@ -423,9 +423,9 @@ export interface RowLines {
  * (health on a sound pair) or comes and goes (the reading-time estimate,
  * before and after a second page turns) never reshuffles anything already
  * on screen, it only removes or adds itself at its own fixed position in
- * the join. `Chrome.tsx` pairs this with a `white-space: nowrap` row of
- * fixed height, so a change in the joined string's *length* — the estimate
- * ticking a digit longer, say — can never grow the row taller either.
+ * the join. `Chrome.tsx` pairs this with a fixed-height row whose text is
+ * `white-space: nowrap`, so a change in the joined string's *length* (the
+ * estimate a digit longer, say) never spills a second line out of the row.
  *
  * Health sits second, not last. `Chrome.tsx`'s `overflow: hidden` +
  * `text-overflow: ellipsis` clips from the end of this joined string, so

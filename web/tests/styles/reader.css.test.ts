@@ -29,6 +29,18 @@ function declared(css: string, prelude: string, property: string): string[] {
   )
 }
 
+/** `declared`, but tolerant of how Biome wraps a two-prelude selector list. */
+const flat = (css: string, prelude: string, property: string) =>
+  rules(css)
+    .filter((rule) => rule.prelude.replace(/\s+/g, ' ').trim() === prelude)
+    .flatMap((rule) =>
+      [
+        ...rule.body.matchAll(
+          new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+)`, 'g'),
+        ),
+      ].map((m) => m[1].replace(/\s+/g, '')),
+    )
+
 describe('the reader root', () => {
   it('is dark in both themes, on the black ground', () => {
     expect(declared(readerSource, '.reader', 'color-scheme')).toEqual(['dark'])
@@ -89,18 +101,6 @@ describe('the reader root', () => {
 })
 
 describe('the dialog panel’s controls clear the iOS zoom floor', () => {
-  /** `declared`, but tolerant of how Biome wraps a two-prelude selector list. */
-  const flat = (css: string, prelude: string, property: string) =>
-    rules(css)
-      .filter((rule) => rule.prelude.replace(/\s+/g, ' ').trim() === prelude)
-      .flatMap((rule) =>
-        [
-          ...rule.body.matchAll(
-            new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+)`, 'g'),
-          ),
-        ].map((m) => m[1].replace(/\s+/g, '')),
-      )
-
   it('gives them a coarse-pointer font-size of at least 16px', () => {
     // O151. `base.css` carries this floor for `:where(.library, .login)`
     // because a control under 16px makes iOS Safari zoom the document on focus
@@ -159,6 +159,23 @@ describe('the dialog panel’s controls clear the iOS zoom floor', () => {
   })
 })
 
+describe('the docked panels’ controls clear the iOS zoom floor too', () => {
+  it('gives the docked panels’ controls a coarse-pointer font-size of at least 16px (O171)', () => {
+    // The note editor's text box is in a docked panel, not a dialog, so the
+    // dialog floor above never reaches it. Its own rule, rather than a wider
+    // dialog-floor selector, because the case above pins that prelude
+    // exactly. `rules()` drops the `@media`, so whether this sits inside
+    // the coarse block is held by `App.browser.test.tsx`'s fine-pointer case.
+    expect(
+      flat(
+        readerSource,
+        '.docked-panel :where(input, select, textarea), .docked-panel .reader-field',
+        'font-size',
+      ),
+    ).toEqual(['max(16px,var(--text-ui))'])
+  })
+})
+
 describe('the panel’s fields clear the 44px floor too', () => {
   it('puts .reader-field in the rule .reader-button has had since ③', () => {
     // §7.1's 44px row. The note body wears `.reader-field`, and so do the
@@ -168,7 +185,7 @@ describe('the panel’s fields clear the 44px floor too', () => {
     // **What this cannot see**, stated rather than left to be discovered:
     // `rules()` discards which `@media` a rule came from, so a floor lifted
     // out of the coarse block — giving a mouse the same 44px — passes here.
-    // The three-block shape of this file is why an `indexOf` on the at-rule
+    // This file's several coarse blocks are why an `indexOf` on the at-rule
     // is not the fix.
     expect(
       declared(readerSource, '.reader-button, .reader-field', 'min-height'),

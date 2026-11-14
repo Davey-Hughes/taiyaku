@@ -1502,8 +1502,12 @@ describe('the note editor', () => {
     expect(panel).not.toBeNull()
     // The anchor comes from `display(state, resolver)` at the moment of the
     // press, read through `sessionRef` — the mirror that exists because the
-    // keydown listener's closure is frozen at load.
-    expect(panel?.textContent).toContain('raw slot 2')
+    // keydown listener's closure is frozen at load. Stored progress is `raw`
+    // slot 2, which the readout prints as slot 3 / 6; the heading counts from
+    // 1 the same way (O172).
+    expect(panel?.querySelector('p.reader-meta')?.textContent).toBe(
+      'raw slot 3 · whole page',
+    )
   })
 
   it('a opens the review list, and a again closes it', async () => {
@@ -4216,6 +4220,101 @@ describe('the panels and focus', () => {
     expect(panel.contains(document.activeElement)).toBe(true)
     click(button(panel, 'Close'))
     expect(document.activeElement).toBe(gear)
+  })
+
+  /**
+   * O229: Account… replaces Settings, and the account panel hands focus back
+   * where closing Settings would have: Account… itself has gone with Settings.
+   */
+  it.each(['Close', 'Escape'])(
+    'Settings opened by ⚙, then Account…: the account panel hands focus back to ⚙ on %s',
+    async (how) => {
+      const host = await open()
+      press('Tab')
+      const gear = button(host, 'Settings')
+      act(() => gear.focus())
+      click(gear)
+      click(button(dialog(host, 'Settings') as HTMLElement, 'Account…'))
+      await settle()
+      expect(
+        host.querySelectorAll('[role="dialog"][aria-modal="true"]').length,
+        'one modal at a time',
+      ).toBe(1)
+      expect(dialog(host, 'Settings')).toBeNull()
+      expect(dialog(host, 'Account')?.contains(document.activeElement)).toBe(
+        true,
+      )
+      if (how === 'Close')
+        click(button(dialog(host, 'Account') as HTMLElement, 'Close'))
+      else pressHere('Escape')
+      expect(document.activeElement).toBe(gear)
+    },
+  )
+
+  /**
+   * §3.3: a key pressed on the page opened Settings, so the page is where
+   * closing it would have put focus, even with ⚙ on screen.
+   */
+  it('Settings opened by s on the page, then Account…: Escape hands focus back to the page, not ⚙', async () => {
+    const host = await open()
+    press('Tab')
+    act(() => pageArea(host).focus())
+    pressHere('s')
+    click(button(dialog(host, 'Settings') as HTMLElement, 'Account…'))
+    await settle()
+    expect(dialog(host, 'Settings')).toBeNull()
+    expect(dialog(host, 'Account')?.contains(document.activeElement)).toBe(true)
+    expect(button(host, 'Settings'), '⚙ is a candidate too').toBeDefined()
+    pressHere('Escape')
+    expect(document.activeElement).toBe(pageArea(host))
+  })
+
+  // O229: Shift+A over Settings does what Account… does.
+  it('Shift+A over Settings opened by ⚙ replaces it, and Escape hands focus back to ⚙', async () => {
+    const host = await open()
+    press('Tab')
+    const gear = button(host, 'Settings')
+    act(() => gear.focus())
+    click(gear)
+    pressHere('A', true)
+    await settle()
+    expect(
+      host.querySelectorAll('[role="dialog"][aria-modal="true"]').length,
+      'one modal at a time',
+    ).toBe(1)
+    expect(dialog(host, 'Settings')).toBeNull()
+    expect(dialog(host, 'Account')?.contains(document.activeElement)).toBe(true)
+    pressHere('Escape')
+    expect(document.activeElement).toBe(gear)
+  })
+
+  // The panel holding focus is asserted first: a Shift+A that did nothing
+  // would leave Escape to close Settings, which also lands on the page.
+  it('Shift+A over Settings opened by s on the page hands focus back to the page', async () => {
+    const host = await open()
+    press('Tab')
+    act(() => pageArea(host).focus())
+    pressHere('s')
+    pressHere('A', true)
+    await settle()
+    expect(dialog(host, 'Settings')).toBeNull()
+    expect(dialog(host, 'Account')?.contains(document.activeElement)).toBe(true)
+    expect(button(host, 'Settings'), '⚙ is a candidate too').toBeDefined()
+    pressHere('Escape')
+    expect(document.activeElement).toBe(pageArea(host))
+  })
+
+  // O161 with Settings closed: the stop Shift+A was pressed on, not ⚙.
+  it('Shift+A with the bars up and Settings closed hands focus back to the stop it was pressed on', async () => {
+    const host = await open()
+    press('Tab')
+    const library = button(host, 'Library')
+    expect(document.activeElement, 'Tab puts focus on Library').toBe(library)
+    pressHere('A', true)
+    await settle()
+    expect(dialog(host, 'Account')?.contains(document.activeElement)).toBe(true)
+    pressHere('Escape')
+    expect(document.activeElement).toBe(library)
   })
 
   it('s closes Settings once ⚙ has opened it (O135)', async () => {

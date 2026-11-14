@@ -101,6 +101,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     expect(host.children.length).toBe(0)
@@ -116,6 +117,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={onClose}
+        onAccount={vi.fn()}
       />,
     )
     const close = [...host.querySelectorAll('button')].find(
@@ -123,6 +125,31 @@ describe('Settings', () => {
     )
     close?.click()
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  // O229: a touch reader's only way into the account panel from a book. Close
+  // stays at the row's end, where the account panel has its own.
+  it('draws Account… in its head row before Close, and hands a press to onAccount alone', () => {
+    const onAccount = vi.fn()
+    const onClose = vi.fn()
+    const host = mount(
+      <Settings
+        visible
+        modules={modules}
+        prefs={{}}
+        onChange={vi.fn()}
+        onReset={vi.fn()}
+        onClose={onClose}
+        onAccount={onAccount}
+      />,
+    )
+    const head = host.querySelector('.reader-panel-head') as HTMLElement
+    const buttons = [...head.querySelectorAll('button')]
+    expect(buttons.map((b) => b.textContent)).toEqual(['Account…', 'Close'])
+    const account = buttons.find((b) => b.textContent === 'Account…')
+    ;(account as HTMLButtonElement).click()
+    expect(onAccount).toHaveBeenCalledOnce()
+    expect(onClose).not.toHaveBeenCalled()
   })
 
   it('draws as the reader’s dialog, its look in the stylesheet', () => {
@@ -134,6 +161,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     const dialog = host.querySelector('[role="dialog"]') as HTMLElement
@@ -151,6 +179,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     const dialog = host.querySelector('[role="dialog"]')
@@ -171,6 +200,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     const checkbox = host.querySelector(
@@ -210,6 +240,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     const checkbox = host.querySelector(
@@ -247,6 +278,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     const number = host.querySelector(
@@ -275,6 +307,7 @@ describe('Settings', () => {
         onChange={onChange}
         onReset={vi.fn()}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     const checkbox = host.querySelector(
@@ -294,6 +327,7 @@ describe('Settings', () => {
         onChange={onChange}
         onReset={vi.fn()}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     const number = host.querySelector(
@@ -313,6 +347,7 @@ describe('Settings', () => {
         onChange={onChange}
         onReset={vi.fn()}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     const text = host.querySelector('input[type="text"]') as HTMLInputElement
@@ -330,6 +365,7 @@ describe('Settings', () => {
         onChange={onChange}
         onReset={vi.fn()}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     const select = host.querySelector('select') as HTMLSelectElement
@@ -347,6 +383,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={onReset}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     const resetButton = [...host.querySelectorAll('button')].find(
@@ -367,6 +404,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     const section = host.querySelector('section')
@@ -389,6 +427,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={onClose}
+        onAccount={vi.fn()}
       />,
     )
     const scrim = host.querySelector('.reader-dialog') as HTMLElement
@@ -417,6 +456,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={onClose}
+        onAccount={vi.fn()}
       />,
     )
     const scrim = host.querySelector('.reader-dialog') as HTMLElement
@@ -454,6 +494,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={onClose}
+        onAccount={vi.fn()}
       />,
     )
     const scrim = host.querySelector('.reader-dialog') as HTMLElement
@@ -497,6 +538,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={onClose}
+        onAccount={vi.fn()}
       />,
     )
     const scrim = host.querySelector('.reader-dialog') as HTMLElement
@@ -533,6 +575,7 @@ describe('Settings', () => {
         onChange={vi.fn()}
         onReset={vi.fn()}
         onClose={vi.fn()}
+        onAccount={vi.fn()}
       />,
     )
     const section = host.querySelector('section')

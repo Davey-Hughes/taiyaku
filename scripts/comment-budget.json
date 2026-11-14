@@ -6,6 +6,6 @@
   "crates/taiyaku-serve": 0.2280,
   "crates/taiyaku-wasm": 0.3230,
   "web/src": 0.4445,
-  "web/tests": 0.1517,
+  "web/tests": 0.1418,
   "scripts": 0.3144
 }

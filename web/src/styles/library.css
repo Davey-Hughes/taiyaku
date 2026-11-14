@@ -158,9 +158,13 @@
 }
 
 /* Titles in the title face; `anywhere` so a long file name breaks rather
- * than widening its column. */
+ * than widening its column. A volume's arm names the tile's own title, in
+ * its link or its `tile-unreadable` box: an open volume draws the metadata
+ * editor in the same tile, and its Title field, `label.field.title`, is a
+ * form field drawn as the rest of the form. `:where()` keeps the arm at the
+ * specificity of the other two. */
 .grid .title,
-.volumes .title,
+.volumes :where(a, .tile-unreadable) > .title,
 .continue .title {
   font-family: var(--font-title);
   font-size: var(--text-ui);
@@ -432,6 +436,44 @@
  * page's why-line is: it goes as the hold ends, and is no fault to act on. */
 .stamp-waits {
   color: var(--muted);
+}
+
+/* An open volume's panels stay inside its tile (the owner's ruling,
+ * style-pass §7 ②), and what they print, a path, a content_key or an
+ * error, may hold no space to break at (O274). On the panels' own roots,
+ * not the tile, whose title has its own rule. */
+.alignment-panel,
+.metadata-editor,
+.stamp-comicinfo {
+  overflow-wrap: anywhere;
+}
+
+/* The Title box (O274), a textarea so that it can wrap while it is edited.
+ * At rest it is drawn as a one-line text input is: one line, an input's
+ * padding, no handle. As wide as its tile: a text box's own width follows
+ * its font, not its container, and can be wider than the tile;
+ * `border-box` so the `100%` includes its border and padding. At its line's
+ * top, because a textarea's baseline is its bottom edge, which would make
+ * the line taller than an input's. */
+.metadata-editor textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 1px 2px;
+  vertical-align: top;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+}
+
+/* Open, `MetadataEditor.tsx`'s `layOpen` sizes and places it, and past five
+ * lines it scrolls. It is drawn over the tiles beside and below its own,
+ * whose covers are positioned and would otherwise be drawn over it, and
+ * under the phone bar, the scrim and the drawer. */
+.metadata-editor textarea[data-open] {
+  position: relative;
+  z-index: 1;
+  overflow-y: auto;
+  white-space: pre-wrap;
 }
 
 /* The field on `--field` like every input `base.css` draws, at most 24 rem
