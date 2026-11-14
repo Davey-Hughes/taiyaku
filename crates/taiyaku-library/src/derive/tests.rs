@@ -2071,8 +2071,9 @@ fn an_edition_takes_the_kind_of_the_first_member_that_resolved_one() {
 
 #[test]
 fn a_member_directly_under_the_root_keeps_its_whole_name_as_the_title() {
-    // `work.title` is what a reader sees, what `work_fts` indexes and what
-    // the slug is built from. A member with no directory above it has no `/`
+    // `work.title` is what a reader sees, what `work_fts` indexes and, for a
+    // book with no series or volume, what the slug is built from (O282). A
+    // member with no directory above it has no `/`
     // in its `rel_path`, and taking "the part after the last slash" of a
     // string with no slash is one off-by-one away from `lone - v01`.
     let tree = flat();
@@ -2190,8 +2191,9 @@ fn a_container_that_would_not_open_is_counted_rather_than_written_with_no_pages(
 #[test]
 fn a_rule_that_captures_a_title_decides_the_works_own() {
     // The `title` capture is the one field of `Resolved` that reaches
-    // `work.title` — what a reader sees, what `work_fts` indexes and what the
-    // slug is built from. Without it the name on disk is the only answer, and
+    // `work.title` — what a reader sees, what `work_fts` indexes and, for a
+    // book with no series or volume, what the slug is built from (O282).
+    // Without it the name on disk is the only answer, and
     // `- v01 (2019)` is a scene tag rather than a title.
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
@@ -2220,6 +2222,190 @@ fn a_rule_that_captures_a_title_decides_the_works_own() {
             "Go-Toubun no Hanayome - v01".to_string(),
             "Go-Toubun no Hanayome - v02".to_string(),
         ]
+    );
+}
+
+/// A root holding a three-page archive at each of `rel_paths`.
+fn archives(label: &str, rel_paths: &[&str]) -> crate::tests::TempDir {
+    let dir = crate::tests::tempdir(label);
+    for rel in rel_paths {
+        write_archive(&dir.path().join(rel), 3);
+    }
+    dir
+}
+
+/// Every work's `(volume, slug, title, title_derived)`, by id.
+fn minted(conn: &Connection) -> Vec<(Option<f64>, String, String, String)> {
+    conn.prepare("SELECT volume, slug, title, title_derived FROM work ORDER BY id")
+        .expect("prepare")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect")
+}
+
+fn minted_row(
+    volume: Option<f64>,
+    slug: &str,
+    title: &str,
+) -> (Option<f64>, String, String, String) {
+    (volume, slug.into(), title.into(), title.into())
+}
+
+#[test]
+fn a_scanned_volume_is_minted_its_series_and_volume_and_titled_without_its_extension() {
+    // O282 and O284. v02's provisional title slug is already `berserk-v02`,
+    // so the mint must not count the row's own slug as another's.
+    let tree = archives(
+        "derive-minted",
+        &[
+            "Berserk/Berserk - v01 (2003).cbz",
+            "Berserk/Berserk v02.cbz",
+        ],
+    );
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+
+    derive::derive(&conn).expect("derive");
+
+    let mut works = minted(&conn);
+    works.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("volumes compare"));
+    assert_eq!(
+        works,
+        vec![
+            minted_row(Some(1.0), "berserk-v01", "Berserk - v01 (2003)"),
+            minted_row(Some(2.0), "berserk-v02", "Berserk v02"),
+        ]
+    );
+}
+
+#[test]
+fn a_book_renumbered_by_hand_keeps_its_slug() {
+    // The slug is an address, minted once (O282). The rule changes the
+    // edition's kind, so the second derive rewrites the held row and runs
+    // `write_work`'s tail, where an inserted row's slug is minted.
+    let tree = archives("derive-renumbered", &["Berserk/Berserk - v01 (2003).cbz"]);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first derive");
+    conn.execute("UPDATE work SET volume_hand = 2, volume = 2", [])
+        .expect("a person renumbers it");
+    conn.execute(
+        "INSERT INTO rule (ordinal, kind, pattern, match_on, set_kind)
+         VALUES (99, 'prefix', '', 'path', 'official')",
+        [],
+    )
+    .expect("a rule that changes the edition");
+
+    derive::derive(&conn).expect("second derive");
+
+    let rows: Vec<(String, f64, Option<String>)> = conn
+        .prepare("SELECT w.slug, w.volume, e.kind FROM work w JOIN edition e ON e.work_id = w.id")
+        .expect("prepare")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert_eq!(
+        rows,
+        vec![("berserk-v01".to_string(), 2.0, Some("official".to_string()))],
+        "the slug it was minted with, the hand volume, and the rule's kind — \
+         proof the second derive wrote the row rather than leaving it"
+    );
+}
+
+#[test]
+fn a_volume_minted_onto_a_slug_another_work_holds_takes_the_next_suffix() {
+    // `work.slug` is UNIQUE, and a document-backed work keeps its title slug.
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let imported = crate::import::sidecar(
+        &conn,
+        &taiyaku_core::Sidecar::from_json(
+            r#"{"taiyaku":1,"work":{"title":"Berserk v01","reading":"rtl"},
+                "editions":{"raw":{"label":"raw","members":[
+                  {"path":"raw/imported.cbz","sha256":"aa","pages":2}]}},
+                "hub":"raw","alignments":[]}"#,
+        )
+        .expect("parses"),
+        std::path::Path::new("/x/taiyaku.json"),
+    )
+    .expect("imports a work no directory holds");
+    let tree = archives("derive-minted-taken", &["Berserk/Berserk - v01 (2003).cbz"]);
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+
+    derive::derive(&conn).expect("derive");
+
+    let slugs: Vec<(i64, String)> = conn
+        .prepare("SELECT id, slug FROM work ORDER BY id")
+        .expect("prepare")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert_eq!(
+        slugs,
+        vec![
+            (imported, "berserk-v01".to_string()),
+            (imported + 1, "berserk-v01-2".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn a_volume_less_book_is_minted_from_its_title() {
+    // A series and no volume: the title rule, never a volume of 0.
+    let tree = archives("derive-volume-less", &["Look Back/Look Back (2022).cbz"]);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+
+    derive::derive(&conn).expect("derive");
+
+    let series: Option<i64> = conn
+        .query_row("SELECT series_id FROM work", [], |r| r.get(0))
+        .expect("series");
+    assert!(
+        series.is_some(),
+        "the fixture: a series, from the directory"
+    );
+    assert_eq!(
+        minted(&conn),
+        vec![minted_row(None, "look-back-2022", "Look Back (2022)")]
+    );
+}
+
+#[test]
+fn a_title_a_rule_captures_keeps_its_extension() {
+    // A capture is a person's choice of title and shows as written (O284);
+    // the slug is still the series and the volume.
+    let tree = archives("derive-captured", &["Berserk/Berserk - v01 (2003).cbz"]);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    conn.execute(
+        "INSERT INTO rule (ordinal, kind, pattern, match_on)
+         VALUES (99, 'regex', '^(?<title>.+\\.cbz)$', 'name')",
+        [],
+    )
+    .expect("a rule that captures the whole file name");
+
+    derive::derive(&conn).expect("derive");
+
+    assert_eq!(
+        minted(&conn),
+        vec![minted_row(
+            Some(1.0),
+            "berserk-v01",
+            "Berserk - v01 (2003).cbz"
+        )]
     );
 }
 

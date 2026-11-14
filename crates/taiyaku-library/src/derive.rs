@@ -29,7 +29,7 @@
 //!
 //! `work`, `edition` and `member` **rows** are written by [`crate::import`]
 //! alone — this module builds a [`Sidecar`] and hands it to
-//! [`crate::import::scanned`] rather than issuing its own inserts, so the
+//! `import::scanned_inserting` rather than issuing its own inserts, so the
 //! column lists cannot drift from `project.rs`'s reader. What it then writes
 //! itself is exactly what the sidecar format has no field for and so cannot
 //! carry: `work.series_id`, `work.volume`, `edition.kind`/`edition.language`,
@@ -192,8 +192,8 @@ pub struct DeriveReport {
     /// consulted, so nothing followed anything and this still counts one. That
     /// needs a duplicated download to reach — see
     /// `a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive` — and
-    /// narrowing it would mean asking `import` which probe answered, which is
-    /// a second question for a signature that answers one.
+    /// narrowing it would mean asking `import` which probe answered, a third
+    /// question for a signature that answers two.
     pub rekeyed: usize,
     /// Editions left standing on a work this derive wrote or left as it
     /// stands, that this derive did not derive.
@@ -570,7 +570,7 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
 ///
 /// **No transaction of its own — but everything under it can still be
 /// wrapped in one.** [`write_work`] opens one per work it writes, which
-/// [`crate::import::scanned`]'s own nests in, and [`crate::fold::absorb`]
+/// `import::scanned_inserting`'s own nests in, and [`crate::fold::absorb`]
 /// opens one per fold; all three do it through [`crate::Nested`] rather than
 /// `unchecked_transaction` directly: a plain `BEGIN` — the same constraint
 /// [`crate::import::replace_alignments`] records — is refused outright inside
@@ -1876,10 +1876,11 @@ fn held_members_of(conn: &Connection, work_id: i64) -> Result<Vec<MemberRow>, St
     .map_err(failed)
 }
 
-/// Build one group's document and hand it to [`crate::import::scanned`], then
-/// write the columns the document cannot carry — `work.series_id`,
-/// `work.volume` and, through [`write_chapters`], `member.chapter_declared` —
-/// and apply a hand document at this work's address that nothing has absorbed.
+/// Build one group's document and hand it to
+/// [`crate::import::scanned_inserting`], then write the columns the document
+/// cannot carry — `work.series_id`, `work.volume`, a new row's `work.slug`
+/// and, through [`write_chapters`], `member.chapter_declared` — and apply a
+/// hand document at this work's address that nothing has absorbed.
 /// A held work [`unchanged`] finds already written is left as it stands.
 ///
 /// Returns the `work_id` it resolved, written or left, so [`derive`] can hand
@@ -1921,12 +1922,12 @@ fn write_work(
     // **Counted before the import, because afterwards the row already holds
     // the new key and the move is unobservable.** `content_key` is recomputed
     // here rather than returned from `import` — a sha256 over a handful of
-    // hex digests, against leaving `import::scanned`'s signature answering
-    // two questions instead of one.
+    // hex digests, against `import::scanned_inserting`'s signature answering
+    // three questions instead of two.
     //
     // **`rekeyed_from` is captured in the same breath, for
     // [`crate::hand::rename_from`] near the end of this function.**
-    // `held_key` is this row's `content_key` before `import::scanned`
+    // `held_key` is this row's `content_key` before `import::scanned_inserting`
     // overwrites it — the only place that value is still readable — so it is
     // saved here rather than re-derived from `work.content_key` after the
     // fact, which is what a caller with no memory of `held` would have to do.
@@ -1940,7 +1941,8 @@ fn write_work(
     // The second identity probe: this work's address, for a work that has no
     // document to be addressed by. Without it, the changed files above would
     // mint a second row and leave the reader's progress on the first.
-    let work_id = crate::import::scanned(conn, &doc, held.map(|(id, _, _)| id))?;
+    let (work_id, inserted) =
+        crate::import::scanned_inserting(conn, &doc, held.map(|(id, _, _)| id))?;
     // **Counted after the import, where `rekeyed` above had to be counted
     // before it.** The two are not the same shape: a `content_key` is
     // overwritten by the import, so the old value is gone once it returns,
@@ -1952,7 +1954,7 @@ fn write_work(
 
     // **Before the read-back below.** `write_roots` only issues
     // `UPDATE member SET root_id = ?` from the group's own candidates, matched
-    // on `(edition key, ordinal)` — `import::scanned`, just above, is the
+    // on `(edition key, ordinal)` — `import::scanned_inserting`, just above, is the
     // only thing either depends on, so nothing here needs the guard or the
     // read-back to have run first. The read-back does need this to have run
     // first: on a work being minted for the first time, `member.root_id` would
@@ -1965,7 +1967,7 @@ fn write_work(
     //
     // **`write_chapters` stays below, and that is not an oversight.** It looks
     // like the same shape — another targeted update keyed on
-    // `(edition key, ordinal)` from `import::scanned`'s own rows — but it
+    // `(edition key, ordinal)` from `import::scanned_inserting`'s own rows — but it
     // has a real ordering dependency the read-back's `apply` call creates:
     // `librarydoc::apply`'s `apply_members` clears *every* member's chapter for
     // this work unconditionally, then rewrites only the entries the hand
@@ -1998,7 +2000,7 @@ fn write_work(
     // that column NULL: `held_member_meta` restores it by matching the old and
     // new rows on `sha256`, and a repacked archive's hash is exactly what
     // changed. `write_roots`, just above, is what restores it, by `(edition
-    // key, ordinal)` instead — and it runs *after* `import::scanned`
+    // key, ordinal)` instead — and it runs *after* `import::scanned_inserting`
     // returns, so it cannot have run yet at any point inside `import_with`.
     // Calling the rename there would, for a work with exactly one member, find
     // `path_for` answering `None` and leave the document unmoved, reported as
@@ -2046,7 +2048,7 @@ fn write_work(
     // read-back below arms the marker itself, because a `.library.json` file
     // sits on disk with nothing in `migrated_document` yet to say so.
     //
-    // **Content matching finds this row.** `import::scanned`'s own
+    // **Content matching finds this row.** `import::scanned_inserting`'s own
     // `find_by_key` probes `content_key`, across the store, before
     // it ever falls back to the address `held_work` computed above, and
     // `content_key` is a hash over the hub edition's members — untouched by a
@@ -2126,6 +2128,13 @@ fn write_work(
         rusqlite::params![series_id, group.volume, work_id],
     )
     .map_err(|e| format!("attaching work {work_id} to series {series_id}: {e}"))?;
+    // **The slug is minted here, and only for a row the import inserted
+    // (O282).** The series and volume are final only after the read-back and
+    // the `UPDATE` above. A row the import found keeps its slug whatever its
+    // series or volume now say: the slug is the URL bookmarks and OPDS hold.
+    if inserted {
+        crate::import::mint_slug(conn, work_id)?;
+    }
     write_edition_metadata(conn, work_id, group, report)?;
     write_chapters(conn, work_id, group)?;
     tx.commit()
@@ -2540,7 +2549,7 @@ fn keep_primaries(
 ///
 /// Read back rather than diffed against what was there before: the keys this
 /// derive wrote are `doc.editions`, and every other edition on the row is by
-/// definition one [`crate::import::scanned`] left standing.
+/// definition one [`crate::import::scanned_inserting`] left standing.
 fn kept_editions(conn: &Connection, work_id: i64, doc: &Sidecar) -> Result<usize, String> {
     let mut stmt = conn
         .prepare("SELECT key FROM edition WHERE work_id = ?1")
@@ -2567,19 +2576,20 @@ fn kept_editions(conn: &Connection, work_id: i64, doc: &Sidecar) -> Result<usize
 /// on disk is a name a person chose, and `Go-Toubun no Hanayome - v01 (2019)`
 /// says more than `Go-Toubun no Hanayome 1` reconstructed from two columns.
 ///
-/// **The whole `rel_path` when it holds no `/`**, which is a member sitting
-/// directly under the root — `Series - v01.cbz` beside its siblings, which
-/// seeded rule 4 resolves a series for. Written as its own arm rather than
-/// through [`parent_of`], which answers `""` for that case and would take the
-/// title's first character off with it.
+/// **The whole `rel_path` when it holds no `/`**: a member directly under
+/// the root (`Series - v01.cbz`, which seeded rule 4 gives a series). Its own
+/// arm, because [`parent_of`] answers `""` there and would take the title's
+/// first character off with it.
 ///
-/// **And the root's own directory name when the `rel_path` is empty**, which
-/// is the root itself having become the member. Reachable through any
-/// `set_series` rule broad enough to match `""` — a `prefix` rule with an
-/// empty pattern is what `proposals::accept` writes. The name of the
-/// directory the root points at is the only name that entry has; it is read
-/// off the member's absolute [`Candidate::path`], since its `rel_path`
-/// carries nothing at all.
+/// **And the root's own directory name when the `rel_path` is empty**: the
+/// root itself became the member, through a `set_series` rule matching `""`
+/// (`proposals::accept` writes an empty `prefix`). It is read off the
+/// member's absolute [`Candidate::path`], the only name that entry has.
+///
+/// **A name from disk loses one archive extension (O284)**: the extension
+/// names the container, not the book, and the title is what every tile, the
+/// reader and OPDS show. A rule's capture is a person's choice and is kept
+/// as written.
 fn title_of(group: &Group, hub_key: &str) -> String {
     let first = group
         .editions
@@ -2593,24 +2603,29 @@ fn title_of(group: &Group, hub_key: &str) -> String {
     if let Some(title) = &first.title {
         return title.clone();
     }
-    if first.rel_path.is_empty() {
+    let name = if first.rel_path.is_empty() {
         // `root.path.join("")` leaves a trailing separator, which
         // `Path::file_name` steps over — it reads components, not bytes. The
         // fallback is for a root that genuinely has no final component, `/`
         // being the one that does.
-        return std::path::Path::new(&first.path).file_name().map_or_else(
+        std::path::Path::new(&first.path).file_name().map_or_else(
             || first.path.clone(),
             |name| name.to_string_lossy().into_owned(),
-        );
-    }
-    match first.rel_path.rfind('/') {
-        Some(at) => first.rel_path[at + 1..].to_string(),
-        None => first.rel_path.clone(),
+        )
+    } else {
+        match first.rel_path.rfind('/') {
+            Some(at) => first.rel_path[at + 1..].to_string(),
+            None => first.rel_path.clone(),
+        }
+    };
+    match crate::import::archive_stem(&name) {
+        Some(stem) if !stem.is_empty() => stem.to_string(),
+        _ => name,
     }
 }
 
 /// Write the chapter numbers the rules resolved onto the member rows
-/// `import::scanned` just wrote, each as [`chapter_after`] settles it, and
+/// `import::scanned_inserting` just wrote, each as [`chapter_after`] settles it, and
 /// only onto a row it changes: every member of the work, an edition this
 /// derive did not name included.
 ///
@@ -2701,7 +2716,7 @@ fn chapter_after(
     }
 }
 
-/// Write each member's root and `member_root` rows onto `import::scanned`'s.
+/// Write each member's root and `member_root` rows onto `import::scanned_inserting`'s.
 ///
 /// **The same shape as [`write_chapters`], and for the same reason**: the
 /// sidecar format has no field for a root and must not gain one, because a
@@ -2976,7 +2991,7 @@ fn in_page_order(candidates: &[Candidate]) -> Vec<&Candidate> {
 }
 
 /// Write the edition kind and language the rules resolved onto the `edition`
-/// rows [`crate::import::scanned`] just wrote.
+/// rows [`crate::import::scanned_inserting`] just wrote.
 ///
 /// # Why these two do not join the never-overwrite list
 ///

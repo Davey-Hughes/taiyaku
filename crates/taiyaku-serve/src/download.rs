@@ -60,88 +60,6 @@ pub(crate) fn download_name(
     format!("{stem}{volume_part} ({}).{extension}", safe(label))
 }
 
-/// Two digits at least, the fraction only when there is one.
-///
-/// `v01`, `v12`, `v105`, `v01.5`. Zero-padded so a downloads folder sorts, and
-/// `work.volume` is REAL because omnibus and half-volumes exist — and, being
-/// unconstrained, can hold any fraction, not only `.5`.
-///
-/// **The whole value is rounded once, before anything is split into a whole
-/// part and a fraction.** Splitting first and rounding the fraction second
-/// would leave a fraction that rounds up to `1.000` (`1.9999`, or
-/// `49.99999999999999`) nowhere to carry to: the whole part, already formatted
-/// from the unrounded value, would give `"011"` and `"491"` instead of `"02"`
-/// and `"50"`.
-///
-/// Rounding once means scaling to milli-units and rounding *there*, as a
-/// single integer operation, then splitting that integer with `/` and `%` —
-/// not `format!("{volume:.3}")` split on `'.'`. The two give different
-/// answers for a value like `2.9995`: the nearest `f64` to that literal is
-/// actually `2.99949999999999983302`, which correct decimal formatting
-/// rounds *down* to `"2.999"`, while `2.9995 * 1000.0` happens to land on
-/// the exactly-representable `2999.5`, which rounds *up* to `2999.5.round()
-/// == 3000`. Milli-units matches how a person reads the number typed into
-/// the sidecar; decimal formatting matches the `f64` underneath it. This
-/// function does the former, since a card labelled `2.9995` is closer to
-/// volume 3 than to volume 2 to the person who wrote that label.
-///
-/// Rounding to three decimal places and trimming trailing zeros (rather than
-/// printing the raw `f64` remainder) matters on its own: most fractions
-/// (`2.3 - 2.0`, for one) are not exactly representable in binary and would
-/// otherwise spill their full imprecise expansion into the filename.
-///
-/// Caller's responsibility, not this function's: `volume` must be finite.
-/// `download_name` filters `NAN`/`INFINITY` out before calling this, the same
-/// as no volume at all, rather than let this print `"vNaN"` or `"vinf"`.
-///
-/// Multiplying by 1000 to get milli-units overflows a `u64` past roughly
-/// `1.84e16`, and a saturating cast turns every volume beyond that — `1e300`
-/// and `f64::MAX` alike — into the identical wrong string (`u64::MAX / 1000`),
-/// silently. `2^52` sidesteps it rather than papering over it with a wider
-/// integer that only moves the ceiling: past `2^52` the gap between adjacent
-/// `f64` values is already `>= 1.0`, so every such volume is already a whole
-/// number with no fraction to round, and can be formatted directly instead
-/// of multiplied.
-const WHOLE_NUMBER_THRESHOLD: f64 = 4_503_599_627_370_496.0; // 2^52
-fn volume_text(volume: f64) -> String {
-    let magnitude = volume.abs();
-    let (whole, fraction) = if magnitude >= WHOLE_NUMBER_THRESHOLD {
-        (format!("{magnitude:.0}"), String::new())
-    } else {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "magnitude < 2^52, so magnitude * 1000.0 < 2^52 * 1000 \
-                      (~4.5e18), well inside u64's range: the cast neither \
-                      truncates nor loses a sign"
-        )]
-        let milli = (magnitude * 1000.0).round() as u64;
-        let whole = (milli / 1000).to_string();
-        let fraction = milli % 1000;
-        let fraction = if fraction == 0 {
-            String::new()
-        } else {
-            format!("{fraction:03}").trim_end_matches('0').to_string()
-        };
-        (whole, fraction)
-    };
-    let padded_whole = format!("{whole:0>2}");
-    let magnitude_text = if fraction.is_empty() {
-        padded_whole
-    } else {
-        format!("{padded_whole}.{fraction}")
-    };
-    // `-0.0`, or any volume so close to zero it rounds to zero, must not
-    // print a bare `-` in front of it — nothing about the sign survives
-    // rounding to zero.
-    let is_zero = magnitude_text.chars().all(|c| c == '0' || c == '.');
-    if volume.is_sign_negative() && !is_zero {
-        format!("-{magnitude_text}")
-    } else {
-        magnitude_text
-    }
-}
-
 /// A path component nothing can escape from.
 ///
 /// Separators and control characters become `-`; leading dots and the
@@ -226,6 +144,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
+use taiyaku_library::import::volume_text;
 
 use crate::{ServeState, cbz};
 

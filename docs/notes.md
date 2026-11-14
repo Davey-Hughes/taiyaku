@@ -26580,3 +26580,56 @@ file each, each held under both directories, where a fresh store over the
 same two directories made one work of the two files. Each file keeps the
 primary it was first held under, as decisions 13 and 14 say; no ruling
 covers the result.
+
+## O282 and O284 on the test library (2026-11-14)
+
+A copy of the test library's store (`/home/davey/temp/manga-test`) was
+opened by a release build of `main` (`taiyaku library user password`), which
+migrated it from schema 13 to 22. Three reading positions, three notes and
+the hand title `Mine.cbz` on work 1271 were planted in it
+(`task4-plant.sql`), and a release build of this branch then opened it the
+same way: the open took the `-before-v23` backup and ran migration 23. Each
+open's backup holds the schema it was taken at (`task5-setup.txt`). The
+commands and their output are in `.superpowers/sdd/shorter-urls-evidence/`
+(`check.txt`, `task4-http.txt`, `task5-lengths.txt`), which is not
+committed.
+
+**Slugs.** The 1,896 works hold 1,896 distinct slugs, and none kept its old
+one. Each of the 1,880 with a volume is its series' name and its volume
+(`berserk---v01--2003--cbz` became `berserk-v01`), and each of the 16
+without one is the slug its title gives (`look-back-2022`); none needed a
+`-2`. The average slug went from 41.68 characters to 27.28, and the longest
+from 108 to 80. Sixteen slugs now hold a letter outside ASCII, which O262's
+rule keeps and no old slug held (`kabushikigaisha-magi-lumière-v01` was
+`kabushikigaisha-magi-lumi-re---v01--2024--cbz`).
+
+**Titles.** Each of the 1,896 derived titles lost one archive extension and
+nothing else, and none ends in one now. The title shown changed on 1,894
+works. The other two hold a hand title: work 1271 still shows the planted
+`Mine.cbz`, while the derived title under it became `One Piece - v085
+(2018)`.
+
+**Positions and notes.** The planted positions and notes read the same
+before and after (the dumps' `diff` is empty), and the server gave each back
+under its work's new slug. Against the `-before-v23` backup, no `work` row
+changed outside the three columns the pass writes, and the only other tables
+that changed were `meta` (the schema version), `user` (the opening command
+set the password again) and `structure_version`, a counter a trigger moves
+on every update of a `work` row, three times for each work here; the search
+index's tables were not compared.
+
+**Over HTTP**, with the branch's build serving the copy:
+`/api/works/berserk-v01`, which the reader asks for to open
+`/read/berserk-v01`, answered 200 with the title `Berserk - v01 (2003)`, and
+its first page with a JPEG. The old slug `berserk---v01--2003--cbz` and
+`no-such-work` answered alike, 404 with the same body but for the slug, on
+the API and on OPDS. OPDS listed 1,896 entries with 1,896 distinct ids,
+Berserk v01's being `taiyaku:work:berserk-v01`, and `-cbz` nowhere. No
+browser was driven: the server ran without `--web`, so it served no app, and
+`/read/berserk-v01` itself answered 404.
+
+**Not exercised.** The test library has no `bridge:` row, so leaving one's
+slug and title alone rests on `schema::remake`'s `a_bridge_row_keeps_its_slug`.
+Nothing under `/home/davey/temp/manga-test` was written: `find -newer` a
+marker touched before the copy printed nothing, and the sha256 and `stat` of
+its `library.db`, `-wal` and `-shm` were the same before and after.

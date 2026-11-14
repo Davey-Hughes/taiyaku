@@ -4053,7 +4053,7 @@ async fn an_edition_merged_from_two_libraries_is_listed_with_each_librarys_share
         listed,
         serde_json::json!({ "editions": [{
             "work": merged.slug,
-            "title": "Foo v01.cbz",
+            "title": "Foo v01",
             "edition": "raw",
             "pages": 9,
             "members": [

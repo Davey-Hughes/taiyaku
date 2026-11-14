@@ -143,11 +143,11 @@ async fn the_cover_url_encodes_a_slug_and_an_edition_key_outside_ascii() {
         .as_array()
         .expect("an array")
         .iter()
-        .find(|work| work["slug"] == "kabushikigaisha-magi-lumière-v01-2024")
+        .find(|work| work["slug"] == "kabushikigaisha-magi-lumière-v01")
         .expect("the first volume is listed");
     assert_eq!(
         first["cover"],
-        "/api/works/kabushikigaisha-magi-lumi%C3%A8re-v01-2024/%C3%A9dition/pages/0/thumb"
+        "/api/works/kabushikigaisha-magi-lumi%C3%A8re-v01/%C3%A9dition/pages/0/thumb"
     );
 
     let thumb = crate::test_support::get(

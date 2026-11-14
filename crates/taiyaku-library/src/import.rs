@@ -38,7 +38,7 @@ fn readable_version(doc: &Sidecar) -> Result<(), String> {
 /// build reads (see [`readable_version`]), if `content_key` fails — a hub
 /// naming no edition — or if SQLite refuses a statement.
 pub fn sidecar(conn: &Connection, doc: &Sidecar, path: &Path) -> Result<i64, String> {
-    import_with(conn, doc, Some(path), Scope::Document, None)
+    import_with(conn, doc, Some(path), Scope::Document, None).map(|(id, _)| id)
 }
 
 /// What the document being imported is entitled to speak for, and so what an
@@ -59,6 +59,7 @@ enum Scope {
 }
 
 /// Import a work the **scanner** derived, which has no document on disk.
+/// Only tests call it, and it skips [`mint_slug`], so its slug is the title's.
 ///
 /// **Across the store.** Content decides whichever library's directories the
 /// files are under, so a byte-identical volume in two libraries lands on one
@@ -105,9 +106,8 @@ enum Scope {
 /// `credits`, or from a person, and a module that walks a filesystem must not
 /// be the thing that deletes them.
 ///
-/// This extends a principle the store already had rather than inventing one:
-/// [`replace_editions`] carries `chapter_declared` across its own wholesale
-/// replace, keyed on `sha256`, for exactly this reason.
+/// This extends a principle the store already had: [`replace_editions`] carries
+/// `chapter_declared` across its own wholesale replace, keyed on `sha256`.
 ///
 /// **What it costs, stated rather than left to be discovered.** A rule edit
 /// that removes an edition an alignment references leaves that edge naming an
@@ -145,17 +145,40 @@ enum Scope {
 ///
 /// The same as [`sidecar`].
 pub fn scanned(conn: &Connection, doc: &Sidecar, known: Option<i64>) -> Result<i64, String> {
+    scanned_inserting(conn, doc, known).map(|(id, _)| id)
+}
+
+/// [`scanned`], answering as well whether this call inserted the work's row.
+/// `derive` mints a new row's slug ([`mint_slug`]) once its series and volume
+/// are written, and never a row the import found (O282).
+pub(crate) fn scanned_inserting(
+    conn: &Connection,
+    doc: &Sidecar,
+    known: Option<i64>,
+) -> Result<(i64, bool), String> {
     import_with(conn, doc, None, Scope::Scan, known)
 }
 
+/// The work's id, and whether this call inserted its row.
 fn import_with(
     conn: &Connection,
     doc: &Sidecar,
     path: Option<&Path>,
     scope: Scope,
     known: Option<i64>,
-) -> Result<i64, String> {
+) -> Result<(i64, bool), String> {
     readable_version(doc)?;
+    // **A document's title loses its archive extension here, before the
+    // insert and the update both see it (O284)**: a reimport rewrites
+    // `title_derived` on every `serve` start, so stripping it only at the
+    // insert would put the `.cbz` back. A scan's title is `derive::title_of`'s,
+    // which has already decided, and a rule's capture there keeps its extension.
+    let title = match scope {
+        Scope::Document => archive_stem(&doc.work.title)
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or(&doc.work.title),
+        Scope::Scan => &doc.work.title,
+    };
     let key = crate::identity::content_key(doc)?;
     // `crate::Nested`, not `unchecked_transaction` directly: `derive_with`
     // calls this once per work inside `write_work`'s own scope, and
@@ -180,12 +203,12 @@ fn import_with(
         },
     };
 
-    let work_id = match existing {
+    let (work_id, inserted) = match existing {
         Some(id) => {
-            update_work(&tx, id, doc, path, &key, scope)?;
-            id
+            update_work(&tx, id, doc, title, path, &key, scope)?;
+            (id, false)
         }
-        None => insert_work(&tx, doc, path, &key)?,
+        None => (insert_work(&tx, doc, title, path, &key)?, true),
     };
 
     // Only meaningful when a path was claimed: content decided `work_id`, so
@@ -211,7 +234,7 @@ fn import_with(
 
     tx.commit()
         .map_err(|e| format!("committing import of work {work_id}: {e}"))?;
-    Ok(work_id)
+    Ok((work_id, inserted))
 }
 
 /// Re-import a document over a work the library already holds.
@@ -509,6 +532,7 @@ fn update_work(
     conn: &Connection,
     work_id: i64,
     doc: &Sidecar,
+    title: &str,
     path: Option<&Path>,
     key: &str,
     scope: Scope,
@@ -542,7 +566,7 @@ fn update_work(
          WHERE id = ?6",
         rusqlite::params![
             key,
-            doc.work.title,
+            title,
             direction_text(doc.work.reading),
             doc.hub,
             path.map(|p| p.to_string_lossy().into_owned()),
@@ -556,17 +580,18 @@ fn update_work(
 fn insert_work(
     conn: &Connection,
     doc: &Sidecar,
+    title: &str,
     path: Option<&Path>,
     key: &str,
 ) -> Result<i64, String> {
-    let slug = unique_slug(conn, &doc.work.title)?;
+    let slug = unique_slug(conn, title)?;
     conn.execute(
         "INSERT INTO work (content_key, slug, title, title_derived, reading, hub, sidecar_path)
          VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6)",
         rusqlite::params![
             key,
             slug,
-            doc.work.title,
+            title,
             direction_text(doc.work.reading),
             doc.hub,
             path.map(|p| p.to_string_lossy().into_owned()),
@@ -576,8 +601,8 @@ fn insert_work(
     Ok(conn.last_insert_rowid())
 }
 
-/// [`slugify`] `title`, with a numeric suffix appended until the result is
-/// unused: `t`, `t-2`, `t-3`.
+/// [`slugify`] `title`, through [`first_free`]: a document's slug for good,
+/// and a scanned work's until [`mint_slug`] replaces it.
 ///
 /// `taiyaku-serve`'s `works::work_id` keeps its own ASCII rule, from a
 /// sidecar's filename, for a work with no store row, and the two need not
@@ -587,14 +612,47 @@ fn insert_work(
 /// this corpus is `taiyaku.json`, so slugifying the filename would collide
 /// every work in a library, which is the whole reason this crate exists.
 fn unique_slug(conn: &Connection, title: &str) -> Result<String, String> {
-    let base = slugify(title);
-    let mut candidate = base.clone();
+    first_free(conn, &slugify(title), None)
+}
+
+/// Mint `work_id`'s slug from its row (O282): [`slug_base`] over its series'
+/// name, volume and title, through [`first_free`], written and returned.
+///
+/// Read from the row, not from a document: the series and volume a person
+/// set by hand are there, and nowhere else. The row's own slug is not counted
+/// as taken, since it is the one being replaced.
+pub(crate) fn mint_slug(conn: &Connection, work_id: i64) -> Result<String, String> {
+    let (series_id, volume, title): (Option<i64>, Option<f64>, String) = conn
+        .query_row(
+            "SELECT series_id, volume, title FROM work WHERE id = ?1",
+            [work_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| format!("reading work {work_id} to mint its slug: {e}"))?;
+    let series = match series_id {
+        Some(id) => series_name(conn, id)?,
+        None => None,
+    };
+    let base = slug_base(series.as_deref(), volume, &title);
+    let slug = first_free(conn, &base, Some(work_id))?;
+    conn.execute(
+        "UPDATE work SET slug = ?1 WHERE id = ?2",
+        rusqlite::params![slug, work_id],
+    )
+    .map_err(|e| format!("writing slug `{slug}` to work {work_id}: {e}"))?;
+    Ok(slug)
+}
+
+/// The first of `base`, `base-2`, `base-3`, … that no work but `except`
+/// holds. `IS NOT`, so `except = None` excludes no row.
+fn first_free(conn: &Connection, base: &str, except: Option<i64>) -> Result<String, String> {
+    let mut candidate = base.to_string();
     let mut suffix = 2;
     loop {
         let taken: bool = conn
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM work WHERE slug = ?1)",
-                [&candidate],
+                "SELECT EXISTS(SELECT 1 FROM work WHERE slug = ?1 AND id IS NOT ?2)",
+                rusqlite::params![candidate, except],
                 |row| row.get(0),
             )
             .map_err(|e| format!("checking slug `{candidate}` for collision: {e}"))?;
@@ -606,11 +664,71 @@ fn unique_slug(conn: &Connection, title: &str) -> Result<String, String> {
     }
 }
 
-/// The archive extensions a title can still end in: `derive::title_of` keeps
-/// the file's extension, and a slug that ends in `-cbz` keeps it for good.
+/// The archive extensions [`archive_stem`] drops from the end of a name.
+///
+/// One list for a slug and for a title made from a file name (O284): a slug
+/// that ends in `-cbz` keeps it for good, and a title that ends in `.cbz`
+/// shows it on every screen that names the book.
 const ARCHIVE_EXTENSIONS: [&str; 10] = [
     ".cbz", ".cbr", ".cb7", ".cbt", ".zip", ".rar", ".7z", ".tar", ".pdf", ".epub",
 ];
+
+/// `name` without one trailing [`ARCHIVE_EXTENSIONS`] entry, matched ASCII
+/// case-insensitively; `None` when it ends in none.
+///
+/// One extension, not every one: in `Two.cbz.cbz` the inner `.cbz` is part
+/// of the name. It may answer `Some("")` (the name `.cbz`); each caller
+/// decides whether an empty stem is usable.
+pub(crate) fn archive_stem(name: &str) -> Option<&str> {
+    ARCHIVE_EXTENSIONS.iter().find_map(|ext| {
+        let start = name.len().checked_sub(ext.len())?;
+        // `get` rather than indexing: `start` can fall inside a multi-byte
+        // character, where an index panics.
+        let tail = name.get(start..)?;
+        tail.eq_ignore_ascii_case(ext).then(|| &name[..start])
+    })
+}
+
+/// A new work's slug before [`first_free`]'s `-2`, `-3` (O282): the series'
+/// name and the volume, `berserk-v01`, when the book has both. The volume is
+/// [`volume_text`]'s, through the same [`slug_token`] (`10.5` is `v10-5`).
+///
+/// **Otherwise the title rule, [`slugify`].** A series whose name has no
+/// letter or digit would leave the volume alone (`v01`), and a non-finite
+/// volume has no rendering (`vinf`); both, like no series or no volume,
+/// fall back to the title.
+pub(crate) fn slug_base(series: Option<&str>, volume: Option<f64>, title: &str) -> String {
+    match (series, volume) {
+        (Some(series), Some(volume)) if volume.is_finite() && !slug_token(series).is_empty() => {
+            slug_token(&format!("{series} v{}", volume_text(volume)))
+        }
+        _ => slugify(title),
+    }
+}
+
+/// The name a series goes by: the one the Series page shows
+/// ([`crate::browse`]'s series listing), so a slug made from it reads as the
+/// shelf the book sits on.
+///
+/// The greatest primary title, else the first title by rowid, else
+/// `sort_title`, which every series row has. Not `comicinfo`'s order
+/// (primary first, then alphabetical), which can name a different title.
+/// `None` when no series has the id.
+pub(crate) fn series_name(conn: &Connection, series_id: i64) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT COALESCE(
+             (SELECT MAX(title) FROM series_title
+               WHERE series_id = s.id AND is_primary = 1),
+             (SELECT title FROM series_title WHERE series_id = s.id
+               ORDER BY rowid LIMIT 1),
+             s.sort_title)
+           FROM series s WHERE s.id = ?1",
+        [series_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("reading the name of series {series_id}: {e}"))
+}
 
 /// A work's slug from its title: one trailing archive extension dropped,
 /// whatever its case, then [`slug_token`], then `work` when nothing is left.
@@ -619,16 +737,7 @@ const ARCHIVE_EXTENSIONS: [&str; 10] = [
 /// pass [`unique_slug`]'s collision check as a real one, while an edition key
 /// with nothing in it is refused rather than renamed.
 fn slugify(title: &str) -> String {
-    let stem = ARCHIVE_EXTENSIONS
-        .iter()
-        .find_map(|ext| {
-            let start = title.len().checked_sub(ext.len())?;
-            // `get` rather than indexing: `start` can fall inside a
-            // multi-byte character, where an index panics.
-            let tail = title.get(start..)?;
-            tail.eq_ignore_ascii_case(ext).then(|| &title[..start])
-        })
-        .unwrap_or(title);
+    let stem = archive_stem(title).unwrap_or(title);
     let token = slug_token(stem);
     if token.is_empty() {
         "work".to_string()
@@ -662,6 +771,87 @@ pub(crate) fn slug_token(s: &str) -> String {
         out.pop();
     }
     out
+}
+
+const WHOLE_NUMBER_THRESHOLD: f64 = 4_503_599_627_370_496.0; // 2^52
+
+/// Two digits at least, the fraction only when there is one.
+///
+/// `v01`, `v12`, `v105`, `v01.5`. Zero-padded so a downloads folder sorts, and
+/// `work.volume` is REAL because omnibus and half-volumes exist — and, being
+/// unconstrained, can hold any fraction, not only `.5`.
+///
+/// **The whole value is rounded once, before anything is split into a whole
+/// part and a fraction.** Splitting first and rounding the fraction second
+/// would leave a fraction that rounds up to `1.000` (`1.9999`, or
+/// `49.99999999999999`) nowhere to carry to: the whole part, already formatted
+/// from the unrounded value, would give `"011"` and `"491"` instead of `"02"`
+/// and `"50"`.
+///
+/// Rounding once means scaling to milli-units and rounding *there*, as a
+/// single integer operation, then splitting that integer with `/` and `%` —
+/// not `format!("{volume:.3}")` split on `'.'`. The two give different
+/// answers for a value like `2.9995`: the nearest `f64` to that literal is
+/// actually `2.99949999999999983302`, which correct decimal formatting
+/// rounds *down* to `"2.999"`, while `2.9995 * 1000.0` happens to land on
+/// the exactly-representable `2999.5`, which rounds *up* to `2999.5.round()
+/// == 3000`. Milli-units matches how a person reads the number typed into
+/// the sidecar; decimal formatting matches the `f64` underneath it. This
+/// function does the former, since a card labelled `2.9995` is closer to
+/// volume 3 than to volume 2 to the person who wrote that label.
+///
+/// Rounding to three decimal places and trimming trailing zeros (rather than
+/// printing the raw `f64` remainder) matters on its own: most fractions
+/// (`2.3 - 2.0`, for one) are not exactly representable in binary and would
+/// otherwise spill their full imprecise expansion into the filename.
+///
+/// Caller's responsibility, not this function's: `volume` must be finite.
+///
+/// Multiplying by 1000 to get milli-units overflows a `u64` past roughly
+/// `1.84e16`, and a saturating cast turns every volume beyond that — `1e300`
+/// and `f64::MAX` alike — into the identical wrong string (`u64::MAX / 1000`),
+/// silently. `2^52` sidesteps it rather than papering over it with a wider
+/// integer that only moves the ceiling: past `2^52` the gap between adjacent
+/// `f64` values is already `>= 1.0`, so every such volume is already a whole
+/// number with no fraction to round, and can be formatted directly instead
+/// of multiplied.
+pub fn volume_text(volume: f64) -> String {
+    let magnitude = volume.abs();
+    let (whole, fraction) = if magnitude >= WHOLE_NUMBER_THRESHOLD {
+        (format!("{magnitude:.0}"), String::new())
+    } else {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "magnitude < 2^52, so magnitude * 1000.0 < 2^52 * 1000 \
+                      (~4.5e18), well inside u64's range: the cast neither \
+                      truncates nor loses a sign"
+        )]
+        let milli = (magnitude * 1000.0).round() as u64;
+        let whole = (milli / 1000).to_string();
+        let fraction = milli % 1000;
+        let fraction = if fraction == 0 {
+            String::new()
+        } else {
+            format!("{fraction:03}").trim_end_matches('0').to_string()
+        };
+        (whole, fraction)
+    };
+    let padded_whole = format!("{whole:0>2}");
+    let magnitude_text = if fraction.is_empty() {
+        padded_whole
+    } else {
+        format!("{padded_whole}.{fraction}")
+    };
+    // `-0.0`, or any volume so close to zero it rounds to zero, must not
+    // print a bare `-` in front of it — nothing about the sign survives
+    // rounding to zero.
+    let is_zero = magnitude_text.chars().all(|c| c == '0' || c == '.');
+    if volume.is_sign_negative() && !is_zero {
+        format!("-{magnitude_text}")
+    } else {
+        magnitude_text
+    }
 }
 
 /// Replace every edition, member and page flag under `work_id` with what

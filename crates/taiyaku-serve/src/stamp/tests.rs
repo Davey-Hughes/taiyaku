@@ -2,8 +2,8 @@ use crate::test_support::{self, get, get_json, send_json};
 use axum::http::{Method, StatusCode};
 
 /// The fixture's one work, by slug, looked up rather than spelled out — the
-/// slug is derived from a scanned directory name and is not this module's to
-/// assert.
+/// slug is minted from the series and volume the scan resolves (O282) and is
+/// not this module's to assert.
 fn a_slug(state: &std::sync::Arc<crate::ServeState>) -> String {
     let conn = state.library.conn();
     conn.query_row("SELECT slug FROM work LIMIT 1", [], |row| row.get(0))

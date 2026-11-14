@@ -1962,8 +1962,8 @@ pub(crate) fn router_over_two_scanned_volumes_with_a_non_ascii_title()
         assert_eq!(
             named,
             [
-                ("kabushikigaisha-magi-lumière-v01-2024", "édition"),
-                ("kabushikigaisha-magi-lumière-v02-2024", "édition"),
+                ("kabushikigaisha-magi-lumière-v01", "édition"),
+                ("kabushikigaisha-magi-lumière-v02", "édition"),
             ],
             "each volume's slug keeps its `è`, and its one edition is keyed by the rule"
         );

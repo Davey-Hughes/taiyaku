@@ -69,8 +69,13 @@ fn an_unparseable_schema_version_is_refused_rather_than_read_as_zero() {
 fn a_migration_that_fails_part_way_leaves_no_trace_and_can_be_retried() {
     let conn = Connection::open_in_memory().expect("in-memory connection");
 
-    let refused = migrate_with(&conn, &["CREATE TABLE early (x); CREATE TABLE early (x);"])
-        .expect_err("the repeated CREATE must fail");
+    let refused = migrate_with(
+        &conn,
+        &[Migration::Sql(
+            "CREATE TABLE early (x); CREATE TABLE early (x);",
+        )],
+    )
+    .expect_err("the repeated CREATE must fail");
     assert!(
         refused.contains("applying schema version 1"),
         "the message names the version it was applying: {refused}"
@@ -94,8 +99,40 @@ fn a_migration_that_fails_part_way_leaves_no_trace_and_can_be_retried() {
         "a migration that did not apply must not have recorded a version"
     );
 
-    migrate_with(&conn, &["CREATE TABLE early (x);"])
+    migrate_with(&conn, &[Migration::Sql("CREATE TABLE early (x);")])
         .expect("the same database migrates once the migration is corrected");
+}
+
+/// A Rust pass is applied inside its migration's transaction, as SQL is: what
+/// it wrote before refusing rolls back, and the version stays where it was.
+#[test]
+fn a_pass_that_fails_leaves_the_store_at_its_version() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    migrate_with(&conn, &[Migration::Sql("CREATE TABLE a (x);")])
+        .expect("the database is at version 1");
+
+    let refused = migrate_with(
+        &conn,
+        &[
+            Migration::Sql("CREATE TABLE a (x);"),
+            Migration::Pass(|c| {
+                c.execute("INSERT INTO a VALUES (1)", [])
+                    .map_err(|e| e.to_string())?;
+                Err("refused".into())
+            }),
+        ],
+    )
+    .expect_err("the pass refuses");
+    assert!(
+        refused.contains("applying schema version 2") && refused.contains("refused"),
+        "the message names the version and the pass's reason: {refused}"
+    );
+
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM a", [], |row| row.get(0))
+        .expect("counting a's rows");
+    assert_eq!(rows, 0, "the row the pass wrote rolled back with it");
+    assert_eq!(version(&conn).expect("reading the version"), 1);
 }
 
 /// An older database's migrations each commit on their own, so the version
@@ -104,14 +141,15 @@ fn a_migration_that_fails_part_way_leaves_no_trace_and_can_be_retried() {
 #[test]
 fn an_older_database_keeps_each_migration_that_committed_before_a_later_one_failed() {
     let conn = Connection::open_in_memory().expect("in-memory connection");
-    migrate_with(&conn, &["CREATE TABLE first (x);"]).expect("the database is at version 1");
+    migrate_with(&conn, &[Migration::Sql("CREATE TABLE first (x);")])
+        .expect("the database is at version 1");
 
     let refused = migrate_with(
         &conn,
         &[
-            "CREATE TABLE first (x);",
-            "CREATE TABLE second (x);",
-            "CREATE TABLE third (x); CREATE TABLE third (x);",
+            Migration::Sql("CREATE TABLE first (x);"),
+            Migration::Sql("CREATE TABLE second (x);"),
+            Migration::Sql("CREATE TABLE third (x); CREATE TABLE third (x);"),
         ],
     )
     .expect_err("migration 3 must fail");
@@ -156,7 +194,7 @@ fn a_fresh_database_whose_second_migration_fails_stays_at_version_zero() {
         &conn,
         &[
             MIGRATIONS[0],
-            "CREATE TABLE second (x); CREATE TABLE second (x);",
+            Migration::Sql("CREATE TABLE second (x); CREATE TABLE second (x);"),
         ],
     )
     .expect_err("migration 2 must fail");
@@ -177,8 +215,11 @@ fn a_fresh_database_whose_second_migration_fails_stays_at_version_zero() {
         "a fresh database that failed to build is still fresh"
     );
 
-    migrate_with(&conn, &[MIGRATIONS[0], "CREATE TABLE second (x);"])
-        .expect("the same database builds once the migration is corrected");
+    migrate_with(
+        &conn,
+        &[MIGRATIONS[0], Migration::Sql("CREATE TABLE second (x);")],
+    )
+    .expect("the same database builds once the migration is corrected");
     assert_eq!(version(&conn).expect("reading the version"), 2);
 }
 
@@ -215,7 +256,9 @@ fn two_processes(label: &str) -> (crate::tests::TempDir, Connection, Connection)
 #[test]
 fn a_migration_decided_before_another_process_committed_it_is_not_applied_twice() {
     let (_dir, first, second) = two_processes("schema-race");
-    let migrations = ["CREATE TABLE series (id INTEGER PRIMARY KEY);"];
+    let migrations = [Migration::Sql(
+        "CREATE TABLE series (id INTEGER PRIMARY KEY);",
+    )];
 
     // The second process looks first, at a database nobody has migrated.
     ensure_meta(&second).expect("meta");
@@ -253,10 +296,16 @@ fn a_database_migrated_past_this_build_while_it_waited_is_refused_rather_than_ig
     ensure_meta(&second).expect("meta");
     let seen = version(&second).expect("reading the version");
 
-    migrate_with(&first, &["CREATE TABLE a (x);", "CREATE TABLE b (x);"])
-        .expect("a newer build migrates the file to version 2");
+    migrate_with(
+        &first,
+        &[
+            Migration::Sql("CREATE TABLE a (x);"),
+            Migration::Sql("CREATE TABLE b (x);"),
+        ],
+    )
+    .expect("a newer build migrates the file to version 2");
 
-    let refused = apply_pending(&second, &["CREATE TABLE a (x);"], seen)
+    let refused = apply_pending(&second, &[Migration::Sql("CREATE TABLE a (x);")], seen)
         .expect_err("this build knows one migration and the file is at two");
     assert!(
         refused.contains("newer taiyaku"),
@@ -1417,8 +1466,8 @@ fn migration_20_adds_missing_since_leaving_existing_works_present() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_twenty_two() {
-    assert_eq!(SCHEMA_VERSION, 22);
+fn the_schema_version_is_twenty_three() {
+    assert_eq!(SCHEMA_VERSION, 23);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -1441,7 +1490,7 @@ fn the_schema_version_is_twenty_two() {
 #[test]
 fn migration_ten_backfills_derived_columns_and_leaves_hand_ones_null() {
     let conn = Connection::open_in_memory().expect("in-memory database");
-    let upto: Vec<&str> = MIGRATIONS[..9].to_vec();
+    let upto: Vec<Migration> = MIGRATIONS[..9].to_vec();
     migrate_with(&conn, &upto).expect("migrates to 9, before title_hand/title_derived exist");
 
     conn.execute_batch(
@@ -1494,7 +1543,7 @@ fn migration_ten_backfills_derived_columns_and_leaves_hand_ones_null() {
 fn migration_7_backfills_the_root_of_a_member_under_one() {
     let conn = Connection::open_in_memory().expect("in-memory connection");
     // Stop one migration short, so the rows exist in the state 006 left them.
-    let upto: Vec<&str> = MIGRATIONS[..6].to_vec();
+    let upto: Vec<Migration> = MIGRATIONS[..6].to_vec();
     migrate_with(&conn, &upto).expect("migrates to 6");
 
     conn.execute(
@@ -1652,7 +1701,7 @@ fn migration_8_rebuild_reindexes_titles_that_predate_it() {
         .expect("fk on");
     // Stop one migration short, so the rows are written while series_fts and
     // work_fts are still the unicode61 tables 001 created.
-    let upto: Vec<&str> = MIGRATIONS[..7].to_vec();
+    let upto: Vec<Migration> = MIGRATIONS[..7].to_vec();
     migrate_with(&conn, &upto).expect("migrates to 7");
 
     conn.execute_batch(
@@ -1896,7 +1945,7 @@ fn a_schema_14_library() -> Connection {
 
 /// Every row of `sql`'s answer, each column rendered as text, so two reads
 /// can be compared whole.
-fn rows_of(conn: &Connection, sql: &str) -> Vec<Vec<String>> {
+pub(super) fn rows_of(conn: &Connection, sql: &str) -> Vec<Vec<String>> {
     let mut stmt = conn.prepare(sql).expect(sql);
     let width = stmt.column_count();
     stmt.query_map([], |row| {
@@ -3141,7 +3190,7 @@ fn migration_22_gives_a_stamp_a_memory_of_the_digests_it_moved() {
     )
     .expect("seeds a schema-21 work");
 
-    migrate(&conn).expect("migrates to 22");
+    migrate_with(&conn, &MIGRATIONS[..22]).expect("migrates to 22");
 
     assert_eq!(version(&conn).expect("reads the version"), 22);
     assert_eq!(

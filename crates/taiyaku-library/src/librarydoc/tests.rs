@@ -1828,8 +1828,8 @@ fn editing_a_title_does_not_move_the_slug() {
         .expect("reading slug");
     assert_eq!(
         before, after,
-        "a slug is an address and a title is a display name; progress, notes \
-         and truth all hang off the slug (O67)"
+        "a slug is an address and a title is a display name; the slug is the \
+         URL bookmarks and OPDS clients hold (O67)"
     );
 }
 

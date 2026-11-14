@@ -64,8 +64,8 @@ pub struct LibraryDoc {
     /// `Option`, and projected from `work.title_hand` rather than from
     /// `work.title` — see migration 010 for why the effective column cannot
     /// be the one that appears here (**O67**). `work.slug` is unaffected and
-    /// deliberately so; it is an address, and progress, notes and truth all
-    /// hang off it.
+    /// deliberately so; it is the URL bookmarks and OPDS clients hold, minted
+    /// once (O282).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

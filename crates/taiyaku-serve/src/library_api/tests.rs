@@ -227,7 +227,7 @@ async fn a_series_cover_redirect_encodes_a_slug_and_an_edition_key_outside_ascii
         .to_owned();
     assert_eq!(
         location,
-        "/api/works/kabushikigaisha-magi-lumi%C3%A8re-v01-2024/%C3%A9dition/pages/0/thumb"
+        "/api/works/kabushikigaisha-magi-lumi%C3%A8re-v01/%C3%A9dition/pages/0/thumb"
     );
 
     let thumb = get(&router, &location).await;

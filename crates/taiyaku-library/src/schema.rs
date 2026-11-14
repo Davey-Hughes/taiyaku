@@ -25,8 +25,23 @@
 
 use rusqlite::Connection;
 
+mod remake;
+
 /// The schema version this build expects.
-pub const SCHEMA_VERSION: u32 = 22;
+pub const SCHEMA_VERSION: u32 = 23;
+
+/// One step of [`MIGRATIONS`]: SQL, or a Rust pass where the rule it applies
+/// lives in Rust and SQL cannot call it (O282's slugs).
+#[derive(Clone, Copy)]
+enum Migration {
+    Sql(&'static str),
+    /// **A pass calls live code**, so it runs the rule as the upgrading build
+    /// has it, against the schema of its own version. A later migration that
+    /// changes a column a pass reads must keep the pass working on a store at
+    /// the version before it: `schema/remake/tests.rs`, which plants rows at
+    /// 22 and then migrates, is what catches that.
+    Pass(fn(&Connection) -> Result<(), String>),
+}
 
 /// Every migration, in order. Index 0 takes an empty database to version 1.
 ///
@@ -34,29 +49,31 @@ pub const SCHEMA_VERSION: u32 = 22;
 /// migration 1 again, so a change made there reaches new databases only and
 /// the two diverge silently. `002` adds one column to `migrated_document`
 /// rather than changing the table `001` creates, for exactly that reason.
-const MIGRATIONS: [&str; 22] = [
-    include_str!("schema/001_initial.sql"),
-    include_str!("schema/002_absorbed.sql"),
-    include_str!("schema/003_scanner.sql"),
-    include_str!("schema/004_auth.sql"),
-    include_str!("schema/005_note_id_per_user.sql"),
-    include_str!("schema/006_member_root.sql"),
-    include_str!("schema/007_backfill_member_root.sql"),
-    include_str!("schema/008_trigram_fts.sql"),
-    include_str!("schema/009_progress_per_edition.sql"),
-    include_str!("schema/010_hand_metadata.sql"),
-    include_str!("schema/011_hand_provenance.sql"),
-    include_str!("schema/012_root_keeps_documents.sql"),
-    include_str!("schema/013_can_stamp.sql"),
-    include_str!("schema/014_structure_version.sql"),
-    include_str!("schema/015_libraries.sql"),
-    include_str!("schema/016_library_names.sql"),
-    include_str!("schema/017_every_library.sql"),
-    include_str!("schema/018_overlapping_libraries.sql"),
-    include_str!("schema/019_library_links.sql"),
-    include_str!("schema/020_work_missing_since.sql"),
-    include_str!("schema/021_anchors.sql"),
-    include_str!("schema/022_stamp_aliases.sql"),
+/// A pass is held to the same rule; see [`Migration::Pass`] for what it costs.
+const MIGRATIONS: [Migration; 23] = [
+    Migration::Sql(include_str!("schema/001_initial.sql")),
+    Migration::Sql(include_str!("schema/002_absorbed.sql")),
+    Migration::Sql(include_str!("schema/003_scanner.sql")),
+    Migration::Sql(include_str!("schema/004_auth.sql")),
+    Migration::Sql(include_str!("schema/005_note_id_per_user.sql")),
+    Migration::Sql(include_str!("schema/006_member_root.sql")),
+    Migration::Sql(include_str!("schema/007_backfill_member_root.sql")),
+    Migration::Sql(include_str!("schema/008_trigram_fts.sql")),
+    Migration::Sql(include_str!("schema/009_progress_per_edition.sql")),
+    Migration::Sql(include_str!("schema/010_hand_metadata.sql")),
+    Migration::Sql(include_str!("schema/011_hand_provenance.sql")),
+    Migration::Sql(include_str!("schema/012_root_keeps_documents.sql")),
+    Migration::Sql(include_str!("schema/013_can_stamp.sql")),
+    Migration::Sql(include_str!("schema/014_structure_version.sql")),
+    Migration::Sql(include_str!("schema/015_libraries.sql")),
+    Migration::Sql(include_str!("schema/016_library_names.sql")),
+    Migration::Sql(include_str!("schema/017_every_library.sql")),
+    Migration::Sql(include_str!("schema/018_overlapping_libraries.sql")),
+    Migration::Sql(include_str!("schema/019_library_links.sql")),
+    Migration::Sql(include_str!("schema/020_work_missing_since.sql")),
+    Migration::Sql(include_str!("schema/021_anchors.sql")),
+    Migration::Sql(include_str!("schema/022_stamp_aliases.sql")),
+    Migration::Pass(remake::slugs_and_titles),
 ];
 
 /// The version a database reaches is the number of migrations applied to it,
@@ -100,7 +117,7 @@ pub(crate) fn pending_migration(conn: &Connection) -> Result<Option<(u32, u32)>,
 /// [`SCHEMA_VERSION`] so the "written by a newer taiyaku" refusal stays
 /// coherent for whatever list it was given; the two agree for the real call by
 /// the `const` assertion above.
-fn migrate_with(conn: &Connection, migrations: &[&str]) -> Result<(), String> {
+fn migrate_with(conn: &Connection, migrations: &[Migration]) -> Result<(), String> {
     let known = u32::try_from(migrations.len()).unwrap_or(u32::MAX);
     ensure_meta(conn)?;
     let current = version(conn)?;
@@ -209,9 +226,9 @@ fn written_by_a_newer_taiyaku(current: u32, known: u32) -> String {
 /// second time, under the write lock `BEGIN IMMEDIATE` took, and that read
 /// decides: at 0 every migration runs in this one transaction (O269), so no
 /// other open sees a part-built database, takes it for older and backs it up.
-fn apply_pending(conn: &Connection, migrations: &[&str], current: u32) -> Result<(), String> {
+fn apply_pending(conn: &Connection, migrations: &[Migration], current: u32) -> Result<(), String> {
     let known = u32::try_from(migrations.len()).unwrap_or(u32::MAX);
-    for (index, sql) in migrations.iter().enumerate() {
+    for (index, step) in migrations.iter().enumerate() {
         let target = u32::try_from(index).unwrap_or(u32::MAX) + 1;
         // **A fast path, not the decision.** The recheck below, under the
         // write lock, is what makes the skip correct; `version(&tx)` can only
@@ -251,14 +268,14 @@ fn apply_pending(conn: &Connection, migrations: &[&str], current: u32) -> Result
             continue;
         }
         if applied == 0 {
-            for (target, sql) in (1..=known).zip(migrations) {
-                apply_one(&tx, target, sql)?;
+            for (target, step) in (1..=known).zip(migrations) {
+                apply_one(&tx, target, step)?;
             }
             return tx
                 .commit()
                 .map_err(|e| format!("committing schema versions 1 to {known}: {e}"));
         }
-        apply_one(&tx, target, sql)?;
+        apply_one(&tx, target, step)?;
         tx.commit()
             .map_err(|e| format!("committing schema version {target}: {e}"))?;
     }
@@ -266,10 +283,14 @@ fn apply_pending(conn: &Connection, migrations: &[&str], current: u32) -> Result
 }
 
 /// One migration, the foreign-key check after it and its version row, inside
-/// the caller's transaction, which commits them or rolls them back on drop.
-fn apply_one(tx: &Connection, target: u32, sql: &str) -> Result<(), String> {
-    tx.execute_batch(sql)
-        .map_err(|e| format!("applying schema version {target}: {e}"))?;
+/// the caller's transaction, which commits them or rolls them back on drop. A
+/// pass is handed `tx`, so what it wrote rolls back with the rest.
+fn apply_one(tx: &Connection, target: u32, step: &Migration) -> Result<(), String> {
+    match step {
+        Migration::Sql(sql) => tx.execute_batch(sql).map_err(|e| e.to_string()),
+        Migration::Pass(pass) => pass(tx),
+    }
+    .map_err(|e| format!("applying schema version {target}: {e}"))?;
     // **`without_foreign_keys` turned them off around this whole run**, so
     // nothing enforced them while the migration ran. The enforcement that
     // would otherwise have happened continuously happens once, here, inside

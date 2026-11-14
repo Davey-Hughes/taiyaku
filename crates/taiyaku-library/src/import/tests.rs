@@ -436,6 +436,51 @@ fn a_third_work_with_one_title_takes_the_third_slug_in_sequence() {
     );
 }
 
+/// O284: a reimport (every `serve <sidecar>` start) rewrites `title_derived`
+/// from the document, so the import strips it, not only the first insert.
+#[test]
+fn a_documents_title_loses_its_extension_and_a_reimport_keeps_it_off() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let path = Path::new("/x/taiyaku.json");
+    let mut titled = doc("aa");
+    titled.work.title = "Berserk - v01 (2003).cbz".to_string();
+    let row = |id: i64| -> (String, String, String) {
+        conn.query_row(
+            "SELECT title, title_derived, slug FROM work WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("the work")
+    };
+
+    let id = sidecar(&conn, &titled, path).expect("import");
+    assert_eq!(
+        row(id),
+        (
+            "Berserk - v01 (2003)".to_string(),
+            "Berserk - v01 (2003)".to_string(),
+            "berserk-v01-2003".to_string(),
+        )
+    );
+
+    let mut hand = crate::librarydoc::of(&conn, id).expect("projects");
+    hand.title = Some("Mine.cbz".to_string());
+    crate::librarydoc::apply(&conn, id, &hand).expect("a hand title");
+    let again = sidecar(&conn, &titled, path).expect("reimport");
+
+    assert_eq!(again, id);
+    assert_eq!(
+        row(id),
+        (
+            "Mine.cbz".to_string(),
+            "Berserk - v01 (2003)".to_string(),
+            "berserk-v01-2003".to_string(),
+        ),
+        "a hand title shows as typed; the derived one stays stripped"
+    );
+}
+
 #[test]
 fn importing_the_same_document_twice_is_one_work() {
     let library = Library::open_in_memory().expect("library");
@@ -1305,6 +1350,171 @@ fn a_title_with_no_alphanumeric_characters_slugifies_to_work() {
     assert_eq!(
         slug, "work",
         "a title with nothing alphanumeric in it must not slugify to an empty string"
+    );
+}
+
+/// **One trailing archive extension comes off, whatever its case, and only
+/// one (O284).** A file name's title and its slug share this rule; a name
+/// that ends in no archive extension answers `None` so a caller can tell
+/// "nothing to drop" from "dropped to nothing".
+#[test]
+fn an_archive_stem_drops_one_extension_whatever_its_case() {
+    let cases = [
+        ("Berserk - v01 (2003).cbz", Some("Berserk - v01 (2003)")),
+        ("X v01.CBZ", Some("X v01")),
+        ("Two.cbz.cbz", Some("Two.cbz")),
+        ("Lumière.epub", Some("Lumière")),
+        (".cbz", Some("")),
+        ("Look Back (2022)", None),
+    ];
+    // Compared as one list so a failure shows every name's answer at once.
+    let got: Vec<(&str, Option<&str>)> = cases
+        .iter()
+        .map(|&(name, _)| (name, archive_stem(name)))
+        .collect();
+    assert_eq!(
+        got,
+        cases.to_vec(),
+        "each name without one trailing archive extension, matched ASCII \
+         case-insensitively; `None` when it ends in none"
+    );
+}
+
+/// **A slug is the series' name and the volume, two digits at least
+/// (O282).** Every title here differs from its expected slug, so an answer
+/// taken from the title instead shows.
+#[test]
+fn a_slug_base_is_the_series_and_the_volume() {
+    let cases = [
+        ("Berserk", 1.0, "Berserk - v01 (2003).cbz", "berserk-v01"),
+        (
+            "One Piece",
+            85.0,
+            "One Piece - v85 (2017).cbz",
+            "one-piece-v85",
+        ),
+        (
+            "One Piece",
+            105.0,
+            "One Piece - v105 (2023).cbz",
+            "one-piece-v105",
+        ),
+        (
+            "Death Note (Colored Council)",
+            1.0,
+            "Death Note - Colored - v01.cbz",
+            "death-note-colored-council-v01",
+        ),
+        ("X", 10.5, "X - v10.5 (2020).cbz", "x-v10-5"),
+        (
+            "Spy × Family",
+            2.0,
+            "Spy × Family - v02 (2020).cbz",
+            "spy-family-v02",
+        ),
+        (
+            "Kabushikigaisha Magi-Lumière",
+            1.0,
+            "Kabushikigaisha Magi-Lumière - v01 (2023).cbz",
+            "kabushikigaisha-magi-lumière-v01",
+        ),
+    ];
+    // A title whose own slug is the expected one would pass with the title
+    // rule in place of the series rule, and prove nothing for that case.
+    for &(_, _, title, slug) in &cases {
+        assert_ne!(
+            slugify(title),
+            slug,
+            "`{title}` must slugify to something other than `{slug}`"
+        );
+    }
+    let got: Vec<(&str, String)> = cases
+        .iter()
+        .map(|&(series, volume, title, _)| (series, slug_base(Some(series), Some(volume), title)))
+        .collect();
+    let expected: Vec<(&str, String)> = cases
+        .iter()
+        .map(|&(series, _, _, slug)| (series, slug.to_string()))
+        .collect();
+    assert_eq!(
+        got, expected,
+        "each slug: the series' slug token, `-v`, and the volume at two digits \
+         at least through the same character rule"
+    );
+}
+
+/// **Without a usable series or volume, a book keeps the title rule.** A
+/// series with no letter or digit would leave `v01` alone, and an infinite
+/// volume would print `vinf`; both fall back to [`slugify`] instead.
+#[test]
+fn a_book_without_a_usable_series_or_volume_keeps_the_title_rule() {
+    let cases = [
+        (None, Some(1.0), "Look Back (2022).cbz", "look-back-2022"),
+        (
+            Some("Berserk"),
+            None,
+            "Berserk - Prototype.cbz",
+            "berserk-prototype",
+        ),
+        (Some("???"), Some(1.0), "Q - v01 (2020).cbz", "q-v01-2020"),
+        (
+            Some("Berserk"),
+            Some(f64::INFINITY),
+            "Berserk.cbz",
+            "berserk",
+        ),
+    ];
+    let got: Vec<(&str, String)> = cases
+        .iter()
+        .map(|&(series, volume, title, _)| (title, slug_base(series, volume, title)))
+        .collect();
+    let expected: Vec<(&str, String)> = cases
+        .iter()
+        .map(|&(_, _, title, slug)| (title, slug.to_string()))
+        .collect();
+    assert_eq!(
+        got, expected,
+        "no series, no volume, a series with no letter or digit, or a \
+         non-finite volume: the slug comes from the title"
+    );
+}
+
+/// **The series' name is the one the Series page shows** (`browse.rs`'s
+/// listing): the greatest primary title, else the first title by rowid, else
+/// `sort_title`. Series 1's two primaries, the lesser inserted first, tell
+/// the greatest from the least or the first; series 2's first title by rowid
+/// is neither its greatest nor its least.
+#[test]
+fn the_series_name_is_the_one_the_series_page_shows() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    conn.execute_batch(
+        "INSERT INTO series (id, sort_title) VALUES (1, 'berserk sort');
+         INSERT INTO series_title (series_id, title, is_primary) VALUES (1, 'Zzz Alt', 0);
+         INSERT INTO series_title (series_id, title, is_primary) VALUES (1, 'Azure', 1);
+         INSERT INTO series_title (series_id, title, is_primary) VALUES (1, 'Berserk', 1);
+         INSERT INTO series (id, sort_title) VALUES (2, 's2');
+         INSERT INTO series_title (series_id, title, is_primary) VALUES (2, 'Mid', 0);
+         INSERT INTO series_title (series_id, title, is_primary) VALUES (2, 'Zeta', 0);
+         INSERT INTO series_title (series_id, title, is_primary) VALUES (2, 'Alpha', 0);
+         INSERT INTO series (id, sort_title) VALUES (3, 'Only Sort');",
+    )
+    .expect("series rows");
+
+    let got: Vec<(i64, Option<String>)> = [1, 2, 3, 99]
+        .into_iter()
+        .map(|id| (id, series_name(&conn, id).expect("series name")))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (1, Some("Berserk".to_string())),
+            (2, Some("Mid".to_string())),
+            (3, Some("Only Sort".to_string())),
+            (99, None),
+        ],
+        "the primary title, else the first title by rowid, else the sort \
+         title; no series at all is `None`"
     );
 }
 

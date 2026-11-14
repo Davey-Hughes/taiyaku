@@ -1643,11 +1643,11 @@ async fn the_works_feed_links_a_slug_outside_ascii_percent_encoded_and_the_link_
 
     for (href, title) in [
         (
-            "/opds/v1.2/works/kabushikigaisha-magi-lumi%C3%A8re-v01-2024",
+            "/opds/v1.2/works/kabushikigaisha-magi-lumi%C3%A8re-v01",
             "<title>Kabushikigaisha Magi-Lumière - v01 (2024)</title>",
         ),
         (
-            "/opds/v1.2/works/kabushikigaisha-magi-lumi%C3%A8re-v02-2024",
+            "/opds/v1.2/works/kabushikigaisha-magi-lumi%C3%A8re-v02",
             "<title>Kabushikigaisha Magi-Lumière - v02 (2024)</title>",
         ),
     ] {
@@ -1672,8 +1672,8 @@ async fn a_work_feed_links_an_edition_key_outside_ascii_percent_encoded() {
         crate::test_support::router_over_two_scanned_volumes_with_a_non_ascii_title();
 
     for work in [
-        "/opds/v1.2/works/kabushikigaisha-magi-lumi%C3%A8re-v01-2024",
-        "/opds/v1.2/works/kabushikigaisha-magi-lumi%C3%A8re-v02-2024",
+        "/opds/v1.2/works/kabushikigaisha-magi-lumi%C3%A8re-v01",
+        "/opds/v1.2/works/kabushikigaisha-magi-lumi%C3%A8re-v02",
     ] {
         let response = crate::test_support::get(&router, work).await;
         let status = response.status();

@@ -740,7 +740,7 @@ pub fn one_snapshot(conn: &Connection) -> rusqlite::Result<Option<rusqlite::Tran
 /// `unchecked_transaction` sends — is refused outright the moment SQLite
 /// already holds an open transaction; `derive.rs`'s own doc records exactly
 /// this, on why [`crate::derive::derive`] holds no transaction of its own.
-/// So [`crate::import::scanned`] (through `import_with`, called once per
+/// So `import::scanned_inserting` (through `import_with`, called once per
 /// work) and [`crate::fold::absorb`] (once per fold), each of which opens one
 /// of its own, would be uncomposable with a caller that wraps a whole
 /// derivation in a transaction to roll it all back at once —
