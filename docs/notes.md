@@ -26778,7 +26778,8 @@ rest on Task 3's probe and on reading, as they say.
   way, so it reads as the window's behaviour from before O286, not the
   line moving focus. That rests on reading: the wheel's path is one O286
   leaves alone, and the branch changes no window code in `Filmstrip.tsx`;
-  it was not run on `main`. It is not fixed here. A press on the mark
+  it was not run on `main`. It is not fixed here, and is filed as O289.
+  A press on the mark
   where it stood, and every jump on the 7-page volume, left the tile
   focused; with focus on the page, as the reader usually has it, a press
   kept it, and Space and ArrowLeft did after the press what they did
