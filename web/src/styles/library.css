@@ -239,6 +239,14 @@
   line-height: 1.4;
 }
 
+/* On a volume's cover ⇄ takes the top-right, leaving the bottom-right to
+ * `i`, or to ↓ in its place (O283). A series' tile in the library grid has
+ * no control on its cover, and keeps its mark where it was. */
+.volumes .cover-box .aligned {
+  top: 0.25rem;
+  bottom: auto;
+}
+
 /* §3's preset B, in a box that scrolls sideways (spec 2026-09-17 §7.2). The
  * table takes the UI face and gives the figures face back to its page-count
  * cells only: `base.css` puts the figures face on every table, and here that
@@ -358,16 +366,15 @@
   filter: grayscale(1);
 }
 
-/* The download control — spec C2 §8. Modelled on `.panel-open` below, which
- * sits in the same place under a tile and must not look like a different
- * kind of thing.
+/* The download control — spec C2 §8: on the cover's corner in `i`'s place,
+ * or at the foot of the open panel (O283). Drawn as `.panel-open` below is,
+ * so the two read as one kind of control.
  *
- * **An inline display is load-bearing, not tidying** — `inline-flex`, so its
- * 24 px box centres the arrow. `.volumes li a` (above) sets `display: flex`
- * and `flex-direction: column` on every anchor in a tile. Without this
- * override the control stretches to the full tile width and stacks. jsdom
- * computes no layout, so `Series.test.tsx` passes either way and only a
- * browser sees it. */
+ * **`align-self: start` is load-bearing, not tidying**: the panel's ↓ is an
+ * item of the panel's column, and without it stretches to the panel's
+ * width. A flex display centres the arrow in its 24 px box. jsdom computes
+ * no layout, so `Series.test.tsx` passes either way and only a browser sees
+ * it. */
 .volumes a.get {
   display: inline-flex;
   align-items: center;
@@ -375,8 +382,6 @@
   align-self: start;
   min-width: 24px;
   min-height: 24px;
-  margin-top: 0.15rem;
-  padding: 0 0.4rem;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-control);
   background: var(--surface);
@@ -386,11 +391,18 @@
   text-decoration: none;
 }
 
+/* ↓ Download at the panel's foot (O283) is a word button, so it takes the
+ * UI's text size rather than a one-glyph control's. Its left padding is
+ * 2 px less than its right because the ↓ is drawn narrower than its
+ * advance, which with even padding sets the label right of centre. */
+.tile-panel a.get {
+  padding: 0 calc(0.6rem + 2px) 0 calc(0.6rem - 2px);
+  font-size: var(--text-ui);
+}
+
 .volumes .panel-open {
   min-width: 24px;
   min-height: 24px;
-  margin-top: 0.15rem;
-  padding: 0 0.4rem;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-control);
   background: var(--surface);
@@ -400,11 +412,130 @@
   cursor: pointer;
 }
 
+/* The box `i` and the corner ↓ are placed in. `> li`: the alignment panel
+ * draws a list of its own. */
+.volumes > li {
+  position: relative;
+}
+
+/* `i` on the cover's bottom-right corner, nearest the panel it opens, and ↓
+ * in its place where a tile has no `i` (O283), never inside the tile's link.
+ * A percentage margin is taken of the containing block's width, and the
+ * cover is the tile's width at 2:3, so 150% reaches the cover's foot at any
+ * column width; `translate` lifts the control by its own height. Its size
+ * is its minimum, border included and no padding, so the ↓, a glyph wider
+ * than `i`, is drawn at `i`'s size. */
+.volumes > li > :is(.panel-open, a.get) {
+  position: absolute;
+  top: 0;
+  right: 0.25rem;
+  box-sizing: border-box;
+  margin-top: calc(150% - 0.25rem);
+  padding: 0;
+  translate: 0 -100%;
+}
+
+/* Where every pointer can hover, the corner control waits, transparent and
+ * taking no pointer, until its tile is hovered or holds focus, or its panel
+ * is open. Opacity, never `display` or `visibility`, so Tab still reaches
+ * it. Any coarse pointer keeps it shown: a touch laptop's primary pointer
+ * hovers, and its finger would tap a control it cannot see and land on the
+ * cover's link. */
+@media (hover: hover) and (not (any-pointer: coarse)) {
+  .volumes > li > :is(.panel-open, a.get) {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms;
+  }
+
+  .volumes > li:hover > :is(.panel-open, a.get),
+  .volumes > li:focus-within > :is(.panel-open, a.get),
+  .volumes > li > .panel-open[aria-expanded="true"] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* No fade where the system asks for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .volumes > li > :is(.panel-open, a.get) {
+    transition: none;
+  }
+}
+
+/* An open volume's panel (O283), 4 px under its tile and over the rows
+ * below, so nothing moves as it opens; `tilePanel.ts` sets its left and
+ * width. Above the covers and the marks on them, under the phone bar (10)
+ * and View (15), and drawn as View's panel is. Its parts are set apart by
+ * its gap alone. */
+.tile-panel {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 5;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  box-shadow: 0 4px 16px var(--scrim);
+}
+
+/* The room under a panel: as much as the page area keeps under its last
+ * row (`shell.css`'s `--page-area-end`), so a panel run past the end of a
+ * page ends it with that room below, not on the window's edge. Its top is
+ * the panel's foot: `100%` is the foot of the panel's padding box, and the
+ * 1 px is the panel's own border. Unseen, and a press on it reaches what
+ * lies under it; no wider than the panel, so it scrolls nothing sideways. */
+.tile-panel::after {
+  content: "";
+  position: absolute;
+  top: calc(100% + 1px);
+  inset-inline: 0;
+  height: var(--page-area-end);
+  pointer-events: none;
+}
+
+/* Below 900 px, where the document scrolls, the room under the last row
+ * holds `.library`'s bottom safe-area inset as well (`shell.css`). */
+@media (width < 900px) {
+  .tile-panel::after {
+    height: calc(var(--page-area-end) + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* Two tiles and the gap before `tilePanel.ts` has measured, the width it
+ * then sets wherever the page has room: the Title field is fitted as it
+ * mounts, before its panel is laid, and would be fitted at the tile's
+ * width. */
+.volumes > li > .tile-panel {
+  width: calc(200% + 1rem);
+}
+
+.library.compact .volumes > li > .tile-panel {
+  width: calc(200% + 0.6rem);
+}
+
+/* What scrolls a series page while it draws the volume grid keeps its
+ * scrollbar's gutter whether or not it scrolls (O283): `main`, and below
+ * 900px, where `main` does not scroll (`shell.css`), the document. A panel
+ * run past the end of a page that did not scroll brings a classic
+ * scrollbar, which would narrow the grid and move every tile. */
+.library > main:has(.volumes) {
+  scrollbar-gutter: stable;
+}
+
+@media (width < 900px) {
+  :root:has(.volumes) {
+    scrollbar-gutter: stable;
+  }
+}
+
+/* The alignment detail, drawn only in a volume's panel as one of its parts:
+ * bare, inside the panel's own padding and border. */
 .alignment-panel {
-  margin-top: 0.35rem;
-  padding: 0.5rem 0.6rem;
-  border: 1px solid var(--line);
-  border-radius: 0;
   background: var(--surface);
   color: var(--text);
   font-size: var(--text-meta);
@@ -438,9 +569,9 @@
   color: var(--muted);
 }
 
-/* An open volume's panels stay inside its tile (the owner's ruling,
- * style-pass §7 ②), and what they print, a path, a content_key or an
- * error, may hold no space to break at (O274). On the panels' own roots,
+/* An open volume's panel lies over the rows below (O283) and keeps inside
+ * the page area, and what its parts print, a path, a content_key or an
+ * error, may hold no space to break at (O274). On the parts' own roots,
  * not the tile, whose title has its own rule. */
 .alignment-panel,
 .metadata-editor,
@@ -448,30 +579,61 @@
   overflow-wrap: anywhere;
 }
 
-/* The Title box (O274), a textarea so that it can wrap while it is edited.
- * At rest it is drawn as a one-line text input is: one line, an input's
- * padding, no handle. As wide as its tile: a text box's own width follows
- * its font, not its container, and can be wider than the tile;
- * `border-box` so the `100%` includes its border and padding. At its line's
- * top, because a textarea's baseline is its bottom edge, which would make
- * the line taller than an input's. */
+/* The alignment detail's text and the stamp section's heading keep no
+ * margin in the panel, which would add to the gap the panel sets between
+ * its parts. `:where()` holds the first arm at the specificity of the `p`
+ * rules after it. */
+.tile-panel :where(.alignment-panel) p,
+.tile-panel .stamp-comicinfo > h3 {
+  margin: 0;
+}
+
+/* The Title form's parts in a column, their own margins dropped so the gap
+ * alone sets the space between them. Positioned, so Saved can sit on the
+ * label's line. */
+.metadata-editor {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.metadata-editor p {
+  margin: 0;
+}
+
+.metadata-editor .field.title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* Saved shares the label's line, so the two take one line height. */
+.metadata-editor .field.title > span,
+.metadata-editor .saved-note {
+  line-height: 1.4;
+}
+
+/* Saved, and Saving… for a slow save, at the end of the label's line
+ * (O283): neither takes a row, so nothing moves as they come and go. */
+.metadata-editor .saved-note {
+  position: absolute;
+  top: 0;
+  right: 0;
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+/* The Title field (O283) wraps its whole title, at rest as while it is
+ * edited, and `MetadataEditor.tsx`'s `fitTitle` makes it as tall as the
+ * title, up to five lines, past which it scrolls. As wide as its container:
+ * a text box's own width follows its font, not its container; `border-box`
+ * so the `100%` includes its border and padding. */
 .metadata-editor textarea {
   box-sizing: border-box;
   width: 100%;
-  padding: 1px 2px;
-  vertical-align: top;
+  padding: 1px var(--space-2);
   resize: none;
-  overflow: hidden;
-  white-space: pre;
-}
-
-/* Open, `MetadataEditor.tsx`'s `layOpen` sizes and places it, and past five
- * lines it scrolls. It is drawn over the tiles beside and below its own,
- * whose covers are positioned and would otherwise be drawn over it, and
- * under the phone bar, the scrim and the drawer. */
-.metadata-editor textarea[data-open] {
-  position: relative;
-  z-index: 1;
   overflow-y: auto;
   white-space: pre-wrap;
 }

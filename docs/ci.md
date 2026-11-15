@@ -1228,6 +1228,13 @@ scrollbars. A test file under `src/` would match none of them and never run,
 so `tests/srcHoldsNoTests.test.ts` fails while one is there, naming it.
 Coverage measures `src/` alone, so nothing under `tests/` is counted as source.
 
+The first launch's `--hide-scrollbars` hides a scrollbar but not a gutter
+that `scrollbar-gutter: stable` keeps. Below 900 px the Series page keeps the
+document's gutter while it draws its volume grid (O283), so at 390 px the
+body there is 375 px wide while the root's `clientWidth` still reads 390, and
+`Shell.browser.test.tsx` measures sideways scroll by the root's `scrollLeft`
+at its far edge.
+
 ## The one documentation claim a gate can check
 
 `docs/status.md` opens "What is built" with "Five crates, N tests", and repeats

@@ -127,7 +127,7 @@ const HOOKS: Record<string, string[]> = {
   // `rename-library` is the form holding the name's box in the title's
   // place; the box is drawn by its own class, and the form by none.
   './LibraryPage.test.tsx': ['rename-library'],
-  './MetadataEditor.browser.test.tsx': ['archives', 'unwritten'],
+  './MetadataEditor.browser.test.tsx': ['unwritten'],
   './MetadataEditor.test.tsx': [
     'archive',
     'asking',
@@ -167,6 +167,7 @@ const HOOKS: Record<string, string[]> = {
     'delete',
     'override-badge',
   ],
+  './Series.panel.browser.test.tsx': ['archives'],
 }
 
 /**

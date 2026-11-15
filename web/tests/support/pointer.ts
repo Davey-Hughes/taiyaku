@@ -1,21 +1,40 @@
 import { expect } from 'vitest'
 
-// Shared by the browser tests that switch a coarse pointer's rules on.
+// Shared by the browser tests that draw the page as a device's pointers
+// would have it.
+
+/** A device by its pointers, as `pointerRulesAs` draws the page for it. */
+export type Device = 'phone' | 'mouse' | 'touch laptop'
 
 /**
- * Every `@media (pointer: coarse)` block in the page's stylesheets, switched
- * on in place, so the cascade keeps its order; the function returned puts
+ * Whether each pointer or hover condition the stylesheets ask holds on each
+ * device, keyed on the condition as Chromium serialises it, its whitespace
+ * removed. A phone's one pointer is coarse and cannot hover. A mouse is fine
+ * and hovers. A touch laptop's primary pointer is fine and hovers, and its
+ * screen adds a coarse one: `(pointer: coarse)` asks only the primary, while
+ * the hiding rule over a volume tile's `i` (`library.css`) asks every one.
+ */
+const HOLDS = new Map<string, Record<Device, boolean>>([
+  ['(pointer:coarse)', { phone: true, mouse: false, 'touch laptop': false }],
+  [
+    '(hover:hover)and(not(any-pointer:coarse))',
+    { phone: false, mouse: true, 'touch laptop': false },
+  ],
+])
+
+/**
+ * Every `@media` block in the page's stylesheets that asks about the pointer
+ * or hover, switched in place to `all` or `not all` as `HOLDS` says it holds
+ * on `device`, so the cascade keeps its order; the function returned puts
  * each block's condition back as it was written. This project's Chromium has
  * a fine pointer, and its touch emulation, once turned off again, leaves the
  * page reporting no pointer at all to every file that runs after.
  *
- * Any other condition that asks about the pointer or hover — a coarse
- * pointer joined to a width, a fine pointer, a hover — cannot be switched
- * on or off whole the way a coarse device would decide it, so it throws
- * before anything is switched: left alone, it would draw as a fine pointer
- * does while the case says coarse.
+ * A condition `HOLDS` does not name throws before anything is switched: left
+ * alone, it would draw as this Chromium's pointer does while the case names
+ * another device.
  */
-export function coarseRulesOn(): () => void {
+export function pointerRulesAs(device: Device): () => void {
   const found: CSSMediaRule[] = []
   const walk = (list: CSSRuleList) => {
     for (const rule of list) {
@@ -29,22 +48,30 @@ export function coarseRulesOn(): () => void {
     }
   }
   for (const sheet of document.styleSheets) walk(sheet.cssRules)
+  const key = (text: string) => text.replace(/\s/g, '')
   const other = found
     .map((rule) => rule.media.mediaText)
-    .filter((text) => text.replace(/\s/g, '') !== '(pointer:coarse)')
+    .filter((text) => !HOLDS.has(key(text)))
   if (other.length > 0) {
     throw new Error(
-      `cannot switch on as a coarse pointer: @media ${other.join('; @media ')}`,
+      `cannot switch as a ${device}: @media ${other.join('; @media ')}`,
     )
   }
   const switched = found.map(({ media }) => ({
     media,
     written: media.mediaText,
   }))
-  for (const { media } of switched) media.mediaText = 'all'
+  for (const { media, written } of switched) {
+    media.mediaText = HOLDS.get(key(written))?.[device] ? 'all' : 'not all'
+  }
   return () => {
     for (const { media, written } of switched) media.mediaText = written
   }
+}
+
+/** A phone's pointer rules, for the cases that ask only for a coarse one. */
+export function coarseRulesOn(): () => void {
+  return pointerRulesAs('phone')
 }
 
 /** A rectangle in the window's coordinates: where a press lands, or should. */

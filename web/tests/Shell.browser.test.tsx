@@ -223,9 +223,22 @@ function need<T extends Element = HTMLElement>(
   return found
 }
 
-/** How far the page itself scrolls sideways: zero is the spec's promise. */
-const sideways = () =>
-  document.documentElement.scrollWidth - document.documentElement.clientWidth
+/**
+ * How far the page itself scrolls sideways: zero is the spec's promise.
+ * Read by scrolling it to its far edge and back, not as `scrollWidth` less
+ * `clientWidth`: where the root keeps a scrollbar's gutter (the series
+ * grid's, `library.css`), its `clientWidth` is the window's whole width,
+ * gutter and all, so that difference is negative, and a page wider than its
+ * room by less than the gutter would read as fitting.
+ */
+const sideways = () => {
+  const root = document.documentElement
+  const was = root.scrollLeft
+  root.scrollLeft = root.scrollWidth
+  const far = root.scrollLeft
+  root.scrollLeft = was
+  return far
+}
 
 beforeEach(() => {
   localStorage.clear()

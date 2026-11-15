@@ -465,6 +465,10 @@ set to one column, a series page gave two volume columns of 155.5 px, and
 an open alignment panel and metadata editor fitted inside their tile: the
 volume grid needs a narrower frame, not a new layout.
 
+*Reopened 2026-11-14 by the owner: a volume's panel no longer sits inside
+its tile. It lies over the rows below, two tiles and the gap wide, inside
+the page area (O283, O274); see `2026-11-14-compact-series-tiles-design.md`.*
+
 ### 7.1 The shell
 
 **Chosen: one sidebar, which CSS moves off-canvas below 900 px.** The

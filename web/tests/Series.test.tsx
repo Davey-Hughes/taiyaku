@@ -8,7 +8,15 @@ import {
   useNavigate,
   useNavigationType,
 } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from 'vitest'
 import type { Me } from '../src/api'
 import {
   BrowseControlsContext,
@@ -26,9 +34,10 @@ import {
 } from '../src/pageReads'
 import { entryOf, type Read, readSet } from '../src/reads'
 import { Series } from '../src/Series'
+import * as tilePanel from '../src/tilePanel'
 import { deferred, flush } from './support/async'
 import { FirstCommit } from './support/firstCommit'
-import { submit, typeInto } from './support/input'
+import { press, submit, typeInto } from './support/input'
 import { mount, rerender } from './support/mount'
 import {
   holdTheClock,
@@ -51,6 +60,13 @@ vi.mock('../src/library', async (importOriginal) => ({
 vi.mock('../src/metadata', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/metadata')>()),
   patchWork: vi.fn(),
+}))
+
+// jsdom lays nothing out, so placing the panel reads nothing here: watched
+// for when and with what `Series` asks for it.
+vi.mock('../src/tilePanel', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/tilePanel')>()),
+  layPanel: vi.fn(),
 }))
 
 /** What `oneSeries` answers: a series page's body. */
@@ -160,9 +176,28 @@ const settle = () => settleWith()
 const titles = (host: HTMLElement) =>
   [...host.querySelectorAll('.volumes .title')].map((n) => n.textContent)
 
+/**
+ * The `index`th tile, its panel opened by its `i`. Checks the panel is
+ * drawn first, so a case about what the panel holds cannot pass on a panel
+ * that never opened.
+ */
+async function openTile(host: HTMLElement, index = 0): Promise<Element> {
+  const tile = host.querySelectorAll('.volumes > li')[index]
+  await act(async () => {
+    tile.querySelector<HTMLButtonElement>('.panel-open')?.click()
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+  expect(tile.querySelector('.tile-panel .alignment-panel')).not.toBeNull()
+  return tile
+}
+
 describe('Series, grid layout', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Opening a panel fetches the work's detail; a bare `vi.fn()` answers
+    // `undefined`, and `reveal`'s `.then` throws on it.
+    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
     vi.mocked(library.oneSeries).mockResolvedValue({
       series: card(),
       works: [
@@ -336,43 +371,138 @@ describe('Series, grid layout', () => {
     expect(host?.querySelector('[role="alert"]')?.textContent).toContain(tooBig)
   })
 
-  it('offers a download per tile, for the edition the tile is showing', async () => {
-    const host = await settleWith({}, who())
-    const links = [
-      ...host.querySelectorAll<HTMLAnchorElement>('.volumes a.get'),
-    ]
-    expect(links).toHaveLength(3)
-    expect(links[0].getAttribute('href')).toBe(
-      '/api/works/gotoubun-v01/raw/download',
+  it('draws no download on a tile in button mode, and one at the foot of its open panel', async () => {
+    const host = await settleWith({ panel: 'button' }, who())
+    const tiles = [...host.querySelectorAll('.volumes > li')]
+    expect(tiles).toHaveLength(3)
+    expect(tiles.map((li) => li.querySelector(':scope > a.get'))).toEqual([
+      null,
+      null,
+      null,
+    ])
+    await openTile(host, 1)
+    expect(
+      tiles.map((li) => li.querySelectorAll('.tile-panel a.get').length),
+    ).toEqual([0, 1, 0])
+    const get = tiles[1].querySelector('.tile-panel')?.lastElementChild
+    expect(get?.matches('a.get')).toBe(true)
+    expect(get?.textContent).toBe('↓ Download')
+    expect(get?.getAttribute('href')).toBe(
+      '/api/works/gotoubun-v03/raw/download',
     )
     // Bare, with no value. The server's `Content-Disposition` carries an
     // ASCII `filename=` and an RFC 6266 `filename*=`, and a value here would
     // override both with a guess made in the browser.
-    expect(links[0].getAttribute('download')).toBe('')
+    expect(get?.getAttribute('download')).toBe('')
+    expect(get?.getAttribute('aria-label')).toBe(
+      'download Go-Toubun no Hanayome v03 — Manga (RAW)',
+    )
   })
 
-  it('keeps the download anchor outside the tile link, not nested in it', async () => {
-    const host = await settleWith({}, who())
-    const get = host.querySelector('.volumes a.get')
-    expect(get).not.toBeNull()
-    // A nested anchor is invalid HTML and browsers reparent it, which a
-    // snapshot would render identically — so this is asserted structurally.
-    // The tile's own `<Link>` is the anchor holding `.cover-box`.
-    const tileLink = host.querySelector('.volumes li a:has(.cover-box)')
-    expect(tileLink).not.toBeNull()
-    expect(tileLink?.contains(get)).toBe(false)
-  })
+  it.each(['off', 'on-select'] as const)(
+    'puts the download on the cover’s corner, one per tile, in %s mode',
+    async (panel) => {
+      const host = await settleWith({ panel }, who())
+      const tiles = [...host.querySelectorAll('.volumes > li')]
+      expect(
+        tiles.map((li) => {
+          const get = li.querySelector(':scope > a.get')
+          return [
+            get?.getAttribute('href'),
+            get?.textContent,
+            get?.getAttribute('download'),
+            get?.getAttribute('aria-label'),
+          ]
+        }),
+      ).toEqual([
+        [
+          '/api/works/gotoubun-v01/raw/download',
+          '↓',
+          '',
+          'download Go-Toubun no Hanayome v01 — Manga (RAW)',
+        ],
+        [
+          '/api/works/gotoubun-v03/raw/download',
+          '↓',
+          '',
+          'download Go-Toubun no Hanayome v03 — Manga (RAW)',
+        ],
+        [
+          '/api/works/gotoubun-v08/raw/download',
+          '↓',
+          '',
+          'download Go-Toubun no Hanayome v08 — Manga (RAW)',
+        ],
+      ])
+      expect(host.querySelectorAll('.volumes a.get')).toHaveLength(3)
+      expect(host.querySelector('.panel-open')).toBeNull()
+      if (panel === 'on-select') {
+        await act(async () => {
+          tiles[1]
+            .querySelector('a')
+            ?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+        expect(
+          tiles[1].querySelector('.tile-panel .alignment-panel'),
+        ).not.toBeNull()
+        expect(tiles[1].querySelector('.tile-panel a.get')).toBeNull()
+        expect(host.querySelectorAll('.volumes a.get')).toHaveLength(3)
+      }
+    },
+  )
 
-  it('shows no download at all when the account may not download', async () => {
-    const host = await settleWith({}, who({ can_download: false }))
-    expect(host.querySelectorAll('.volumes a.get')).toHaveLength(0)
-  })
+  it.each(['off', 'button'] as const)(
+    'keeps the download anchor outside the tile link, not nested in it, in %s mode',
+    async (panel) => {
+      const host = await settleWith({ panel }, who())
+      const tile =
+        panel === 'button'
+          ? await openTile(host)
+          : host.querySelectorAll('.volumes > li')[0]
+      const get = tile.querySelector('a.get')
+      expect(get).not.toBeNull()
+      // A nested anchor is invalid HTML and browsers reparent it, which a
+      // snapshot would render identically — so this is asserted structurally.
+      // The tile's own `<Link>` is the anchor holding `.cover-box`.
+      const tileLink = tile.querySelector('a:has(.cover-box)')
+      expect(tileLink).not.toBeNull()
+      expect(tileLink?.contains(get)).toBe(false)
+    },
+  )
 
-  it('shows no download when no gate sits above the screen', async () => {
-    // `useGate()` is `undefined` here, and `gate.ts` says the safe reading of
-    // that is "no account known" rather than a permissive one.
-    const host = await settle()
-    expect(host.querySelectorAll('.volumes a.get')).toHaveLength(0)
+  it.each(['button', 'off', 'on-select'] as const)(
+    'shows no download at all when the account may not download, in %s mode',
+    async (panel) => {
+      const host = await settleWith({ panel }, who({ can_download: false }))
+      if (panel === 'button') await openTile(host)
+      expect(host.querySelectorAll('.volumes a.get')).toHaveLength(0)
+    },
+  )
+
+  it.each(['button', 'off', 'on-select'] as const)(
+    'shows no download when no gate sits above the screen, in %s mode',
+    async (panel) => {
+      // `useGate()` is `undefined` here, and `gate.ts` says the safe reading of
+      // that is "no account known" rather than a permissive one.
+      const host = await settleWith({ panel })
+      if (panel === 'button') await openTile(host)
+      expect(host.querySelectorAll('.volumes a.get')).toHaveLength(0)
+    },
+  )
+
+  it('names each i “details for” its volume', async () => {
+    const host = await settleWith({ panel: 'button' }, who())
+    expect(
+      [...host.querySelectorAll('.volumes > li')].map((li) =>
+        li.querySelector('.panel-open')?.getAttribute('aria-label'),
+      ),
+    ).toEqual([
+      'details for Go-Toubun no Hanayome v01',
+      'details for Go-Toubun no Hanayome v03',
+      'details for Go-Toubun no Hanayome v08',
+    ])
   })
 
   it('names its tab after the series, once it has loaded — O173', async () => {
@@ -431,32 +561,37 @@ describe('Series, grid layout — the reader link and download withheld', () => 
     expect(host.querySelector('.volumes .unreadable')).toBeNull()
   })
 
-  it('withholds the per-tile download for the edition it would show, when that edition has lost its files, even though the volume itself stays readable', async () => {
-    vi.mocked(library.oneSeries).mockResolvedValue({
-      series: card(),
-      works: [
-        work({
-          // **`opens: 'en'` is what keeps this test about the download.**
-          // `chosen === 'all'` shows `editions[0]` — the broken one — while
-          // the volume itself opens `en` and stays readable. Downloading
-          // files that are not on disk is not an offer this screen should
-          // make, independent of whether the volume opens; leaving `opens`
-          // at the broken edition would withhold the reader link too and the
-          // test could no longer tell the two guards apart.
-          opens: 'en',
-          editions: [
-            edition({ key: 'raw', missing: 2 }),
-            edition({ key: 'en', missing: 0 }),
-          ],
-        }),
-      ],
-    })
-    const host = await settleWith({}, who())
-    expect(
-      host.querySelector('.volumes a[href="/read/gotoubun-v01"]'),
-    ).not.toBeNull()
-    expect(host.querySelector('.volumes a.get')).toBeNull()
-  })
+  it.each(['button', 'off'] as const)(
+    'withholds the per-tile download for the edition it would show, when that edition has lost its files, even though the volume itself stays readable, in %s mode',
+    async (panel) => {
+      vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+      vi.mocked(library.oneSeries).mockResolvedValue({
+        series: card(),
+        works: [
+          work({
+            // **`opens: 'en'` is what keeps this test about the download.**
+            // `chosen === 'all'` shows `editions[0]` — the broken one — while
+            // the volume itself opens `en` and stays readable. Downloading
+            // files that are not on disk is not an offer this screen should
+            // make, independent of whether the volume opens; leaving `opens`
+            // at the broken edition would withhold the reader link too and the
+            // test could no longer tell the two guards apart.
+            opens: 'en',
+            editions: [
+              edition({ key: 'raw', missing: 2 }),
+              edition({ key: 'en', missing: 0 }),
+            ],
+          }),
+        ],
+      })
+      const host = await settleWith({ panel }, who())
+      expect(
+        host.querySelector('.volumes a[href="/read/gotoubun-v01"]'),
+      ).not.toBeNull()
+      if (panel === 'button') await openTile(host)
+      expect(host.querySelector('.volumes a.get')).toBeNull()
+    },
+  )
 })
 
 describe('Series, the work-level editor', () => {
@@ -665,14 +800,19 @@ describe('Series, the work-level editor', () => {
 
     it('reads the series again and marks the other views when the save answers that it did not reach the library’s documents', async () => {
       vi.mocked(metadata.patchWork).mockResolvedValueOnce(saved(false))
+      const host = await editing()
+      // The re-read's answer, set after the page drew the title the field
+      // is mounted with: a title equal to that one is not sent.
       vi.mocked(library.oneSeries).mockResolvedValue({
         series: card(),
         works: [work({ title: renamed })],
       })
-      const host = await editing()
       await submit(form(host))
       await flush()
       await flush()
+      expect(vi.mocked(metadata.patchWork).mock.calls).toEqual([
+        ['gotoubun-v01', { title: renamed }],
+      ])
       expect(host.querySelector('.metadata-editor .unwritten')).not.toBeNull()
       expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7, undefined]])
       expect(
@@ -702,11 +842,10 @@ describe('Series, the work-level editor', () => {
           ?.textContent,
       ).toBe('Go-Toubun no Hanayome v01')
       expect(
-        host.querySelector('.metadata-editor textarea[name="title"]'),
-      ).not.toBeNull()
-      expect(host.querySelector('.metadata-editor .current')?.textContent).toBe(
-        renamed,
-      )
+        host.querySelector<HTMLTextAreaElement>(
+          '.metadata-editor textarea[name="title"]',
+        )?.value,
+      ).toBe(renamed)
     })
 
     it('reads nothing again and marks nothing when the save fails', async () => {
@@ -1300,13 +1439,17 @@ describe('Series, the edition selector', () => {
      * The page at the second of `entries`, the first standing before it, for
      * an account that may download. Drawn again with another `editionSelector`
      * through `rerender`, the router keeps its place in the history.
+     *
+     * With the panel off, so each tile's download is on its cover's corner,
+     * where `downloads` reads it: in `button` mode a tile draws none outside
+     * its panel.
      */
     const page = (
       entries: MemoryRouterProps['initialEntries'],
       editionSelector: boolean,
     ) => (
       <BrowsePrefsContext.Provider
-        value={{ ...browseModule.defaults, editionSelector }}
+        value={{ ...browseModule.defaults, editionSelector, panel: 'off' }}
       >
         <GateContext.Provider value={{ who: who(), signOut: () => {} }}>
           <MemoryRouter initialEntries={entries} initialIndex={1}>
@@ -1340,10 +1483,14 @@ describe('Series, the edition selector', () => {
         li.classList.contains('without'),
       ])
 
-    /** Each tile's download, by its address, `null` where it offers none. */
+    /**
+     * Each tile's download on its cover's corner, by its address, `null`
+     * where it offers none.
+     */
     const downloads = (host: HTMLElement) =>
-      [...host.querySelectorAll('.volumes li')].map(
-        (li) => li.querySelector('a.get')?.getAttribute('href') ?? null,
+      [...host.querySelectorAll('.volumes > li')].map(
+        (li) =>
+          li.querySelector(':scope > a.get')?.getAttribute('href') ?? null,
       )
 
     const choose = (host: HTMLElement, key: string) =>
@@ -1662,7 +1809,7 @@ describe('Series, the alignment panel', () => {
 
   /**
    * The toggle belongs at the button's own `onClick`, not inside `reveal`:
-   * `reveal(slug)` always calls `setOpen(slug)`, and `on-select`'s hover and
+   * `reveal(slug)` always asks for `slug`'s panel, and `on-select`'s hover and
    * focus paths call `reveal` too, so a toggle there would close the panel the
    * second time a pointer merely passed back over the same tile. The button's
    * toggle is what lets the panel close once any button has opened it.
@@ -2091,5 +2238,859 @@ describe('Series, its View panel — spec §2', () => {
     expect(
       [...panel.querySelectorAll('button')].map((b) => b.textContent),
     ).toEqual(['Reset'])
+  })
+})
+
+/**
+ * The open panel is laid at once and again from one `ResizeObserver` on its
+ * tile, and on nothing else (O283). jsdom has no observer, so a stub stands
+ * in: it keeps what each one watches and whether it is still connected, and
+ * a case reports a resize through it.
+ */
+describe('Series, the open panel’s observer (O283)', () => {
+  class StubResizeObserver {
+    static made: StubResizeObserver[] = []
+    watched: Element[] = []
+    connected = true
+    report: () => void
+    constructor(report: () => void) {
+      this.report = report
+      StubResizeObserver.made.push(this)
+    }
+    observe(el: Element) {
+      this.watched.push(el)
+    }
+    unobserve(el: Element) {
+      this.watched = this.watched.filter((each) => each !== el)
+    }
+    disconnect() {
+      this.connected = false
+      this.watched = []
+    }
+  }
+
+  /** What each observer still connected watches. */
+  const watching = () =>
+    StubResizeObserver.made
+      .filter((each) => each.connected)
+      .map((each) => each.watched)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    StubResizeObserver.made = []
+    vi.stubGlobal('ResizeObserver', StubResizeObserver)
+    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+    vi.mocked(library.oneSeries).mockResolvedValue({
+      series: card(),
+      works: [
+        work(),
+        work({
+          id: 2,
+          slug: 'gotoubun-v03',
+          title: 'Go-Toubun no Hanayome v03',
+          volume: 3,
+        }),
+      ],
+    })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('watches the open tile alone, with one observer, until its panel closes or another opens', async () => {
+    // A reader, so the panel holds no editor and its Title field's own
+    // observer.
+    const host = await settleWith({ panel: 'button' }, who())
+    const tiles = [...host.querySelectorAll('.volumes > li')]
+    expect(watching(), 'nothing open').toEqual([])
+
+    await openTile(host, 0)
+    expect(watching(), 'the first open').toEqual([[tiles[0]]])
+
+    await openTile(host, 1)
+    expect(watching(), 'the second open').toEqual([[tiles[1]]])
+
+    await act(async () => {
+      tiles[1].querySelector<HTMLButtonElement>('.panel-open')?.click()
+      await Promise.resolve()
+    })
+    expect(tiles[1].querySelector('.tile-panel'), 'closed').toBeNull()
+    expect(watching(), 'none open').toEqual([])
+  })
+
+  it('lays the panel from its tile as it opens, and again at each report', async () => {
+    const host = await settleWith({ panel: 'button' }, who())
+    const tile = await openTile(host, 0)
+    const panel = tile.querySelector('.tile-panel')
+    expect(vi.mocked(tilePanel.layPanel).mock.calls).toEqual([[panel, tile]])
+
+    const [observer] = StubResizeObserver.made
+    observer.report()
+    expect(vi.mocked(tilePanel.layPanel).mock.calls).toEqual([
+      [panel, tile],
+      [panel, tile],
+    ])
+  })
+})
+
+/**
+ * The panel's closes (O283): Escape, a press outside, `i` again, and in
+ * `button` mode focus arriving outside; each waits for the Title field's
+ * save, so none loses a typed title. jsdom has no pointer, so a press is
+ * dispatched where it would land, as `Sidebar.test.tsx` does;
+ * `Series.panel.browser.test.tsx` presses with a real mouse.
+ */
+describe('Series, closing a volume’s panel (O283)', () => {
+  const renamed = 'Go-Toubun no Hanayome, volume 1'
+  const third = work({
+    id: 2,
+    slug: 'gotoubun-v03',
+    title: 'Go-Toubun no Hanayome v03',
+    volume: 3,
+  })
+  const stored = (title: string): metadata.PatchResult => ({
+    taiyaku_library: 1,
+    updated: '2026-11-14T00:00:00Z',
+    title,
+    persisted: true,
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // Reset, not only cleared: a once-answer a case left unused would
+    // otherwise answer the next case's first call.
+    vi.mocked(metadata.patchWork).mockReset()
+    vi.mocked(library.oneSeries).mockReset()
+    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+  })
+
+  /**
+   * The page in `panel` mode for an administrator who may download, in
+   * `.library > main` as the shell draws it, with View's controls, so
+   * `.view-button` is drawn beside the title.
+   */
+  async function page(
+    panel: 'button' | 'on-select',
+    works = [work(), third],
+  ): Promise<HTMLElement> {
+    vi.mocked(library.oneSeries).mockResolvedValue({ series: card(), works })
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <BrowsePrefsContext.Provider
+          value={{ ...browseModule.defaults, panel }}
+        >
+          <BrowseControlsContext.Provider
+            value={{ change: () => {}, reset: () => {} }}
+          >
+            <GateContext.Provider
+              value={{ who: who({ admin: true }), signOut: () => {} }}
+            >
+              <div className="library">
+                <main>
+                  <MemoryRouter initialEntries={['/series/7']}>
+                    <Routes>
+                      <Route path="/series/:id" element={<Series />} />
+                    </Routes>
+                  </MemoryRouter>
+                </main>
+              </div>
+            </GateContext.Provider>
+          </BrowseControlsContext.Provider>
+        </BrowsePrefsContext.Provider>,
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    if (!host) throw new Error('nothing mounted')
+    expect(tilesOf(host)).toHaveLength(works.length)
+    return host
+  }
+
+  const tilesOf = (host: HTMLElement) => [
+    ...host.querySelectorAll<HTMLElement>('.volumes > li'),
+  ]
+  const need = <T extends Element>(el: T | null | undefined, what: string) => {
+    if (!el) throw new Error(`no ${what}`)
+    return el
+  }
+  const panelIn = (tile: Element) => tile.querySelector('.tile-panel')
+  const iOf = (tile: Element) =>
+    need(tile.querySelector<HTMLButtonElement>(':scope > .panel-open'), 'i')
+  const linkOf = (tile: Element) =>
+    need(tile.querySelector<HTMLAnchorElement>(':scope > a:not(.get)'), 'link')
+  const fieldOf = (tile: Element) =>
+    need(
+      tile.querySelector<HTMLTextAreaElement>(
+        ".tile-panel textarea[name='title']",
+      ),
+      'Title field',
+    )
+  const downloadIn = (tile: Element) =>
+    need(tile.querySelector<HTMLAnchorElement>('.tile-panel a.get'), '↓')
+  const headingOf = (host: HTMLElement) =>
+    need(host.querySelector<HTMLElement>('h1'), 'heading')
+  const viewOf = (host: HTMLElement) =>
+    need(host.querySelector<HTMLButtonElement>('.view-button'), 'View')
+  const calls = () => vi.mocked(metadata.patchWork).mock.calls
+
+  const focusOn = (el: HTMLElement) =>
+    flush(() => {
+      el.focus()
+    })
+  /** A key pressed where focus is, as a keyboard sends it. */
+  const key = (init: KeyboardEventInit) =>
+    flush(() => {
+      ;(document.activeElement ?? document.body).dispatchEvent(
+        new KeyboardEvent('keydown', {
+          bubbles: true,
+          cancelable: true,
+          ...init,
+        }),
+      )
+    })
+  const pressEscape = (init: KeyboardEventInit = {}) =>
+    key({ key: 'Escape', ...init })
+  const pressOn = (target: Element) =>
+    flush(() => {
+      target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    })
+  /** React's `onMouseEnter` listens for `mouseover`. */
+  const hoverOn = (target: Element) =>
+    flush(() => {
+      target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    })
+
+  /** The first tile's panel open in `button` mode, a title typed in it. */
+  async function typedIn(title = renamed) {
+    const host = await page('button')
+    const tile = await openTile(host, 0)
+    const field = fieldOf(tile)
+    await focusOn(field)
+    await typeInto(field, title)
+    return { host, tile, field }
+  }
+
+  it('closes on Escape and sends focus back to i', async () => {
+    const host = await page('button')
+    const tile = await openTile(host, 0)
+    await focusOn(downloadIn(tile))
+    await pressEscape()
+    expect(host.querySelector('.tile-panel')).toBeNull()
+    expect(document.activeElement).toBe(iOf(tile))
+  })
+
+  it('puts the title back on an Escape in the Title field, and closes on the next', async () => {
+    const { tile, field } = await typedIn()
+    await pressEscape()
+    expect({
+      open: panelIn(tile) !== null,
+      value: field.value,
+      focused: document.activeElement === field,
+    }).toEqual({
+      open: true,
+      value: 'Go-Toubun no Hanayome v01',
+      focused: true,
+    })
+
+    await pressEscape()
+    expect(panelIn(tile)).toBeNull()
+    expect(document.activeElement).toBe(iOf(tile))
+    expect(calls()).toEqual([])
+  })
+
+  it('stops the Escape that closes it on the way down', async () => {
+    const host = await page('button')
+    const heard: string[] = []
+    const hear = (event: KeyboardEvent) => {
+      heard.push(event.key)
+    }
+    document.addEventListener('keydown', hear)
+    onTestFinished(() => {
+      document.removeEventListener('keydown', hear)
+    })
+    const tile = await openTile(host, 0)
+    await focusOn(downloadIn(tile))
+    await pressEscape()
+    expect(panelIn(tile)).toBeNull()
+    expect(heard, 'the Escape that closed it').toEqual([])
+
+    // With no panel open, the same Escape reaches the document.
+    await pressEscape()
+    expect(heard, 'an Escape with none open').toEqual(['Escape'])
+  })
+
+  it.each([
+    ['isComposing', { isComposing: true }],
+    ['keyCode 229', { keyCode: 229 }],
+  ] as const)(
+    'leaves an Escape that ends a composition alone (%s)',
+    async (_, init) => {
+      const host = await page('button')
+      const tile = await openTile(host, 0)
+      await focusOn(downloadIn(tile))
+      await pressEscape(init)
+      expect(panelIn(tile)).not.toBeNull()
+    },
+  )
+
+  it('closes on a press outside its tile and panel, and not on one inside', async () => {
+    const host = await page('button')
+    const tile = await openTile(host, 0)
+    for (const inside of [
+      fieldOf(tile),
+      need(tile.querySelector('.alignment-panel'), 'alignment detail'),
+      iOf(tile),
+      linkOf(tile),
+    ]) {
+      await pressOn(inside)
+    }
+    expect(panelIn(tile), 'after presses inside').not.toBeNull()
+    await pressOn(headingOf(host))
+    expect(panelIn(tile), 'after a press outside').toBeNull()
+  })
+
+  it('closes when focus arrives outside it in button mode, and not in on-select', async () => {
+    const button = await page('button')
+    const tile = await openTile(button, 0)
+    await focusOn(fieldOf(tile))
+    expect(panelIn(tile), 'focus inside').not.toBeNull()
+    await focusOn(viewOf(button))
+    expect(panelIn(tile), 'button mode').toBeNull()
+
+    const onSelect = await page('on-select')
+    const [first] = tilesOf(onSelect)
+    await hoverOn(linkOf(first))
+    expect(panelIn(first), 'opened by the pointer').not.toBeNull()
+    await focusOn(viewOf(onSelect))
+    expect(panelIn(first), 'on-select mode').not.toBeNull()
+  })
+
+  it('closes an on-select panel on Escape with focus back on the tile’s link, and leaves it closed', async () => {
+    const host = await page('on-select')
+    const [tile] = tilesOf(host)
+    await hoverOn(linkOf(tile))
+    await focusOn(fieldOf(tile))
+    // The field's own Escape: the panel stays.
+    await pressEscape()
+    expect(panelIn(tile)?.contains(document.activeElement)).toBe(true)
+
+    await pressEscape()
+    expect(document.activeElement).toBe(linkOf(tile))
+    await flush()
+    expect(host.querySelector('.tile-panel')).toBeNull()
+  })
+
+  it('closes an unreadable tile’s on-select panel on Escape with focus still in the page', async () => {
+    const lost = work({ editions: [edition({ missing: 2 })] })
+    const host = await page('on-select', [lost, third])
+    const [tile] = tilesOf(host)
+    const box = need(
+      tile.querySelector<HTMLElement>(':scope > .tile-unreadable'),
+      'unreadable box',
+    )
+    await hoverOn(box)
+    // The fixture tells: the panel is open, and the tile has no link and
+    // no ↓ to send focus to.
+    expect(panelIn(tile)).not.toBeNull()
+    expect(tile.querySelector('a')).toBeNull()
+
+    await pressEscape()
+    expect(document.activeElement).toBe(box)
+    await flush()
+    expect(host.querySelector('.tile-panel')).toBeNull()
+  })
+
+  it('closes an unreadable tile’s on-select panel on Escape with focus on its corner ↓, where it has one', async () => {
+    // Opens the broken raw edition, and shows the whole English one.
+    const lost = work({
+      editions: [
+        edition({ key: 'en', label: 'English' }),
+        edition({ missing: 2 }),
+      ],
+      opens: 'raw',
+    })
+    const host = await page('on-select', [lost, third])
+    const [tile] = tilesOf(host)
+    await hoverOn(
+      need(tile.querySelector(':scope > .tile-unreadable'), 'unreadable box'),
+    )
+    const get = need(tile.querySelector<HTMLElement>(':scope > a.get'), '↓')
+    // The fixture tells: the panel is open, and the tile has no link.
+    expect(panelIn(tile)).not.toBeNull()
+    expect(tile.querySelector(':scope > a:not(.get)')).toBeNull()
+
+    await pressEscape()
+    expect(document.activeElement).toBe(get)
+    await flush()
+    expect(host.querySelector('.tile-panel')).toBeNull()
+  })
+
+  it('keeps an on-select panel when the pointer leaves its tile', async () => {
+    const host = await page('on-select')
+    const [tile] = tilesOf(host)
+    const link = linkOf(tile)
+    await hoverOn(link)
+    expect(panelIn(tile), 'opened by the pointer').not.toBeNull()
+    await flush(() => {
+      link.dispatchEvent(
+        new MouseEvent('mouseout', {
+          bubbles: true,
+          relatedTarget: headingOf(host),
+        }),
+      )
+    })
+    expect(panelIn(tile)).not.toBeNull()
+  })
+
+  it.each([
+    [
+      'Escape after focus moves to ↓ Download',
+      async (_: HTMLElement, tile: Element) => {
+        await focusOn(downloadIn(tile))
+        await pressEscape()
+      },
+      'closed',
+    ],
+    [
+      'a press outside with focus still in the field',
+      async (host: HTMLElement) => {
+        await pressOn(headingOf(host))
+      },
+      'closed',
+    ],
+    [
+      'a click on i',
+      async (_: HTMLElement, tile: Element) => {
+        await press(iOf(tile))
+      },
+      'closed',
+    ],
+    [
+      'focus arriving on .view-button',
+      async (host: HTMLElement) => {
+        await focusOn(viewOf(host))
+      },
+      'closed',
+    ],
+    [
+      'a click on the second tile’s i',
+      async (host: HTMLElement) => {
+        await press(iOf(tilesOf(host)[1]))
+      },
+      'second open',
+    ],
+  ] as const)(
+    'saves a changed title before the panel closes, on %s',
+    async (_, close, end) => {
+      const save = deferred<metadata.PatchResult>()
+      vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+      const { host, tile } = await typedIn()
+      await close(host, tile)
+      const sent = [['gotoubun-v01', { title: renamed }]]
+      expect({ drawn: panelIn(tile) !== null, calls: calls() }).toEqual({
+        drawn: true,
+        calls: sent,
+      })
+
+      await flush(() => {
+        save.resolve(stored(renamed))
+      })
+      await flush()
+      const [first, second] = tilesOf(host)
+      expect({
+        first: panelIn(first) !== null,
+        second: panelIn(second) !== null,
+        calls: calls(),
+      }).toEqual({
+        first: false,
+        second: end === 'second open',
+        calls: sent,
+      })
+    },
+  )
+
+  it('keeps the panel open, its failure under the field, when the save a close needs fails', async () => {
+    const save = deferred<metadata.PatchResult>()
+    vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+    const { host, tile } = await typedIn()
+    await pressOn(headingOf(host))
+    await flush(() => {
+      save.reject(new Error('/api/library/works/gotoubun-v01: 500'))
+    })
+    await flush()
+    expect(panelIn(tile)).not.toBeNull()
+    expect(tile.querySelector('.tile-panel p.failure')?.textContent).toBe(
+      '/api/library/works/gotoubun-v01: 500',
+    )
+  })
+
+  it('moves an on-select panel only once the save out has landed', async () => {
+    const save = deferred<metadata.PatchResult>()
+    vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+    const host = await page('on-select')
+    const [first, second] = tilesOf(host)
+    await hoverOn(linkOf(first))
+    const field = fieldOf(first)
+    await focusOn(field)
+    await typeInto(field, renamed)
+    await flush(() => {
+      field.blur()
+    })
+    expect(calls()).toEqual([['gotoubun-v01', { title: renamed }]])
+
+    await hoverOn(linkOf(second))
+    expect({
+      first: panelIn(first) !== null,
+      second: panelIn(second) !== null,
+    }).toEqual({ first: true, second: false })
+
+    await flush(() => {
+      save.resolve(stored(renamed))
+    })
+    await flush()
+    expect({
+      first: panelIn(first) !== null,
+      second: panelIn(second) !== null,
+      calls: calls().length,
+    }).toEqual({ first: false, second: true, calls: 1 })
+  })
+
+  it('sends nothing when the pointer or focus comes back to the open on-select panel’s tile', async () => {
+    vi.mocked(metadata.patchWork).mockRejectedValueOnce(
+      new Error('/api/library/works/gotoubun-v01: 500'),
+    )
+    const host = await page('on-select')
+    const [tile] = tilesOf(host)
+    const link = linkOf(tile)
+    await hoverOn(link)
+    const field = fieldOf(tile)
+    await focusOn(field)
+    await typeInto(field, renamed)
+    await flush(() => {
+      field.blur()
+    })
+    // The fixture tells: the save failed, and the field holds the title
+    // it did not store.
+    expect({
+      calls: calls().length,
+      failure: tile.querySelector('.tile-panel p.failure')?.textContent,
+      value: field.value,
+    }).toEqual({
+      calls: 1,
+      failure: '/api/library/works/gotoubun-v01: 500',
+      value: renamed,
+    })
+
+    await hoverOn(link)
+    await focusOn(link)
+    await focusOn(field)
+    expect({ open: panelIn(tile) !== null, calls: calls().length }).toEqual({
+      open: true,
+      calls: 1,
+    })
+  })
+
+  it('keeps the panel through a press on the page area itself or the root, and closes on one on the page’s heading', async () => {
+    const host = await page('button')
+    const tile = await openTile(host, 0)
+    await pressOn(need(host.querySelector('.library > main'), 'page area'))
+    expect(panelIn(tile), 'a press on the page area').not.toBeNull()
+    await pressOn(document.documentElement)
+    expect(panelIn(tile), 'a press on the root').not.toBeNull()
+    await pressOn(headingOf(host))
+    expect(panelIn(tile), 'a press on the heading').toBeNull()
+  })
+
+  it('saves what is typed while a close’s save is out before it closes', async () => {
+    const first = deferred<metadata.PatchResult>()
+    const again = deferred<metadata.PatchResult>()
+    vi.mocked(metadata.patchWork)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(again.promise)
+    const { host, tile, field } = await typedIn('A')
+    await pressOn(headingOf(host))
+    expect(calls()).toEqual([['gotoubun-v01', { title: 'A' }]])
+    expect(document.activeElement).toBe(field)
+    await typeInto(field, 'AB')
+
+    await flush(() => {
+      first.resolve(stored('A'))
+    })
+    await flush()
+    expect({ drawn: panelIn(tile) !== null, calls: calls() }).toEqual({
+      drawn: true,
+      calls: [
+        ['gotoubun-v01', { title: 'A' }],
+        ['gotoubun-v01', { title: 'AB' }],
+      ],
+    })
+
+    await flush(() => {
+      again.resolve(stored('AB'))
+    })
+    await flush()
+    expect({ drawn: panelIn(tile) !== null, calls: calls().length }).toEqual({
+      drawn: false,
+      calls: 2,
+    })
+  })
+
+  /**
+   * The field's own Escape withdraws the ask a waiting close made, so the
+   * save out answers `true` with newer text unsent in the field.
+   */
+  it('saves what is typed after an Escape in the field while a close waits on the field’s own save', async () => {
+    const first = deferred<metadata.PatchResult>()
+    const again = deferred<metadata.PatchResult>()
+    vi.mocked(metadata.patchWork)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(again.promise)
+    const { host, tile, field } = await typedIn('A')
+    await key({ key: 'Enter' })
+    expect(calls(), 'the field’s own save').toEqual([
+      ['gotoubun-v01', { title: 'A' }],
+    ])
+    await pressOn(headingOf(host))
+    await pressEscape()
+    expect(field.value, 'the title being sent, put back').toBe('A')
+    await typeInto(field, 'AB')
+    expect(
+      { drawn: panelIn(tile) !== null, calls: calls().length },
+      'before the save lands',
+    ).toEqual({ drawn: true, calls: 1 })
+
+    await flush(() => {
+      first.resolve(stored('A'))
+    })
+    await flush()
+    expect({ drawn: panelIn(tile) !== null, calls: calls() }).toEqual({
+      drawn: true,
+      calls: [
+        ['gotoubun-v01', { title: 'A' }],
+        ['gotoubun-v01', { title: 'AB' }],
+      ],
+    })
+
+    await flush(() => {
+      again.resolve(stored('AB'))
+    })
+    await flush()
+    expect({ drawn: panelIn(tile) !== null, calls: calls().length }).toEqual({
+      drawn: false,
+      calls: 2,
+    })
+  })
+
+  it('puts the stored title back on an Escape in the field once the save out has failed, and closes on the next', async () => {
+    const save = deferred<metadata.PatchResult>()
+    // A second send is held rather than answered, so it is counted.
+    vi.mocked(metadata.patchWork)
+      .mockReturnValueOnce(save.promise)
+      .mockReturnValueOnce(deferred<metadata.PatchResult>().promise)
+    const { tile, field } = await typedIn('A')
+    await key({ key: 'Enter' })
+    await typeInto(field, 'AB')
+    await pressEscape()
+    await flush(() => {
+      save.reject(new Error('/api/library/works/gotoubun-v01: 500'))
+    })
+    await flush()
+    // The fixture tells: the field, focused, holds the title that failed,
+    // and the failure is under it.
+    expect({
+      value: field.value,
+      focused: document.activeElement === field,
+      failure: tile.querySelector('.tile-panel p.failure')?.textContent,
+    }).toEqual({
+      value: 'A',
+      focused: true,
+      failure: '/api/library/works/gotoubun-v01: 500',
+    })
+
+    await pressEscape()
+    expect({
+      open: panelIn(tile) !== null,
+      value: field.value,
+      calls: calls().length,
+    }).toEqual({ open: true, value: 'Go-Toubun no Hanayome v01', calls: 1 })
+
+    await pressEscape()
+    expect({ open: panelIn(tile) !== null, calls: calls().length }).toEqual({
+      open: false,
+      calls: 1,
+    })
+  })
+
+  it('stays open with the unwritten note when the save a close waits on is not written beside the library, and closes on the next press', async () => {
+    const save = deferred<metadata.PatchResult>()
+    vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+    const { host, tile } = await typedIn()
+    await pressOn(headingOf(host))
+    await flush(() => {
+      save.resolve({ ...stored(renamed), persisted: false, why: ['disk full'] })
+    })
+    await flush()
+    expect({
+      open: panelIn(tile) !== null,
+      note: tile.querySelector('.tile-panel .unwritten li')?.textContent,
+    }).toEqual({ open: true, note: 'disk full' })
+
+    await pressOn(headingOf(host))
+    expect({ open: panelIn(tile) !== null, calls: calls().length }).toEqual({
+      open: false,
+      calls: 1,
+    })
+  })
+
+  it('keeps an on-select panel with the unwritten note when the save a move waits on is not written beside the library, and moves on the next', async () => {
+    const save = deferred<metadata.PatchResult>()
+    vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+    const host = await page('on-select')
+    const [first, second] = tilesOf(host)
+    await hoverOn(linkOf(first))
+    const field = fieldOf(first)
+    await focusOn(field)
+    await typeInto(field, renamed)
+    await flush(() => {
+      field.blur()
+    })
+    await hoverOn(linkOf(second))
+    await flush(() => {
+      save.resolve({ ...stored(renamed), persisted: false, why: ['disk full'] })
+    })
+    await flush()
+    expect({
+      first: panelIn(first) !== null,
+      second: panelIn(second) !== null,
+      note: first.querySelector('.tile-panel .unwritten li')?.textContent,
+    }).toEqual({ first: true, second: false, note: 'disk full' })
+
+    await hoverOn(linkOf(second))
+    expect({
+      first: panelIn(first) !== null,
+      second: panelIn(second) !== null,
+      calls: calls().length,
+    }).toEqual({ first: false, second: true, calls: 1 })
+  })
+
+  it('leaves focus where it was moved while an on-select panel’s Escape close waited on the save out', async () => {
+    const save = deferred<metadata.PatchResult>()
+    vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+    const host = await page('on-select')
+    const [tile] = tilesOf(host)
+    await hoverOn(linkOf(tile))
+    const field = fieldOf(tile)
+    await focusOn(field)
+    await typeInto(field, renamed)
+    await key({ key: 'Enter' })
+    // The field's own Escape, then the close, which waits on the save.
+    await pressEscape()
+    await pressEscape()
+    expect(panelIn(tile), 'while the save is out').not.toBeNull()
+    await focusOn(viewOf(host))
+
+    await flush(() => {
+      save.resolve(stored(renamed))
+    })
+    await flush()
+    expect(panelIn(tile)).toBeNull()
+    expect(document.activeElement).toBe(viewOf(host))
+  })
+
+  it.each([
+    [
+      '↓ Download, inside the panel',
+      (tile: Element) => focusOn(downloadIn(tile)),
+    ],
+    [
+      'the page’s body, the field left',
+      (tile: Element) =>
+        flush(() => {
+          fieldOf(tile).blur()
+        }),
+    ],
+  ] as const)(
+    'sends focus to i once an Escape’s close has waited on the save out, focus having moved to %s',
+    async (_, move) => {
+      const save = deferred<metadata.PatchResult>()
+      vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+      const { tile } = await typedIn()
+      await key({ key: 'Enter' })
+      await pressEscape()
+      await pressEscape()
+      expect(panelIn(tile), 'while the save is out').not.toBeNull()
+      await move(tile)
+      expect(document.activeElement, 'moved').not.toBe(fieldOf(tile))
+
+      await flush(() => {
+        save.resolve(stored(renamed))
+      })
+      await flush()
+      expect(panelIn(tile)).toBeNull()
+      expect(document.activeElement).toBe(iOf(tile))
+    },
+  )
+
+  it('sends focus to i on an Escape from its tile’s link', async () => {
+    const host = await page('button')
+    const tile = await openTile(host, 0)
+    await focusOn(linkOf(tile))
+    expect(panelIn(tile), 'focus on the link, outside the panel').not.toBeNull()
+    await pressEscape()
+    expect(panelIn(tile)).toBeNull()
+    expect(document.activeElement).toBe(iOf(tile))
+  })
+
+  it('sends focus to i once a click on it has closed the panel, where the click did not focus it', async () => {
+    const host = await page('button')
+    const tile = await openTile(host, 0)
+    await focusOn(fieldOf(tile))
+    await press(iOf(tile))
+    expect(panelIn(tile)).toBeNull()
+    expect(document.activeElement).toBe(iOf(tile))
+  })
+
+  it('sends a failed title again for no pointer entering another on-select tile, and moves once the field holds the stored title', async () => {
+    vi.mocked(metadata.patchWork).mockRejectedValue(
+      new Error('/api/library/works/gotoubun-v01: 500'),
+    )
+    const host = await page('on-select')
+    const [first, second] = tilesOf(host)
+    await hoverOn(linkOf(first))
+    const field = fieldOf(first)
+    await focusOn(field)
+    await typeInto(field, renamed)
+    await flush(() => {
+      field.blur()
+    })
+    // The fixture tells: the save failed, and focus is off the panel.
+    expect({
+      calls: calls().length,
+      failure: first.querySelector('.tile-panel p.failure')?.textContent,
+      inPanel: panelIn(first)?.contains(document.activeElement),
+    }).toEqual({
+      calls: 1,
+      failure: '/api/library/works/gotoubun-v01: 500',
+      inPanel: false,
+    })
+
+    await hoverOn(linkOf(second))
+    expect({
+      first: panelIn(first) !== null,
+      second: panelIn(second) !== null,
+      calls: calls().length,
+    }).toEqual({ first: true, second: false, calls: 1 })
+
+    // Escape puts the stored title back, so nothing is left to send.
+    await focusOn(field)
+    await pressEscape()
+    await focusOn(viewOf(host))
+    await hoverOn(linkOf(second))
+    expect({
+      first: panelIn(first) !== null,
+      second: panelIn(second) !== null,
+      calls: calls().length,
+    }).toEqual({ first: false, second: true, calls: 1 })
   })
 })

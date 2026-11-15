@@ -1,23 +1,26 @@
 import { act } from 'react'
-import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
-import { page, userEvent } from 'vitest/browser'
+import { userEvent } from 'vitest/browser'
 // **Required**, the same reason `Config.browser.test.tsx` gives.
 import '../src/index.css'
-import { BrowsePrefsContext, browseModule } from '../src/browseModule'
-import { GateContext } from '../src/gate'
 import * as library from '../src/library'
-import { Series } from '../src/Series'
-import { settleUntil } from './support/async'
-import { mount } from './support/mount'
+import * as metadata from '../src/metadata'
+import { deferred, settleUntil } from './support/async'
+import { mouse } from './support/mouse'
+import { pointerRulesAs } from './support/pointer'
+import { seriesPage } from './support/seriesPage'
 
 vi.mock('../src/library', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/library')>()),
   oneSeries: vi.fn(),
   work: vi.fn(),
 }))
+vi.mock('../src/metadata', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/metadata')>()),
+  patchWork: vi.fn(),
+}))
 
-/** 96 characters: open, the Title box hangs over the next tile. */
+/** 96 characters, as long as a series title with its edition runs. */
 const LONG_TITLE =
   'Kagami no Kuni no Harisugawa: The Complete Digital Edition, Volume 01 (Collector’s Box Set, Ed.)'
 
@@ -41,11 +44,10 @@ const work = (id: number, title: string): library.WorkCard => ({
   opens: 'raw',
 })
 
+/** Ten volumes: two rows at 1280 px, so the first panel lies over a tile. */
 const WORKS = [
   work(1, LONG_TITLE),
-  work(2, 'Volume 2'),
-  work(3, 'Volume 3'),
-  work(4, 'Volume 4'),
+  ...Array.from({ length: 9 }, (_, n) => work(n + 2, `Volume ${n + 2}`)),
 ]
 
 beforeEach(() => {
@@ -58,7 +60,7 @@ beforeEach(() => {
       editions: WORKS.length,
       aligned: 0,
       added: 1,
-      unread: 4,
+      unread: WORKS.length,
       cover: null,
       titles: [],
     },
@@ -68,56 +70,55 @@ beforeEach(() => {
     ...(WORKS.find((w) => w.slug === slug) as library.WorkCard),
     alignments: [],
   }))
+  // Reset, not only cleared: a once-answer a case left unused would
+  // otherwise answer the next case's first call.
+  vi.mocked(metadata.patchWork).mockReset()
+  vi.mocked(metadata.patchWork).mockImplementation(async (_, fields) =>
+    stored(fields.title ?? ''),
+  )
 })
+
+/** The answer to a title save that stored `title`. */
+const stored = (title: string): metadata.PatchResult => ({
+  taiyaku_library: 1,
+  updated: '2026-11-14T00:00:00Z',
+  title,
+  persisted: true,
+})
+
+/** A real input, the React updates it causes drawn inside `act`. */
+const real = (input: () => Promise<unknown>) =>
+  act(async () => {
+    await input()
+  })
+
+const rect = (el: Element | null | undefined) => {
+  if (el == null) throw new Error('nothing drawn')
+  return el.getBoundingClientRect()
+}
 
 /**
  * The Series page in `on-select` mode, §3's panel that follows the pointer
  * and the focus, for an admin at 1280 px, in `.library > main` as the shell
- * draws it; the first volume's panel revealed by a pointer on its tile.
+ * draws it; the first volume's panel revealed by a pointer on its tile,
+ * and `under`, a tile of the next row that the panel lies over.
  */
 async function firstPanelOpen() {
-  const was = [window.innerWidth, window.innerHeight] as const
-  onTestFinished(() => page.viewport(...was))
-  await page.viewport(1280, 800)
-  let host: HTMLElement | undefined
-  await act(async () => {
-    host = mount(
-      <BrowsePrefsContext.Provider
-        value={{ ...browseModule.defaults, panel: 'on-select' }}
-      >
-        <GateContext.Provider
-          value={{
-            who: {
-              user_id: 1,
-              admin: true,
-              can_download: false,
-              can_stream: true,
-              can_stamp: false,
-            },
-            signOut: () => {},
-          }}
-        >
-          <div className="library">
-            <div className="sidebar-column" />
-            <main>
-              <MemoryRouter initialEntries={['/series/7']}>
-                <Routes>
-                  <Route path="/series/:id" element={<Series />} />
-                </Routes>
-              </MemoryRouter>
-            </main>
-          </div>
-        </GateContext.Provider>
-      </BrowsePrefsContext.Provider>,
-    )
+  const shown = await seriesPage({
+    width: 1280,
+    panel: 'on-select',
+    who: {
+      user_id: 1,
+      admin: true,
+      can_download: false,
+      can_stream: true,
+      can_stamp: false,
+    },
   })
-  const shown = host as HTMLElement
   const tiles = () => [...shown.querySelectorAll('.volumes > li')]
-  await settleUntil('the volumes', () => tiles().length === 4, 1000)
+  await settleUntil('the volumes', () => tiles().length === WORKS.length, 1000)
   await document.fonts.ready
-  await act(async () => {
-    await userEvent.hover(tiles()[0].querySelector('a') as Element)
-  })
+  await real(() => userEvent.hover(tiles()[0].querySelector('a') as Element))
   await settleUntil(
     'the first volume’s editor',
     () => tiles()[0].querySelector('.metadata-editor') != null,
@@ -125,8 +126,24 @@ async function firstPanelOpen() {
   )
   const box = tiles()[0].querySelector<HTMLTextAreaElement>("[name='title']")
   if (box === null) throw new Error('no title box')
-  return { host: shown, tiles, box }
+  const panel = rect(tiles()[0].querySelector('.tile-panel'))
+  const under = tiles().find((tile) => {
+    const at = rect(tile)
+    return (
+      at.top > rect(tiles()[0]).bottom &&
+      at.left < panel.right &&
+      at.right > panel.left &&
+      at.top < panel.bottom
+    )
+  })
+  // The fixture tells: a tile of the next row lies under the first panel.
+  expect(under, 'a tile under the first panel').toBeDefined()
+  return { host: shown, tiles, box, under: under as Element }
 }
+
+/** Which tiles draw an editor, in order. */
+const editorIn = (tiles: Element[]) =>
+  tiles.map((tile) => tile.querySelector('.metadata-editor') !== null)
 
 /** Whether a pointer has come onto `el`: the browser's own `mouseenter`. */
 const entered = (el: Element) => {
@@ -137,105 +154,97 @@ const entered = (el: Element) => {
   return seen
 }
 
-/**
- * Click into the open first volume's Title box, type, and rest the pointer
- * on the part of the open box that hangs over the second tile.
- */
-async function typedWithPointerOnOverhang() {
-  const opened = await firstPanelOpen()
-  const { tiles, box } = opened
-  await act(async () => {
-    await userEvent.click(box)
-  })
-  await act(async () => {
-    await userEvent.keyboard('{Control>}{End}{/Control} (typed)')
-  })
-  const next = tiles()[1].getBoundingClientRect()
-  const open = box.getBoundingClientRect()
-  const at = { x: next.left + next.width / 2, y: open.top + open.height / 2 }
-  // The fixture tells: the point is on the open box, and over the second
-  // tile.
-  expect(open.right).toBeGreaterThan(at.x)
-  expect(document.elementFromPoint(at.x, at.y)).toBe(box)
-  await act(async () => {
-    await userEvent.hover(box, {
-      position: { x: at.x - open.left, y: at.y - open.top },
-    })
-  })
-  return { ...opened, seen: entered(tiles()[1]) }
-}
+describe('the Series page’s on-select panel while its Title field is edited (O283)', () => {
+  it('keeps the panel, the focus and the restored title on the first Escape in the Title field, with the pointer resting on the panel over the next row', async () => {
+    onTestFinished(pointerRulesAs('mouse'))
+    const { tiles, box, under } = await firstPanelOpen()
+    await real(() => userEvent.click(box))
+    await real(() => userEvent.keyboard('{Control>}{End}{/Control} (2)'))
+    expect(box.value).toBe(`${LONG_TITLE} (2)`)
 
-describe('the Series page’s on-select panel while its Title box is edited (O274)', () => {
-  it('keeps the panel, the focus and the restored title on Escape with the pointer on the box’s overhang', async () => {
-    const { tiles, box, seen } = await typedWithPointerOnOverhang()
-    expect(box.value).toBe(`${LONG_TITLE} (typed)`)
-
-    await act(async () => {
-      await userEvent.keyboard('{Escape}')
-    })
-    // The fixture tells: closed, the box uncovers the second tile under the
-    // pointer, and the browser says the pointer came onto it.
-    await settleUntil('the pointer on the second tile', () => seen.yes, 1000)
-
+    // The pointer onto the middle of where the panel and the lower tile
+    // meet.
+    const panel = tiles()[0].querySelector('.tile-panel')
+    const over = rect(panel)
+    const tile = rect(under)
+    const x =
+      (Math.max(over.left, tile.left) + Math.min(over.right, tile.right)) / 2
+    const y =
+      (Math.max(over.top, tile.top) + Math.min(over.bottom, tile.bottom)) / 2
+    await real(() => mouse.moveTo(x, y))
+    // The fixture tells: the point is in the panel and in the lower tile.
     expect({
-      editorIn: tiles().map(
-        (tile) => tile.querySelector('.metadata-editor') != null,
-      ),
+      inTile:
+        x > tile.left && x < tile.right && y > tile.top && y < tile.bottom,
+      onPanel:
+        document.elementFromPoint(x, y)?.closest('.tile-panel') === panel,
+    }).toEqual({ inTile: true, onPanel: true })
+
+    await real(() => userEvent.keyboard('{Escape}'))
+    expect({
+      editors: editorIn(tiles()),
       focused: document.activeElement === box,
-      value: box.isConnected ? box.value : 'unmounted',
+      value: box.value,
     }).toEqual({
-      editorIn: [true, false, false, false],
+      editors: tiles().map((_, n) => n === 0),
       focused: true,
       value: LONG_TITLE,
     })
   })
 
-  it('keeps the panel and the typed title on Tab to Save with the pointer on the box’s overhang', async () => {
-    const { tiles, box, seen } = await typedWithPointerOnOverhang()
+  it('saves the typed title, then moves the panel, on Tab from the Title field to the next tile’s link', async () => {
+    onTestFinished(pointerRulesAs('mouse'))
+    const save = deferred<metadata.PatchResult>()
+    vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+    const { tiles, box } = await firstPanelOpen()
+    await real(() => userEvent.click(box))
+    await real(() => userEvent.keyboard('{Control>}{End}{/Control} (2)'))
+    // Off every tile, so that only focus chooses the panel.
+    await real(() => mouse.moveTo(0, 0))
 
-    await act(async () => {
-      await userEvent.tab()
+    await real(() => userEvent.keyboard('{Tab}'))
+    const next = tiles()[1].querySelector(':scope > a')
+    expect({
+      focused: document.activeElement === next,
+      editors: editorIn(tiles()),
+      calls: vi.mocked(metadata.patchWork).mock.calls,
+    }).toEqual({
+      focused: true,
+      editors: tiles().map((_, n) => n === 0),
+      calls: [['kagami-v01', { title: `${LONG_TITLE} (2)` }]],
     })
-    await settleUntil('the pointer on the second tile', () => seen.yes, 1000)
 
-    const save = tiles()[0].querySelector(
-      ".metadata-editor button[type='submit']",
+    await real(async () => {
+      save.resolve(stored(`${LONG_TITLE} (2)`))
+    })
+    await settleUntil(
+      'the first editor gone or the second drawn',
+      () => !editorIn(tiles())[0] || editorIn(tiles())[1],
+      1000,
     )
     expect({
-      editorIn: tiles().map(
-        (tile) => tile.querySelector('.metadata-editor') != null,
-      ),
-      onSave: save !== null && document.activeElement === save,
-      value: box.isConnected ? box.value : 'unmounted',
-    }).toEqual({
-      editorIn: [true, false, false, false],
-      onSave: true,
-      value: `${LONG_TITLE} (typed)`,
-    })
+      editors: editorIn(tiles()),
+      calls: vi.mocked(metadata.patchWork).mock.calls.length,
+    }).toEqual({ editors: tiles().map((_, n) => n === 1), calls: 1 })
   })
 
-  it('reveals the volume under the pointer again once focus has left the open panel', async () => {
+  it('reveals the volume under the pointer again once a press outside has closed the panel', async () => {
+    onTestFinished(pointerRulesAs('mouse'))
     const { host, tiles, box } = await firstPanelOpen()
-    await act(async () => {
-      await userEvent.click(box)
-    })
+    await real(() => userEvent.click(box))
     const third = tiles()[2].querySelector('a') as Element
     const seen = entered(tiles()[2])
-    await act(async () => {
-      await userEvent.hover(third)
-    })
+    await real(() => userEvent.hover(third))
     await settleUntil('the pointer on the third tile', () => seen.yes, 1000)
     // While focus is in the panel, the pointer reveals nothing.
     expect(tiles()[2].querySelector('.alignment-panel')).toBeNull()
 
-    // Focus leaves the panel for the page, then the pointer comes back.
-    await act(async () => {
-      await userEvent.click(host.querySelector('h1') as Element)
-    })
-    expect(document.activeElement).toBe(document.body)
-    await act(async () => {
-      await userEvent.hover(third)
-    })
+    // A press outside closes the panel, then the pointer comes back.
+    await real(() => userEvent.click(host.querySelector('h1') as Element))
+    expect(editorIn(tiles()), 'after the press').toEqual(
+      tiles().map(() => false),
+    )
+    await real(() => userEvent.hover(third))
     await settleUntil(
       'the third volume’s panel',
       () => tiles()[2].querySelector('.metadata-editor') != null,

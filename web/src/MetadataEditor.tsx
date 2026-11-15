@@ -36,11 +36,21 @@
  * reserved for the one path that really did lose the edit: a thrown
  * 409/404/403 from a hard failure.
  */
-import { type FormEvent, useId, useLayoutEffect, useRef, useState } from 'react'
+import {
+  type FormEvent,
+  type Ref,
+  useEffect,
+  useId,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import { humanBytes } from './bytes'
 import { statusOf } from './config'
 import { JOB_WAITS, useDeriveHold, useOwnRequests } from './deriveHold'
 import { HeldButton } from './HeldButton'
+import { useDrawnWait } from './hooks'
 import { type PatchResult, reasons, type WorkEdit } from './metadata'
 import {
   type Archive,
@@ -224,60 +234,46 @@ const confirmablePlan = (phase: StampPhase): StampPlan | undefined => {
 /** A title is one line: each line break a paste brings becomes a space. */
 const oneLine = (typed: string) => typed.replace(/\r\n|\r|\n/g, ' ')
 
-/** The left and right of `area`'s content box. */
-const contentSpan = (area: Element) => {
-  const box = area.getBoundingClientRect()
-  const style = getComputedStyle(area)
-  const left = box.left + area.clientLeft
-  return {
-    start: left + parseFloat(style.paddingLeft),
-    end: left + area.clientWidth - parseFloat(style.paddingRight),
-  }
-}
-
 /**
- * Lays the open Title box, `box` as it is at rest, over the tiles beside
- * and below its own (O274): two tiles and the gap between them wide, or the
- * page area's width where that is less; from its tile's left edge, or back
- * from its tile's right edge, which only the row's last column needs, and
- * never left of the area; as tall as its title, up to five lines.
- * Read from the layout: only the grid knows which column a tile fell in.
+ * Sets the Title field's height to its title's lines at its own width, up
+ * to five, past which it scrolls (O283). One line is read from the field at
+ * `rows={1}` with its own height cleared.
  */
-function layOpen(box: HTMLTextAreaElement) {
-  const grid = box.closest('.volumes')
-  const tiled = box.closest('.volumes > li')
-  const area = box.closest('.library > main')
-  // Only a volume's tile on a page has columns to open across.
-  if (grid === null || tiled === null || area === null) return
-  const rest = box.getBoundingClientRect()
-  const tile = tiled.getBoundingClientRect()
-  const gap = parseFloat(getComputedStyle(grid).columnGap)
-  const { start, end } = contentSpan(area)
-  const width = Math.min(2 * tile.width + gap, end - start)
-  // Held to the area's left edge: when the box is as wide as the area the
-  // rightward test is exact, and a tile a fraction right of the area's
-  // start fails it, which would open the box a whole tile past the left
-  // edge.
-  const left =
-    tile.left + width <= end ? tile.left : Math.max(start, tile.right - width)
+function fitTitle(box: HTMLTextAreaElement) {
+  // Cleared, the field is one line tall and loses its place in the title.
+  const scrolled = box.scrollTop
+  box.style.height = ''
   const style = getComputedStyle(box)
   const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
   const line = box.clientHeight - padding
-  const border = rest.height - box.clientHeight
-  box.style.left = `${left - rest.left}px`
-  box.style.width = `${width}px`
-  box.style.maxWidth = 'none'
-  // Read at the open width, where the title takes fewer lines, and with no
-  // scrollbar, which a box one line tall would draw beside them and which
-  // would narrow them.
+  const border = box.getBoundingClientRect().height - box.clientHeight
+  // Read with no scrollbar, which a field one line tall would draw beside
+  // its lines and which would narrow them.
   box.style.overflowY = 'hidden'
   const height = Math.min(box.scrollHeight, 5 * line + padding) + border
   box.style.overflowY = ''
   box.style.height = `${height}px`
-  // Margins that give back what it grew by: its line, and all after it,
-  // stays where it was at rest.
-  box.style.marginRight = `${rest.width - width}px`
-  box.style.marginBottom = `${rest.height - height}px`
+  box.scrollTop = scrolled
+}
+
+/** What `Series.tsx` holds of the open editor, so that no close loses a title. */
+export interface TitleFlush {
+  /**
+   * A blank title is put back first. Then `null` when nothing typed is
+   * unsaved and no save is out; otherwise the save of the newest text, sent
+   * now or after the one out: `true` once it is stored and written beside
+   * the library, `false` once a save failed or was stored but not written
+   * there, which is then shown under the field. A `false` holds the close
+   * waiting on it, so no close hides either; after an unwritten save
+   * nothing is left to send, and the next answer is `null`.
+   */
+  flush(): Promise<boolean> | null
+  /**
+   * Whether the field holds a title whose save failed. A leave, an Enter
+   * or a close asks for it to be sent again; a pointer passing over tiles
+   * does not, so `Series` moves no panel by hover while this holds.
+   */
+  failed(): boolean
 }
 
 export function MetadataEditor({
@@ -285,6 +281,7 @@ export function MetadataEditor({
   title,
   onPatch,
   canStamp = false,
+  ref,
 }: {
   slug: string
   title: string
@@ -309,17 +306,77 @@ export function MetadataEditor({
    * screen could tell them.
    */
   canStamp?: boolean
+  /** Where `Series` is handed the editor's `flush`, which its closes wait on. */
+  ref?: Ref<TitleFlush>
 }) {
   const [value, setValue] = useState(title)
-  const [current, setCurrent] = useState(title)
-  const [saving, setSaving] = useState(false)
-  const [open, setOpen] = useState(false)
+  /**
+   * The field's text, as `value` holds it, for the readers no render
+   * reaches: a save as it lands, which closes over the render that sent
+   * it, and `flush`, which `Series` calls from its document listeners.
+   */
+  const latest = useRef(title)
+  /** Sets the field's text and `latest` together, so neither lags. */
+  const setText = (text: string) => {
+    latest.current = text
+    setValue(text)
+  }
+  const [editing, setEditing] = useState(false)
   const titleBox = useRef<HTMLTextAreaElement>(null)
   /**
-   * What Escape puts back: the title the box held when it took focus or at
-   * its last save that succeeded, whichever came later.
+   * The title stored: the one mounted, then the text of each save that
+   * succeeded. Escape puts it back while no save is out, and a title equal
+   * to it is not sent. Never the server's re-projected title, since the
+   * field keeps what was typed (O283), and never taken at focus, where the
+   * field may hold a title whose save failed.
    */
-  const held = useRef(title)
+  const stored = useRef(title)
+  /**
+   * The text of the title save that is out, `null` when none. Escape and a
+   * blank title put it back while it is out: it is the stored title once
+   * it lands, and a field put back to the older one would send that over
+   * it at the next leave.
+   */
+  const sending = useRef<string | null>(null)
+  /**
+   * The title save that is out, `null` when none: one at a time. It settles
+   * only after the newest text asked for meanwhile is sent and settles too,
+   * so whoever waits on it waits for every edit.
+   */
+  const out = useRef<Promise<boolean> | null>(null)
+  /**
+   * A leave, an Enter or a `flush` came while a save was out, so the newest
+   * text goes once that save lands. Cleared as each save is sent, and by
+   * Escape, which undoes every edit not yet sent, this ask among them.
+   * Cleared when a save fails too: nothing is sent after a failure, which
+   * stays shown until the next save, or until the field is back at the
+   * stored title: put there by Escape, or found there by a leave, an Enter
+   * or a `flush`.
+   */
+  const again = useRef(false)
+  /**
+   * `sending` as state, so the note can say a save is out: true from
+   * `send` until the chain it starts ends. Never false between a save and
+   * the newer title it sends as it lands, or the note would go blank while
+   * that title is out. Drawn only once it has held `WAIT_DRAWN_AFTER_MS`,
+   * so a quick save says only "Saved".
+   */
+  const [saving, setSaving] = useState(false)
+  const slow = useDrawnWait(saving)
+  /**
+   * A save has just landed. Said for a moment, and gone at the next edit or
+   * save: it speaks of the title that save stored, not the one in the field.
+   */
+  const [saved, setSaved] = useState(false)
+  useEffect(() => {
+    if (!saved) return
+    const quiet = setTimeout(() => {
+      setSaved(false)
+    }, 3000)
+    return () => {
+      clearTimeout(quiet)
+    }
+  }, [saved])
   // Three states, not two. `undefined` means "nothing to say" — either
   // nothing has been saved yet, or the last save reached disk cleanly. `[]`
   // means the last save succeeded but did not reach `<stem>.library.json`
@@ -531,52 +588,128 @@ export function MetadataEditor({
       })
   }
 
-  const submit = (event: FormEvent) => {
-    event.preventDefault()
+  /**
+   * Sends `text` as the title. Once it is stored, the field's newest text
+   * follows it if one was asked for meanwhile and differs; the answer is
+   * the last one's, as `TitleFlush.flush` gives it.
+   */
+  const send = (text: string): Promise<boolean> => {
+    sending.current = text
+    again.current = false
     setSaving(true)
+    setSaved(false)
     setFailure(undefined)
-    onPatch(slug, { title: value })
-      .then((result) => {
-        setSaving(false)
-        // The re-projected document, not the value just typed — the two
-        // agree on the ordinary path, but a document is the server's word
-        // for what it actually holds now.
-        setCurrent(result.title ?? value)
+    const save = onPatch(slug, { title: text }).then(
+      (result) => {
+        stored.current = text
         setUnwritten(result.persisted ? undefined : reasons(result))
-        held.current = value
-      })
-      .catch((err: unknown) => {
+        const newest = latest.current
+        // A blank field is still being typed in, and its leave puts a
+        // title back rather than sending one.
+        if (again.current && newest !== text && newest.trim() !== '') {
+          return send(newest)
+        }
+        sending.current = null
+        out.current = null
+        setSaving(false)
+        setSaved(true)
+        return result.persisted
+      },
+      (err: unknown) => {
+        sending.current = null
+        out.current = null
+        again.current = false
         setSaving(false)
         setFailure(messageOf(err))
-      })
+        // Focused, the field holds a title not stored, which its own Escape
+        // puts back; unmarked, `Series` would take that Escape as a close
+        // and send the failed title again.
+        if (document.activeElement === titleBox.current) setEditing(true)
+        return false
+      },
+    )
+    out.current = save
+    return save
   }
 
-  // The Title box opens while it is edited (O274).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `value` is a trigger: the title's length sets the open box's height.
+  /**
+   * Saves the field's title, as it is left, on Enter, by the form's submit
+   * or by `flush`, and answers as `TitleFlush.flush` says. While a save is
+   * out it sends nothing yet, and answers that save, which sends the newest
+   * text after it.
+   */
+  const saveTitle = (): Promise<boolean> | null => {
+    // The server stores an empty title unchecked, and leaving the field
+    // saves it: a stray leave after clearing the field must not write one.
+    if (latest.current.trim() === '') {
+      setText(sending.current ?? stored.current)
+    }
+    if (out.current !== null) {
+      again.current = true
+      return out.current
+    }
+    if (latest.current === stored.current) {
+      // The failure spoke of a title no longer in the field. The unwritten
+      // note stays: it speaks of the stored title, the one in the field.
+      setFailure(undefined)
+      return null
+    }
+    return send(latest.current)
+  }
+
+  useImperativeHandle(ref, () => ({
+    flush: saveTitle,
+    failed: () => failure !== undefined && latest.current !== stored.current,
+  }))
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault()
+    saveTitle()
+  }
+
+  // Fitted again as the title changes and as the field's width does: a new
+  // width is a new count of lines (O283).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `value` is a trigger: the title's length sets the field's height.
   useLayoutEffect(() => {
     const box = titleBox.current
-    if (!open || box === null) return
-    const lay = () => {
-      box.removeAttribute('style')
-      layOpen(box)
+    if (box === null) return
+    fitTitle(box)
+    // And as a face lands: the UI face comes in subsets fetched as text
+    // first needs them, so a title in kanji is fitted in a fallback's
+    // widths until its subset arrives. jsdom has no `document.fonts`.
+    const landed = () => {
+      fitTitle(box)
     }
-    lay()
-    // A turned phone or a resized window moves the tiles under it.
-    window.addEventListener('resize', lay)
-    // So does a page area that changes width alone, as when it gains a
-    // scrollbar. jsdom has no observer and lays nothing out to follow.
-    const area = box.closest('.library > main')
-    let moved: ResizeObserver | undefined
-    if (area !== null && typeof ResizeObserver !== 'undefined') {
-      moved = new ResizeObserver(lay)
-      moved.observe(area)
+    document.fonts?.addEventListener('loadingdone', landed)
+    const unheard = () => {
+      document.fonts?.removeEventListener('loadingdone', landed)
     }
+    // jsdom has no observer and lays nothing out to follow.
+    if (typeof ResizeObserver === 'undefined') return unheard
+    let width = box.clientWidth
+    let again = 0
+    const resized = new ResizeObserver(() => {
+      // The first report as the field is watched carries the width it was
+      // fitted at; only a new width moves a line.
+      if (box.clientWidth === width) return
+      width = box.clientWidth
+      // Unwatched while it is fitted: a height set inside this callback is
+      // a resize the observer cannot report in this frame, which it says
+      // with an error event. Watched again, its first report carries the
+      // width then, so a change in between is still caught.
+      resized.unobserve(box)
+      fitTitle(box)
+      again = requestAnimationFrame(() => {
+        resized.observe(box)
+      })
+    })
+    resized.observe(box)
     return () => {
-      window.removeEventListener('resize', lay)
-      moved?.disconnect()
-      box.removeAttribute('style')
+      unheard()
+      if (again) cancelAnimationFrame(again)
+      resized.disconnect()
     }
-  }, [open, value])
+  }, [value])
 
   const titleKeys = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // An Enter or an Escape that ends an input method's composition is
@@ -585,20 +718,25 @@ export function MetadataEditor({
     const { isComposing, keyCode } = event.nativeEvent
     if (isComposing || keyCode === 229) return
     if (event.key === 'Enter') {
-      // As Save does, which is held while a save is out.
+      // A title is one line: Enter saves it rather than breaking it.
       event.preventDefault()
-      if (!saving) event.currentTarget.form?.requestSubmit()
+      saveTitle()
     } else if (event.key === 'Escape') {
       event.preventDefault()
-      setValue(held.current)
-      setOpen(false)
+      setText(sending.current ?? stored.current)
+      again.current = false
+      // The failure spoke of the title this discards. The unwritten note
+      // stays: it speaks of the stored title, the one put back.
+      setFailure(undefined)
+      setEditing(false)
     }
   }
 
-  /** A title typed or pasted after Escape opens the box again. */
+  /** A title typed or pasted after Escape is being edited again. */
   const edit = (line: string) => {
-    setValue(line)
-    setOpen(true)
+    setText(line)
+    setEditing(true)
+    setSaved(false)
   }
 
   const titlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -872,8 +1010,8 @@ export function MetadataEditor({
       <form className="metadata-editor" onSubmit={submit}>
         <label className="field title">
           <span>Title</span>
-          {/* A textarea, so the title can wrap while it is edited; at rest
-              it is drawn as one line (`library.css`). */}
+          {/* A textarea, so the whole title wraps, at rest as while it is
+              edited; `fitTitle` sets its height (O283). */}
           <textarea
             ref={titleBox}
             name="title"
@@ -883,13 +1021,13 @@ export function MetadataEditor({
             spellCheck={false}
             enterKeyHint="done"
             value={value}
-            data-open={open ? '' : undefined}
-            onFocus={(event) => {
-              held.current = event.currentTarget.value
-              setOpen(true)
+            data-editing={editing ? '' : undefined}
+            onFocus={() => {
+              setEditing(true)
             }}
             onBlur={() => {
-              setOpen(false)
+              setEditing(false)
+              saveTitle()
             }}
             onKeyDown={titleKeys}
             onPaste={titlePaste}
@@ -899,10 +1037,12 @@ export function MetadataEditor({
             }}
           />
         </label>
-        <button type="submit" disabled={saving}>
-          Save
-        </button>
-        <p className="current">{current}</p>
+        {/* There from the first render, since a live region must exist
+            before what it announces. Outside the label, so it is no part
+            of the field's name; drawn on the label's line (`library.css`). */}
+        <p className="saved-note" role="status">
+          {slow ? 'Saving…' : saved ? 'Saved' : ''}
+        </p>
         {unwritten !== undefined && (
           <div className="unwritten">
             <p>
@@ -927,7 +1067,7 @@ export function MetadataEditor({
       {/*
        * Outside the `<form>` above, not inside it — a `<button>` inside a
        * form with no `type` attribute submits that form, which would make an
-       * irreversible archive rewrite a side effect of pressing Save on a
+       * irreversible archive rewrite a side effect of a title save on a
        * reversible title edit. `type="button"` below is belt and braces on
        * top of that structural separation.
        */}

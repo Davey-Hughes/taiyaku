@@ -22,9 +22,9 @@
  * edition is `?edition=` (spec `2026-10-28-loading-library-design.md` §5.1), so
  * that Back brings it back.
  */
-import { useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
-import { MetadataEditor } from './MetadataEditor'
+import { MetadataEditor, type TitleFlush } from './MetadataEditor'
 import { type PatchResult, patchWork, type WorkEdit } from './metadata'
 import { type BrowsePrefs, useBrowsePrefs } from './browseModule'
 import { useGate } from './gate'
@@ -43,6 +43,7 @@ import { messageOf } from './message'
 import { invalidateLibraryViews, seriesRead } from './pageReads'
 import { useKeptScroll } from './scrollKeeper'
 import { PageLoading } from './settingsLayout'
+import { layPanel } from './tilePanel'
 import { useDocumentTitle } from './title'
 import { usePage } from './usePage'
 import { ViewMenu } from './ViewMenu'
@@ -491,8 +492,49 @@ export function Series() {
   // undefined`, and seeding that with a placeholder would change what the
   // panel shows while the real request is still outstanding.
   const pending = useRef<Set<string>>(new Set())
-  /** The open volume's panel: its alignment detail and its editor. */
+  /**
+   * The open volume's panel: its editor, its alignment detail and, in
+   * `button` mode, ↓ Download.
+   */
   const openPanel = useRef<HTMLDivElement>(null)
+  /** The open volume's tile, which its panel is laid from. */
+  const openTile = useRef<HTMLLIElement>(null)
+  /** The open panel's editor, whose `flush` every close waits on. */
+  const editor = useRef<TitleFlush>(null)
+  /** The newest `choosePanel` call; one waiting on a save is then dropped. */
+  const choosing = useRef<symbol>(undefined)
+  /**
+   * The volume whose panel is open as of the last change `choosePanel`
+   * made, which `open` holds only from the next render.
+   */
+  const opened = useRef<string>(undefined)
+  /**
+   * True only while a close sends focus back to its tile: in `on-select`
+   * mode that focus would otherwise reveal the panel again.
+   */
+  const refocusing = useRef(false)
+
+  // The open panel lies over the rows below its tile (O283), laid from the
+  // tile's width and place, and laid again whenever the tile's width
+  // changes. One observer is enough: `main` has no `max-width`, so a window
+  // that changes width changes the page area's, and the tile, `1fr` of the
+  // area, changes width with the area and with the density.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `open` and `layout` are triggers; the body reads the refs.
+  useLayoutEffect(() => {
+    const panelBox = openPanel.current
+    const tile = openTile.current
+    if (panelBox === null || tile === null) return
+    layPanel(panelBox, tile)
+    // jsdom has no observer and lays nothing out to follow.
+    if (typeof ResizeObserver === 'undefined') return
+    const resized = new ResizeObserver(() => {
+      layPanel(panelBox, tile)
+    })
+    resized.observe(tile)
+    return () => {
+      resized.disconnect()
+    }
+  }, [open, layout])
 
   // **Both attachments are grid-only, by decision rather than accident.** The
   // selector's job is "which edition's cover do I see", and the table shows
@@ -523,8 +565,119 @@ export function Series() {
     ? editionIn(params, loaded?.works ?? [])
     : 'all'
 
+  /**
+   * Every change of which volume's panel is open: the open editor's `flush`
+   * first, asked again after each `true` (text typed while a save was out),
+   * then the change once it answers `null`; none on `false`, the failure or
+   * the unwritten reason then shown in the panel still open. A call made
+   * while one waits replaces it.
+   * `after` runs once the change is made. The open volume asked for again is
+   * no change, so its tile's focus and pointer send nothing.
+   */
+  const choosePanel = (next: string | undefined, after?: () => void): void => {
+    const call = Symbol()
+    choosing.current = call
+    const ask = () => {
+      const answer =
+        next === opened.current ? null : (editor.current?.flush() ?? null)
+      if (answer === null) {
+        opened.current = next
+        setOpen(next)
+        after?.()
+        return
+      }
+      void answer.then((stored) => {
+        if (stored && choosing.current === call) ask()
+      })
+    }
+    ask()
+  }
+
+  /**
+   * A close's `after` that focuses `target`. Focus left in the panel would
+   * be dropped with it, and the next Tab would start again at the top of
+   * the page. Focus the person has moved elsewhere, while the close waited
+   * on a save, stays where they put it.
+   */
+  const refocus = (target: HTMLElement | null) => {
+    const from = document.activeElement
+    return () => {
+      const now = document.activeElement
+      const dropped =
+        now === document.body || openPanel.current?.contains(now) === true
+      if (now !== from && !dropped) return
+      refocusing.current = true
+      try {
+        target?.focus()
+      } finally {
+        refocusing.current = false
+      }
+    }
+  }
+
+  /**
+   * An Escape's close sends focus back to `tile`: its `i`, or in
+   * `on-select` mode, which has none, its link, its corner ↓, or the box an
+   * unreadable volume is drawn in, which takes focus without being a Tab
+   * stop.
+   */
+  const focusBack = (tile: HTMLElement) =>
+    refocus(
+      panel === 'button'
+        ? tile.querySelector<HTMLElement>(':scope > .panel-open')
+        : (tile.querySelector<HTMLElement>(':scope > a:not(.get)') ??
+            tile.querySelector<HTMLElement>(':scope > a.get') ??
+            tile.querySelector<HTMLElement>(':scope > .tile-unreadable')),
+    )
+
+  // The open panel's closes, as `usePopover`'s are: an Escape, caught on
+  // the way down and stopped so that it closes nothing below it, unless it
+  // is the Title field's own or ends a composition; a press outside the
+  // tile, though not on the scroller itself, whose scrollbar may be the way
+  // to ↓ Download; and in `button` mode, focus arriving outside. In
+  // `on-select` mode, focus on another tile moves the panel instead.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `choosePanel` and `focusBack` read only refs, `setOpen` and `panel`, so those from the render that opened the panel serve until it closes or the mode changes.
+  useEffect(() => {
+    if (open === undefined) return
+    const inside = (target: EventTarget | null) =>
+      target instanceof Node && (openTile.current?.contains(target) ?? false)
+    const onKey = (event: KeyboardEvent) => {
+      const tile = openTile.current
+      if (event.key !== 'Escape' || tile === null) return
+      if (event.isComposing || event.keyCode === 229) return
+      const { target } = event
+      if (
+        target instanceof Element &&
+        target.matches("textarea[name='title'][data-editing]")
+      ) {
+        return
+      }
+      event.stopPropagation()
+      choosePanel(undefined, focusBack(tile))
+    }
+    const onPress = (event: Event) => {
+      const { target } = event
+      if (inside(target) || target === document.documentElement) return
+      if (target instanceof Element && target.matches('.library > main')) {
+        return
+      }
+      choosePanel(undefined)
+    }
+    const onFocus = (event: FocusEvent) => {
+      if (!inside(event.target)) choosePanel(undefined)
+    }
+    document.addEventListener('keydown', onKey, true)
+    document.addEventListener('pointerdown', onPress)
+    if (panel === 'button') document.addEventListener('focusin', onFocus)
+    return () => {
+      document.removeEventListener('keydown', onKey, true)
+      document.removeEventListener('pointerdown', onPress)
+      document.removeEventListener('focusin', onFocus)
+    }
+  }, [open, panel])
+
   const reveal = (slug: string) => {
-    setOpen(slug)
+    choosePanel(slug)
     if (detail[slug] !== undefined || pending.current.has(slug)) return
     pending.current.add(slug)
     fetchWork(slug)
@@ -590,6 +743,30 @@ export function Series() {
                   chosen === 'all'
                     ? w.editions[0]
                     : w.editions.find((e) => e.key === chosen)
+                // One download per tile (O283): at the foot of the open panel
+                // where the tile has `i`, and otherwise on the cover's corner
+                // in `i`'s place, so a reader with the panel off keeps one.
+                // An `on-select` panel does not repeat it.
+                const download = mayDownload &&
+                  shown &&
+                  shown.missing === 0 && (
+                    // Outside the tile's link wherever it is placed: a nested
+                    // anchor is invalid HTML, and browsers reparent it.
+                    // `shown.missing === 0` asks of the edition this tile
+                    // shows, which can be the broken one of a readable volume,
+                    // and files not on disk are not offered. `download` is
+                    // bare: the server's `Content-Disposition` carries an
+                    // ASCII `filename=` and an RFC 6266 `filename*=`, which a
+                    // value here would override with a guess.
+                    <a
+                      className="get"
+                      href={editionDownload(w.slug, shown.key)}
+                      download
+                      aria-label={`download ${w.title} — ${shown.label}`}
+                    >
+                      {panel === 'button' ? '↓ Download' : '↓'}
+                    </a>
+                  )
                 // **`onFocusCapture`, plus `onMouseEnter`.** Hover and focus
                 // both, because "select" with a mouse and "select" with a
                 // keyboard are the same intent and only one of them is a click;
@@ -605,11 +782,12 @@ export function Series() {
                 return (
                   <li
                     key={w.slug}
+                    ref={open === w.slug ? openTile : undefined}
                     className={shown ? undefined : 'without'}
                     onFocusCapture={
                       panel === 'on-select'
                         ? () => {
-                            reveal(w.slug)
+                            if (!refocusing.current) reveal(w.slug)
                           }
                         : undefined
                     }
@@ -617,14 +795,18 @@ export function Series() {
                       panel === 'on-select'
                         ? () => {
                             // Not while focus is in the open panel: a pointer
-                            // passing by, or left on this tile as the Title
-                            // box closed from over it, would unmount the panel
-                            // and what is typed in it (O274). Focus moving to
-                            // this tile is a choice, and still reveals it.
+                            // passing over other tiles, the rows the panel
+                            // lies over among them, would take the panel from
+                            // the person typing in it. Nor while its field
+                            // holds a title whose save failed, which the move
+                            // would send again at every tile passed. Focus
+                            // moving to this tile is a choice, and still
+                            // reveals it.
                             if (
                               openPanel.current?.contains(
                                 document.activeElement,
-                              )
+                              ) ||
+                              editor.current?.failed() === true
                             ) {
                               return
                             }
@@ -643,7 +825,10 @@ export function Series() {
                       // the volume keeps its name — withholding that too would
                       // read as a library that has lost the work rather than
                       // one that cannot open it.
-                      <span className="tile-unreadable">
+                      <span
+                        className="tile-unreadable"
+                        tabIndex={panel === 'on-select' ? -1 : undefined}
+                      >
                         <VolumeCover w={w} shown={shown} />
                         <span className="title">{w.title}</span>{' '}
                         <span className="unreadable">
@@ -656,40 +841,13 @@ export function Series() {
                         <span className="title">{w.title}</span>
                       </Link>
                     )}
-                    {mayDownload && shown && shown.missing === 0 && (
-                      // **A sibling of the tile above, not a child.** A
-                      // nested anchor is invalid HTML and browsers reparent
-                      // it; the `panel-open` button below is already a
-                      // sibling for the same structural reason.
-                      //
-                      // `shown.missing === 0`, per edition rather than per
-                      // work: `shown` is whichever edition this tile is
-                      // currently displaying (the hub under `'all'`, or the
-                      // chosen key), and that can be the broken edition of an
-                      // otherwise-readable volume — a sibling edition keeps
-                      // the reader link above, but downloading files that
-                      // are not on disk is not an offer this control should
-                      // make either way.
-                      //
-                      // `download` is bare, with no value: the server sends
-                      // `Content-Disposition` with an ASCII `filename=` and
-                      // an RFC 6266 `filename*=`, and a value here would
-                      // override that careful name with a guess.
-                      <a
-                        className="get"
-                        href={editionDownload(w.slug, shown.key)}
-                        download
-                        aria-label={`download ${w.title} — ${shown.label}`}
-                      >
-                        ↓
-                      </a>
-                    )}
+                    {panel !== 'button' && download}
                     {panel === 'button' && (
                       <button
                         type="button"
                         className="panel-open"
                         aria-expanded={open === w.slug}
-                        aria-label={`alignment detail for ${w.title}`}
+                        aria-label={`details for ${w.title}`}
                         // **Toggle lives here, not inside `reveal`.** `reveal`
                         // is also `on-select`'s hover/focus handler, where
                         // pointing at a tile a second time must still show
@@ -701,9 +859,11 @@ export function Series() {
                         // per-slug `detail` cache and `pending` guard are
                         // untouched either way, so closing loses nothing
                         // fetched and reopening never refetches.
-                        onClick={() => {
+                        onClick={(event) => {
                           if (open === w.slug) {
-                            setOpen(undefined)
+                            // A click need not focus the button, and focus
+                            // in the panel would go with it.
+                            choosePanel(undefined, refocus(event.currentTarget))
                           } else {
                             reveal(w.slug)
                           }
@@ -713,14 +873,13 @@ export function Series() {
                       </button>
                     )}
                     {open === w.slug && (
-                      // One block around the open panel, so that a pointer's
-                      // reveal can ask whether focus is in it. With no
-                      // margin, border or padding, it moves none of its parts.
-                      <div ref={openPanel}>
-                        <AlignmentPanel
-                          editionCount={w.editions.length}
-                          state={detail[w.slug]}
-                        />
+                      // The drawn panel, placed absolutely by `library.css`
+                      // under its tile and over the rows below, so nothing
+                      // moves as it opens; the effect above sets its left
+                      // and width. One block, so that a pointer's reveal can
+                      // ask whether focus is in it. The Title form and its
+                      // stamp section, the alignment detail, ↓ Download.
+                      <div ref={openPanel} className="tile-panel">
                         {mayEdit && (
                           // **In the panel, not beside the title** — C3 §5's
                           // "contextual, from the thing being corrected": the
@@ -729,15 +888,21 @@ export function Series() {
                           // There is no metadata screen to navigate to.
                           //
                           // A save reads the series again (`saveWork`), so
-                          // the tile's title follows it; the editor shows the
-                          // server's re-projected title itself meanwhile.
+                          // the tile's title follows it; the field keeps the
+                          // title as typed (O283).
                           <MetadataEditor
+                            ref={editor}
                             slug={w.slug}
                             title={w.title}
                             onPatch={saveWork}
                             canStamp={mayStamp}
                           />
                         )}
+                        <AlignmentPanel
+                          editionCount={w.editions.length}
+                          state={detail[w.slug]}
+                        />
+                        {panel === 'button' && download}
                       </div>
                     )}
                   </li>

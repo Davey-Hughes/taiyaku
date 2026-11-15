@@ -30,6 +30,9 @@ a page that scrolls sideways.
   settled on 2026-09-18 that the alignment panel and metadata editor fit
   inside their tile (`2026-09-17-style-pass-design.md:457-466`). O274 is
   narrowed to that half, not closed.
+  *Reopened 2026-11-14 by the owner: the open volume's panel lies over the
+  rows below, two tiles and the gap wide, and O274 is closed; see
+  `2026-11-14-compact-series-tiles-design.md`.*
 - The other phone rows (O139, O142, O162, O167 and the rest).
 - Any change to what the readout says or the order it says it in.
 
@@ -37,9 +40,9 @@ a page that scrolls sideways.
 
 - **The reader's top bar does not change.** Its make-up (Library, title,
   layout, ⚙) was settled with the user on 2026-09-19 (style-pass §8.3,
-  `:764-773`), and a new stop would narrow the phone title further.
+  `:768-777`), and a new stop would narrow the phone title further.
 - **The readout row stays one line** (style-pass §8.4,
-  `:829`: it keeps `readoutRow`'s text, order and ellipsis). Wrapping to
+  `:833`: it keeps `readoutRow`'s text, order and ellipsis). Wrapping to
   two lines would fix the overflow by breaking that ruling.
 - **No two dialogs open at once.** Settings and the account panel are each
   a modal; one replaces the other.
@@ -156,6 +159,11 @@ the owner approved:
 five-line cap, what Escape does, and closing when focus leaves. The
 non-goal stands: the panel still sits in its tile; the open box is drawn
 over the tiles around it only while it is being edited.
+
+*Reopened 2026-11-14 by the owner: the Title field wraps its whole title at
+rest, as tall as it up to five lines, and never opens; it saves as it is
+left or on Enter, with no Save, and the panel it sits in lies over the rows
+below (O283); see `2026-11-14-compact-series-tiles-design.md`.*
 
 ## Left to the builder
 

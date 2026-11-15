@@ -1,56 +1,51 @@
 import { act } from 'react'
-import { describe, expect, it, onTestFinished, vi } from 'vitest'
-import { page, userEvent } from 'vitest/browser'
+import { describe, expect, it, vi } from 'vitest'
 // **Required**, the same reason `Config.browser.test.tsx` gives.
 import '../src/index.css'
 import { MetadataEditor } from '../src/MetadataEditor'
-import { mount } from './support/mount'
+import { lineCount, lineOf } from './support/lines'
+import { mount, rerender } from './support/mount'
 
 /**
- * The open Title box (O274) beside a scrollbar that takes its width, as a
+ * The Title field (O283) beside a scrollbar that takes its width, as a
  * classic one does. Run only in the launch that shows scrollbars,
  * `vite.config.ts`'s second `browser` instance.
  */
-describe('the open Title box, where a scrollbar takes width (O274)', () => {
-  /** A line longer at a scrollbar's width less than the open box's. */
+describe('the Title field, where a scrollbar takes width (O283)', () => {
+  /** A line longer at a scrollbar's width less than the field's. */
   const TITLE =
     'The Complete Digital Edition of Kagami no Kuni no Harisugawa, Volume 01'
 
-  it('is as tall as its title’s lines at its open width', async () => {
-    const was = [window.innerWidth, window.innerHeight] as const
-    onTestFinished(() => page.viewport(...was))
-    await page.viewport(1280, 800)
-    let host: HTMLElement | undefined
+  /** The holder's width: there, a scrollbar's width less takes a line more. */
+  const WIDTH = '18rem'
+
+  it('is as tall as its title’s lines at its width, beside a scrollbar’s width', async () => {
+    const host = mount(
+      <div className="library">
+        <div style={{ width: WIDTH }} />
+      </div>,
+    )
+    const holder = host.querySelector('.library > div')
+    if (holder === null) throw new Error('no holder mounted')
+    // Loaded before the field is fitted as it mounts. The form sets no font
+    // of its own, so it is drawn in the holder's.
+    const face = getComputedStyle(holder)
+    await document.fonts.load(
+      `${face.fontStyle} ${face.fontWeight} ${face.fontSize} ${face.fontFamily}`,
+      TITLE,
+    )
     await act(async () => {
-      host = mount(
+      rerender(
         <div className="library">
-          <div className="sidebar-column" />
-          <main>
-            <ul className="volumes">
-              <li>
-                <MetadataEditor slug="w" title={TITLE} onPatch={vi.fn()} />
-              </li>
-              <li />
-            </ul>
-          </main>
+          <div style={{ width: WIDTH }}>
+            <MetadataEditor slug="w" title={TITLE} onPatch={vi.fn()} />
+          </div>
         </div>,
       )
     })
-    await document.fonts.ready
-    const label = host?.querySelector('.metadata-editor .field.title')
-    const box = host?.querySelector<HTMLTextAreaElement>("[name='title']")
-    if (label == null || box == null) throw new Error('no title box mounted')
+    const field = holder.querySelector<HTMLTextAreaElement>("[name='title']")
+    if (field === null) throw new Error('no title field mounted')
 
-    /** How tall `TITLE` is set `width` px wide as the box sets it. */
-    const linesAt = (width: number) => {
-      const probe = document.createElement('div')
-      probe.style.cssText = `position: absolute; visibility: hidden; width: ${width}px; white-space: pre-wrap; overflow-wrap: break-word`
-      probe.textContent = TITLE
-      label.append(probe)
-      const height = probe.getBoundingClientRect().height
-      probe.remove()
-      return height
-    }
     const scroller = document.createElement('div')
     scroller.style.cssText =
       'position: absolute; overflow-y: scroll; width: 100px; height: 10px'
@@ -58,26 +53,21 @@ describe('the open Title box, where a scrollbar takes width (O274)', () => {
     const scrollbar = scroller.offsetWidth - scroller.clientWidth
     scroller.remove()
 
-    await act(async () => {
-      box.focus()
-      await userEvent.click(box)
-    })
-    const style = getComputedStyle(box)
-    const content =
-      box.clientWidth -
-      parseFloat(style.paddingLeft) -
-      parseFloat(style.paddingRight)
+    const style = getComputedStyle(field)
+    const content = lineOf(field)
 
     // The fixture tells: a scrollbar here takes width, and that width less,
     // the title takes a line more.
     expect(scrollbar).toBeGreaterThan(0)
-    expect(linesAt(content - scrollbar)).toBeGreaterThan(linesAt(content))
+    expect(lineCount(field, TITLE, content - scrollbar)).toBeGreaterThan(
+      lineCount(field, TITLE),
+    )
 
     expect(
-      box.clientHeight -
+      field.clientHeight -
         parseFloat(style.paddingTop) -
         parseFloat(style.paddingBottom),
-      'the open box’s lines against its title’s',
-    ).toBe(linesAt(content))
+      'the field’s lines against its title’s',
+    ).toBe(lineCount(field, TITLE) * parseFloat(style.lineHeight))
   })
 })

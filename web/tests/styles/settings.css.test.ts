@@ -1,57 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { rules, selectors, withoutComments } from '../support/css'
+import { atRulesOf, rules, selectors } from '../support/css'
 import adminSource from '../../src/styles/admin.css?raw'
 import settingsSource from '../../src/styles/settings.css?raw'
 import shellSource from '../../src/styles/shell.css?raw'
-
-/**
- * Each rule of `css` whose prelude is `prelude`: its body, and the at-rules,
- * such as `@media (width < 900px)`, that it sits inside, joined by a space,
- * or `''` for a rule at the top level, which is what `rules()` drops.
- * Brace-counted by hand, as `base.css.test.ts`'s `splitByCoarsePointer` is,
- * since an inner rule's own braces end a non-greedy match at the wrong `}`.
- */
-function atRulesOf(
-  css: string,
-  prelude: string,
-): Array<{ at: string; body: string }> {
-  const text = withoutComments(css)
-  const open: {
-    head: string
-    from: number
-    found?: { at: string; body: string }
-  }[] = []
-  const found: { at: string; body: string }[] = []
-  let start = 0
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i]
-    if (char === '{') {
-      const head = text.slice(start, i).replace(/\s+/g, ' ').trim()
-      const block: (typeof open)[number] = { head, from: i + 1 }
-      if (head === prelude) {
-        block.found = {
-          at: open
-            .map((one) => one.head)
-            .filter((h) => h.startsWith('@'))
-            .join(' '),
-          body: '',
-        }
-        found.push(block.found)
-      }
-      open.push(block)
-      start = i + 1
-    } else if (char === '}') {
-      const block = open.pop()
-      if (block?.found !== undefined) {
-        block.found.body = text.slice(block.from, i)
-      }
-      start = i + 1
-    } else if (char === ';') {
-      start = i + 1
-    }
-  }
-  return found
-}
 
 /**
  * `useFitsPair` measures the split's width, and a scrollbar that came with

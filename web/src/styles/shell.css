@@ -331,11 +331,15 @@ a.account-button {
 
 /* `min-width: 0` because a grid item's automatic minimum is its min-content
  * width: one unbreakable word inside `<main>` would otherwise widen the `1fr`
- * track past the viewport. */
+ * track past the viewport. The block-end padding is the room under a page's
+ * last line, named once in `--page-area-end` because `library.css` leaves
+ * the same room under a volume's panel run past the end of a Series page. */
 .library > main {
+  --page-area-end: 1rem;
   min-width: 0;
   overflow-y: auto;
   padding: 1rem 1.5rem;
+  padding-block-end: var(--page-area-end);
 }
 
 /* The skip link (O174): the first stop on every library screen, drawn only
@@ -570,8 +574,10 @@ a.account-button {
   }
 
   .library > main {
+    --page-area-end: var(--space-4);
     overflow-y: visible;
     padding: var(--space-4);
+    padding-block-end: var(--page-area-end);
   }
 
   /* Off-canvas, and `visibility: hidden` as well, so neither Tab nor a screen

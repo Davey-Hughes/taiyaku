@@ -1,7 +1,7 @@
-import { act } from 'react'
+import { act, createRef, type RefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as derive from '../src/libraries'
-import { MetadataEditor } from '../src/MetadataEditor'
+import { MetadataEditor, type TitleFlush } from '../src/MetadataEditor'
 import * as stamp from '../src/stamp'
 import { holdOf } from './support/held'
 import { tick } from './support/libraries'
@@ -47,9 +47,6 @@ const click = async (el: Element) => {
     await Promise.resolve()
   })
 }
-
-const submitButton = (host: HTMLElement) =>
-  host.querySelector('button[type="submit"]') as HTMLButtonElement
 
 const titleField = (host: HTMLElement) =>
   host.querySelector<HTMLTextAreaElement>("[name='title']")
@@ -103,10 +100,12 @@ const askingLine = (host: HTMLElement) =>
  */
 function deferred<T>() {
   let settle!: (value: T) => void
-  const promise = new Promise<T>((resolve) => {
+  let fail!: (reason: unknown) => void
+  const promise = new Promise<T>((resolve, reject) => {
     settle = resolve
+    fail = reject
   })
-  return { promise, settle }
+  return { promise, settle, fail }
 }
 
 /** Let React drain the microtasks a hand-settled promise queued. */
@@ -116,178 +115,6 @@ const drain = async () => {
     await Promise.resolve()
   })
 }
-
-describe('MetadataEditor', () => {
-  it('saves a corrected title and shows the new one', async () => {
-    const patch = vi
-      .fn()
-      .mockResolvedValue({ title: 'Volume 1', persisted: true })
-    const host = mount(
-      <MetadataEditor
-        slug="w"
-        title="Series - v01 (2021).cbz"
-        onPatch={patch}
-      />,
-    )
-
-    const field = titleField(host)
-    expect(field?.value).toBe('Series - v01 (2021).cbz')
-
-    await typeInto(field!, 'Volume 1')
-    await click(submitButton(host))
-
-    expect(patch).toHaveBeenCalledWith('w', { title: 'Volume 1' })
-    expect(host.textContent).toContain('Volume 1')
-  })
-
-  /**
-   * The test above cannot distinguish `setCurrent(result.title ?? value)` from
-   * the regressed `setCurrent(value)` — its mock resolves with the exact
-   * string just typed, so the two expressions agree by coincidence. This mocks
-   * a re-projected title that differs from what was typed (the server's own
-   * word for what it actually holds now, per `submit`'s comment in
-   * `MetadataEditor.tsx`), so only the correct expression can make the
-   * displayed title match it.
-   */
-  it('shows the server-reprojected title, not the value just typed, when they differ', async () => {
-    const patch = vi.fn().mockResolvedValue({
-      title: 'Volume 1: The Reprojected Title',
-      persisted: true,
-    })
-    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
-
-    await typeInto(titleField(host)!, 'Volume 1')
-    await click(submitButton(host))
-
-    expect(host.querySelector('p.current')?.textContent).toBe(
-      'Volume 1: The Reprojected Title',
-    )
-  })
-
-  it('says so when the correction could not be written beside the library', async () => {
-    const patch = vi.fn().mockResolvedValue({ title: 'old', persisted: false })
-    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
-
-    await click(submitButton(host))
-
-    expect(host.textContent).toMatch(/could not be saved beside your library/i)
-  })
-
-  it('says nothing about being unwritten when the correction landed cleanly', async () => {
-    const patch = vi.fn().mockResolvedValue({ title: 'old', persisted: true })
-    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
-
-    await click(submitButton(host))
-
-    expect(host.textContent).not.toMatch(/could not be saved/i)
-  })
-
-  /**
-   * The claim is stronger than "no particular wording appears": a response
-   * with `keeps_documents: false` must render **exactly** what an ordinary
-   * successful save renders — nothing at all keyed off that field, not even
-   * a new note a pinned string would not know to look for. Pinning one
-   * wording (`/could not be saved beside your library/i`) would catch a
-   * regression that reuses that exact note but wave through a new alarm
-   * element keyed off `keeps_documents` with different wording; comparing two
-   * full renders catches either.
-   */
-  it('renders exactly what an ordinary successful save renders when keeps_documents is false', async () => {
-    const ordinary = mount(
-      <MetadataEditor
-        slug="w"
-        title="old"
-        onPatch={vi.fn().mockResolvedValue({ title: 'old', persisted: true })}
-      />,
-    )
-    await click(submitButton(ordinary))
-
-    const declined = mount(
-      <MetadataEditor
-        slug="w"
-        title="old"
-        onPatch={vi.fn().mockResolvedValue({
-          title: 'old',
-          persisted: true,
-          keeps_documents: false,
-        })}
-      />,
-    )
-    await click(submitButton(declined))
-
-    expect(declined.innerHTML).toBe(ordinary.innerHTML)
-  })
-
-  it('names every reason a fanned-out edit could not all reach disk', async () => {
-    const patch = vi.fn().mockResolvedValue({
-      title: 'old',
-      persisted: false,
-      why: ['root is read-only', 'no on-disk address'],
-    })
-    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
-
-    await click(submitButton(host))
-
-    expect(host.textContent).toContain('root is read-only')
-    expect(host.textContent).toContain('no on-disk address')
-  })
-
-  it('surfaces a hard failure as an alert, distinct from an unwritten sidecar', async () => {
-    const patch = vi
-      .fn()
-      .mockRejectedValue(
-        new Error('/api/library/works/w: 409 a name this route refused'),
-      )
-    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
-
-    await click(submitButton(host))
-
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      '409 a name this route refused',
-    )
-    expect(host.textContent).not.toMatch(/could not be saved beside/i)
-  })
-
-  it('stringifies a rejection that is not an Error, rather than losing it', async () => {
-    const patch = vi.fn().mockRejectedValue('offline')
-    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
-
-    await click(submitButton(host))
-
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe('offline')
-  })
-
-  /**
-   * What `submit`'s `setFailure(undefined)` protects is the frame while the
-   * save is out, where the previous save's alert would sit over it.
-   */
-  it('clears the last save failure while the next save is out', async () => {
-    // The two fields this editor reads, not the whole document — the other
-    // `onPatch` stubs in this file are untyped `vi.fn()`s and answer the same
-    // pair.
-    const retried = deferred<{ title: string; persisted: boolean }>()
-    const patch = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockReturnValueOnce(retried.promise)
-    const host = mount(
-      <MetadataEditor slug="w" title="Volume 1" onPatch={patch} />,
-    )
-    await click(submitButton(host))
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe('offline')
-
-    await click(submitButton(host))
-
-    expect(host.querySelector('[role="alert"]')).toBeNull()
-    expect(submitButton(host).disabled).toBe(true)
-
-    retried.settle({ title: 'Volume 1', persisted: true })
-    await drain()
-
-    expect(host.querySelector('[role="alert"]')).toBeNull()
-    expect(host.querySelector('.current')?.textContent).toBe('Volume 1')
-  })
-})
 
 /** A keydown of `key` in `el`; whether its default action was left to run. */
 const keyDown = async (el: Element, key: string, init?: KeyboardEventInit) => {
@@ -319,6 +146,190 @@ const blurFrom = async (el: HTMLElement) => {
   })
 }
 
+/** `text` typed into the Title field, and Enter pressed there. */
+const enterWith = async (host: HTMLElement, text: string) => {
+  const field = titleField(host)!
+  await focusOn(field)
+  await typeInto(field, text)
+  await keyDown(field, 'Enter')
+}
+
+/** `text` typed into the Title field, and the field left. */
+const leaveWith = async (host: HTMLElement, text: string) => {
+  const field = titleField(host)!
+  await focusOn(field)
+  await typeInto(field, text)
+  await blurFrom(field)
+}
+
+describe('MetadataEditor', () => {
+  it('saves a corrected title as the field is left, and says Saved', async () => {
+    const patch = vi
+      .fn()
+      .mockResolvedValue({ title: 'Volume 1', persisted: true })
+    const host = mount(
+      <MetadataEditor
+        slug="w"
+        title="Series - v01 (2021).cbz"
+        onPatch={patch}
+      />,
+    )
+    expect(titleField(host)?.value).toBe('Series - v01 (2021).cbz')
+
+    await leaveWith(host, 'Volume 1')
+
+    expect(patch.mock.calls).toEqual([['w', { title: 'Volume 1' }]])
+    expect(host.querySelector('[role="status"]')?.textContent).toBe('Saved')
+  })
+
+  /**
+   * The server answers the title as it re-projected it, which can differ from
+   * what was typed. The field keeps what was typed (O283), and nothing
+   * repeats the server's word under it.
+   */
+  it('keeps the typed title in the field, not the server’s re-projected one', async () => {
+    const patch = vi.fn().mockResolvedValue({
+      title: 'Volume 1: The Reprojected Title',
+      persisted: true,
+    })
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+
+    await enterWith(host, 'Volume 1')
+    await drain()
+
+    expect(patch.mock.calls).toEqual([['w', { title: 'Volume 1' }]])
+    expect(titleField(host)?.value).toBe('Volume 1')
+    expect(host.querySelector('p.current')).toBeNull()
+  })
+
+  it('says so when the correction could not be written beside the library', async () => {
+    const patch = vi.fn().mockResolvedValue({ title: 'old', persisted: false })
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+
+    await enterWith(host, 'new')
+
+    expect(host.textContent).toMatch(/could not be saved beside your library/i)
+  })
+
+  it('says nothing about being unwritten when the correction landed cleanly', async () => {
+    const patch = vi.fn().mockResolvedValue({ title: 'old', persisted: true })
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+
+    await enterWith(host, 'new')
+
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(host.textContent).not.toMatch(/could not be saved/i)
+  })
+
+  /**
+   * The claim is stronger than "no particular wording appears": a response
+   * with `keeps_documents: false` must render **exactly** what an ordinary
+   * successful save renders — nothing at all keyed off that field, not even
+   * a new note a pinned string would not know to look for. Pinning one
+   * wording (`/could not be saved beside your library/i`) would catch a
+   * regression that reuses that exact note but wave through a new alarm
+   * element keyed off `keeps_documents` with different wording; comparing two
+   * full renders catches either.
+   */
+  it('renders exactly what an ordinary successful save renders when keeps_documents is false', async () => {
+    const ordinaryPatch = vi
+      .fn()
+      .mockResolvedValue({ title: 'new', persisted: true })
+    const ordinary = mount(
+      <MetadataEditor slug="w" title="old" onPatch={ordinaryPatch} />,
+    )
+    await enterWith(ordinary, 'new')
+    expect(ordinaryPatch, 'on Enter').toHaveBeenCalledTimes(1)
+
+    const declinedPatch = vi.fn().mockResolvedValue({
+      title: 'new',
+      persisted: true,
+      keeps_documents: false,
+    })
+    const declined = mount(
+      <MetadataEditor slug="w" title="old" onPatch={declinedPatch} />,
+    )
+    // Focus moving here left the first field; this one is left too, so the
+    // two differ by nothing their focus marks.
+    await enterWith(declined, 'new')
+    expect(declinedPatch, 'on Enter').toHaveBeenCalledTimes(1)
+    await blurFrom(titleField(declined)!)
+
+    expect(ordinaryPatch, 'after both were left').toHaveBeenCalledTimes(1)
+    expect(declinedPatch, 'after both were left').toHaveBeenCalledTimes(1)
+    expect(declined.innerHTML).toBe(ordinary.innerHTML)
+  })
+
+  it('names every reason a fanned-out edit could not all reach disk', async () => {
+    const patch = vi.fn().mockResolvedValue({
+      title: 'old',
+      persisted: false,
+      why: ['root is read-only', 'no on-disk address'],
+    })
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+
+    await enterWith(host, 'new')
+
+    expect(host.textContent).toContain('root is read-only')
+    expect(host.textContent).toContain('no on-disk address')
+  })
+
+  it('surfaces a hard failure as an alert, distinct from an unwritten sidecar', async () => {
+    const patch = vi
+      .fn()
+      .mockRejectedValue(
+        new Error('/api/library/works/w: 409 a name this route refused'),
+      )
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+
+    await enterWith(host, 'new')
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
+      '409 a name this route refused',
+    )
+    expect(host.textContent).not.toMatch(/could not be saved beside/i)
+  })
+
+  it('stringifies a rejection that is not an Error, rather than losing it', async () => {
+    const patch = vi.fn().mockRejectedValue('offline')
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+
+    await enterWith(host, 'new')
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('offline')
+  })
+
+  /**
+   * What `saveTitle`'s `setFailure(undefined)` protects is the frame while
+   * the save is out, where the previous save's alert would sit over it.
+   */
+  it('clears the last save failure while the next save is out', async () => {
+    // The two fields this editor reads, not the whole document — the other
+    // `onPatch` stubs in this file are untyped `vi.fn()`s and answer the same
+    // pair.
+    const retried = deferred<{ title: string; persisted: boolean }>()
+    const patch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockReturnValueOnce(retried.promise)
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    await enterWith(host, 'Volume 1')
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('offline')
+
+    // Resent: the title still differs from the one stored.
+    await keyDown(titleField(host)!, 'Enter')
+
+    expect(patch).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+
+    retried.settle({ title: 'Volume 1', persisted: true })
+    await drain()
+
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(host.querySelector('[role="status"]')?.textContent).toBe('Saved')
+  })
+})
+
 /**
  * Paste `text` into `el` at its selection as a browser does: the `paste`
  * event, then, unless a handler took it, the text put in and an `input`.
@@ -338,7 +349,7 @@ const pasteInto = async (el: HTMLTextAreaElement, text: string) => {
 }
 
 describe('MetadataEditor, the Title box’s keys (O274)', () => {
-  it('saves on Enter what the box holds, as Save does, and puts no line break in it', async () => {
+  it('saves on Enter what the field holds, and puts no line break in it', async () => {
     const patch = vi
       .fn()
       .mockResolvedValue({ title: 'Volume 1', persisted: true })
@@ -353,21 +364,23 @@ describe('MetadataEditor, the Title box’s keys (O274)', () => {
     expect(runs, 'the Enter’s own line break').toBe(false)
   })
 
-  it('sends no second save for an Enter while one is out, as Save, held, sends none', async () => {
+  it('sends no second save for an Enter while one is out, and none after it for an unchanged title', async () => {
     const out = deferred<{ title: string; persisted: boolean }>()
     const patch = vi.fn().mockReturnValue(out.promise)
     const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
     const field = titleField(host)!
-    await focusOn(field)
-    await keyDown(field, 'Enter')
+    await enterWith(host, 'new')
     expect(patch).toHaveBeenCalledTimes(1)
-    expect(submitButton(host).disabled).toBe(true)
 
     await keyDown(field, 'Enter')
 
-    expect(patch).toHaveBeenCalledTimes(1)
-    out.settle({ title: 'old', persisted: true })
+    expect(patch, 'while the save is out').toHaveBeenCalledTimes(1)
+    out.settle({ title: 'new', persisted: true })
     await drain()
+
+    await keyDown(field, 'Enter')
+
+    expect(patch, 'after it, for the title it stored').toHaveBeenCalledTimes(1)
   })
 
   it('leaves an Enter or an Escape that ends an input method’s composition to that method', async () => {
@@ -415,14 +428,13 @@ describe('MetadataEditor, the Title box’s keys (O274)', () => {
     expect(patch.mock.calls).toEqual([['w', { title: '鏡の国' }]])
   })
 
-  it('puts back on Escape the title the box held when it took focus, and keeps the focus', async () => {
-    const host = mount(
-      <MetadataEditor slug="w" title="old" onPatch={vi.fn()} />,
-    )
+  it('puts back on Escape the title saved as the field was last left, and keeps the focus', async () => {
+    const patch = vi.fn().mockResolvedValue({ title: 'held', persisted: true })
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
     const field = titleField(host)!
-    await focusOn(field)
-    await typeInto(field, 'held')
-    await blurFrom(field)
+    await leaveWith(host, 'held')
+    await drain()
+    expect(patch.mock.calls).toEqual([['w', { title: 'held' }]])
     await focusOn(field)
     await typeInto(field, 'typed')
 
@@ -463,7 +475,7 @@ describe('MetadataEditor, the Title box’s keys (O274)', () => {
       value: 'Kagami no Kuni Volume 1',
       caret: 'Kagami no Kuni '.length,
     })
-    await click(submitButton(host))
+    await keyDown(field, 'Enter')
     expect(patch.mock.calls).toEqual([
       ['w', { title: 'Kagami no Kuni Volume 1' }],
     ])
@@ -478,23 +490,24 @@ describe('MetadataEditor, the Title box’s keys (O274)', () => {
     await typeInto(field, 'Kagami no Kuni\nno Harisugawa\r\nVolume 1')
 
     expect(field.value).toBe('Kagami no Kuni no Harisugawa Volume 1')
-    await click(submitButton(host))
+    await keyDown(field, 'Enter')
     expect(patch.mock.calls).toEqual([
       ['w', { title: 'Kagami no Kuni no Harisugawa Volume 1' }],
     ])
   })
 
-  it('keeps the typed title when focus leaves the box', async () => {
-    const patch = vi.fn()
+  it('saves the typed title when focus leaves the field, and keeps it there', async () => {
+    const patch = vi.fn().mockResolvedValue({ title: 'typed', persisted: true })
     const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
     const field = titleField(host)!
     await focusOn(field)
     await typeInto(field, 'typed')
 
     await blurFrom(field)
+    await drain()
 
     expect(field.value).toBe('typed')
-    expect(patch).not.toHaveBeenCalled()
+    expect(patch.mock.calls).toEqual([['w', { title: 'typed' }]])
   })
 
   it('asks for no spellcheck, which a textarea gets by default and a romaji title does not want, and labels Enter as done', () => {
@@ -510,7 +523,848 @@ describe('MetadataEditor, the Title box’s keys (O274)', () => {
   })
 })
 
-describe('MetadataEditor, the open Title box’s watch on its page area (O274)', () => {
+describe('MetadataEditor, the Title field saves as it is left (O283)', () => {
+  /** A save that lands, so a save sent where none should be is counted. */
+  const landing = () =>
+    vi.fn().mockResolvedValue({ title: 'saved', persisted: true })
+
+  const status = (host: HTMLElement) => [
+    ...host.querySelectorAll('[role="status"]'),
+  ]
+
+  it('sends nothing when the field is left, or Enter pressed, with its title unchanged', async () => {
+    const patch = landing()
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+
+    await focusOn(field)
+    await blurFrom(field)
+    await focusOn(field)
+    await keyDown(field, 'Enter')
+    await drain()
+
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it.each(['leave', 'Enter'])(
+    'puts the stored title back for a blank title on %s, and sends nothing',
+    async (how) => {
+      const patch = landing()
+      const host = mount(
+        <MetadataEditor slug="w" title="old" onPatch={patch} />,
+      )
+      const field = titleField(host)!
+      await focusOn(field)
+      await typeInto(field, '   ')
+
+      if (how === 'leave') await blurFrom(field)
+      else await keyDown(field, 'Enter')
+      await drain()
+
+      expect({ value: field.value, saves: patch.mock.calls.length }).toEqual({
+        value: 'old',
+        saves: 0,
+      })
+    },
+  )
+
+  // Never the label's text: the field's value is text inside the label too.
+  it('says Saved in a status region there from the first render, outside the label', async () => {
+    const host = mount(
+      <MetadataEditor slug="w" title="old" onPatch={landing()} />,
+    )
+    const label = host.querySelector('label.field.title')!
+
+    expect(
+      status(host).map((s) => s.textContent),
+      'at mount',
+    ).toEqual([''])
+    expect(label.contains(status(host)[0]), 'at mount, in the label').toBe(
+      false,
+    )
+    expect(label.querySelector('span')?.textContent).toBe('Title')
+
+    await enterWith(host, 'new')
+    await drain()
+
+    expect(
+      status(host).map((s) => s.textContent),
+      'saved',
+    ).toEqual(['Saved'])
+    expect(label.contains(status(host)[0]), 'saved, in the label').toBe(false)
+  })
+
+  describe('clears Saved after 3 s, and at the next edit', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('after 3 s', async () => {
+      const host = mount(
+        <MetadataEditor slug="w" title="old" onPatch={landing()} />,
+      )
+      await enterWith(host, 'new')
+      await drain()
+
+      await act(async () => {
+        vi.advanceTimersByTime(2999)
+      })
+      expect(status(host)[0]?.textContent, 'at 2999 ms').toBe('Saved')
+      await act(async () => {
+        vi.advanceTimersByTime(1)
+      })
+      expect(status(host)[0]?.textContent, 'at 3000 ms').toBe('')
+    })
+
+    it('at once at the next edit', async () => {
+      const host = mount(
+        <MetadataEditor slug="w" title="old" onPatch={landing()} />,
+      )
+      await enterWith(host, 'new')
+      await drain()
+      expect(status(host)[0]?.textContent, 'saved').toBe('Saved')
+
+      await typeInto(titleField(host)!, 'newer')
+
+      expect(status(host)[0]?.textContent, 'edited').toBe('')
+    })
+  })
+
+  // Settled by `drain`: `allLanded` waits on a `setTimeout` the fakes hold.
+  describe('says Saving… in Saved’s place once a save has been out 200 ms', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    /** The clock run `ms`, and what it set drawn. */
+    const wait = async (ms: number) => {
+      await act(async () => {
+        vi.advanceTimersByTime(ms)
+      })
+    }
+
+    /** One save, left out until the test settles it. */
+    const heldSave = () => {
+      const out = deferred<Answer>()
+      return { out, patch: vi.fn().mockReturnValue(out.promise) }
+    }
+
+    it('says Saving… once a title save has been out 200 ms, and Saved as it lands', async () => {
+      const { out, patch } = heldSave()
+      const host = mount(
+        <MetadataEditor slug="w" title="old" onPatch={patch} />,
+      )
+      const note = status(host)[0]
+      await leaveWith(host, 'new')
+
+      await wait(199)
+      expect(status(host)[0], 'the region at 199 ms').toBe(note)
+      expect(note?.textContent, 'at 199 ms').toBe('')
+      await wait(1)
+      expect(status(host)[0], 'the region at 200 ms').toBe(note)
+      expect(note?.textContent, 'at 200 ms').toBe('Saving…')
+
+      out.settle({ title: 'new', persisted: true })
+      await drain()
+
+      expect(status(host)[0], 'the region once landed').toBe(note)
+      expect(note?.textContent, 'landed').toBe('Saved')
+    })
+
+    it('says no Saving… for a save that lands within 200 ms', async () => {
+      const { out, patch } = heldSave()
+      const host = mount(
+        <MetadataEditor slug="w" title="old" onPatch={patch} />,
+      )
+      await leaveWith(host, 'new')
+
+      await wait(150)
+      expect(status(host)[0]?.textContent, 'out at 150 ms').toBe('')
+
+      out.settle({ title: 'new', persisted: true })
+      await drain()
+      expect(status(host)[0]?.textContent, 'landed at 150 ms').toBe('Saved')
+      await wait(100)
+      expect(status(host)[0]?.textContent, '100 ms after').toBe('Saved')
+    })
+
+    it('keeps Saving… through the newer title sent after the save that was out', async () => {
+      const first = deferred<Answer>()
+      const second = deferred<Answer>()
+      const patch = vi
+        .fn()
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise)
+      const host = mount(
+        <MetadataEditor slug="w" title="old" onPatch={patch} />,
+      )
+      await leaveWith(host, 'A')
+      await wait(250)
+      expect(status(host)[0]?.textContent, 'A out').toBe('Saving…')
+
+      await leaveWith(host, 'AB')
+      expect(patch, 'AB left while A is out').toHaveBeenCalledTimes(1)
+      first.settle({ title: 'A', persisted: true })
+      await drain()
+
+      expect(patch.mock.calls, 'A landed').toEqual([
+        ['w', { title: 'A' }],
+        ['w', { title: 'AB' }],
+      ])
+      expect(status(host)[0]?.textContent, 'AB out').toBe('Saving…')
+
+      second.settle({ title: 'AB', persisted: true })
+      await drain()
+
+      expect(status(host)[0]?.textContent, 'AB landed').toBe('Saved')
+    })
+
+    it('takes Saving… away when the save fails', async () => {
+      const { out, patch } = heldSave()
+      const host = mount(
+        <MetadataEditor slug="w" title="old" onPatch={patch} />,
+      )
+      await leaveWith(host, 'new')
+      await wait(250)
+      expect(status(host)[0]?.textContent, 'out').toBe('Saving…')
+
+      out.fail(new Error('offline'))
+      await drain()
+
+      expect({
+        status: status(host)[0]?.textContent,
+        alert: host.querySelector('[role="alert"]')?.textContent,
+      }).toEqual({ status: '', alert: 'offline' })
+    })
+  })
+
+  it('puts back the stored title on Escape after a failed save', async () => {
+    const patch = vi.fn().mockRejectedValue(new Error('offline'))
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await leaveWith(host, 'X')
+    await drain()
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('offline')
+
+    await focusOn(field)
+    await keyDown(field, 'Escape')
+
+    expect(field.value).toBe('old')
+  })
+
+  // The failure spoke of the title Escape discarded.
+  it('takes the failure away on the Escape that puts back the stored title', async () => {
+    const patch = vi.fn().mockRejectedValue(new Error('offline'))
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await leaveWith(host, 'X')
+    await drain()
+    expect(
+      host.querySelector('[role="alert"]')?.textContent,
+      'before Escape',
+    ).toBe('offline')
+
+    await focusOn(field)
+    await keyDown(field, 'Escape')
+
+    expect(field.value, 'put back').toBe('old')
+    expect(host.querySelector('[role="alert"]'), 'after Escape').toBeNull()
+  })
+
+  // That note speaks of the stored title, which Escape puts back.
+  it('keeps the note that a save was not written beside the library through that Escape', async () => {
+    const patch = vi
+      .fn()
+      .mockResolvedValueOnce({ title: 'A', persisted: false })
+      .mockRejectedValueOnce(new Error('offline'))
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await leaveWith(host, 'A')
+    await drain()
+    await leaveWith(host, 'AB')
+    await drain()
+    const shown = () => ({
+      value: field.value,
+      alert: host.querySelector('[role="alert"]')?.textContent ?? null,
+      unwritten: host.querySelector('.unwritten') !== null,
+    })
+    expect(shown(), 'AB failed').toEqual({
+      value: 'AB',
+      alert: 'offline',
+      unwritten: true,
+    })
+
+    await focusOn(field)
+    await keyDown(field, 'Escape')
+
+    expect(shown(), 'after Escape').toEqual({
+      value: 'A',
+      alert: null,
+      unwritten: true,
+    })
+  })
+
+  /**
+   * A title save that failed as the field was left: the field holds the
+   * failed title, and its failure is shown under it.
+   */
+  const afterAFailure = async () => {
+    const patch = vi.fn().mockRejectedValue(new Error('offline'))
+    const handle = createRef<TitleFlush>()
+    const host = mount(
+      <MetadataEditor ref={handle} slug="w" title="old" onPatch={patch} />,
+    )
+    const field = titleField(host)!
+    await leaveWith(host, 'X')
+    await drain()
+    expect(host.querySelector('[role="alert"]')?.textContent, 'X failed').toBe(
+      'offline',
+    )
+    return { patch, handle, host, field }
+  }
+
+  // The failure spoke of a title no longer in the field.
+  it('takes the failure away when the field is left blank after a failed save', async () => {
+    const { patch, host, field } = await afterAFailure()
+
+    await focusOn(field)
+    await typeInto(field, '')
+    await blurFrom(field)
+    await drain()
+
+    expect(field.value, 'put back').toBe('old')
+    expect(host.querySelector('[role="alert"]'), 'left').toBeNull()
+    expect(patch, 'X only').toHaveBeenCalledTimes(1)
+  })
+
+  it('takes the failure away when the stored title is typed back and the field left', async () => {
+    const { patch, host } = await afterAFailure()
+
+    await leaveWith(host, 'old')
+    await drain()
+
+    expect(host.querySelector('[role="alert"]'), 'left').toBeNull()
+    expect(patch, 'X only').toHaveBeenCalledTimes(1)
+  })
+
+  it('takes the failure away when the stored title is typed back and Enter pressed', async () => {
+    const { patch, host } = await afterAFailure()
+
+    await enterWith(host, 'old')
+    await drain()
+
+    expect(host.querySelector('[role="alert"]'), 'Enter').toBeNull()
+    expect(patch, 'X only').toHaveBeenCalledTimes(1)
+  })
+
+  it('takes the failure away when a close flushes a field back at the stored title', async () => {
+    const { handle, host, field } = await afterAFailure()
+    await focusOn(field)
+    await typeInto(field, 'old')
+
+    let answer: Promise<boolean> | null | undefined
+    await act(async () => {
+      answer = handle.current?.flush()
+    })
+
+    expect(answer, 'flush').toBeNull()
+    expect(host.querySelector('[role="alert"]'), 'flushed').toBeNull()
+  })
+
+  // That note speaks of the stored title, the one the field is left at.
+  it('keeps the unwritten note through a leave back at the stored title', async () => {
+    const patch = vi
+      .fn()
+      .mockResolvedValueOnce({ title: 'A', persisted: false })
+      .mockRejectedValueOnce(new Error('offline'))
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await leaveWith(host, 'A')
+    await drain()
+    await leaveWith(host, 'AB')
+    await drain()
+    const shown = () => ({
+      alert: host.querySelector('[role="alert"]')?.textContent ?? null,
+      unwritten: host.querySelector('.unwritten') !== null,
+    })
+    expect(shown(), 'AB failed').toEqual({ alert: 'offline', unwritten: true })
+
+    await leaveWith(host, 'A')
+    await drain()
+
+    expect(field.value, 'typed back').toBe('A')
+    expect(shown(), 'left at A').toEqual({ alert: null, unwritten: true })
+  })
+
+  it('sends nothing when the field is left after Escape put its title back', async () => {
+    const patch = landing()
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await focusOn(field)
+    await typeInto(field, 'typed')
+    await keyDown(field, 'Escape')
+
+    await blurFrom(field)
+    await drain()
+
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('marks the field data-editing from focus until Escape, again at the next edit, and not after blur', async () => {
+    const host = mount(
+      <MetadataEditor slug="w" title="old" onPatch={landing()} />,
+    )
+    const field = titleField(host)!
+    const marked = () => field.hasAttribute('data-editing')
+    expect(marked(), 'at mount').toBe(false)
+
+    await focusOn(field)
+    expect(marked(), 'focused').toBe(true)
+
+    await keyDown(field, 'Escape')
+    expect(marked(), 'after Escape').toBe(false)
+
+    await typeInto(field, 'typed')
+    expect(marked(), 'typed after Escape').toBe(true)
+
+    await blurFrom(field)
+    await drain()
+    expect(marked(), 'left').toBe(false)
+  })
+})
+
+/** The two fields this editor reads of a save's answer. */
+type Answer = { title: string; persisted: boolean }
+
+/**
+ * Every microtask a settled save queued has run, a save it sent in turn
+ * included: a macrotask comes after them all.
+ */
+const allLanded = async () => {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}
+
+describe('MetadataEditor, a title changed while a save is out (O283)', () => {
+  /** A first save left out until the test settles it; every later one lands. */
+  const firstOut = (later: string) => {
+    const out = deferred<Answer>()
+    const patch = vi
+      .fn()
+      .mockReturnValueOnce(out.promise)
+      .mockResolvedValue({ title: later, persisted: true })
+    return { out, patch }
+  }
+
+  it('sends a title changed while a save is out once it returns, the newest text last, one at a time', async () => {
+    const { out, patch } = firstOut('ABC')
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await enterWith(host, 'A')
+    await typeInto(field, 'AB')
+    await keyDown(field, 'Enter')
+    await typeInto(field, 'ABC')
+    await blurFrom(field)
+    await drain()
+
+    expect(patch.mock.calls, 'while it is out').toEqual([['w', { title: 'A' }]])
+
+    out.settle({ title: 'A', persisted: true })
+    await allLanded()
+
+    expect(patch.mock.calls, 'after it').toEqual([
+      ['w', { title: 'A' }],
+      ['w', { title: 'ABC' }],
+    ])
+  })
+
+  it.each(['leave', 'Enter'])(
+    'sends a title changed while a save is out on %s, once that save returns',
+    async (how) => {
+      const { out, patch } = firstOut('AB')
+      const host = mount(
+        <MetadataEditor slug="w" title="old" onPatch={patch} />,
+      )
+      const field = titleField(host)!
+      await enterWith(host, 'A')
+      await typeInto(field, 'AB')
+
+      if (how === 'leave') await blurFrom(field)
+      else await keyDown(field, 'Enter')
+      out.settle({ title: 'A', persisted: true })
+      await allLanded()
+
+      expect(patch.mock.calls).toEqual([
+        ['w', { title: 'A' }],
+        ['w', { title: 'AB' }],
+      ])
+    },
+  )
+
+  it('sends nothing queued after a save that failed, and shows the failure', async () => {
+    const { out, patch } = firstOut('AB')
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await enterWith(host, 'A')
+    await typeInto(field, 'AB')
+    await keyDown(field, 'Enter')
+
+    out.fail(new Error('offline'))
+    await allLanded()
+
+    expect(patch.mock.calls, 'after the failure').toEqual([
+      ['w', { title: 'A' }],
+    ])
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('offline')
+
+    await keyDown(field, 'Enter')
+
+    expect(patch.mock.calls, 'at the next Enter').toEqual([
+      ['w', { title: 'A' }],
+      ['w', { title: 'AB' }],
+    ])
+  })
+
+  it('sends no blank title once the save out returns, where the field has been cleared since', async () => {
+    const { out, patch } = firstOut('AB')
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await enterWith(host, 'A')
+    await typeInto(field, 'AB')
+    await keyDown(field, 'Enter')
+    await typeInto(field, '')
+
+    out.settle({ title: 'A', persisted: true })
+    await allLanded()
+
+    expect(patch.mock.calls).toEqual([['w', { title: 'A' }]])
+  })
+
+  // The field saves when it is left or on Enter, never as it is typed in.
+  it('sends nothing once the save out returns for a title typed since but neither left nor entered', async () => {
+    const { out, patch } = firstOut('AB')
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    await enterWith(host, 'A')
+    await typeInto(titleField(host)!, 'AB')
+
+    out.settle({ title: 'A', persisted: true })
+    await allLanded()
+
+    expect(patch.mock.calls).toEqual([['w', { title: 'A' }]])
+  })
+
+  it('sends nothing after the newest text’s own save for a title typed since but neither left nor entered', async () => {
+    const first = deferred<Answer>()
+    const second = deferred<Answer>()
+    const patch = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+      .mockResolvedValue({ title: 'ABC', persisted: true })
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await enterWith(host, 'A')
+    await typeInto(field, 'AB')
+    await keyDown(field, 'Enter')
+    first.settle({ title: 'A', persisted: true })
+    await allLanded()
+    await typeInto(field, 'ABC')
+
+    second.settle({ title: 'AB', persisted: true })
+    await allLanded()
+
+    expect(patch.mock.calls).toEqual([
+      ['w', { title: 'A' }],
+      ['w', { title: 'AB' }],
+    ])
+  })
+
+  it('sends a title changed once the save before it has landed', async () => {
+    const patch = vi.fn().mockResolvedValue({ title: 'B', persisted: true })
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await enterWith(host, 'A')
+    await allLanded()
+
+    await typeInto(field, 'B')
+    await blurFrom(field)
+    await allLanded()
+
+    expect(patch.mock.calls).toEqual([
+      ['w', { title: 'A' }],
+      ['w', { title: 'B' }],
+    ])
+  })
+
+  it.each(['leave', 'Enter'])(
+    'puts back the title being sent for a blank title on %s while the field’s own save is out, and sends nothing after it',
+    async (how) => {
+      const { out, patch } = firstOut('A')
+      const host = mount(
+        <MetadataEditor slug="w" title="old" onPatch={patch} />,
+      )
+      const field = titleField(host)!
+      await enterWith(host, 'A')
+      await typeInto(field, '   ')
+
+      if (how === 'leave') await blurFrom(field)
+      else await keyDown(field, 'Enter')
+
+      expect(field.value, 'put back').toBe('A')
+      out.settle({ title: 'A', persisted: true })
+      await allLanded()
+
+      expect({ value: field.value, calls: patch.mock.calls }).toEqual({
+        value: 'A',
+        calls: [['w', { title: 'A' }]],
+      })
+    },
+  )
+
+  it('puts back on Escape the title being sent while the field’s own save is out', async () => {
+    const { out, patch } = firstOut('A')
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await enterWith(host, 'A')
+    await typeInto(field, 'AB')
+
+    await keyDown(field, 'Escape')
+
+    // Soft, so the leave below still runs on a wrong put-back: left while
+    // the save is out, an older title would be sent over the newer one.
+    expect.soft(field.value, 'put back').toBe('A')
+    await blurFrom(field)
+    out.settle({ title: 'A', persisted: true })
+    await allLanded()
+
+    expect({ value: field.value, calls: patch.mock.calls }).toEqual({
+      value: 'A',
+      calls: [['w', { title: 'A' }]],
+    })
+  })
+
+  it('withdraws on Escape a save asked for while one is out, and sends no title typed after it', async () => {
+    const { out, patch } = firstOut('AX')
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await enterWith(host, 'A')
+    await typeInto(field, 'AB')
+    await keyDown(field, 'Enter')
+    await keyDown(field, 'Escape')
+    await typeInto(field, 'AX')
+
+    out.settle({ title: 'A', persisted: true })
+    await allLanded()
+
+    expect(patch.mock.calls).toEqual([['w', { title: 'A' }]])
+  })
+
+  it('puts back on Escape the title being sent while the field’s own save is out, and the stored one once that save has failed', async () => {
+    const { out, patch } = firstOut('A')
+    const host = mount(<MetadataEditor slug="w" title="old" onPatch={patch} />)
+    const field = titleField(host)!
+    await enterWith(host, 'A')
+    await typeInto(field, 'AB')
+    await keyDown(field, 'Escape')
+    expect(field.value, 'while it is out').toBe('A')
+
+    out.fail(new Error('offline'))
+    await allLanded()
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('offline')
+    // `Series` leaves the field an Escape only while it is marked.
+    expect(
+      field.hasAttribute('data-editing'),
+      'marked again, focused, once it has failed',
+    ).toBe(true)
+
+    await keyDown(field, 'Escape')
+
+    expect(field.value, 'once it has failed').toBe('old')
+  })
+})
+
+describe('MetadataEditor’s flush, which a close waits on (O283)', () => {
+  /**
+   * `flush` called as `Series` calls it, from outside the editor. Its
+   * answer comes back wrapped: an async function's own answer would wait
+   * on it.
+   */
+  const flushFrom = async (handle: RefObject<TitleFlush | null>) => {
+    let answer: Promise<boolean> | null | undefined
+    await act(async () => {
+      answer = handle.current?.flush()
+    })
+    return { answer }
+  }
+
+  /** What an answer has settled to so far: `'out'` until it settles. */
+  const watch = (answer: Promise<boolean> | null | undefined) => {
+    let now: boolean | 'out' = 'out'
+    void answer?.then((ok) => {
+      now = ok
+    })
+    return () => now
+  }
+
+  it('flush answers null with nothing unsaved and no save out', async () => {
+    const patch = vi.fn().mockResolvedValue({ title: 'old', persisted: true })
+    const handle = createRef<TitleFlush>()
+    mount(<MetadataEditor ref={handle} slug="w" title="old" onPatch={patch} />)
+
+    const { answer } = await flushFrom(handle)
+    await allLanded()
+
+    expect({ answer, saves: patch.mock.calls.length }).toEqual({
+      answer: null,
+      saves: 0,
+    })
+  })
+
+  it('flush answers null once the save out has landed with nothing typed since', async () => {
+    const patch = vi.fn().mockResolvedValue({ title: 'new', persisted: true })
+    const handle = createRef<TitleFlush>()
+    const host = mount(
+      <MetadataEditor ref={handle} slug="w" title="old" onPatch={patch} />,
+    )
+    await enterWith(host, 'new')
+    await allLanded()
+
+    const { answer } = await flushFrom(handle)
+    await allLanded()
+
+    expect({ answer, saves: patch.mock.calls.length }).toEqual({
+      answer: null,
+      saves: 1,
+    })
+  })
+
+  it('flush sends a changed title and resolves true once it is stored', async () => {
+    const out = deferred<Answer>()
+    const patch = vi.fn().mockReturnValueOnce(out.promise)
+    const handle = createRef<TitleFlush>()
+    const host = mount(
+      <MetadataEditor ref={handle} slug="w" title="old" onPatch={patch} />,
+    )
+    await typeInto(titleField(host)!, 'new')
+
+    const now = watch((await flushFrom(handle)).answer)
+    await allLanded()
+
+    expect(patch.mock.calls, 'sent').toEqual([['w', { title: 'new' }]])
+    expect(now(), 'while the save is out').toBe('out')
+
+    out.settle({ title: 'new', persisted: true })
+    await allLanded()
+
+    expect(now(), 'once it is stored').toBe(true)
+    expect(patch, 'once').toHaveBeenCalledTimes(1)
+  })
+
+  it('flush resolves false when the save fails, and the failure is under the field', async () => {
+    const patch = vi.fn().mockRejectedValue(new Error('offline'))
+    const handle = createRef<TitleFlush>()
+    const host = mount(
+      <MetadataEditor ref={handle} slug="w" title="old" onPatch={patch} />,
+    )
+    await typeInto(titleField(host)!, 'new')
+
+    const now = watch((await flushFrom(handle)).answer)
+    await allLanded()
+
+    expect(now()).toBe(false)
+    expect(
+      host.querySelector('form.metadata-editor [role="alert"]')?.textContent,
+    ).toBe('offline')
+  })
+
+  it('flush resolves false when the title is stored but not written beside the library, the reason under the field, and answers null next', async () => {
+    const patch = vi
+      .fn()
+      .mockResolvedValue({ title: 'new', persisted: false, why: ['disk full'] })
+    const handle = createRef<TitleFlush>()
+    const host = mount(
+      <MetadataEditor ref={handle} slug="w" title="old" onPatch={patch} />,
+    )
+    await typeInto(titleField(host)!, 'new')
+
+    const now = watch((await flushFrom(handle)).answer)
+    await allLanded()
+
+    expect({
+      answer: now(),
+      reason: host.querySelector('form.metadata-editor .unwritten li')
+        ?.textContent,
+    }).toEqual({ answer: false, reason: 'disk full' })
+    const { answer } = await flushFrom(handle)
+    expect({ next: answer, saves: patch.mock.calls.length }).toEqual({
+      next: null,
+      saves: 1,
+    })
+  })
+
+  it('flush waits for the save out and the newest text after it, sending each once', async () => {
+    const first = deferred<Answer>()
+    const second = deferred<Answer>()
+    const patch = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const handle = createRef<TitleFlush>()
+    const host = mount(
+      <MetadataEditor ref={handle} slug="w" title="old" onPatch={patch} />,
+    )
+    await enterWith(host, 'A')
+    await typeInto(titleField(host)!, 'AB')
+
+    const now = watch((await flushFrom(handle)).answer)
+    await allLanded()
+    expect(patch.mock.calls, 'while the first is out').toEqual([
+      ['w', { title: 'A' }],
+    ])
+
+    first.settle({ title: 'A', persisted: true })
+    await allLanded()
+    expect(patch.mock.calls, 'after the first').toEqual([
+      ['w', { title: 'A' }],
+      ['w', { title: 'AB' }],
+    ])
+    expect(now(), 'while the newest is out').toBe('out')
+
+    second.settle({ title: 'AB', persisted: true })
+    await allLanded()
+
+    expect(now(), 'once the newest is stored').toBe(true)
+    expect(patch, 'each once').toHaveBeenCalledTimes(2)
+  })
+
+  it('flush puts a blank title back and answers null', async () => {
+    const patch = vi.fn().mockResolvedValue({ title: 'old', persisted: true })
+    const handle = createRef<TitleFlush>()
+    const host = mount(
+      <MetadataEditor ref={handle} slug="w" title="old" onPatch={patch} />,
+    )
+    const field = titleField(host)!
+    await typeInto(field, '   ')
+
+    const { answer } = await flushFrom(handle)
+    await allLanded()
+
+    expect({
+      answer,
+      value: field.value,
+      saves: patch.mock.calls.length,
+    }).toEqual({ answer: null, value: 'old', saves: 0 })
+  })
+})
+
+describe('MetadataEditor, the Title field’s watch on its own width (O283)', () => {
   /** jsdom has no `ResizeObserver`; this one records what it is asked. */
   class Watch {
     static made: Watch[] = []
@@ -539,39 +1393,84 @@ describe('MetadataEditor, the open Title box’s watch on its page area (O274)',
   const watches = () =>
     Watch.made.map(({ observed, disconnected }) => ({ observed, disconnected }))
 
-  it('watches the page area only while the box is open, and lets it go when the box closes and when the editor goes', async () => {
+  it('watches its own field for a width change, and lets the watch go when the editor goes', () => {
     const host = mount(
-      <div className="library">
-        <main>
-          <MetadataEditor slug="w" title="old" onPatch={vi.fn()} />
-        </main>
-      </div>,
+      <MetadataEditor slug="w" title="old" onPatch={vi.fn()} />,
     )
-    const main = host.querySelector('.library > main')
-    const field = titleField(host)!
-    expect(watches(), 'at rest').toEqual([])
-
-    await focusOn(field)
-    expect(watches(), 'open').toEqual([
-      { observed: [main], disconnected: false },
+    const field = titleField(host)
+    expect(watches(), 'mounted').toEqual([
+      { observed: [field], disconnected: false },
     ])
 
-    await blurFrom(field)
-    expect(watches(), 'closed').toEqual([
-      { observed: [main], disconnected: true },
-    ])
-
-    await focusOn(field)
-    rerender(
-      <div className="library">
-        <main />
-      </div>,
-    )
-    expect(watches(), 'open, then gone').toEqual([
-      { observed: [main], disconnected: true },
-      { observed: [main], disconnected: true },
+    rerender(<div />)
+    expect(watches(), 'gone').toEqual([
+      { observed: [field], disconnected: true },
     ])
   })
+})
+
+describe('MetadataEditor, the Title field fitted again as a face lands (O283)', () => {
+  /** jsdom has no `document.fonts`; this one only carries its events. */
+  beforeEach(() => {
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: new EventTarget(),
+    })
+  })
+  afterEach(() => {
+    Reflect.deleteProperty(document, 'fonts')
+    vi.unstubAllGlobals()
+  })
+
+  /** `field` laid out with 20 px lines, `content` px of title and a 1 px border. */
+  const laidOut = (field: HTMLTextAreaElement, content: number) => {
+    field.style.padding = '0px'
+    Object.defineProperty(field, 'clientHeight', {
+      configurable: true,
+      value: 20,
+    })
+    Object.defineProperty(field, 'scrollHeight', {
+      configurable: true,
+      value: content,
+    })
+    vi.spyOn(field, 'getBoundingClientRect').mockReturnValue({
+      height: 22,
+    } as DOMRect)
+  }
+
+  it.each([
+    ['without', false],
+    ['with', true],
+  ] as const)(
+    'fits the field again as a face lands, and no longer once the editor is gone, %s a ResizeObserver',
+    (_, observer) => {
+      if (observer) {
+        vi.stubGlobal(
+          'ResizeObserver',
+          class {
+            observe() {}
+            unobserve() {}
+            disconnect() {}
+          },
+        )
+      }
+      const host = mount(
+        <MetadataEditor slug="w" title="old" onPatch={vi.fn()} />,
+      )
+      const field = titleField(host)!
+      laidOut(field, 60)
+      // The fixture tells: the fit made as it mounted had nothing laid out.
+      expect(field.style.height, 'as mounted').not.toBe('62px')
+
+      document.fonts.dispatchEvent(new Event('loadingdone'))
+      expect(field.style.height, 'a face landed').toBe('62px')
+
+      rerender(<div />)
+      laidOut(field, 80)
+      document.fonts.dispatchEvent(new Event('loadingdone'))
+      expect(field.style.height, 'a face landed after it went').toBe('62px')
+    },
+  )
 })
 
 describe('MetadataEditor, the ComicInfo stamp', () => {
@@ -672,6 +1571,26 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
     await click(planButton(host)!)
 
     expect(patch).not.toHaveBeenCalled()
+    expect(stamp.stampPlan).toHaveBeenCalledWith('w')
+  })
+
+  it('saves a changed title when focus leaves the field for the stamp controls', async () => {
+    vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)
+    const patch = vi
+      .fn()
+      .mockResolvedValue({ title: 'Volume 1', persisted: true })
+    const host = mount(
+      <MetadataEditor slug="w" title="t" onPatch={patch} canStamp />,
+    )
+    const field = titleField(host)!
+    await focusOn(field)
+    await typeInto(field, 'Volume 1')
+
+    await focusOn(planButton(host)!)
+    await drain()
+
+    expect(patch.mock.calls).toEqual([['w', { title: 'Volume 1' }]])
+    await click(planButton(host)!)
     expect(stamp.stampPlan).toHaveBeenCalledWith('w')
   })
 
@@ -813,7 +1732,7 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
    * as belt and braces. Without this test, a future change that moved the
    * section inside the form would go uncaught unless it also dropped
    * `type="button"`. A button with no `type` inside a form submits it, which
-   * would make an irreversible archive rewrite a side effect of pressing Save.
+   * would make an irreversible archive rewrite a side effect of a title save.
    */
   it('does not render the stamp section inside the metadata form', () => {
     const host = mount(
@@ -1120,12 +2039,12 @@ describe('MetadataEditor, the ComicInfo stamp', () => {
 
   /**
    * **Reachable without any mistake.** Open the panel, read the plan, correct
-   * the title in the form above and Save — the rendered XML now differs, so a
-   * third zip enters the plan — then confirm. The server answers "this work's
-   * archives have changed since the plan was made (2 then, 3 now); nothing
-   * was written". If the only enabled control resent the same body, the same
-   * guard would refuse it every time, and closing the whole panel would be
-   * the only escape.
+   * the title in the form above and leave it — the rendered XML now differs,
+   * so a third zip enters the plan — then confirm. The server answers "this
+   * work's archives have changed since the plan was made (2 then, 3 now);
+   * nothing was written". If the only enabled control resent the same body,
+   * the same guard would refuse it every time, and closing the whole panel
+   * would be the only escape.
    */
   it('offers a fresh plan after a refusal, and draws the new one over the old', async () => {
     vi.mocked(stamp.stampPlan).mockResolvedValue(PLAN)

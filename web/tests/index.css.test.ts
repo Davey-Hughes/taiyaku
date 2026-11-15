@@ -895,3 +895,46 @@ describe('a tab row and a pill row stay two different rows', () => {
     expect(withoutComments(cssSource)).not.toContain('.chips')
   })
 })
+
+/**
+ * A volume tile's `i`, and its corner ↓ where it has no `i`, wait for the
+ * tile to be pointed at or focused only where every pointer can hover
+ * (O283). A touch laptop's primary pointer hovers, so `(hover: hover)` alone
+ * would leave its finger tapping a control it cannot see. The browser cases
+ * switch the rule by this text (`support/pointer.ts`'s `pointerRulesAs`), so
+ * it is held here as written.
+ */
+describe('a volume tile’s controls on the cover (O283)', () => {
+  it('hides i only where every pointer hovers', () => {
+    const hiding = withoutComments(librarySource).match(
+      /@media([^{]*)\{\s*\.volumes > li > :is\(\.panel-open, a\.get\)\s*\{[^}]*\bopacity:\s*0;/,
+    )
+    expect(hiding?.[1].trim()).toBe(
+      '(hover: hover) and (not (any-pointer: coarse))',
+    )
+  })
+})
+
+/**
+ * An open volume's panel lies over the rows below its tile (O283): above
+ * the covers and the marks on them, under the phone bar and View, both of
+ * which a reader must reach with a panel open.
+ */
+describe('an open volume’s panel', () => {
+  /** The `z-index` of the one rule whose whole selector is `selector`. */
+  const layer = (selector: string) => {
+    const found = rules(cssSource).filter((rule) => rule.prelude === selector)
+    if (found.length !== 1) {
+      throw new Error(`${found.length} rules for ${selector}, not one`)
+    }
+    return Number(required(found[0].body, 'z-index'))
+  }
+
+  it('draws an open volume’s panel above the covers and under the phone bar and View', () => {
+    const panel = layer('.tile-panel')
+    expect(Number.isInteger(panel)).toBe(true)
+    expect(panel).toBeGreaterThan(0)
+    expect(panel).toBeLessThan(layer('.phone-bar'))
+    expect(panel).toBeLessThan(layer('.view-panel'))
+  })
+})

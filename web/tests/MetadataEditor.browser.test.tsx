@@ -1,6 +1,7 @@
-import { act } from 'react'
+import latinFace from '@fontsource/zen-kaku-gothic-new/files/zen-kaku-gothic-new-latin-400-normal.woff2?url'
+import { act, type ReactNode } from 'react'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
-import { page, userEvent } from 'vitest/browser'
+import { userEvent } from 'vitest/browser'
 // Required, the same reason every other file in this project gives: the
 // rules under test live in `styles/`, whose sheets reach the app through
 // `index.css`. Without this the boxes below measure browser defaults.
@@ -9,10 +10,11 @@ import { SCAN_POLL_MS } from '../src/config'
 import * as derive from '../src/libraries'
 import { MetadataEditor } from '../src/MetadataEditor'
 import * as stamp from '../src/stamp'
-import { settleUntil } from './support/async'
+import { deferred, settleUntil } from './support/async'
 import { pressOn } from './support/callout'
 import { holdOf } from './support/held'
-import { mount } from './support/mount'
+import { lineCount, lineOf, oneLineIn } from './support/lines'
+import { mount, rerender } from './support/mount'
 
 vi.mock('../src/stamp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/stamp')>()),
@@ -75,9 +77,8 @@ describe('the Series page’s title field, after the Rules screen hoisted .field
  * `ul.volumes` > `li`, beside the tile's own `span.title`, and the editor's
  * Title field is `label.field.title`: a rule for the tile's title that named
  * any `.title` in `.volumes` would draw the field in the title face too.
- * The editor has one field, so the label is held to the form's other text,
- * `.current`, and its box to the form's other control, Save, which takes the
- * form's font through `base.css`'s `font: inherit` as the box does.
+ * The label and the box are held to the form's own face: the label inherits
+ * it, and the box takes it through `base.css`'s `font: inherit`.
  */
 describe('the editor’s Title field in a volume’s tile', () => {
   it('draws its label and box in the editor’s face, not the tile title’s', async () => {
@@ -118,23 +119,20 @@ describe('the editor’s Title field in a volume’s tile', () => {
       }
     }
     const tile = face(need('.volumes li > a > .title'))
-    const text = face(need('.metadata-editor .current'))
+    const form = face(need('form.metadata-editor'))
 
-    // The fixture tells: the tile's title differs from the form's text in
+    // The fixture tells: the tile's title differs from the form's face in
     // each of the four, so a field drawn in the title face cannot match.
-    expect(tile.family).not.toBe(text.family)
-    expect(tile.weight).not.toBe(text.weight)
-    expect(tile.size).not.toBe(text.size)
-    expect(tile.lineHeight).not.toBe(text.lineHeight)
+    expect(tile.family).not.toBe(form.family)
+    expect(tile.weight).not.toBe(form.weight)
+    expect(tile.size).not.toBe(form.size)
+    expect(tile.lineHeight).not.toBe(form.lineHeight)
 
     // One comparison, so a failure shows the label and the box together.
     expect({
       label: face(need('.metadata-editor .field.title')),
       box: face(need(".metadata-editor .field.title [name='title']")),
-    }).toEqual({
-      label: text,
-      box: face(need(".metadata-editor button[type='submit']")),
-    })
+    }).toEqual({ label: form, box: form })
   })
 })
 
@@ -198,647 +196,242 @@ describe('Write ComicInfo.xml’s confirm, held in a real browser (O51)', () => 
 })
 
 /**
- * The width of `text` set on one line in `el`'s own font: a span inside
- * `el` inherits it, and is taken out again before anything reads `el`.
+ * The editor in a `div` `width` wide inside `.library`, its saves answered
+ * by `onPatch`. The face is loaded first: the field is fitted as it mounts,
+ * and a face that landed later would change its lines and not its height.
  */
-const oneLineIn = (el: Element, text: string) => {
-  const probe = document.createElement('span')
-  probe.style.position = 'absolute'
-  probe.style.whiteSpace = 'pre'
-  probe.style.visibility = 'hidden'
-  probe.textContent = text
-  el.append(probe)
-  const width = probe.getBoundingClientRect().width
-  probe.remove()
-  return width
+async function fieldIn(
+  width: string,
+  title: string,
+  onPatch = vi.fn().mockResolvedValue({ title, persisted: true }),
+) {
+  const host = mount(
+    <div className="library">
+      <div style={{ width }} />
+    </div>,
+  )
+  const holder = host.querySelector<HTMLElement>('.library > div')
+  if (holder === null) throw new Error('no holder mounted')
+  // The form sets no font of its own, so it is drawn in the holder's.
+  const face = getComputedStyle(holder)
+  await document.fonts.load(
+    `${face.fontStyle} ${face.fontWeight} ${face.fontSize} ${face.fontFamily}`,
+    title,
+  )
+  await act(async () => {
+    rerender(
+      <div className="library">
+        <div style={{ width }}>
+          <MetadataEditor slug="w" title={title} onPatch={onPatch} />
+        </div>
+      </div>,
+    )
+  })
+  const label = holder.querySelector('.metadata-editor .field.title')
+  const field = holder.querySelector<HTMLTextAreaElement>("[name='title']")
+  if (label === null || field === null) throw new Error('no field mounted')
+  return { holder, label, field }
 }
 
-/**
- * The editor as a Series page draws it, in a volume's tile (`.library` >
- * `main` > `ul.volumes` > `li`), mostly in the right-hand tile of a phone's
- * two, which ends where the window does, so whatever overruns it widens the
- * page. The editor and the alignment panel stay inside their tile
- * (style-pass §7 ②), though a plan's path, `<content_key>.library.json`,
- * the title and an error naming a path hold no space to break at; in a
- * desktop's column the title box keeps to its tile too.
- */
-describe('a stamp plan drawn in a volume’s tile (O274)', () => {
-  /** Its last name has no `/`, `-` or space to break at. */
-  const LONG =
-    '/mnt/user/manga/Kagami_no_Kuni_no_Harisugawa_Complete_Digital_Edition_Volume_01.cbz'
+describe('the Title field fits its title (O283)', () => {
+  /** The holder's width: the titles below take 1, 3 and 8 lines there. */
+  const WIDTH = '18rem'
 
-  /** A title with no space in it, as a title taken from a file name can be. */
-  const TITLE = 'Kagami_no_Kuni_no_Harisugawa_Complete_Digital_Edition'
+  const ONE = 'Kagami no Kuni, Volume 01'
 
-  /** A content_key as `identity::content_key` writes it: sha256 in hex. */
-  const KEY = '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08'
-
-  beforeEach(() => {
-    vi.clearAllMocks()
-    vi.mocked(stamp.stampPlan).mockResolvedValue({
-      archives: [{ member_id: 7, edition_key: 'e1', path: LONG, bytes: 1024 }],
-      total_bytes: 1024,
-      skipped_formats: [],
-    })
-    // Moved and rewritten, so the key and both document lines are drawn.
-    vi.mocked(stamp.performStamp).mockResolvedValue({
-      rewritten: 1,
-      content_key: KEY,
-      document_moved: true,
-      document_rewritten: true,
-      sidecar_rewritten: false,
-    })
-    vi.mocked(derive.deriveStatus).mockResolvedValue({
-      derive_running: false,
-      job_held: false,
-    })
-  })
-
-  /** How wide a line `block` lays out is: its content box. */
-  const lineOf = (block: Element) => {
-    const style = getComputedStyle(block)
-    return (
-      block.clientWidth -
-      parseFloat(style.paddingLeft) -
-      parseFloat(style.paddingRight)
-    )
-  }
-
-  /**
-   * How wide `el` is drawn with no width or `max-width` of its own: a copy
-   * beside it, in the same context, taken out again before anything reads
-   * the page.
-   */
-  const unboundedWidthOf = (el: Element) => {
-    const copy = el.cloneNode() as HTMLElement
-    copy.style.position = 'absolute'
-    copy.style.visibility = 'hidden'
-    copy.style.width = 'auto'
-    copy.style.maxWidth = 'none'
-    el.after(copy)
-    const width = copy.getBoundingClientRect().width
-    copy.remove()
-    return width
-  }
-
-  /**
-   * Every element and every text node in `tile` whose box ends past the
-   * tile's right edge. Text is asked on its own: text that overflows its
-   * block leaves the block's box where it was.
-   */
-  const pastTheEdgeOf = (tile: Element) => {
-    const edge = tile.getBoundingClientRect().right + 0.5
-    const past: string[] = []
-    for (const el of tile.querySelectorAll('*')) {
-      if (el.getBoundingClientRect().right > edge) {
-        past.push(`<${el.tagName.toLowerCase()} class="${el.className}">`)
-      }
-    }
-    const walker = document.createTreeWalker(tile, NodeFilter.SHOW_TEXT)
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const range = document.createRange()
-      range.selectNodeContents(node)
-      if (range.getBoundingClientRect().right > edge) {
-        past.push(JSON.stringify(node.textContent?.slice(0, 40)))
-      }
-    }
-    return past
-  }
-
-  /**
-   * The editor in the first (`left`) or second (`right`) of two volume
-   * tiles, in a window `width` px wide, 390 unless given, where they are the
-   * row's two columns; wider, the row has more. Its plan read; hands back
-   * the tile, the volume's `li`, not `.path`'s nearest `li`, the archive's
-   * row. A save answers `saved`. `inMain` draws the grid inside
-   * `.library > main`, as the Series page does, whose padding narrows the
-   * tiles.
-   */
-  async function planInTile(
-    column: 'left' | 'right',
-    {
-      saved = { title: 't', persisted: true },
-      inMain = false,
-      alignmentError,
-      width = 390,
-    }: {
-      saved?: { title: string; persisted: boolean; why?: string[] }
-      inMain?: boolean
-      alignmentError?: string
-      width?: number
-    } = {},
-  ) {
-    const was = [window.innerWidth, window.innerHeight] as const
-    onTestFinished(() => page.viewport(...was))
-    await page.viewport(width, 844)
-    const editor = (
-      <li>
-        {/* Above the editor in the same tile, as the Series page draws it.
-            `AlignmentPanel` is private to `Series.tsx`, so this is its error
-            branch's markup by hand: the rule under test reads its root. */}
-        {alignmentError !== undefined && (
-          <div className="alignment-panel">
-            <p role="alert">{alignmentError}</p>
-          </div>
-        )}
-        <MetadataEditor
-          slug="w"
-          title={TITLE}
-          onPatch={vi.fn().mockResolvedValue(saved)}
-          canStamp
-        />
-      </li>
-    )
-    const volumes = (
-      <ul className="volumes">
-        {column === 'left' ? editor : <li />}
-        {column === 'left' ? <li /> : editor}
-      </ul>
-    )
-    let host: HTMLElement | undefined
-    await act(async () => {
-      host = mount(
-        <div className="library">
-          {/* From 900 px `.library` is a grid whose first column is the
-              sidebar's (`shell.css`); with none drawn, `main` would take
-              that narrow column instead of the page's. */}
-          {inMain && width >= 900 && <div className="sidebar-column" />}
-          {inMain ? <main>{volumes}</main> : volumes}
-        </div>,
-      )
-    })
-    if (host === undefined) throw new Error('nothing mounted')
-    const ask = host.querySelector("button[name='plan-stamp']") as HTMLElement
-    await act(async () => {
-      await userEvent.click(ask)
-    })
-    await settleUntil(
-      'the plan’s path',
-      () => host?.querySelector('.archives .path') != null,
-      1000,
-    )
-    const tile = host.querySelector(
-      `.volumes > li:nth-child(${column === 'left' ? 1 : 2})`,
-    )
-    if (tile?.querySelector('.metadata-editor') == null) {
-      throw new Error('the editor is not in the tile')
-    }
-    return { host, tile }
-  }
-
-  it('O274: a stamp plan’s path stays inside its tile at 390 px', async () => {
-    const { host, tile } = await planInTile('left')
-    const paths = [...host.querySelectorAll('.archives .path')]
-    expect(paths).toHaveLength(1)
-    for (const path of paths) {
-      // The fixture tells: unbroken, the last name cannot fit the tile.
-      expect(
-        oneLineIn(path, LONG.slice(LONG.lastIndexOf('/') + 1)),
-        'the last name on one line against the tile’s content box',
-      ).toBeGreaterThan(lineOf(tile))
-      expect(
-        path.getBoundingClientRect().right,
-        'the path’s right edge against its tile’s',
-      ).toBeLessThanOrEqual(tile.getBoundingClientRect().right + 0.5)
-    }
-    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
-      window.innerWidth,
-    )
-  })
-
-  it('O274: the editor stays inside a right-hand tile at 390 px, so the page does not scroll sideways', async () => {
-    const { host, tile } = await planInTile('right', {
-      alignmentError: `${LONG}: no such file or directory`,
-    })
-    const title = host.querySelector(".metadata-editor [name='title']")
-    const current = host.querySelector('.metadata-editor .current')
-    const alignment = host.querySelector('.alignment-panel p')
-    const run = '<content_key>.library.json'
-    const line = [...host.querySelectorAll('.consequences li')].find((li) =>
-      li.textContent?.includes(run),
-    )
-    if (
-      title === null ||
-      current === null ||
-      alignment === null ||
-      line === undefined
-    ) {
-      throw new Error('no title box, title line, alignment error or run')
-    }
-
-    // The fixture tells, each part first. The tile ends where the window
-    // does, so whatever runs past it widens the page.
-    expect(tile.getBoundingClientRect().right).toBeCloseTo(window.innerWidth, 0)
-    expect(
-      oneLineIn(current, TITLE),
-      'the title on one line against its line',
-    ).toBeGreaterThan(lineOf(current))
-    expect(
-      oneLineIn(alignment, LONG.slice(LONG.lastIndexOf('/') + 1)),
-      'the alignment error’s last name on one line against its line',
-    ).toBeGreaterThan(lineOf(alignment))
-    expect(
-      oneLineIn(line, run),
-      'the content_key file’s name on one line against its line',
-    ).toBeGreaterThan(lineOf(line))
-    expect(
-      oneLineIn(
-        host.querySelector('.archives .path') as Element,
-        LONG.slice(LONG.lastIndexOf('/') + 1),
-      ),
-      'the last name on one line against the tile’s content box',
-    ).toBeGreaterThan(lineOf(tile))
-
-    // Per element and per text node, so a failure names what overran.
-    expect(pastTheEdgeOf(tile)).toEqual([])
-    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
-      window.innerWidth,
-    )
-  })
-
-  it('O274: the title box keeps to its tile’s column at 1280 px', async () => {
-    const { host, tile } = await planInTile('right', {
-      width: 1280,
-      inMain: true,
-    })
-    const box = host.querySelector(".metadata-editor [name='title']")
-    if (box === null) throw new Error('no title box')
-    const within = tile.getBoundingClientRect()
-
-    // The fixture tells: at its own default width the box is wider than
-    // the tile, so only the bound keeps it in.
-    expect(
-      unboundedWidthOf(box),
-      'the title box at its own default width against the tile’s',
-    ).toBeGreaterThan(within.width)
-
-    const edges = box.getBoundingClientRect()
-    expect(
-      edges.left,
-      'the box’s left edge against the tile’s',
-    ).toBeGreaterThanOrEqual(within.left - 0.5)
-    expect(
-      edges.right,
-      'the box’s right edge against the tile’s',
-    ).toBeLessThanOrEqual(within.right + 0.5)
-  })
-
-  it('O274: a stamp’s outcome and a save’s unwritten reason stay inside a right-hand tile at 390 px', async () => {
-    // The reason names the document by its path, as `hand::save` does.
-    const { host, tile } = await planInTile('right', {
-      saved: {
-        title: TITLE,
-        persisted: false,
-        why: [
-          `/mnt/user/manga/${KEY}.library.json: the root refused the write`,
-        ],
-      },
-      inMain: true,
-    })
-    const confirm = () => host.querySelector("button[name='confirm-stamp']")
-    await settleUntil(
-      'the confirm, free',
-      () => {
-        const button = confirm()
-        return button !== null && holdOf(button) === 'free'
-      },
-      1000,
-    )
-    await act(async () => {
-      await userEvent.click(confirm() as HTMLElement)
-    })
-    await settleUntil(
-      'the stamp’s outcome',
-      () => host.querySelector('.stamped .document') != null,
-      1000,
-    )
-    const save = host.querySelector(
-      ".metadata-editor button[type='submit']",
-    ) as HTMLElement
-    await act(async () => {
-      await userEvent.click(save)
-    })
-    await settleUntil(
-      'the unwritten reason',
-      () => host.querySelector('.unwritten li') != null,
-      1000,
-    )
-    const moved = host.querySelector('.stamped .key-moved')
-    const rewritten = host.querySelector('.stamped .document')
-    const reason = host.querySelector('.unwritten li')
-    if (moved === null || rewritten === null || reason === null) {
-      throw new Error('no moved key, rewritten document or unwritten reason')
-    }
-
-    // The fixture tells, each part first, in a tile as wide as a phone's.
-    expect(
-      oneLineIn(moved, KEY),
-      'the content_key on one line against its line',
-    ).toBeGreaterThan(lineOf(moved))
-    expect(
-      oneLineIn(rewritten, '<content_key>.library.json'),
-      'the document’s name on one line against its line',
-    ).toBeGreaterThan(lineOf(rewritten))
-    expect(
-      oneLineIn(reason, `${KEY}.library.json:`),
-      'the reason’s document name on one line against its line',
-    ).toBeGreaterThan(lineOf(reason))
-
-    // Per element and per text node, so a failure names what overran.
-    expect(pastTheEdgeOf(tile)).toEqual([])
-    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
-      window.innerWidth,
-    )
-  })
-})
-
-describe('the Title box opens downward while it is edited (O274)', () => {
   /** 96 characters, as long as a series title with its edition runs. */
-  const LONG_TITLE =
+  const THREE =
     'Kagami no Kuni no Harisugawa: The Complete Digital Edition, Volume 01 (Collector’s Box Set, Ed.)'
 
-  /** `el`'s content box, left to right. */
-  const contentOf = (el: Element) => {
-    const box = el.getBoundingClientRect()
-    const style = getComputedStyle(el)
-    const left = box.left + el.clientLeft
-    return {
-      left: left + parseFloat(style.paddingLeft),
-      right: left + el.clientWidth - parseFloat(style.paddingRight),
-    }
-  }
+  const EIGHT = `${THREE} ${THREE} Kagami no Kuni no Harisugawa: The Complete Digital Edition`
 
-  const need = <T extends Element>(host: Element, selector: string) => {
-    const el = host.querySelector<T>(selector)
-    if (el === null) throw new Error(`no ${selector} mounted`)
-    return el
-  }
-
-  /**
-   * The editor in a tile of `.library > main` in a window `width` by
-   * `height`, in the `first` or the `last` of a row of `columns` tiles, with
-   * one tile more on the row below. Every other tile is drawn as the Series
-   * page draws a volume, its cover in a positioned box.
-   */
-  async function titleIn(
-    width: number,
-    height: number,
-    columns: number,
-    column: 'first' | 'last',
-    title = LONG_TITLE,
-  ) {
-    const was = [window.innerWidth, window.innerHeight] as const
-    onTestFinished(() => page.viewport(...was))
-    await page.viewport(width, height)
-    const editorAt = column === 'first' ? 0 : columns - 1
-    const tiles = [...Array(columns + 1).keys()].map((n) =>
-      n === editorAt ? (
-        <li key={n}>
-          <MetadataEditor
-            slug="w"
-            title={title}
-            onPatch={vi.fn().mockResolvedValue({ title, persisted: true })}
-          />
-        </li>
-      ) : (
-        <li key={n}>
-          <a href={`/read/v${n}`}>
-            <span className="cover-box">
-              <span className="cover-missing">cover</span>
-            </span>
-            <span className="title">Volume {n}</span>
-          </a>
-        </li>
-      ),
-    )
-    let host: HTMLElement | undefined
-    await act(async () => {
-      host = mount(
-        <div className="library">
-          {width >= 900 && <div className="sidebar-column" />}
-          <main>
-            <ul className="volumes">{tiles}</ul>
-          </main>
-        </div>,
-      )
-    })
-    if (host === undefined) throw new Error('nothing mounted')
-    // A face that lands between two readings would move Save by itself.
-    await document.fonts.ready
-    const nth = (n: number) =>
-      need(host as Element, `.volumes > li:nth-child(${n + 1})`)
-    return {
-      main: need(host, '.library > main'),
-      grid: need<HTMLElement>(host, '.volumes'),
-      tile: nth(editorAt),
-      beside: nth(column === 'first' ? 1 : columns - 2),
-      below: nth(columns),
-      label: need(host, '.metadata-editor .field.title'),
-      box: need<HTMLTextAreaElement>(host, ".metadata-editor [name='title']"),
-      save: need<HTMLElement>(host, ".metadata-editor button[type='submit']"),
-    }
-  }
-
-  /** Within `tile`'s left and right edges. */
-  const withinTile = (box: Element, tile: Element) => {
-    const edges = box.getBoundingClientRect()
-    const within = tile.getBoundingClientRect()
-    return edges.left >= within.left - 0.5 && edges.right <= within.right + 0.5
-  }
-
-  async function opensOver(
-    width: number,
-    height: number,
-    columns: number,
-    column: 'first' | 'last',
-  ) {
-    const { main, grid, tile, beside, below, label, box, save } = await titleIn(
-      width,
-      height,
-      columns,
-      column,
-    )
-    const area = contentOf(main)
-    const edge = tile.getBoundingClientRect()
-    const gap = parseFloat(getComputedStyle(grid).columnGap)
-    const rest = box.getBoundingClientRect()
-    // Inside the open box, on the tile beside its own.
-    const point = {
-      x:
-        column === 'first'
-          ? edge.right + gap + edge.width / 2
-          : edge.left - gap - edge.width / 2,
-      y: rest.top + rest.height / 2,
-    }
-
-    // The fixture tells, each part first: the title runs past the tile on
-    // one line, the tile is in the row's first or last column, a row
-    // follows, and the point lies on the next tile's positioned cover.
-    expect(
-      oneLineIn(label, LONG_TITLE),
-      'the title on one line against its tile',
-    ).toBeGreaterThan(edge.width)
-    if (column === 'first') {
-      expect(edge.left, 'the tile’s left edge').toBeCloseTo(area.left, 0)
-    } else {
-      expect(edge.right, 'the tile’s right edge').toBeCloseTo(area.right, 0)
-    }
-    expect(below.getBoundingClientRect().top).toBeGreaterThan(edge.bottom)
-    const covered = document.elementFromPoint(point.x, point.y)
-    expect(
-      covered !== null &&
-        beside.contains(covered) &&
-        covered.closest('.cover-box') !== null,
-      'the point on the cover beside the tile',
-    ).toBe(true)
-
-    expect(withinTile(box, tile), 'at rest, within its tile').toBe(true)
-    const saveAt = save.getBoundingClientRect().toJSON()
-    const belowAt = below.getBoundingClientRect().toJSON()
-
-    await act(async () => {
-      box.focus()
-      await userEvent.click(box)
-    })
-
-    const open = box.getBoundingClientRect()
-    expect(open.width, 'open, against its tile').toBeGreaterThan(
-      edge.width + 0.5,
-    )
-    expect(
-      open.width,
-      'open, against two tiles and the gap between',
-    ).toBeLessThanOrEqual(2 * edge.width + gap + 0.5)
-    expect(box.scrollWidth, 'its title wraps').toBeLessThanOrEqual(
-      box.clientWidth + 1,
-    )
-    expect(open.height, 'open, against one line').toBeGreaterThan(
-      rest.height + 0.5,
-    )
-    expect(open.left, 'its left edge').toBeGreaterThanOrEqual(area.left - 0.5)
-    expect(open.right, 'its right edge').toBeLessThanOrEqual(area.right + 0.5)
-    expect(open.left).toBeGreaterThanOrEqual(0)
-    expect(open.right).toBeLessThanOrEqual(window.innerWidth)
-    expect(main.scrollWidth, 'the page area’s width').toBe(main.clientWidth)
-    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
-      window.innerWidth,
-    )
-    if (column === 'first') {
-      expect(open.left, 'lined up with its tile’s left edge').toBeCloseTo(
-        edge.left,
-        0,
-      )
-    } else {
-      expect(open.right, 'lined up with its tile’s right edge').toBeCloseTo(
-        edge.right,
-        0,
-      )
-    }
-    expect(save.getBoundingClientRect().toJSON(), 'Save').toEqual(saveAt)
-    expect(below.getBoundingClientRect().toJSON(), 'the row below').toEqual(
-      belowAt,
-    )
-    expect(document.elementFromPoint(point.x, point.y), 'on top').toBe(box)
-
-    // Escape closes it and keeps the focus; typing opens it again.
-    await act(async () => {
-      await userEvent.keyboard('{Escape}')
-    })
-    expect(document.activeElement).toBe(box)
-    expect(withinTile(box, tile), 'after Escape, within its tile').toBe(true)
-    await act(async () => {
-      await userEvent.keyboard('x')
-    })
-    expect(box.getBoundingClientRect().width, 'typed in again').toBeGreaterThan(
-      edge.width + 0.5,
-    )
-
-    await act(async () => {
-      await userEvent.tab()
-    })
-    expect(document.activeElement).toBe(save)
-    expect(withinTile(box, tile), 'closed, within its tile').toBe(true)
-  }
-
-  it('O274: opens rightward from the first column at 1280 px', async () => {
-    await opensOver(1280, 800, 7, 'first')
-  })
-
-  it('O274: opens leftward from the last column at 1280 px', async () => {
-    await opensOver(1280, 800, 7, 'last')
-  })
-
-  it('O274: opens across both columns from the left one at 390 px', async () => {
-    await opensOver(390, 844, 2, 'first')
-  })
-
-  it('O274: opens across both columns from the right one at 390 px', async () => {
-    await opensOver(390, 844, 2, 'last')
-  })
-
-  it('O274: at rest the box is drawn as a text input is, on one line', async () => {
-    const { tile, label, box, save } = await titleIn(390, 844, 2, 'first')
-    const look = (el: Element) => {
-      const style = getComputedStyle(el)
-      const edges = el.getBoundingClientRect()
-      return {
-        top: edges.top,
-        left: edges.left,
-        height: edges.height,
-        border: style.border,
-        borderRadius: style.borderRadius,
-        padding: style.padding,
-        font: style.font,
-        background: style.backgroundColor,
-        saveTop: save.getBoundingClientRect().top,
-      }
-    }
-    const input = document.createElement('input')
-    input.value = LONG_TITLE
-    box.style.display = 'none'
-    box.after(input)
-    const asInput = look(input)
-    input.remove()
-    box.style.display = ''
-
-    expect(look(box)).toEqual(asInput)
-    expect(box.scrollWidth, 'its title runs on past it').toBeGreaterThan(
-      box.clientWidth + 1,
-    )
-    expect(withinTile(box, tile)).toBe(true)
-    expect(label.contains(box)).toBe(true)
-  })
-
-  it('O274: past five lines the open box scrolls inside', async () => {
-    const title = `${LONG_TITLE} ${LONG_TITLE} ${LONG_TITLE}`
-    const { label, box } = await titleIn(1280, 800, 7, 'first', title)
-    await act(async () => {
-      box.focus()
-      await userEvent.click(box)
-    })
-    const style = getComputedStyle(box)
+  /** The field's lines, and the height of one, as it is drawn. */
+  const linesOf = (field: HTMLTextAreaElement) => {
+    const style = getComputedStyle(field)
     const line = parseFloat(style.lineHeight)
-    const probe = document.createElement('div')
-    probe.style.cssText = `position: absolute; visibility: hidden; width: ${box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)}px; white-space: pre-wrap; overflow-wrap: break-word`
-    probe.textContent = title
-    label.append(probe)
-    const lines = probe.getBoundingClientRect().height / line
-    probe.remove()
+    const inner =
+      field.clientHeight -
+      parseFloat(style.paddingTop) -
+      parseFloat(style.paddingBottom)
+    return { line, inner }
+  }
 
-    // The fixture tells: open, the title takes more than five lines.
-    expect(lines).toBeGreaterThan(5)
+  it.each([
+    [1, ONE],
+    [3, THREE],
+    [8, EIGHT],
+  ])(
+    'is as tall as a title of %i lines, up to five, at its width',
+    async (lines, title) => {
+      const { field } = await fieldIn(WIDTH, title)
+
+      // The fixture tells: the title takes that many lines at the field's width.
+      expect(lineCount(field, title), 'the title’s lines').toBe(lines)
+
+      const { line, inner } = linesOf(field)
+      expect(inner, 'the field’s height in lines').toBe(
+        Math.min(lines, 5) * line,
+      )
+      if (lines > 5) {
+        expect(field.scrollHeight, 'scrolls inside').toBeGreaterThan(
+          field.clientHeight,
+        )
+        expect(
+          getComputedStyle(field).overflowY,
+          'scrolled by a wheel or a finger',
+        ).toBe('auto')
+      }
+    },
+  )
+
+  it('wraps the whole title at rest, 8 px in from each side', async () => {
+    const { label, field } = await fieldIn(WIDTH, THREE)
+
+    // The fixture tells: on one line the title runs past the field's line.
     expect(
-      box.clientHeight -
-        parseFloat(style.paddingTop) -
-        parseFloat(style.paddingBottom),
-      'five lines',
-    ).toBe(5 * line)
-    expect(box.scrollHeight, 'scrolls inside').toBeGreaterThan(box.clientHeight)
-    expect(style.overflowY, 'scrolled by a wheel or a finger').toBe('auto')
+      oneLineIn(label, THREE),
+      'the title on one line against the field’s line',
+    ).toBeGreaterThan(lineOf(field))
+
+    expect(document.activeElement, 'never focused').not.toBe(field)
+    expect(field.scrollWidth, 'its title wraps').toBeLessThanOrEqual(
+      field.clientWidth + 1,
+    )
+    const style = getComputedStyle(field)
+    expect({
+      whiteSpace: style.whiteSpace,
+      paddingLeft: style.paddingLeft,
+      paddingRight: style.paddingRight,
+    }).toEqual({
+      whiteSpace: 'pre-wrap',
+      paddingLeft: '8px',
+      paddingRight: '8px',
+    })
+  })
+
+  it('neither moves nor grows when clicked, or typed into without taking another line', async () => {
+    const { label, field } = await fieldIn(WIDTH, THREE)
+    const typed = `${THREE}x`
+
+    // The fixture tells: the character typed at the end takes no new line.
+    expect(lineCount(field, typed), 'typed, against at rest').toBe(
+      lineCount(field, THREE),
+    )
+
+    const rects = () => ({
+      field: field.getBoundingClientRect().toJSON(),
+      label: label.getBoundingClientRect().toJSON(),
+    })
+    const atRest = rects()
+    await act(async () => {
+      await userEvent.click(field)
+    })
+    expect(document.activeElement, 'clicked into').toBe(field)
+    expect(rects(), 'clicked').toEqual(atRest)
+
+    await act(async () => {
+      await userEvent.keyboard('{Control>}{End}{/Control}x')
+    })
+    expect(field.value).toBe(typed)
+    expect(rects(), 'typed into').toEqual(atRest)
+  })
+
+  it('grows one line as a typed title takes another', async () => {
+    const { field } = await fieldIn(WIDTH, THREE)
+    const suffix = ' and its Bonus Booklet'
+
+    // The fixture tells: typed, the suffix takes exactly one line more.
+    expect(lineCount(field, `${THREE}${suffix}`), 'typed').toBe(
+      lineCount(field, THREE) + 1,
+    )
+
+    const atRest = linesOf(field)
+    await act(async () => {
+      await userEvent.click(field)
+    })
+    await act(async () => {
+      await userEvent.keyboard(`{Control>}{End}{/Control}${suffix}`)
+    })
+    expect(field.value).toBe(`${THREE}${suffix}`)
+    expect(linesOf(field).inner - atRest.inner, 'grown by').toBe(atRest.line)
+  })
+
+  it('is fitted again when its width changes', async () => {
+    const { holder, field } = await fieldIn('18rem', THREE)
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize)
+    // The field is as wide as its holder, so its line widens as much.
+    const wider = lineOf(field) + 12 * rem
+
+    // The fixture tells: the title takes fewer lines at 30rem than at 18rem.
+    const narrowLines = lineCount(field, THREE)
+    const wideLines = lineCount(field, THREE, wider)
+    expect(wideLines, 'at 30rem, against 18rem').not.toBe(narrowLines)
+
+    // A resize the observer could not report in its own frame reaches the
+    // page as an error event.
+    const loops: string[] = []
+    const heard = (event: ErrorEvent) => {
+      if (event.message.includes('ResizeObserver loop'))
+        loops.push(event.message)
+    }
+    window.addEventListener('error', heard)
+    onTestFinished(() => window.removeEventListener('error', heard))
+
+    holder.style.width = '30rem'
+    // One frame for the layout, and the next for what follows from it.
+    await new Promise(requestAnimationFrame)
+    await new Promise(requestAnimationFrame)
+
+    expect(lineOf(field), 'its line at 30rem').toBe(wider)
+    const { line, inner } = linesOf(field)
+    expect(inner, 'the field’s height in lines').toBe(wideLines * line)
+
+    // And a third, in which the field is watched again.
+    await new Promise(requestAnimationFrame)
+    expect(loops, 'the observer’s loop errors').toEqual([])
+  })
+
+  it('is fitted again when a face lands after it was fitted', async () => {
+    // Named for a face the document does not hold yet, so the field is
+    // fitted in the fallback, as a title in a UI-face subset not yet
+    // fetched is.
+    const holder = (children?: ReactNode) => (
+      <div className="library">
+        <div style={{ width: WIDTH, fontFamily: '"late face", monospace' }}>
+          {children}
+        </div>
+      </div>
+    )
+    const host = mount(holder())
+    await act(async () => {
+      rerender(
+        holder(<MetadataEditor slug="w" title={THREE} onPatch={vi.fn()} />),
+      )
+    })
+    const field = host.querySelector<HTMLTextAreaElement>("[name='title']")
+    if (field === null) throw new Error('no field mounted')
+    const fallback = lineCount(field, THREE)
+    expect(linesOf(field).inner, 'fitted in the fallback').toBe(
+      fallback * linesOf(field).line,
+    )
+
+    const face = new FontFace('late face', `url(${latinFace})`)
+    document.fonts.add(face)
+    onTestFinished(() => {
+      document.fonts.delete(face)
+    })
+    await face.load()
+    // The fixture tells: the face sets the title in another count of lines.
+    const landed = lineCount(field, THREE)
+    expect(landed, 'in the face, against the fallback').not.toBe(fallback)
+
+    await expect
+      .poll(() => linesOf(field).inner, { message: 'the field’s height' })
+      .toBe(landed * linesOf(field).line)
   })
 
   it('O274: a pasted line break is a space, and the caret is left after the paste', async () => {
-    const { box } = await titleIn(390, 844, 2, 'first', 'Kagami Volume 1')
+    const { field: box } = await fieldIn(WIDTH, 'Kagami Volume 1')
     const source = document.createElement('textarea')
     source.value = 'no\nKuni '
     document.body.append(source)
@@ -857,101 +450,188 @@ describe('the Title box opens downward while it is edited (O274)', () => {
       caret: 'Kagami no Kuni '.length,
     })
   })
+})
 
-  it('O274: the open box is laid again when the window’s width changes', async () => {
-    const { main, tile, box } = await titleIn(390, 844, 2, 'last')
+describe('the Title field’s label, Saved and what follows it (O283)', () => {
+  const WIDTH = '18rem'
+
+  /** One line at the field's width, with room for a character or two more. */
+  const TITLE = 'Kagami no Kuni, Volume 01'
+
+  /** The form, the label's own text and the status line under `holder`. */
+  const partsOf = (holder: HTMLElement) => {
+    const form = holder.querySelector('form.metadata-editor')
+    const words = holder.querySelector('.metadata-editor .field.title > span')
+    const saved = holder.querySelector('.metadata-editor [role="status"]')
+    if (form === null || words === null || saved === null) {
+      throw new Error('no form, label text or status line')
+    }
+    return { form, words, saved }
+  }
+
+  /** `text` typed at the field's end with real keys, then a real Enter. */
+  const enterAtEnd = async (field: HTMLTextAreaElement, text: string) => {
     await act(async () => {
-      box.focus()
-      await userEvent.click(box)
+      await userEvent.click(field)
     })
-    expect(box.getBoundingClientRect().right).toBeCloseTo(
-      tile.getBoundingClientRect().right,
-      0,
-    )
+    await act(async () => {
+      await userEvent.keyboard(`{Control>}{End}{/Control}${text}{Enter}`)
+    })
+  }
 
-    await page.viewport(600, 844)
-    await new Promise(requestAnimationFrame)
+  it('sets the label 4 px above the field', async () => {
+    const { holder, field } = await fieldIn(WIDTH, TITLE)
+    const { words } = partsOf(holder)
 
-    // The fixture tells: wider, the tile is no longer the row's last.
-    const area = contentOf(main)
-    const edge = tile.getBoundingClientRect()
-    expect(edge.right).toBeLessThan(area.right - 1)
-    const open = box.getBoundingClientRect()
-    expect(open.left, 'lined up with its tile’s left edge').toBeCloseTo(
-      edge.left,
-      0,
-    )
-    expect(open.right).toBeLessThanOrEqual(area.right + 0.5)
-    expect(open.width).toBeGreaterThan(edge.width + 0.5)
+    expect(
+      field.getBoundingClientRect().top - words.getBoundingClientRect().bottom,
+    ).toBeCloseTo(4, 0)
   })
 
-  it('O274: the open box is laid again when the page area’s width changes and the window’s does not', async () => {
-    const { main, grid, tile, box } = await titleIn(1280, 800, 7, 'last')
-    await act(async () => {
-      box.focus()
-      await userEvent.click(box)
+  it('draws Saved at the end of the label’s line, so nothing moves as it comes and goes', async () => {
+    const { holder, label, field } = await fieldIn(WIDTH, TITLE)
+    const { form, words, saved } = partsOf(holder)
+
+    // The fixture tells: the character typed takes no new line, so only
+    // Saved could move what is measured.
+    expect(lineCount(field, `${TITLE}!`), 'typed, against at rest').toBe(
+      lineCount(field, TITLE),
+    )
+
+    const rects = () => ({
+      field: field.getBoundingClientRect().toJSON(),
+      label: label.getBoundingClientRect().toJSON(),
+      form: form.getBoundingClientRect().toJSON(),
     })
-    expect(box.getBoundingClientRect().right).toBeCloseTo(
-      tile.getBoundingClientRect().right,
+    await enterAtEnd(field, '!')
+    await settleUntil('Saved', () => saved.textContent === 'Saved', 1000)
+    const shown = rects()
+
+    const note = saved.getBoundingClientRect()
+    expect(note.height, 'Saved, drawn').toBeGreaterThan(0)
+    expect(note.top, 'its top against the label text’s').toBeGreaterThanOrEqual(
+      words.getBoundingClientRect().top - 0.5,
+    )
+    expect(note.bottom, 'its bottom against the field’s top').toBeLessThan(
+      field.getBoundingClientRect().top + 0.5,
+    )
+    expect(note.right, 'its right edge against the form’s').toBeCloseTo(
+      form.getBoundingClientRect().right,
       0,
     )
 
-    // A wider sidebar column takes the width from the page area alone.
-    const library = main.closest<HTMLElement>('.library')
-    if (library === null) throw new Error('no .library mounted')
-    library.style.gridTemplateColumns = '30rem 1fr'
-    // One frame for the layout, and the next for what follows from it.
-    await new Promise(requestAnimationFrame)
-    await new Promise(requestAnimationFrame)
+    const probe = document.createElement('span')
+    probe.style.color = 'var(--muted)'
+    form.append(probe)
+    const muted = getComputedStyle(probe).color
+    probe.remove()
+    expect(getComputedStyle(saved).color, 'its colour').toBe(muted)
 
-    // The fixture tells: the window is as it was, and in the narrower area
-    // the tile is no longer the row's last.
-    expect(window.innerWidth).toBe(1280)
-    const area = contentOf(main)
-    const edge = tile.getBoundingClientRect()
-    expect(edge.right).toBeLessThan(area.right - 1)
-    const gap = parseFloat(getComputedStyle(grid).columnGap)
-    const open = box.getBoundingClientRect()
-    expect(open.left, 'lined up with its tile’s left edge').toBeCloseTo(
-      edge.left,
-      0,
-    )
-    expect(open.width, 'two of its tiles and the gap').toBeCloseTo(
-      2 * edge.width + gap,
-      0,
-    )
-    expect(open.left).toBeGreaterThanOrEqual(area.left - 0.5)
-    expect(open.right).toBeLessThanOrEqual(area.right + 0.5)
+    await settleUntil('Saved, cleared', () => saved.textContent === '', 4000)
+    expect(rects(), 'Saved cleared, against shown').toEqual(shown)
   })
 
-  it('O274: the open box keeps inside the page area when its tile and the area’s edges disagree by half a pixel', async () => {
-    const { main, grid, tile, box } = await titleIn(390, 844, 2, 'first')
-    // The grid half a pixel right of the area's edges, standing for any
-    // sub-pixel disagreement between a tile's left and the area's start.
-    grid.style.marginLeft = '0.5px'
-    grid.style.marginRight = '-0.5px'
-    const area = contentOf(main)
-    const edge = tile.getBoundingClientRect()
-    const gap = parseFloat(getComputedStyle(grid).columnGap)
-    const wide = Math.min(2 * edge.width + gap, area.right - area.left)
+  it('draws Saving… on the label’s line, so nothing moves as it comes and goes', async () => {
+    const out = deferred<{ title: string; persisted: boolean }>()
+    const { holder, label, field } = await fieldIn(
+      WIDTH,
+      TITLE,
+      vi.fn().mockReturnValue(out.promise),
+    )
+    const { form, words, saved } = partsOf(holder)
 
-    // The fixture tells: from the first column's left edge the open width
-    // runs past the area's right edge, and back from its right edge, a
-    // whole tile past the area's left.
-    expect(edge.left, 'the tile’s left edge').toBeGreaterThan(area.left)
-    expect(edge.left + wide, 'opened rightward').toBeGreaterThan(area.right)
-    expect(edge.right - wide, 'opened leftward').toBeLessThan(
-      area.left - edge.width,
+    // The fixture tells: Saving… is the wider of the two, so it reaches
+    // nearer the label's text than Saved does; and the character typed
+    // takes no new line, so only the note could move what is measured.
+    expect(
+      oneLineIn(saved, 'Saving…'),
+      'Saving… against Saved, drawn',
+    ).toBeGreaterThan(oneLineIn(saved, 'Saved'))
+    expect(lineCount(field, `${TITLE}!`), 'typed, against at rest').toBe(
+      lineCount(field, TITLE),
     )
 
-    await act(async () => {
-      box.focus()
-      await userEvent.click(box)
+    const rects = () => ({
+      field: field.getBoundingClientRect().toJSON(),
+      label: label.getBoundingClientRect().toJSON(),
+      form: form.getBoundingClientRect().toJSON(),
     })
+    await act(async () => {
+      await userEvent.click(field)
+    })
+    await act(async () => {
+      await userEvent.keyboard('{Control>}{End}{/Control}!')
+    })
+    const before = rects()
+    await act(async () => {
+      await userEvent.keyboard('{Enter}')
+    })
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 250))
+    })
+    expect(saved.textContent, 'out 250 ms').toBe('Saving…')
+    const saving = rects()
 
-    const open = box.getBoundingClientRect()
-    expect(open.width).toBeCloseTo(wide, 0)
-    expect(open.left, 'its left edge').toBeGreaterThanOrEqual(area.left - 0.5)
-    expect(open.right, 'its right edge').toBeLessThanOrEqual(area.right + 0.5)
+    // The label's first line is its text's span, which spans the label: the
+    // text's own width is where the words end.
+    const note = saved.getBoundingClientRect()
+    const line = words.getBoundingClientRect()
+    expect(note.height, 'Saving…, drawn').toBeGreaterThan(0)
+    expect(note.top, 'its top against the line’s').toBeGreaterThanOrEqual(
+      line.top - 0.5,
+    )
+    expect(note.bottom, 'its bottom against the line’s').toBeLessThanOrEqual(
+      line.bottom + 0.5,
+    )
+    expect(
+      note.left,
+      'its left edge against the label’s words',
+    ).toBeGreaterThan(line.left + oneLineIn(words, 'Title'))
+    expect(
+      note.right,
+      'its right edge against the label’s',
+    ).toBeLessThanOrEqual(label.getBoundingClientRect().right + 0.5)
+
+    await act(async () => {
+      out.resolve({ title: `${TITLE}!`, persisted: true })
+    })
+    await settleUntil('Saved', () => saved.textContent === 'Saved', 1000)
+
+    expect(saving, 'Saving… shown, against before the save').toEqual(before)
+    expect(rects(), 'Saved shown, against before the save').toEqual(before)
+  })
+
+  it('puts a failure 8 px under the field, and the unwritten reasons too', async () => {
+    const patch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('/api/library/works/w: 500'))
+      .mockResolvedValueOnce({
+        title: `${TITLE}!!`,
+        persisted: false,
+        why: ['the root is read-only'],
+      })
+    const { holder, field } = await fieldIn(WIDTH, TITLE, patch)
+    const under = (el: Element) =>
+      el.getBoundingClientRect().top - field.getBoundingClientRect().bottom
+
+    await enterAtEnd(field, '!')
+    await settleUntil(
+      'the failure',
+      () => holder.querySelector('.metadata-editor .failure') !== null,
+      1000,
+    )
+    const failure = holder.querySelector('.metadata-editor .failure')
+    if (failure === null) throw new Error('no failure drawn')
+    expect(under(failure), 'the failure').toBeCloseTo(8, 0)
+
+    await enterAtEnd(field, '!')
+    await settleUntil(
+      'the unwritten reasons',
+      () => holder.querySelector('.metadata-editor .unwritten li') !== null,
+      1000,
+    )
+    const unwritten = holder.querySelector('.metadata-editor .unwritten > p')
+    if (unwritten === null) throw new Error('no unwritten note drawn')
+    expect(under(unwritten), 'the unwritten reasons').toBeCloseTo(8, 0)
   })
 })
