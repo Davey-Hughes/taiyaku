@@ -13,6 +13,8 @@ export type Device = 'phone' | 'mouse' | 'touch laptop'
  * and hovers. A touch laptop's primary pointer is fine and hovers, and its
  * screen adds a coarse one: `(pointer: coarse)` asks only the primary, while
  * the hiding rule over a volume tile's `i` (`library.css`) asks every one.
+ * Beside it, the progress line's press band and its wake (`reader.css`) ask
+ * whether any pointer is fine, which a touch laptop's trackpad is.
  */
 const HOLDS = new Map<string, Record<Device, boolean>>([
   ['(pointer:coarse)', { phone: true, mouse: false, 'touch laptop': false }],
@@ -20,6 +22,7 @@ const HOLDS = new Map<string, Record<Device, boolean>>([
     '(hover:hover)and(not(any-pointer:coarse))',
     { phone: false, mouse: true, 'touch laptop': false },
   ],
+  ['(any-pointer:fine)', { phone: false, mouse: true, 'touch laptop': true }],
 ])
 
 /**

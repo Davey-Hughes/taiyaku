@@ -1,15 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { atRulesOf } from '../support/css'
+import { atRulesOf, valuesOf } from '../support/css'
 import librarySource from '../../src/styles/library.css?raw'
 import shellSource from '../../src/styles/shell.css?raw'
-
-/** Each value `body` declares for `property`, in order, spaces collapsed. */
-const valuesOf = (body: string, property: string) =>
-  [
-    ...body.matchAll(
-      new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]*?)\\s*(?=;|$)`, 'g'),
-    ),
-  ].map((m) => m[1].replace(/\s+/g, ' '))
 
 /**
  * A volume's panel opened on a Series page's last row ends the page with as
@@ -49,5 +41,17 @@ describe('library.css gives a last-row panel the room under it that the last row
         height: [`calc(${room} + env(safe-area-inset-bottom, 0px))`],
       },
     ])
+  })
+})
+
+// O286, spec goal 9: as the reader's and the account's failures are drawn.
+// `MetadataEditor.browser.test.tsx` reads the colour the failure is given.
+describe('library.css colours the Title form’s failure', () => {
+  it('draws the Title form’s failure in --danger', () => {
+    expect(
+      atRulesOf(librarySource, '.metadata-editor .failure').map(
+        ({ at, body }) => ({ at, color: valuesOf(body, 'color') }),
+      ),
+    ).toEqual([{ at: '', color: ['var(--danger)'] }])
   })
 })

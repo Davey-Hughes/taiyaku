@@ -12,6 +12,7 @@ import { MetadataEditor } from '../src/MetadataEditor'
 import * as stamp from '../src/stamp'
 import { deferred, settleUntil } from './support/async'
 import { pressOn } from './support/callout'
+import { tokenColour } from './support/colour'
 import { holdOf } from './support/held'
 import { lineCount, lineOf, oneLineIn } from './support/lines'
 import { mount, rerender } from './support/mount'
@@ -623,6 +624,10 @@ describe('the Title field’s label, Saved and what follows it (O283)', () => {
     const failure = holder.querySelector('.metadata-editor .failure')
     if (failure === null) throw new Error('no failure drawn')
     expect(under(failure), 'the failure').toBeCloseTo(8, 0)
+    // O286: in the colour every other failure takes.
+    expect(getComputedStyle(failure).color, 'the failure’s colour').toBe(
+      tokenColour(holder, '--danger'),
+    )
 
     await enterAtEnd(field, '!')
     await settleUntil(

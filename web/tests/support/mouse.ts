@@ -1,6 +1,9 @@
 import { afterEach } from 'vitest'
 import { cdp } from 'vitest/browser'
 
+/** Which kind of pointer Chromium is told sent an input, and which pressed. */
+type Kind = 'mouse' | 'pen'
+
 /**
  * A real mouse for the browser project, its button held across moves.
  *
@@ -14,7 +17,12 @@ import { cdp } from 'vitest/browser'
  * where the window is the smaller of the two, so a place in the frame is
  * carried through the frame's own box.
  */
-const pointer = { x: 0, y: 0, down: false }
+const pointer: { x: number; y: number; down: boolean; by: Kind } = {
+  x: 0,
+  y: 0,
+  down: false,
+  by: 'mouse',
+}
 
 /**
  * The time the next inputs are stamped with, where a case keeps the time
@@ -23,7 +31,10 @@ const pointer = { x: 0, y: 0, down: false }
  */
 let clock: { since: number; ms: number } | undefined
 
-async function send(type: 'mouseMoved' | 'mousePressed' | 'mouseReleased') {
+async function send(
+  type: 'mouseMoved' | 'mousePressed' | 'mouseReleased',
+  kind: Kind,
+) {
   const frame = window.frameElement
   if (!frame) throw new Error('this file is not running in a frame')
   const box = frame.getBoundingClientRect()
@@ -34,6 +45,7 @@ async function send(type: 'mouseMoved' | 'mousePressed' | 'mouseReleased') {
     button: type === 'mouseMoved' && !pointer.down ? 'none' : 'left',
     buttons: pointer.down ? 1 : 0,
     clickCount: type === 'mouseMoved' ? 0 : 1,
+    pointerType: kind,
     ...(clock && { timestamp: clock.since + clock.ms / 1000 }),
   })
 }
@@ -43,16 +55,17 @@ export const mouse = {
   async moveTo(x: number, y: number) {
     pointer.x = x
     pointer.y = y
-    await send('mouseMoved')
+    await send('mouseMoved', 'mouse')
   },
   /** The primary button, where the pointer is. */
   async press() {
     pointer.down = true
-    await send('mousePressed')
+    pointer.by = 'mouse'
+    await send('mousePressed', 'mouse')
   },
   async release() {
     pointer.down = false
-    await send('mouseReleased')
+    await send('mouseReleased', 'mouse')
   },
   /**
    * From `from` pixels past `x` to `to` pixels past it, level at `y`, in
@@ -85,10 +98,35 @@ export const mouse = {
   },
 }
 
+/**
+ * A pen, for a case about what a pen's press does: `mouse`'s one pointer,
+ * moved, pressed and let go as `mouse` does it, each input sent as a pen's
+ * (`pointerType: 'pen'`), so the page hears a pen's pointer events.
+ */
+export const pen = {
+  /** To a place in the test's own frame, in its own pixels. */
+  async moveTo(x: number, y: number) {
+    pointer.x = x
+    pointer.y = y
+    await send('mouseMoved', 'pen')
+  },
+  /** The pen's tip, where the pointer is. */
+  async press() {
+    pointer.down = true
+    pointer.by = 'pen'
+    await send('mousePressed', 'pen')
+  },
+  async release() {
+    pointer.down = false
+    await send('mouseReleased', 'pen')
+  },
+}
+
 // A case that fails with the button down would leave it down for the next,
 // and one that fails with its own clock set would leave the next stamped by
-// it.
+// it. Let go by what pressed it: a release of another kind is another
+// pointer's, and would leave this one down.
 afterEach(async () => {
   clock = undefined
-  if (pointer.down) await mouse.release()
+  if (pointer.down) await (pointer.by === 'pen' ? pen : mouse).release()
 })

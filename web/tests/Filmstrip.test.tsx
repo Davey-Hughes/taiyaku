@@ -1,4 +1,4 @@
-import { act, Profiler } from 'react'
+import { act, createRef, Profiler, type RefObject } from 'react'
 import {
   afterEach,
   beforeEach,
@@ -8,7 +8,11 @@ import {
   onTestFinished,
   vi,
 } from 'vitest'
-import { Filmstrip, type FilmstripProps } from '../src/Filmstrip'
+import {
+  Filmstrip,
+  type FilmstripProps,
+  type StripScroller,
+} from '../src/Filmstrip'
 import type { Group } from '../src/pairing'
 import type { Position } from '../src/resolver'
 import { mount, rerender } from './support/mount'
@@ -3485,5 +3489,67 @@ describe('a mouse dragging the rail', () => {
         expect(commits).toBe(mounted)
       })
     }
+  })
+})
+
+/**
+ * O286: what the strip hands the progress line to drag the rail by. The
+ * rail's widths are given by hand, as jsdom lays nothing out.
+ */
+describe('the strip’s scroller (O286)', () => {
+  const railOf = (host: HTMLElement) => host.firstElementChild as HTMLElement
+  function widths(rail: HTMLElement, scrollWidth: number, clientWidth: number) {
+    Object.defineProperty(rail, 'scrollWidth', {
+      value: scrollWidth,
+      configurable: true,
+    })
+    Object.defineProperty(rail, 'clientWidth', {
+      value: clientWidth,
+      configurable: true,
+    })
+  }
+  /** What the strip filled `ref` with, which a case cannot go on without. */
+  function filled(ref: RefObject<StripScroller | null>): StripScroller {
+    if (!ref.current) throw new Error('the strip filled no scroller')
+    return ref.current
+  }
+
+  // A quarter of the travel: 300 px of 1200, then 500 of 2000.
+  it('stands the rail along its travel from the widths it has when asked, both ways', () => {
+    for (const [reading, later] of [
+      ['ltr', 1],
+      ['rtl', -1],
+    ] as const) {
+      const scroller = createRef<StripScroller>()
+      const rail = railOf(
+        mount(<Filmstrip {...props({ reading })} scroller={scroller} />),
+      )
+      widths(rail, 1600, 400)
+      act(() => filled(scroller).scrollAlong(0.25))
+      expect(rail.scrollLeft, reading).toBe(later * 300)
+
+      widths(rail, 2400, 400)
+      act(() => filled(scroller).scrollAlong(0.25))
+      expect(rail.scrollLeft, reading).toBe(later * 500)
+    }
+  })
+
+  it('empties the ref when the strip goes, and fills it again for a new reading direction', () => {
+    const scroller = createRef<StripScroller>()
+    const host = mount(
+      <Filmstrip {...props({ reading: 'ltr' })} scroller={scroller} />,
+    )
+    const first = filled(scroller)
+
+    rerender(<Filmstrip {...props({ reading: 'rtl' })} scroller={scroller} />)
+    const second = filled(scroller)
+    expect(second).not.toBe(first)
+    const rail = railOf(host)
+    widths(rail, 1600, 400)
+    act(() => second.scrollAlong(0.25))
+    expect(rail.scrollLeft).toBe(-300)
+
+    rerender(<div />)
+    expect(scroller.current).toBeNull()
   })
 })

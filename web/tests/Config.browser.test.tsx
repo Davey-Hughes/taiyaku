@@ -20,12 +20,7 @@ import { DeriveSection, ScanReport } from '../src/ScanReport'
 import { Row, Section } from '../src/settingsLayout'
 import { deferred, flush, settleUntil } from './support/async'
 import { holdOf } from './support/held'
-import {
-  type Channels,
-  channels,
-  contrast,
-  tokenColour,
-} from './support/colour'
+import { channels, contrast, tokenColour } from './support/colour'
 import {
   changesOf,
   expectCallout,
@@ -42,6 +37,7 @@ import {
   roomKept,
 } from './support/callout'
 import { expectDisclosure } from './support/disclosure'
+import { apart, drawn, pixelAt } from './support/drawn'
 import { press, submit, typeInto } from './support/input'
 import { boxOf, expectKept } from './support/kept'
 import { buttonSaying, byRole } from './support/located'
@@ -5087,31 +5083,6 @@ describe('a library’s grant', () => {
 })
 
 // --- colours as drawn --------------------------------------------------------
-
-/** `el` as drawn: the pixels of its screenshot, read back through a canvas. */
-const drawn = async (el: Element) => {
-  const png = await page.screenshot({ element: el, save: false })
-  const image = new Image()
-  image.src = `data:image/png;base64,${png}`
-  await image.decode()
-  const canvas = document.createElement('canvas')
-  canvas.width = image.naturalWidth
-  canvas.height = image.naturalHeight
-  const context = canvas.getContext('2d')
-  if (context === null) throw new Error('no canvas to read the pixels from')
-  context.drawImage(image, 0, 0)
-  return context.getImageData(0, 0, canvas.width, canvas.height)
-}
-const pixelAt = (image: ImageData, x: number, y: number): Channels => {
-  const at = (y * image.width + x) * 4
-  const [r, g, b] = image.data.slice(at, at + 3)
-  return { r, g, b, a: 1 }
-}
-/** How far apart two colours are: their channels' differences, summed. */
-const apart = (one: Channels, other: Channels) =>
-  Math.abs(one.r - other.r) +
-  Math.abs(one.g - other.g) +
-  Math.abs(one.b - other.b)
 
 /**
  * An unchecked checkbox's and radio's edge is the edge of a control, at 3:1

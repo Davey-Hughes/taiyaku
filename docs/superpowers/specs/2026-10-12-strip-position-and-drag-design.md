@@ -71,7 +71,14 @@ line is mirrored for a work read right to left, and a drag is a mouse's only.
   strip shows, and never narrower than 32 px. On the 237-slot volume the
   prototype was tried on that is 32 px at a 1,440 px and a 2,560 px window;
   on a 48-page volume it measured 45 px and 144 px.
+  *Replaced 2026-11-14 by the owner (O286): the share of the volume the
+  strip shows, never under 64 px and never over 160 px; see
+  `2026-11-14-strip-scrollbar-design.md`.*
 - **How tall.** One pixel proud of the 2 px line above and below.
+  *Replaced 2026-11-14 by the owner (O286): still one pixel proud at rest,
+  and where a mouse wakes the line or holds it, the line is 4 px and the
+  mark 8 px, centred where the line is; see
+  `2026-11-14-strip-scrollbar-design.md`.*
 - **Its colour.** The Ink text colour at half opacity, so the fill shows
   through where the mark lies over it. A fourth fixed token beside the
   reader's own three in `tokens.css`, held to the Ink pair by the test that
@@ -112,6 +119,9 @@ line is mirrored for a work read right to left, and a drag is a mouse's only.
 - A thumb that can itself be dragged, or a click on the line that jumps the
   strip there. The user asked for where the strip is, and for a drag of the
   strip.
+  *Replaced 2026-11-14 by the owner (O286): a mouse drags the mark, and a
+  press on the line away from it centres the mark on the pointer and goes
+  on as a drag; see `2026-11-14-strip-scrollbar-design.md`.*
 - Momentum, and any change to the wheel's step.
 - The defect in §5.
 
@@ -126,6 +136,8 @@ Each is to be watched failing against its defect put back by hand.
   is told, the floor and the eighth each deciding a case; no mark where the
   strip shows everything; the line mirrored for a work read right to left
   and not for one read left to right.
+  *The floor and the eighth were replaced on 2026-11-14 (O286), and these
+  cases with them; see §2.1.*
 - **`Filmstrip.test.tsx`** (jsdom): the rail's standing told after a scroll
   and not told twice for the same standing; a press and a move past the
   slop scrolls the rail and the click after it reaches no tile; a press and

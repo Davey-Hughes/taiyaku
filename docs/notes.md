@@ -25828,6 +25828,10 @@ front of the deployed server. What a wipe costs there.
 
 ## O216: the strip under a hand, its mark and its drag (2026-10-12)
 
+*Its width rule, an eighth of the share on show and never under 32 px,
+was replaced on 2026-11-14 by the owner (O286): the share, between 64 and
+160 px.*
+
 **The hand check.** `main` at `1eb5723e`, a release build and a production
 build of the web app, served on this machine from a scratch copy of the test
 library's database, in the user's Firefox (asked later that day which
@@ -26633,3 +26637,152 @@ slug and title alone rests on `schema::remake`'s `a_bridge_row_keeps_its_slug`.
 Nothing under `/home/davey/temp/manga-test` was written: `find -newer` a
 marker touched before the copy printed nothing, and the sha256 and `stat` of
 its `library.db`, `-wal` and `-shm` were the same before and after.
+
+## O286: the strip's progress line as a scrollbar (2026-11-15)
+
+The spec is `docs/superpowers/specs/2026-11-14-strip-scrollbar-design.md`
+and the plan `docs/superpowers/plans/2026-11-14-strip-scrollbar.md`. The
+files named below are in `.superpowers/sdd/strip-scrollbar-evidence/`,
+which is not committed.
+
+**The six rounds.** The owner settled the line over six rounds of a
+prototype served from a scratch copy of the test library, and tried each in
+Firefox; the prototype as they tried it is commit `6ebbebbc`. The spec's
+Goals say what each round settled, in the owner's words: the drag and the
+jump, and a mouse only, were the owner's picks (goals 1 and 2); round 3
+gave the press band (goal 6); round 4 the mark's width and how thick the
+awake line is (goals 3 and 5); round 5 the wake and its motion (goals 4
+and 7); round 6 the fill's round end (goal 8). The rounds' own check
+scripts and their logs are in `prototype-checks/`.
+
+**The long drag** (`T4-long-drag.log`, `T4-report.md`). The spec asked for
+this measured rather than assumed: a drag on the line moves the rail many
+pixels for each pixel the pointer moves, so it meets the strip's window
+rebuilds near a spacer more often than the rail's own drag does. A scratch
+browser case, deleted before Task 4's commit, took a 400-page volume at
+1440×900 and dragged the mark's centre along the whole line in 93 steps of
+15 px, each step moving the rail about 503 px, with a Profiler around the
+bars, reading eight frames after each step. It ran outside `act` and with
+an `act` per frame, in both reading directions, and the four runs read the
+same: 50 commits of the bars over the 93 steps, none or one a step, and no
+spacer in view two or three frames after any step. The browser case
+"drags a long volume's mark from end to end with tiles in view as each move
+settles" (`Chrome.drag.browser.test.tsx`) holds the last: no step shows a
+spacer three frames after its move.
+
+**The 4.4 px sample** (gap 7; `T4-chase.txt`, `check5-rerun.mjs`,
+`T4-chase-head-*.log`, `T4-chase-fix-*.log`, `T4-chase-browser*.log`). The
+prototype's `check5` once read the mark 4.4 px off the pointer during a
+long drag. The chase read every frame two ways: a `requestAnimationFrame`
+loop asked for a frame ahead, which reads what the last frame painted and
+any write since, and a `ResizeObserver` forced every frame, which reads
+what that frame paints. On the built app (the 237-page volume at 1280×800,
+`check5`'s drag and jump, 20 runs a direction at CPU throttling rates 1
+and 4) the 4.4 px was a read taken between a write and the next frame,
+never painted: a window rebuild changed the rail's length mid-drag, the
+rebuild's render told the share from a passive effect, in a task between
+frames, and wrote the mark about 4 px off, and the next frame's scroll put it
+back before that frame painted. A jump, though, did paint the mark off the
+pointer for one frame, 1.36 px, in every run: with the pointer held still
+after the jump, the rail's length changed in a frame callback, `placeMark`
+wrote the mark from the new share, and the rail's scroll event came only in
+the next frame. In the browser project the same thing, thumbnails loading
+late under a still hold, painted it 13.57 px off for a frame. `placeMark`
+now writes the mark, while a hold is on, where the pointer puts it
+(`alongAt`), in the same write that stands the rail there; after that no
+sample in either place was over 1 px. The browser case "keeps a still-held
+mark under the pointer in every frame as thumbnails load late" holds it.
+
+**A reason the comments no longer give.** Task 1 cut the prototype's
+comments in `Chrome.tsx` and `styles/reader.css` to within the comment
+guard's eight lines (`T1-report.md`). One reason they gave is held nowhere
+else: the line's thickness eases on the main thread, with the rest of the
+mark's drawing, and not by a compositor's `scaleY`, which would stretch
+the mark's round ends out of true (the comment keeps that) and would also
+run apart from the mark whenever the page is busy. The other reasons cut
+are in the spec's goals 4 to 7, in `reader.css`'s comment on the awake
+line (the mark stays inside the band), or in `reader.css.test.ts` (quick
+to wake and slower to sleep, as an overlay scrollbar is).
+
+**What the band leaves, accepted and not fixed.** The band is drawn wherever
+some pointer is fine, and its top 4 px lie over the rail's bottom padding,
+below the tiles, though the band is not inside the rail.
+
+- A wheel there lands on the band, not on the rail whose listener turns a
+  wheel into a scroll of the strip, so it no longer scrolls the strip: a
+  cost of the band against O138's "the wheel scrolls it" (`preflight.md`,
+  M21; found by reading the code, then driven: see the drive, below).
+- A pen's press there no longer reaches the rail either, so it no longer
+  stops a glide the rail is running, which O216 had any press on the rail
+  do (`preflight.md`, M22; found by reading, not driven). A pen's press is
+  not moved as a finger's is, below: under Task 3's mutation that let
+  `onLineDown` take a pen, a pen's press on the line's row took the line
+  and moved the rail (`T3-report.md`, mutation 05).
+- A finger's press there is another matter in Chromium, whose touch
+  adjustment moves it: on every row of the band that Task 3's probe tried,
+  a finger's `pointerdown` went to a tile inside the rail
+  (`T3-mut-04-probe3-browser.log`; `T3-report.md`, "Where the cases
+  differ from the brief, and why", 1). So in Chromium it still reaches the
+  rail's press listener, `Filmstrip.tsx`'s `onDown`, which ends a glide at
+  any pointer's press: read from the code, not driven. The tap then lands
+  on that tile, the edge the last bullet records.
+- `onLineMouseDown` prevents every primary `mousedown` on the band, a pen's
+  or a finger's compatibility one too, since the event does not say what
+  sent it, so such a press whose `mousedown` lands on the band leaves focus
+  where it was (`T3-report.md`, concern 2).
+- A finger's tap on the band's rows is moved by Chromium's touch adjustment
+  onto the tile above (`T3-report.md`, concern 1;
+  `T3-mut-04-probe3-browser.log`); that it then turns to that tile's page
+  is inferred from the click landing on the tile, not seen. Nothing on the
+  line answers touch (spec goal 2). A known edge.
+
+**The drive** (`drive-chromium.txt`, `drive-firefox.txt`, screenshots in
+`drive-shots/`). A release build of `54e96319`, served from a backup copy
+of the prototype server's scratch database, was driven by Playwright
+1.62.1, headless at 1280×800, with a real mouse, its wheel and the
+keyboard, in Chromium 151.0.7922.34 and Firefox 153.0. It took the
+237-page `akame-ga-kill-v01` and the library's shortest volume, of 7
+pages, each in both reading directions. Each browser read 58 PASS, 2 FAIL
+and 12 NOTE, with no page error. Every reading below was driven. The drive
+sent no pen or touch input, so the bullets above on a pen and a finger
+rest on Task 3's probe and on reading, as they say.
+
+- The mark drew 64 px on the long volume and 160 on the short. Drag, jump,
+  both ends, no glide after a release, wake and sleep, the keep zone, a
+  hold, a real Escape mid-hold, presses 12 px above and below the line,
+  focus and Space after a press with focus on the page, the fill's round
+  end at rest and awake, and no layout shift on waking passed in both.
+  Firefox has no layout-shift entries to read, so there the boxes compared
+  asleep and awake hold the last alone.
+- Firefox eases the wake, as the plan asked of a Firefox of at least 128:
+  `--grow` read strictly between 0 and 1 on 8 or 9 frames over 116 to
+  133 ms as the line woke, and on 17 or 18 frames as it slept, as in
+  Chromium.
+- The wheel (a `deltaY` of 240, from the rail's middle) scrolled the rail
+  over the tiles and over the rail's padding 5 px above the line's top, by
+  120 px in Chromium and 240 in Firefox on the long volume. Over the
+  band's top 4 px (2 px above the line's top), on the line and on the band
+  below it, the rail stayed where it was: M21, the first bullet above.
+- After a drag's release the mark stood off where the rail's scroll puts
+  it by at most 0.04 px on the long volume, but on the 7-page one by up to
+  1.46 px in Chromium and 2.66 px in Firefox, the same a second later;
+  there one pixel of the rail is 2.81 to 6.81 px of the line. While a hold
+  was on, the mark kept within 0.02 px of the pointer's place in Chromium
+  and 0.96 px in Firefox. Left as it is: the mark stays where the mouse
+  let it go until the strip next scrolls.
+- The FAIL, the same in both browsers and both directions, on the long
+  volume only: with a tile focused, a jump far along the line (the rail
+  moved 15,551 to 15,773 px) left focus on `body`, because the strip's
+  window takes a tile that far out of view off the page. A wheel over the
+  tiles that moved the rail 10,433 to 10,760 px dropped focus the same
+  way, so it reads as the window's behaviour from before O286, not the
+  line moving focus. That rests on reading: the wheel's path is one O286
+  leaves alone, and the branch changes no window code in `Filmstrip.tsx`;
+  it was not run on `main`. It is not fixed here. A press on the mark
+  where it stood, and every jump on the 7-page volume, left the tile
+  focused; with focus on the page, as the reader usually has it, a press
+  kept it, and Space and ArrowLeft did after the press what they did
+  before it.
+- The test library's `library.db`, `-wal` and `-shm` had the same
+  `sha256sum` and `stat` before and after (`drive-before.txt`,
+  `drive-after.txt`).

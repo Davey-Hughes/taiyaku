@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import indexHtml from '../../index.html?raw'
 import { STRIP_BREAKPOINT_PX, STRIP_TILE_PX } from '../../src/tileSize'
-import { rules, selectors, withoutComments } from '../support/css'
+import {
+  atRulesOf,
+  rules,
+  selectors,
+  valuesOf,
+  withoutComments,
+} from '../support/css'
 import readerSource from '../../src/styles/reader.css?raw'
 import shellSource from '../../src/styles/shell.css?raw'
 
@@ -284,34 +290,6 @@ describe('the bars’ and the borrowed mark’s colours', () => {
   })
 
   /**
-   * O216. The mark on the progress line is the line's child and stands a
-   * pixel proud of it above and below (`Chrome.tsx`'s `markStyle`). A line
-   * that clipped what overflows it would cut both rows off and leave a mark
-   * no taller than the line. The browser project reads the rows as they are
-   * drawn (`Chrome.browser.test.tsx`), and CI does not run it. What is held
-   * here is narrower: that the line's rule declares none of the properties
-   * listed below.
-   */
-  it('lets the mark stand proud of the progress line, whose rule declares no overflow, clip-path or contain', () => {
-    // THE CONTROL: the rule is found, so an empty answer below is its own.
-    expect(bodies(readerSource, '.reader-progress')).toHaveLength(1)
-    for (const property of [
-      'overflow',
-      'overflow-x',
-      'overflow-y',
-      'overflow-block',
-      'overflow-inline',
-      'clip-path',
-      'contain',
-    ]) {
-      expect(
-        declared(readerSource, '.reader-progress', property),
-        property,
-      ).toEqual([])
-    }
-  })
-
-  /**
    * **The one declaration on this stylesheet that CI cannot otherwise see.**
    * `.reader-section-head` carries no margin — its only other user draws one
    * row per section — and the account panel stacks it, so the separation
@@ -326,6 +304,251 @@ describe('the bars’ and the borrowed mark’s colours', () => {
     expect(
       declared(readerSource, '.reader-section-head-stacked', 'margin-top'),
     ).toEqual(['var(--space-2)'])
+  })
+})
+
+describe('the progress line and its mark (O216, O286)', () => {
+  /**
+   * Every rule for the line itself, at the top level or under an at-rule:
+   * `.reader-progress` and its `:where()` forms, and not its fill's, its
+   * mark's or its band's. Asserts that the line's rule at the top level and
+   * the one that thickens it are among them, so an empty answer read from
+   * these is theirs.
+   */
+  function theLinesRules() {
+    const preludes = new Set(
+      rules(readerSource)
+        .map(({ prelude }) => prelude)
+        .filter((prelude) => /^\.reader-progress(?![\w-])/.test(prelude)),
+    )
+    const found = [...preludes].flatMap((prelude) =>
+      atRulesOf(readerSource, prelude).map((rule) => ({ prelude, ...rule })),
+    )
+    // THE CONTROL.
+    const lines = found.filter(({ prelude }) => prelude === '.reader-progress')
+    expect(lines.map(({ at }) => at)).toContain('')
+    expect(lines.map(({ at }) => at)).toContain('@media (any-pointer: fine)')
+    return found
+  }
+
+  /**
+   * O286. The band that takes a mouse's press and the line's wake are there
+   * together wherever the device has a fine pointer, a touch laptop's
+   * trackpad too (spec goal 6). A second condition on either, such as
+   * `(hover: hover)`, would part them on some device: a band taking presses
+   * on a line that never wakes. `Chrome.test.tsx` holds that the wake asks
+   * the same condition of `matchMedia`.
+   */
+  it('asks one pointer condition of the progress line, `(any-pointer: fine)`', () => {
+    const FINE = '@media (any-pointer: fine)'
+    // Each rule the condition gates, and a declaration only its gated form
+    // makes.
+    const gated: Array<[string, RegExp]> = [
+      ['.reader-progress-grip', /(?:^|;)\s*display:\s*block/],
+      ['.reader-progress', /(?:^|;)\s*box-shadow:/],
+      ['.reader-progress:where([data-awake], [data-held])', /--grow:\s*1/],
+      ['.reader-progress:where([data-still])', /transition:\s*none/],
+      ['.reader-progress-fill', /(?:^|;)\s*top:[^;]*var\(--grow\)/],
+      ['.reader-progress-shown', /(?:^|;)\s*top:[^;]*var\(--grow\)/],
+    ]
+    for (const [prelude, declaration] of gated) {
+      const found = atRulesOf(readerSource, prelude)
+      const asked = found
+        .map(({ at }) => at)
+        .filter((at) => /pointer|hover/.test(at))
+      expect(new Set(asked), prelude).toEqual(new Set([FINE]))
+      // THE CONTROL: the gated rule itself is the one found under it.
+      expect(
+        found.some(({ at, body }) => at === FINE && declaration.test(body)),
+        prelude,
+      ).toBe(true)
+    }
+  })
+
+  /**
+   * O286, spec goal 6. Where no pointer is fine there is no band: its top
+   * 4 px lie over the rail's padding, where a phone's finger starts a swipe
+   * of the strip. Hidden first and drawn after, so the fine block, of the
+   * same weight, wins where it applies. The browser project finds no band
+   * on a phone, and CI does not run it.
+   */
+  it('draws the press band only where some pointer is fine', () => {
+    const FINE = '@media (any-pointer: fine)'
+    const grip = atRulesOf(readerSource, '.reader-progress-grip')
+    const displays = grip.map(({ at, body }) => ({
+      at,
+      display: valuesOf(body, 'display'),
+    }))
+    expect(displays).toEqual([
+      { at: '', display: ['none'] },
+      { at: FINE, display: ['block'] },
+    ])
+  })
+
+  /**
+   * O216. The mark is the line's child and stands proud of it above and
+   * below, further while the line is awake (O286). A line that clipped what
+   * overflows it would cut both rows off and leave a mark no taller than the
+   * line. The browser project reads the rows as they are drawn, and CI does
+   * not run it; what is held here is that no rule for the line declares any
+   * of the properties below, whether at the top level or under an at-rule.
+   */
+  it('no rule for the progress line, under any at-rule, declares overflow, clip-path or contain', () => {
+    const found = theLinesRules()
+    for (const { prelude, at, body } of found) {
+      for (const property of [
+        'overflow',
+        'overflow-x',
+        'overflow-y',
+        'overflow-block',
+        'overflow-inline',
+        'clip-path',
+        'contain',
+      ]) {
+        expect(
+          valuesOf(body, property),
+          `${property} in ${prelude} ${at || 'at the top level'}`,
+        ).toEqual([])
+      }
+    }
+  })
+
+  /**
+   * O286, spec goal 8. Only the fill's leading end is round; the grey line
+   * stays square, awake or asleep. A radius on the line would round it and
+   * both the shadows that thicken it. The browser project reads only the
+   * fill's corners, and CI does not run it, so this is what holds the
+   * line's.
+   */
+  it('draws the grey line square: no rule for it, under any at-rule, declares a radius', () => {
+    const found = theLinesRules()
+    for (const { prelude, at, body } of found) {
+      for (const property of [
+        'border-radius',
+        'border-top-left-radius',
+        'border-top-right-radius',
+        'border-bottom-right-radius',
+        'border-bottom-left-radius',
+        'border-start-start-radius',
+        'border-start-end-radius',
+        'border-end-start-radius',
+        'border-end-end-radius',
+      ]) {
+        expect(
+          valuesOf(body, property),
+          `${property} in ${prelude} ${at || 'at the top level'}`,
+        ).toEqual([])
+      }
+    }
+  })
+
+  /**
+   * O286. One registered number eases, and the line's shadows, the fill's
+   * and the mark's insets and their corners are worked out from it, so the
+   * three cannot grow out of step. A size given by a rule of its own for the
+   * awake line would jump while the number eased. The browser project reads
+   * the sizes it gives partway through a wake
+   * (`Chrome.look.browser.test.tsx`).
+   */
+  it('registers one number, `--grow`, that the line, its fill and the mark are drawn from', () => {
+    const registered = atRulesOf(readerSource, '@property --grow')
+    expect(
+      registered.map(({ at, body }) => ({
+        at,
+        syntax: valuesOf(body, 'syntax'),
+        inherits: valuesOf(body, 'inherits'),
+        initial: valuesOf(body, 'initial-value'),
+      })),
+    ).toEqual([
+      { at: '', syntax: ['"<number>"'], inherits: ['true'], initial: ['0'] },
+    ])
+
+    const FINE = '@media (any-pointer: fine)'
+    const drawnFrom: Array<[string, string]> = [
+      ['.reader-progress', 'box-shadow'],
+      ['.reader-progress-fill', 'top'],
+      ['.reader-progress-fill', 'bottom'],
+      ['.reader-progress-fill', 'border-radius'],
+      ['.reader-progress-shown', 'top'],
+      ['.reader-progress-shown', 'bottom'],
+      ['.reader-progress-shown', 'border-radius'],
+    ]
+    for (const [prelude, property] of drawnFrom) {
+      const values = atRulesOf(readerSource, prelude)
+        .filter(({ at }) => at === FINE)
+        .flatMap(({ body }) => valuesOf(body, property))
+      expect(values, `${prelude} ${property}`).toHaveLength(1)
+      expect(values[0], `${prelude} ${property}`).toContain('var(--grow)')
+    }
+  })
+
+  /**
+   * O286, spec goal 7. Quick to wake and slower to sleep, as an overlay
+   * scrollbar is. The rules that stop the easing are of the awake rule's
+   * weight (`:where()`), so the still one has to come after it in the same
+   * block to win, and the reduced-motion block after that block. The
+   * reduced-motion block asks nothing of the pointer, so no device escapes
+   * it.
+   */
+  it('eases a wake over 150 ms out and a sleep over 300 ms in and out, and none when still or reduced', () => {
+    const AWAKE = '.reader-progress:where([data-awake], [data-held])'
+    const STILL = '.reader-progress:where([data-still])'
+    const blocks = atRulesOf(readerSource, '@media (any-pointer: fine)').map(
+      ({ body }) => rules(body),
+    )
+    const block = blocks.find((list) =>
+      list.some(({ prelude }) => prelude === AWAKE),
+    )
+    // THE CONTROL: the block that wakes the line is found.
+    expect(block, 'the block holding the awake rule').toBeDefined()
+    const eased = (block ?? []).flatMap(({ prelude, body }) =>
+      valuesOf(body, 'transition').map((value) => ({
+        prelude,
+        transition: value.replace(/\s+/g, ''),
+      })),
+    )
+    // In the block's order, so the still rule is seen to come last.
+    expect(eased).toEqual([
+      { prelude: '.reader-progress', transition: '--grow300msease-in-out' },
+      { prelude: AWAKE, transition: '--grow150msease-out' },
+      { prelude: STILL, transition: 'none' },
+    ])
+
+    const reduced = atRulesOf(readerSource, '.reader-progress').filter(
+      ({ at }) => /prefers-reduced-motion/.test(at),
+    )
+    expect(
+      reduced.map(({ at, body }) => ({
+        at,
+        transition: valuesOf(body, 'transition'),
+      })),
+    ).toEqual([
+      { at: '@media (prefers-reduced-motion: reduce)', transition: ['none'] },
+    ])
+    // In the stylesheet's order: after the line's easing rule, and so, in a
+    // block of its own (above), after the awake rule's whole block too.
+    expect(
+      atRulesOf(readerSource, '.reader-progress')
+        .filter(({ body }) => valuesOf(body, 'transition').length > 0)
+        .map(({ at }) => at),
+    ).toEqual([
+      '@media (any-pointer: fine)',
+      '@media (prefers-reduced-motion: reduce)',
+    ])
+  })
+
+  // O286: the insets are the stylesheet's and not `Chrome.tsx`'s, so the
+  // rule that thickens the line can grow them; this is the pixel at rest.
+  it('draws the mark one pixel proud of the line at rest', () => {
+    const atTheTop = atRulesOf(readerSource, '.reader-progress-shown').filter(
+      ({ at }) => at === '',
+    )
+    expect(atTheTop).toHaveLength(1)
+    const [{ body }] = atTheTop
+    expect([valuesOf(body, 'top'), valuesOf(body, 'bottom')]).toEqual([
+      ['-1px'],
+      ['-1px'],
+    ])
   })
 })
 

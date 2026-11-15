@@ -1,20 +1,48 @@
 import { act } from 'react'
-import { describe, expect, it, onTestFinished, vi } from 'vitest'
+import { describe, expect, it, onTestFinished } from 'vitest'
 import { page } from 'vitest/browser'
 // Required, for the reason `Filmstrip.browser.test.tsx` gives at its own
 // import: the reader's custom properties, the line's height and the mark's
 // colour all reach a page through this.
 import '../src/index.css'
-import { Chrome, type ChromeProps } from '../src/Chrome'
-import type { Group } from '../src/pairing'
-import type { Position } from '../src/resolver'
-import { mount, rerender } from './support/mount'
+import type { ChromeProps } from '../src/Chrome'
+import { rerender } from './support/mount'
 import { mouse } from './support/mouse'
+import { pointerRulesAs } from './support/pointer'
+import {
+  BARELY,
+  centre,
+  FITS,
+  farEnd,
+  firstReportPast,
+  flick,
+  frame,
+  inReader,
+  LONG,
+  laterSide,
+  lineOf,
+  loadThumbnailsLate,
+  MARK_MAX_PX,
+  MARK_MIN_PX,
+  markBox,
+  markOf,
+  onShowPx,
+  railOf,
+  reader,
+  rememberLetGo,
+  SHORT,
+  scrollRail,
+  tileMiddle,
+  travel,
+  untilAtRest,
+  VERY_LONG,
+  widthDue,
+} from './support/readerBars'
 
 /**
  * O216: the mark on the progress line, with a real strip over a real line.
  *
- * `Chrome.test.tsx` holds what `Chrome` writes on the mark, a `max()` and a
+ * `Chrome.test.tsx` holds what `Chrome` writes on the mark, a `clamp()` and a
  * `calc()` that jsdom leaves unresolved, and `Filmstrip.test.tsx` when the
  * strip tells and what it tells from numbers given by hand. Neither can say
  * where the mark lands. Here the rail's numbers are the browser's, the strip
@@ -31,193 +59,6 @@ import { mouse } from './support/mouse'
  * negative, and the line is mirrored: each of the three is a way to be right
  * in one direction and wrong in the other.
  */
-
-/** A volume of `pages` single pages, one tile each. */
-function volume(pages: number): { slots: Position[]; groups: Group[] } {
-  const slots: Position[] = Array.from({ length: pages }, (_, i) => ({
-    page: i,
-  }))
-  return { slots, groups: slots.map((_, i) => ({ slots: [i] })) }
-}
-
-// Lengths of volume, for the things the rail's length decides. Each case
-// that leans on one asserts it of the rail it measures, so a change to the
-// tiles' size that moved a volume out of its kind fails there.
-/** Long enough that an eighth of the share on show is narrower than the floor. */
-const LONG = volume(120)
-/** Long enough to overflow the rail, and short enough that the eighth is the wider. */
-const SHORT = volume(24)
-/** Short enough that the rail holds all of it. */
-const FITS = volume(3)
-/** A little longer than the rail is wide, in the wide window its case sets: the travel is a small part of the length. */
-const BARELY = volume(21)
-
-/** The floor and the fraction `Chrome.tsx` draws the mark by, as the spec gives them. */
-const FLOOR_PX = 32
-const SHARE = 1 / 8
-
-function props(overrides: Partial<ChromeProps> = {}): ChromeProps {
-  return {
-    visible: true,
-    motion: { animate: false, ms: 0 },
-    readouts: {
-      position: true,
-      time: false,
-      chapter: false,
-      health: false,
-      notes: false,
-    },
-    position: 'slot 1',
-    chapter: '',
-    progress: 0.25,
-    editionLine: 'Raw',
-    mode: 'single',
-    onMode: () => {},
-    settingsOpen: false,
-    onSettings: () => {},
-    onLeave: () => {},
-    reading: 'ltr',
-    work: 'w',
-    edition: 'e',
-    ...LONG,
-    currentIndex: 0,
-    onNavigate: () => {},
-    ...overrides,
-  }
-}
-
-/**
- * The two bars in a reader that fills the window. `.reader` carries the
- * custom properties, and a fixed box is what the bottom bar's `position:
- * absolute` docks against, as `App`'s root is in the app.
- *
- * Its own function so that a `rerender` can hand React the tree `inReader`
- * mounted, which keeps the bars and their strip the same instances across it.
- */
-function reader(overrides: Partial<ChromeProps>) {
-  return (
-    <div className="reader" style={{ position: 'fixed', inset: 0 }}>
-      <Chrome {...props(overrides)} />
-    </div>
-  )
-}
-
-function inReader(overrides: Partial<ChromeProps>) {
-  return mount(reader(overrides))
-}
-
-const railOf = (host: HTMLElement) =>
-  host.querySelector('.reader-strip-rail') as HTMLElement
-const lineOf = (host: HTMLElement) =>
-  host.querySelector('.reader-progress') as HTMLElement
-/** The mark's element, which is there whenever the bars are, drawn or hidden. */
-const markOf = (host: HTMLElement) =>
-  host.querySelector('[data-testid="strip-shown"]') as HTMLElement
-
-/** The mark's box. Throws where the mark is hidden, so a case cannot measure nothing. */
-function markBox(host: HTMLElement): DOMRect {
-  const mark = markOf(host)
-  if (mark.hidden) throw new Error('the mark is hidden')
-  return mark.getBoundingClientRect()
-}
-
-const centre = (box: DOMRect) => box.left + box.width / 2
-
-const frame = () =>
-  new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-
-/**
- * Lets the observer on the rail make its first report. A `ResizeObserver`
- * reports once of its own accord, in the frame after it is told what to
- * watch, and the strip reads the rail when it does. Two frames, since the
- * report comes after the first frame's own callbacks have run.
- *
- * A case about something that happens after the strip has mounted waits for
- * this first, so that the report is behind it and what happens is told by
- * whatever is there to tell it, or by nothing.
- */
-async function firstReportPast() {
-  await act(async () => {
-    await frame()
-    await frame()
-  })
-}
-
-/**
- * Waits for the rail to be at rest, which is two frames running in which
- * nothing but this asked for a frame. A glide of the strip asks for one in
- * every frame it runs, and the rail's scroll listener for one after every
- * scroll. Each frame is in an `act` of its own, so a render one asks for is
- * made before the next. Gives up after ten seconds, which fails the case.
- */
-async function untilAtRest() {
-  const asked = vi.spyOn(window, 'requestAnimationFrame')
-  onTestFinished(() => asked.mockRestore())
-  const deadline = performance.now() + 10_000
-  let quiet = 0
-  while (quiet < 2) {
-    if (performance.now() > deadline) {
-      throw new Error('the rail still asks for frames after ten seconds')
-    }
-    const before = asked.mock.calls.length
-    await act(async () => {
-      await frame()
-    })
-    quiet = asked.mock.calls.length - before > 1 ? 0 : quiet + 1
-  }
-}
-
-/** How far the rail can be scrolled. */
-const travel = (rail: HTMLElement) => rail.scrollWidth - rail.clientWidth
-
-/**
- * The width the spec gives the mark for the rail as it stands: an eighth of
- * the share of its length on show, as a share of the line, and never under
- * the floor.
- */
-function widthDue(rail: HTMLElement, line: HTMLElement): number {
-  const share = rail.clientWidth / rail.scrollWidth
-  return Math.max(FLOOR_PX, share * SHARE * line.getBoundingClientRect().width)
-}
-
-/**
- * Writes the rail's `scrollLeft`, then waits for the `scroll` the browser
- * fires for it and for the frame the rail's listener takes after that. The
- * listener here is added after the rail's own and the frame asked for after
- * the rail's, so the rail's runs first both times; the `act` held open
- * around them is what the state set in that frame lands inside.
- *
- * `to` has to be somewhere the rail is not, or no `scroll` comes.
- */
-async function scrollRail(rail: HTMLElement, to: number) {
-  expect(Math.round(rail.scrollLeft)).not.toBe(Math.round(to))
-  await act(async () => {
-    const scrolled = new Promise((resolve) =>
-      rail.addEventListener('scroll', resolve, { once: true }),
-    )
-    rail.scrollLeft = to
-    await scrolled
-    await frame()
-  })
-}
-
-/**
- * Which side of an earlier tile a later one stands on: `1` for the right,
- * `-1` for the left. Asked of two tiles' boxes rather than of the reading
- * direction, so no case here decides for itself what `rtl` means.
- */
-function laterSide(rail: HTMLElement): 1 | -1 {
-  const [first, second] = [...rail.querySelectorAll('button')].map((b) =>
-    centre(b.getBoundingClientRect()),
-  )
-  if (first === undefined || second === undefined || first === second) {
-    throw new Error('two tiles side by side are needed to tell the sides apart')
-  }
-  return second > first ? 1 : -1
-}
-
-/** The rail's far end, as the browser signs it for this rail. */
-const farEnd = (rail: HTMLElement) => laterSide(rail) * travel(rail)
 
 describe('the mark on the progress line, laid out', () => {
   for (const reading of ['ltr', 'rtl'] as const) {
@@ -421,29 +262,75 @@ describe('the mark on the progress line, laid out', () => {
         )
     })
 
-    it(`is as wide as the floor on a long volume, and one pixel proud of the line, ${reading}`, async () => {
+    // At rest the mark's insets on a mouse's device come from the rule that
+    // thickens the line, and on a phone from the stylesheet's top-level rule
+    // alone, so each device's drawing is read.
+    for (const device of ['mouse', 'phone'] as const) {
+      it(`is 64 px where the share on show is narrower, one pixel proud of the line at rest, ${device} ${reading}`, async () => {
+        onTestFinished(pointerRulesAs(device))
+        await page.viewport(1440, 900)
+        const host = inReader({ ...VERY_LONG, reading, currentIndex: 0 })
+        const rail = railOf(host)
+        const lineElement = lineOf(host)
+        for (const a of lineElement.getAnimations({ subtree: true })) {
+          a.finish()
+        }
+        const line = lineElement.getBoundingClientRect()
+
+        // THE STATE THIS TEST NAMES: the line at rest, and the share on show
+        // narrower than the lower bound, so that bound decides.
+        expect(lineElement.dataset.awake).toBeUndefined()
+        const onShow = onShowPx(rail, lineElement)
+        expect(onShow).toBeGreaterThan(0)
+        expect(onShow).toBeLessThan(MARK_MIN_PX - 1)
+
+        const mark = markBox(host)
+        expect(mark.width).toBeCloseTo(MARK_MIN_PX, 0)
+        expect(line.height).toBe(2)
+        expect([mark.top, mark.bottom]).toEqual([line.top - 1, line.bottom + 1])
+      })
+    }
+
+    it(`is the share on show where that lies between 64 and 160 px, ${reading}`, async () => {
       await page.viewport(1440, 900)
       const host = inReader({ reading, currentIndex: 0 })
       const rail = railOf(host)
-      const line = lineOf(host).getBoundingClientRect()
+      const lineElement = lineOf(host)
+      for (const a of lineElement.getAnimations({ subtree: true })) a.finish()
 
-      // THE STATE THIS TEST NAMES: an eighth of the share on show is narrower
-      // than the floor, so the floor is what decides.
-      const eighth = (rail.clientWidth / rail.scrollWidth) * SHARE * line.width
-      expect(eighth).toBeGreaterThan(0)
-      expect(eighth).toBeLessThan(FLOOR_PX - 1)
+      // THE STATE THIS TEST NAMES: the line at rest, and the share on show
+      // between the bounds, so neither decides.
+      expect(lineElement.dataset.awake).toBeUndefined()
+      const onShow = onShowPx(rail, lineElement)
+      expect(onShow).toBeGreaterThan(MARK_MIN_PX + 1)
+      expect(onShow).toBeLessThan(MARK_MAX_PX - 1)
 
-      const mark = markBox(host)
-      expect(mark.width).toBeCloseTo(FLOOR_PX, 0)
-      expect(line.height).toBe(2)
-      expect([mark.top, mark.bottom]).toEqual([line.top - 1, line.bottom + 1])
+      expect(markBox(host).width).toBeCloseTo(onShow, 0)
     })
 
-    // The case above reads the mark's box, and a box is the same whether or
+    it(`is 160 px where the share on show is wider, ${reading}`, async () => {
+      await page.viewport(1440, 900)
+      const host = inReader({ ...SHORT, reading, currentIndex: 0 })
+      const rail = railOf(host)
+      const lineElement = lineOf(host)
+      for (const a of lineElement.getAnimations({ subtree: true })) a.finish()
+
+      // THE STATE THIS TEST NAMES: the line at rest, a rail that overflows,
+      // and the share on show wider than the upper bound, so that bound
+      // decides.
+      expect(lineElement.dataset.awake).toBeUndefined()
+      expect(travel(rail)).toBeGreaterThan(0)
+      const onShow = onShowPx(rail, lineElement)
+      expect(onShow).toBeGreaterThan(MARK_MAX_PX + 1)
+
+      expect(markBox(host).width).toBeCloseTo(MARK_MAX_PX, 0)
+    })
+
+    // The cases above read the mark's box, and a box is the same whether or
     // not what holds it clips it: a line with `overflow: hidden` leaves the
-    // box a pixel proud and draws none of either row. What is under a point
-    // is what is drawn there, so this asks what is under a point in each of
-    // the two rows.
+    // box a pixel proud and draws none of either row. What is at a point is
+    // what is drawn there, so this asks what is at a point in each of the
+    // two rows: every element, since the press band lies over the mark.
     //
     // A row is asked for by its own whole number. Between two rows the
     // browser's answer leans upward, and a point half a pixel above a box
@@ -454,19 +341,26 @@ describe('the mark on the progress line, laid out', () => {
       const line = lineOf(host).getBoundingClientRect()
       const mark = markOf(host)
       const x = centre(markBox(host))
-      const under = (row: number) => document.elementFromPoint(x, row)
-      // THE STATE THIS TEST NAMES: the line lies on whole rows, two of them.
+      const at = (row: number) => document.elementsFromPoint(x, row)
+      // THE STATE THIS TEST NAMES: the line lies on whole rows, two of them,
+      // and the topmost element at its middle is the press band, not the
+      // mark.
       expect(Number.isInteger(line.top)).toBe(true)
       expect(line.height).toBe(2)
+      expect(
+        document
+          .elementFromPoint(x, line.top + line.height / 2)
+          ?.classList.contains('reader-progress-grip'),
+      ).toBe(true)
 
-      expect(under(line.top - 1)).toBe(mark)
-      expect(under(line.bottom)).toBe(mark)
+      expect(at(line.top - 1)).toContain(mark)
+      expect(at(line.bottom)).toContain(mark)
       // On the line's own two rows as well.
-      expect(under(line.top)).toBe(mark)
-      expect(under(line.top + 1)).toBe(mark)
+      expect(at(line.top)).toContain(mark)
+      expect(at(line.top + 1)).toContain(mark)
       // THE CONTROL: a row further out either way is not the mark's.
-      expect(under(line.top - 2)).not.toBe(mark)
-      expect(under(line.bottom + 1)).not.toBe(mark)
+      expect(at(line.top - 2)).not.toContain(mark)
+      expect(at(line.bottom + 1)).not.toContain(mark)
     })
 
     // A drag of the strip writes the rail's `scrollLeft` as the wheel does,
@@ -490,11 +384,7 @@ describe('the mark on the progress line, laid out', () => {
       }
       const before = stand()
       const stood = rail.scrollLeft
-      const tile = (
-        rail.querySelector('[data-group="62"]') as HTMLElement
-      ).getBoundingClientRect()
-      const x = Math.round(centre(tile))
-      const y = Math.round(tile.top + tile.height / 2)
+      const { x, y } = tileMiddle(rail, 62)
       // Toward the middle of the window, so the pointer stays inside it.
       const by = x > window.innerWidth / 2 ? -600 : 600
 
@@ -526,12 +416,9 @@ describe('the mark on the progress line, laid out', () => {
     // A drag let go while the pointer is moving carries the rail on, with
     // the reader's animation on as it is here, and the mark has to go on
     // with it. A real mouse again: the mark is read once the rail has come
-    // to rest, well on from where the mouse let it go.
-    //
-    // Each input carries a time the case gives it, 15 px and 15 ms a move,
-    // so the pointer is going at 1 px a millisecond however long this
-    // machine takes between two of them: `Filmstrip.browser.test.tsx` has
-    // the same flick and why.
+    // to rest, well on from where the mouse let it go. The flick is at 1 px
+    // a millisecond however long this machine takes between two moves
+    // (`flick`).
     it(`follows a glide of the strip to where it comes to rest, ${reading}`, async () => {
       await page.viewport(1440, 900)
       const host = inReader({
@@ -552,36 +439,17 @@ describe('the mark on the progress line, laid out', () => {
           room: line.width - mark.width,
         }
       }
-      const tile = (
-        rail.querySelector('[data-group="62"]') as HTMLElement
-      ).getBoundingClientRect()
-      const x = Math.round(centre(tile))
-      const y = Math.round(tile.top + tile.height / 2)
-      let letGoAt = Number.NaN
-      const onUp = () => {
-        letGoAt = rail.scrollLeft
-      }
-      window.addEventListener('pointerup', onUp, true)
-      onTestFinished(() => window.removeEventListener('pointerup', onUp, true))
+      const { x, y } = tileMiddle(rail, 62)
+      const letGo = rememberLetGo(rail)
 
-      await act(async () => {
-        await mouse.moveTo(x, y)
-        mouse.clock(0)
-        await mouse.press()
-        for (let move = 1; move <= 8; move++) {
-          mouse.clock(15 * move)
-          await mouse.moveTo(x + 15 * move, y)
-        }
-        await mouse.release()
-        mouse.clock()
-      })
+      await flick(x, y, 1)
       const atTheRelease = stand()
       await untilAtRest()
 
       // THE STATE THIS TEST NAMES: the rail has gone on since it was let go
       // by the 325 px a glide from that speed carries it, far enough that a
       // mark left where it was then would be seen to be.
-      const on = Math.abs(rail.scrollLeft - letGoAt)
+      const on = Math.abs(rail.scrollLeft - (letGo.at(-1) as number))
       expect(on).toBeGreaterThanOrEqual(325 - 2)
       expect(on).toBeLessThanOrEqual(325 + 2)
       const { fromStart, room } = stand()
@@ -589,21 +457,6 @@ describe('the mark on the progress line, laid out', () => {
       expect(Math.abs(along * room - atTheRelease.fromStart)).toBeGreaterThan(8)
 
       expect(fromStart).toBeCloseTo(along * room, 0)
-    })
-
-    it(`is as wide as an eighth of the share on show on a short volume, ${reading}`, async () => {
-      await page.viewport(1440, 900)
-      const host = inReader({ ...SHORT, reading, currentIndex: 0 })
-      const rail = railOf(host)
-      const line = lineOf(host)
-
-      // THE STATE THIS TEST NAMES: the rail overflows, and an eighth of the
-      // share on show is wider than the floor, so the eighth is what decides.
-      expect(travel(rail)).toBeGreaterThan(0)
-      const due = widthDue(rail, line)
-      expect(due).toBeGreaterThan(FLOOR_PX + 1)
-
-      expect(markBox(host).width).toBeCloseTo(due, 0)
     })
 
     // The same bars and the same strip throughout: a longer volume is handed
@@ -628,10 +481,10 @@ describe('the mark on the progress line, laid out', () => {
       expect(travel(rail)).toBeGreaterThan(0)
       expect(mark.hidden).toBe(false)
       // Drawn where a strip mounted on the long volume draws it: at the
-      // line's start, as wide as the floor.
+      // line's start, as wide as the rail's numbers say.
       const line = lineOf(host).getBoundingClientRect()
       const box = markBox(host)
-      expect(box.width).toBeCloseTo(FLOOR_PX, 0)
+      expect(box.width).toBeCloseTo(widthDue(rail, lineOf(host)), 0)
       if (laterSide(rail) === 1) {
         expect(box.left).toBeCloseTo(line.left, 0)
       } else {
@@ -644,49 +497,31 @@ describe('the mark on the progress line, laid out', () => {
       expect(getComputedStyle(mark).display).toBe('none')
     })
 
-    // The thumbnails the strip asks for never load here, so the late one is
-    // made: once the strip has drawn and told, each image it rendered is
-    // handed a real picture, square where a tile's floor is a page's upright
-    // shape. That is what a slow server does. The tiles take the pictures'
-    // width, the rail grows, and nothing scrolls and nothing renders.
+    // The thumbnails the strip asks for never load here, so the late ones
+    // are made once the strip has drawn and told (`loadThumbnailsLate`).
     it(`is as wide as the rail's numbers say after thumbnails load late, ${reading}`, async () => {
       await page.viewport(1440, 900)
-      const host = inReader({ ...SHORT, reading, currentIndex: 0 })
+      const host = inReader({ reading, currentIndex: 0 })
       const rail = railOf(host)
       const line = lineOf(host)
       await firstReportPast()
 
+      // THE FIXTURE: the share on show lies between the bounds, so the mark
+      // is the share and a change to it shows.
+      expect(onShowPx(rail, line)).toBeGreaterThan(MARK_MIN_PX + 1)
+      expect(onShowPx(rail, line)).toBeLessThan(MARK_MAX_PX - 1)
       const before = rail.scrollWidth
       const stale = markBox(host).width
       expect(stale).toBeCloseTo(widthDue(rail, line), 0)
 
-      const canvas = document.createElement('canvas')
-      canvas.width = 160
-      canvas.height = 160
-      const picture = canvas.toDataURL('image/png')
-      const images = [...rail.querySelectorAll('img')]
-      expect(images.length).toBeGreaterThan(0)
-      await act(async () => {
-        const loaded = images.map(
-          (img) =>
-            new Promise((resolve) =>
-              img.addEventListener('load', resolve, { once: true }),
-            ),
-        )
-        for (const img of images) {
-          // Every one the window rendered, the ones out of sight too.
-          img.loading = 'eager'
-          img.src = picture
-        }
-        await Promise.all(loaded)
-        // The frame the strip takes after a load. Asked for after the strip's.
-        await frame()
-      })
+      await loadThumbnailsLate(rail)
 
       // THE STATE THIS TEST NAMES: the rail is longer than it was, still
-      // where it stood, and by enough that a mark left as it was would show.
+      // where it stood, its share on show still between the bounds, and by
+      // enough that a mark left as it was would show.
       expect(rail.scrollWidth).toBeGreaterThan(before)
       expect(rail.scrollLeft).toBe(0)
+      expect(onShowPx(rail, line)).toBeGreaterThan(MARK_MIN_PX + 1)
       const due = widthDue(rail, line)
       expect(stale - due).toBeGreaterThan(5)
 
@@ -695,13 +530,18 @@ describe('the mark on the progress line, laid out', () => {
 
     it(`is as wide as the rail's numbers say after the window is made narrower, ${reading}`, async () => {
       await page.viewport(1440, 900)
-      const host = inReader({ ...SHORT, reading, currentIndex: 0 })
+      const host = inReader({ reading, currentIndex: 0 })
       const rail = railOf(host)
       const line = lineOf(host)
       await firstReportPast()
+
+      // THE FIXTURE: the share on show lies between the bounds, so the mark
+      // is the share and a change to it shows.
+      expect(onShowPx(rail, line)).toBeGreaterThan(MARK_MIN_PX + 1)
+      expect(onShowPx(rail, line)).toBeLessThan(MARK_MAX_PX - 1)
       const wide = rail.clientWidth
-      const shareBefore = rail.clientWidth / rail.scrollWidth
-      expect(markBox(host).width).toBeCloseTo(widthDue(rail, line), 0)
+      const stale = markBox(host).width
+      expect(stale).toBeCloseTo(widthDue(rail, line), 0)
 
       // Waited for by what it does and not by time: first the rail is laid
       // out narrower, then two frames, since the observer is called in the
@@ -715,14 +555,14 @@ describe('the mark on the progress line, laid out', () => {
       })
 
       // THE STATE THIS TEST NAMES: a narrower rail over the same tiles, still
-      // overflowing, showing a share of them a stale mark would misstate.
+      // overflowing, its share on show still between the bounds, and by
+      // enough that a mark left as it was would show.
       expect(rail.clientWidth).toBeLessThan(wide)
       expect(travel(rail)).toBeGreaterThan(0)
-      expect(shareBefore - rail.clientWidth / rail.scrollWidth).toBeGreaterThan(
-        0.05,
-      )
+      expect(onShowPx(rail, line)).toBeGreaterThan(MARK_MIN_PX + 1)
+      expect(onShowPx(rail, line)).toBeLessThan(MARK_MAX_PX - 1)
       const due = widthDue(rail, line)
-      expect(due).toBeGreaterThan(FLOOR_PX + 1)
+      expect(stale - due).toBeGreaterThan(5)
 
       expect(markBox(host).width).toBeCloseTo(due, 0)
     })

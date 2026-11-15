@@ -3,7 +3,7 @@ import type { Rolldown } from 'vite'
 import { build } from 'vite'
 import { beforeAll, describe, expect, it } from 'vitest'
 import tokensSource from '../src/styles/tokens.css?raw'
-import { rules, selectors } from './support/css'
+import { atRulesOf, rules, selectors, valuesOf } from './support/css'
 
 /**
  * **The stylesheet as the build ships it, not as it is written (O218).**
@@ -118,6 +118,28 @@ describe('the built stylesheet', () => {
       for (const { value } of found) expect(value).toMatch(/^light-dark\(/)
     },
   )
+
+  // O286. The line eases only while its number is registered, and the
+  // build's targets include a Firefox without `@property`; it grows only
+  // under its pointer block. Either one dropped or rewritten by the build
+  // would ship a line that jumps, or never grows, where the source eases.
+  it('keeps the line’s registered number and its pointer block in the build', () => {
+    expect(
+      atRulesOf(built, '@property --grow').map(({ body }) => ({
+        syntax: valuesOf(body, 'syntax'),
+        inherits: valuesOf(body, 'inherits'),
+        initial: valuesOf(body, 'initial-value'),
+      })),
+    ).toEqual([{ syntax: ['"<number>"'], inherits: ['true'], initial: ['0'] }])
+    const fine = atRulesOf(built, '.reader-progress').filter(
+      ({ at }) => at.replace(/\s/g, '') === '@media(any-pointer:fine)',
+    )
+    expect(
+      fine.flatMap(({ body }) =>
+        valuesOf(body, 'transition').map((value) => value.replace(/\s/g, '')),
+      ),
+    ).toEqual([expect.stringMatching(/^--grow\b/)])
+  })
 
   it('gives no rule the switch properties a compiled pair reads', () => {
     // The matches, not the stylesheet: a failure prints what was found.

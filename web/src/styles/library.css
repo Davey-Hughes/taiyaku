@@ -638,6 +638,12 @@
   white-space: pre-wrap;
 }
 
+/* The Title form's failure, in the colour the reader's and the account's
+ * failures take. */
+.metadata-editor .failure {
+  color: var(--danger);
+}
+
 /* The field on `--field` like every input `base.css` draws, at most 24 rem
  * wide, and the whole row on a phone. Its border, corners, colour and font
  * are `base.css`'s. */

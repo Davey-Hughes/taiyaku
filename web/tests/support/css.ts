@@ -131,3 +131,15 @@ export function atRulesOf(
   }
   return found
 }
+
+/**
+ * Each value `body` declares for `property`, in order, spaces collapsed:
+ * `body` is one rule's, as `atRulesOf` hands it.
+ */
+export function valuesOf(body: string, property: string): string[] {
+  return [
+    ...body.matchAll(
+      new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]*?)\\s*(?=;|$)`, 'g'),
+    ),
+  ].map((m) => m[1].replace(/\s+/g, ' '))
+}

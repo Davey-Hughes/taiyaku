@@ -260,7 +260,19 @@
   background: var(--line);
 }
 
+/* How far through the edition the reader is, drawn from the line's start,
+ * with a round end where the reader stands: half its height, so a true
+ * semicircle, and inside its own box, so at 100% it does not run past the
+ * line's end. Placed absolutely and as tall as the line, so it can be drawn
+ * thicker with it (below) as one shape, and at no cost to the layout. The
+ * line is mirrored for a right-to-left work, which takes the round end to
+ * the fill's left, where it then ends. */
 .reader-progress-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 0 1px 1px 0;
   background: var(--accent);
 }
 
@@ -268,8 +280,86 @@
  * own and not `--text`, since the mark is drawn over the line and its fill
  * and has to let both through. */
 .reader-progress-shown {
+  top: -1px;
+  bottom: -1px;
   background: var(--reader-mark);
   border-radius: 2px;
+}
+
+/* Where a mouse takes hold of the progress line (O286): `Chrome.tsx`'s
+ * `gripStyle`. Only where some pointer is fine, a mouse's or a trackpad's:
+ * above the line it lies over the rail's padding, where a phone's finger
+ * would start a swipe of the strip. */
+.reader-progress-grip {
+  display: none;
+}
+
+@media (any-pointer: fine) {
+  .reader-progress-grip {
+    display: block;
+  }
+}
+
+/* How far the line has woken, 0 asleep to 1 awake (O286): one number that
+ * the line, its fill and the mark all take their thickness from, so the
+ * three grow and shrink as one, frame for frame, about the same centre.
+ * Registered, so a transition eases the number itself; and inherited, so
+ * the line's children follow the line's. */
+@property --grow {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+/* The line drawn thicker while it is awake or held, so it is easier to take
+ * (O286), under the press band's condition, so the band never takes a press
+ * on a line that cannot wake. Drawn and not laid out, so nothing else on the
+ * bar moves: two shadows, and the fill and the mark placed absolutely. The
+ * mark stands at most 3 px past the line, inside the band's 4, so a press on
+ * its edge takes it and not the rail's drag, which runs the strip the other
+ * way. Only the thickness eases, so the mark never lags the pointer, and on
+ * the main thread: a compositor's `scaleY` would stretch its round ends. */
+@media (any-pointer: fine) {
+  .reader-progress {
+    --grow: 0;
+    transition: --grow 300ms ease-in-out;
+  }
+
+  /* `:where()`, so the two rules that turn the easing off, below and of
+   * the same weight, come after it and win. */
+  .reader-progress:where([data-awake], [data-held]) {
+    --grow: 1;
+    transition: --grow 150ms ease-out;
+  }
+
+  .reader-progress {
+    box-shadow:
+      0 calc(var(--grow) * -1px) var(--line),
+      0 calc(var(--grow) * 1px) var(--line);
+  }
+
+  .reader-progress-fill {
+    top: calc(var(--grow) * -1px);
+    bottom: calc(var(--grow) * -1px);
+    border-radius: 0 calc(1px + var(--grow) * 1px) calc(1px + var(--grow) * 1px)
+      0;
+  }
+
+  .reader-progress-shown {
+    top: calc(-1px - var(--grow) * 2px);
+    bottom: calc(-1px - var(--grow) * 2px);
+    border-radius: calc(2px + var(--grow) * 2px);
+  }
+
+  .reader-progress:where([data-still]) {
+    transition: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reader-progress {
+    transition: none;
+  }
 }
 
 .reader-readout {

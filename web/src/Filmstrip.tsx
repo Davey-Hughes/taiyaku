@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type RefObject,
+} from 'react'
 import { thumbUrl } from './api'
 import type { Group } from './pairing'
 import type { Position } from './resolver'
@@ -154,6 +160,19 @@ function previewOf(
   return first && { page: first.page, half: first.half }
 }
 
+/**
+ * What the progress line asks of the rail while a mouse drags it as a
+ * scrollbar (O286).
+ */
+export interface StripScroller {
+  /**
+   * Stands the rail `along` its travel, 0 at the start of the volume and 1 at
+   * its end, reckoned from the rail's widths as they are now. Stops a glide
+   * first: its next frame would write the rail back to where it had it going.
+   */
+  scrollAlong: (along: number) => void
+}
+
 export interface FilmstripProps {
   /**
    * Which way the rail runs.
@@ -266,6 +285,12 @@ export interface FilmstripProps {
    * the caller's to say: the strip asks that itself, at each release.
    */
   glides?: boolean
+  /**
+   * Filled with this strip's `StripScroller` while it is mounted, and
+   * emptied when it goes. `Chrome` drags the rail from the progress line
+   * through it.
+   */
+  scroller?: RefObject<StripScroller | null>
 }
 
 /**
@@ -308,6 +333,7 @@ export function Filmstrip({
   onPreview,
   onShown,
   glides = true,
+  scroller,
 }: FilmstripProps) {
   const currentRef = useRef<HTMLButtonElement>(null)
   const pairedRef = useRef<HTMLButtonElement>(null)
@@ -1180,6 +1206,28 @@ export function Filmstrip({
       endGlide()
     }
   }, [])
+
+  // The progress line's way to drag the rail (O286). The travel is read at
+  // each call and not kept: thumbnails that load and a window rebuilt near a
+  // spacer change the rail's length while the line is being dragged. The
+  // write fires the rail's own `scroll`, so the window and the mark follow
+  // it as they follow the wheel.
+  useEffect(() => {
+    if (!scroller) return
+    const later = stepFor(1, reading)
+    scroller.current = {
+      scrollAlong: (along) => {
+        const rail = railRef.current
+        if (!rail) return
+        stopGlide.current()
+        rail.scrollLeft =
+          later * along * Math.max(rail.scrollWidth - rail.clientWidth, 0)
+      },
+    }
+    return () => {
+      scroller.current = null
+    }
+  }, [scroller, reading])
 
   return (
     <div
