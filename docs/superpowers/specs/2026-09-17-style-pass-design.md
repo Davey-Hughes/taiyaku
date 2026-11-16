@@ -572,6 +572,10 @@ the progress version and the setting that picks between them — the
 
 - a 104 px cover, `workCover(slug, opens)`, which is the thumbnail of the
   edition the reader will open, from data `/api/library/home` already sends;
+  *Replaced 2026-11-15 (O285, O288): a Continue cover is as wide as a
+  grid cover (the Cover size slider's size from 900 px up, the grid's
+  filled column below) and sits over the grid's columns; see
+  `2026-11-14-cover-size-and-continue-row-design.md`.*
 - the title in the title face, at most two lines;
 - "Vol. N" in `--muted` when `volume` is set;
 - no link, and "files missing — cannot be opened" in `--warning`, when
@@ -594,7 +598,11 @@ drew the accent underline side by side.
 instead of a rounded `--line-strong` border. Titles take the title face.
 Under each title a new line in `--muted` gives the series' `works` count —
 "42 volumes", "1 volume" — which `SeriesCard` already carries. A phone
-gets two columns, three in compact. Works that belong to no series keep
+gets two columns, three in compact. *Replaced 2026-11-15 (O285): compact
+is gone, and below 900 px the columns fill the row at no less than the
+Cover size slider's size, so a 390 px phone gets two at the default 144 px
+and three at 104 px, the size a stored compact carries over to; see
+`2026-11-14-cover-size-and-continue-row-design.md`.* Works that belong to no series keep
 their title-only tiles, restyled. The empty states, which had no CSS at
 all before ②, take the title face for their headings and `--muted` for their
 text — the proposals inbox's too, since it draws the same `EmptyState`

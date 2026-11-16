@@ -11,7 +11,14 @@
  *
  * The theme's tokens throughout — see `styles/tokens.css`.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { Link, useLocation } from 'react-router'
 import { AccountMenu } from './AccountMenu'
 import {
@@ -19,6 +26,8 @@ import {
   BrowsePrefsContext,
   browseModule,
   browseRegistry,
+  coverSizeOf,
+  loadBrowsePrefs,
 } from './browseModule'
 import { INBOX_MIN_SCORE, inboxTotal, listProposals } from './curation'
 import { useGate } from './gate'
@@ -26,7 +35,7 @@ import { usePrefsMap } from './hooks'
 import type { LibraryStatus } from './library'
 import { fieldChanged, sliceFor, sliceReset } from './module'
 import { LIBRARY_STATUS } from './pageReads'
-import { loadPrefs, resetPrefs, savePrefs } from './prefs'
+import { resetPrefs, savePrefs } from './prefs'
 import { InboxRefreshContext, STATUS_FAILED, StatusContext } from './shell'
 import { TO_TOP } from './scrollKeeper'
 import { SEARCH_BOX_ID } from './searchHits'
@@ -87,7 +96,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   // "a second registry, not a second implementation" — but the state and its
   // persistence are the hook's. An updater must stay pure (React may invoke it
   // more than once), so nothing persists from inside `setMap`'s own updater.
-  const [map, setMap] = usePrefsMap(BROWSE_MODULES, loadPrefs, savePrefs)
+  const [map, setMap] = usePrefsMap(BROWSE_MODULES, loadBrowsePrefs, savePrefs)
   const prefs = sliceFor(map, browseModule)
 
   const change = useCallback(
@@ -215,13 +224,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
     setMenuOpen(false)
   }, [location])
 
-  const classes = [
-    'library',
-    prefs.density === 'compact' ? 'compact' : '',
-    menuOpen ? 'menu-open' : '',
-  ]
+  const classes = ['library', menuOpen ? 'menu-open' : '']
     .filter(Boolean)
     .join(' ')
+  // The cover width as a bare number: `library.css` derives the tile's width
+  // and its gap from it, so the stylesheet keeps the gap's curve.
+  const coverStyle = { '--cover-n': coverSizeOf(prefs) } as CSSProperties
 
   return (
     <BrowsePrefsContext.Provider value={prefs}>
@@ -233,7 +241,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               (statusFailure === undefined ? undefined : STATUS_FAILED)
             }
           >
-            <div className={classes}>
+            <div className={classes} style={coverStyle}>
               {/* O174: a sighted keyboard user's way past the sidebar. Focus
                   moves by hand rather than by following `#content`, which
                   would put a fragment in the URL and a history entry for Back

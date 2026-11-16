@@ -1,4 +1,4 @@
-import { withFieldValue } from './settingsPanel'
+import { type SliderScale, withFieldValue } from './settingsPanel'
 
 /** A key a module claims, and the intent it produces. */
 export interface KeyBinding {
@@ -51,6 +51,13 @@ export interface ReaderModule<P> {
    * answers with nothing.
    */
   options?: Record<string, string[]>
+  /**
+   * The scale a `number` preference is drawn on, keyed by preference name —
+   * which turns its control from a number box into a slider, for a value
+   * judged by eye as it changes. Its default must sit at the scale's middle
+   * (`sliderFaults`).
+   */
+  sliders?: Record<string, SliderScale>
 }
 
 export interface Collision {
@@ -96,6 +103,28 @@ export function duplicateIds(modules: ReaderModule<unknown>[]): string[] {
   return [...dupes]
 }
 
+/**
+ * `<id>.<key>` for each declared slider whose default is not a finite number
+ * at its scale's middle position, a key `defaults` lacks among them. The
+ * panel marks the default at the track's middle, the one place it can be
+ * drawn without the thumb's width, which differs between browsers.
+ */
+export function sliderFaults(modules: ReaderModule<unknown>[]): string[] {
+  const faults: string[] = []
+  for (const m of modules) {
+    const defaults = m.defaults as Record<string, unknown>
+    for (const [key, scale] of Object.entries(m.sliders ?? {})) {
+      const value = defaults[key]
+      const middle =
+        typeof value === 'number' &&
+        Number.isFinite(value) &&
+        scale.positionOf(value) * 2 === scale.last
+      if (!middle) faults.push(`${m.id}.${key}`)
+    }
+  }
+  return faults
+}
+
 export interface Registry {
   ids: string[]
   get(id: string): ReaderModule<unknown> | undefined
@@ -123,7 +152,10 @@ export function sliceFor<P extends object>(
   return (map[mod.id] as P | undefined) ?? mod.defaults
 }
 
-/** Build the registry, refusing at startup if two modules claim one key or share one id. */
+/**
+ * Build the registry, refusing at startup if two modules claim one key or
+ * share one id, or a slider's default is off its middle.
+ */
 export function buildRegistry(modules: ReaderModule<unknown>[]): Registry {
   const dupes = duplicateIds(modules)
   if (dupes.length > 0) {
@@ -137,6 +169,12 @@ export function buildRegistry(modules: ReaderModule<unknown>[]): Registry {
       (c) => `\`${c.key}\` claimed by ${c.modules.join(' and ')}`,
     )
     throw new Error(`two modules claim one key: ${detail.join('; ')}`)
+  }
+  const offMiddle = sliderFaults(modules)
+  if (offMiddle.length > 0) {
+    throw new Error(
+      `a slider's default is not at its middle: ${offMiddle.map((name) => `\`${name}\``).join(', ')}`,
+    )
   }
   const byId = new Map(modules.map((m) => [m.id, m]))
   return {

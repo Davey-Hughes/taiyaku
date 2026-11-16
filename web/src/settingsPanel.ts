@@ -11,8 +11,28 @@
  * be pinned by a fast, DOM-free test.
  */
 
+/** A number preference drawn as a slider over positions 0 to `last`. */
+export interface SliderScale {
+  /** The last position; the input steps by 1, and the default sits at `last / 2`. */
+  last: number
+  /** The value at a position. */
+  valueAt: (position: number) => number
+  /** The nearest position to a value, held to 0 to `last`. */
+  positionOf: (value: number) => number
+  /** The value's unit as written beside the name: `144 px`. */
+  unit: string
+  /** The unit as read aloud, for `aria-valuetext`: `144 pixels`. */
+  spokenUnit: string
+}
+
 /** What kind of control a preference key's current value wants. */
-export type FieldKind = 'boolean' | 'number' | 'string' | 'select' | 'object'
+export type FieldKind =
+  | 'boolean'
+  | 'number'
+  | 'string'
+  | 'select'
+  | 'slider'
+  | 'object'
 
 /** One row the generated panel renders, before it is turned into a control. */
 export interface Field {
@@ -20,13 +40,17 @@ export interface Field {
   kind: FieldKind
   /** The values a `'select'` field may take, in the order the module declared them. */
   options?: string[]
+  /** A `'slider'`'s scale, as its module declared it. */
+  scale?: SliderScale
+  /** A `'slider'`'s default: under the mark, and what a double-click restores. */
+  initial?: number
 }
 
 /**
  * Classify a preference value by its runtime type, the way `Settings.tsx`
  * turns a module's `defaults` into controls: `boolean` → checkbox, `number`
- * → numeric input, `string` → text (a select where the module declares
- * `options` for the key, which `fieldsOf` decides, not this).
+ * → numeric input, `string` → text. A select or a slider is its module's
+ * declaration on a string or a number, which `fieldsOf` reads, not this.
  *
  * Everything else — a nested `Record` such as `direction`'s `override` or
  * `regroup`'s `breaks`, but also `null`, `undefined` and an array, none of
@@ -56,6 +80,7 @@ export function fieldKind(value: unknown): FieldKind {
 export function fieldsOf<P extends object>(
   defaults: P,
   options: Record<string, string[]> = {},
+  sliders: Record<string, SliderScale> = {},
 ): Field[] {
   return Object.entries(defaults).map(([key, value]) => {
     const kind = fieldKind(value)
@@ -65,6 +90,10 @@ export function fieldsOf<P extends object>(
     // this panel from having to know which module it is looking at.
     if (kind === 'string' && options[key]?.length)
       return { key, kind: 'select', options: options[key] }
+    // A number with a declared scale is a slider, by the same rule. Own keys
+    // only: an inherited `toString` is no scale.
+    if (kind === 'number' && Object.hasOwn(sliders, key))
+      return { key, kind: 'slider', scale: sliders[key], initial: value }
     return { key, kind }
   })
 }

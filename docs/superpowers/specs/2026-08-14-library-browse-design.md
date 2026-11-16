@@ -159,6 +159,12 @@ options:  { layout: ['grid', 'table'], panel: ['off', 'button', 'on-select'],
             density: ['compact', 'comfortable'] }
 ```
 
+*Since 2026-11-15 (O285) `density` is `coverSize`, a number, and a number
+preference its module declares a slider (`ReaderModule.sliders`) is drawn
+as one by `settingsFields.tsx`'s `FieldControl`, in the View panel and the
+reader's Settings alike, so this section holds whole: no control is drawn
+by name; see `2026-11-14-cover-size-and-continue-row-design.md`.*
+
 **A second registry, not an entry in the existing one.** `modules/registry.ts`
 is *"every reading behaviour this build ships"*, built at module scope so
 `buildRegistry`'s collision check fires on import. A browse module is not a

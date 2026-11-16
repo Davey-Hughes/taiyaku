@@ -1,7 +1,7 @@
 import { act } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { page } from 'vitest/browser'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { cdp, page } from 'vitest/browser'
 import '../src/index.css'
 import * as aboutApi from '../src/about'
 import * as library from '../src/library'
@@ -9,6 +9,7 @@ import { Library } from '../src/Library'
 import { Series } from '../src/Series'
 import { Shell } from '../src/Shell'
 import { ABOUT } from './support/about'
+import { homePage } from './support/homePage'
 import { mount } from './support/mount'
 
 /**
@@ -250,4 +251,96 @@ describe.each([1280, 390])('a failed cover’s tile at %i px', (width) => {
       `cover box and title offset: failed ${failed}, loaded ${loaded}`,
     ).toEqual([true, true])
   })
+})
+
+/**
+ * **A cover asks for the image its drawn width needs** (`library.ts`'s
+ * `coverSources` and `coverSizes`): from 900 px up a cover is the size, and
+ * below it fills its column, up to the whole row. The address is a blob's
+ * with the size after a `#`, so it loads with no server; a data address would
+ * not do, as Chromium counts one as held already and picks the largest. A
+ * blob per case, since a size the page already holds is picked the same way.
+ */
+describe('a cover’s image', () => {
+  async function drawn(width: number, coverSize: number) {
+    const png = Uint8Array.from(
+      atob(LOADS.slice(LOADS.indexOf(',') + 1)),
+      (c) => c.charCodeAt(0),
+    )
+    const blob = URL.createObjectURL(new Blob([png], { type: 'image/png' }))
+    onTestFinished(() => URL.revokeObjectURL(blob))
+    const address = `${blob}#cover`
+    vi.mocked(library.grid).mockResolvedValue({
+      series: [series(1, 'Cover', address)],
+      unfiled: [],
+    })
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [],
+      added: [],
+      read: [],
+    })
+    const host = await homePage({ width, coverSize })
+    const img = () => host.querySelector<HTMLImageElement>('.grid img')
+    await expect
+      .poll(() => (img()?.complete ? img()?.currentSrc : ''))
+      .not.toBe('')
+    return {
+      picked: img()?.currentSrc.slice(address.length),
+      width: img()?.getBoundingClientRect().width,
+    }
+  }
+
+  it.each([
+    [1280, 144, 144, '?w=256'],
+    [1280, 240, 240, '?w=512'],
+    // One column, the whole row wide.
+    [390, 240, 358, '?w=768'],
+  ])(
+    'at %i px with a %i px cover drawn %i px wide is the %s one',
+    async (width, size, drawnWidth, picked) => {
+      expect(await drawn(width, size)).toEqual({ picked, width: drawnWidth })
+    },
+  )
+
+  /**
+   * The page's density, set over the DevTools session: it is the page's, not
+   * this frame's, so when the case ends the density is put back, at the
+   * page's size and screen as they were. The override itself stays: clearing
+   * it leaves the screen at the window's own size, not the one Playwright set.
+   */
+  async function atDensity(density: number) {
+    const { cssLayoutViewport } = await cdp().send('Page.getLayoutMetrics')
+    const metrics = {
+      width: cssLayoutViewport.clientWidth,
+      height: cssLayoutViewport.clientHeight,
+      screenWidth: screen.width,
+      screenHeight: screen.height,
+      mobile: false,
+    }
+    const was = window.devicePixelRatio
+    onTestFinished(async () => {
+      await cdp().send('Emulation.setDeviceMetricsOverride', {
+        ...metrics,
+        deviceScaleFactor: was,
+      })
+    })
+    await cdp().send('Emulation.setDeviceMetricsOverride', {
+      ...metrics,
+      deviceScaleFactor: density,
+    })
+    expect(window.devicePixelRatio).toBe(density)
+  }
+
+  // O133's picks, which a cover the default size must keep.
+  it.each([
+    [1, '?w=256'],
+    [2, '?w=512'],
+    [3, '?w=768'],
+  ])(
+    'at 1280 px with a 144 px cover on a %i× screen is the %s one',
+    async (density, picked) => {
+      await atDensity(density)
+      expect(await drawn(1280, 144)).toEqual({ picked, width: 144 })
+    },
+  )
 })

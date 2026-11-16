@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { coverSources } from './library'
+import { coverSizeOf, useBrowsePrefs } from './browseModule'
+import { coverSizes, coverSources } from './library'
 
 /**
  * A series cover, or a placeholder carrying its title — §8's third empty state.
@@ -27,15 +28,16 @@ import { coverSources } from './library'
  * survives in one file and drifts in two.
  *
  * **`src` is a cover address the server sent**, and the image is offered at
- * three sizes, one per screen density (`library.ts`'s `coverSources`, O133):
- * the browser fetches 256 px on a 1× screen and 768 px on a 3× phone. The
- * failure is still remembered by that address: the browser fetches one of
- * the three, and if it fails the placeholder stands in for the cover,
- * whichever size it was. A `null` one is no cover at all, so the placeholder
- * is drawn at once and no image is asked for.
+ * three sizes (`library.ts`'s `coverSources`, O133), of which the browser
+ * fetches the one the cover's drawn width (`coverSizes`) and the screen's
+ * density need. The failure is still remembered by that address: if the
+ * one fetched fails, the placeholder stands in for the cover, whichever
+ * size it was. A `null` one is no cover at all, so the placeholder is drawn
+ * at once and no image is asked for.
  */
 export function Cover({ src, title }: { src: string | null; title: string }) {
   const [failed, setFailed] = useState<string>()
+  const size = coverSizeOf(useBrowsePrefs())
   if (src === null || failed === src)
     return (
       <span className="cover-missing" aria-hidden="true">
@@ -47,6 +49,7 @@ export function Cover({ src, title }: { src: string | null; title: string }) {
     <img
       src={sources.src}
       srcSet={sources.srcSet}
+      sizes={coverSizes(size)}
       alt=""
       loading="lazy"
       onError={() => {

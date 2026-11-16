@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Unauthenticated } from '../src/api'
 import {
+  coverSizes,
   coverSources,
   type EditionCard,
   grid,
@@ -324,10 +325,11 @@ describe('libraryParam', () => {
 })
 
 /**
- * O133: a library cover is offered at three long edges, one per screen density.
+ * O133: a library cover is offered at three long edges, each described by its
+ * width in a cover's 2:3 box, so the browser picks by the width it is drawn at.
  */
 describe('cover sources', () => {
-  it('adds 256, 512 and 768 px to the address the server sends, after its version, for one, two and three device pixels per CSS pixel', () => {
+  it('adds 256, 512 and 768 px to the address the server sends, after its version, each described by its width at 2:3', () => {
     expect(
       coverSources(
         '/api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1',
@@ -335,7 +337,7 @@ describe('cover sources', () => {
     ).toEqual({
       src: '/api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1&w=256',
       srcSet:
-        '/api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1&w=256 1x, /api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1&w=512 2x, /api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1&w=768 3x',
+        '/api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1&w=256 171w, /api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1&w=512 341w, /api/works/go%20toubun/raw%2Fen/pages/0/thumb?v=c0ffee-0-1&w=768 512w',
     })
   })
 
@@ -343,7 +345,20 @@ describe('cover sources', () => {
     expect(coverSources('/api/works/w/raw/pages/0/thumb')).toEqual({
       src: '/api/works/w/raw/pages/0/thumb?w=256',
       srcSet:
-        '/api/works/w/raw/pages/0/thumb?w=256 1x, /api/works/w/raw/pages/0/thumb?w=512 2x, /api/works/w/raw/pages/0/thumb?w=768 3x',
+        '/api/works/w/raw/pages/0/thumb?w=256 171w, /api/works/w/raw/pages/0/thumb?w=512 341w, /api/works/w/raw/pages/0/thumb?w=768 512w',
     })
+  })
+})
+
+/**
+ * Below 900 px a cover fills its column, which is narrower than two covers
+ * and a gap; from 900 px up it is the size.
+ */
+describe('cover sizes', () => {
+  it.each([
+    [144, '(width < 900px) 320px, 144px'],
+    [240, '(width < 900px) 512px, 240px'],
+  ])('for a %i px cover is %s', (size, sizes) => {
+    expect(coverSizes(size)).toBe(sizes)
   })
 })

@@ -1,9 +1,35 @@
 import { act } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { FieldControl } from '../src/settingsFields'
+import type { Field } from '../src/settingsPanel'
+import { typeInto } from './support/input'
 import { mount } from './support/mount'
+import { MS_SCALE } from './support/sliderScale'
 
 const noStyle = {}
+
+const DELAY: Field = {
+  key: 'delay',
+  kind: 'slider',
+  scale: MS_SCALE,
+  initial: 100,
+}
+
+/** `DELAY` drawn at `value`, and its range. */
+function slider(value: unknown, onChange: (raw: unknown) => void = () => {}) {
+  const host = mount(
+    <FieldControl field={DELAY} value={value} onChange={onChange} />,
+  )
+  const range = host.querySelector<HTMLInputElement>('input[type="range"]')
+  if (!range) throw new Error('no range drawn')
+  return { host, range }
+}
+
+function doubleClick(el: Element) {
+  act(() => {
+    el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+  })
+}
 
 describe('FieldControl', () => {
   it('renders a checkbox for a boolean and reports the new value', () => {
@@ -79,5 +105,63 @@ describe('FieldControl', () => {
     expect((host.firstElementChild as HTMLElement).style.padding).toBe(
       '3px 9px',
     )
+    // A slider's row is its name's, above the track: on the outer `div` the
+    // style would set name, value and track side by side.
+    const drawn = mount(
+      <FieldControl
+        field={DELAY}
+        value={100}
+        onChange={() => {}}
+        rowStyle={{ padding: '3px 9px' }}
+      />,
+    )
+    const head = drawn.querySelector<HTMLElement>('.field-slider-head')
+    expect(head?.style.padding).toBe('3px 9px')
+    expect(drawn.querySelector('.field-slider')?.hasAttribute('style')).toBe(
+      false,
+    )
+  })
+
+  it('draws a slider as a range over positions, its value and unit on the name’s row', () => {
+    const { host, range } = slider(120)
+    expect([
+      range.min,
+      range.max,
+      range.value,
+      range.getAttribute('aria-valuetext'),
+    ]).toEqual(['0', '10', '7', '120 milliseconds'])
+    const outer = host.firstElementChild as HTMLElement
+    expect(outer.className).toBe('field-slider')
+    expect([...outer.children].map((child) => child.className)).toEqual([
+      'field-slider-head',
+      'field-slider-track',
+    ])
+    const [head, track] = outer.children
+    const label = head.querySelector('label')
+    expect(label?.textContent).toBe('delay')
+    expect(range.id).not.toBe('')
+    expect(label?.htmlFor).toBe(range.id)
+    expect(head.querySelector('output')?.textContent).toBe('120 ms')
+    expect(range.parentElement).toBe(track)
+  })
+
+  it('reports a position as its value, and its default on a double-click', async () => {
+    const onChange = vi.fn()
+    const { range } = slider(120, onChange)
+    await typeInto(range, '2')
+    expect(onChange).toHaveBeenLastCalledWith(70)
+    doubleClick(range)
+    expect(onChange).toHaveBeenLastCalledWith(100)
+    expect(onChange).toHaveBeenCalledTimes(2)
+  })
+
+  it('draws a value off the scale at the nearest position, and one that is no number at its default', () => {
+    const drawn = (value: unknown) => {
+      const { host, range } = slider(value)
+      return [host.querySelector('output')?.textContent, range.value]
+    }
+    expect(drawn(123)).toEqual(['120 ms', '7'])
+    expect(drawn('x')).toEqual(['100 ms', '5'])
+    expect(drawn(Number.POSITIVE_INFINITY)).toEqual(['100 ms', '5'])
   })
 })

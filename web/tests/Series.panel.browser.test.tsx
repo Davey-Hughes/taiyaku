@@ -9,6 +9,7 @@ import * as library from '../src/library'
 import * as metadata from '../src/metadata'
 import * as stamp from '../src/stamp'
 import { deferred, settleUntil } from './support/async'
+import { columnsOf } from './support/columns'
 import { holdOf } from './support/held'
 import { lineCount, lineOf, oneLineIn, pastTheEdgeOf } from './support/lines'
 import { areaOf, overlapOf, pointerRulesAs } from './support/pointer'
@@ -58,8 +59,9 @@ const work = (
 })
 
 /**
- * Twenty volumes: three rows at 1280 px, seven to a row comfortable and
- * eight compact, and ten rows of two at 390 px.
+ * Twenty volumes: at the default size four rows at 1280 px, six to a row,
+ * and ten rows of two at 390 px; at 104 px three rows at 1280 px, eight to
+ * a row.
  */
 const volumes = (over: Record<number, Partial<library.WorkCard>> = {}) =>
   Array.from({ length: 20 }, (_, n) => work(n + 1, over[n]))
@@ -185,16 +187,16 @@ const heightOf = (field: HTMLTextAreaElement) => {
  */
 async function drawn({
   width,
-  compact = false,
+  coverSize,
   who = ADMIN,
   text = 'Kagami no Kuni no Harisugawa v01',
 }: {
   width: number
-  compact?: boolean
+  coverSize?: number
   who?: Me
   text?: string
 }) {
-  const host = await seriesPage({ width, compact, panel: 'button', who })
+  const host = await seriesPage({ width, coverSize, panel: 'button', who })
   const all = () => [...host.querySelectorAll<HTMLElement>('.volumes > li')]
   await settleUntil('the volumes', () => all().length > 0, 1000)
   const face = getComputedStyle(host.querySelector('.volumes') as Element)
@@ -260,41 +262,95 @@ describe('a volume’s panel over the rows below (O283)', () => {
   })
 
   it.each([
-    ['comfortable', false, 16],
-    ['compact', true, 9.6],
+    [1280, 144],
+    [1280, 104],
+    [899, 144],
+    [390, 104],
   ] as const)(
-    'is two tiles and the gap wide, from its tile’s left edge, at 1280 px (%s)',
-    async (_, compact, gap) => {
+    'is two tiles and the laid gap wide at %i px (%i px covers)',
+    async (width, size) => {
       onTestFinished(pointerRulesAs('mouse'))
-      const { main, tiles } = await drawn({ width: 1280, compact })
+      const { main, tiles } = await drawn({ width, coverSize: size })
+      const columns = columnsOf(main.querySelector('.volumes') as Element, size)
       const tile = rect(tiles[0])
-      // The fixture tells: the grid's gap is the density's, and two tiles
-      // and the gap fit right of the tile's left edge.
-      expect(rect(tiles[1]).left - tile.right).toBeCloseTo(gap, 1)
+      const gap = rect(tiles[1]).left - tile.right
+      // The fixture tells: from 900 px up the tile is the size and the gap
+      // the spread one, wider than the least; below, the gap is the least
+      // and the tile the filled column, wider than the size. Either way
+      // two tiles and the gap fit right of the tile's left edge.
+      const spread = (columns.width - columns.n * size) / (columns.n - 1)
+      const filled = (columns.width - (columns.n - 1) * columns.gap) / columns.n
+      expect(
+        width >= 900
+          ? { tile: tile.width, gap, wider: gap > columns.gap + 1 }
+          : { tile: tile.width, gap, wider: tile.width > size + 1 },
+      ).toEqual(
+        width >= 900
+          ? { tile: size, gap: expect.closeTo(spread, 1), wider: true }
+          : {
+              tile: expect.closeTo(filled, 1),
+              gap: expect.closeTo(columns.gap, 1),
+              wider: true,
+            },
+      )
       expect(tile.left + 2 * tile.width + gap).toBeLessThan(
         contentOf(main).right,
       )
 
       const box = rect(await open(tiles[0]))
-      expect(box.left).toBeCloseTo(tile.left, 0)
-      expect(box.width).toBeCloseTo(2 * tile.width + gap, 0)
+      expect({ left: box.left, width: box.width }).toEqual({
+        left: expect.closeTo(tile.left, 0),
+        width: expect.closeTo(2 * tile.width + gap, 0),
+      })
     },
   )
+
+  it('is the area wide with one column (390 px, 240 px covers)', async () => {
+    onTestFinished(pointerRulesAs('mouse'))
+    const { main, tiles } = await drawn({ width: 390, coverSize: 240 })
+    const list = main.querySelector('.volumes') as Element
+    const columns = columnsOf(list, 240)
+    const tile = rect(tiles[0])
+    // The fixture tells: one column, the tile the list's content width, so
+    // the grid's resolved columns hold no gap to read.
+    expect({
+      n: columns.n,
+      tracks: getComputedStyle(list).gridTemplateColumns.split(' ').length,
+      tile: tile.width,
+      below: rect(tiles[1]).top > tile.bottom,
+    }).toEqual({
+      n: 1,
+      tracks: 1,
+      tile: expect.closeTo(columns.width, 0),
+      below: true,
+    })
+
+    const box = rect(await open(tiles[0]))
+    expect({ left: box.left, width: box.width }).toEqual({
+      left: expect.closeTo(columns.left, 0),
+      width: expect.closeTo(columns.width, 0),
+    })
+  })
 
   it('lies back from its tile’s right edge in the row’s last column at 1280 px', async () => {
     onTestFinished(pointerRulesAs('mouse'))
     const { main, tiles } = await drawn({ width: 1280 })
-    const last = tiles[6]
+    const { gap, n } = columnsOf(main.querySelector('.volumes') as Element, 144)
+    const last = tiles[n - 1]
     const tile = rect(last)
-    // The fixture tells: the tile's right edge is the area's, and two tiles
-    // and the gap from its left edge run past the area.
+    // The fixture tells: the tile ends the first row, its right edge is the
+    // area's, and two tiles and the least gap from its left edge run past
+    // the area.
+    expect(rect(tiles[n]).top).toBeGreaterThan(tile.bottom)
     expect(tile.right).toBeCloseTo(contentOf(main).right, 0)
-    expect(tile.left + 2 * tile.width + 16).toBeGreaterThan(
+    expect(tile.left + 2 * tile.width + gap).toBeGreaterThan(
       contentOf(main).right + 0.5,
     )
 
     const panel = await open(last)
     expect(rect(panel).right).toBeCloseTo(tile.right, 0)
+    // Over the column before, not held to the tile's own width.
+    expect(rect(panel).left).toBeLessThan(tile.left - tile.width)
     expect(main.scrollWidth, 'the page area scrolls sideways by').toBe(
       main.clientWidth,
     )
@@ -307,7 +363,7 @@ describe('a volume’s panel over the rows below (O283)', () => {
     'lies from its tile’s left edge in a row’s second-to-last column at %i px, %i to a row (compact)',
     async (width, perRow) => {
       onTestFinished(pointerRulesAs('mouse'))
-      const { tiles } = await drawn({ width, compact: true })
+      const { tiles } = await drawn({ width, coverSize: 104 })
       const tile = rect(tiles[perRow - 2])
       const last = rect(tiles[perRow - 1])
       // The fixture tells: the first row holds `perRow` tiles, so the next
@@ -377,7 +433,8 @@ describe('a volume’s panel over the rows below (O283)', () => {
     expect(lineCount(field, title), 'the title’s lines').toBeGreaterThan(5)
 
     const tile = rect(tiles[0])
-    expect(rect(panel).width).toBeCloseTo(2 * tile.width + 16, 0)
+    const gap = rect(tiles[1]).left - tile.right
+    expect(rect(panel).width).toBeCloseTo(2 * tile.width + gap, 0)
     expect(pastTheEdgeOf(panel)).toEqual([])
     const { line, inner } = heightOf(field)
     expect(
@@ -389,51 +446,129 @@ describe('a volume’s panel over the rows below (O283)', () => {
   it('is laid again when the window’s width changes', async () => {
     onTestFinished(pointerRulesAs('mouse'))
     const { main, tiles } = await drawn({ width: 1280 })
-    const last = tiles[6]
+    const list = main.querySelector('.volumes') as Element
+    const last = tiles[5]
     const panel = await open(last)
-    // The fixture tells: at 1280 px the tile is the row's last, and its
-    // panel lies back from its right edge.
+    const was = {
+      width: rect(last).width,
+      gap: rect(tiles[1]).left - rect(tiles[0]).right,
+    }
+    // The fixture tells: six columns at 1280 px, so the tile ends the first
+    // row and its panel lies back from its right edge.
+    expect(columnsOf(list, 144).n).toBe(6)
     expect(rect(last).right).toBeCloseTo(contentOf(main).right, 0)
     expect(rect(panel).left).toBeLessThan(rect(last).left - 1)
 
-    await page.viewport(800, 800)
-    await expect.poll(() => window.innerWidth).toBe(800)
-    // The fixture tells: no longer the row's last, and two tiles and the
-    // gap from its left edge end 8 px or more inside the area.
+    await page.viewport(1100, 800)
+    await expect.poll(() => window.innerWidth).toBe(1100)
+    // The fixture tells: five columns, so the tile opens the second row as
+    // wide as it was, and the gap the columns are laid apart by moved; two
+    // tiles and that gap fit right of its left edge.
     const tile = rect(last)
+    const gap = rect(tiles[6]).left - tile.right
     const area = contentOf(main)
-    expect(tile.right).toBeLessThan(area.right - 1)
-    expect(tile.left + 2 * tile.width + 16).toBeLessThanOrEqual(area.right - 8)
+    expect({
+      n: columnsOf(list, 144).n,
+      left: tile.left,
+      width: tile.width,
+      gapMoved: Math.abs(gap - was.gap) > 1,
+    }).toEqual({
+      n: 5,
+      left: expect.closeTo(area.left, 0),
+      width: was.width,
+      gapMoved: true,
+    })
+    expect(tile.left + 2 * tile.width + gap).toBeLessThan(area.right)
 
     await expect
-      .poll(() => rect(panel).left, { message: 'the panel’s left edge' })
-      .toBeCloseTo(tile.left, 0)
+      .poll(() => ({ left: rect(panel).left, width: rect(panel).width }), {
+        message: 'the panel’s left edge and width',
+      })
+      .toEqual({
+        left: expect.closeTo(tile.left, 0),
+        width: expect.closeTo(2 * tile.width + gap, 0),
+      })
     const box = rect(panel)
     expect(box.left).toBeGreaterThanOrEqual(area.left - 0.5)
     expect(box.right).toBeLessThanOrEqual(area.right + 0.5)
   })
 
+  it('is laid again across 900 px', async () => {
+    onTestFinished(pointerRulesAs('mouse'))
+    const { main, tiles } = await drawn({ width: 900 })
+    const list = main.querySelector('.volumes') as Element
+    const panel = await open(tiles[0])
+    /** The tile's width, and two tiles and the laid gap, as drawn now. */
+    const laid = () => {
+      const tile = rect(tiles[0])
+      const gap = rect(tiles[1]).left - tile.right
+      return { tile: tile.width, wide: 2 * tile.width + gap }
+    }
+    // The fixture tells: opened at 900 px, two tiles of the size and the
+    // spread gap wide.
+    expect(laid().tile).toBe(144)
+    expect(rect(panel).width).toBeCloseTo(laid().wide, 0)
+
+    for (const width of [899, 900]) {
+      await page.viewport(width, 800)
+      await expect.poll(() => window.innerWidth).toBe(width)
+      const columns = columnsOf(list, 144)
+      const { tile, wide } = laid()
+      // The fixture tells: below 900 px the tile is the filled column, wider
+      // than the size; at 900 px it is the size again.
+      expect(tile, `the tile at ${width} px`).toBeCloseTo(
+        width < 900
+          ? (columns.width - (columns.n - 1) * columns.gap) / columns.n
+          : 144,
+        1,
+      )
+      if (width < 900) expect(tile).toBeGreaterThan(144 + 1)
+
+      await expect
+        .poll(() => rect(panel).width, {
+          message: `the panel’s width at ${width} px`,
+        })
+        .toBeCloseTo(wide, 0)
+      const area = contentOf(main)
+      const box = rect(panel)
+      expect({
+        left: box.left >= area.left - 0.5,
+        right: box.right <= area.right + 0.5,
+      }).toEqual({ left: true, right: true })
+    }
+  })
+
   it('is laid again, its field fitted again, when the page area’s width changes and the window’s does not', async () => {
     onTestFinished(pointerRulesAs('mouse'))
     const title =
-      'Kagami no Kuni no Harisugawa: The Complete Digital Edition, Volume 01 (Collector’s Box Set, Ed.)'
+      'Kagami no Kuni no Harisugawa: The Complete Digital Edition, Volume 01 (Collector’s Box Set, Deluxe Limited Ed.)'
     serve(volumes({ 0: { title } }))
-    const { host, tiles } = await drawn({ width: 1280, text: title })
+    const { host, main, tiles } = await drawn({ width: 1280, text: title })
+    const list = main.querySelector('.volumes') as Element
     const panel = await open(tiles[0])
     const field = panel.querySelector<HTMLTextAreaElement>("[name='title']")
     if (field === null) throw new Error('no Title field')
-    const was = { panel: rect(panel).width, line: lineOf(field) }
+    const was = {
+      panel: rect(panel).width,
+      line: lineOf(field),
+      tile: rect(tiles[0]).width,
+    }
 
     // A wider sidebar column takes the width from the page area alone.
     const shell = host.querySelector<HTMLElement>('.library')
     if (shell === null) throw new Error('no .library mounted')
-    shell.style.gridTemplateColumns = '28rem 1fr'
+    shell.style.gridTemplateColumns = '30rem 1fr'
     const tile = rect(tiles[0])
-    const wide = 2 * tile.width + 16
+    const wide = 2 * tile.width + (rect(tiles[1]).left - tile.right)
 
-    // The fixture tells: the window is as it was, the tile's width is not,
-    // and the title takes another count of lines at the field's new width.
-    expect(window.innerWidth).toBe(1280)
+    // The fixture tells: the window and the tile's width are as they were,
+    // the columns are fewer and laid further apart, and the title takes
+    // another count of lines at the field's new width.
+    expect({
+      window: window.innerWidth,
+      tile: tile.width,
+      n: columnsOf(list, 144).n,
+    }).toEqual({ window: 1280, tile: was.tile, n: 4 })
     expect(Math.abs(wide - was.panel)).toBeGreaterThan(1)
     const lines = lineCount(field, title, was.line + wide - was.panel)
     expect(lines, 'its lines after, against before').not.toBe(

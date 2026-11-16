@@ -165,7 +165,11 @@ export function Settings({
           </button>
         </div>
         {modules.map((mod) => {
-          const fields = fieldsOf(mod.defaults as object, mod.options)
+          const fields = fieldsOf(
+            mod.defaults as object,
+            mod.options,
+            mod.sliders,
+          )
           if (fields.length === 0) return null
           const modulePrefs = (prefs[mod.id] ?? mod.defaults) as Record<
             string,

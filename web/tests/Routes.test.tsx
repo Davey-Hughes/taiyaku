@@ -67,10 +67,12 @@ vi.mock('../src/library', async (importOriginal) => ({
   // the library page and the sidebar both read the parameter through it.
   libraryParam: (await importOriginal<typeof import('../src/library')>())
     .libraryParam,
-  // The real cover URLs, a pure function too, for the tile a search's hit
-  // draws (`a link to /search`, below).
+  // The real cover URLs and their `sizes`, pure functions too, for the tile a
+  // search's hit draws (`a link to /search`, below).
   coverSources: (await importOriginal<typeof import('../src/library')>())
     .coverSources,
+  coverSizes: (await importOriginal<typeof import('../src/library')>())
+    .coverSizes,
   // The real readers and writers of the Library view's address, pure
   // functions too: the view and the sidebar beside it read `?show=` and
   // `?sort=` through them, and the view's reads name their addresses with

@@ -95,7 +95,7 @@ const real = (input: () => Promise<unknown>) =>
 async function drawn(options: {
   width: number
   panel: 'off' | 'button' | 'on-select'
-  compact?: boolean
+  coverSize?: number
 }) {
   const host = await seriesPage({ ...options, who: READER })
   const all = () => [...host.querySelectorAll<HTMLElement>('.volumes > li')]
@@ -142,14 +142,14 @@ const inBottomRight = (box: DOMRect, cover: DOMRect) => {
 
 describe('a volume tile’s controls on its cover (O283)', () => {
   it.each([
-    ['1280 comfortable', 1280, false, 'mouse'],
-    ['1280 compact', 1280, true, 'mouse'],
-    ['390', 390, false, 'phone'],
+    ['1280 comfortable', 1280, undefined, 'mouse'],
+    ['1280 compact', 1280, 104, 'mouse'],
+    ['390', 390, undefined, 'phone'],
   ] as const)(
     'sets i 0.25rem in from the cover’s bottom-right corner at %s, on a readable and an unreadable tile',
-    async (_, width, compact, device) => {
+    async (_, width, coverSize, device) => {
       onTestFinished(pointerRulesAs(device))
-      const { tiles } = await drawn({ width, compact, panel: 'button' })
+      const { tiles } = await drawn({ width, coverSize, panel: 'button' })
       // The unreadable tile draws its cover in a box, not a link.
       expect(tiles[0].querySelector(':scope > a .cover-box')).not.toBeNull()
       expect(

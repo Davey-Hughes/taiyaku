@@ -15,6 +15,9 @@
  * scrolling — for the reason the `@media (width < 900px)` block below gives
  * (iOS Safari's toolbar and status-bar tap). */
 .library {
+  /* A page's heading row (`.page-head`, below), named because `library.css`
+   * sets the Continue heading level with the sidebar's from it. */
+  --head-row: calc(var(--text-ui) * 1.5 + 2 * var(--space-2) + 2px);
   display: grid;
   grid-template-columns: 14rem 1fr;
   height: 100%;
@@ -191,7 +194,7 @@ a.account-button {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  min-block-size: calc(var(--text-ui) * 1.5 + 2 * var(--space-2) + 2px);
+  min-block-size: var(--head-row);
 }
 
 .page-head h1 {
@@ -227,6 +230,10 @@ a.account-button {
   border: 1px solid var(--line-strong);
   background: var(--surface);
   box-shadow: 0 4px 16px var(--scrim);
+  /* Every line in it is a control or its label: a press that misses the
+   * slider's thumb, or a quick second click on a checkbox, would otherwise
+   * select the menu's words. */
+  user-select: none;
 }
 
 /* `hidden` is the browser's `display: none`, which the rule above would
@@ -237,7 +244,8 @@ a.account-button {
 
 /* One row per preference: the label's text at one end, its control at the
  * other. `FieldControl` draws a `<label>` per field of every kind but a
- * nested object's, and no browse preference is of that kind. */
+ * nested object's, and no browse preference is of that kind. A slider's
+ * label holds its name alone, its row being `.field-slider-head`. */
 .view-panel label {
   display: flex;
   align-items: center;
@@ -247,10 +255,68 @@ a.account-button {
   font-size: var(--text-ui);
 }
 
+/* A checkbox's row toggles from anywhere on it, out to the panel's edges:
+ * the panel's side padding would otherwise be dead ground beside a row that
+ * reads as one control. */
+.view-panel label:has(> input[type="checkbox"]) {
+  margin-inline: calc(-1 * var(--space-3));
+  padding-inline: var(--space-3);
+  cursor: pointer;
+}
+
 /* The panel is `--surface`, the select's own ground; `--field` sets the box
  * apart from it in both themes. */
 .view-panel select {
   background: var(--field);
+}
+
+/* A declared slider (`settingsFields.tsx`), in the View panel and the
+ * reader's Settings alike: its name and value on one row, the slider the
+ * panel's width under them, so a drag has the most travel. */
+.field-slider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.field-slider-head output {
+  color: var(--muted);
+  font-size: var(--text-ui);
+  font-variant-numeric: tabular-nums;
+}
+
+.field-slider input[type="range"] {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* The default's place: a short line under the track's middle, where the
+ * thumb's centre sits at the default (`buildRegistry` holds a declared
+ * slider's default at its middle position). Placed from the input's centre,
+ * where both engines draw the thumb at any box height (a coarse pointer's
+ * floor, below), 11px down: half the 16px thumb, Firefox's 2px ring and a
+ * pixel, so the thumb on the default does not hide it. `--mark-room` is
+ * 11 + 6 - 8, its reach below a box the thumb's height (Chromium's). Drawn,
+ * not content: no pointer events, nothing in the accessibility tree. */
+.field-slider-track {
+  --mark-room: 9px;
+  position: relative;
+  padding-bottom: var(--mark-room);
+}
+
+.field-slider-track::after {
+  content: "";
+  position: absolute;
+  top: calc((100% - var(--mark-room)) / 2 + 11px);
+  left: calc(50% - 0.5px);
+  width: 1px;
+  height: 6px;
+  background: var(--line-strong);
+  pointer-events: none;
 }
 
 .view-reset {
@@ -642,7 +708,8 @@ a.account-button {
   .account-button,
   .view-button,
   .view-panel label,
-  .view-panel button {
+  .view-panel button,
+  .field-slider input[type="range"] {
     min-height: 44px;
   }
 

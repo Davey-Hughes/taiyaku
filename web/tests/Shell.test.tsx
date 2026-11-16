@@ -222,12 +222,16 @@ function openView(host: HTMLElement): HTMLElement {
   return panel
 }
 
-/** The control inside the View panel's `<label>` whose own text is `label`. */
+/**
+ * The control the View panel's `<label>` whose own text is `label` names:
+ * a generated row's words sit in a `<span>` beside its control, and the
+ * Cover size slider's label holds bare text and names its range by `for`.
+ */
 function controlLabelled(panel: HTMLElement, label: string): HTMLElement {
   const row = [...panel.querySelectorAll('label')].find(
-    (l) => l.querySelector('span')?.textContent === label,
+    (l) => (l.querySelector('span') ?? l).textContent === label,
   )
-  const control = row?.querySelector<HTMLElement>('input, select')
+  const control = row?.control
   if (!control) throw new Error(`no control labelled "${label}"`)
   return control
 }
@@ -732,23 +736,43 @@ describe('Shell', () => {
   })
 
   /**
-   * `density` decides the one class name `Shell` puts on its own root —
-   * `'comfortable'` never reaches the ternary's `'compact'` branch. Seeded
-   * through storage rather than through a View panel's control, because this
-   * is about what `Shell` draws from a stored preference on first mount, not
-   * about the panel that writes one.
+   * Spec O285 item 10: a stored `density` carries over to a size once, a
+   * stored `coverSize` wins over it, and one off the scale is drawn at its
+   * nearest position but saved as it was. Seeded through storage rather
+   * than through a View panel's control, because this is about what `Shell`
+   * draws from a stored preference on first mount and what its first save
+   * leaves behind, not about the panel that writes one.
    */
-  it('marks the root compact when the stored preference says so', async () => {
-    const s = fakeStorage()
-    s.setItem('taiyaku.prefs.browse', JSON.stringify({ density: 'compact' }))
-    vi.stubGlobal('localStorage', s)
-    const host = await settle(
-      <Shell>
-        <p>x</p>
-      </Shell>,
-    )
-    expect(host.querySelector('.library.compact')).not.toBeNull()
-  })
+  it.each([
+    ['a stored compact density', { density: 'compact' }, '104', 104],
+    ['a stored comfortable density', { density: 'comfortable' }, '144', 144],
+    ['nothing stored', undefined, '144', 144],
+    ['a stored size', { coverSize: 200 }, '200', 200],
+    [
+      'a stored size beside a density',
+      { coverSize: 200, density: 'compact' },
+      '200',
+      200,
+    ],
+    ['a stored size off the scale', { coverSize: 151 }, '152', 151],
+  ] as const)(
+    'draws the covers from %s, and saves their size with no density',
+    async (_, stored, drawn, saved) => {
+      const s = fakeStorage()
+      if (stored) s.setItem('taiyaku.prefs.browse', JSON.stringify(stored))
+      vi.stubGlobal('localStorage', s)
+      const host = await settle(
+        <Shell>
+          <p>x</p>
+        </Shell>,
+      )
+      const root = host.querySelector<HTMLElement>('.library')
+      expect(root?.style.getPropertyValue('--cover-n')).toBe(drawn)
+      const slice = JSON.parse(s.getItem('taiyaku.prefs.browse') ?? 'null')
+      expect(slice).toMatchObject({ coverSize: saved })
+      expect(slice).not.toHaveProperty('density')
+    },
+  )
 
   /**
    * `module.ts`'s `sliceReset` doc: `resetPrefs` alone satisfies "reload,
@@ -877,7 +901,7 @@ describe('Shell', () => {
         layout: 'table',
         editionSelector: false,
         panel: 'off',
-        density: 'compact',
+        coverSize: 104,
         continueStrip: false,
       }),
     )
@@ -914,8 +938,18 @@ describe('Shell', () => {
       panel: 'off',
     })
 
+    /** The Cover size slider's position and the size its output says. */
+    const coverSize = (panel: HTMLElement) => {
+      const range = controlLabelled(panel, 'Cover size') as HTMLInputElement
+      const output = [...panel.querySelectorAll('output')].find(
+        (o) => o.getAttribute('for') === range.id,
+      )
+      return [range.value, output?.textContent]
+    }
+
     await follow(host, '.sidebar-heading a[href="/"]')
     expect(checkboxLabelled(host, 'Continue strip').checked).toBe(false)
+    expect(coverSize(openView(host))).toEqual(['8', '104 px'])
     const reset = resetIn(host)
     act(() => {
       reset.click()
@@ -925,9 +959,7 @@ describe('Shell', () => {
       (controlLabelled(libraryView, 'Continue strip') as HTMLInputElement)
         .checked,
     ).toBe(true)
-    expect(
-      (controlLabelled(libraryView, 'Density') as HTMLSelectElement).value,
-    ).toBe('comfortable')
+    expect(coverSize(libraryView)).toEqual(['48', '144 px'])
 
     await follow(host, 'main a[href="/series/7"]')
     expect(seriesView(host)).toEqual({

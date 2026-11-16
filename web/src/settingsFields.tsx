@@ -1,15 +1,16 @@
-import type { CSSProperties } from 'react'
+import { type CSSProperties, useId } from 'react'
 import {
   humanize,
   nestedCount,
   nestedSummary,
   type Field,
+  type SliderScale,
 } from './settingsPanel'
 
 /**
- * One field's control — inferred purely from `field.kind`, which
- * `settingsPanel.ts`'s `fieldKind` already derived from the preference's own
- * runtime type. Nothing here branches on which module or which key this is.
+ * One field's control, drawn from `field.kind` alone: `settingsPanel.ts`'s
+ * `fieldsOf` infers it from the preference's type, and a choice or a slider
+ * is a kind its module declares. Nothing here branches on module or key.
  *
  * **Its own file because two panels render it and they disagree about two
  * things.** The reader's `Settings.tsx` is a centred modal over artwork and
@@ -43,6 +44,19 @@ export function FieldControl({
     return sentenceCase ? text.charAt(0).toUpperCase() + text.slice(1) : text
   }
   const label = word(field.key)
+  const { scale, initial } = field
+  if (field.kind === 'slider' && scale && initial !== undefined) {
+    return (
+      <SliderField
+        label={label}
+        scale={scale}
+        initial={initial}
+        value={value}
+        onChange={onChange}
+        rowStyle={rowStyle}
+      />
+    )
+  }
   if (field.kind === 'boolean') {
     return (
       <label style={rowStyle}>
@@ -109,6 +123,56 @@ export function FieldControl({
     <div style={rowStyle}>
       <span>{label}</span>
       <span style={{ opacity: 0.7 }}>{nestedSummary(nestedCount(value))}</span>
+    </div>
+  )
+}
+
+/**
+ * A number on its module's scale. The input runs over positions, so the
+ * default sits at the track's middle, where `shell.css` marks it; what it
+ * says and reports is the value, and a double-click reports the default.
+ * `rowStyle` is the name's row's: on the outer `div` it would set the name,
+ * the value and the track side by side.
+ */
+function SliderField({
+  label,
+  scale,
+  initial,
+  value,
+  onChange,
+  rowStyle,
+}: {
+  label: string
+  scale: SliderScale
+  initial: number
+  value: unknown
+  onChange: (raw: unknown) => void
+  rowStyle?: CSSProperties
+}) {
+  const id = useId()
+  const shown =
+    typeof value === 'number' && Number.isFinite(value)
+      ? scale.valueAt(scale.positionOf(value))
+      : initial
+  return (
+    <div className="field-slider">
+      <div className="field-slider-head" style={rowStyle}>
+        <label htmlFor={id}>{label}</label>
+        <output htmlFor={id}>{`${shown} ${scale.unit}`}</output>
+      </div>
+      <div className="field-slider-track">
+        <input
+          id={id}
+          type="range"
+          min={0}
+          max={scale.last}
+          step={1}
+          value={scale.positionOf(shown)}
+          aria-valuetext={`${shown} ${scale.spokenUnit}`}
+          onChange={(e) => onChange(scale.valueAt(Number(e.target.value)))}
+          onDoubleClick={() => onChange(initial)}
+        />
+      </div>
     </div>
   )
 }

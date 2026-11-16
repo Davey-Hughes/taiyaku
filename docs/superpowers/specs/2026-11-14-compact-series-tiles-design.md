@@ -29,6 +29,8 @@ about 130 px, O274's open half.
   server-side, with O282 on `shorter-urls`; none of it comes over. (owner)
 - **The cover-size slider** in place of the `density` toggle: opened as
   O285, not built. (owner)
+  *Built 2026-11-15, closing O285; see
+  `2026-11-14-cover-size-and-continue-row-design.md`.*
 - The table layout's missing route to alignment detail (O63) stays open.
 
 ## Anti-goals
@@ -190,6 +192,9 @@ either column; on a desktop it is two columns wide.
   of `density`, whose compact sets `.library.compact .grid` and
   `.volumes` to `minmax(6.5rem, 1fr)` against `.volumes`' 7.5rem
   (`Shell.tsx` sets the class). O284 is taken on the O282 branch.
+  *O285 closed 2026-11-15, and `density`, its compact class and both
+  `.library.compact` rules are gone; see
+  `2026-11-14-cover-size-and-continue-row-design.md`.*
 - **Record the reopened settlement** in O283's bullet, and give both
   specs above a dated pointer here, their prose kept.
 

@@ -95,6 +95,9 @@ are drawn changes. Labels are in sentence case.
 | Series | Layout, Edition selector, Panel, Density, Reset |
 | Library (`/`, `/?library=N`) | Continue strip, Density, Reset |
 
+*Replaced 2026-11-15 (O285): Density is Cover size, a slider, on both
+pages; see `2026-11-14-cover-size-and-continue-row-design.md`.*
+
 Reset restores all five preferences from either page, as it does today.
 The panel follows §1's disclosure rules.
 

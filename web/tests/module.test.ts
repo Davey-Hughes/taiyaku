@@ -9,10 +9,12 @@ import {
   persistPrefs,
   sliceFor,
   sliceReset,
+  sliderFaults,
   withSlice,
   type ReaderModule,
 } from '../src/module'
-import { withFieldValue } from '../src/settingsPanel'
+import { type SliderScale, withFieldValue } from '../src/settingsPanel'
+import { MS_SCALE } from './support/sliderScale'
 
 const mod = (
   id: string,
@@ -56,7 +58,40 @@ describe('duplicateIds', () => {
   })
 })
 
+/**
+ * A module `fx` declaring `sliders` over a 100 that is `MS_SCALE`'s middle, a
+ * 60 that is not, and a `'100'` that would be the middle if it were a number.
+ */
+const fx = (sliders: Record<string, SliderScale>): ReaderModule<unknown> => ({
+  id: 'fx',
+  label: 'fx',
+  defaults: { delay: 100, early: 60, word: '100' },
+  sliders,
+})
+
+describe('sliderFaults', () => {
+  it('names a slider whose default is off its middle or is no number', () => {
+    expect(
+      sliderFaults([
+        fx({
+          delay: MS_SCALE,
+          early: MS_SCALE,
+          word: MS_SCALE,
+          absent: MS_SCALE,
+        }),
+      ]),
+    ).toEqual(['fx.early', 'fx.word', 'fx.absent'])
+  })
+})
+
 describe('buildRegistry', () => {
+  it('throws at build for a slider off its middle, naming it', () => {
+    expect(() =>
+      buildRegistry([fx({ delay: MS_SCALE, early: MS_SCALE })]),
+    ).toThrow(/`fx\.early`/)
+    expect(buildRegistry([fx({ delay: MS_SCALE })]).ids).toEqual(['fx'])
+  })
+
   it('throws on a collision rather than letting two modules fight at runtime', () => {
     expect(() => buildRegistry([mod('a', ['g']), mod('b', ['g'])])).toThrow(
       /\bg\b/,

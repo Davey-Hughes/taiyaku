@@ -27164,3 +27164,297 @@ Looked up through the server: hablaron to hablar, dijo to decir,
 language took 0.9-1 s (the file opened cold), each after 1-4 ms. Korean has
 no dictionary yet: its particles join the word they follow, and a lookup
 would need to take them off first.
+
+## O285 and O288: the cover-size slider and the Continue row (2026-11-15)
+
+The spec is `docs/superpowers/specs/2026-11-14-cover-size-and-continue-row-design.md`
+and the plan `docs/superpowers/plans/2026-11-15-cover-size-and-continue-row.md`.
+The files named below are in `.superpowers/sdd/continue-row-evidence/`, and
+the owner's rulings, indexed by date, in
+`.superpowers/sdd/cover-size-evidence/rulings.md`; neither is committed.
+
+**The owner's rounds.** The owner settled both items on prototypes served
+from a scratch copy of the test library on 2026-11-14 and 2026-11-15, in
+short rounds. The prototypes as they tried them are the four commits on
+`continue-align` titled "Prototype as the owner tried it": the first holds
+the Continue row's heading, covers and fade, and the three after it the
+cover-size slider, the covers' layout, the line under the row and the View
+menu's rows. The spec quotes each ruling where it settles an item: the
+heading (item 1), the covers (2), the fade (3), the line (4), the slider's
+scale, mark and reset (6 to 8, after a catch at the middle was tried at two
+strengths and turned down), the exact layout (9) and the View menu (11,
+12).
+
+**Two rulings after the prototype**, both of 2026-11-15, are built here and
+were not in it.
+
+- **Covers fill the row on phones** (item 9). Below the shell's 900 px
+  breakpoint the columns are `minmax(size, 1fr)` at the least gap, so the
+  slider sets the least a cover may be and how many columns there are.
+  From 900 px up the covers stay exactly the size. `library.css` sets
+  `--tile-fill: 1` in the same `@media (width < 900px)` block, so a script
+  reads which layout is drawn rather than repeating the breakpoint.
+- **The slider is a kind of setting** (item 13), not a control drawn by its
+  key, so C1 §4 holds whole. A module declares it in `ReaderModule.sliders`,
+  which maps a number preference's key to a `SliderScale`: `last`, the last
+  position (the input steps by one); `valueAt` and `positionOf`, the value
+  at a position and the position nearest a value; `unit`, written beside
+  the name; and `spokenUnit`, read aloud in `aria-valuetext`. `fieldsOf`
+  makes such a key a `'slider'` field carrying its scale and its default,
+  for a number default and an own key of `sliders` only, and
+  `FieldControl` draws it in the View panel and the reader's Settings
+  alike. **A declared slider's default must be its middle position.** The
+  mark under the track is drawn at the track's middle, the one place it
+  sits under the thumb without knowing the thumb's width, which differs
+  between browsers; so `sliderFaults` names a declared slider whose default
+  is not a finite number at position `last / 2`, and `buildRegistry`
+  throws on it at import.
+
+**What the build found beyond the prototype.**
+
+- **The comment guard was red** at the prototype: five comment blocks over
+  its eight counted lines, one in `Library.tsx` (the Continue row's hook,
+  since moved to `continueRow.ts`) and four in `library.css`
+  (`T1-comments.log`). Each was cut by the task whose code it explains, and
+  what was cut is below.
+- **A zero-gap fallback.** The prototype's hook read the least gap as
+  `px('--tile-gap') || 0`, so a gap it could not read counted the columns
+  at no gap, more than the grid lays, and set the row to a spread gap the
+  grid did not have. A token that is not a px length now removes both of
+  the row's properties, and the row keeps the least gap through
+  `library.css`'s `var(--continue-gap, var(--tile-gap))`.
+- **The coarse mark.** Under a coarse pointer the range has a 44 px floor,
+  and both engines centre the thumb in it, so the prototype's mark, hung
+  from the bottom of that box, lay 14 px further below the drawn track
+  than under a fine pointer in Chromium (`T2b-defect-d5-bottom-0.log`). The mark is now
+  placed from the range's centre in the kind's own rule, so the reader's
+  Settings panel has it too. Under a fine pointer it sits where the owner
+  approved it in Firefox, and 2 px lower in Chromium, whose range box is
+  shorter; the slider's row is 2 px taller in both (`T2b-report.md`).
+- **The volume's panel was not laid again on a resize.** From 900 px up a
+  tile is the cover size whatever the area's width, so a window or a
+  sidebar change moves only the grid's width, and with it the laid gap and
+  the tile's column; the observer on the tile alone never fired. It now
+  watches the tile and its grid (`Series.tsx`), and the panel is laid
+  again when the area's width changes and when the window crosses 900 px
+  (`T5-report.md`).
+- **Large covers were soft.** `Cover.tsx` offered the three cover sizes by
+  screen density alone, sized for a cover drawn about 256 px tall; a
+  240 px cover is 360 px tall, so the 1× pick was drawn about 1.4 times
+  up. What changed is under "The O133 mechanism", below.
+- **Firefox's label press.** In Firefox 153.0 a press on a View row's words
+  that moved 3 or 4 px before its release reached the words as a click and
+  did not toggle the box, where 0 to 2 px did; Chromium 151 toggled at
+  every distance from 0 to 4 px (`T3-firefox-probe.log`,
+  `T3-chromium-probe.log`). `ViewMenu.tsx`'s `sendRowClick`, on the panel,
+  clicks the row's box itself and cancels the label's own activation, so
+  Chromium, which still passes it on, does not toggle the box twice.
+- **A ResizeObserver loop.** Setting the filled column inside the
+  observer's callback changes the cards' width and so the list's height, a
+  resize the observer cannot report in that frame, and Chromium fired a
+  "ResizeObserver loop completed with undelivered notifications" error
+  event on the crossing and on a resize below 900 px. The hook now stops
+  watching the list when a measure changed what it set and watches it
+  again on the next frame, whose first report carries the size then, as
+  `MetadataEditor.tsx` does; a report that changes nothing keeps it
+  watched, so there is no loop frame to frame (`T6-notes-for-docs.md`).
+- **The first paint.** A first visit's answer reaches `Library` through
+  `useSyncExternalStore`, a sync render, whose passive effects React runs
+  before a mutation record is delivered, so a test of a first visit cannot
+  tell a `useLayoutEffect` from a `useEffect`. The path where the layout
+  effect matters is a return to `/` through the router, which commits in a
+  transition; `Library.continue.browser.test.tsx` holds that one
+  (`T6-notes-for-docs.md`).
+- **Firefox's search box.** In Firefox the search box's line was 22 px
+  where Chromium draws the 1.5 line at 21, so the box, and with it the page
+  head, was 40 px tall against the 39 px the Continue heading's margin is
+  built on (`--head-row`), and the Continue rule lay 1 px below the
+  Libraries rule (`T11b-report.md`, row 4). A `line-height` of 21 px left
+  the line at 22 px there (`review-probe-head.log`). `library.css` now
+  sizes the box in the page head from the 1.5 line itself, which the same
+  probe drew level in Firefox at a 16 px and a 20 px root. Chromium has no
+  such floor, so its test forces the search box's line taller with a
+  `<style>` and holds the head's height and the two rules.
+
+**The decisions.**
+
+- **The slider saves on each step of a drag**, not on its release. The
+  shell holds one state and stores it on every change, so what is drawn is
+  what is stored; a save on release would need a second, draft state for
+  the drag, and would lose the drag if the panel closed on Escape or a
+  press outside before the release. A `localStorage` write a step is small
+  beside the render the drag already causes to make the covers follow
+  (the plan, Task 2b).
+- **The `@property` fallback is reachable only where the registration is
+  missing.** `--tile-min` and `--tile-gap` are registered as lengths, which
+  is what makes a computed value a px length rather than the `clamp()`
+  text it was written as; a browser without `@property` (the build's
+  targets include a Firefox without it, `vite.config.ts`'s `cssTarget`)
+  hands the script the text, and the row keeps the least gap. In a browser
+  that registers them nothing reaches that path, so its test deletes the
+  `@property` rule for the case and puts it back after ("falls back to the
+  least gap when the gap is not a px length").
+- **A phone's `sizes` is a bound.** Below 900 px a cover is its filled
+  column, a width `sizes` cannot write, so `coverSizes` names a width the
+  column never reaches: a column is always narrower than two covers and a
+  gap, or a second cover would fit, and the least gap is at most 1rem, so
+  `2 × size + 32` px never asks for less than the cover needs up to a
+  32 px root. It may ask one image step more than a filled cover needs:
+  worked out from the selection rule and not driven, two 171 px columns at
+  390 px and 144 px, at 1×, ask for 320 px and get the 512 px image where
+  the 256 would do (`T9-notes-for-docs.md`).
+- **A cover-size change keeps the Continue row's place.** The hook
+  measures in the commit that sets the new size, and that read lays the
+  row with the new size and the old gap. Left to itself, a row scrolled to
+  its end was clamped by a step down: at 1280 px with 20 cards at the end
+  at 131 px, one step to 130 px left it 22 px short of its new end
+  (`T7-probe2.log`). A step up let the row grow under a `scrollLeft` that
+  held, most where the grid loses a column: a drag right from the end left
+  it 377 and then 949 px short, in both engines (`T11b-report.md`, rows 61
+  and 62). Each mark now records the row's place: whether it is at its
+  end, and the card at its start edge as steps of the cards' pitch. A run
+  for a new size puts the row back after its measure, at its new end, or
+  with that card at the start edge and its offset scaled to the new
+  pitch, as far as the row reaches: a row too short at the new size to
+  bring the card to its start edge stops at its end. The place is the last mark's, since by that run
+  the row may have been clamped. It is kept until the row is scrolled or its cards
+  move: Chromium reads a set `scrollLeft` back in whole px
+  (`wave-scrollprobe.log`), so a place worked out again at each step of a
+  drag would drift, and a row that fits at some size on the way keeps the
+  place a drag back returns to. `Library.continue.browser.test.tsx` holds
+  both places across changes that move the grid's columns, and the end
+  through a size at which every card fits (`wave-report.md`). A window
+  resize does not put the row back, a kept place can outlive a change in
+  the number of cards, and two parts of the place have no test; O301 has
+  them (`wave-rereview.md`).
+
+**The O133 mechanism.** O133 (closed 2026-09-19) offered a cover's three
+long edges, 256, 512 and 768 px, as density descriptors, `1x`, `2x` and
+`3x`, so the browser picked by screen density alone. `library.ts`'s
+`coverSources` now describes the same three addresses by their width in a
+cover's 2:3 box (`171w`, `341w`, `512w`), and `Cover.tsx` sets `sizes` from
+`coverSizes`, so the browser picks by the drawn width, or on a phone a
+bound on it, and the density together. The server is unchanged: the same three edges
+(`cover.rs`'s `COVER_LONG_EDGES`) and the same `?w=`. From 900 px up a
+144 px cover gets O133's pick at 1×, 2× and 3×, and at 1× a 240 px cover at
+1280 px gets the 512 px image; at 390 px and 1× a 240 px cover, one column
+drawn 358 px wide, gets the 768, where `sizes` of the size alone gets the
+512 (`Cover.browser.test.tsx`; `T9-report.md`, its watched defects).
+Chromium takes the smallest image wide enough for the drawn width at the
+screen's density (`T9-notes-for-docs.md`), so from 900 px up a cover wider
+than about 170 px gets the next size up at 1× and 2× (the 171w image runs
+out there at 1×, and the 341w at 2×), and at 3× one under about 114 px gets
+the 512 (341w over 3), where O133 gave every cover the 768; worked out from the three
+widths and that rule, not driven (`T10-fix1-derive.log`).
+`library.css` and `coverSizes` both write the breakpoint and the gap's
+1rem cap, since `sizes` cannot read a stylesheet; `library.css.test.ts`'s
+"library.css and coverSizes agree" ties them.
+
+- **Not fixed: a 3× screen enlarges a wide cover.** 768 px is the server's
+  largest cover, 512 px wide at 2:3, so on a 3× screen a cover drawn wider
+  than about 170 CSS px has fewer image pixels than device pixels. O133's
+  `768 3x` gave such a screen the same image, so this is no regression;
+  the slider allows larger covers. A larger cover size on the server would
+  fix it.
+- **Not decided: `sizes="auto, …"`.** It would let Chromium pick a lazy
+  cover's image from its laid-out width, ending the phone's one-step
+  over-ask there, while an engine without `auto` skips that entry and
+  keeps the bound. Not built; it needs a ruling.
+
+**Accepted and not fixed.**
+
+- **The row's own scrollbar fades with it.** Where a browser draws the
+  Continue row's scrollbar, it is drawn by the list the fade's mask is on,
+  so it fades at its ends with the row (the spec's "Left to the builder").
+
+**A question for the owner at the PR, not decided.** Below 900 px the
+columns are `minmax(var(--tile-min), 1fr)`, so where the list is narrower
+than one cover it overflows sideways. The home grid's list is the window
+less 32 px of padding (358 px at 390, `T4-notes-for-docs.md`), so that is
+240 px covers in a window under about 272 px, or a browser zoomed in until
+it is that narrow in CSS pixels; at WCAG's 320 CSS px reflow width a
+240 px cover fits. `minmax(min(var(--tile-min), 100%), 1fr)`
+would prevent it, at the cost of the slider no longer setting the least a
+cover may be.
+
+**A fact about the test browser.** In the browser project's launch that
+hides scrollbars, a series page's list is narrower than the home grid's at
+the same window width, 993 px against 1008 at 1280 (`T4-notes-for-docs.md`):
+the gutter that `scrollbar-gutter: stable` keeps on a series page (O283) is
+kept even where a scrollbar takes no width. A series page can therefore lay
+a column fewer than the home grid at the same size and width, and a figure
+for a series page is worked out from its own list.
+
+**What the comments no longer say.** Five blocks were cut to the guard's
+cap; the reasons they gave that are held nowhere else:
+
+- **The least gap's curve.** 0.6rem at the slider's least size, rising
+  linearly to 1rem at the default, and 1rem above; the comment says only
+  that the gap narrows under the default, and why, and the clamp states
+  the values.
+- **Why a script lays the Continue row.** From 900 px up the grid's spare
+  room is spread into its gaps by `justify-content: space-between`, and a
+  row that overflows has no spare room to spread, so CSS alone cannot give
+  it the grid's gap. Below 900 px the row could lay the grid's
+  `minmax(…, 1fr)` tracks, but once its cards overflow, `1fr` tracks shrink
+  to their least width (the prototype's first round), so the hook sets the
+  filled column as a fixed track. It reads `--tile-min` and `--tile-gap`,
+  not the list's own track and gap, which it sets itself, and its
+  `ResizeObserver` is also what lays the row for the other layout, since
+  the list's width always changes where the sidebar's column comes and
+  goes.
+- **The fade's lengths.** Clear for 12 px at the edge, half see-through at
+  50 px and solid at 80 px, the owner's after "a soft fade" and "a bit more
+  obvious"; `library.css` names them `--fade-clear`, `--fade-half` and
+  `--fade`.
+- **The heading's alignment.** Each hairline is centred on its heading's
+  line box, and under a coarse pointer the Libraries heading is as tall as
+  its 44 px link. The Libraries hairline lies under the wordmark's
+  `--space-4` margin, the wordmark, the sidebar's `--space-4` padding and
+  half its heading; the Continue hairline under `main`'s 1rem padding, the
+  page's heading row (`--head-row`) and half its own heading. The margin is
+  the first sum less the second.
+- **The hook's properties.** `--continue-gap` is the exact layout's spread
+  gap and `--continue-col` the fill layout's column, chosen by
+  `--tile-fill`, and the `data-more-*` marks it sets are what the fade
+  reads.
+
+**The drive.** A release build of the branch, over a copy of the test
+library's database, was driven with Playwright's real mouse and keyboard
+in Chromium 151.0.7922.34 and Firefox 153.0, both headless, at 1280, 1024,
+899 and 390 px wide and at sizes 96, 144 and 240, and driven again after
+the last review's fixes for what those fixes changed (`T11b-report.md`
+and its round 2). The Continue cards sat over the grid's columns at its
+covers' width at every width and size, and kept the grid's pitch past the
+row's edge. The list's inline style held `--continue-gap` from 900 px up
+and `--continue-col` below, also across a live 1280 → 899 → 1280 resize,
+and a series page's open panel stayed two tiles and the laid gap wide
+through the same resize. From 900 px up the covers were exactly the
+slider's size; below it they filled the row at the least gap, two 171 px
+columns at 390 px and 144, as `main` draws them, and one 358 px cover at
+240. The fade showed on each side the row can still scroll to, at its
+start, middle and end, and not at all when two entries fit. A press on a
+faded cover opened it, and a focused card was never faded. The line under
+the row was 1 px in `--line`, 16 px under the cards and 16 px over the
+chips, with a classic scrollbar's 15 px between the cards and the line
+where one is drawn. There was no line with the strip off, on search
+results, or for an account with nothing in progress. After the search
+box's change the Continue rule was drawn on the same pixel row as the
+Libraries rule in both browsers, and in Firefox 157.0 too, at a 16 px and
+a 20 px root; under a coarse pointer, driven in Chromium before that
+change, it was level too. The slider stepped 1 px below 144 and 2 px
+above, a double-click on the thumb or the track saved 144, a drag moved
+the covers and saved on each step, and a stored `compact` and
+`comfortable` came in as 104 and 144. During a drag a row scrolled to its
+end stayed at its end, and a row scrolled partway kept the same card at
+its start edge with the offset into it scaled, also where the grid's
+column count changed, at 1280, 899 and 390 px; where the row became too
+short to hold that card it stopped at its end. A row that came to fit and
+then overflowed again went back where it had been. The View panel
+selected no words, and its checkbox row toggled exactly once from a press
+at either end and from a press on its words, still or moved 1 to 4 px, in
+Firefox as well, leaving the focus on the checkbox with no ring drawn.
+Not driven: iOS Safari, a desktop browser with the system's own fonts,
+the Paper and Ink themes, the library page in a dark theme, and a window
+resize with the row scrolled (O301). The reader's Settings panel draws no
+slider, since no reader module declares one.

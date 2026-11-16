@@ -7,6 +7,7 @@ import {
   nestedSummary,
   withFieldValue,
 } from '../src/settingsPanel'
+import { MS_SCALE } from './support/sliderScale'
 
 describe('fieldKind', () => {
   it('reads a boolean default as a checkbox field', () => {
@@ -168,6 +169,32 @@ describe('fieldsOf with declared options', () => {
   it('leaves a string with an empty option list as free text', () => {
     expect(fieldsOf({ label: 'x' }, { label: [] })).toEqual([
       { key: 'label', kind: 'string' },
+    ])
+  })
+})
+
+describe('fieldsOf with declared sliders', () => {
+  it('infers a slider for a number the module declared a scale for, with its default', () => {
+    expect(
+      fieldsOf({ delay: 100, label: 'x' }, {}, { delay: MS_SCALE }),
+    ).toEqual([
+      { key: 'delay', kind: 'slider', scale: MS_SCALE, initial: 100 },
+      { key: 'label', kind: 'string' },
+    ])
+  })
+
+  it('ignores a scale declared against something that is not a number', () => {
+    expect(
+      fieldsOf({ on: true, label: 'x' }, {}, { on: MS_SCALE, label: MS_SCALE }),
+    ).toEqual([
+      { key: 'on', kind: 'boolean' },
+      { key: 'label', kind: 'string' },
+    ])
+  })
+
+  it('takes no scale from what every object inherits', () => {
+    expect(fieldsOf({ toString: 5 })).toEqual([
+      { key: 'toString', kind: 'number' },
     ])
   })
 })

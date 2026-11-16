@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { coverSizes } from '../../src/library'
 import { atRulesOf, valuesOf } from '../support/css'
 import librarySource from '../../src/styles/library.css?raw'
 import shellSource from '../../src/styles/shell.css?raw'
@@ -53,5 +54,34 @@ describe('library.css colours the Title form’s failure', () => {
         ({ at, body }) => ({ at, color: valuesOf(body, 'color') }),
       ),
     ).toEqual([{ at: '', color: ['var(--danger)'] }])
+  })
+})
+
+/**
+ * `library.ts`'s `coverSizes` repeats two facts of this file, as an image's
+ * `sizes` cannot read CSS: the breakpoint below which a cover fills its
+ * column, and the gap's 1rem cap, which its 32 px allowance holds. Either
+ * moved here alone would have a cover between the two values ask for an
+ * image smaller than it is drawn.
+ */
+describe('library.css and coverSizes agree', () => {
+  it('fills the columns below the breakpoint coverSizes names, at a gap of at most 1rem', () => {
+    const set = (property: string) =>
+      atRulesOf(librarySource, '.library')
+        .map(({ at, body }) => ({ at, values: valuesOf(body, property) }))
+        .filter(({ values }) => values.length > 0)
+    expect(set('--tile-fill')).toEqual([
+      { at: '', values: ['0'] },
+      { at: '@media (width < 900px)', values: ['1'] },
+    ])
+    const fill = (set('--tile-fill')[1]?.at ?? '').replace(/^@media /, '')
+    for (const size of [96, 144, 240])
+      expect(coverSizes(size).slice(0, fill.length + 1)).toBe(`${fill} `)
+
+    const gaps = set('--tile-gap')
+    expect(gaps.map(({ at }) => at)).toEqual([''])
+    const gap = gaps[0]?.values[0] ?? ''
+    expect(gap).toMatch(/^clamp\(/)
+    expect(/,\s*([^,()]+?)\s*\)$/.exec(gap)?.[1]).toBe('1rem')
   })
 })

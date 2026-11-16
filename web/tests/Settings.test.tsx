@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ReaderModule } from '../src/module'
 import { Settings } from '../src/Settings'
 import { mount } from './support/mount'
+import { MS_SCALE } from './support/sliderScale'
 
 /**
  * `Settings` is generated purely from `settingsPanel.ts`'s inference, which
@@ -371,6 +372,41 @@ describe('Settings', () => {
     const select = host.querySelector('select') as HTMLSelectElement
     act(() => fireSelect(select, 'y'))
     expect(onChange).toHaveBeenCalledWith('modA', 'choice', 'y')
+  })
+
+  it('draws a declared slider as the View panel does, its name’s row in the panel’s row style', () => {
+    const onChange = vi.fn()
+    const fx: ReaderModule<{ delay: number }> = {
+      id: 'fx',
+      label: 'Fixture',
+      defaults: { delay: 100 },
+      sliders: { delay: MS_SCALE },
+    }
+    const host = mount(
+      <Settings
+        visible
+        modules={[fx]}
+        prefs={{}}
+        onChange={onChange}
+        onReset={vi.fn()}
+        onClose={vi.fn()}
+        onAccount={vi.fn()}
+      />,
+    )
+    const range = host.querySelector<HTMLInputElement>('input[type="range"]')
+    if (!range) throw new Error('no range drawn')
+    expect(range.value).toBe('5')
+    expect(host.querySelector('.field-slider output')?.textContent).toBe(
+      '100 ms',
+    )
+    const head = host.querySelector<HTMLElement>('.field-slider-head')
+    expect(head?.style.display).toBe('flex')
+    act(() => fireInput(range, '7'))
+    expect(onChange).toHaveBeenLastCalledWith('fx', 'delay', 120)
+    act(() => {
+      range.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    })
+    expect(onChange).toHaveBeenLastCalledWith('fx', 'delay', 100)
   })
 
   it('resets one module’s whole slice on its own Reset button, naming that module’s id', () => {

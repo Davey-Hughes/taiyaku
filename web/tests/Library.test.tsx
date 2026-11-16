@@ -9,7 +9,11 @@ import {
 } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Me } from '../src/api'
-import { BrowseControlsContext } from '../src/browseModule'
+import {
+  BrowseControlsContext,
+  BrowsePrefsContext,
+  browseModule,
+} from '../src/browseModule'
 import { GateContext } from '../src/gate'
 import * as library from '../src/library'
 import type { LibraryStatus } from '../src/library'
@@ -1279,12 +1283,43 @@ describe('the library screen', () => {
       expect(host.querySelector('img')?.getAttribute('src')).toBe(
         '/api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256',
       )
-      // O133: the browser picks the size for its screen's density.
+      // O133: the browser picks the size for the cover's drawn width.
       expect(host.querySelector('img')?.getAttribute('srcset')).toBe(
-        '/api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256 1x, /api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=512 2x, /api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=768 3x',
+        '/api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=256 171w, /api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=512 341w, /api/works/a-series-v01/raw/pages/0/thumb?v=c0ffee-0-1&w=768 512w',
       )
       expect(host.querySelector('.cover-missing')).toBeNull()
     })
+
+    // The size off the scale is drawn at the nearest position's, so its
+    // cover is asked for at that.
+    it.each([
+      [240, '(width < 900px) 512px, 240px'],
+      [151, '(width < 900px) 336px, 152px'],
+    ])(
+      'with a %i px cover size in the preferences, asks for its image with sizes %s',
+      async (stored, sizes) => {
+        vi.mocked(library.grid).mockResolvedValue({
+          series: [series({ id: 3, title: 'Gotoubun no Hanayome' })],
+          unfiled: [],
+        })
+        let host!: HTMLElement
+        await act(async () => {
+          host = mount(
+            <MemoryRouter>
+              <StatusContext.Provider value={defaultStatus}>
+                <BrowsePrefsContext
+                  value={{ ...browseModule.defaults, coverSize: stored }}
+                >
+                  <Library />
+                </BrowsePrefsContext>
+              </StatusContext.Provider>
+            </MemoryRouter>,
+          )
+        })
+        await flush()
+        expect(host.querySelector('img')?.getAttribute('sizes')).toBe(sizes)
+      },
+    )
   })
 
   /**
@@ -1577,20 +1612,21 @@ describe('the library page’s View panel — spec §2', () => {
     ).toEqual(['visually-hidden', 'search-box', 'view-menu'])
   })
 
-  it('holds Continue strip, Density and Reset, in sentence case', async () => {
+  it('holds Continue strip, Cover size and Reset, in sentence case', async () => {
     const panel = openView(await mountWithView())
+    // `control`, as the slider's label names its range by `for`.
     expect(
       [...panel.querySelectorAll('label')].map((label) => {
-        const control = label.querySelector('input, select')
+        const control = label.control
         return [
-          label.querySelector('span')?.textContent,
+          (label.querySelector('span') ?? label).textContent,
           control instanceof HTMLInputElement ? control.type : control?.tagName,
           [...label.querySelectorAll('option')].map((o) => o.textContent),
         ]
       }),
     ).toEqual([
       ['Continue strip', 'checkbox', []],
-      ['Density', 'SELECT', ['Compact', 'Comfortable']],
+      ['Cover size', 'range', []],
     ])
     expect(
       [...panel.querySelectorAll('button')].map((b) => b.textContent),

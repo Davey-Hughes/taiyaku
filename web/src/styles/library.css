@@ -46,10 +46,7 @@
  * heading with a hairline after it. The row scrolls sideways inside itself,
  * so the page never does. `.tile-unreadable` is the same card with no link,
  * for a work whose files have left the disk — O62, applied here because the
- * reader may be mid-read when the files go. The list pads itself by
- * `--space-1` on the top and sides, and pulls its margin back by as much
- * there, so a cover's hairline and a card's focus ring are not clipped at its
- * edge; the bottom's `--space-2` keeps the cards clear of a scrollbar. */
+ * reader may be mid-read when the files go. */
 .continue h2 {
   display: flex;
   align-items: center;
@@ -65,17 +62,132 @@
   background: var(--line);
 }
 
+/* The heading's hairline again under the row, setting it apart from the
+ * library below, across the column. The room between the row's last line
+ * and the chips, the list's own `--space-2` padding and the chips' margin,
+ * is split evenly about it: `--space-2` more above, and the chips' margin
+ * cut to the same 16 px below. Part of the section, so it goes wherever the
+ * row is not drawn. */
+.continue::after {
+  content: "";
+  display: block;
+  height: 1px;
+  margin-top: var(--space-2);
+  background: var(--line);
+}
+
+.continue + .library-chips {
+  margin-top: var(--space-4);
+}
+
+/* Where the sidebar stands beside the column (`Shell.tsx`'s `WIDE`), this
+ * heading's hairline is drawn level with the Libraries heading's. Each sits
+ * mid-heading, so the margin is what lies above that one less what lies
+ * above this one: the wordmark, as tall as its seal, between two
+ * `--space-4`s, against `main`'s 1rem padding and the heading row. A change
+ * to any of these moves one hairline and not the other. A coarse pointer
+ * makes the Libraries link and the row taller, so `--side-half` and
+ * `--row-block` are set again below. */
+@media (width >= 900px) {
+  .continue h2 {
+    /* The seal (`shell.css`'s `.wordmark .seal`): two glyphs at
+     * `--text-badge`, each tracked 0.1em, in 4px and 3px of padding. */
+    --seal: calc(2 * 1.1 * var(--text-badge) + 7px);
+    --side-half: calc(1.25 * var(--text-ui) / 2);
+    --row-block: var(--head-row);
+    --side-rule: calc(2 * var(--space-4) + var(--seal) + var(--side-half));
+    --main-rule: calc(1rem + var(--row-block) + 1.25 * var(--text-h3) / 2);
+    margin-top: calc(var(--side-rule) - var(--main-rule));
+  }
+}
+
+/* A tile's width and least gap, from the bare cover size `Shell.tsx` sets
+ * as `--cover-n` (O285), on `.library` so that the grid, the Continue row
+ * and a series page's volumes share them. The gap narrows under the
+ * default size, since small covers far apart read as scattered. Registered
+ * as lengths, so a script reads them in px from the computed style, and
+ * `--tile-fill` (set again below 900 px) tells it which layout is in force.
+ * Only `library.ts`'s `coverSizes` repeats the breakpoint and the gap's 1rem
+ * cap, as an image's `sizes` cannot read CSS; `library.css.test.ts` ties them. */
+@property --tile-min {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+@property --tile-gap {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
+
+.library {
+  --tile-min: calc(var(--cover-n, 144) * 1px);
+  --tile-gap: clamp(
+    0.6rem,
+    calc(0.6rem + (var(--cover-n, 144) - 96) * 0.4rem / 48),
+    1rem
+  );
+  --tile-fill: 0;
+}
+
+/* A card is a grid tile's width and sits over the grid's columns, also
+ * once the row overflows: `continueRow.ts` sets the grid's spread gap or its
+ * filled column, and with neither the row keeps the least gap. The padding,
+ * `--space-1` on the top and sides, keeps a cover's hairline and a focus
+ * ring unclipped; the margin takes it back, so the tracks are counted across
+ * the grid's width. The bottom's `--space-2` keeps the cards clear of a
+ * scrollbar. */
 .continue ul {
+  --track: var(--continue-col, var(--tile-min));
   list-style: none;
   margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) 0;
   padding: var(--space-1) var(--space-1) var(--space-2);
-  display: flex;
-  gap: var(--space-3);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, var(--track));
+  grid-auto-columns: var(--track);
+  grid-auto-flow: column;
+  gap: var(--continue-gap, var(--tile-gap));
   overflow-x: auto;
 }
 
-.continue li {
-  flex: 0 0 104px;
+/* A side with cards past it (`useContinueRow` marks it) fades out: where
+ * scrollbars hide until used, it is the one sign there are more, so it is
+ * wide and mostly see-through. `--fade-half` is a colour hint, which eases
+ * the ramp without bands. A mask, not a layer over the cards, so they fade
+ * to any theme's ground and still take a press; it reads only alpha, so
+ * `black` is no colour. One layer a side, intersected, so each side comes
+ * and goes on its own. Lifted while a focus ring shows, so it is whole. */
+.continue ul:is([data-more-before], [data-more-after]) {
+  --fade: 80px;
+  --fade-half: 50px;
+  --fade-clear: 12px;
+  --mask-before: linear-gradient(black, black);
+  --mask-after: linear-gradient(black, black);
+  mask-image: var(--mask-before), var(--mask-after);
+  mask-composite: intersect;
+}
+
+.continue ul[data-more-before] {
+  --mask-before: linear-gradient(
+    to right,
+    transparent var(--fade-clear),
+    var(--fade-half),
+    black var(--fade)
+  );
+}
+
+.continue ul[data-more-after] {
+  --mask-after: linear-gradient(
+    to left,
+    transparent var(--fade-clear),
+    var(--fade-half),
+    black var(--fade)
+  );
+}
+
+.continue ul:has(:focus-visible) {
+  mask-image: none;
 }
 
 .continue a,
@@ -87,13 +199,19 @@
   text-decoration: none;
 }
 
+/* From 900 px up every cover is the slider's width (O285), as many as fit
+ * at the least gap, and the spare room spread into the gaps so a row still
+ * spans the area; below it the columns fill the row (the block that sets
+ * `--tile-fill: 1`). A short last row keeps to the same columns, since
+ * `auto-fill` keeps its empty tracks. */
 .grid {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, var(--tile-min));
+  justify-content: space-between;
+  gap: var(--tile-gap);
 }
 
 /* `.tile-unreadable` alongside `a`, not instead of it: O62's grid and
@@ -192,27 +310,17 @@
   font-size: var(--text-meta);
 }
 
-/* The volume list on a series page — spec C1 §3. Narrower tiles than the
- * library grid's `9rem`: a series page shows volumes of one work, so the
- * covers are near-identical and the title under each is what distinguishes
- * them. Everything else it shares with `.grid` by name, above. */
+/* The volume list on a series page — spec C1 §3. The library grid's tile
+ * and spacing, set by the one cover size; everything else it shares with
+ * `.grid` by name, above. */
 .volumes {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
-  gap: 1rem;
-}
-
-/* §4's `density`. Compact is the same grid with less room per tile — not a
- * different layout, which is the whole argument of §3. After both `.grid`
- * and `.volumes` in source order, so its higher specificity does not read as
- * a cascade defect to the descending-specificity lint rule. */
-.library.compact .grid,
-.library.compact .volumes {
-  grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
-  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fill, var(--tile-min));
+  justify-content: space-between;
+  gap: var(--tile-gap);
 }
 
 /* §3 puts the alignment mark **on the cover**, which needs a positioned box
@@ -509,13 +617,10 @@
 /* Two tiles and the gap before `tilePanel.ts` has measured, the width it
  * then sets wherever the page has room: the Title field is fitted as it
  * mounts, before its panel is laid, and would be fitted at the tile's
- * width. */
+ * width. From 900 px up the columns are laid wider apart than this gap
+ * (O285's spread), which the measured width then takes in. */
 .volumes > li > .tile-panel {
-  width: calc(200% + 1rem);
-}
-
-.library.compact .volumes > li > .tile-panel {
-  width: calc(200% + 0.6rem);
+  width: calc(200% + var(--tile-gap));
 }
 
 /* What scrolls a series page while it draws the volume grid keeps its
@@ -530,6 +635,22 @@
 @media (width < 900px) {
   :root:has(.volumes) {
     scrollbar-gutter: stable;
+  }
+}
+
+/* On a phone the columns fill the row (O285): as many as fit at the least
+ * gap, each grown to an equal share of the row, so the slider sets the
+ * least a cover may be. Exact covers would leave a narrow screen's spare
+ * room as wide gaps. `--tile-fill` is set in this same block so that a
+ * script reads which layout is drawn rather than repeating the breakpoint. */
+@media (width < 900px) {
+  .library {
+    --tile-fill: 1;
+  }
+
+  .grid,
+  .volumes {
+    grid-template-columns: repeat(auto-fill, minmax(var(--tile-min), 1fr));
   }
 }
 
@@ -676,8 +797,16 @@
   margin: 0;
 }
 
+/* Sized from the 1.5 line the row is built on (`shell.css`'s `--head-row`,
+ * which the Continue heading's margin reads), not from the engine's line
+ * box: Firefox holds a one-line field's line at no less than `normal`,
+ * taller than 1.5 in this face, which would make the row taller and draw
+ * the Continue rule below the Libraries rule. `em` is the box's own font,
+ * which a coarse pointer raises. */
 .page-head .search-box input {
   max-width: none;
+  box-sizing: border-box;
+  block-size: calc(1.5em + 2 * var(--space-2) + 2px);
 }
 
 /* A series title breaks rather than widening the page. */
@@ -710,6 +839,13 @@
   .volumes .panel-open {
     min-width: 44px;
     min-height: 44px;
+  }
+
+  /* The Libraries heading's link and View are 44px tall here (`shell.css`),
+   * and the Continue heading's margin above is set from both. */
+  .continue h2 {
+    --side-half: calc(max(1.25 * var(--text-ui), 44px) / 2);
+    --row-block: max(var(--head-row), 44px);
   }
 }
 

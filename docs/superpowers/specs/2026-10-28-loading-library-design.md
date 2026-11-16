@@ -153,6 +153,9 @@ of the page's body.
    Continue cards; a null series cover draws the missing-cover box with no
    request. `workCover` goes. The series cover `307` route stays as it is;
    the web client no longer uses it.
+   *Since 2026-11-15 (O285) the `srcSet` describes the three sizes by
+   width, and a cover's `sizes` gives the width it is drawn at, or on a
+   phone a bound on it; see O133's row in `docs/status.md`.*
 5. **What it does not change.** `private` keeps shared caches out. Covers
    already stay in the browser's cache after signing out, under `no-cache`.
    A revoked grant drops the series from the next list read, so its cover's

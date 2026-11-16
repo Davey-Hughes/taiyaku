@@ -27,14 +27,15 @@
  * one set, so a return draws what was kept in its first render and reads it
  * again, and a first visit draws both in one step.
  */
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import {
   Link,
   useLocation,
   useNavigationType,
   useSearchParams,
 } from 'react-router'
-import { type BrowsePrefs, useBrowsePrefs } from './browseModule'
+import { type BrowsePrefs, coverSizeOf, useBrowsePrefs } from './browseModule'
+import { useContinueRow } from './continueRow'
 import { Cover } from './Cover'
 import { type EmptyKind, EmptyState } from './EmptyState'
 import {
@@ -65,10 +66,10 @@ import { useKeptScroll } from './scrollKeeper'
 import { boxStateOf, SEARCH_BOX_ID, useSearchHits } from './searchHits'
 import { usePage } from './usePage'
 
-/** What this page's View panel offers: the two preferences that act here. */
+/** What this page's View panel offers: the preferences that act here. */
 const LIBRARY_VIEW: readonly (keyof BrowsePrefs)[] = [
   'continueStrip',
-  'density',
+  'coverSize',
 ]
 
 const CHIPS: { id: Chip; label: string }[] = [
@@ -255,6 +256,20 @@ export function Library() {
     })
   }
 
+  const continueList = useRef<HTMLUListElement>(null)
+  // One condition for the strip and its hook, so they cannot disagree.
+  const stripDrawn =
+    !searching &&
+    prefs.continueStrip &&
+    home !== undefined &&
+    home.continuing.length > 0
+  useContinueRow(
+    continueList,
+    stripDrawn,
+    coverSizeOf(prefs),
+    home?.continuing.length ?? 0,
+  )
+
   const visible = gridData
     ? sorted(
         gridData.series.filter((s) => matchesChip(s, chip)),
@@ -290,10 +305,10 @@ export function Library() {
         </div>
       ) : (
         <>
-          {prefs.continueStrip && home && home.continuing.length > 0 && (
+          {stripDrawn && (
             <section data-testid="continue" className="continue">
               <h2>Continue</h2>
-              <ul>
+              <ul ref={continueList}>
                 {home.continuing.map((w) => (
                   <li key={w.slug}>
                     {unreadable(w) ? (

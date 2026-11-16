@@ -32,6 +32,36 @@ export function panelSpan(
 }
 
 /**
+ * The gap a grid `width` px wide lays its columns apart by, from its
+ * resolved `grid-template-columns` (the columns' own widths, with any line
+ * names): the width less the columns, over the gaps between them. From
+ * 900 px up that is the gap the stylesheet writes and the spare room
+ * `justify-content` spreads into the gaps (O285's exact-size covers). One
+ * column has no gap between columns to read.
+ */
+export function laidGapOf(
+  trackList: string,
+  width: number,
+): number | undefined {
+  const tracks = trackList
+    .split(' ')
+    .map((track) => Number.parseFloat(track))
+    .filter((track) => Number.isFinite(track))
+  if (tracks.length < 2) return undefined
+  const sum = tracks.reduce((total, track) => total + track, 0)
+  return (width - sum) / (tracks.length - 1)
+}
+
+/** The grid's laid gap, or the gap its stylesheet writes where it has none. */
+function laidGap(grid: HTMLElement, width: number): number {
+  const style = getComputedStyle(grid)
+  return (
+    laidGapOf(style.gridTemplateColumns, width) ??
+    Number.parseFloat(style.columnGap)
+  )
+}
+
+/**
  * Lays `panel`, absolutely placed in `tile`, from the tile's grid and the
  * page area around it. Only a volume's tile on a page has columns to lie
  * across, so elsewhere it leaves the panel as its stylesheet draws it.
@@ -44,7 +74,7 @@ export function layPanel(panel: HTMLElement, tile: HTMLElement): void {
   // to the fraction of a pixel where the area's `clientWidth` is rounded to
   // a whole one, which would end the area short of its last column.
   const area = grid.getBoundingClientRect()
-  const gap = parseFloat(getComputedStyle(grid).columnGap)
+  const gap = laidGap(grid, area.width)
   const { left, width } = panelSpan(box, gap, {
     start: area.left,
     end: area.right,

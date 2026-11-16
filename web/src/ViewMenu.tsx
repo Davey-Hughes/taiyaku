@@ -28,12 +28,35 @@ import { usePopover } from './popover'
 import { FieldControl } from './settingsFields'
 import { fieldsOf } from './settingsPanel'
 
+/**
+ * A click on a checkbox's row, off the box, clicks the box once and cancels
+ * the label's own activation. Firefox drops that activation once a press has
+ * moved a few pixels, which would leave a slightly sloppy press on a row's
+ * words doing nothing there; cancelling it keeps Chromium, which still
+ * passes it on, from toggling the box a second time. The box takes the
+ * focus that activation gave it, so Space toggles the row just pressed.
+ */
+function sendRowClick(event: React.MouseEvent<HTMLDivElement>) {
+  const target = event.target as Element
+  const box = target
+    .closest('label')
+    ?.querySelector<HTMLInputElement>(':scope > input[type="checkbox"]')
+  if (!box || target === box) return
+  event.preventDefault()
+  box.focus({ preventScroll: true })
+  box.click()
+}
+
 export function ViewMenu({ keys }: { keys: readonly (keyof BrowsePrefs)[] }) {
   const prefs = useBrowsePrefs()
   const controls = useContext(BrowseControlsContext)
   const { open, toggle, wrap, button, panelId } = usePopover()
   if (!controls) return null
-  const fields = fieldsOf(browseModule.defaults, browseModule.options)
+  const fields = fieldsOf(
+    browseModule.defaults,
+    browseModule.options,
+    browseModule.sliders,
+  )
   const shown = keys.flatMap((key) => fields.filter((f) => f.key === key))
   return (
     <div className="view-menu" ref={wrap}>
@@ -50,7 +73,13 @@ export function ViewMenu({ keys }: { keys: readonly (keyof BrowsePrefs)[] }) {
           <path d="M3 4.5l3 3 3-3" />
         </svg>
       </button>
-      <div id={panelId} className="view-panel" hidden={!open}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: the rows are labels and checkboxes with their own keyboard; this only re-sends a label's click to its box. */}
+      <div
+        id={panelId}
+        className="view-panel"
+        hidden={!open}
+        onClick={sendRowClick}
+      >
         {shown.map((field) => (
           <FieldControl
             key={field.key}

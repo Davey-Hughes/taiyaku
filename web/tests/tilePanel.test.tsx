@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { layPanel, panelSpan } from '../src/tilePanel'
+import { laidGapOf, layPanel, panelSpan } from '../src/tilePanel'
 
 /**
  * `tilePanel.ts` places an open volume's panel from the layout, which only a
  * browser draws, so `Series.panel.browser.test.tsx` reaches it there and the
- * coverage run does not. These hand `panelSpan` the edges a layout would,
- * and stub the reads `layPanel` makes.
+ * coverage run does not. These hand `panelSpan` and `laidGapOf` what a
+ * layout would, and stub the reads `layPanel` makes.
  */
 
 afterEach(() => {
@@ -53,6 +53,23 @@ describe('panelSpan', () => {
     expect(
       panelSpan({ left: 724.5, right: 854.5, width: 130 }, 16, AREA),
     ).toEqual({ left: 724.5, width: 275.5 })
+  })
+})
+
+describe('laidGapOf', () => {
+  it('is the width the tracks leave, over the gaps between them', () => {
+    expect(laidGapOf('144px 144px 144px', 500)).toBe(34)
+  })
+
+  it('reads past the line names a resolved track list holds', () => {
+    expect(laidGapOf('[a] 144px [b] 144px', 300)).toBe(12)
+  })
+
+  it('has no gap to read from one track or none', () => {
+    expect({
+      one: laidGapOf('144px', 300),
+      none: laidGapOf('', 300),
+    }).toEqual({ one: undefined, none: undefined })
   })
 })
 

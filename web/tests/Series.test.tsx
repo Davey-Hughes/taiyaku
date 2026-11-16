@@ -2191,18 +2191,21 @@ describe('Series, its View panel — spec §2', () => {
     })
   })
 
-  /** Each row of the open panel: its words, its kind and its choices. */
+  /**
+   * Each row of the open panel: its words, its kind and its choices. Read
+   * through `control`, as the slider's label names its range by `for`.
+   */
   const rows = (panel: HTMLElement) =>
     [...panel.querySelectorAll('label')].map((label) => {
-      const control = label.querySelector('input, select')
+      const control = label.control
       return [
-        label.querySelector('span')?.textContent,
+        (label.querySelector('span') ?? label).textContent,
         control instanceof HTMLInputElement ? control.type : control?.tagName,
         [...label.querySelectorAll('option')].map((o) => o.textContent),
       ]
     })
 
-  it('holds Layout, Edition selector, Panel, Density and Reset, in sentence case', async () => {
+  it('holds Layout, Edition selector, Panel, Cover size and Reset, in sentence case', async () => {
     let host!: HTMLElement
     await act(async () => {
       host = mount(
@@ -2233,7 +2236,7 @@ describe('Series, its View panel — spec §2', () => {
       ['Layout', 'SELECT', ['Grid', 'Table']],
       ['Edition selector', 'checkbox', []],
       ['Panel', 'SELECT', ['Off', 'Button', 'On-select']],
-      ['Density', 'SELECT', ['Compact', 'Comfortable']],
+      ['Cover size', 'range', []],
     ])
     expect(
       [...panel.querySelectorAll('button')].map((b) => b.textContent),
@@ -2297,18 +2300,19 @@ describe('Series, the open panel’s observer (O283)', () => {
     vi.unstubAllGlobals()
   })
 
-  it('watches the open tile alone, with one observer, until its panel closes or another opens', async () => {
+  it('watches the open tile and its grid, with one observer, until its panel closes or another opens', async () => {
     // A reader, so the panel holds no editor and its Title field's own
     // observer.
     const host = await settleWith({ panel: 'button' }, who())
+    const grid = host.querySelector('.volumes')
     const tiles = [...host.querySelectorAll('.volumes > li')]
     expect(watching(), 'nothing open').toEqual([])
 
     await openTile(host, 0)
-    expect(watching(), 'the first open').toEqual([[tiles[0]]])
+    expect(watching(), 'the first open').toEqual([[tiles[0], grid]])
 
     await openTile(host, 1)
-    expect(watching(), 'the second open').toEqual([[tiles[1]]])
+    expect(watching(), 'the second open').toEqual([[tiles[1], grid]])
 
     await act(async () => {
       tiles[1].querySelector<HTMLButtonElement>('.panel-open')?.click()

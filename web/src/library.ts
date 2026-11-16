@@ -185,11 +185,8 @@ export const oneSeries = (id: number, library?: number) =>
   )
 
 /**
- * The long edges a library cover is offered at, one per screen density — O133.
- *
- * A tile is drawn about 256 CSS px on its long edge (a phone's two-column
- * grid; a desktop tile is a little smaller), so 256, 512 and 768 are what one,
- * two and three device pixels per CSS pixel draw it at.
+ * The long edges a library cover is offered at — O133. The browser picks one
+ * by the width the cover is drawn at and the screen's density.
  *
  * **The server holds the same three** (`cover.rs`'s `COVER_LONG_EDGES`): the
  * tile route sizes page 0 to those and to nothing else, and answers any other
@@ -200,16 +197,31 @@ const COVER_LONG_EDGES = [256, 512, 768] as const
 
 /**
  * A cover address at each of `COVER_LONG_EDGES`, for an `<img>`'s `src` and
- * `srcSet`. The server's addresses carry `?v=`, so the size goes after it.
+ * `srcSet`. Each is described by its width in a cover's 2:3 box: a cover is
+ * drawn at whatever width the slider sets, so a density alone cannot say
+ * which it needs, and `coverSizes` gives the width. The server's addresses
+ * carry `?v=`, so the size goes after it.
  */
 export function coverSources(url: string): { src: string; srcSet: string } {
   const at = (edge: number) => `${url}${url.includes('?') ? '&' : '?'}w=${edge}`
   return {
     src: at(COVER_LONG_EDGES[0]),
-    srcSet: COVER_LONG_EDGES.map((edge, i) => `${at(edge)} ${i + 1}x`).join(
-      ', ',
-    ),
+    srcSet: COVER_LONG_EDGES.map(
+      (edge) => `${at(edge)} ${Math.round((edge * 2) / 3)}w`,
+    ).join(', '),
   }
+}
+
+/**
+ * `sizes` for a cover drawn `size` px wide. Below the shell's breakpoint
+ * (`library.css`'s `(width < 900px)`) a cover fills its column, a width
+ * `sizes` cannot write, so it names one the column never reaches: a column
+ * two covers and a gap wide would hold a second cover, and the gap is at
+ * most 1rem, which 32 px holds up to a 32 px root. A guess under the column
+ * would draw a filled cover blurred.
+ */
+export function coverSizes(size: number): string {
+  return `(width < 900px) ${2 * size + 32}px, ${size}px`
 }
 
 /**

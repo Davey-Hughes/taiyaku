@@ -49,12 +49,12 @@ import { useDocumentTitle } from './title'
 import { usePage } from './usePage'
 import { ViewMenu } from './ViewMenu'
 
-/** What this page's View panel offers: the four preferences that act here. */
+/** What this page's View panel offers: the preferences that act here. */
 const SERIES_VIEW: readonly (keyof BrowsePrefs)[] = [
   'layout',
   'editionSelector',
   'panel',
-  'density',
+  'coverSize',
 ]
 
 interface Loaded {
@@ -516,10 +516,12 @@ export function Series() {
   const refocusing = useRef(false)
 
   // The open panel lies over the rows below its tile (O283), laid from the
-  // tile's width and place, and laid again whenever the tile's width
-  // changes. One observer is enough: `main` has no `max-width`, so a window
-  // that changes width changes the page area's, and the tile, `1fr` of the
-  // area, changes width with the area and with the density.
+  // tile's width and place and the gap its grid lays the columns apart by,
+  // and laid again when either's width changes. The tile's width follows
+  // the cover size, and below 900 px the page area's too, as a filled
+  // column; from 900 px up it is the size, so only the grid, which fills
+  // the area (`main` has no `max-width`), follows a window or sidebar that
+  // changes the area, and the gap and the tile's column follow the grid.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `open` and `layout` are triggers; the body reads the refs.
   useLayoutEffect(() => {
     const panelBox = openPanel.current
@@ -532,6 +534,7 @@ export function Series() {
       layPanel(panelBox, tile)
     })
     resized.observe(tile)
+    if (tile.parentElement !== null) resized.observe(tile.parentElement)
     return () => {
       resized.disconnect()
     }

@@ -187,10 +187,13 @@ async function open(tile: HTMLElement) {
 describe('a volume’s panel run past the end of the page (O283)', () => {
   // Each page, the rows its grid draws, and a window's height that holds
   // the page but not the panel opened on the first tile of its last row:
-  // one volume, and three full rows.
+  // one volume, one row of two, and three full rows. A lone cover at the
+  // row's start keeps its place here whatever the width; a second one is
+  // laid by the room the row has.
   it.each([
     ['one volume', 1, 1, 500],
-    ['the last row’s first tile of three', 21, 3, 1050],
+    ['one row of two', 2, 1, 500],
+    ['the last row’s first tile of three', 18, 3, 1050],
   ] as const)(
     'keeps every tile in place as a panel runs past the end of a page area that did not scroll, at 1280 px (%s)',
     async (_, count, rows, height) => {
@@ -310,7 +313,7 @@ describe('a volume’s panel run past the end of the page (O283)', () => {
   // Each page width, and a page of three rows in a window too short for
   // them, so that what scrolls the page scrolls with no panel open.
   const LONG = {
-    1280: { count: 21, height: 600 },
+    1280: { count: 18, height: 600 },
     390: { count: 6, height: 600 },
   } as const
 
