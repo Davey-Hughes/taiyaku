@@ -173,6 +173,7 @@ fn router_over(
         library,
         works,
         cache_dir: fixture.path().join("covers"),
+        dictionaries: None,
         source: std::sync::Arc::new(crate::LocalLibrary),
         log: None,
         auth: crate::session::AuthConfig::default(),
@@ -478,12 +479,113 @@ pub(crate) fn state(root: &std::path::Path) -> ServeState {
         works: crate::Works::fixed(vec![work(root)]),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     }
+}
+
+/// The `sha256` of the file at `path`, in hex, for a fixture's sidecar to name
+/// its member by: the book route caches what it reads by a member's digest
+/// for the life of the process, so two fixtures naming different text by one
+/// made-up digest would read each other's in one test process.
+///
+/// # Panics
+///
+/// Panics if the file cannot be read.
+pub(crate) fn sha256_of(path: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+    let bytes = std::fs::read(path).expect("reads the fixture's file");
+    Sha256::digest(&bytes)
+        .iter()
+        .fold(String::new(), |mut hex, b| {
+            let _ = write!(hex, "{b:02x}");
+            hex
+        })
+}
+
+/// `doc` held in `library` as a scan of `dir` holds a work: imported, every
+/// member filed under a directory at `dir`, and each `(file, format)` in
+/// `walked` recorded there as the walk records it, which is how the library
+/// tells a book (`browse::books_among`). Each member's path is `dir` joined to
+/// one of `walked`'s files.
+///
+/// # Panics
+///
+/// Panics if a write is refused.
+pub(crate) fn held_as_scanned(
+    library: &taiyaku_library::Library,
+    dir: &std::path::Path,
+    doc: &taiyaku_core::Sidecar,
+    walked: &[(&str, &str)],
+) -> i64 {
+    let conn = library.conn();
+    let work_id = taiyaku_library::import::scanned(&conn, doc, None).expect("imports the work");
+    conn.execute(
+        "INSERT INTO root (path) VALUES (?1)",
+        [dir.to_string_lossy()],
+    )
+    .expect("a directory");
+    let root_id = conn.last_insert_rowid();
+    conn.execute(
+        "UPDATE member SET root_id = ?1
+          WHERE edition_id IN (SELECT id FROM edition WHERE work_id = ?2)",
+        [root_id, work_id],
+    )
+    .expect("files the members under it");
+    for (file, format) in walked {
+        conn.execute(
+            "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
+             VALUES (?1, ?2, 'file', ?3, 1, 1)",
+            rusqlite::params![root_id, file, format],
+        )
+        .expect("the walk's record");
+    }
+    work_id
+}
+
+/// A library of two files, each named as the other kind is and scanned and
+/// derived for what it is: `Story/Story v01.zip`, a reflowable EPUB of two
+/// blocks, and `Comic/Comic v01.epub`, a comic archive of two pages. Answers
+/// the state and the slugs of the book's work and the comic's.
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written, or the scan or derive fails.
+pub(crate) fn misnamed(dir: &std::path::Path) -> (std::sync::Arc<ServeState>, String, String) {
+    let tree = dir.join("tree");
+    for series in ["Story", "Comic"] {
+        std::fs::create_dir_all(tree.join(series)).expect("creates a series directory");
+    }
+    taiyaku_read::test_support::epub(&tree.join("Story"), "Story v01.zip", &["One.", "Two."]);
+    taiyaku_read::test_support::cbz_pages(&tree.join("Comic"), "Comic v01.epub", 2, 0);
+    let library = library();
+    let slugs = {
+        let conn = library.conn();
+        let root = taiyaku_library::scan::add_root(&conn, &tree).expect("adds the root");
+        taiyaku_library::scan::scan_root(&conn, &root).expect("scans the tree");
+        taiyaku_library::derive::derive(&conn).expect("derives the library");
+        let slug = |file: &str| -> String {
+            conn.query_row(
+                "SELECT work.slug FROM work JOIN edition ON edition.work_id = work.id
+                   JOIN member ON member.edition_id = edition.id
+                  WHERE member.path LIKE ?1",
+                [format!("%/{file}")],
+                |row| row.get(0),
+            )
+            .expect("the file's one work")
+        };
+        (slug("Story v01.zip"), slug("Comic v01.epub"))
+    };
+    let works = crate::works::from_library(&library).expect("projects the scanned works");
+    let mut state = state(dir);
+    state.library = library;
+    state.works = crate::Works::fixed(works);
+    (std::sync::Arc::new(state), slugs.0, slugs.1)
 }
 
 /// The shared fixture plus a second edition and a solved edge between
@@ -703,6 +805,7 @@ fn state_over(
         works: crate::Works::fixed(vec![work]),
         source,
         cache_dir: fixture.path().join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -999,6 +1102,7 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
         works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1084,6 +1188,7 @@ fn two_editions_in_a_library(
         works: crate::Works::fixed(works),
         source,
         cache_dir: fixture.path().join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1266,6 +1371,7 @@ pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<Serv
         works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1451,6 +1557,7 @@ fn router_over_a_written_tree_with(
         // Beside the scanned tree rather than inside it: one that appeared
         // under the root would be material a later scan walked.
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         source: std::sync::Arc::new(crate::LocalLibrary),
         log: None,
         auth: crate::session::AuthConfig::default(),
@@ -1528,6 +1635,7 @@ pub(crate) fn router_over_a_scanned_cbz() -> (axum::Router, std::sync::Arc<Serve
         // Outside the scanned tree, so nothing this creates is material a
         // later scan walks — `router_over_a_scanned_tree`'s own reasoning.
         cache_dir: fixture.path().join("covers"),
+        dictionaries: None,
         source: std::sync::Arc::new(crate::LocalLibrary),
         log: None,
         auth: crate::session::AuthConfig::default(),
@@ -1749,6 +1857,7 @@ fn two_scanned_roots_over(
         works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1870,6 +1979,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
         works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -2048,6 +2158,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
         works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -2152,6 +2263,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -2238,6 +2350,7 @@ pub(crate) fn router_over_a_series_in_two_libraries() -> (
         works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -2361,6 +2474,7 @@ fn nested_libraries(inner_first: bool) -> NestedLibraries {
         works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -2963,6 +3077,7 @@ pub(crate) fn router_over_a_granted_two_dir_library(
         works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: dir.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -3092,6 +3207,7 @@ fn work_whose_editions_sit_in_two_libraries(
         works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -3394,6 +3510,7 @@ fn an_edition_merged_from_two_libraries(
         works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -3498,6 +3615,7 @@ pub(crate) fn router_over_a_copy_granted_through_its_second_directory()
         works: crate::Works::fixed(works),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),

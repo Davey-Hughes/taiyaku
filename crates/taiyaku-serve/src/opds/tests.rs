@@ -579,6 +579,7 @@ async fn a_percent_encoded_edition_key_in_the_feed_routes_back_to_the_same_editi
         )]),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: tmp.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -811,6 +812,137 @@ async fn the_acquisition_link_declares_the_type_the_route_will_send() {
         !feed_body.contains(r#"rel="http://opds-spec.org/acquisition" type="image/jpeg""#),
         "the acquisition link is no longer a page: {feed_body}"
     );
+}
+
+/// A book edition streams no pages, so its entry carries the download alone,
+/// and a reader who may not download is offered no entry for it at all. The
+/// comic edition beside it keeps its page stream either way.
+#[tokio::test]
+async fn a_book_edition_is_offered_as_a_download_and_never_as_pages() {
+    async fn feed(dir: &std::path::Path, can_download: bool) -> String {
+        let shelf = dir.join("work");
+        let json = format!(
+            r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "T", "reading": "ltr" }},
+          "editions": {{
+            "en": {{ "label": "en", "members": [
+              {{ "path": "{at}/Story.epub", "sha256": "e", "pages": 40 }} ], "spreads": [] }},
+            "raw": {{ "label": "raw", "members": [
+              {{ "path": "{at}/Story.cbz", "sha256": "r", "pages": 12 }} ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#,
+            at = shelf.display()
+        );
+        let sidecar = taiyaku_core::Sidecar::from_json(&json).unwrap();
+        let mut state = crate::test_support::state(dir);
+        crate::test_support::held_as_scanned(
+            &state.library,
+            &shelf,
+            &sidecar,
+            &[("Story.epub", "epub-reflow"), ("Story.cbz", "zip")],
+        );
+        state.works = crate::Works::fixed(vec![crate::Work::new(
+            "t".into(),
+            shelf.join("taiyaku.json"),
+            sidecar,
+        )]);
+        let mut extensions = axum::http::Extensions::new();
+        extensions.insert(crate::auth::Principal {
+            can_download,
+            ..an_administrator()
+        });
+        let response = crate::opds::work_feed(
+            axum::extract::State(Arc::new(state)),
+            axum::extract::Path("t".to_string()),
+            extensions,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        body_of(response).await
+    }
+    let entry = |body: &str, key: &str| -> Option<String> {
+        body.split("<entry>")
+            .find(|e| e.contains(&format!("<id>taiyaku:edition:t:{key}</id>")))
+            .map(str::to_string)
+    };
+
+    let tmp = crate::test_support::Fixture::new("opds-book-yes");
+    let granted = feed(&tmp, true).await;
+    let book = entry(&granted, "en").expect("the book's entry");
+    assert!(book.contains("/download"), "{book}");
+    assert!(
+        !book.contains("opds-pse/stream") && !book.contains("/pages/"),
+        "{book}"
+    );
+    assert!(
+        entry(&granted, "raw")
+            .expect("the comic's entry")
+            .contains("opds-pse/stream")
+    );
+
+    let tmp = crate::test_support::Fixture::new("opds-book-no");
+    let withheld = feed(&tmp, false).await;
+    assert_eq!(entry(&withheld, "en"), None, "{withheld}");
+    assert!(
+        entry(&withheld, "raw")
+            .expect("the comic's entry")
+            .contains("opds-pse/stream")
+    );
+}
+
+/// The entries of [`crate::opds::work_feed`] for the work `pick` chooses, the
+/// book's or the comic's, of [`crate::test_support::misnamed`]'s library, as
+/// an account that may or may not download.
+async fn misnamed_entries(pick: fn(String, String) -> String, can_download: bool) -> Vec<String> {
+    let tmp = crate::test_support::Fixture::new("opds-misnamed");
+    let (state, book, comic) = crate::test_support::misnamed(&tmp);
+    let mut extensions = axum::http::Extensions::new();
+    extensions.insert(crate::auth::Principal {
+        can_download,
+        ..an_administrator()
+    });
+    let response = crate::opds::work_feed(
+        axum::extract::State(state),
+        axum::extract::Path(pick(book, comic)),
+        extensions,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_of(response).await;
+    body.split("<entry>").skip(1).map(str::to_string).collect()
+}
+
+/// A book is told by what the scan read, as the library tells it, and not by
+/// its name: a reflowable EPUB named `.zip` streams no pages.
+#[tokio::test]
+async fn a_feed_streams_no_pages_of_a_reflowable_epub_named_zip() {
+    let entries = misnamed_entries(|book, _| book, true).await;
+    let [entry] = entries.as_slice() else {
+        panic!("the book's one edition: {entries:?}");
+    };
+    assert!(
+        entry.contains("/download") && !entry.contains("opds-pse/stream"),
+        "{entry}"
+    );
+}
+
+/// A comic named `.epub` streams its pages, to a reader who may not download
+/// as well as to one who may.
+#[tokio::test]
+async fn a_feed_streams_the_pages_of_a_comic_archive_named_epub() {
+    for can_download in [true, false] {
+        let entries = misnamed_entries(|_, comic| comic, can_download).await;
+        let [entry] = entries.as_slice() else {
+            panic!("the comic's one edition, downloading {can_download}: {entries:?}");
+        };
+        assert!(
+            entry.contains("opds-pse/stream"),
+            "downloading {can_download}: {entry}"
+        );
+    }
 }
 
 /// **The work feed asks the filesystem off the async worker** — O120.
@@ -1108,6 +1240,7 @@ async fn the_cover_cache_key_follows_locate_past_a_pageless_first_member() {
         works: crate::Works::fixed(vec![work_with_a_pageless_first_member(&tmp)]),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: dir.clone(),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1308,6 +1441,7 @@ fn router_with_a_real_page_under_a_withheld_root(
         works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1417,6 +1551,7 @@ fn router_with_two_editions_split_across_roots(
         works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1499,6 +1634,7 @@ fn router_with_two_works_one_withheld(
         works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),

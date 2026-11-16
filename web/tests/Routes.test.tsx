@@ -52,6 +52,16 @@ vi.mock('../src/App', () => ({
     )
   },
 }))
+vi.mock('../src/BookReader', () => ({
+  BookReader: ({ work, onLeave }: { work: string; onLeave: () => void }) => (
+    <div data-testid="book">
+      {work}
+      <button type="button" data-testid="leave-book" onClick={onLeave}>
+        leave
+      </button>
+    </div>
+  ),
+}))
 vi.mock('../src/library', async (importOriginal) => ({
   // The real parser of `?library=`: it is a pure function over the URL, and
   // the library page and the sidebar both read the parameter through it.
@@ -483,6 +493,30 @@ describe('the routes', () => {
     vi.mocked(useParams).mockReturnValueOnce({})
     const host = at('/read/gotoubun-v01')
     expect(host.querySelector('[data-testid="reader"]')).toBeNull()
+    expect(host.querySelector('.library')).not.toBeNull()
+    await flush()
+  })
+
+  it('opens a book in the book reader, and leaving it returns to the library', async () => {
+    const host = at('/book/harry-potter-1')
+    expect(host.querySelector('[data-testid="book"]')?.textContent).toContain(
+      'harry-potter-1',
+    )
+    expect(host.querySelector('[data-testid="reader"]')).toBeNull()
+    await act(async () => {
+      host
+        .querySelector<HTMLButtonElement>('[data-testid="leave-book"]')
+        ?.click()
+      await Promise.resolve()
+    })
+    expect(host.querySelector('[data-testid="book"]')).toBeNull()
+    await flush()
+  })
+
+  it('sends a book route with no work to the library', async () => {
+    vi.mocked(useParams).mockReturnValueOnce({})
+    const host = at('/book/harry-potter-1')
+    expect(host.querySelector('[data-testid="book"]')).toBeNull()
     expect(host.querySelector('.library')).not.toBeNull()
     await flush()
   })

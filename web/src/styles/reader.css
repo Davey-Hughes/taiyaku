@@ -776,3 +776,23 @@ button.reader-secret:hover {
   background: var(--reader-panel);
   color: var(--text);
 }
+
+/* The compare layout's two pages, each a spread's cell, and the words a pane
+ * says where its edition has no page for the place being read. */
+.compared {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+.compared > * {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+}
+
+.compared-none {
+  margin: auto;
+  padding: var(--space-4);
+}

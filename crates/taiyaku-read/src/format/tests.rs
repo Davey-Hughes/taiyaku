@@ -180,7 +180,7 @@ fn every_format_names_its_schema_token_and_says_whether_it_can_be_read() {
         (Format::Dir, Some("dir"), true),
         (Format::Zip, Some("zip"), true),
         (Format::EpubFixed, Some("epub-fixed"), false),
-        (Format::EpubReflow, Some("epub-reflow"), false),
+        (Format::EpubReflow, Some("epub-reflow"), true),
         (Format::Pdf, Some("pdf"), false),
         (Format::Rar, Some("rar"), false),
         (Format::SevenZip, Some("7z"), false),

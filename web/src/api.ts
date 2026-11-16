@@ -728,3 +728,30 @@ export async function putTruth(
     etag: res.headers.get('etag') ?? undefined,
   }
 }
+
+/** What a dictionary says of a word: its headword, part of speech and senses, and the form looked up where that is not the headword. */
+export interface DictionaryEntry {
+  word: string
+  pos: string
+  glosses: string[]
+  via: string | null
+}
+
+/**
+ * `word` looked up in this server's dictionary for `lang`, the reader's word
+ * never leaving the server; `undefined` where it has none for the language,
+ * which is the server's 404.
+ */
+export async function lookUpWord(
+  lang: string,
+  word: string,
+): Promise<DictionaryEntry[] | undefined> {
+  const res = await request(
+    `/api/dictionary/${encodeURIComponent(lang)}/${encodeURIComponent(word)}`,
+  )
+  if (res.status === 404) return undefined
+  if (!res.ok) {
+    throw new Error(`looking up ${word}: ${res.status} ${await res.text()}`)
+  }
+  return (await res.json()) as DictionaryEntry[]
+}

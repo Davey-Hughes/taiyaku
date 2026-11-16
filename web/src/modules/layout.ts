@@ -1,9 +1,9 @@
 import type { ReaderModule } from '../module'
-import type { Mode } from '../pairing'
+import type { Layout } from '../layouts'
 
 /**
- * How the page area is laid out: one page, a two-page spread, or a continuous
- * scroll.
+ * How the page area is laid out: one page, a two-page spread, a continuous
+ * scroll, or one page beside another edition's.
  *
  * **It is a module so that it persists**: registering it here is all it takes,
  * since `App.tsx` builds its preference state from `registry.all()` and writes
@@ -24,12 +24,12 @@ import type { Mode } from '../pairing'
  * one slice.
  */
 export interface LayoutPrefs {
-  mode: Mode
+  mode: Layout
 }
 
 export const layoutModule: ReaderModule<LayoutPrefs> = {
   id: 'layout',
   label: 'Layout',
   defaults: { mode: 'single' },
-  options: { mode: ['single', 'two', 'scroll'] },
+  options: { mode: ['single', 'two', 'scroll', 'compare'] },
 }

@@ -326,6 +326,7 @@ describe('the 16px iOS zoom floor, against every stylesheet index.css imports', 
       './admin.css',
       './settings.css',
       './reader.css',
+      './book.css',
     ])
     for (const path of CASCADE_ORDER) {
       expect(STYLESHEETS[path], path).toBeTruthy()

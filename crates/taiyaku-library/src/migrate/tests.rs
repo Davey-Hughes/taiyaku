@@ -284,6 +284,7 @@ fn a_notes_json_beside_the_sidecar_migrates_every_note_id_body_and_region() {
         recovered.notes,
         vec![
             Note {
+                text: None,
                 id: "01H1".to_string(),
                 edition: "raw-mono".to_string(),
                 slot: 0,
@@ -296,6 +297,7 @@ fn a_notes_json_beside_the_sidecar_migrates_every_note_id_body_and_region() {
                 at: None,
             },
             Note {
+                text: None,
                 id: "01H2".to_string(),
                 edition: "raw-mono".to_string(),
                 slot: 3,
@@ -331,6 +333,7 @@ fn notes_already_held_are_not_overwritten_by_the_file() {
             taiyaku_notes: crate::NOTES_VERSION,
             work: "t".to_string(),
             notes: vec![Note {
+                text: None,
                 id: "live".to_string(),
                 edition: "raw-mono".to_string(),
                 slot: 0,

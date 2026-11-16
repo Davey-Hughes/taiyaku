@@ -67,6 +67,9 @@ import { useGate } from './gate'
 import { CreditsPanel } from './CreditsPanel'
 import { Help } from './Help'
 import { TurnButtons } from './TurnButtons'
+import { Compared } from './Compared'
+import { type Layout, PAGE_LAYOUTS, PAGE_LAYOUTS_COMPARED } from './layouts'
+import { PageView } from './PageView'
 import { controlKind, inPanel, intentOf, isInteractivePress } from './keys'
 import { keyPlan } from './keyplan'
 import { messageOf } from './message'
@@ -171,8 +174,8 @@ import { NotePanel } from './NotePanel'
 import { work as workDetail, type WorkDetail } from './library'
 import { cellOf, groups, type Group, type Mode } from './pairing'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
-import { display, navigate } from './reading'
-import { readerName, titleLines } from './readerTitle'
+import { display, navigate, swap } from './reading'
+import { labelOf, readerName, titleLines } from './readerTitle'
 import { ReaderFailed, type LoadFailure } from './ReaderFailed'
 import { ReaderHeading } from './ReaderHeading'
 import { ringStep } from './ring'
@@ -299,10 +302,6 @@ function App({ work, onLeave }: AppProps) {
   // it, from beside the `if (!session) return null` far below: the first
   // place a second render path can sit with no hook after it.
   const [failure, setFailure] = useState<LoadFailure>()
-  // The reading mode is a preference, not component state. `layoutModule`
-  // holds it, which is what makes it load, save and reach the settings panel;
-  // `setMode` writes that slice and nothing else changes, because every read
-  // below reads a `Mode`.
   // The part of the drawn group the reader is looking at. `WHOLE` is
   // fit-whole, which is what scroll mode does — see the `Viewport` wrapper
   // below, which is only mounted for the two modes that draw one group into a
@@ -468,11 +467,25 @@ function App({ work, onLeave }: AppProps) {
   // the `P` a plain `Record<string, object>` can't carry, so every site below
   // is typed. Derived on every render rather than memoised: each is a cheap
   // property lookup with a fallback, not a computation worth caching.
-  const mode = sliceFor(prefsMap, layoutModule).mode
+  const chosen = sliceFor(prefsMap, layoutModule).mode
+  // Compare needs a second edition, and the choice is kept across works, so on
+  // a work of one it draws a single page, sized and pressed as one.
+  const layout: Layout =
+    chosen === 'compare' && (session?.editions.length ?? 0) < 2
+      ? 'single'
+      : chosen
+  // Compared, the edition viewed is drawn as single draws it, with the next
+  // edition's page beside it (`companionPage`).
+  const mode: Mode = layout === 'compare' ? 'single' : layout
+  // The reading mode is a preference, not component state. `layoutModule`
+  // holds it, which is what makes it load, save and reach the settings panel;
+  // `setMode` writes that slice and nothing else changes: `layout` is the
+  // choice as it can be drawn, and `mode` the page layout drawn for it.
+  //
   // `changeSlice`, not a hand-written spread of the map and of the slice —
   // `LayoutPrefs` has one field, so writing it out would work and would be
   // exactly the bug `direction.ts`'s `setOverride` exists to prevent.
-  const setMode = (next: Mode) =>
+  const setMode = (next: Layout) =>
     setPrefsMap((map) =>
       changeSlice(map, layoutModule, (prefs) => ({ ...prefs, mode: next })),
     )
@@ -1293,7 +1306,11 @@ function App({ work, onLeave }: AppProps) {
   // does, and the two have to match: the browser caches a page once per `?w=`,
   // so a page warmed at any other size warms nothing the reader draws (O110).
   const pageLongEdge = requestedLongEdge(
-    pageBoxLongEdge(viewportWidth, window.innerHeight, mode),
+    pageBoxLongEdge(
+      viewportWidth,
+      window.innerHeight,
+      layout === 'compare' ? 'two' : mode,
+    ),
     window.devicePixelRatio,
     1 / view.w,
   )
@@ -1837,6 +1854,13 @@ function App({ work, onLeave }: AppProps) {
     reading,
     directionPrefs.override[shown.edition],
   )
+  // Compared, the edition after the one viewed stands beside it as a spread's
+  // other page does: the page read in the cell its reading order puts first.
+  const companion =
+    layout === 'compare'
+      ? editions[(editions.indexOf(shown.edition) + 1) % editions.length]
+      : undefined
+  const readCell = effectiveReading === 'rtl' ? 'second' : 'first'
   // Same `shown.edition` reasoning as `effectiveReading` above: breaks are
   // stored per edition, keyed by the edition whose slots `groups` is about
   // to pair.
@@ -2091,9 +2115,11 @@ function App({ work, onLeave }: AppProps) {
    * them either.
    */
   const hugFor = (group: Group | undefined, slot: number): ArtworkHug =>
-    mode !== 'two' || !group
-      ? 'centre'
-      : hugForCell(cellOf(group, effectiveReading, slot))
+    companion
+      ? hugForCell(readCell)
+      : mode !== 'two' || !group
+        ? 'centre'
+        : hugForCell(cellOf(group, effectiveReading, slot))
 
   /** The hug for the slot the reader is on, which is the one the overlay draws over. */
   const shownHug = at ? hugFor(current, at.slot) : 'centre'
@@ -2101,8 +2127,9 @@ function App({ work, onLeave }: AppProps) {
     at && current && mode !== 'scroll'
       ? {
           url: pageAt(at.slot),
-          cell:
-            mode === 'two'
+          cell: companion
+            ? readCell
+            : mode === 'two'
               ? cellOf(current, effectiveReading, at.slot)
               : 'only',
           half: slots[at.slot].half,
@@ -2614,6 +2641,27 @@ function App({ work, onLeave }: AppProps) {
       onTake={take}
     />
   )
+  // The companion's page for the place the reader is at is found as a swap to
+  // it would find it, and a gap is said.
+  const companionPage = (edition: string) => {
+    const there = display(swap(state, edition), resolver)
+    const at =
+      there.kind === 'at' ? resolver.slotAt(edition, there.slot) : undefined
+    const label = labelOf(detail, edition)
+    return at ? (
+      <PageView
+        src={pageUrl(work, edition, at.page, pageLongEdge)}
+        alt={`${label}, page ${at.page + 1}`}
+        hug={hugForCell(readCell === 'first' ? 'second' : 'first')}
+        buffered={buffered}
+        decodeQueue={swapQueue}
+        cohort={pageCohort}
+        fit={fitPrefs}
+      />
+    ) : (
+      <p className="compared-none">{label} has no page here.</p>
+    )
+  }
   // The borrowed page, and the one `slotAt` all three of its page values are
   // built from. `Borrowed` wants the lender's page 1-based for the mark and the
   // `alt`, 0-based for the URL, and its `half` beside both — and asking the
@@ -2882,18 +2930,29 @@ function App({ work, onLeave }: AppProps) {
             ))}
           </div>
         ) : (
-          current && (
-            // Scroll mode's branch above mounts every group at once and keeps
-            // fit-whole, which is the spec's scope decision rather than an
-            // oversight. `WHOLE` while the module is disabled rather than
-            // unmounting the wrapper, so turning zoom off does not change what
-            // React reconciles here — a changed element type at this position
-            // is what `cellsFor`'s doc records forcing a remount and throwing
-            // away `PageView`'s decode gate.
+          current &&
+          // Scroll mode's branch above mounts every group at once and keeps
+          // fit-whole, which is the spec's scope decision rather than an
+          // oversight. `WHOLE` while the module is disabled rather than
+          // unmounting the wrapper, so turning zoom off does not change what
+          // React reconciles here — a changed element type at this position
+          // is what `cellsFor`'s doc records forcing a remount and throwing
+          // away `PageView`'s decode gate.
+          (companion ? (
+            <Viewport rect={zoomPrefs.enabled ? view : WHOLE}>
+              <Compared
+                reading={effectiveReading}
+                fit={fitPrefs}
+                companion={companionPage(companion)}
+              >
+                {drawGroup(current)}
+              </Compared>
+            </Viewport>
+          ) : (
             <Viewport rect={zoomPrefs.enabled ? view : WHOLE}>
               {drawGroup(current)}
             </Viewport>
-          )
+          ))
         )}
         {/*
           Meant as VoiceOver's way to turn a page (spec 2026-09-26 §3.4) —
@@ -2935,7 +2994,8 @@ function App({ work, onLeave }: AppProps) {
         progress={readouts.progress}
         title={heading.title}
         editionLine={heading.editionLine}
-        mode={mode}
+        layouts={editions.length > 1 ? PAGE_LAYOUTS_COMPARED : PAGE_LAYOUTS}
+        mode={layout}
         onMode={setMode}
         settingsOpen={settingsVisible}
         onSettings={() => setSettingsVisible((open) => !open)}

@@ -10,10 +10,12 @@
 
 pub mod account;
 pub mod backup;
+pub mod book_pins;
 pub mod browse;
 pub mod comicinfo;
 pub mod credential;
 pub mod derive;
+pub mod dictionary;
 pub mod export;
 // **Private, and that is the point.** `fold::absorb` deletes a `work` row, and
 // `derive` is the only thing that has any business calling it —
@@ -149,6 +151,15 @@ pub struct Region {
     pub h: f64,
 }
 
+/// A run of a book block's text, from `start` up to `end`, in UTF-16 code
+/// units as a browser counts a string, since a browser is what draws it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextRange {
+    pub start: u32,
+    pub end: u32,
+}
+
 /// One note.
 ///
 /// `region` is optional and absent means the whole slot — a degenerate case
@@ -164,6 +175,10 @@ pub struct Note {
     pub slot: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<Region>,
+    /// The run of a book block's text this note marks, a highlight; absent for
+    /// a note on the whole block, and for every note on a page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextRange>,
     /// Which colour a reader gave this note, as a name rather than as pixels.
     ///
     /// A **token**, never CSS: `taiyaku.json` carries correspondence and this
@@ -200,14 +215,17 @@ pub struct Note {
 
 impl Note {
     /// Whether two notes are anchored to exactly the same place: the same
-    /// edition, slot and region.
+    /// edition, slot, region and run of text.
     ///
     /// Not whether they are equal: a reader retyping a note's words leaves the
     /// anchor alone, and re-checking an anchor that has not moved is what
     /// makes the notes `PUT` refuse documents for a note nobody touched.
     #[must_use]
     pub fn same_anchor(&self, other: &Note) -> bool {
-        self.edition == other.edition && self.slot == other.slot && self.region == other.region
+        self.edition == other.edition
+            && self.slot == other.slot
+            && self.region == other.region
+            && self.text == other.text
     }
 }
 

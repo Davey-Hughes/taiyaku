@@ -4,6 +4,7 @@ import { cdp } from 'vitest/browser'
 // through `index.css`.
 import '../src/index.css'
 import { Chrome, type ChromeProps } from '../src/Chrome'
+import { PAGE_LAYOUTS } from '../src/layouts'
 import { mount } from './support/mount'
 
 /**
@@ -172,6 +173,7 @@ function readerBars(): HTMLElement {
     progress: 0.25,
     title: 'Go-Toubun no Hanayome',
     editionLine: 'Raw',
+    layouts: PAGE_LAYOUTS,
     mode: 'single',
     onMode: () => {},
     settingsOpen: false,

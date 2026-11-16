@@ -2,6 +2,7 @@ import { Link } from 'react-router'
 import { Cover } from './Cover'
 import {
   narrowedTo,
+  readerPath,
   type SeriesCard,
   unreadable,
   type WorkCard,
@@ -64,7 +65,7 @@ export function SeriesGrid({
           ) : (
             // An unfiled work has no series page — §5.4 — so it links
             // straight into the reader.
-            <Link to={`/read/${w.slug}`}>
+            <Link to={readerPath(w)}>
               <span className="title">{w.title}</span>
             </Link>
           )}

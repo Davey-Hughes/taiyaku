@@ -16,12 +16,20 @@ export interface TitleLines {
   editionLine: string
 }
 
+/** `edition`'s label as the library has it, or its key until it answers. */
+export function labelOf(
+  detail: WorkDetail | undefined,
+  edition: string,
+): string {
+  return detail?.editions.find((e) => e.key === edition)?.label ?? edition
+}
+
 export function titleLines(
   detail: WorkDetail | undefined,
   edition: string,
 ): TitleLines {
   if (!detail) return { editionLine: edition }
-  const label = detail.editions.find((e) => e.key === edition)?.label ?? edition
+  const label = labelOf(detail, edition)
   return {
     title: detail.title,
     editionLine:

@@ -26,6 +26,7 @@ fn notes_doc(entries: &[(&str, &str, &str)]) -> Notes {
         notes: entries
             .iter()
             .map(|(id, body, updated)| Note {
+                text: None,
                 id: (*id).to_string(),
                 edition: "raw-mono".to_string(),
                 slot: 0,
@@ -116,6 +117,7 @@ fn a_note_with_a_region_round_trips() {
         taiyaku_notes: crate::NOTES_VERSION,
         work: "t".to_string(),
         notes: vec![Note {
+            text: None,
             id: "01H".to_string(),
             edition: "raw-mono".to_string(),
             slot: 7,
@@ -172,6 +174,37 @@ fn a_partially_null_region_is_refused_rather_than_guessed_at() {
         result.is_err(),
         "a region with only rx/ry set must not read as anything"
     );
+}
+
+/// A highlight's run of text is read back as it was written.
+#[test]
+fn a_note_on_a_run_of_text_round_trips() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work(&conn);
+    let mut doc = notes_doc(&[("01H", "a highlight", "2026-08-14T10:00:00Z")]);
+    doc.notes[0].text = Some(TextRange { start: 4, end: 19 });
+
+    put_notes(&conn, work_id, 1, &doc).expect("write");
+    let back = notes(&conn, work_id, 1).expect("read");
+
+    assert_eq!(back.notes[0].text, Some(TextRange { start: 4, end: 19 }));
+}
+
+/// As with a region, a run with one end missing is refused, not guessed at.
+#[test]
+fn a_run_of_text_with_one_end_is_refused_rather_than_guessed_at() {
+    let library = Library::open_in_memory().expect("library");
+    let conn = library.conn();
+    let work_id = a_work(&conn);
+    conn.execute(
+        "INSERT INTO note (id, user_id, work_id, edition, slot, ts, body, created, updated)
+         VALUES ('01H', 1, ?1, 'raw-mono', 0, 4, 'b', 't', 't')",
+        [work_id],
+    )
+    .expect("hand-inserted, bypassing put_notes");
+
+    assert!(notes(&conn, work_id, 1).is_err());
 }
 
 /// Two readers' notes on the same work must not leak into each other.
@@ -1737,6 +1770,7 @@ fn a_position_on_an_edition_the_work_no_longer_has_answers_its_slot() {
 /// Note `id` on `raw`'s `slot`, its words its own.
 fn a_raw_note(id: &str, slot: u32) -> Note {
     Note {
+        text: None,
         id: id.into(),
         edition: "raw".into(),
         slot,

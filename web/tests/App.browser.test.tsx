@@ -248,7 +248,14 @@ describe('the reader’s two bars, in a browser', () => {
     'at %i×%i, each top-bar control is what a click at its centre reaches',
     async (width, height) => {
       await readerWithChrome(width, height)
-      for (const name of ['Library', 'single', 'two', 'scroll', 'Settings']) {
+      for (const name of [
+        'Library',
+        'single',
+        'two',
+        'scroll',
+        'compare',
+        'Settings',
+      ]) {
         const control = button(name)
         expect(hitAtCentreOf(control), name).toBe(control)
       }
@@ -768,7 +775,7 @@ describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
     async (width, height) => {
       await readerFocused(width, height)
       const walk: string[] = []
-      for (let i = 0; i < 14; i++) {
+      for (let i = 0; i < 16; i++) {
         await userEvent.tab()
         walk.push(`${focused()}${barsUp() ? ' +bars' : ''}`)
       }
@@ -777,6 +784,7 @@ describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
         'single +bars',
         'two +bars',
         'scroll +bars',
+        'compare +bars',
         'Settings +bars',
         'page 3 +bars',
         'page',
@@ -790,13 +798,14 @@ describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
     async (width, height) => {
       await readerFocused(width, height)
       const walk: string[] = []
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < 8; i++) {
         await userEvent.tab({ shift: true })
         walk.push(`${focused()}${barsUp() ? ' +bars' : ''}`)
       }
       expect(walk).toEqual([
         'page 3 +bars',
         'Settings +bars',
+        'compare +bars',
         'scroll +bars',
         'two +bars',
         'single +bars',
@@ -808,7 +817,7 @@ describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
 
   it('Escape from ⚙ takes the bars away and leaves focus on the page', async () => {
     await readerFocused(1440, 900)
-    for (let i = 0; i < 5; i++) await userEvent.tab()
+    for (let i = 0; i < 6; i++) await userEvent.tab()
     expect(focused()).toBe('Settings')
     await userEvent.keyboard('{Escape}')
     expect(barsUp()).toBe(false)
@@ -817,7 +826,7 @@ describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
 
   it('→ on the strip turns the page and focus follows it', async () => {
     await readerFocused(1440, 900)
-    for (let i = 0; i < 6; i++) await userEvent.tab()
+    for (let i = 0; i < 7; i++) await userEvent.tab()
     expect(focused()).toBe('page 3')
     await userEvent.keyboard('{ArrowRight}')
     await until(() => focused() === 'page 4')
@@ -846,7 +855,15 @@ describe('the keyboard ring, with real keys: every stop and every region (spec 2
 
   it('Escape from every stop in the bars takes them down and leaves focus on the page', async () => {
     await readerFocused(1440, 900)
-    const stops = ['Library', 'single', 'two', 'scroll', 'Settings', 'page 3']
+    const stops = [
+      'Library',
+      'single',
+      'two',
+      'scroll',
+      'compare',
+      'Settings',
+      'page 3',
+    ]
     for (const [i, name] of stops.entries()) {
       // Each Escape lands on the page, so the walk to the next stop restarts.
       await tabs(i + 1)
@@ -861,7 +878,7 @@ describe('the keyboard ring, with real keys: every stop and every region (spec 2
     await readerFocused(1440, 900)
     // The browser fixture reads `ltr`, so `→` is a step forward. Stored
     // progress is slot 2, page 3.
-    const stops = ['Library', 'single', 'two', 'scroll', 'Settings']
+    const stops = ['Library', 'single', 'two', 'scroll', 'compare', 'Settings']
     await tabs(1)
     await until(() => spokenPage() === 3)
     for (const name of stops) {

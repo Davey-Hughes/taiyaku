@@ -2503,7 +2503,8 @@ fn serve_refuses_an_unknown_flag() {
     assert_eq!(
         err,
         "serve has no flag `--bogus`; its flags are --addr, --allow-web-setup, --cache, \
-             --cache-max, --db, --dirs, --insecure-cookies, --log-requests, --refresh-stump, \
+             --cache-max, --db, --dictionaries, --dirs, --insecure-cookies, --log-requests, \
+             --refresh-stump, \
              --secure-cookies, --stump-key, --stump-url, --trusted-proxy, --web"
     );
 }

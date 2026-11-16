@@ -612,6 +612,7 @@ fn promotion_reaches_the_seeded_row_and_keeps_what_hangs_off_it() {
             taiyaku_notes: crate::NOTES_VERSION,
             work: "t".to_string(),
             notes: vec![crate::Note {
+                text: None,
                 id: "01HBEFORE".to_string(),
                 edition: "raw".to_string(),
                 slot: 0,

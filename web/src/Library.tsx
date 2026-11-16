@@ -44,6 +44,7 @@ import {
   type LibraryStatus,
   libraryParam,
   matchesChip,
+  readerPath,
   sorted,
   unreadable,
   type View,
@@ -309,7 +310,7 @@ export function Library() {
                         </span>
                       </span>
                     ) : (
-                      <Link to={`/read/${w.slug}`}>
+                      <Link to={readerPath(w)}>
                         <ContinueCard w={w} />
                       </Link>
                     )}

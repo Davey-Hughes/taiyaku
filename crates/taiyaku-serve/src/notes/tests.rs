@@ -11,6 +11,7 @@ fn library() -> Library {
 
 fn note(id: &str, slot: u32, region: Option<Region>) -> Note {
     Note {
+        text: None,
         id: id.into(),
         edition: "raw".into(),
         slot,
@@ -159,6 +160,7 @@ fn a_stale_anchor_already_stored_does_not_refuse_the_writes_that_follow_it() {
     // Already stored, and now a reader adds an ordinary note beside it.
     let mut both = stale.clone();
     both.notes.push(Note {
+        text: None,
         id: "01NEW".into(),
         edition: "raw".into(),
         slot: 1,
@@ -303,6 +305,7 @@ fn on(edition: &str, slot: u32, region: Option<Region>) -> Notes {
         taiyaku_notes: taiyaku_library::NOTES_VERSION,
         work: "t".into(),
         notes: vec![Note {
+            text: None,
             id: "01J8".into(),
             edition: edition.into(),
             slot,
@@ -314,6 +317,45 @@ fn on(edition: &str, slot: u32, region: Option<Region>) -> Notes {
             stale: false,
             at: None,
         }],
+    }
+}
+
+/// A run of text starts at or before its end, an empty run being a caret, is
+/// not also a region, and is on a book's text, never on a page.
+#[test]
+fn a_run_of_text_must_be_a_run_on_a_book_and_not_a_region_too() {
+    let tmp = crate::test_support::Fixture::new("notes-text");
+    let work = crate::test_support::work(&tmp);
+    let mut book = (*work.sidecar()).clone();
+    book.editions.get_mut("raw").unwrap().members.truncate(1);
+    let books = std::collections::HashSet::from(["raw".to_string()]);
+    let marking = |start, end, region| {
+        let mut doc = on("raw", 0, region);
+        doc.notes[0].text = Some(taiyaku_library::TextRange { start, end });
+        validate_against(&doc, "t", &book, &empty("t"), &books)
+    };
+    let mut on_a_page = on("raw", 0, None);
+    on_a_page.notes[0].text = Some(taiyaku_library::TextRange { start: 3, end: 9 });
+    assert!(
+        matches!(
+            validate(&on_a_page, &work, &empty("t")),
+            Err(Invalid::Refused(why)) if why.contains("is not a run")
+        ),
+        "a run on a comic's page"
+    );
+    let region = Region {
+        x: 0.1,
+        y: 0.1,
+        w: 0.5,
+        h: 0.5,
+    };
+    assert!(marking(3, 9, None).is_ok());
+    assert!(marking(4, 4, None).is_ok());
+    for refused in [marking(9, 3, None), marking(3, 9, Some(region))] {
+        assert!(
+            matches!(&refused, Err(Invalid::Refused(why)) if why.contains("is not a run")),
+            "{refused:?}"
+        );
     }
 }
 

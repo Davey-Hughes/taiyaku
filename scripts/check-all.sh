@@ -230,7 +230,7 @@ else
   # held until that check has run. CI does the same with a step condition.
   set +e
   run env -u TAIYAKU_CORPUS cargo llvm-cov nextest --workspace --all-features \
-    --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
+    --ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
     --fail-under-lines 91
   rust_coverage_status=$?
   set -e
@@ -244,7 +244,7 @@ else
     # The floor is skipped when `report` fails, so a report left by an earlier run is never read.
     set +e
     run cargo llvm-cov report --json --output-path target/rust-coverage.json \
-      --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'
+      --ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'
     report_status=$?
     if [ "${report_status}" -eq 0 ]; then
       run node scripts/coverage-floor.mjs target/rust-coverage.json

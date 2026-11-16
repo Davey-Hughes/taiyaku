@@ -26,6 +26,8 @@
 #[cfg(test)]
 mod band_sweep;
 #[cfg(test)]
+mod book_experiment;
+#[cfg(test)]
 mod borrow_frequency;
 mod cache;
 #[cfg(test)]
@@ -37,6 +39,7 @@ mod credits;
 #[cfg(test)]
 mod credit_fixture;
 mod detect;
+mod dictionary;
 mod duplicates;
 mod fingerprint;
 // A one-off measurement rather than a shipped command, and gated on
@@ -156,6 +159,7 @@ fn run(args: &[String]) -> Result<(), String> {
         Some("inventory") => inventory::command(&args[1..]),
         Some("credits") => credits::command(&args[1..]),
         Some("library") => library::command(&args[1..]),
+        Some("dictionary") => dictionary::command(&args[1..]),
         Some("regions") => regions::command(&args[1..]),
         Some("score") => score::command(&args[1..]),
         Some(other) => Err(format!("unknown command `{other}`")),
@@ -175,7 +179,7 @@ fn print_usage() {
     println!("       taiyaku topology <hub>... -- <spoke>... -- <spoke>...");
     println!("       taiyaku lookup <taiyaku.json> <from> <to> <page>...");
     println!(
-        "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--db PATH] \
+        "       taiyaku serve  <taiyaku.json>... [--addr HOST:PORT] [--db PATH] [--dictionaries DIR] \
          [--stump-url URL] [--stump-key KEY] [--log-requests FILE] [--refresh-stump] \
          [--cache DIR] [--cache-max SIZE] [--trusted-proxy CIDR]... [--secure-cookies] \
          [--insecure-cookies] [--allow-web-setup] [--web DIR] [--dirs DIR]..."
@@ -213,6 +217,9 @@ fn print_usage() {
     println!(
         "       taiyaku library proposals [--min-score N] [--accept ID] [--dismiss ID] \
          [--unaccept ID] [--reopen ID] [--db PATH]"
+    );
+    println!(
+        "       taiyaku dictionary import <lang> <kaikki.jsonl> --dir DIR  (a language's dictionary for the book reader's lookups)"
     );
     println!("       taiyaku duplicates <copy>... -- <copy>... [--against <member>...] [--ltr]");
     println!("       taiyaku inventory <root> [--min-pages N] [--pattern SPEC]");
@@ -1220,6 +1227,7 @@ fn serve(args: &[String]) -> Result<(), String> {
             "--cache",
             "--cache-max",
             "--db",
+            "--dictionaries",
             "--dirs",
             "--insecure-cookies",
             "--log-requests",
@@ -1396,6 +1404,7 @@ fn serve_options(
         web,
         dirs,
         cache_max,
+        dictionaries: option_value(args, "--dictionaries", "a directory")?.map(PathBuf::from),
     })
 }
 

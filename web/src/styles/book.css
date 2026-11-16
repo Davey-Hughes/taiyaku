@@ -1,0 +1,329 @@
+/* A book read as text, inside the page reader's `.reader` root: the same
+ * ground, bars and panels, with no filmstrip in its bottom bar. */
+.book-reader {
+  --strip-height: 0px;
+}
+
+.book-text {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-6) var(--space-4);
+  font-family: ui-serif, Georgia, serif;
+  font-size: var(--book-text-size);
+  line-height: var(--book-line-spacing);
+}
+
+.book-text[data-typeface="sans"] {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+.book-text[data-page="paper"] {
+  background: var(--book-paper);
+  color: var(--book-paper-ink);
+}
+
+.book-text > * {
+  max-width: var(--book-column-width);
+  margin: 0 auto 0.9em;
+}
+
+/* Paged: the text runs on in screen-high columns, one a page, turned by
+ * scrolling sideways. Its column gap is its two side paddings, so a page is
+ * exactly its own width (`turn`, `show` in `bookPages.ts`). */
+.book-text[data-paged] {
+  box-sizing: border-box;
+  align-self: center;
+  width: min(100%, calc(var(--book-column-width) + 2 * var(--space-6)));
+  padding: var(--space-6);
+  column-count: 1;
+  column-fill: auto;
+  column-gap: calc(2 * var(--space-6));
+  overflow: hidden;
+}
+
+.book-text[data-paged][data-compared] {
+  width: min(
+    100%,
+    calc(
+      var(--columns, 2) *
+      var(--book-column-width) +
+      (var(--columns, 2) + 1) *
+      var(--space-6)
+    )
+  );
+}
+
+/* A verse line's printed number, in the margin as a book sets it: outside
+ * the column, so the line's own words keep their place. */
+.book-text [data-line] {
+  position: relative;
+}
+
+.book-text [data-line]::before {
+  content: attr(data-line);
+  position: absolute;
+  right: calc(100% + 0.8em);
+  font-size: 0.7em;
+  line-height: inherit;
+  opacity: 0.55;
+}
+
+.book-text[data-justify] p {
+  text-align: justify;
+  hyphens: auto;
+}
+
+/* Korean breaks a line between words, not inside one. */
+.book-text:lang(ko) {
+  word-break: keep-all;
+}
+
+.book-text[data-indent] p {
+  margin-bottom: 0;
+  text-indent: 1.5em;
+}
+
+.book-text[data-indent] h2 + p,
+.book-text[data-indent] > p:first-child {
+  text-indent: 0;
+}
+
+/* A swap's landing, faded out over `--book-lit-fade`, which is 0 when the
+ * reader has motion off. */
+.book-text > * {
+  transition: background-color var(--book-lit-fade);
+}
+
+.book-text > [data-lit],
+.book-text [data-sentence][data-lit] {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.book-peek {
+  display: block;
+  margin-top: 0.5em;
+  padding-left: 0.8em;
+  border-left: 2px solid currentColor;
+  font-size: 0.9em;
+  font-weight: normal;
+  line-height: var(--book-line-spacing);
+  text-align: start;
+  text-indent: 0;
+  opacity: 0.8;
+}
+
+/* A translation under each sentence: the peek's look, quieter and without
+ * its rule, since there is one under every sentence rather than one asked
+ * for. Hidden, it keeps its length as a bar, so the reader sees where one
+ * waits for a tap. */
+.book-interlinear {
+  display: block;
+  margin: 0.15em 0 0.4em;
+  font-size: 0.85em;
+  font-weight: normal;
+  line-height: var(--book-line-spacing);
+  text-align: start;
+  text-indent: 0;
+  opacity: 0.65;
+}
+
+.book-interlinear[data-hidden] {
+  color: transparent;
+  background: color-mix(in srgb, var(--book-paper-ink) 12%, transparent);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+/* One dictionary entry in the look-up panel: its senses close under its
+ * headword, a rule between it and the next. */
+.book-lookup-entry {
+  padding-block: var(--space-2);
+  border-top: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.book-lookup-entry > * {
+  margin: 0 0 var(--space-2);
+}
+
+.book-peek > span {
+  display: block;
+}
+
+.book-text h2 {
+  /* Paged, a heading is not left at a page's foot, apart from what it heads. */
+  break-after: avoid;
+  font-family: var(--font-title);
+  font-size: 1.35em;
+  line-height: 1.3;
+  margin-top: 2.5em;
+}
+
+.book-text[data-indent] h2 {
+  margin-bottom: 1.2em;
+}
+
+.book-progress-tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: var(--reader-hair);
+}
+
+.book-contents {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.book-contents button {
+  width: 100%;
+  padding: var(--space-2) 0;
+  border: 0;
+  border-top: 1px solid var(--reader-hair);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.book-contents button[aria-current="true"] {
+  font-weight: 700;
+}
+
+/* Editions compared: a row to each passage, so the columns cannot drift
+ * apart, as many columns as `--columns` says. Below two columns' width each
+ * row stacks, every edition after the first set off as a peek is. The bar of
+ * the columns' names above takes the same grid, so each names its column. */
+.book-text > .book-row,
+.book-columns {
+  display: grid;
+  grid-template-columns: repeat(var(--columns, 2), minmax(0, 1fr));
+  gap: var(--space-6);
+  max-width: calc(
+    var(--columns, 2) *
+    var(--book-column-width) +
+    (var(--columns, 2) - 1) *
+    var(--space-6)
+  );
+}
+
+.book-cell > * {
+  margin: 0 0 0.9em;
+}
+
+/* Over the text, not in it: it stays in view as the text scrolls or turns,
+ * and a press on it is never a tap on the page. */
+.book-columns {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 auto;
+  padding: var(--space-2) var(--space-6);
+  align-items: center;
+  font-size: 0.85em;
+}
+
+.book-column-name {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.book-column-add {
+  justify-self: start;
+}
+
+@media (max-width: 40rem) {
+  .book-text > .book-row,
+  .book-columns {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .book-row > .book-cell:not(:first-child):not(:empty) {
+    padding-left: 0.8em;
+    border-left: 2px solid currentColor;
+    font-size: 0.9em;
+    opacity: 0.8;
+  }
+}
+
+.book-failed {
+  padding: var(--space-4);
+}
+
+/* Notes: a highlight tints its words, and a note on a whole paragraph, or one
+ * carried from another edition, is a dot in the margin beside it. */
+.book-text [data-block] {
+  position: relative;
+}
+
+.book-text mark {
+  color: inherit;
+  border-radius: 2px;
+}
+
+.book-note-mark {
+  position: absolute;
+  top: 0.55em;
+  left: -0.9em;
+  width: 0.45em;
+  height: 0.45em;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.book-note-quote {
+  display: block;
+  margin: 0;
+  font-style: italic;
+  opacity: 0.8;
+}
+
+.book-contents button > span {
+  display: block;
+}
+
+/* What a selection can become, set just under it. */
+.book-selection-bar {
+  position: fixed;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--reader-hair);
+  border-radius: var(--radius-control, 6px);
+  background: var(--reader-panel);
+}
+
+/* Pinning, and what a write of the notes or a pin said, set over the text. */
+.book-pinning,
+.book-notice {
+  position: absolute;
+  top: calc(var(--reader-top-bar) + var(--safe-top) + var(--space-2));
+  left: 50%;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--reader-hair);
+  background: var(--reader-panel);
+  transform: translateX(-50%);
+}
+
+.book-text > .book-row[data-pinned] > :first-child {
+  border-inline-start: 2px solid currentColor;
+  padding-inline-start: 0.6em;
+}
+
+/* The progress line, made a target a finger can take and drag. */
+.book-scrubber {
+  padding: var(--space-2) 0;
+  margin: calc(-1 * var(--space-2)) 0;
+  cursor: pointer;
+  touch-action: none;
+}

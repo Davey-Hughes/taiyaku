@@ -19,6 +19,7 @@ import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router'
 import { About } from './About'
 import { Account } from './Account'
 import App from './App'
+import { BookReader } from './BookReader'
 import { Config } from './Config'
 import { useGate } from './gate'
 import { Library } from './Library'
@@ -38,13 +39,8 @@ import { useDocumentTitle } from './title'
  * none was.
  */
 function Reader() {
-  const { work } = useParams()
-  const navigate = useNavigate()
+  const { work, leave } = useReaderRoute()
   if (!work) return <Navigate to="/" replace />
-  const leave = () =>
-    void navigate(lastLibraryAddress() ?? '/', {
-      state: { [RESTORE_SCROLL]: true },
-    })
   // `.reader-route` blacks out the page from the first frame (spec 2026-09-17
   // §8.2): `App` draws nothing until its load answers, so its own `.reader`
   // root is not there for `styles/reader.css`'s ground rule until then.
@@ -53,6 +49,24 @@ function Reader() {
       <App key={work} work={work} onLeave={leave} />
     </div>
   )
+}
+
+/** A book, keyed by the slug in the URL, leaving as the reader leaves. */
+function BookRoute() {
+  const { work, leave } = useReaderRoute()
+  if (!work) return <Navigate to="/" replace />
+  return <BookReader key={work} work={work} onLeave={leave} />
+}
+
+/** A reader's slug from the URL, and its way back to the last Library view, at its scroll. */
+function useReaderRoute() {
+  const { work } = useParams()
+  const navigate = useNavigate()
+  const leave = () =>
+    void navigate(lastLibraryAddress() ?? '/', {
+      state: { [RESTORE_SCROLL]: true },
+    })
+  return { work, leave }
 }
 
 /**
@@ -165,6 +179,7 @@ export function AppRoutes() {
         }
       />
       <Route path="/read/:work" element={<Reader />} />
+      <Route path="/book/:work" element={<BookRoute />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

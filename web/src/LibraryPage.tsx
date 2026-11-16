@@ -1344,8 +1344,12 @@ export function LibraryPage({
       {library.works === 0 && library.books > 0 && (
         <p className="no-readable">
           No readable files yet: its scans found{' '}
-          {count(library.books, 'EPUB or PDF file', 'EPUB or PDF files')}, and
-          reading those arrives with the books work. A rescan is all this
+          {count(
+            library.books,
+            'PDF or fixed-layout EPUB file',
+            'PDF or fixed-layout EPUB files',
+          )}
+          , and reading those arrives with the books work. A rescan is all this
           library will need then.
         </p>
       )}

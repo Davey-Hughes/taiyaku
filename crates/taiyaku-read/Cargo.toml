@@ -18,6 +18,9 @@ authors.workspace = true
 crc32fast = "1.5.0"
 sha2 = "0.11.0"
 zip = "9.1.3"
+# Strict XML for `book`: an EPUB's documents are XHTML, and one that does
+# not parse is refused rather than recovered by guessing.
+roxmltree = "0.21.2"
 # Optional: only `test_support::cbz_pages` encodes pages, and no binary this
 # workspace ships should carry an image codec for it. PNG alone is what it
 # writes; the other crates that enable `image` bring their own codecs.

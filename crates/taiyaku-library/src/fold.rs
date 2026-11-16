@@ -489,9 +489,11 @@ struct NoteContent {
     body: String,
     created: String,
     updated: String,
+    ts: Option<i64>,
+    te: Option<i64>,
 }
 
-/// [`NoteContent`] out of nine consecutive columns of `row`, starting at `at`,
+/// [`NoteContent`] out of eleven consecutive columns of `row`, starting at `at`,
 /// in the order the struct declares them.
 fn note_content(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<NoteContent> {
     Ok(NoteContent {
@@ -504,6 +506,8 @@ fn note_content(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<NoteCont
         body: row.get(at + 6)?,
         created: row.get(at + 7)?,
         updated: row.get(at + 8)?,
+        ts: row.get(at + 9)?,
+        te: row.get(at + 10)?,
     })
 }
 
@@ -593,9 +597,9 @@ fn shared_note_ids(
         .prepare(
             "SELECT s.user_id, s.id, s.edition, t.edition,
                     s.slot, s.rx, s.ry, s.rw, s.rh, s.color, s.body, s.created, s.updated,
-                    s.at_sha256, s.at_nth, s.at_page, s.at_half,
+                    s.ts, s.te, s.at_sha256, s.at_nth, s.at_page, s.at_half,
                     t.slot, t.rx, t.ry, t.rw, t.rh, t.color, t.body, t.created, t.updated,
-                    t.at_sha256, t.at_nth, t.at_page, t.at_half
+                    t.ts, t.te, t.at_sha256, t.at_nth, t.at_page, t.at_half
                FROM note s
                JOIN note t ON t.user_id = s.user_id AND t.id = s.id AND t.work_id = ?2
               WHERE s.work_id = ?1
@@ -609,8 +613,8 @@ fn shared_note_ids(
                 id: row.get(1)?,
                 from_key: row.get(2)?,
                 into_key: row.get(3)?,
-                source: (note_content(row, 4)?, at_columns(row, 13)?),
-                target: (note_content(row, 17)?, at_columns(row, 26)?),
+                source: (note_content(row, 4)?, at_columns(row, 15)?),
+                target: (note_content(row, 19)?, at_columns(row, 30)?),
             })
         })
         .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())

@@ -8,6 +8,7 @@ mod about;
 mod alignments;
 mod auth;
 mod backup_api;
+mod book;
 mod cache_root;
 mod cache_sweep;
 mod cbz;
@@ -28,6 +29,7 @@ mod cover;
 /// [`build_router`] and nothing else — a `pub` here would be surface with no
 /// caller.
 mod curation;
+mod dictionary;
 mod dirs_api;
 pub(crate) mod download;
 mod libraries_api;
@@ -106,6 +108,9 @@ pub struct ServeState {
     pub source: Arc<dyn PageSource>,
     /// Where generated covers are kept between runs.
     pub cache_dir: std::path::PathBuf,
+    /// Where `taiyaku dictionary import` wrote a dictionary a language,
+    /// `<lang>.db`; none and no word is looked up.
+    pub dictionaries: Option<std::path::PathBuf>,
     /// Set when `--log-requests` was given; otherwise nothing is recorded.
     pub log: Option<Arc<crate::reqlog::Log>>,
     /// What this server knows about the deployment it sits in: whether the
@@ -391,6 +396,9 @@ pub struct ServeOptions {
     /// deletes the least recently used renderings until the cache is at or
     /// under it; between sweeps the cache may grow past it.
     pub cache_max: u64,
+    /// `--dictionaries`: where `taiyaku dictionary import` wrote each
+    /// language's dictionary; none and no word is looked up.
+    pub dictionaries: Option<std::path::PathBuf>,
 }
 
 /// Says, line by line to `say`, why each directory the server was started with
@@ -444,6 +452,7 @@ pub async fn serve(
         web,
         dirs,
         cache_max,
+        dictionaries,
     } = options;
     let addr = addr.as_str();
     // Opened before anything else so a bad `--log-requests` path is a
@@ -530,6 +539,7 @@ pub async fn serve(
         works,
         source,
         cache_dir: resolved.covers(),
+        dictionaries,
         log,
         auth,
         scans: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),

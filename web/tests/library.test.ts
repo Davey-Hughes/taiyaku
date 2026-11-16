@@ -8,6 +8,7 @@ import {
   libraryParam,
   matchesChip,
   oneSeries,
+  readerPath,
   search,
   type SeriesCard,
   sorted,
@@ -190,6 +191,18 @@ describe('the browse client', () => {
       card({ id: 2, title: 'apple' }),
     ]
     expect(sorted(input, 'title').map((s) => s.id)).toEqual([2, 1])
+  })
+
+  describe('readerPath', () => {
+    it('opens a work with a book edition in the book reader, and any other in the page reader', () => {
+      const book = workCard({
+        slug: 'w',
+        editions: [edition({ key: 'raw' }), edition({ key: 'en', book: true })],
+      })
+      expect(readerPath(book)).toBe('/book/w')
+      const comic = workCard({ slug: 'w', editions: [edition({ key: 'raw' })] })
+      expect(readerPath(comic)).toBe('/read/w')
+    })
   })
 
   describe('unreadable', () => {

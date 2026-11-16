@@ -1,16 +1,14 @@
 import type { CSSProperties, ReactNode } from 'react'
+import type { AnyLayout } from './layouts'
 import type { Mode } from './pairing'
-
-/** The three layouts, in the order the control draws them. */
-const MODES: readonly Mode[] = ['single', 'two', 'scroll']
 
 /**
  * Each layout drawn rather than named (spec 2026-09-17 §8.3): at 390 px the
- * three words would leave the title about 70 px. The word stays in the button
+ * words would leave the title almost no room. The word stays in the button
  * as visually hidden text, so its accessible name — and the `textContent` the
- * reader's tests find it by — is still `single`, `two` or `scroll`.
+ * reader's tests find it by — is still the layout's name.
  */
-const ICONS: Record<Mode, ReactNode> = {
+const ICONS: Record<AnyLayout, ReactNode> = {
   single: <rect x="7" y="4" width="10" height="16" />,
   two: (
     <>
@@ -24,7 +22,23 @@ const ICONS: Record<Mode, ReactNode> = {
       <rect x="7" y="13" width="10" height="9" />
     </>
   ),
+  compare: (
+    <>
+      <rect x="2" y="5" width="8" height="14" />
+      <rect x="14" y="5" width="8" height="14" />
+      <path d="M10 10h4M10 14h4" />
+    </>
+  ),
+  interlinear: <path d="M4 6h16M7 9.5h10M4 14h16M7 17.5h10" />,
 }
+
+/** A page and the way it turns: the book reader's paged switch. */
+const PAGED_ICON = (
+  <>
+    <rect x="4" y="4" width="11" height="16" />
+    <path d="M18 9l3 3-3 3" />
+  </>
+)
 
 // Docked to the reader's top edge like the bottom bar to its bottom, and for
 // the same reason: absolutely positioned against `App.tsx`'s root, so showing
@@ -46,13 +60,21 @@ const barStyle: CSSProperties = {
     'var(--safe-top) calc(var(--space-2) + var(--safe-right)) 0 calc(var(--space-3) + var(--safe-left))',
 }
 
-export interface TopBarProps {
+export interface TopBarProps<L extends AnyLayout = Mode> {
   /** The work's title, from the library — absent until it answers, or if it never does. */
   title?: string
   /** `Vol. N · <label>` for the edition on screen, or its key alone — `readerTitle.ts`. */
   editionLine: string
-  mode: Mode
-  onMode: (mode: Mode) => void
+  /**
+   * The layouts the reader offers, in the order drawn, the one shown, and its
+   * switch; a reader with none draws no layout group.
+   */
+  layouts?: readonly L[]
+  mode?: L
+  onMode?: (mode: L) => void
+  /** Whether the text is turned page by page, and its switch, drawn in the layout group, or alone in it. */
+  paged?: boolean
+  onPaged?: () => void
   /** Whether the settings panel is open, which ⚙ toggles. */
   settingsOpen: boolean
   onSettings: () => void
@@ -71,16 +93,20 @@ export interface TopBarProps {
  * slice the settings panel's Layout section writes, and ⚙ flips the same flag
  * the `s` key does.
  */
-export function TopBar({
+export function TopBar<L extends AnyLayout = Mode>({
   title,
   editionLine,
+  layouts,
   mode,
   onMode,
+  paged,
+  onPaged,
   settingsOpen,
   onSettings,
   onLeave,
   style,
-}: TopBarProps) {
+}: TopBarProps<L>) {
+  const switchable = layouts && mode !== undefined && onMode
   return (
     <div
       className="reader-top-bar"
@@ -99,21 +125,32 @@ export function TopBar({
         )}
         <span className="reader-title-edition">{editionLine}</span>
       </div>
-      <div className="reader-layout" role="group" aria-label="Layout">
-        {MODES.map((m) => (
-          <button
-            key={m}
-            type="button"
-            aria-pressed={m === mode}
-            onClick={() => onMode(m)}
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              {ICONS[m]}
-            </svg>
-            <span className="visually-hidden">{m}</span>
-          </button>
-        ))}
-      </div>
+      {(switchable || onPaged) && (
+        <div className="reader-layout" role="group" aria-label="Layout">
+          {switchable &&
+            layouts.map((m) => (
+              <button
+                key={m}
+                type="button"
+                aria-pressed={m === mode}
+                onClick={() => onMode(m)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  {ICONS[m]}
+                </svg>
+                <span className="visually-hidden">{m}</span>
+              </button>
+            ))}
+          {onPaged && (
+            <button type="button" aria-pressed={paged} onClick={onPaged}>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                {PAGED_ICON}
+              </svg>
+              <span className="visually-hidden">paged</span>
+            </button>
+          )}
+        </div>
+      )}
       <button
         type="button"
         className="reader-icon-button"

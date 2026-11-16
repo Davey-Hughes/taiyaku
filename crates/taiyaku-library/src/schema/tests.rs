@@ -1466,8 +1466,8 @@ fn migration_20_adds_missing_since_leaving_existing_works_present() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_twenty_three() {
-    assert_eq!(SCHEMA_VERSION, 23);
+fn the_schema_version_is_twenty_five() {
+    assert_eq!(SCHEMA_VERSION, 25);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -3233,6 +3233,77 @@ fn migration_22_gives_a_stamp_a_memory_of_the_digests_it_moved() {
         rows_of(&conn, "SELECT * FROM stamp_alias"),
         Vec::<Vec<String>>::new(),
         "its alias went with it"
+    );
+}
+
+#[test]
+fn migration_24_gives_a_scanned_file_a_title_and_has_each_book_read_again() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..23]).expect("migrates to 23");
+    conn.execute_batch(
+        "INSERT INTO root (id, path) VALUES (7, '/srv/books');
+         INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime, pages)
+         VALUES (7, 'a.epub', 'file', 'epub-reflow', 10, 100, 3),
+                (7, 'b.cbz', 'file', 'zip', 10, 100, 2);",
+    )
+    .expect("seeds two schema-23 entries");
+
+    migrate_with(&conn, &MIGRATIONS[..24]).expect("migrates to 24");
+
+    assert_eq!(version(&conn).expect("reads the version"), 24);
+    assert_eq!(
+        rows_of(
+            &conn,
+            "SELECT rel_path, mtime, pages, title FROM scan_entry ORDER BY rel_path"
+        ),
+        [
+            [r#"Text("a.epub")"#, "Integer(-1)", "Integer(3)", "Null"],
+            [r#"Text("b.cbz")"#, "Integer(100)", "Integer(2)", "Null"]
+        ],
+        "the book is set to have moved, and nothing else"
+    );
+}
+
+#[test]
+fn migration_25_gives_a_note_a_run_of_text_and_a_book_its_pins() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..24]).expect("migrates to 24");
+    conn.execute_batch(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (1, 'k', 's', 'T', 'ltr', 'en');
+         INSERT INTO note (id, user_id, work_id, edition, slot, body, created, updated)
+         VALUES ('n', 1, 1, 'en', 3, 'b', 'c', 'u');",
+    )
+    .expect("seeds a schema-24 note");
+
+    migrate(&conn).expect("migrates to 25");
+
+    assert_eq!(version(&conn).expect("reads the version"), 25);
+    assert_eq!(
+        rows_of(&conn, "SELECT id, ts, te FROM note"),
+        [[r#"Text("n")"#, "Null", "Null"]],
+        "an existing note marks no run of text"
+    );
+    assert_eq!(
+        columns_of(&conn, "book_pin"),
+        ["work_id", "edition", "hub_block", "block"]
+    );
+    let pin = "INSERT INTO book_pin (work_id, edition, hub_block, block) VALUES (1, 'ko', ?1, ?2)";
+    assert_eq!(conn.execute(pin, rusqlite::params![2, 3]), Ok(1));
+    assert!(
+        conn.execute(pin, rusqlite::params![2, 4]).is_err(),
+        "one pin a hub block and edition"
+    );
+    conn.execute("DELETE FROM work WHERE id = 1", [])
+        .expect("removes the work");
+    assert_eq!(
+        rows_of(&conn, "SELECT * FROM book_pin"),
+        Vec::<Vec<String>>::new(),
+        "its pins went with it"
     );
 }
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
+import { saveFile } from './saveFile'
 import { usePanelFocus } from './focus'
 import {
   exportName,
@@ -8,7 +9,8 @@ import {
   type PanelMode,
   type ReviewEntry,
 } from './notes'
-import { COLOUR_NAMES, DEFAULT_COLOUR, noteColour } from './palette'
+import { DEFAULT_COLOUR, noteColour } from './palette'
+import { Swatches } from './Swatches'
 
 // The panel is `.docked-panel` in `styles/reader.css`, shared with `Help` and
 // `CreditsPanel` (spec 2026-09-17 §8.5).
@@ -138,14 +140,7 @@ export function NotePanel({
   if (!mode) return null
 
   function download() {
-    const url = URL.createObjectURL(
-      new Blob([notesJson(doc)], { type: 'application/json' }),
-    )
-    const link = document.createElement('a')
-    link.href = url
-    link.download = exportName(work)
-    link.click()
-    URL.revokeObjectURL(url)
+    saveFile(exportName(work), notesJson(doc), 'application/json')
   }
 
   return (
@@ -185,43 +180,11 @@ export function NotePanel({
             className="reader-field"
             style={{ width: '100%', resize: 'vertical' }}
           />
-          {/*
-            The colours, as swatches rather than a dropdown: the choice *is*
-            the appearance, so a list of names would make a reader translate
-            twice. The current one is ringed rather than ticked, because a tick
-            drawn on a swatch has to be one colour or the other and would
-            vanish into half of them.
-          */}
-          <div
-            style={{ display: 'flex', gap: 6 }}
-            role="group"
-            aria-label="Note colour"
-          >
-            {COLOUR_NAMES.map((name) => {
-              const chosen = (draft.color ?? DEFAULT_COLOUR) === name
-              return (
-                <button
-                  key={name}
-                  type="button"
-                  className="reader-swatch"
-                  disabled={busy}
-                  onClick={() => onColour(name)}
-                  aria-label={name}
-                  aria-pressed={chosen}
-                  title={name}
-                  style={{
-                    width: 22,
-                    height: 22,
-                    padding: 0,
-                    borderRadius: '50%',
-                    border: 'none',
-                    background: noteColour(name).tab,
-                    cursor: 'pointer',
-                  }}
-                />
-              )
-            })}
-          </div>
+          <Swatches
+            chosen={draft.color ?? DEFAULT_COLOUR}
+            disabled={busy}
+            onPick={onColour}
+          />
           {notice && <p style={{ margin: 0 }}>{notice}</p>}
           {/*
             No Save and no Done: changes reach the server on their own, and

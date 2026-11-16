@@ -377,7 +377,7 @@ describe('LibraryPage', () => {
       '0 works in 1 directory',
     )
     expect(books.host.querySelector('.no-readable')?.textContent).toContain(
-      'No readable files yet: its scans found 3 EPUB or PDF files',
+      'No readable files yet: its scans found 3 PDF or fixed-layout EPUB files',
     )
     const mixed = await shown(manga({ works: 2, books: 3 }))
     expect(mixed.host.querySelector('.no-readable')).toBeNull()

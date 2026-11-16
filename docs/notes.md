@@ -26585,6 +26585,224 @@ same two directories made one work of the two files. Each file keeps the
 primary it was first held under, as decisions 13 and 14 say; no ruling
 covers the result.
 
+## Books: Harry Potter 1, English against Korean, aligned by length (2026-11-14)
+
+Phase 1 of the books work (`docs/superpowers/specs/2026-09-30-book-alignment-measurement-design.md`)
+on its first pair: the Pottermore EPUBs of Harry Potter 1 in English (3,248
+blocks) and in Korean (3,629), read by `taiyaku_read::read_book`, aligned whole
+by `taiyaku_core::align_blocks`, and scored by `book_experiment` against a key
+for chapter 1. Run with `TAIYAKU_CORPUS="$PWD/corpus" cargo test --release -p
+taiyaku-cli book_experiment -- --nocapture`. *The experiment has since grown
+to every pair and more settings, so a run now prints the tables of "Books:
+nine pairs, five keys, and what held out" below rather than this one's.*
+
+**The key.** Chapter 1, 112 English blocks against 147 Korean, in 111 links:
+84 are 1:1, 18 are 1:2, six 1:3, two 1:4 and one 2:1. No block of the chapter
+is on one side only. It was drafted by reading the two texts side by side, with
+no aligner run, and checked as §3 asks: twenty links drawn by
+`random.Random(20261114).sample`, each read on both sides. The owner delegated
+that check, so a separate reviewer that had not seen the drafting judged them,
+and all twenty were right. Both books also end with the first chapter of
+Chamber of Secrets as a preview, so neither has text the other lacks there.
+
+**The controls held.** The key scored against itself is 100% on every metric,
+and shifted by one Korean block it falls to 23.9% exact landing, 0% strict F1
+and 23.4% lax F1. No key link ends outside the ±400 band. The fitted ratio is
+0.585 Korean characters to an English one.
+
+**Length alone lands 99.6% of swaps exactly**, at groups of up to four and a
+one-sided cost of 4.5 (Gale and Church's 1:0 prior) or 9. The other 0.4%, one
+block of 259, lands one block off. Strict F1 is 98.2% and lax F1 100%. A
+selection of the 36 runs:
+
+| scorer | max group | skip | exact | ±1 | unpaired | strict F1 | lax F1 | seconds |
+|---|---|---|---|---|---|---|---|---|
+| length | 2 | 4.5 | 89.6% | 7.3% | 2.3% | 83.3% | 92.1% | 0.41 |
+| length | 3 | 4.5 | 98.8% | 1.2% | 0.0% | 96.4% | 100.0% | 0.75 |
+| length | 4 | 2.25 | 98.8% | 0.4% | 0.8% | 95.5% | 99.1% | 1.28 |
+| length | 4 | 4.5 | 99.6% | 0.4% | 0.0% | 98.2% | 100.0% | 1.27 |
+| length + anchors | 4 | 4.5 | 99.6% | 0.4% | 0.0% | 98.2% | 100.0% | 1.52 |
+| length + anchors | 4 | 2.25 | 93.8% | 2.7% | 3.5% | 92.6% | 93.4% | 1.52 |
+| length, refitted (1.3) | 4 | 4.5 | 97.3% | 2.7% | 0.0% | 94.5% | 99.5% | 1.25 |
+
+What the table says, for the spec's four questions:
+
+1. **One reading-order program aligns this pair**, by length alone. The spec
+   expected a cross-language pair to need embeddings; on this key it does not.
+2. **Anchors add nothing at the best setting** and cost 2.25 runs 5 points
+   lower, where they tip borderline pairings toward one-sided steps. Length is
+   enough for this pair.
+3. **The unit is the paragraph, with groups of up to four.** A program limited
+   to pairs tops out near 90%, since the key's eight 1:3 and 1:4 links cannot be
+   expressed; three reaches 98.8% and four 99.6%.
+4. Not asked of this pair: it has no PDF.
+
+**Refitting the variance makes it worse.** Re-estimated from the first pass's
+1:1 links it comes out near 1.3, against Gale and Church's 6.8, and every
+setting loses one to twenty points. A guess at why: the first pass keeps as 1:1
+the pairings whose lengths already agree, so the refit measures the agreeable
+ones and underestimates the spread. 6.8 stays.
+
+**Cost.** 1.3 seconds a whole-book alignment at groups of four and the ±400
+band, in release, on the workstation. The table it fills is 3,249 rows of 801
+cells, a cost (8 bytes) and a step (2 bytes) each: about 26 MB, computed, not
+measured.
+
+**What it does not show.** One chapter is keyed, and every setting above was
+chosen on that same chapter, which is a mild overfit, stated as one. A second
+keyed chapter, held out, is what would check it. The fitted ratio also leans on
+the two books holding the same text: a fixture with one extra block in seven
+moved the ratio enough to merge where it should skip
+(`book_align::tests::a_block_one_side_lacks_is_a_one_sided_link` is built of
+twenty shared blocks for that reason), so a pair whose editions differ by more
+than a preview chapter may need the ratio fitted some other way.
+
+## Books: nine pairs, five keys, and what held out (2026-11-14)
+
+The first pair's figures were chosen and scored on one chapter, so this tests
+them across the corpus. Nine pairs under `corpus/books/`: Harry Potter 1 to 7 in
+English against Korean (Pottermore), Crime and Punishment in Ready's and
+Pevear and Volokhonsky's translations, and Anna Karenina in Bartlett's and
+Schwartz's. `book_experiment` aligns each whole at every setting in its
+`SETTINGS` and scores three ways: each hand key, chapter anchors, and how much
+it left one-sided.
+
+**Four more hand keys**, each drafted by one reader that had not seen an
+aligner's output and checked by another that had not drafted it:
+
+| key | links | shapes | check |
+|---|---|---|---|
+| HP1 chapter 9 | 212 | 1:1 ×184, 1:2 ×23, 1:3 ×4, 2:2 ×1 | 20 drawn, 20 right |
+| HP1 chapter 16 | 319 | 1:1 ×305, 1:2 ×10, 1:3 ×1, 2:1 ×1, 2:2 ×2 | 20 drawn, 20 right |
+| HP7 chapter 1 | 108 | 1:1 ×66, 1:2 ×14, 1:3 ×27, 2:3 ×1 | 20 drawn, 20 right |
+| Crime and Punishment III.VI | 71 | 1:1 ×71 | all 71 read, all right |
+
+The Crime and Punishment key was checked whole rather than drawn from, since an
+all-diagonal key drafted quickly is what a lazy one looks like. It is not: the
+two translations paragraph that chapter identically.
+
+**Chapter anchors are a free key with two wrong drafts behind them.** A
+chapter number appears more than once on a side, in a contents page before the
+text or a preview of the next book after it (every Korean volume from 2 to 6
+ends with the next book's first chapter, as the English does). Paired from the
+last occurrence back, English chapter one went to a Korean contents entry;
+paired by nearest place in the book, Ready's long introduction put its
+contents entries for Part One I and II nearer Pevear and Volokhonsky's
+chapters than its own. Both passed the order check, which is why it is not the
+only check. What stands: a contents page is a run of markers each within three
+blocks of the last and numbered after it, dropped first, and the rest paired
+nearest first by place. Every pair then gives one anchor a chapter, none from a
+contents page (204 for Harry Potter, 41 for Crime and Punishment).
+
+**Held out, the baseline holds and anchors help.** Baseline is length at groups
+of four, skip 4.5, variance 6.8, band 400, the setting chosen on HP1 chapter 1.
+
+| pair, key | baseline | + anchors |
+|---|---|---|
+| HP1 ch1 | 99.6% | 99.6% |
+| HP1 ch9 | 98.0% | 100.0% |
+| HP1 ch16 | 99.5% | 100.0% |
+| HP7 ch1 | 83.3% | 93.0% |
+| Crime and Punishment III.VI | 100.0% | 100.0% |
+| Crime and Punishment, 41 chapter anchors | 100.0% | 100.0% |
+
+So the first pair's "anchors add nothing" was the one chapter it was read on:
+on every held-out key they help or tie. Crime and Punishment finds Part Three
+VI, which Ready's contents leave out, without being told it exists.
+
+**The alternatives, each one change from the baseline:**
+
+- Groups of three cost HP1 chapter 1 0.8 points; five gain nothing anywhere.
+- Variance 3.4 costs a point or more; 13.6 helps HP7 (88.5%) and nothing else.
+- Skip 9 helps HP7 (88.5%) and moves two Crime and Punishment chapter anchors
+  by 51 blocks.
+- A sentence-count term is worse on nearly every key (HP7 74.2%, Crime and
+  Punishment 85.9%).
+- Shared words, for the one same-language pair, ties length at 100% and costs
+  45 times its time.
+- A band of ±100 is four times faster and drops Crime and Punishment's chapter
+  anchors to 68.3%, one 203 blocks off: whole books drift further than that.
+- Anchors with skip 9 and variance 13.6 together: HP7 93.7%, the rest as
+  anchors alone.
+- One-sided runs (a skip of up to 32 blocks costing 4.5 then a per-block
+  extension): at 0.5 a block they leave text out rather than pair it (HP7 61%
+  one-sided, 23.7% exact); at 3 they change nothing; at 2 HP7 reaches 88.5%
+  but some chapter headings go unpaired.
+
+**Decided: length with anchors** at the baseline's other settings, the simplest
+setting that is best or tied on every key.
+
+**What remains wrong, and why:**
+
+- *A chapter heading lands one block early.* "CHAPTER THIRTEEN" is sixteen
+  characters, and length cannot tell which side of a break it belongs to, so it
+  joins the last paragraph of the chapter before. The chapter's first
+  paragraph lands right. This is why HP2 to HP6 read 37% to 64% on chapter
+  anchors while HP1 reads 89%: those Korean volumes set the number and title in
+  one block, which the English splits in two.
+- *HP7 drifts at its start.* Its English has a sixteen-line epigraph the Korean
+  lacks, which the aligner folds into merges rather than leaving out, and its
+  first chapter's thirteen opening links are wrong because of it; anchors take
+  the chapter to 93%.
+- *Bartlett's Anna Karenina cannot be aligned at paragraph level.* Its
+  conversion uses `<br>` both for a paragraph break and for a line break in the
+  middle of a sentence, so its 2,221 blocks are not paragraphs. Every setting
+  leaves 27% or more one-sided. It is the one pair here a reader should not be
+  offered.
+- *Extraction had a bug these found.* Text outside any `<p>`, which Bartlett
+  has, was gathered out of order into one block; it is now split around the
+  nested blocks as a browser lays it out.
+
+## Books: a chapter number keeps its heading with its chapter (2026-11-14)
+
+The section above left a chapter heading landing one block early: length
+cannot tell which side of a break sixteen characters of `CHAPTER THIRTEEN`
+belong on, and in the two ways to pair it the merge costs come to the same
+4.6. What tells them apart is the number. The Korean title carries it as
+digits (`13장 아주 비밀스러운 일기장`), and the English heading spells it in
+capitals. So `Anchors::of` now counts an English number word set in capitals
+as a number, read by `taiyaku_core::english_number` (`zero` to `ninety-nine`,
+tens before ones), and the heading's number pulls it onto the Korean title.
+
+A number word in running text is not counted. Measured both ways, at the
+anchors setting:
+
+| pair | chapters exact before | capitals only | every number word |
+|---|---|---|---|
+| HP1 | 88.9% | 100.0% | 100.0% |
+| HP2 | 36.8% | 89.5% | 89.5% |
+| HP3 | 34.8% | 91.3% | 91.3% |
+| HP4 | 39.5% | 86.8% | 94.7% |
+| HP5 | 61.5% | 92.3% | 92.3% |
+| HP6 | 48.4% | 96.8% | 96.8% |
+| HP7 | 94.4% | 97.2% | 94.4% |
+
+Every key is unchanged by either: HP1 chapters 1, 9 and 16 at 99.6%, 100% and
+100%, HP7 chapter 1 at 93.0%, Crime and Punishment at 100% on its key and its
+41 chapter anchors. Counting every number word wins one pair and loses one,
+and in running text a translation as often spells a number as a word (`두
+남자` for "two men"), so capitals only stands.
+
+## Books: Harry Potter read in the browser, end to end (2026-11-14)
+
+A release build of 87daf97 served a fresh store holding one directory, the
+Harry Potter EPUBs in English and in Korean, scanned under three rules: the
+volume from a file name's leading number, `Harry Potter/` as edition `en` and
+`Harry Potter (Korean)/` as edition `ko` of series "Harry Potter". The scan
+derived one series, seven works and fourteen editions, every work an `en`
+and a `ko`.
+
+- The series page linked each volume to `/book/…`, and the first
+  `GET /api/works/{work}/book` for volume 1 answered in 1.2 s, alignment
+  included: 3,248 English blocks, 3,629 Korean, 3,230 links.
+- In the browser, English block 45 ("At half past eight, Mr. Dursley picked
+  up his briefcase…") at the top, Space showed Korean block 48 ("8시 30분에
+  더즐리 씨는 서류가방을 집어 들고…") at the top, and Space again English 45.
+- Scrolled to English block 115 and reloaded, the reader opened at 115.
+
+Not yet right: an edition's label is its key (`en`, `ko`) until a person
+names it, and the reader's tab has no title of its own.
+
 ## O282 and O284 on the test library (2026-11-14)
 
 A copy of the test library's store (`/home/davey/temp/manga-test`) was
@@ -26787,3 +27005,162 @@ rest on Task 3's probe and on reading, as they say.
 - The test library's `library.db`, `-wal` and `-shm` had the same
   `sha256sum` and `stat` before and after (`drive-before.txt`,
   `drive-after.txt`).
+
+## Books: sizing paged text keeps the page it began on (2026-11-15)
+
+Reported: paged, `=` or `-` left the reader on another page, not the one
+whose text it had been reading. The reader kept only the block at the top,
+and a page laid out again went to the page holding that block's first line,
+pages back when the page had started inside a long paragraph; each size
+step crept back again.
+
+Driven after the fix in Chromium at 1905×2053 on Harry Potter 1, Korean,
+paged, on a copy of the local store: page 5 starts inside block 108
+("네모난 안경을 쓴…"). `=` three times and `-` three times went 18 → 24 →
+18 px, the book 121 → 163 → 121 pages, and those words were on the page
+after every step, the reader ending on page 5. The wheel, four notches up
+and four down, did the same.
+
+## Books: a library of translations and originals (2026-11-15)
+
+The test library's books, scanned whole for the first time (Literature,
+Poetry and Light Novels): 612 English EPUBs and 7 Korean, and no other
+language.
+
+- **Strict XHTML refused 14 of them.** Thirteen used HTML's named
+  references (`&nbsp;` in all but one) and read once those are rewritten as
+  numbers; one (*Twenty Thousand Leagues Under the Sea*, SUNY) has tags that
+  do not match, and is still refused.
+- **Fifteen works came in 2–5 English translations**, each in its own
+  directory and none numbered. Nine were grouped by a title rule and a key
+  rule apiece: the Odyssey, the Iliad, the Aeneid, Crime and Punishment,
+  Anna Karenina, Don Quixote, Les Misérables, the Metamorphoses and the
+  Prince. Dante waits: one translation is three files, the other one.
+- **Originals added beside them**, public domain: Spanish *Don Quijote*
+  (Project Gutenberg 2000), Russian *Анна Каренина* and *Преступление и
+  наказание* (Wikisource, modern spelling, complete), and Japanese
+  *坊っちゃん* (Wikisource, with ruby readings) against Mori's *Botchan*
+  (Gutenberg 8868). Each aligns to its translations on first open.
+- **Editions split their text very differently**, which the paragraph
+  aligner feels: Fagles' *Aeneid* is 1,905 blocks against Fitzgerald's
+  17,013 (stanzas against lines), and Bartlett's *Anna Karenina* 2,221
+  against Schwartz's 8,412. Front matter differs too: Gutenberg's licence,
+  a publisher's introduction, Wikisource's list of chapters.
+
+## Books: sentences paired inside the block links (2026-11-15)
+
+Each book's sentences split by `taiyaku_core::sentences` and paired by
+`align_sentences` within each block link, 40% of the way through each
+book, by eye:
+
+| Pair | Sentences | Links one to one | What the sample showed |
+|---|---|---|---|
+| Harry Potter 1, en–ko | 7,424 / 9,273 | 67% | all five right |
+| Botchan, ja–en (Mori) | 2,773 / 3,265 | 46% | right; one Japanese sentence left unpaired |
+| Don Quixote, es–en (Grossman) | 10,785 / 13,234 | 73% | the first two right, the last three a sentence apart, where the two break paragraphs differently |
+| Anna Karenina, en (Bartlett)–ru | 23,309 / 20,292 | 24% | wrong: the block links themselves are, the Bartlett file splitting its text unlike any other |
+
+Sentence pairing refines a block link and cannot mend one: where the
+blocks are mispaired, so are their sentences. The first request for a
+book, which aligns both levels, took 0.3 s (Botchan) to 4.7 s (Don
+Quixote) on the release build; a second is served from the cache.
+In the browser, Harry Potter 1 in Korean, paged: a double tap on 「그건
+햇빛 때문임이 분명했다.」 lit it and peeked "It must have been a trick of
+the light."
+
+Joining the next block links where a pairing ends lopsided, up to four,
+the same samples again: Don Quixote's five all right (the first two of
+five before), 74% one to one; Harry Potter 68% and Botchan 47%, their
+samples right as before; the first request no slower.
+
+**Why Anna Karenina pairs badly.** Bartlett's file is an Oxford "uncorrected
+advance reading copy" converted from print: it separates paragraphs with
+`<br/>` inside one `<p>`, so a run of dialogue reaches the reader as one
+block (its longest is 14,485 characters, Schwartz's 6,662), and it is the
+work's hub, the edition every other one is aligned to. `read_book` is right
+to read a `<br/>` as a line break, which is what one is in verse and
+addresses. The Russian file opens most chapters with Wikisource's list of
+chapters ("Главы: I · II · …"), which the aligner leaves out as text the
+English lacks.
+
+Titled apart with a rule, Bartlett's copy kept its work, and Anna Karenina
+became a new work of the Russian and Schwartz's, the Russian its hub: 88%
+of its sentence links one to one (24% through Bartlett), the five sampled
+all right. Doing it first showed both parts of the split finding the old
+row by a member path and writing over it in turn; the probe now matches the
+hub edition's paths alone. Deleting `raw` editions by hand had also left
+nine works naming a hub they no longer held, read past by the derive (it
+falls back to the first key) but wrong in the row: each was set to the key
+the derive was already using.
+
+*The probe has since been widened by the books PR's review: where no
+group holds a path in a row's hub edition, a path in any of its editions
+finds it, so long as every file of it the derive holds is one group's and
+no other row has that group's document's key, so the translations left when a book's hub file goes keep its row
+(`derive::held_work`). A rule titling part of a work apart still leaves
+the row to the part holding the hub.*
+
+## Books: interlinear, and what it shows of an alignment (2026-11-15)
+
+Botchan, Japanese with Mori's English under it: 1,660 lines under 2,773
+sentences. Read down the first chapter, the lines run one sentence late
+from 「別段深い理由でもない。」 for a stretch ("O, you chicken-heart, ha,
+ha!" under it, where it belongs under 「弱虫やーい。」). A peek showed one
+pairing at a time; interlinear shows every one, and a pairing by length
+alone is weakest between Japanese and English, whose characters carry very
+different amounts. Labels: each edition of the grouped works was given its
+language or its translator as its label, so the bar and a peek say
+"Lattimore" or "Korean" rather than a key.
+
+Reading aloud, driven in the test Chrome on Linux: it lists no voices at
+all, and an utterance there ends in `synthesis-failed` within a second. The
+reader now says so ("This device could not read ja aloud.") rather than
+lighting nothing and staying silent. A reading actually spoken was not
+heard on this machine; the voices it picks are each browser's own.
+
+Three columns of the Aeneid (Fagles, Fitzgerald, Ruden): 10,033 rows. The
+rows show how little of it pairs: Fitzgerald's line numbers are blocks of
+their own ("310", "315"), each verse line another, against Fagles' stanzas,
+and a run of Fitzgerald's lines sits beside a bibliography of Fagles'. That
+is the verse and line-number work, not the columns.
+
+## Books: verse line numbers, and editions of different grain (2026-11-15)
+
+Before, the verse editions' printed numbers were text or blocks of their
+own: 2,682 number-only blocks in Fitzgerald's Aeneid, 1,980 in Ruden's,
+1,563 in Martin's Metamorphoses, and numbers opening lines in Fagles'
+Odyssey (1,890), Lattimore's (2,445) and his Iliad (3,600). Read by shape
+alone, a number opening a short paragraph also took "4 Privet Drive", the
+Hogwarts list ("1 wand", "1 cauldron") and Botchan's "1919 A NOTE BY THE
+TRANSLATOR"; required to agree with the next or last number by the lines
+between, Harry Potter and Botchan keep every number, and the verse
+editions number 1,570 to 3,133 lines each. Rutherford's Don Quixote numbers
+184 paragraphs: its endnotes, one paragraph each and numbered in order,
+which read as verse numbered every line would.
+
+Line against line, translations pair well: Fagles–Lattimore Odyssey 81% of
+links one block to one, Martin–Mandelbaum Metamorphoses 92%. Stanzas or
+paragraphs against lines do not: Fagles' Aeneid (1,889 blocks, median 151
+characters) against Fitzgerald's (14,289) and Ruden's (11,272), and
+Fitzgerald's Iliad (2,726, median 237) against Lattimore's (17,625), 2-3%,
+since a step joins at most four blocks a side. Joining the finer edition's
+lines into runs that end where a sentence does (no more than twelve), where
+it had over three times the other's blocks, raised the share of the hub
+paired to 76-88%, but samples through the body were still a passage or a
+book apart, the hubs' introductions, notes and glossaries pulling them off,
+and no key covers these editions; so it was not kept. A key for a stretch
+of the Aeneid is what deciding it needs.
+
+## Books: dictionaries from Wiktionary (2026-11-15)
+
+kaikki.org's extracts of English Wiktionary, imported with `taiyaku
+dictionary import` on the release build: Japanese (370 MB of JSON lines)
+to 143,973 entries and 950,609 forms, 68 MB, in 28 s; Russian (905 MB) to
+62,535 entries and 1,996,913 forms, 168 MB, 39 s; Spanish (1.1 GB) to
+124,487 entries and 2,391,083 forms, 132 MB, 26 s. No line was passed over.
+Looked up through the server: hablaron to hablar, dijo to decir,
+счастливые to счастливый, семьи to семья, сказал to сказать, 言った to
+言う, and 親譲り, 無鉄砲 and 学校 as themselves; the first lookup in a
+language took 0.9-1 s (the file opened cold), each after 1-4 ms. Korean has
+no dictionary yet: its particles join the word they follow, and a lookup
+would need to take them off first.

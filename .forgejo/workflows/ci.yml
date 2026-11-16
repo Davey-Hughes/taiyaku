@@ -202,18 +202,13 @@ jobs:
         id: rust_coverage
         # `cargo llvm-cov nextest` runs the tests — this is the test step, not
         # an addition to it, and the `nextest` subcommand is what applies
-        # `.config/nextest.toml`'s per-test timeout. Fourteen files are ignored,
-        # in three groups: gated one-off measurement modules, the ones that
-        # cannot execute without TAIYAKU_CORPUS which CI does not have, and four
+        # `.config/nextest.toml`'s per-test timeout. The ignored files fall in
+        # three groups: gated one-off measurement modules, the ones that cannot
+        # execute without TAIYAKU_CORPUS which CI does not have, and the
         # `test_support` modules — two `#[cfg(test)] pub(crate)` in taiyaku-serve,
         # and one each in taiyaku-read and taiyaku-library that a `test-support`
-        # feature also exposes to other crates' tests. The count is of the files
-        # the regex matches, not of its nine alternations: `band_sweep.rs`,
-        # `borrow_frequency.rs`, `geometry_experiment.rs`, `model_experiment.rs`,
-        # `region_experiment.rs`, `score_corpus.rs` and `truth_population.rs` in
-        # taiyaku-cli, `corpus.rs` in taiyaku-cli, taiyaku-serve and
-        # taiyaku-library, and `test_support.rs` twice in taiyaku-serve and once
-        # each in taiyaku-read and taiyaku-library.
+        # feature also exposes to other crates' tests. `docs/ci.md`, "The
+        # ignored Rust files, named", lists each with its reason.
         #
         # `test_support` is named here only because cargo-llvm-cov's own default
         # exclusion misses it: that default drops a source file whose basename
@@ -250,7 +245,7 @@ jobs:
           TAIYAKU_COMMIT: ${{ github.sha }}
         run: |
           cargo llvm-cov nextest --workspace --all-features \
-            --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
+            --ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
             --fail-under-lines 91
       - name: Install node
         if: success() || steps.rust_coverage.outcome == 'failure'
@@ -306,7 +301,7 @@ jobs:
         # other side, and the two files hash identically.
         run: |
           cargo llvm-cov report --json --output-path target/rust-coverage.json \
-            --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'
+            --ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'
           node scripts/coverage-floor.mjs target/rust-coverage.json
 
       # docs/status.md states a total test count twice. That is the only

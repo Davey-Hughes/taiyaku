@@ -158,7 +158,10 @@ pub(crate) const CBZ_TYPE: &str = "application/vnd.comicbook+zip";
 /// input, so the root rule — and the scanned-work case where these paths are
 /// already absolute and the join is the identity — is not written out again in
 /// each caller.
-fn member_paths(work: &crate::Work, edition: &taiyaku_core::Edition) -> Vec<std::path::PathBuf> {
+pub(crate) fn member_paths(
+    work: &crate::Work,
+    edition: &taiyaku_core::Edition,
+) -> Vec<std::path::PathBuf> {
     let root = work
         .path
         .parent()

@@ -75,6 +75,7 @@ export function GroupView({
       <PageView
         src={src(slot)}
         alt={alt(slot)}
+        hug={hug(group, slot)}
         buffered={buffered}
         decodeQueue={decodeQueue}
         cohort={cohort}

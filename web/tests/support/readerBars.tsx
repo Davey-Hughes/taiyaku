@@ -10,6 +10,7 @@
 import { act } from 'react'
 import { expect, onTestFinished, vi } from 'vitest'
 import { Chrome, type ChromeProps } from '../../src/Chrome'
+import { PAGE_LAYOUTS } from '../../src/layouts'
 import type { Group } from '../../src/pairing'
 import type { Position } from '../../src/resolver'
 import { mount } from './mount'
@@ -56,6 +57,7 @@ export function props(overrides: Partial<ChromeProps> = {}): ChromeProps {
     chapter: '',
     progress: 0.25,
     editionLine: 'Raw',
+    layouts: PAGE_LAYOUTS,
     mode: 'single',
     onMode: () => {},
     settingsOpen: false,

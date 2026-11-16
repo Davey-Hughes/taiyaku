@@ -2309,6 +2309,7 @@ fn a_rewrite_syncs_the_staged_archive_before_the_rename_and_the_directory_after_
 /// Note `id` on `edition`'s `slot`.
 fn a_note(id: &str, edition: &str, slot: u32) -> crate::Note {
     crate::Note {
+        text: None,
         id: id.into(),
         edition: edition.into(),
         slot,

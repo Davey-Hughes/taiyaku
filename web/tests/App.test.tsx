@@ -3922,6 +3922,176 @@ describe('what survives the tab going away', () => {
   })
 })
 
+// ---- two editions compared ---------------------------------------------------
+
+describe('two editions compared', () => {
+  const compare = () =>
+    localStorage.setItem(
+      'taiyaku.prefs.layout',
+      JSON.stringify({ mode: 'compare' }),
+    )
+
+  /** The two panes' pages, or what each says, left to right. */
+  const panes = (host: HTMLElement) =>
+    [...(host.querySelector('.compared')?.children ?? [])].map(
+      (pane) =>
+        pane.querySelector('img')?.getAttribute('src')?.split('?')[0] ??
+        pane.textContent,
+    )
+
+  /** How the page in each pane is pulled, left to right. */
+  const hugs = (host: HTMLElement) =>
+    [...host.querySelectorAll<HTMLElement>('.compared img')].map(
+      (img) => img.style.objectPosition,
+    )
+
+  it('draws the page read beside the next edition’s as a spread, the one read first in reading order', async () => {
+    compare()
+    const host = await open()
+    expect(panes(host)).toEqual([
+      '/api/works/vol-01/en/pages/2',
+      '/api/works/vol-01/raw/pages/2',
+    ])
+    const [left, right] = hugs(host)
+    expect(left).toMatch(/^(right|100%)/)
+    expect(right).toMatch(/^(left|0%)/)
+  })
+
+  it('zooms the two pages as one, as a spread is zoomed', async () => {
+    compare()
+    const host = await open()
+    press('=')
+    const zoomed = [...host.querySelectorAll('div')].find((d) =>
+      d.style.transform.startsWith('scale('),
+    )
+    expect(zoomed?.style.transform).not.toContain('scale(1, 1)')
+    expect(zoomed?.firstElementChild?.classList.contains('compared')).toBe(true)
+  })
+
+  it('carries a zoomed view across a swap onto the page read, in its half of the pair', async () => {
+    compare()
+    localStorage.setItem(
+      'taiyaku.prefs.zoom',
+      JSON.stringify({
+        enabled: true,
+        maxScale: 8,
+        step: 1.15,
+        onSwap: 'content',
+      }),
+    )
+    const host = await open()
+    measure(pageArea(host), { w: 800, h: 600 })
+    press('=')
+    press('=')
+    await settle()
+    // Each page decoded at its own size: the swap measures the page read and
+    // the page that will be, which the other pane already shows.
+    for (const img of host.querySelectorAll<HTMLImageElement>('.compared img'))
+      decoded(
+        img,
+        img.src.includes('/raw/') ? { w: 700, h: 1000 } : { w: 1400, h: 1000 },
+      )
+    const zoomed = drawnRect(host)
+    press('2')
+    await settle()
+    // The page read stays in its half, the right one in this `rtl` work, and
+    // the view is carried onto it there: the wide page drawn into that half
+    // is smaller, so its content is magnified further than a page filling the
+    // whole group would need.
+    expect(drawnRect(host)).not.toBe(zoomed)
+    expect(drawnRect(host)).toBe(
+      'scale(2.6449999999999996, 2.6449999999999996) translate(-43.59640831758034%, -31.096408317580337%)',
+    )
+  })
+
+  it('turns both together', async () => {
+    compare()
+    const host = await open()
+    press('ArrowLeft')
+    await settle()
+    expect(panes(host)).toEqual([
+      '/api/works/vol-01/en/pages/3',
+      '/api/works/vol-01/raw/pages/3',
+    ])
+  })
+
+  it('says where the next edition has no page for the place', async () => {
+    compare()
+    ports.getProgress.mockResolvedValue({ edition: 'raw', slot: 5 })
+    const host = await open()
+    expect(panes(host)).toEqual([
+      'English official has no page here.',
+      '/api/works/vol-01/raw/pages/5',
+    ])
+  })
+
+  it('puts the other edition first when it is the one read', async () => {
+    compare()
+    const host = await open()
+    press('2')
+    await settle()
+    expect(panes(host)).toEqual([
+      '/api/works/vol-01/raw/pages/2',
+      '/api/works/vol-01/en/pages/2',
+    ])
+  })
+
+  it('asks for each page at the size a two-page spread asks for its halves', async () => {
+    const width = (host: HTMLElement) =>
+      new URL(pages(host)[0], 'http://reader.test').searchParams.get('w')
+    localStorage.setItem(
+      'taiyaku.prefs.layout',
+      JSON.stringify({ mode: 'two' }),
+    )
+    const two = width(await open())
+    compare()
+    const compared = width(await open())
+    localStorage.setItem(
+      'taiyaku.prefs.layout',
+      JSON.stringify({ mode: 'single' }),
+    )
+    const single = width(await open())
+    expect(compared).toBe(two)
+    expect(compared).not.toBe(single)
+  })
+
+  it('offers compare in the top bar of a work of two editions', async () => {
+    const host = await open()
+    press('Tab')
+    click(button(host, 'compare'))
+    await settle()
+    expect(prefsFor('layout')).toEqual({ mode: 'compare' })
+    expect(panes(host)).toHaveLength(2)
+  })
+
+  it('offers no compare for a work of one edition, and draws one page though compare was chosen', async () => {
+    compare()
+    ports.getSidecarWithEtag.mockResolvedValue({
+      json: JSON.stringify({
+        work: { reading: 'rtl' },
+        editions: { raw: {} },
+        hub: 'raw',
+        alignments: [],
+      }),
+      etag: 's1',
+    })
+    const width = (host: HTMLElement) =>
+      new URL(pages(host)[0], 'http://reader.test').searchParams.get('w')
+    const host = await open()
+    const compared = width(host)
+    press('Tab')
+    expect(button(host, 'compare')).toBeUndefined()
+    expect(button(host, 'single').getAttribute('aria-pressed')).toBe('true')
+    expect(host.querySelector('.compared')).toBeNull()
+    expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/2')])
+    localStorage.setItem(
+      'taiyaku.prefs.layout',
+      JSON.stringify({ mode: 'single' }),
+    )
+    expect(compared).toBe(width(await open()))
+  })
+})
+
 // ---- the keyboard ring (spec 2026-09-26 §3.1) --------------------------------
 
 describe('the keyboard ring', () => {
@@ -3938,7 +4108,7 @@ describe('the keyboard ring', () => {
   it('walks the page, the top bar, the strip’s one stop and back to the page', async () => {
     const host = await open()
     const walk: string[] = []
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 8; i++) {
       expect(pressHere('Tab').defaultPrevented).toBe(true)
       walk.push(`${focused()}${barsUp(host) ? ' +bars' : ''}`)
     }
@@ -3948,6 +4118,7 @@ describe('the keyboard ring', () => {
       'single +bars',
       'two +bars',
       'scroll +bars',
+      'compare +bars',
       'Settings +bars',
       'page 3 +bars',
       'page',
@@ -3957,13 +4128,14 @@ describe('the keyboard ring', () => {
   it('walks it backwards with Shift+Tab', async () => {
     const host = await open()
     const walk: string[] = []
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 8; i++) {
       pressHere('Tab', true)
       walk.push(`${focused()}${barsUp(host) ? ' +bars' : ''}`)
     }
     expect(walk).toEqual([
       'page 3 +bars',
       'Settings +bars',
+      'compare +bars',
       'scroll +bars',
       'two +bars',
       'single +bars',
@@ -3985,7 +4157,7 @@ describe('the keyboard ring', () => {
 
   it('an arrow on the strip turns the page and focus follows the new current tile', async () => {
     const host = await open()
-    for (let i = 0; i < 6; i++) pressHere('Tab')
+    for (let i = 0; i < 7; i++) pressHere('Tab')
     expect(focused()).toBe('page 3')
     // `rtl`: the physical `←` is a step forward.
     pressHere('ArrowLeft')
@@ -4022,7 +4194,7 @@ describe('the keyboard ring', () => {
       etag: 'n1',
     })
     const host = await open()
-    for (let i = 0; i < 6; i++) pressHere('Tab')
+    for (let i = 0; i < 7; i++) pressHere('Tab')
     expect(focused()).toBe('page 3')
     pressHere('Tab')
     expect(barsUp(host)).toBe(false)

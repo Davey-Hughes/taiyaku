@@ -600,10 +600,12 @@ from the day it landed until this one. Here they are, with a reason each:
 | `taiyaku-cli/src/truth_population.rs` | the same: a gated one-off measurement, reading 480 hand-drawn boxes over 45 pages to derive `detect.rs`'s size band, ink floor and smear gap rather than guess them |
 | `taiyaku-cli/src/model_experiment.rs` | the same: a gated one-off measurement, scoring phase 3's model candidate against the same 45 pages for a head-to-head table a person reads — asserts only that it measured something, never which detector wins |
 | `taiyaku-cli/src/band_sweep.rs` | the same: a gated one-off measurement, scoring eight component-size bands over those 45 pages so `BAND` is read off a table rather than argued for |
+| `taiyaku-cli/src/book_experiment.rs` | the same: a gated one-off measurement, aligning whole books at sixteen settings and scoring each against hand-made keys, for the tables in `docs/notes.md` |
 | `taiyaku-cli/src/borrow_frequency.rs` | the same: a gated one-off measurement, walking the corpus to count how often a reader meets a gap and who lends the page — added to the regex in `ca20d05` and to this table on 2026-08-14, having matched in between without being listed |
 | `taiyaku-cli/src/corpus.rs` | cannot execute without `TAIYAKU_CORPUS`, which CI does not have |
 | `taiyaku-serve/src/corpus.rs` | the same |
 | `taiyaku-library/src/corpus.rs` | the same — added by the library scanner branch (the standing scan/derive check over real material) and matched by `/corpus` from the day it landed, listed here on 2026-08-18 having been exempt without being named, exactly as `borrow_frequency.rs` was |
+| `taiyaku-read/src/corpus.rs` | the same — added with `taiyaku_read::read_book`, the books work's standing check that every EPUB under `$TAIYAKU_CORPUS/books/` reads, and matched by `/corpus` from the day it landed |
 | `taiyaku-cli/src/score_corpus.rs` | the same |
 | `taiyaku-serve/src/test_support.rs` | `#[cfg(test)]` scaffolding, and a third category rather than a gated module: cargo-llvm-cov's default exclusion drops a file whose basename contains `tests` and so misses this one, for want of an `s` |
 | `taiyaku-serve/src/stump/http/test_support.rs` | the same |
@@ -618,7 +620,8 @@ on 2026-08-14 from `cargo llvm-cov report --json` with and without the flag: 54
 files without the regex, 43 with it, and the eleven that disappear are exactly
 the eleven above.** *The table has since grown to fourteen — `taiyaku-library`'s
 `corpus.rs` on 2026-08-18, `taiyaku-read`'s `test_support.rs` with O104 and
-`taiyaku-library`'s with the overlapping-libraries PR 3 — and
+`taiyaku-library`'s with the overlapping-libraries PR 3 — then to sixteen with
+the books work's `taiyaku-read` `corpus.rs` and `book_experiment.rs`, and
 the 2026-08-14 figures in this paragraph are left as measured.* The workspace reads **71.46%** lines without the regex
 (7,573 of 10,598) against **93.95%** with it (6,735 of 7,169), both
 re-measured the same way.
@@ -650,7 +653,7 @@ for, arriving in the one document that explains that script. **A per-site list
 is checkable; a count is not** — and the fourth drift shows the converse edge:
 the list is only authoritative if something puts new entries *into* it, which is
 why the diff below is worth running when a file joins the regex and not only
-when a crate joins the workspace. The fourteen rows above are the list; every
+when a crate joins the workspace. The sixteen rows above are the list; every
 number
 in this paragraph is derived from them and was re-measured, not carried
 forward.
@@ -659,7 +662,7 @@ forward.
 used to end "re-run that diff when adding a crate", and asking a reader to
 remember a thing is the weakest form of a check there is. The per-file floor
 script now asserts the file count itself — 82 on 2026-09-13, 40 required — so a
-regex that quietly swallows more than these fourteen fails the job instead of waiting to
+regex that quietly swallows more than these sixteen fails the job instead of waiting to
 be noticed. Only *half*, because the automated half sees the count and not the
 names: a regex that dropped one file while a new crate added one would net to
 zero and pass. So the diff is still worth running when adding a crate, and it is
@@ -668,7 +671,7 @@ and silent growth:
 
     env -u TAIYAKU_CORPUS cargo llvm-cov --workspace --all-features --summary-only > /tmp/all.txt
     env -u TAIYAKU_CORPUS cargo llvm-cov --workspace --all-features --summary-only \
-      --ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' > /tmp/gated.txt
+      --ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' > /tmp/gated.txt
     diff <(awk '{print $1}' /tmp/all.txt) <(awk '{print $1}' /tmp/gated.txt)
 
 Both commands above run the tests. To diff the file lists alone against profile

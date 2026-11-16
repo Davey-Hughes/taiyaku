@@ -1393,6 +1393,115 @@ fn a_dir_two_libraries_hold_is_refused_again_by_the_library_it_is_sent_to() {
     assert_eq!((roots(&conn).expect("roots"), links(&conn)), stored);
 }
 
+/// A reflowable EPUB is scanned with its format and its text blocks as its
+/// count, and derived into a work whose edition is a book, named by its
+/// `dc:title`.
+#[test]
+fn a_reflowable_epub_becomes_a_book_counted_in_blocks() {
+    let top = crate::tests::tempdir("scan-epub");
+    let series = top.path().join("Story");
+    std::fs::create_dir_all(&series).expect("mkdir");
+    taiyaku_read::test_support::epub_with(
+        &series,
+        "Story v01.epub",
+        "<dc:title>The Story</dc:title>",
+        &["One.", "Two.", "Three."],
+    );
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, top.path()).expect("add");
+
+    scan_root(&conn, &root).expect("scan");
+    crate::derive::derive(&conn).expect("derives");
+
+    let (format, pages): (String, i64) = conn
+        .query_row(
+            "SELECT format, pages FROM scan_entry WHERE rel_path = 'Story/Story v01.epub'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the entry");
+    assert_eq!((format.as_str(), pages), ("epub-reflow", 3));
+    let (edition, member_pages): (i64, i64) = conn
+        .query_row("SELECT edition_id, pages FROM member", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("one member");
+    assert_eq!(member_pages, 3);
+    assert!(
+        crate::browse::books_among(&conn, &[edition])
+            .expect("lists")
+            .contains(&edition)
+    );
+    let title: String = conn
+        .query_row("SELECT title FROM work", [], |row| row.get(0))
+        .expect("one work");
+    assert_eq!(title, "The Story", "named by the book, not by its file");
+}
+
+/// An EPUB with no text to read, its pages pictures, is not a book of no
+/// blocks: the derive names it among the files whose pages could not be
+/// counted, and its library counts it among the files it cannot read.
+#[test]
+fn an_epub_with_no_text_is_named_unreadable_and_counted_by_its_library() {
+    let top = crate::tests::tempdir("scan-epub-no-text");
+    let series = top.path().join("Story");
+    std::fs::create_dir_all(&series).expect("mkdir");
+    taiyaku_read::test_support::epub(&series, "Story v01.epub", &[r#"<img src="p1.jpg"/>"#]);
+    taiyaku_read::test_support::epub(&series, "Story v02.epub", &["One."]);
+    taiyaku_read::test_support::epub(&series, "Story v03.epub", &["Two."]);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root_in(&conn, top.path(), InLibrary::Named("Books")).expect("add");
+
+    scan_root(&conn, &root).expect("scan");
+    let report = crate::derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        (&report.unreadable.uncounted, report.unreadable.no_pages),
+        (
+            &vec![root.path.join("Story/Story v01.epub").display().to_string()],
+            0
+        ),
+        "named, as a file that would not open is"
+    );
+    assert_eq!(report.works, 2, "each EPUB of text is a book still");
+    assert_eq!(
+        crate::libraries::books(&conn, root.libraries[0]).expect("counts"),
+        1
+    );
+}
+
+/// A book scanned before its title was read, as migration 24 leaves one, is
+/// read again by the next scan and its title recorded.
+#[test]
+fn a_book_set_to_have_moved_is_read_again_for_its_title() {
+    let top = crate::tests::tempdir("scan-epub-title");
+    taiyaku_read::test_support::epub_with(
+        top.path(),
+        "Story v01.epub",
+        "<dc:title>The Story</dc:title>",
+        &["One."],
+    );
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, top.path()).expect("add");
+    scan_root(&conn, &root).expect("scan");
+    conn.execute("UPDATE scan_entry SET title = NULL, mtime = -1", [])
+        .expect("as migration 24 leaves it");
+
+    scan_root(&conn, &root).expect("scan again");
+
+    let title: Option<String> = conn
+        .query_row(
+            "SELECT title FROM scan_entry WHERE rel_path = 'Story v01.epub'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the entry");
+    assert_eq!(title.as_deref(), Some("The Story"));
+}
+
 /// O246's member check is not asked of a link: a link changes no walk and no
 /// file's directory. `S - v01` is Kids' directory, added after Copies' `c` was
 /// walked and before the derive made the folder a member, so the check now
@@ -2702,6 +2811,7 @@ fn removing_a_root_reports_the_works_positions_and_notes_it_will_take() {
 /// `slot` when written.
 fn a_raw_note(id: &str, slot: u32) -> crate::Note {
     crate::Note {
+        text: None,
         id: id.into(),
         edition: "raw".into(),
         slot,
@@ -9488,7 +9598,7 @@ fn read_on_raw_slot_2() -> (String, i64, String, i64, Option<String>) {
 /// around it before anything is counted. The rehearsal and the removal count
 /// nothing removed; the works, the reader's position and note and the
 /// hand-set title are kept; each file's row is Manga's again, at `kids/…`, and
-/// is copied with the digest Kids held; its members are Manga's; and the series
+/// is copied with the digest and title Kids held; its members are Manga's; and the series
 /// is Manga's `kids` again. Removing Kids' whole library does the same.
 #[test]
 fn removing_a_nested_directory_hands_its_files_to_the_directory_around_it() {
@@ -9505,6 +9615,11 @@ fn removing_a_nested_directory_hands_its_files_to_the_directory_around_it() {
             .map(|rel| digest_at(&conn, &h.kids, rel))
             .collect();
         assert!(digests.iter().all(Option::is_some), "the fixture");
+        conn.execute(
+            "UPDATE scan_entry SET title = rel_path WHERE root_id = ?1",
+            [h.kids.id],
+        )
+        .expect("titles Kids' rows");
         {
             // The digests as copied, before a derive could hash the files again.
             let tx = crate::Nested::open(&conn, "hand_back").expect("opens a transaction");
@@ -9520,6 +9635,14 @@ fn removing_a_nested_directory_hands_its_files_to_the_directory_around_it() {
                     *digest,
                     "{rel}"
                 );
+                let title: Option<String> = tx
+                    .query_row(
+                        "SELECT title FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+                        rusqlite::params![h.manga.id, format!("kids/{rel}")],
+                        |r| r.get(0),
+                    )
+                    .expect("the copied row");
+                assert_eq!(title.as_deref(), Some(*rel), "{rel}");
             }
         }
 

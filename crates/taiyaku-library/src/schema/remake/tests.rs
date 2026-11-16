@@ -104,7 +104,9 @@ fn the_remake_gives_each_work_its_series_and_volume_and_moves_no_position_or_not
         "the store holds two positions and two notes: {before:?}"
     );
 
-    migrate(&conn).expect("the re-make finishes");
+    // Only through the re-make: a later migration may add a column to these
+    // rows, which is not the re-make moving them.
+    migrate_with(&conn, &MIGRATIONS[..23]).expect("the re-make finishes");
 
     assert_eq!(
         slugs(&conn),

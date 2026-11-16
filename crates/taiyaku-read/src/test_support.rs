@@ -350,6 +350,48 @@ impl std::io::Read for OneByteAtATime<'_> {
     }
 }
 
+/// A minimal reflowable EPUB at `dir/name`: one spine document holding each
+/// of `paragraphs` as a `<p>`.
+pub fn epub(dir: &Path, name: &str, paragraphs: &[&str]) -> PathBuf {
+    epub_with(dir, name, "", paragraphs)
+}
+
+/// [`epub`], its package's metadata holding `dc`, Dublin Core elements written
+/// as `<dc:title>…</dc:title>`.
+pub fn epub_with(dir: &Path, name: &str, dc: &str, paragraphs: &[&str]) -> PathBuf {
+    use std::io::Write;
+    let body: String = paragraphs.iter().map(|p| format!("<p>{p}</p>")).collect();
+    let metadata =
+        format!(r#"<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">{dc}</metadata>"#);
+    let files = [
+        ("mimetype", "application/epub+zip".to_string()),
+        (
+            "META-INF/container.xml",
+            r#"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>"#
+                .to_string(),
+        ),
+        (
+            "content.opf",
+            format!(
+                r#"<package xmlns="http://www.idpf.org/2007/opf">{metadata}<manifest><item id="t" href="text.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="t"/></spine></package>"#
+            ),
+        ),
+        (
+            "text.xhtml",
+            format!(r#"<html xmlns="http://www.w3.org/1999/xhtml"><body>{body}</body></html>"#),
+        ),
+    ];
+    let path = dir.join(name);
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).expect("create epub"));
+    for (entry, text) in files {
+        zip.start_file(entry, zip::write::SimpleFileOptions::default())
+            .expect("start entry");
+        zip.write_all(text.as_bytes()).expect("write entry");
+    }
+    zip.finish().expect("finish epub");
+    path
+}
+
 /// A cbz of `count` decodable pages that fingerprint differently from each
 /// other. Seeds used together must be at least `count` apart, since page `i + 1`
 /// of seed `s` is page `i` of seed `s + 1`.

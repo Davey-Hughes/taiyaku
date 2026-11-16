@@ -7,6 +7,12 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { pageUrl } from './api'
+import {
+  bottomBarStyle,
+  progressStyle,
+  readoutStyle,
+  readoutTextStyle,
+} from './bars'
 import { Filmstrip, type FilmstripProps, type StripScroller } from './Filmstrip'
 import {
   fadeStyle,
@@ -16,7 +22,7 @@ import {
 } from './modules/motion'
 import { readoutRow, type ReadoutsPrefs } from './modules/readouts'
 import { stepFor } from './modules/direction'
-import type { Mode } from './pairing'
+import type { Layout } from './layouts'
 import type { RailShare } from './tiles'
 import { TopBar } from './TopBar'
 
@@ -36,46 +42,12 @@ import { TopBar } from './TopBar'
 /// too.
 const previewMaxHeight = '55vh'
 
-// The bottom bar (spec 2026-09-17 §8.4): one full-width band docked to the
-// reader's bottom edge — the strip, the progress line and the readout row,
-// padded by the safe areas.
-//
-// `position: absolute` against `App.tsx`'s root, which carries `position:
-// relative` for exactly this, rather than a flex child of the page-area
-// column: an absolutely positioned box is removed from that flow entirely, so
-// mounting or unmounting it cannot change the page area's size — the one
-// property this component exists to guarantee. `zIndex: 3` stands it over the
-// page's own layers (`Annotations`' overlay is at 2); the docked panels share
-// the figure and dock clear of it (`--panel-bottom`, `styles/reader.css`).
-const bottomBarStyle: CSSProperties = {
-  position: 'absolute',
-  left: 0,
-  right: 0,
-  bottom: 0,
-  zIndex: 3,
-  paddingLeft: 'var(--safe-left)',
-  paddingRight: 'var(--safe-right)',
-  paddingBottom: 'var(--safe-bottom)',
-}
-
 // The strip: its tiles at the breakpoint's size plus the rail's padding and
 // the tiles' borders. `--strip-tile` in `styles/reader.css` has the two sizes
 // and why each — 160 px, the thumbnail's own height, from 900 px up, and 96 on
 // a phone — and a height that depends on the viewport is a custom property
 // because an inline style cannot hold a media query.
 const stripStyle: CSSProperties = { height: 'var(--strip-height)' }
-
-// How far through the edition, as a line across the bar: `readoutLines`'
-// `progress`, the fraction the readout's percentage prints — the two agree
-// except where the slot count has gone backwards, which `progress` clamps at 1
-// and `positionLine` does not (see `ReadoutLines.progress`).
-const progressStyle: CSSProperties = {
-  height: 'var(--progress-height)',
-  margin: '0 var(--space-3)',
-  // So the mark is placed against the line and not against the bar: the
-  // percentages in its `left` and its width are of the line's own width.
-  position: 'relative',
-}
 
 // The mark on the progress line (O216): where along the volume the strip
 // stands. The rail draws no scrollbar, and without this nothing says where
@@ -277,34 +249,6 @@ const previewImgStyle: CSSProperties = {
   objectFit: 'contain',
 }
 
-// The readout row, the bar's last line. Its fixed `height` holds whatever its
-// text does; `readoutTextStyle`'s `nowrap` is what keeps a second line from
-// spilling out of it. `readoutRow` (`modules/readouts.ts`) is the other half
-// of this: a fixed segment order, so which readouts are enabled or have
-// something to say right now changes the row's *length*, never the order
-// pieces appear in.
-const readoutStyle: CSSProperties = {
-  height: 'var(--readout-height)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 4,
-  padding: '0 12px',
-}
-
-// The row's text. The truncation sits on this span, not the row, because
-// `text-overflow` does nothing on a flex container (O141). `nowrap` keeps the
-// row one line high, since wrapped text grows past a fixed `height`, and what
-// runs wider than the bar ends in "…". `overflow: 'hidden'` also makes the
-// span a scroll container, which as a flex item has no automatic minimum
-// width, so it shrinks to the row's padding. Unstretched, it is as wide as its
-// text, so short text stays centred.
-const readoutTextStyle: CSSProperties = {
-  whiteSpace: 'nowrap',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-}
-
 export interface ChromeProps extends FilmstripProps {
   /** Whether the two bars are shown at all. */
   visible: boolean
@@ -336,9 +280,10 @@ export interface ChromeProps extends FilmstripProps {
   title?: string
   /** The top bar's second line: `Vol. N · <label>`, or the edition's key — `readerTitle.ts`. */
   editionLine: string
-  /** The layout on screen, and the top bar's way to change it. */
-  mode: Mode
-  onMode: (mode: Mode) => void
+  /** The layouts the work offers, the one on screen, and the top bar's way to change it. */
+  layouts: readonly Layout[]
+  mode: Layout
+  onMode: (mode: Layout) => void
   /** Whether the settings panel is open; ⚙ toggles it. */
   settingsOpen: boolean
   onSettings: () => void
@@ -391,6 +336,7 @@ export function Chrome({
   progress,
   title,
   editionLine,
+  layouts,
   mode,
   onMode,
   settingsOpen,
@@ -626,6 +572,7 @@ export function Chrome({
         <TopBar
           title={title}
           editionLine={editionLine}
+          layouts={layouts}
           mode={mode}
           onMode={onMode}
           settingsOpen={settingsOpen}

@@ -50,13 +50,20 @@ pub enum Invalid {
     Refused(String),
 }
 
-/// [`validate_against`], against the work's own sidecar.
+/// [`validate_against`], against the work's own sidecar, with no edition a
+/// book: only the library's scan says which are.
 ///
 /// # Errors
 ///
 /// Returns what [`validate_against`] returns.
 pub fn validate(notes: &Notes, work: &Work, stored: &Notes) -> Result<(), Invalid> {
-    validate_against(notes, &work.id, &work.sidecar(), stored)
+    validate_against(
+        notes,
+        &work.id,
+        &work.sidecar(),
+        stored,
+        &std::collections::HashSet::new(),
+    )
 }
 
 /// Everything that has to be true of a notes document before it replaces one.
@@ -102,6 +109,7 @@ pub fn validate_against(
     work: &str,
     sidecar: &taiyaku_core::Sidecar,
     stored: &Notes,
+    books: &std::collections::HashSet<String>,
 ) -> Result<(), Invalid> {
     if notes.work != work {
         return Err(Invalid::Refused(format!(
@@ -160,6 +168,20 @@ pub fn validate_against(
                     note.id
                 )));
             }
+        }
+
+        let on_a_book = sidecar
+            .editions
+            .get(&note.edition)
+            .is_some_and(|edition| crate::book::is_book(&note.edition, edition, books));
+        if let Some(text) = note.text
+            && (text.start > text.end || note.region.is_some() || !on_a_book)
+        {
+            return Err(Invalid::Refused(format!(
+                "note `{}` marks the run of text {}..{}, which is not a run; a run starts \
+                 at or before its end, and marks a book's text rather than a region of a page",
+                note.id, text.start, text.end
+            )));
         }
 
         if let Some(region) = note.region {

@@ -14,8 +14,13 @@ describe('layoutModule', () => {
     expect(layoutModule.defaults.mode).toBe('single')
   })
 
-  it('offers exactly the three modes the page area can draw', () => {
-    expect(layoutModule.options?.mode).toEqual(['single', 'two', 'scroll'])
+  it('offers exactly the three modes the page area can draw, and compare', () => {
+    expect(layoutModule.options?.mode).toEqual([
+      'single',
+      'two',
+      'scroll',
+      'compare',
+    ])
   })
 
   // A string preference with declared options renders as a select; without the

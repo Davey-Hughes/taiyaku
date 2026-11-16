@@ -25,6 +25,8 @@ export interface EditionCard {
    * goes missing; never negative and never greater than `members`.
    */
   missing: number
+  /** A reflowable EPUB, read as text; its `pages` count its text blocks. */
+  book?: boolean
   /**
    * Page 0's cover address, `/api/works/{work}/{edition}/pages/0/thumb?v=…`,
    * as the server builds it: `v` names the bytes, which lets the route mark
@@ -230,6 +232,12 @@ export const search = (q: string, library?: number) =>
   )
 
 export const status = () => getJson<LibraryStatus>('/api/library/status')
+
+/** Where a work opens: the book reader for a work with a book edition. */
+export function readerPath(w: WorkCard): string {
+  const reader = w.editions.some((e) => e.book) ? 'book' : 'read'
+  return `/${reader}/${w.slug}`
+}
 
 /**
  * Whether nothing this caller can see of `w` can still be opened — O62,

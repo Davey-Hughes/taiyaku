@@ -436,6 +436,7 @@ async fn a_scan_cut_while_queued_reads_interrupted_until_the_next_startup_scan()
         works: crate::Works::fixed(Vec::new()),
         source: std::sync::Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("next-covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),

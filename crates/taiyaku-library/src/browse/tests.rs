@@ -2480,6 +2480,34 @@ fn a_restricted_grant_counts_only_the_missing_members_it_may_see() {
     );
 }
 
+/// One edition of each kind, and a third whose file no scan recorded, which
+/// is no book: a query that matched every member, or matched by path alone,
+/// would name more than the one.
+#[test]
+fn an_edition_walked_as_a_reflowable_epub_is_a_book() {
+    let conn = Connection::open_in_memory().expect("in-memory database");
+    crate::schema::migrate(&conn).expect("migrating");
+    conn.execute_batch(
+        "INSERT INTO root (id, path) VALUES (1, '/library');
+         INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (1, 'k', 'w', 'W', 'ltr', 'en');
+         INSERT INTO edition (id, work_id, key, label)
+         VALUES (1, 1, 'en', 'en'), (2, 1, 'ko', 'ko'), (3, 1, 'fr', 'fr');
+         INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id)
+         VALUES (1, 1, 0, '/library/en.epub', 'a', 3248, 1),
+                (2, 2, 0, '/library/ko.cbz', 'b', 120, 1),
+                (3, 3, 0, '/library/fr.epub', 'c', 900, 1);
+         INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
+         VALUES (1, 'en.epub', 'file', 'epub-reflow', 100, 0),
+                (1, 'ko.cbz', 'file', 'zip', 100, 0);",
+    )
+    .expect("seeding");
+
+    let books = books_among(&conn, &[1, 2, 3]).expect("lists");
+
+    assert_eq!(books, HashSet::from([1]));
+}
+
 /// One edition's missing count, as [`missing_by_edition`] answers it.
 ///
 /// It answers a map (O85) in which an edition with nothing missing has no row

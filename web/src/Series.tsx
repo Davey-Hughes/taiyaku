@@ -33,6 +33,7 @@ import {
   type AlignmentCard,
   type EditionCard,
   libraryParam,
+  readerPath,
   type SeriesCard,
   unreadable,
   work as fetchWork,
@@ -184,7 +185,7 @@ function Table({
                     </span>
                   </>
                 ) : (
-                  <Link to={`/read/${w.slug}`}>{w.title}</Link>
+                  <Link to={readerPath(w)}>{w.title}</Link>
                 )}
                 {w.aligned && (
                   <span className="aligned" title="has an aligned edition">
@@ -836,7 +837,7 @@ export function Series() {
                         </span>
                       </span>
                     ) : (
-                      <Link to={`/read/${w.slug}`}>
+                      <Link to={readerPath(w)}>
                         <VolumeCover w={w} shown={shown} />
                         <span className="title">{w.title}</span>
                       </Link>

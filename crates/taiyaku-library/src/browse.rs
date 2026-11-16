@@ -181,6 +181,9 @@ pub struct EditionCard {
     /// The `sha256` of the member holding this edition's page 0, or `None` when
     /// none of its members holds a page. See [`page_zero_hash`].
     pub page_zero_sha256: Option<String>,
+    /// Whether this edition is a reflowable EPUB, read as text rather than as
+    /// pages. Its `pages` then counts text blocks. See [`books_among`].
+    pub book: bool,
 }
 
 /// One work, with only the editions this caller may see.
@@ -815,6 +818,7 @@ fn editions_by_work(
                     pages: row.get(5)?,
                     missing: 0,
                     page_zero_sha256: row.get(6)?,
+                    book: false,
                 },
             ))
         })
@@ -824,15 +828,76 @@ fn editions_by_work(
 
     let edition_ids: Vec<i64> = rows.iter().map(|(_, id, _)| *id).collect();
     let missing = missing_by_edition(conn, account, &edition_ids)?;
+    let books = books_among(conn, &edition_ids)?;
 
     let mut by_work: HashMap<i64, Vec<EditionCard>> = HashMap::new();
     for (work_id, edition_id, card) in rows {
         by_work.entry(work_id).or_default().push(EditionCard {
             missing: missing.get(&edition_id).copied().unwrap_or(0),
+            book: books.contains(&edition_id),
             ..card
         });
     }
     Ok(by_work)
+}
+
+/// The editions among `edition_ids` whose members were walked as reflowable
+/// EPUBs, read back from `scan_entry` as [`missing_by_edition`] reads, since
+/// nothing writes `member.format`.
+///
+/// # Errors
+///
+/// Returns an error if SQLite fails.
+pub fn books_among(conn: &Connection, edition_ids: &[i64]) -> Result<HashSet<i64>, String> {
+    if edition_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let sql = format!(
+        "SELECT DISTINCT m.edition_id
+           FROM member m
+           JOIN root r ON r.id = m.root_id
+           JOIN scan_entry se
+             ON se.root_id  = m.root_id
+            AND se.rel_path = ltrim(substr(m.path, length(r.path) + 1), '/')
+          WHERE m.edition_id IN ({}) AND se.format = ?",
+        holes(edition_ids.len())
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = edition_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::ToSql)
+        .collect();
+    let token = taiyaku_read::Format::EpubReflow.token();
+    params.push(&token);
+    let mut stmt = prepare(conn, &sql).map_err(|e| format!("preparing the book listing: {e}"))?;
+    stmt.query_map(params.as_slice(), |row| row.get::<_, i64>(0))
+        .map_err(|e| format!("listing books: {e}"))?
+        .collect::<rusqlite::Result<HashSet<i64>>>()
+        .map_err(|e| format!("reading books: {e}"))
+}
+
+/// The keys of work `work_id`'s editions that are books, as [`books_among`]
+/// tells them, so a server reading a work's editions tells a book as this
+/// listing does, whatever its file is named.
+///
+/// # Errors
+///
+/// Returns an error if SQLite fails.
+pub fn book_keys(conn: &Connection, work_id: i64) -> Result<HashSet<String>, String> {
+    let failed = |e: rusqlite::Error| format!("reading the editions of work {work_id}: {e}");
+    let keyed: Vec<(i64, String)> = conn
+        .prepare_cached("SELECT id, key FROM edition WHERE work_id = ?1")
+        .map_err(failed)?
+        .query_map([work_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(failed)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(failed)?;
+    let ids: Vec<i64> = keyed.iter().map(|(id, _)| *id).collect();
+    let books = books_among(conn, &ids)?;
+    Ok(keyed
+        .into_iter()
+        .filter(|(id, _)| books.contains(id))
+        .map(|(_, key)| key)
+        .collect())
 }
 
 /// How many of each edition's members no longer exist on disk.

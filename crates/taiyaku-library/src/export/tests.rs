@@ -59,6 +59,7 @@ fn a_work_with_notes_and_progress(conn: &rusqlite::Connection, dir: &TempDir) ->
             taiyaku_notes: crate::NOTES_VERSION,
             work: "t".to_string(),
             notes: vec![crate::Note {
+                text: None,
                 id: "01H".to_string(),
                 edition: "raw".to_string(),
                 slot: 0,
@@ -585,6 +586,7 @@ fn a_note_whose_page_is_gone_is_exported_at_its_slot_without_stale() {
             taiyaku_notes: crate::NOTES_VERSION,
             work: "t".to_string(),
             notes: vec![crate::Note {
+                text: None,
                 id: "01H".to_string(),
                 edition: "raw".to_string(),
                 slot: 4,
@@ -654,6 +656,7 @@ fn an_export_carries_no_page_and_no_stale_mark() {
     let b = r#"{"path":"raw/b.cbz","sha256":"bb","pages":4}"#;
     let id = crate::import::sidecar(&conn, &of(&format!("{a},{b}")), &path).expect("import");
     let note = |id: &str, slot: u32| crate::Note {
+        text: None,
         id: id.to_string(),
         edition: "raw".to_string(),
         slot,
@@ -1202,6 +1205,7 @@ fn note_for(conn: &rusqlite::Connection, work_id: i64, user_id: i64, id: &str, b
             taiyaku_notes: crate::NOTES_VERSION,
             work: "t".to_string(),
             notes: vec![crate::Note {
+                text: None,
                 id: id.to_string(),
                 edition: "raw".to_string(),
                 slot: 0,

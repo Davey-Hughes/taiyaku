@@ -1627,8 +1627,9 @@ fn copy_entry(
 ) -> rusqlite::Result<usize> {
     tx.execute(
         "INSERT INTO scan_entry
-             (root_id, rel_path, kind, format, size, mtime, pages, sha256, first_seen, last_seen)
-         SELECT ?1, ?2, kind, format, size, mtime, pages, sha256, first_seen, last_seen
+             (root_id, rel_path, kind, format, size, mtime, pages, title, sha256, first_seen,
+              last_seen)
+         SELECT ?1, ?2, kind, format, size, mtime, pages, title, sha256, first_seen, last_seen
            FROM scan_entry WHERE root_id = ?3 AND rel_path = ?4
          ON CONFLICT (root_id, rel_path) DO NOTHING",
         rusqlite::params![to, to_rel, from, rel_path],
@@ -2973,8 +2974,15 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<Option<ScanReport>,
         .filter(|entry| !unchanged(held.get(&entry.rel_path).copied(), entry))
         .map(|entry| {
             let format = format_of(root, entry);
-            let pages = pages_of(root, entry, format);
-            (entry.rel_path.clone(), Resolved { format, pages })
+            let (pages, title) = pages_of(root, entry, format);
+            (
+                entry.rel_path.clone(),
+                Resolved {
+                    format,
+                    pages,
+                    title,
+                },
+            )
         })
         .collect();
 
@@ -3167,7 +3175,7 @@ fn record(
             conn.execute(
                 "UPDATE scan_entry
                     SET kind = ?3, format = ?4, size = ?5, mtime = ?6, pages = ?7,
-                        sha256 = NULL, last_seen = datetime('now')
+                        title = ?8, sha256 = NULL, last_seen = datetime('now')
                   WHERE root_id = ?1 AND rel_path = ?2",
                 rusqlite::params![
                     root.id,
@@ -3177,6 +3185,7 @@ fn record(
                     size,
                     seen.mtime,
                     resolved.pages,
+                    resolved.title,
                 ],
             )
             .map_err(|e| format!("updating {}: {e}", seen.rel_path))?;
@@ -3185,8 +3194,8 @@ fn record(
             report.added += 1;
             conn.execute(
                 "INSERT INTO scan_entry
-                     (root_id, rel_path, kind, format, size, mtime, pages)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                     (root_id, rel_path, kind, format, size, mtime, pages, title)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 rusqlite::params![
                     root.id,
                     seen.rel_path,
@@ -3195,6 +3204,7 @@ fn record(
                     size,
                     seen.mtime,
                     resolved.pages,
+                    resolved.title,
                 ],
             )
             .map_err(|e| format!("recording {}: {e}", seen.rel_path))?;
@@ -3249,12 +3259,12 @@ fn format_of(root: &Root, seen: &Seen) -> Option<&'static str> {
 }
 
 /// A page count for an entry that is new or has moved, or `None` where one
-/// does not apply.
+/// does not apply, and the title it declares.
 ///
 /// A directory's count comes from the walk, which summed it on the way past.
 /// A file's costs an archive open, so it is only paid for a format this
-/// project can actually read — a PDF or an EPUB is recorded with its format
-/// and no count.
+/// project can read, a reflowable EPUB counting its blocks and naming its
+/// `dc:title`; a PDF or fixed-layout EPUB is recorded with no count.
 ///
 /// **A container that will not open is not an error.** `member_pages` refuses
 /// a truncated zip, and a scan that aborted on one would leave a whole
@@ -3265,13 +3275,33 @@ fn format_of(root: &Root, seen: &Seen) -> Option<&'static str> {
 /// compares against `Format::Zip.token()` rather than a `"zip"` literal —
 /// that vocabulary is the schema's, and a second copy of it here is what
 /// `Format::token`'s own doc warns against.
-fn pages_of(root: &Root, seen: &Seen, format: Option<&'static str>) -> Option<u32> {
+fn pages_of(
+    root: &Root,
+    seen: &Seen,
+    format: Option<&'static str>,
+) -> (Option<u32>, Option<String>) {
     match seen.kind {
-        Kind::Dir => seen.pages,
-        Kind::File if format == taiyaku_read::Format::Zip.token() => {
-            taiyaku_read::member_pages(&root.path.join(&seen.rel_path)).ok()
+        Kind::Dir => (seen.pages, None),
+        Kind::File if format == taiyaku_read::Format::Zip.token() => (
+            taiyaku_read::member_pages(&root.path.join(&seen.rel_path)).ok(),
+            None,
+        ),
+        Kind::File if format == taiyaku_read::Format::EpubReflow.token() => {
+            // A book with no text has no count, as `member_pages` refuses an
+            // archive with no page images: the derive names a container with
+            // no count as unreadable, and takes a zero for a directory of
+            // archives, counted and never named.
+            match taiyaku_read::read_book(&root.path.join(&seen.rel_path)) {
+                Ok(book) => (
+                    u32::try_from(book.blocks.len())
+                        .ok()
+                        .filter(|&blocks| blocks > 0),
+                    book.title,
+                ),
+                Err(_) => (None, None),
+            }
         }
-        Kind::File => None,
+        Kind::File => (None, None),
     }
 }
 
@@ -3297,6 +3327,8 @@ fn dir_pages(seen: &Seen) -> Option<u32> {
 struct Resolved {
     format: Option<&'static str>,
     pages: Option<u32>,
+    /// The title the file declares, a book's `dc:title`.
+    title: Option<String>,
 }
 
 /// One row `scan_entry` already holds for this root, as much of it as the

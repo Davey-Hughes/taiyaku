@@ -3308,6 +3308,7 @@ async fn stored_notes_are_served_and_change_the_validator() {
             taiyaku_notes: taiyaku_library::NOTES_VERSION,
             work: "t".into(),
             notes: vec![crate::notes::Note {
+                text: None,
                 id: "01J8".into(),
                 edition: "raw".into(),
                 slot: 2,
@@ -3383,6 +3384,46 @@ async fn write_notes(
         .await
         .unwrap();
     (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+/// A run of text marks a book's text, and a book is told by what the scan
+/// read: a highlight is taken on a reflowable EPUB named `.zip` and refused on
+/// a comic archive named `.epub`.
+#[tokio::test]
+async fn a_run_of_text_is_taken_on_what_the_scan_read_as_a_book() {
+    let tmp = crate::test_support::Fixture::new("notes-misnamed");
+    let (state, book, comic) = crate::test_support::misnamed(&tmp);
+    let app = build_router(state);
+    for (slug, answer) in [(book, StatusCode::OK), (comic, StatusCode::BAD_REQUEST)] {
+        let uri = format!("/api/works/{slug}/notes");
+        let tag = etag_of(&app, &uri).await;
+        let body = format!(
+            r#"{{"work":"{slug}","notes":[{{"id":"01J8","edition":"raw","slot":0,"body":"b",
+                 "text":{{"start":0,"end":3}},
+                 "created":"2026-08-05T10:00:00Z","updated":"2026-08-05T10:00:00Z"}}]}}"#
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::put(&uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::IF_MATCH, tag)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            answer,
+            "{slug}: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
 }
 
 /// The three answers `If-Match` has, on the one route where getting them
@@ -4358,6 +4399,7 @@ fn router_with_two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, A
         works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -5072,6 +5114,7 @@ fn router_over_a_scanned_work_under_a_withheld_root(
         works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: fixture_root.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -5935,9 +5978,13 @@ async fn every_route_naming_a_work_answers_a_hidden_one_as_a_slug_no_work_holds(
                 told_apart |= said[2] != said[0];
             }
         }
-        // O58: the correction is an administrator's, and an administrator
-        // holds no grant, so no request from this account reaches its grant.
-        let asks_this_account_the_grant = pattern != "/api/works/{work}/alignments";
+        // O58: a correction and a pin are an administrator's, and an
+        // administrator holds no grant, so no request from this account
+        // reaches its grant.
+        let asks_this_account_the_grant = !matches!(
+            pattern,
+            "/api/works/{work}/alignments" | "/api/works/{work}/book/pins"
+        );
         assert!(
             told_apart || !asks_this_account_the_grant,
             "{pattern}: no request told a granted work from a hidden one, so this fixture \
@@ -5945,7 +5992,7 @@ async fn every_route_naming_a_work_answers_a_hidden_one_as_a_slug_no_work_holds(
         );
     }
     assert_eq!(
-        walked, 13,
+        walked, 15,
         "the guarded paths that carry `{{work}}`: a route that gains or loses one changes \
          this count"
     );
@@ -6247,6 +6294,7 @@ async fn a_new_note_on_an_edition_outside_the_grant_is_refused_and_a_held_one_is
             taiyaku_notes: taiyaku_library::NOTES_VERSION,
             work: slug.clone(),
             notes: vec![crate::notes::Note {
+                text: None,
                 id: "01HELD".into(),
                 edition: "raw".into(),
                 slot: 0,
@@ -6330,6 +6378,7 @@ async fn a_notes_write_read_before_the_grant_widened_is_refused() {
         crate::test_support::router_over_a_work_whose_editions_sit_in_two_libraries();
     let uri = format!("/api/works/{slug}/notes");
     let note = |id: &str, edition: &str| crate::notes::Note {
+        text: None,
         id: id.into(),
         edition: edition.into(),
         slot: 0,
@@ -8172,6 +8221,7 @@ mod narrowing {
     /// A note `id` on `edition`'s `slot`, its words its own.
     fn note(id: &str, edition: &str, slot: u32) -> crate::notes::Note {
         crate::notes::Note {
+            text: None,
             id: id.into(),
             edition: edition.into(),
             slot,

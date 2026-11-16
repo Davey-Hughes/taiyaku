@@ -8,21 +8,29 @@
 //! native-only. Solving does not: the dynamic programming runs over page
 //! hashes, so it is portable and lives here alongside the lookup.
 
+mod book_align;
 mod credits;
 mod narrow;
 mod regions;
 mod route;
+mod sentences;
 mod sidecar;
 mod slot;
 mod solve;
 mod truth;
 
+pub use book_align::{
+    AnchorScorer, Anchors, Band, BlockLink, BlockParams, BlockScorer, GALE_CHURCH_MERGE,
+    GALE_CHURCH_VARIANCE, LengthScorer, align_blocks, align_texts, align_texts_pinned,
+    english_number,
+};
 pub use credits::{UnpairedRun, unpaired_runs};
 pub use narrow::{FromFull, Narrowed};
 pub use regions::{
     Axis, Region, RegionDoc, RegionEdition, RegionMember, VERSION as REGIONS_VERSION,
 };
 pub use route::{Route, Via, invert, resolve, route};
+pub use sentences::{align_sentences, sentences};
 pub use sidecar::{
     Alignment, Anchor, ChapterAt, Corrected, Edition, Member, MemberPage, Merged, NotCorrected,
     Quality, RunEntry, Sidecar, SlotOf, SlotSpan, SolverInfo, Source, VERSION, Work,

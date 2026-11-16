@@ -62,7 +62,7 @@ use taiyaku_core::{
     TruthEdition, TruthRegion,
 };
 
-use crate::{Note, Notes, Position, Progress, Region};
+use crate::{Note, Notes, Position, Progress, Region, TextRange};
 
 // --- progress ----------------------------------------------------------
 
@@ -687,6 +687,8 @@ struct NoteRow {
     created: String,
     updated: String,
     at: AtColumns,
+    ts: Option<u32>,
+    te: Option<u32>,
 }
 
 /// Each edition key's layout in one [`Numbering`], read once however many
@@ -813,7 +815,7 @@ fn held_notes(
     let mut stmt = conn
         .prepare(
             "SELECT id, edition, slot, rx, ry, rw, rh, color, body, created, updated,
-                    at_sha256, at_nth, at_page, at_half
+                    at_sha256, at_nth, at_page, at_half, ts, te
              FROM note WHERE work_id = ?1 AND user_id = ?2 ORDER BY id",
         )
         .map_err(|e| format!("preparing notes: {e}"))?;
@@ -837,6 +839,8 @@ fn held_notes(
                     page: row.get(13)?,
                     half: row.get(14)?,
                 },
+                ts: row.get(15)?,
+                te: row.get(16)?,
             })
         })
         .map_err(|e| format!("querying notes: {e}"))?
@@ -853,12 +857,24 @@ fn resolve(note: &mut Note, at: Option<&MemberPage>, layouts: &Layouts<'_>) {
 
 fn note_from_row(row: NoteRow) -> Result<(Note, Option<MemberPage>), String> {
     let region = region_from_columns(&row.id, row.rx, row.ry, row.rw, row.rh)?;
+    let text = match (row.ts, row.te) {
+        (None, None) => None,
+        (Some(start), Some(end)) => Some(TextRange { start, end }),
+        (ts, te) => {
+            return Err(format!(
+                "note `{}` has a run of text with only one of ts, te set (ts={ts:?}, te={te:?}); \
+                 a run is both or neither",
+                row.id
+            ));
+        }
+    };
     let at = at_from_columns(row.at).map_err(|e| format!("note `{}` has {e}", row.id))?;
     let note = Note {
         id: row.id,
         edition: row.edition,
         slot: row.slot,
         region,
+        text,
         color: row.color,
         body: row.body,
         created: row.created,
@@ -964,9 +980,9 @@ pub fn put_notes_in(
             .prepare(
                 "INSERT INTO note
                    (id, user_id, work_id, edition, slot, rx, ry, rw, rh, color, body, created,
-                    updated, at_sha256, at_nth, at_page, at_half)
+                    updated, at_sha256, at_nth, at_page, at_half, ts, te)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                         ?14, ?15, ?16, ?17)",
+                         ?14, ?15, ?16, ?17, ?18, ?19)",
             )
             .map_err(|e| format!("preparing note insert: {e}"))?;
         for note in &doc.notes {
@@ -998,6 +1014,8 @@ pub fn put_notes_in(
                 nth,
                 page,
                 half,
+                note.text.map(|t| t.start),
+                note.text.map(|t| t.end),
             ])
             .map_err(|e| format!("writing note `{}`: {e}", note.id))?;
         }

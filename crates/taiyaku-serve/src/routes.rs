@@ -42,7 +42,7 @@ pub(crate) fn answered_and_logged(status: StatusCode, said: String, why: &str) -
 
 /// `answered_and_logged`'s line. A failed write is dropped, as `ServeState::find`
 /// drops one: the answer goes out regardless.
-fn log_line(out: &mut impl std::io::Write, said: &str, why: &str) {
+pub(crate) fn log_line(out: &mut impl std::io::Write, said: &str, why: &str) {
     let _ = writeln!(out, "taiyaku: {said}: {why}");
 }
 
@@ -705,7 +705,7 @@ async fn get_sidecar(
 }
 
 /// [`get_sidecar`]'s answer for a work marked missing.
-fn missing_work(slug: &str) -> Response {
+pub(crate) fn missing_work(slug: &str) -> Response {
     (
         StatusCode::NOT_FOUND,
         axum::Json(serde_json::json!({
@@ -1109,7 +1109,7 @@ fn reader(request_extensions: &axum::http::Extensions) -> Result<i64, NoPrincipa
 /// [`NotAPageIndex`] is one: a `Response` is 128 bytes and `Result<i64, Response>`
 /// trips `clippy::result_large_err`.
 #[derive(Debug)]
-struct NoPrincipal;
+pub(crate) struct NoPrincipal;
 
 impl IntoResponse for NoPrincipal {
     fn into_response(self) -> Response {
@@ -1328,11 +1328,14 @@ async fn put_notes(
         // at an edition a re-solve renamed from refusing every write that
         // follows it — including the one that would remove it. See
         // `notes::validate_against`.
+        let books =
+            crate::book::books_of(&state.library.conn(), &found).map_err(NoNotes::Failed)?;
         crate::notes::validate_against(
             &merged,
             &found.id,
             &view.visible_editions_in_full(),
             &current,
+            &books,
         )?;
 
         crate::notes::store(
@@ -2287,6 +2290,11 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         ),
         ("/api/works/{work}/notes", get(get_notes).put(put_notes)),
         ("/api/works/{work}/truth", get(get_truth).put(put_truth)),
+        ("/api/works/{work}/book", get(crate::book::get_book)),
+        (
+            "/api/works/{work}/book/pins",
+            axum::routing::put(crate::book::put_pin),
+        ),
         (
             "/api/works/{work}/alignments",
             axum::routing::patch(patch_alignments),
@@ -2303,6 +2311,10 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         axum::routing::delete(crate::session::revoke_key),
     ));
     routes.push(("/api/sessions", get(crate::session::list_sessions)));
+    routes.push((
+        "/api/dictionary/{lang}/{word}",
+        get(crate::dictionary::lookup),
+    ));
     routes.push((
         "/api/sessions/{id}",
         axum::routing::delete(crate::session::revoke_session),
@@ -2619,6 +2631,16 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         // grant. The write is an administrator's (O58), and an administrator
         // is never limited by a grant.
         ("/api/works/{work}/truth", RefusesAndFilters),
+        // `get_book` refuses as `get_sidecar` does, only a work with no
+        // visible edition, and leaves out a book edition the grant hides.
+        ("/api/works/{work}/book", Filters),
+        (
+            "/api/works/{work}/book/pins",
+            GrantIndependent {
+                reason: "admin-only (O58), as correcting a pairing is, and an \
+                         administrator is never limited by a grant",
+            },
+        ),
         // The grant halves `patch_alignments` keeps (the go-public design's §5,
         // decision 6) are unreachable: no caller of this route holds a grant.
         (
@@ -2658,6 +2680,13 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
             "/api/sessions",
             GrantIndependent {
                 reason: "the caller's own signed-in devices",
+            },
+        ),
+        (
+            "/api/dictionary/{lang}/{word}",
+            GrantIndependent {
+                reason: "a word looked up in a language's dictionary, which names \
+                          no work and reaches no directory",
             },
         ),
         (
@@ -3095,12 +3124,21 @@ pub(crate) fn narrowing_postures() -> Vec<(&'static str, NarrowingPosture)> {
         // A narrowed account only reads it: the write is an administrator's
         // (O58), and an administrator is never narrowed.
         ("/api/works/{work}/truth", Narrows),
+        (
+            "/api/works/{work}/book",
+            NoPages {
+                reason: "a book edition is one file, seen whole or not at all, \
+                         so no numbering of its pages narrows",
+            },
+        ),
+        ("/api/works/{work}/book/pins", ADMIN),
         ("/api/works/{work}/alignments", ADMIN),
         ("/api/me", OWN),
         ("/api/about", OWN),
         ("/api/keys", OWN),
         ("/api/keys/{id}", OWN),
         ("/api/sessions", OWN),
+        ("/api/dictionary/{lang}/{word}", OWN),
         ("/api/sessions/{id}", OWN),
         ("/api/password", OWN),
         ("/api/library/home", Narrows),

@@ -1,6 +1,6 @@
 import { useRef, type CSSProperties } from 'react'
 import { usePanelFocus } from './focus'
-import { READER_KEYS, withoutCorrecting } from './keys'
+import { READER_KEYS, type ReaderBinding, withoutCorrecting } from './keys'
 import type { Direction } from './modules/direction'
 import { helpGroups } from './modules/help'
 import type { ReaderModule } from './module'
@@ -38,7 +38,7 @@ export interface HelpProps {
    * other one — `helpGroups` derives that from `stepFor` rather than deciding
    * for itself.
    */
-  reading: Direction
+  reading?: Direction
   visible: boolean
   /**
    * The modules to list. The caller's choice, not this component's: it lists
@@ -52,7 +52,12 @@ export interface HelpProps {
    * The account is an administrator. For anyone else `c`'s row is left out,
    * as `keyplan.ts` leaves the key to the browser (O58).
    */
-  mayCorrect: boolean
+  mayCorrect?: boolean
+  /**
+   * The reader's own keys, in place of `READER_KEYS`, whose correcting row
+   * `mayCorrect` then has no say over.
+   */
+  bindings?: ReaderBinding[]
   onClose: () => void
 }
 
@@ -90,8 +95,9 @@ export interface HelpProps {
 export function Help({
   visible,
   modules,
-  reading,
-  mayCorrect,
+  reading = 'ltr',
+  mayCorrect = false,
+  bindings,
   onClose,
 }: HelpProps) {
   const panelRef = useRef<HTMLDivElement>(null)
@@ -114,7 +120,7 @@ export function Help({
       {helpGroups(
         modules,
         reading,
-        mayCorrect ? READER_KEYS : withoutCorrecting(READER_KEYS),
+        bindings ?? (mayCorrect ? READER_KEYS : withoutCorrecting(READER_KEYS)),
       ).map((group) => (
         <section key={group.heading}>
           <h3 className="reader-panel-heading">{group.heading}</h3>

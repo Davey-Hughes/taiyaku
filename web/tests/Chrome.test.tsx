@@ -12,6 +12,7 @@ import { Chrome, type ChromeProps } from '../src/Chrome'
 import type { Group } from '../src/pairing'
 import type { Position } from '../src/resolver'
 import { mount, rerender } from './support/mount'
+import { PAGE_LAYOUTS } from '../src/layouts'
 
 /**
  * `Chrome` is the two bars — `TopBar.tsx` (its own test) owns the top bar's
@@ -73,6 +74,7 @@ const baseProps: ChromeProps = {
   progress: 0.25,
   title: 'Volume One',
   editionLine: 'Vol. 1 · Raw',
+  layouts: PAGE_LAYOUTS,
   mode: 'single',
   onMode: vi.fn(),
   settingsOpen: false,

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount, rerender } from './support/mount'
+import { PAGE_LAYOUTS } from '../src/layouts'
 import { TopBar, type TopBarProps } from '../src/TopBar'
 
 const props = (over: Partial<TopBarProps> = {}): TopBarProps => ({
   title: 'Dandadan',
   editionLine: 'Vol. 1 · Raw, monochrome',
+  layouts: PAGE_LAYOUTS,
   mode: 'single',
   onMode: vi.fn(),
   settingsOpen: false,
@@ -94,5 +96,34 @@ describe('TopBar', () => {
     expect(icons).toHaveLength(5)
     for (const icon of icons)
       expect(icon.getAttribute('aria-hidden')).toBe('true')
+  })
+
+  it('draws the layouts a reader offers, in its order, compare among them', () => {
+    const onMode = vi.fn()
+    const host = mount(
+      <TopBar
+        title="T"
+        editionLine="English"
+        layouts={['scroll', 'compare'] as const}
+        mode="scroll"
+        onMode={onMode}
+        settingsOpen={false}
+        onSettings={vi.fn()}
+        onLeave={vi.fn()}
+      />,
+    )
+    const group = host.querySelector('[aria-label="Layout"]')
+    expect(
+      [...(group?.querySelectorAll('button') ?? [])].map((b) => b.textContent),
+    ).toEqual(['scroll', 'compare'])
+    button(host, 'compare').click()
+    expect(onMode).toHaveBeenCalledWith('compare')
+  })
+
+  it('draws no layout group for a reader that has no layout', () => {
+    const host = mount(<TopBar {...props({ layouts: undefined })} />)
+    expect(host.querySelector('[aria-label="Layout"]')).toBeNull()
+    expect(button(host, 'Library')).toBeDefined()
+    expect(button(host, 'Settings')).toBeDefined()
   })
 })

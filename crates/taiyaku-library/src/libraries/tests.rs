@@ -361,7 +361,7 @@ fn a_rename_that_fails_for_another_reason_is_the_stores_fault() {
 
 /// Two libraries, so a count that forgot the library reads the other's rows.
 #[test]
-fn books_counts_the_librarys_own_epub_and_pdf_entries() {
+fn books_counts_the_librarys_own_unreadable_epub_and_pdf_entries() {
     let parent = crate::tests::tempdir("libraries-books");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
@@ -371,23 +371,29 @@ fn books_counts_the_librarys_own_epub_and_pdf_entries() {
         std::fs::create_dir_all(&dir).expect("mkdir");
         roots.push(add_root_in(&conn, &dir, InLibrary::Named(name)).expect("adds"));
     }
-    for (root, rel_path, format) in [
-        (&roots[0], "a.epub", Some("epub-reflow")),
-        (&roots[0], "b.epub", Some("epub-fixed")),
-        (&roots[0], "c.pdf", Some("pdf")),
-        (&roots[0], "d.cbz", Some("zip")),
-        (&roots[0], "e.bin", None),
-        (&roots[1], "f.pdf", Some("pdf")),
+    for (root, rel_path, format, pages) in [
+        (&roots[0], "a.epub", Some("epub-reflow"), Some(3)),
+        (&roots[0], "b.epub", Some("epub-fixed"), None),
+        (&roots[0], "c.pdf", Some("pdf"), None),
+        (&roots[0], "d.cbz", Some("zip"), None),
+        (&roots[0], "e.bin", None, None),
+        (&roots[0], "g.epub", Some("epub-reflow"), None),
+        (&roots[0], "h.epub", Some("epub-reflow"), Some(7)),
+        (&roots[1], "f.pdf", Some("pdf"), None),
     ] {
         conn.execute(
-            "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
-             VALUES (?1, ?2, 'file', ?3, 1, 1)",
-            rusqlite::params![root.id, rel_path, format],
+            "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime, pages)
+             VALUES (?1, ?2, 'file', ?3, 1, 1, ?4)",
+            rusqlite::params![root.id, rel_path, format, pages],
         )
         .expect("a scanned entry");
     }
 
-    assert_eq!(books(&conn, roots[0].libraries[0]).expect("counts"), 3);
+    assert_eq!(
+        books(&conn, roots[0].libraries[0]).expect("counts"),
+        3,
+        "b, c, and g, a reflowable EPUB with no text counted; not a or h, books"
+    );
     assert_eq!(books(&conn, roots[1].libraries[0]).expect("counts"), 1);
 }
 

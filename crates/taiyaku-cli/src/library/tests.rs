@@ -933,6 +933,7 @@ fn a_second_import_does_not_overwrite_state_changed_since_the_first() {
                 taiyaku_notes: taiyaku_library::NOTES_VERSION,
                 work: "t".to_string(),
                 notes: vec![taiyaku_library::Note {
+                    text: None,
                     id: "live".to_string(),
                     edition: "raw".to_string(),
                     slot: 0,
@@ -1199,6 +1200,7 @@ fn round_trip_export_wipe_the_database_and_reimport_recovers_the_same_state() {
                 taiyaku_notes: taiyaku_library::NOTES_VERSION,
                 work: "t".to_string(),
                 notes: vec![taiyaku_library::Note {
+                    text: None,
                     id: "01H9".to_string(),
                     edition: "raw".to_string(),
                     slot: 2,

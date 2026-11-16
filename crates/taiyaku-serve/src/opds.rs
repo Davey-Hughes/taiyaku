@@ -561,6 +561,10 @@ pub(crate) async fn work_feed(
     } else {
         HashMap::new()
     };
+    let books = match crate::book::read_books(&state, &work).await {
+        Ok(books) => books,
+        Err(refusal) => return refusal,
+    };
 
     let mut entries = String::new();
     for (key, edition) in &sidecar.editions {
@@ -570,6 +574,12 @@ pub(crate) async fn work_feed(
         // key is not sanitised on the way in (a sidecar this server did not
         // write may hold one `align` would refuse), so both have to handle
         // whatever a key actually contains, including a space or a `/`.
+        // A book has no pages to stream, so its one link is the download, and
+        // without that it has no acquisition link at all, which OPDS forbids.
+        let book = crate::book::is_book(key, edition, &books);
+        if book && !may_download {
+            continue;
+        }
         let key_x = escape(key);
         let key_href = escape(&percent_encode(key));
         let label = escape(&edition.label);
@@ -606,19 +616,29 @@ pub(crate) async fn work_feed(
           href="/opds/v1.2/works/{work_href}/{key_href}/pages/0"/>"#
             )
         };
+        let (content, stream) = if book {
+            ("a book".to_string(), String::new())
+        } else {
+            (
+                format!("{pages} pages"),
+                format!(
+                    r#"
+    <link rel="http://vaemendis.net/opds-pse/stream" type="image/jpeg"
+          href="/opds/v1.2/works/{work_href}/{key_href}/pages/{{pageNumber}}"
+          pse:count="{pages}"/>"#
+                ),
+            )
+        };
         let _ = writeln!(
             entries,
             r#"  <entry>
     <id>taiyaku:edition:{work_id}:{key_x}</id>
     <title>{title} — {label}</title>
     <updated>1970-01-01T00:00:00Z</updated>
-    <content type="text">{pages} pages</content>
+    <content type="text">{content}</content>
     <link rel="http://opds-spec.org/image/thumbnail" type="image/jpeg"
           href="/opds/v1.2/works/{work_href}/{key_href}/cover"/>
-    {acquisition}
-    <link rel="http://vaemendis.net/opds-pse/stream" type="image/jpeg"
-          href="/opds/v1.2/works/{work_href}/{key_href}/pages/{{pageNumber}}"
-          pse:count="{pages}"/>
+    {acquisition}{stream}
   </entry>"#
         );
     }

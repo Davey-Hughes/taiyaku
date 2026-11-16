@@ -37,10 +37,10 @@
 junit = { path = "junit.xml" }
 slow-timeout = { period = "30s", terminate-after = 2 }
 
-# The exempt set matches the nine-alternative regex both coverage steps of
-# ci.yml and check-all.sh carry —
-# `--ignore-filename-regex '(band_sweep|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'`
-# — which matches the thirteen files `docs/ci.md` tables under
+# The exempt set matches the regex both coverage steps of ci.yml and
+# check-all.sh carry —
+# `--ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'`
+# — which matches the files `docs/ci.md` tables under
 # "The ignored Rust files, named". This is not one exempt set shared three ways:
 # the two coverage steps share one regex string, but nextest's `filter` selects
 # by test name rather than by file, so this file cannot reuse that string — the
@@ -78,8 +78,11 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # phase 3's model candidate against the same pages for the head-to-head table in
 # `docs/notes.md`. Each is `#[cfg(test)]`, gated on `TAIYAKU_CORPUS`, and none
 # of the three is a unit test with a normal budget.
+#
+# `test(book_experiment)` aligns whole books at each of its settings against
+# hand-made keys, which no unit test's budget covers.
 [[profile.default.overrides]]
-filter = "test(band_sweep) + test(corpus::) + test(geometry_experiment) + test(model_experiment) + test(region_experiment) + test(score_corpus) + test(truth_population)"
+filter = "test(band_sweep) + test(book_experiment) + test(corpus::) + test(geometry_experiment) + test(model_experiment) + test(region_experiment) + test(score_corpus) + test(truth_population)"
 slow-timeout = { period = "60s" }
 
 # `a_root_that_cannot_be_written_falls_back_to_the_short_interval`

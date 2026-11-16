@@ -109,6 +109,7 @@ fn seed_note(conn: &Connection, work_id: i64, edition: &str, slot: u32) {
             taiyaku_notes: crate::NOTES_VERSION,
             work: "ignored".to_string(),
             notes: vec![Note {
+                text: None,
                 id: "01JEXAMPLE0000000000000000".to_string(),
                 edition: edition.to_string(),
                 slot,
@@ -1058,6 +1059,21 @@ fn a_note_id_whose_two_copies_sit_on_different_slots_refuses_the_fold() {
     );
 }
 
+/// Two copies that differ only in the run of text they mark are two notes,
+/// and refuse the fold as two slots do.
+#[test]
+fn a_note_id_whose_two_copies_mark_different_runs_of_text_refuses_the_fold() {
+    let (conn, from, into) = folded_pair();
+    seed_note(&conn, from, "raw", 11);
+    seed_note(&conn, into, "full-color", 11);
+    conn.execute("UPDATE note SET ts = 2, te = 9 WHERE work_id = ?1", [from])
+        .expect("marks a run on the source's copy");
+
+    let why = refused_leaving_every_note(&conn, from, into);
+
+    assert!(why.contains("01JEXAMPLE0000000000000000"), "{why}");
+}
+
 /// Provenance that differs between the two sides is not mergeable and is not
 /// this fold's to choose between.
 ///
@@ -1417,6 +1433,7 @@ fn the_stranded_message_pairs_each_count_with_the_table_it_came_from() {
             work: "ignored".to_string(),
             notes: (1..=3)
                 .map(|n| Note {
+                    text: None,
                     id: format!("01JEXAMPLE000000000000000{n}"),
                     edition: "dropped".to_string(),
                     slot: 33,
@@ -1511,6 +1528,7 @@ fn the_shared_note_refusal_counts_the_ids_and_shows_a_few() {
                 notes: ids
                     .iter()
                     .map(|id| Note {
+                        text: None,
                         id: id.clone(),
                         edition: edition.to_string(),
                         slot: 3,
@@ -1560,6 +1578,7 @@ const SHARED: &str = "01JSHARED00000000000000000";
 /// writes it: the whole slot, the default colour, one pair of timestamps.
 fn shared_note(edition: &str) -> Note {
     Note {
+        text: None,
         id: SHARED.to_string(),
         edition: edition.to_string(),
         slot: 3,
@@ -3596,6 +3615,7 @@ fn note_copies_are_one_note_by_the_slot_each_answers_whatever_their_anchors() {
         2,
         1,
         vec![Note {
+            text: None,
             id: SHARED.to_string(),
             edition: "colour".to_string(),
             slot: 3,

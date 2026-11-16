@@ -203,6 +203,11 @@
    * again, part let through, so the line and its fill show under it. Held to
    * the pair by the same test. */
   --reader-mark: rgb(236 228 212 / 0.5);
+  /* A book's page set as paper in the reader's settings: Paper's `--bg` and
+   * `--text`, fixed, since the page is the book's setting and not the
+   * theme's. */
+  --book-paper: #f3eee3;
+  --book-paper-ink: #231e17;
 }
 
 /* What the notes overlay draws on artwork (spec 2026-09-17 §8.5): fixed, for

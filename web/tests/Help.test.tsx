@@ -122,6 +122,23 @@ describe('Help', () => {
     expect(without).toContain('move into the bars, and on round to the page')
   })
 
+  it("lists the keys a reader passes in place of the page reader's", () => {
+    const host = mount(
+      <Help
+        visible={true}
+        modules={[]}
+        bindings={[
+          { keys: [' '], label: 'switch edition', resolve: () => undefined },
+        ]}
+        onClose={noop}
+      />,
+    )
+    const said = [...host.querySelectorAll('dl > div dd')].map(
+      (dd) => dd.textContent,
+    )
+    expect(said).toEqual(['switch edition'])
+  })
+
   it('calls onClose when the Close button is pressed', () => {
     const onClose = vi.fn()
     const host = mount(

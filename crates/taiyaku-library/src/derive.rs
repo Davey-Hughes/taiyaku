@@ -688,11 +688,22 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     // exactly what `import::scanned`'s `Scope::Scan` arm writes into `edition`
     // for a work `write_work` writes, and what `unchanged` found for one it left.
     let mut written_editions: BTreeSet<(i64, String)> = BTreeSet::new();
+    // Before any group is written, so every group's [`held_work`] reads the
+    // one answer: which files this derive holds at all.
+    let placed: HashSet<String> = groups.values().flat_map(Group::paths).cloned().collect();
     for group in groups.into_values() {
         let series_id = *series_ids
             .get(&group.series)
             .ok_or_else(|| format!("no series row was reconciled for `{}`", group.series))?;
-        let work_id = write_work(conn, series_id, &group, documents, &mut unread, &mut report)?;
+        let work_id = write_work(
+            conn,
+            series_id,
+            &group,
+            &placed,
+            documents,
+            &mut unread,
+            &mut report,
+        )?;
         written_editions.extend(group.editions.keys().cloned().map(|key| (work_id, key)));
         written.insert(work_id);
     }
@@ -918,7 +929,19 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
 /// them, so a book is one work with one reading position and an edition per
 /// edition key: directories sharing a key share one edition
 /// ([`DeriveReport::merged`]).
-type GroupKey = (String, Option<u64>, Option<String>);
+type GroupKey = (String, Option<u64>, Option<Alone>);
+
+/// What a volume-less entry is grouped by ([`GroupKey`]): the title a rule
+/// captured, a person naming the book as a captured volume does, so two
+/// translations a rule titles alike are one work; else its own path. A
+/// file's declared title groups nothing: no person chose it, and two books of
+/// one name by one author are not one book. Two variants rather than one
+/// string, so a title can never meet a path that spells it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Alone {
+    Titled(String),
+    Path(String),
+}
 
 /// One `scan_entry` row, as derivation reads it.
 struct Entry {
@@ -926,6 +949,8 @@ struct Entry {
     format: Option<String>,
     pages: Option<u32>,
     sha256: Option<String>,
+    /// The title the file declares, `scan_entry.title`.
+    title: Option<String>,
 }
 
 /// A resolved entry that will become one member.
@@ -953,6 +978,7 @@ struct Candidate {
     sha256: String,
     pages: u32,
     chapter: Option<f64>,
+    /// A rule's `title` capture, or else the title the file declares.
     title: Option<String>,
     /// What the rules resolved for `edition.kind` on **this entry's own**
     /// path, unvalidated: `rule.set_kind` is a bare `TEXT` column while
@@ -990,6 +1016,18 @@ struct Group {
     editions: BTreeMap<String, Vec<Candidate>>,
 }
 
+impl Group {
+    /// Every path this group holds: each candidate's, and each of its copies',
+    /// since a work may hold a volume under a directory other than the one
+    /// walked first.
+    fn paths(&self) -> impl Iterator<Item = &String> {
+        self.editions
+            .values()
+            .flatten()
+            .flat_map(|c| std::iter::once(&c.path).chain(c.copies.iter().map(|k| &k.path)))
+    }
+}
+
 /// The four things [`classify`] accumulates into, gathered so it takes one
 /// `&mut` rather than four.
 ///
@@ -1008,7 +1046,7 @@ struct Sorting<'a> {
 fn entries(conn: &Connection, root_id: i64) -> Result<Vec<Entry>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT rel_path, format, pages, sha256 FROM scan_entry \
+            "SELECT rel_path, format, pages, sha256, title FROM scan_entry \
              WHERE root_id = ?1 ORDER BY rel_path",
         )
         .map_err(|e| format!("reading the facts for root {root_id}: {e}"))?;
@@ -1019,6 +1057,7 @@ fn entries(conn: &Connection, root_id: i64) -> Result<Vec<Entry>, String> {
                 format: r.get(1)?,
                 pages: r.get(2)?,
                 sha256: r.get(3)?,
+                title: r.get(4)?,
             })
         })
         .map_err(|e| format!("reading the facts for root {root_id}: {e}"))?;
@@ -1301,6 +1340,7 @@ fn classify(
         .join(&entry.rel_path)
         .to_string_lossy()
         .into_owned();
+    let titled = resolved.title.clone();
     into.staged.push(Staged {
         candidate: Candidate {
             path,
@@ -1309,7 +1349,7 @@ fn classify(
             sha256,
             pages,
             chapter: resolved.chapter,
-            title: resolved.title,
+            title: resolved.title.or(entry.title),
             kind: resolved.kind,
             language: resolved.language,
             copies: Vec::new(),
@@ -1319,6 +1359,7 @@ fn classify(
         edition_key: resolved
             .edition_key
             .unwrap_or_else(|| DEFAULT_EDITION_KEY.to_string()),
+        titled,
     });
     Ok(())
 }
@@ -1330,6 +1371,9 @@ struct Staged {
     series: String,
     volume: Option<f64>,
     edition_key: String,
+    /// The title a rule captured, apart from the one the file declares that
+    /// [`Candidate::title`] falls back to: only this one groups.
+    titled: Option<String>,
 }
 
 /// File every staged entry once every root has been walked. **A byte-identical
@@ -1395,6 +1439,7 @@ fn place(
             series,
             volume,
             edition_key,
+            titled,
         }) = slots[at].take()
         else {
             continue;
@@ -1410,8 +1455,12 @@ fn place(
         named_series.insert(series.clone());
         // No volume here means no chapter either — `classify` returned for
         // that case — so this is the entry the rules placed in a series and
-        // nothing more. It is keyed to itself. See [`GroupKey`].
-        let alone = volume.is_none().then(|| candidate.rel_path.clone());
+        // nothing more: keyed to the title a rule gave it, or else to itself.
+        // See [`GroupKey`].
+        let alone = volume.is_none().then(|| match titled {
+            Some(title) => Alone::Titled(title),
+            None => Alone::Path(candidate.rel_path.clone()),
+        });
         let key = (series.clone(), volume.map(f64::to_bits), alone);
         let group = groups.entry(key).or_insert_with(|| Group {
             series,
@@ -1432,22 +1481,24 @@ fn place(
     Ok(groups)
 }
 
-/// Whether `taiyaku-read` can turn what this `scan_entry.format` token names
-/// into pages.
+/// Whether `taiyaku-read` can read what this `scan_entry.format` token names.
 ///
 /// Compared as tokens rather than by rebuilding the enum, because
 /// [`taiyaku_read::Format`] has no parse-back and `token` is explicitly the
 /// schema's vocabulary rather than free text — the same move `scan::pages_of`
-/// makes against `Format::Zip.token()`. The two named here are exactly
-/// [`taiyaku_read::Format::is_readable`]'s two, and that function stays the
-/// place the question is decided; a third readable format is a change in both
+/// makes against `Format::Zip.token()`. The three named here are exactly
+/// [`taiyaku_read::Format::is_readable`]'s three, and that function stays the
+/// place the question is decided; another readable format is a change in both
 /// places, which is the cost of there being no token parser.
 ///
 /// A NULL `format` — a file whose bytes matched no signature — needs no arm
-/// of its own: neither token is `None`, so `None` matches neither, which is
-/// the same answer `Format::Unknown` gives.
+/// of its own: no token is `None`, so `None` matches none, which is the same
+/// answer `Format::Unknown` gives.
 fn is_readable(format: Option<&str>) -> bool {
-    format == taiyaku_read::Format::Dir.token() || format == taiyaku_read::Format::Zip.token()
+    use taiyaku_read::Format;
+    [Format::Dir, Format::Zip, Format::EpubReflow]
+        .iter()
+        .any(|readable| format == readable.token())
 }
 
 /// This member's digest, hashing it and writing the answer back onto
@@ -1607,10 +1658,10 @@ fn document(group: &Group, held_hub: Option<&str>) -> Sidecar {
     //
     // "The key that sorts first" is stable only while the set does not change,
     // which is exactly why it is consulted once. The `.filter` arm is the
-    // remaining case: if the edition that *was* the hub has gone from disk,
-    // its members are gone with it and the old `content_key` cannot be
-    // reproduced anyway, so a new hub is chosen and a new work minted. That is
-    // the honest outcome rather than a recoverable one.
+    // remaining case: once the hub edition's files are gone its key cannot be
+    // reproduced, so the first key left is hashed instead, every derive alike,
+    // as a scan leaves `work.hub` as it was. The row [`held_work`] found takes
+    // that key; a work is minted only where it found none.
     let hub_key = held_hub
         .filter(|held| editions.contains_key(*held))
         .map_or_else(
@@ -1668,13 +1719,14 @@ fn unchanged(
     conn: &Connection,
     series_id: i64,
     group: &Group,
+    placed: &HashSet<String>,
 ) -> Result<Option<Unchanged>, String> {
     // One read snapshot, so a save committing between two of these reads
     // cannot pair halves of two states. `None` inside a caller's transaction
     // (a rule preview), whose own view is already one state.
     let _snapshot = crate::one_snapshot(conn)
         .map_err(|e| format!("reading the held work of `{}`: {e}", group.series))?;
-    let held = held_work(conn, series_id, group)?;
+    let held = held_work(conn, series_id, group, placed)?;
     let doc = document(group, held.as_ref().map(|(_, hub, _)| hub.as_str()));
     let key = crate::identity::content_key(&doc)?;
     if held
@@ -1889,6 +1941,7 @@ fn write_work(
     conn: &Connection,
     series_id: i64,
     group: &Group,
+    placed: &HashSet<String>,
     documents: Documents,
     unread: &mut BTreeMap<i64, String>,
     report: &mut DeriveReport,
@@ -1899,7 +1952,7 @@ fn write_work(
     // below would rewrite a held work's rows, and the `BEGIN IMMEDIATE` holds
     // the lock a page turn's save waits for, so a scan where no file changed
     // would hold it work by work for the whole derive.
-    if let Some(held) = unchanged(conn, series_id, group)? {
+    if let Some(held) = unchanged(conn, series_id, group, placed)? {
         report.kept_editions += held.kept;
         report.unrecognised_kinds += group
             .editions
@@ -1917,7 +1970,7 @@ fn write_work(
     // the one the import writes over.
     let mut tx = crate::Nested::open(conn, "write_work")
         .map_err(|e| format!("starting to write a work of `{}`: {e}", group.series))?;
-    let held = held_work(conn, series_id, group)?;
+    let held = held_work(conn, series_id, group, placed)?;
     let doc = document(group, held.as_ref().map(|(_, hub, _)| hub.as_str()));
     // **Counted before the import, because afterwards the row already holds
     // the new key and the move is unobservable.** `content_key` is recomputed
@@ -2443,22 +2496,23 @@ const HELD_FIRST: &str = "NOT EXISTS (SELECT 1 FROM edition held_e
 /// `a_volume_less_work_still_matches_itself_on_the_next_derive`'s shape, and
 /// probing only the first would mint a second work for it.
 ///
-/// This is not the "second identity probe over any member" that
-/// [`crate::import::scanned`]'s doc refuses. That one is unscoped, and would
-/// merge two genuinely different works sharing one file. This is scoped to
-/// one series' volume-less rows and to paths derived from the very `rel_path`
-/// that keys the group, and two distinct groups cannot share a member path.
+/// A path is probed in the row's hub edition first, then in any edition: the
+/// second identity probe over any member that [`crate::import::scanned`]'s doc
+/// refuses, as it would merge two works sharing a file. Here it is scoped to
+/// one series' volume-less rows, for a row whose files held this derive are
+/// this group's alone and whose document's key is no other row's.
 ///
 /// # Errors
 ///
-/// Returns an error if SQLite refuses either statement.
+/// Returns an error if SQLite refuses a statement.
 fn held_work(
     conn: &Connection,
     series_id: i64,
     group: &Group,
+    placed: &HashSet<String>,
 ) -> Result<Option<(i64, String, String)>, String> {
-    // Both statements order by `HELD_FIRST`, so they cannot differ on which
-    // of two rows at one address is this group's.
+    // Every statement orders by `HELD_FIRST`, so none can differ on which of
+    // two rows at one address is this group's.
     if group.volume.is_some() {
         return conn
             .query_row(
@@ -2473,14 +2527,11 @@ fn held_work(
             .optional()
             .map_err(|e| format!("looking up an existing work at this volume: {e}"));
     }
-    // Every copy's path as well as the primary's: the work may hold this
-    // volume under a directory other than the one walked first.
-    let paths = group
-        .editions
-        .values()
-        .flatten()
-        .flat_map(|c| std::iter::once(&c.path).chain(c.copies.iter().map(|k| &k.path)));
-    for path in paths {
+    // A path in the row's hub edition, whose files its `content_key` hashes:
+    // a rule titling part of a work apart splits one group into two that both
+    // hold the row's files, and only the part holding the hub's may keep it,
+    // or the two write over one row in turn.
+    for path in group.paths() {
         let held: Option<(i64, String, String)> = conn
             .query_row(
                 &format!(
@@ -2488,7 +2539,8 @@ fn held_work(
                       WHERE work.series_id = ?1 AND work.volume IS NULL
                         AND EXISTS (SELECT 1 FROM edition
                                       JOIN member ON member.edition_id = edition.id
-                                     WHERE edition.work_id = work.id AND member.path = ?2)
+                                     WHERE edition.work_id = work.id AND edition.key = work.hub
+                                       AND member.path = ?2)
                       ORDER BY {HELD_FIRST}, work.id LIMIT 1"
                 ),
                 rusqlite::params![series_id, path],
@@ -2498,6 +2550,66 @@ fn held_work(
             .map_err(|e| format!("looking up an existing work holding `{path}`: {e}"))?;
         if held.is_some() {
             return Ok(held);
+        }
+    }
+
+    // Else a path in any edition of a row whose files this derive holds
+    // (`placed`) are this group's alone. No group holds its hub's files, so
+    // none can claim it above, and there is no other part to split it from:
+    // the translations left when a book's hub file goes keep the book's row,
+    // with the reader's position, notes and pins. A row another group holds a
+    // file of is left to neither, as giving it to one would be a guess.
+    let failed = |e: rusqlite::Error| format!("looking up a work this group's files are on: {e}");
+    let mut on = conn
+        .prepare_cached(&format!(
+            "SELECT work.id, work.hub, work.content_key FROM work
+              WHERE work.series_id = ?1 AND work.volume IS NULL
+                AND EXISTS (SELECT 1 FROM edition
+                              JOIN member ON member.edition_id = edition.id
+                             WHERE edition.work_id = work.id AND member.path = ?2)
+              ORDER BY {HELD_FIRST}, work.id"
+        ))
+        .map_err(failed)?;
+    let mut files = conn
+        .prepare_cached(
+            "SELECT member.path FROM member JOIN edition ON edition.id = member.edition_id
+              WHERE edition.work_id = ?1",
+        )
+        .map_err(failed)?;
+    let own: HashSet<&String> = group.paths().collect();
+    let mut asked = HashSet::new();
+    for path in group.paths() {
+        let rows: Vec<(i64, String, String)> = on
+            .query_map(rusqlite::params![series_id, path], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .map_err(failed)?
+            .collect::<Result<_, _>>()
+            .map_err(failed)?;
+        for row in rows {
+            if !asked.insert(row.0) {
+                continue;
+            }
+            let held: Vec<String> = files
+                .query_map([row.0], |r| r.get(0))
+                .map_err(failed)?
+                .collect::<Result<_, _>>()
+                .map_err(failed)?;
+            if !held
+                .iter()
+                .all(|file| own.contains(file) || !placed.contains(file))
+            {
+                continue;
+            }
+            // The import looks the document's key up before this address, so
+            // the row is this group's only where that key names no other row:
+            // a translation left that is byte for byte another work's hub is
+            // that work's, and taking this row too would leave its key
+            // unwritten, for every derive to rewrite again.
+            let key = crate::identity::content_key(&document(group, Some(&row.1)))?;
+            if crate::import::find_by_key(conn, &key)?.is_none_or(|found| found == row.0) {
+                return Ok(Some(row));
+            }
         }
     }
     Ok(None)
@@ -2567,9 +2679,9 @@ fn kept_editions(conn: &Connection, work_id: i64, doc: &Sidecar) -> Result<usize
 
 /// What to call this work.
 ///
-/// A rule's `title` capture if one decided, and otherwise the name of the
-/// thing the **hub** edition holds — the hub rather than whichever edition
-/// happens to sort first, so a second edition arriving in another root cannot
+/// A rule's `title` capture, the file's own (a book's `dc:title`), or the name
+/// of the thing the **hub** edition holds — the hub rather than whichever
+/// edition sorts first, so a second edition arriving in another root cannot
 /// rename a work someone has already bookmarked.
 ///
 /// There is no formatting of the series and volume into a title here: what is
@@ -2855,7 +2967,7 @@ fn digest_held_members(
             .map_err(failed)?;
         let undigested: Vec<Entry> = conn
             .prepare(
-                "SELECT rel_path, format, pages, sha256 FROM scan_entry
+                "SELECT rel_path, format, pages, sha256, title FROM scan_entry
                   WHERE root_id = ?1 AND sha256 IS NULL",
             )
             .and_then(|mut stmt| {
@@ -2865,6 +2977,7 @@ fn digest_held_members(
                         format: r.get(1)?,
                         pages: r.get(2)?,
                         sha256: r.get(3)?,
+                        title: r.get(4)?,
                     })
                 })?
                 .collect()

@@ -241,9 +241,9 @@ pub fn rename(conn: &Connection, id: i64, name: &str) -> Result<String, RenameEr
 }
 
 /// How many entries the scans of the directories library `id` reaches
-/// recorded as an EPUB (fixed-layout or reflowable) or a PDF, which derivation
-/// does not admit. Entries in other formats it does not admit, such as rar, 7z
-/// and tar, are not counted.
+/// recorded as an EPUB with no text counted (fixed-layout, or reflowable and
+/// all pictures) or a PDF, which derivation does not admit. Entries in other
+/// formats it does not admit, such as rar, 7z and tar, are not counted.
 ///
 /// The Libraries screen says "no readable files yet" on this, for a library
 /// that holds such files and no work.
@@ -259,8 +259,8 @@ pub fn books(conn: &Connection, id: i64) -> Result<usize, String> {
     }
     let formats = [
         Format::EpubFixed.token(),
-        Format::EpubReflow.token(),
         Format::Pdf.token(),
+        Format::EpubReflow.token(),
     ];
     let mut bound: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(formats.len() + dirs.len());
     bound.extend(formats.iter().map(|token| token as &dyn rusqlite::ToSql));
@@ -268,7 +268,8 @@ pub fn books(conn: &Connection, id: i64) -> Result<usize, String> {
     conn.query_row(
         &format!(
             "SELECT count(*) FROM scan_entry e
-              WHERE e.format IN (?, ?, ?) AND e.root_id IN ({})",
+              WHERE (e.format IN (?, ?) OR (e.format = ? AND e.pages IS NULL))
+                AND e.root_id IN ({})",
             crate::browse::holes(dirs.len())
         ),
         bound.as_slice(),

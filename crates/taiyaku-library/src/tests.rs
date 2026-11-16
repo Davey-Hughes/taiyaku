@@ -2017,6 +2017,7 @@ fn committing_the_savepoint_branch_sends_no_rollback_to_savepoint_statement() {
 /// changes one or more fields from here.
 fn a_note() -> Note {
     Note {
+        text: None,
         id: "01J8".into(),
         edition: "raw".into(),
         slot: 3,
@@ -2130,6 +2131,13 @@ fn two_notes_have_the_same_anchor_when_only_their_words_colour_times_or_stale_di
             "its region becomes the whole slot",
             Note {
                 region: None,
+                ..a_note()
+            },
+        ),
+        (
+            "it comes to mark a run of text",
+            Note {
+                text: Some(crate::TextRange { start: 1, end: 5 }),
                 ..a_note()
             },
         ),

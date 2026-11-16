@@ -269,6 +269,7 @@ fn a_resolved_root_keeps_covers_and_thumbs_as_siblings() {
             None,
         )
         .covers(),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),

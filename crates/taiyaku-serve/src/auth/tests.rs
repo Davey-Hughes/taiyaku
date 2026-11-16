@@ -61,12 +61,15 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/works/{work}/progress",
         "/api/works/{work}/notes",
         "/api/works/{work}/truth",
+        "/api/works/{work}/book",
+        "/api/works/{work}/book/pins",
         "/api/works/{work}/alignments",
         "/api/me",
         "/api/about",
         "/api/keys",
         "/api/keys/{id}",
         "/api/sessions",
+        "/api/dictionary/{lang}/{word}",
         "/api/sessions/{id}",
         "/api/password",
         // Spec C1 §5's browse API. Guarded, which is the whole point of this
@@ -1256,6 +1259,7 @@ fn router_with_material_under_a_withheld_root(
         works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1355,6 +1359,7 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
         works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1485,6 +1490,87 @@ fn one_work_two_editions_split_across_roots(
         works: crate::Works::fixed(works),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: root.join("covers"),
+        dictionaries: None,
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
+        library_job: Default::default(),
+        dirs: Vec::new(),
+    });
+    (build_router(state.clone()), state)
+}
+
+/// [`one_work_two_editions_split_across_roots`]'s shape for a book: two
+/// editions, each an EPUB on disk, `raw` under the withheld root and `en`
+/// under the granted one.
+fn one_book_two_editions_split_across_roots(
+    dir: &std::path::Path,
+) -> (axum::Router, Arc<ServeState>) {
+    let shelf = dir.to_string_lossy().into_owned();
+    for (edition, text) in [("raw", "Withheld text."), ("en", "Granted text.")] {
+        let folder = dir.join(edition);
+        std::fs::create_dir_all(&folder).expect("mkdir");
+        taiyaku_read::test_support::epub(&folder, "b.epub", &[text]);
+    }
+    let digest = |edition: &str| crate::test_support::sha256_of(&dir.join(edition).join("b.epub"));
+    let (raw, en) = (digest("raw"), digest("en"));
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "Book", "reading": "ltr" }},
+          "editions": {{
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/raw/b.epub", "sha256": "{raw}", "pages": 1 }}
+            ], "spreads": [] }},
+            "en": {{ "label": "En", "members": [
+              {{ "path": "{shelf}/en/b.epub", "sha256": "{en}", "pages": 1 }}
+            ], "spreads": [] }}
+          }},
+          "hub": "raw",
+          "alignments": []
+        }}"#
+    );
+    let library = crate::test_support::library();
+    {
+        let conn = library.conn();
+        let doc = taiyaku_core::Sidecar::from_json(&json).expect("fixture sidecar parses");
+        let work_id =
+            taiyaku_library::import::scanned(&conn, &doc, None).expect("import as a scan");
+        two_dirs_numbered_apart_from_their_libraries(
+            &conn,
+            &format!("{shelf}/en"),
+            &format!("{shelf}/raw"),
+        );
+        for (key, root) in [("raw", 2), ("en", 1)] {
+            conn.execute(
+                "UPDATE member SET root_id = ?1 WHERE edition_id = \
+                 (SELECT id FROM edition WHERE work_id = ?2 AND key = ?3)",
+                rusqlite::params![root, work_id, key],
+            )
+            .expect("files the edition under its root");
+            conn.execute(
+                "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
+                 VALUES (?1, 'b.epub', 'file', 'epub-reflow', 1, 1)",
+                [root],
+            )
+            .expect("the walk read it as a book");
+        }
+        conn.execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+            .expect("a grant restricts a user, never an admin");
+        conn.execute_batch(
+            "INSERT INTO user_library (user_id, library_id)
+             SELECT 1, library_id FROM library_root WHERE root_id = 1;
+             UPDATE user SET every_library = 0 WHERE id = 1;",
+        )
+        .expect("grants only the visible root");
+    }
+    let works = crate::works::from_library(&library).expect("projects the imported work");
+    let state = Arc::new(ServeState {
+        library,
+        works: crate::Works::fixed(works),
+        source: Arc::new(crate::LocalLibrary),
+        cache_dir: dir.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
@@ -1565,8 +1651,8 @@ async fn every_route_declares_its_grant_posture() {
         })
         .count();
     assert_eq!(
-        driven, 25,
-        "25 of the guarded routes must be classified Refuses, Filters or \
+        driven, 26,
+        "26 of the guarded routes must be classified Refuses, Filters or \
          RefusesAndFilters and driven by the proofs below — a route's \
          posture changed without this count moving to match, so a route \
          this suite believes it proves may no longer be one it does. It was \
@@ -1585,11 +1671,12 @@ async fn every_route_declares_its_grant_posture() {
          declared and not driven. F3's four OPDS routes raised it to 26, and \
          the alignments route is one fewer, `GrantIndependent` for O86's \
          reason: O58 makes it admin-only, so no caller of it holds a grant to \
-         refuse against"
+         refuse against. The book route raised it to 26, `Filters` as the work \
+         document it mirrors is"
     );
     assert_eq!(
         table.len() - driven,
-        41,
+        43,
         "the remaining guarded routes must be GrantIndependent — \
          see the `driven` assertion just above, which this one is the other \
          half of. A new admin-only route is GrantIndependent: it changes who \
@@ -2253,6 +2340,40 @@ async fn every_route_declares_its_grant_posture() {
     );
     proven_filters.insert("/api/works/{work}");
 
+    // `/api/works/{work}/book` (`book::get_book`): of a book whose two
+    // editions sit under the two roots, only the granted edition is sent, and
+    // nothing of the withheld one's text.
+    let tmp_book = crate::test_support::Fixture::new("grant-posture-book");
+    let (book_router, book_state) = one_book_two_editions_split_across_roots(&tmp_book);
+    let book_slug = book_state.works.snapshot()[0].id.clone();
+    let book_response = book_router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/works/{book_slug}/book"))
+                .header("authorization", &credential)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("router answers");
+    let book_status = book_response.status();
+    let book_body = crate::test_support::body_string(book_response).await;
+    assert_eq!(book_status, StatusCode::OK, "{book_body}");
+    let book_json: serde_json::Value = serde_json::from_str(&book_body).expect("valid JSON");
+    let book_editions: Vec<&str> = book_json["editions"]
+        .as_object()
+        .expect("an editions object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(book_editions, vec!["en"], "{book_body}");
+    assert_eq!(book_json["hub"].as_str(), Some("en"), "{book_body}");
+    assert!(
+        !book_body.contains("Withheld text"),
+        "/api/works/{{work}}/book sent the withheld edition's text: {book_body}"
+    );
+    proven_filters.insert("/api/works/{work}/book");
+
     // `/api/library/works/{slug}` — `library_api::work` reuses `browse::work`;
     // this proves it, rather than merely trusting the read.
     let library_work_response = split_router
@@ -2602,6 +2723,7 @@ async fn every_route_declares_its_grant_posture() {
             .find_blocking(&split_slug)
             .expect("the split work");
         let note = |edition: &str| crate::notes::Note {
+            text: None,
             id: format!("01{edition}"),
             edition: edition.to_string(),
             slot: 0,
@@ -2840,7 +2962,7 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
     );
     assert_eq!(
         counted(|p| matches!(p, NarrowingPosture::NoPages { .. })),
-        41,
+        44,
         "the NoPages routes, declared and not driven: a route moved here from a driven posture \
          moves this count and one above, and a new route that reads no pages moves this alone"
     );
@@ -2907,6 +3029,7 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
     // What `KeepsUnseen` reads back: a note on part2's page 3, marked, beside
     // ones Manga is sent.
     let note = |id: &str, edition: &str, slot: u32, body: &str| crate::notes::Note {
+        text: None,
         id: id.into(),
         edition: edition.into(),
         slot,
@@ -3455,6 +3578,7 @@ const CLASSIFIED_ELSEWHERE: &[&str] = &["/api/password"];
 /// the motive.
 const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
     "/api/works/{work}/truth",
+    "/api/works/{work}/book/pins",
     "/api/works/{work}/alignments",
     "/api/keys",
     "/api/keys/{id}",

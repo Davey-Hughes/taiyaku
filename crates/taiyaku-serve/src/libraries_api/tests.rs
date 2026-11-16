@@ -294,7 +294,7 @@ async fn the_list_gives_each_library_its_own_dirs_works_and_books() {
                 let format = if rel.ends_with(".pdf") {
                     "pdf"
                 } else {
-                    "epub-reflow"
+                    "epub-fixed"
                 };
                 conn.execute(
                     "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
@@ -309,7 +309,7 @@ async fn the_list_gives_each_library_its_own_dirs_works_and_books() {
         // directory alone would miss.
         conn.execute(
             "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime)
-             SELECT root_id, 'a3.epub', 'file', 'epub-reflow', 1, 1 FROM library_root
+             SELECT root_id, 'a3.epub', 'file', 'epub-fixed', 1, 1 FROM library_root
               WHERE library_id = ?1 ORDER BY root_id DESC LIMIT 1",
             [a_id],
         )

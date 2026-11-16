@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::Connection;
 
-use crate::scan::tests::{fixture, write_archive, write_archive_of, write_pages};
+use crate::scan::tests::{
+    fixture, write_archive, write_archive_labelled, write_archive_of, write_pages,
+};
 use crate::{Library, derive, scan};
 
 /// A root whose volumes are **archives inside volume directories** —
@@ -2410,6 +2412,312 @@ fn a_title_a_rule_captures_keeps_its_extension() {
 }
 
 #[test]
+fn volume_less_books_a_rule_titles_alike_are_one_work_an_edition_each() {
+    // Two translations of one book, neither numbered, each in its own
+    // directory: the title one rule captures from both is what makes them
+    // one work, and a key apiece what keeps them two editions.
+    let tree = archives(
+        "derive-translations",
+        &[
+            "Homer/The Odyssey (Fagles)/The Odyssey (Fagles).cbz",
+            "Homer/The Odyssey of Homer (Lattimore)/The Odyssey of Homer (Lattimore).cbz",
+            "Homer/The Iliad (Fagles)/The Iliad (Fagles).cbz",
+        ],
+    );
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    conn.execute_batch(
+        "INSERT INTO rule (ordinal, kind, pattern, match_on, set_edition_key)
+         VALUES (97, 'prefix', 'Homer/The Odyssey (Fagles)/', 'path', 'fagles'),
+                (98, 'prefix', 'Homer/The Odyssey of Homer (Lattimore)/', 'path', 'lattimore');",
+    )
+    .expect("a key for each translation");
+    derive::derive(&conn).expect("derive");
+    let live = |conn: &Connection| -> Vec<(String, String)> {
+        conn.prepare(
+            "SELECT w.title, group_concat(e.key, ',') FROM work w
+             JOIN (SELECT * FROM edition ORDER BY key) e ON e.work_id = w.id
+             WHERE w.missing_since IS NULL GROUP BY w.id ORDER BY w.title",
+        )
+        .expect("prepare")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect")
+    };
+    assert_eq!(
+        live(&conn).len(),
+        3,
+        "untitled, each volume-less book is its own work: {:?}",
+        live(&conn)
+    );
+
+    conn.execute(
+        "INSERT INTO rule (ordinal, kind, pattern, match_on)
+         VALUES (99, 'regex', '^Homer/(?<title>The Odyssey)\\b', 'path')",
+        [],
+    )
+    .expect("one title for both translations");
+    derive::derive(&conn).expect("derive again");
+
+    // A scan names a work once, so the Odyssey keeps the title it was first
+    // given; which editions share a work is what the capture decides.
+    let mut editions: Vec<String> = live(&conn).into_iter().map(|(_, keys)| keys).collect();
+    editions.sort();
+    assert_eq!(editions, ["fagles,lattimore", "raw"]);
+}
+
+#[test]
+fn a_book_a_rule_titles_apart_leaves_the_work_to_the_part_holding_its_hub() {
+    // One work of two translations; then a rule gives one its own title. The
+    // part holding the hub's file keeps the row, and the other is a new work,
+    // rather than both writing over one row in turn.
+    let tree = archives(
+        "derive-split",
+        &[
+            "Tolstoy/Anna (Bartlett)/Anna (Bartlett).cbz",
+            "Tolstoy/Anna (Schwartz)/Anna (Schwartz).cbz",
+        ],
+    );
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    conn.execute_batch(
+        "INSERT INTO rule (ordinal, kind, pattern, match_on, set_edition_key)
+         VALUES (97, 'prefix', 'Tolstoy/Anna (Bartlett)/', 'path', 'bartlett'),
+                (98, 'prefix', 'Tolstoy/Anna (Schwartz)/', 'path', 'schwartz');
+         INSERT INTO rule (ordinal, kind, pattern, match_on)
+         VALUES (99, 'regex', '^Tolstoy/(?<title>Anna) \\(', 'path');",
+    )
+    .expect("one title for both");
+    derive::derive(&conn).expect("derive");
+    let (first, hub): (i64, String) = conn
+        .query_row("SELECT id, hub FROM work", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .expect("one work");
+    assert_eq!(hub, "bartlett", "the key that sorts first");
+
+    conn.execute(
+        "INSERT INTO rule (ordinal, kind, pattern, match_on)
+         VALUES (100, 'regex', '^Tolstoy/(?<title>Anna \\(Bartlett\\))/', 'path')",
+        [],
+    )
+    .expect("Bartlett titled apart");
+    derive::derive(&conn).expect("derive again");
+
+    // Every work holding a file: a scan keeps an edition a rule change
+    // orphaned (`DeriveReport::kept_editions`), so the old row may hold one too.
+    let holders = |file: &str| -> Vec<i64> {
+        conn.prepare(
+            "SELECT edition.work_id FROM member JOIN edition ON edition.id = member.edition_id
+              WHERE member.path LIKE ?1 ORDER BY edition.work_id",
+        )
+        .expect("prepare")
+        .query_map([format!("%{file}")], |r| r.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect")
+    };
+    assert_eq!(
+        holders("Anna (Bartlett).cbz"),
+        [first],
+        "the hub's part keeps the row"
+    );
+    assert!(
+        holders("Anna (Schwartz).cbz").iter().any(|&w| w != first),
+        "the other is a work of its own: {:?}",
+        holders("Anna (Schwartz).cbz")
+    );
+}
+
+/// Every work holding a member named `file`, in any edition, by id: a scan
+/// keeps an edition no group names any more (`DeriveReport::kept_editions`),
+/// so a file can sit on the work a group left as well as the one it is on.
+fn holders_of(conn: &Connection, file: &str) -> Vec<i64> {
+    conn.prepare(
+        "SELECT edition.work_id FROM member JOIN edition ON edition.id = member.edition_id
+          WHERE member.path LIKE ?1 ORDER BY edition.work_id",
+    )
+    .expect("prepare")
+    .query_map([format!("%/{file}")], |r| r.get(0))
+    .expect("query")
+    .collect::<Result<_, _>>()
+    .expect("collect")
+}
+
+/// A root of one unnumbered book in `keys` translations, `Rowling/Stone
+/// [key]/Stone [key].cbz`, scanned under a rule that titles them all `Stone`
+/// and keys each by its bracket, and derived into one work.
+fn translations(label: &str, keys: &[&str]) -> (crate::tests::TempDir, Library, scan::Root) {
+    let rel_paths: Vec<String> = keys
+        .iter()
+        .map(|key| format!("Rowling/Stone [{key}]/Stone [{key}].cbz"))
+        .collect();
+    let rel_paths: Vec<&str> = rel_paths.iter().map(String::as_str).collect();
+    let tree = archives(label, &rel_paths);
+    let library = Library::open_in_memory().expect("open");
+    let root = {
+        let conn = library.conn();
+        let root = scan::add_root(&conn, tree.path()).expect("add");
+        scan::scan_root(&conn, &root).expect("scan");
+        conn.execute(
+            "INSERT INTO rule (ordinal, kind, pattern, match_on)
+             VALUES (99, 'regex', '^Rowling/(?<title>Stone) \\[(?<edition>[a-z]+)\\]/', 'path')",
+            [],
+        )
+        .expect("one title for every translation, a key for each");
+        derive::derive(&conn).expect("derive");
+        root
+    };
+    (tree, library, root)
+}
+
+#[test]
+fn a_book_whose_hub_file_goes_keeps_its_work_and_what_was_read_on_it() {
+    // The hub's file is the one the row's `content_key` hashes, so once it is
+    // gone no group holds a file of the row's hub edition. The translation
+    // left is still that book, and the reader's position, notes and pins
+    // are on its row: a second row for it would strand them on the first.
+    let (tree, library, root) = translations("derive-hub-gone", &["en", "ko"]);
+    let conn = library.conn();
+    let (work, hub): (i64, String) = conn
+        .query_row("SELECT id, hub FROM work", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .expect("one work of two editions");
+    assert_eq!(hub, "en", "the key that sorts first");
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'en', 2)",
+        [work],
+    )
+    .expect("someone is reading the English");
+    seed_notes(&conn, work, 1, "ko", &["n1"]);
+    crate::book_pins::pin(
+        &conn,
+        work,
+        &crate::book_pins::Pin {
+            edition: "ko".to_string(),
+            hub_block: 0,
+            block: 0,
+        },
+    )
+    .expect("a pin");
+
+    std::fs::remove_dir_all(tree.path().join("Rowling/Stone [en]")).expect("the hub's file goes");
+    scan::scan_root(&conn, &root).expect("rescan");
+    derive::derive(&conn).expect("derive again");
+
+    assert_eq!(
+        holders_of(&conn, "Stone [ko].cbz"),
+        [work],
+        "the translation left is derived onto the book's row, and no second row holds it"
+    );
+    assert_eq!(scalar(&conn, "SELECT count(*) FROM work"), 1);
+    for (what, table) in [
+        ("the position", "progress"),
+        ("the note", "note"),
+        ("the pin", "book_pin"),
+    ] {
+        assert_eq!(
+            scalar(
+                &conn,
+                &format!("SELECT count(*) FROM {table} WHERE work_id = {work}")
+            ),
+            1,
+            "{what} is on the book's row"
+        );
+    }
+    let hub: String = conn
+        .query_row("SELECT hub FROM work WHERE id = ?1", [work], |r| r.get(0))
+        .expect("the work");
+    assert_eq!(
+        hub, "en",
+        "a scan rewrites the row's key and not its hub, so the hub's file coming back restores both"
+    );
+}
+
+#[test]
+fn translations_a_rule_parts_once_the_hub_file_goes_each_keep_a_work_of_their_own() {
+    // Two groups each hold a file of the book's row and neither holds its
+    // hub's. Neither may take the row: one of them would be a guess, and both
+    // would write over one row in turn on every derive.
+    let (tree, library, root) = translations("derive-hub-gone-parted", &["en", "ja", "ko"]);
+    let conn = library.conn();
+    let work: i64 = conn
+        .query_row("SELECT id FROM work", [], |r| r.get(0))
+        .expect("one work of three editions");
+
+    std::fs::remove_dir_all(tree.path().join("Rowling/Stone [en]")).expect("the hub's file goes");
+    conn.execute(
+        "INSERT INTO rule (ordinal, kind, pattern, match_on)
+         VALUES (100, 'regex', '^Rowling/(?<title>Stone \\[ko\\])/', 'path')",
+        [],
+    )
+    .expect("the Korean titled apart");
+    scan::scan_root(&conn, &root).expect("rescan");
+    derive::derive(&conn).expect("derive");
+
+    let parted = (
+        holders_of(&conn, "Stone [ja].cbz"),
+        holders_of(&conn, "Stone [ko].cbz"),
+    );
+    let (ja, ko) = &parted;
+    assert!(
+        ja.len() == 2 && ko.len() == 2 && ja[0] == work && ko[0] == work && ja[1] != ko[1],
+        "each part on a work of its own, the book's row keeping both as it was: {parted:?}"
+    );
+
+    let again = derive::derive(&conn).expect("derive again");
+    assert_eq!(
+        (
+            holders_of(&conn, "Stone [ja].cbz"),
+            holders_of(&conn, "Stone [ko].cbz"),
+        ),
+        parted,
+        "the next derive leaves each part where it is"
+    );
+    assert_eq!(again.rekeyed, 0, "and rewrites no work's key");
+}
+
+#[test]
+fn a_translation_left_with_the_bytes_of_another_works_hub_leaves_no_key_to_rewrite() {
+    // The Korean left when the book's hub file goes is, byte for byte, the
+    // hub of a work of its own. Content decides before the address, so the
+    // Korean is that work's; taking the book's row as well would leave the
+    // row's key behind, and every derive would rewrite it again.
+    let (tree, library, root) = translations("derive-hub-gone-copy", &["en", "ko"]);
+    let conn = library.conn();
+    let korean = tree.path().join("Rowling/Stone [ko]/Stone [ko].cbz");
+    write_archive_labelled(
+        &tree.path().join("Strays/Stone.cbz"),
+        3,
+        "jpg",
+        &korean.to_string_lossy(),
+    );
+    scan::scan_root(&conn, &root).expect("rescan");
+    derive::derive(&conn).expect("derive the copy");
+    assert_eq!(
+        scalar(&conn, "SELECT count(*) FROM work"),
+        2,
+        "the copy's own work"
+    );
+
+    std::fs::remove_dir_all(tree.path().join("Rowling/Stone [en]")).expect("the hub's file goes");
+    scan::scan_root(&conn, &root).expect("rescan");
+    derive::derive(&conn).expect("derive");
+    let again = derive::derive(&conn).expect("derive again");
+
+    assert_eq!(
+        again.rekeyed, 0,
+        "a derive with nothing changed rewrites no key"
+    );
+}
+
+#[test]
 fn several_chapter_directories_under_one_parent_are_one_unattached_directory() {
     // §7 counts the *directory*, which is the thing a person would act on:
     // `attach-chapters` asks one question about "which of these constitute
@@ -3929,6 +4237,7 @@ fn seed_notes(conn: &Connection, work_id: i64, user_id: i64, edition: &str, ids:
             notes: ids
                 .iter()
                 .map(|id| crate::Note {
+                    text: None,
                     id: (*id).to_string(),
                     edition: edition.to_string(),
                     slot: 2,
@@ -8422,6 +8731,7 @@ fn keep_primaries_reads_the_candidates_own_edition() {
                 series: "Foo".to_string(),
                 volume: Some(1.0),
                 edition_key: derive::DEFAULT_EDITION_KEY.to_string(),
+                titled: None,
             }
         })
         .collect();

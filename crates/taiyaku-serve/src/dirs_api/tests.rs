@@ -476,6 +476,7 @@ fn a_router_browsing(
         works: crate::Works::fixed(Vec::new()),
         source: Arc::new(crate::LocalLibrary),
         cache_dir: fixture.join("covers"),
+        dictionaries: None,
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),

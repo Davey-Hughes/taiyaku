@@ -4,12 +4,17 @@
 //! "How a member becomes pages" — so it has to be derived in exactly one
 //! place. Two callers deriving it separately is the defect this crate exists
 //! to make impossible.
+//!
+//! It also reads a book's text: [`read_book`] turns an EPUB into an ordered
+//! list of text blocks, for the books work.
 
 pub mod atomic;
+mod book;
 mod format;
 mod naming;
 mod pages;
 
+pub use book::{Block, BlockId, BlockKind, Book, read_book};
 pub use format::{Format, sniff};
 pub use naming::{chapter_number, natural_cmp, volume_number, volume_number_marked};
 pub use pages::{
@@ -43,6 +48,8 @@ pub use pages::{
 /// `taiyaku-serve` bounds its concurrency separately.
 pub const MAX_DECODE_ALLOC: u64 = 3 * 1024 * 1024 * 1024;
 
+#[cfg(test)]
+mod corpus;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support;

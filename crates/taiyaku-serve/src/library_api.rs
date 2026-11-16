@@ -79,6 +79,7 @@ fn work_json(w: &browse::WorkCard) -> serde_json::Value {
             "members": e.members,
             "pages": e.pages,
             "missing": e.missing,
+            "book": e.book,
             "cover": e.page_zero_sha256.as_deref()
                 .map(|sha256| cover_address(&w.slug, &e.key, sha256)),
         })).collect::<Vec<_>>(),

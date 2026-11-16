@@ -37,6 +37,15 @@ export interface Region {
 }
 
 /**
+ * A run of a book block's text, from `start` up to `end`, in UTF-16 code units
+ * as a string counts them.
+ */
+export interface TextRange {
+  start: number
+  end: number
+}
+
+/**
  * One note, exactly as `taiyaku-serve`'s `notes.rs` stores it.
  *
  * `region` absent means the whole slot — the degenerate case, not a second
@@ -49,6 +58,8 @@ export interface Note {
   edition: string
   slot: number
   region?: Region
+  /** The run of a book block's text this note marks, a highlight. */
+  text?: TextRange
   /**
    * A colour **name**, not pixels — `palette.ts` is what turns one into
    * colour. Absent means the default, so every note written before colours

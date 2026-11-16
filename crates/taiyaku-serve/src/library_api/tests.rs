@@ -1677,6 +1677,7 @@ fn a_cover_with_no_page_zero_is_null() {
         pages: 2,
         missing: 0,
         page_zero_sha256: page.map(str::to_string),
+        book: false,
     };
     let work = WorkCard {
         id: 7,

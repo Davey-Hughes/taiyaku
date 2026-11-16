@@ -6,10 +6,11 @@
 //! `scan_entry.format` is sniffed, never derived from a suffix.
 //!
 //! **Recognising a format is not a step towards reading it.** `Pdf`, `Rar`,
-//! `SevenZip` and both EPUB variants exist so a scan can record what it met
-//! and a reader can be told why nothing opens it. Only `Zip` and `Dir` are
-//! readable; [`Format::is_readable`] is the statement of that, and `pages.rs`
-//! is what enforces it — `unsupported_container` and `read_member` are where
+//! `SevenZip`, `Tar` and the fixed-layout EPUB exist so a scan can record what
+//! it met and a reader can be told why nothing opens it. `Zip` and `Dir` are
+//! readable as pages, and the reflowable EPUB as text (`book.rs`);
+//! [`Format::is_readable`] is the statement of that, and `pages.rs` is what
+//! enforces it for pages — `unsupported_container` and `read_member` are where
 //! a caller actually meets the refusal, and they answer from the bytes in
 //! front of them rather than by asking this enum.
 
@@ -61,7 +62,7 @@ impl Format {
         }
     }
 
-    /// Whether `taiyaku-read` can turn this into pages.
+    /// Whether `taiyaku-read` can read this, as pages or as an EPUB's text.
     ///
     /// **No production caller, deliberately, and it is not dead.** The one
     /// place the question is asked of a stored value is
@@ -75,9 +76,9 @@ impl Format {
     /// is what stops the two drifting — it walks every variant and asserts
     /// both sides agree.
     ///
-    /// **The seven `false`s are a decision, not a backlog — O90.** [`sniff`]
+    /// **The six `false`s are a decision, not a backlog — O90.** [`sniff`]
     /// names eight containers so a scan can say what it met, and this admits
-    /// two; the seventh `false` is `Unknown`, which is no container at all.
+    /// three; the sixth `false` is `Unknown`, which is no container at all.
     /// **RAR in particular is refused on licence, not on difficulty.**
     /// taiyaku is GPL-3.0-or-later, and RARLAB's UnRAR source, which `unrar`
     /// builds and `unrar-rs` incorporates, carries a restriction the GPL does
@@ -92,7 +93,7 @@ impl Format {
     /// `by_format`, which counts each refused format under its token.
     #[must_use]
     pub fn is_readable(self) -> bool {
-        matches!(self, Self::Dir | Self::Zip)
+        matches!(self, Self::Dir | Self::Zip | Self::EpubReflow)
     }
 }
 
