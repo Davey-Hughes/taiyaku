@@ -27191,6 +27191,7 @@ were not in it.
 - **Covers fill the row on phones** (item 9). Below the shell's 900 px
   breakpoint the columns are `minmax(size, 1fr)` at the least gap, so the
   slider sets the least a cover may be and how many columns there are.
+  *(`minmax(min(size, 100%), 1fr)` since O302: "O301 and O302", below.)*
   From 900 px up the covers stay exactly the size. `library.css` sets
   `--tile-fill: 1` in the same `@media (width < 900px)` block, so a script
   reads which layout is drawn rather than repeating the breakpoint.
@@ -27326,7 +27327,8 @@ were not in it.
   through a size at which every card fits (`wave-report.md`). A window
   resize does not put the row back, a kept place can outlive a change in
   the number of cards, and two parts of the place have no test; O301 has
-  them (`wave-rereview.md`).
+  them (`wave-rereview.md`). *O301 has since closed all three: "O301 and
+  O302", below.*
 
 **The O133 mechanism.** O133 (closed 2026-09-19) offered a cover's three
 long edges, 256, 512 and 768 px, as density descriptors, `1x`, `2x` and
@@ -27367,15 +27369,16 @@ widths and that rule, not driven (`T10-fix1-derive.log`).
   Continue row's scrollbar, it is drawn by the list the fade's mask is on,
   so it fades at its ends with the row (the spec's "Left to the builder").
 
-**A question for the owner at the PR, not decided.** Below 900 px the
-columns are `minmax(var(--tile-min), 1fr)`, so where the list is narrower
-than one cover it overflows sideways. The home grid's list is the window
-less 32 px of padding (358 px at 390, `T4-notes-for-docs.md`), so that is
-240 px covers in a window under about 272 px, or a browser zoomed in until
-it is that narrow in CSS pixels; at WCAG's 320 CSS px reflow width a
-240 px cover fits. `minmax(min(var(--tile-min), 100%), 1fr)`
-would prevent it, at the cost of the slider no longer setting the least a
-cover may be.
+**A question for the owner at the PR, since ruled.** Below 900 px
+the columns were `minmax(var(--tile-min), 1fr)`, so where the list is
+narrower than one cover it overflowed sideways. The home grid's list is the
+window less 32 px of padding (358 px at 390, `T4-notes-for-docs.md`), so
+that is 240 px covers in a window under about 272 px, or a browser zoomed
+in until it is that narrow in CSS pixels; at WCAG's 320 CSS px reflow width
+a 240 px cover fits. The owner approved
+`minmax(min(var(--tile-min), 100%), 1fr)`, at the cost of the slider no
+longer setting the least a cover may be where the list is narrower than
+one, and it shipped as O302 ("O301 and O302", below).
 
 **A fact about the test browser.** In the browser project's launch that
 hides scrollbars, a series page's list is narrower than the home grid's at
@@ -27458,3 +27461,127 @@ Not driven: iOS Safari, a desktop browser with the system's own fonts,
 the Paper and Ink themes, the library page in a dark theme, and a window
 resize with the row scrolled (O301). The reader's Settings panel draws no
 slider, since no reader module declares one.
+
+## O301 and O302: the Continue row across a resize, and covers that never spill (2026-11-16)
+
+The spec is `docs/superpowers/specs/2026-11-15-continue-row-resize-design.md`
+and the plan `docs/superpowers/plans/2026-11-15-continue-row-resize.md`.
+The task reports named below are in
+`.superpowers/sdd/2026-11-15-continue-row-resize/`, which is not committed.
+The owner agreed to take O301 and the question "O285 and O288" left open
+in one PR, approved the rule that became O302, and approved the design.
+
+**One put-back for a size change and a resize.** `useContinueRow`'s
+`restore` is the one step that puts the row back where a kept place
+stood: at its end, or the card at its start edge `first` steps along at
+the pitch the row is laid at now, which scales the offset into that card.
+The cover-size path and the `ResizeObserver` callback, `resized`, both
+call it. `resized` puts back the place the last mark kept, not one read
+from the row, since by then the new width has laid the row with the old
+gap or column, which may have clamped it; and a place worked out again
+from `scrollLeft` at each report would drift over a drag's steps, since
+it reads back rounded or clamped.
+
+For the same reason `mark` keeps the place while the list stands at a
+width the row is not yet laid for. A window drag can bring a new width
+each frame. The scroll a put-back queues is marked in the next frame,
+before the observer reports that frame's width, and the mark's read lays
+the row at the new width with the old gap or column. Where that clamped
+the row, a place near its end read as its end, and the row then stayed at
+its end as the list narrowed again: 187 px and 196 px off the card in the
+two drags the tests below make. `measure` records the list's width it
+lays the row for, and `mark` keeps the place while the list's width
+differs; the observer lays the row and puts the place back in the same
+frame. Where there is no `ResizeObserver`, nothing lays the row again, so
+`mark` reads the row at any width.
+
+The place records how many cards there are, because a card more or fewer
+moves no pitch, and moves `scrollLeft` only where it clamps a row near its
+end, so `mark` keeps it only while that count holds. It records the row's
+travel too, so a size change in the same commit as a change in the count
+puts the row back from the place as last seen (`seenAt`), not from one a
+put-back carried forward.
+
+**O302's rule.** `library.css`'s `@media (width < 900px)` rule for
+`.grid, .volumes` lays `repeat(auto-fill, minmax(min(var(--tile-min),
+100%), 1fr))`. Where the list is narrower than one cover the one column
+takes the list's width; anywhere wider, `min()` gives the slider's size and
+nothing changes. With one column `filledColumn` already gave each
+Continue card the list's width, so the grid now agrees with the row there.
+`coverSizes` is unchanged.
+
+**The tests, and the defect each was watched failing against.** Each
+defect was applied to the code by hand, the test was run red, and the
+code was restored. The O302 tests were watched at the head of the task
+that wrote them (`task-2-report.md`). Every O301 test was watched again,
+against each defect named for it below, on the final code after the
+whole-branch review's fix wave (`fix-wave-report.md`; the first runs are
+in `task-1-report.md`). The browser tests are in the browser project,
+which CI does not run and the local gate does.
+
+- `Library.continue.browser.test.tsx`:
+  - "keeps %s across window resizes, a phone turning and back, also across
+    900 px", for its end and for the card at its start edge: 12 cards at
+    144 px from a 390 px window to 844, 1280, 899 and 390, the grid's
+    columns moving at each. Red with no put-back in `resized`, and the
+    start-edge case also with the place worked out again from `scrollLeft`
+    at each report.
+  - "does not creep over a window drag", twenty widths from 390 to 844
+    px, a new one each frame: red with no put-back, and with the place
+    worked out again at each step, which crept. Its drag sets the test
+    frame's width from the page around it, in a task between two frames,
+    and the test checks that each frame drew the next width.
+    `page.viewport` waits for a frame of its own before it answers, so it
+    cannot pace a width a frame.
+  - "keeps a card near the row’s end at its start edge over a window drag
+    out past the row’s reach and back", the tenth of 12 cards, 390 to 844
+    px and back, and "… across 900 px", the eighth, 1000 to 800 px, each
+    a new width a frame: red with `mark` reading at a width the row is not
+    yet laid for (off by 187 px and 196 px), with no put-back, and with
+    the place worked out again at each report.
+  - "keeps its end through a window at which every card fits", 7 cards
+    that overflow at 1280 px and fit at 1400: red with no put-back, and
+    with the place worked out again at each report.
+  - "lays its cards over the grid’s columns and as wide as its tiles at
+    %i px, %i px covers, %i cards" gained a 260 px window at 240 px covers
+    and 3 cards: red with O302's rule taken back, the cards the list's
+    width and the grid's tiles 240 px.
+- `coverLayout.browser.test.tsx`'s "never lays a cover wider than the list
+  on %s, at a 260 px window and 240 px covers", on the home grid and a
+  series page: one column, no overflow, and each tile and cover the list's
+  width. Red with O302's rule taken back.
+- `continueRow.hook.test.tsx`, in jsdom, with the cards' pitch and the
+  row's widths set by the test:
+  - "keeps the card at its start edge across a resize, the same fraction
+    past its edge", "keeps its end across a resize" and "keeps a resize’s
+    place through a cover-size change after it": red with no put-back in
+    `resized`, and the first and third also with the offset into the start
+    card left unscaled.
+  - "scales the offset into the start card to the new pitch on a size
+    change": red with the offset left unscaled. It passed on `main`.
+  - "never counts a row that fits as at its end": red with `seenAt`'s
+    `travel > 1` removed. It passed on `main`.
+  - "keeps a place scrolled to between two resizes": red with a put-back
+    that swallows the user's next scroll, at the place before the scroll,
+    and with the width the row was laid for kept from the first measure,
+    which leaves a scroll at a later width unmarked.
+  - "keeps the place through a scroll marked at a width the row is not
+    yet laid for": red with `mark` reading at any width, at the row's end
+    instead of the card. "marks a scroll at a new width where no
+    ResizeObserver lays the row again": red with `mark` keeping the place
+    at a new width also where no observer exists, at the place before the
+    scroll.
+  - "drops a kept place when the number of cards changes, before a size
+    change (O301’s sequence)": red with the count ignored everywhere.
+    "…, before a resize": red with no count in `mark`'s check. "… in the
+    same commit as the size": red with the size path putting the kept
+    place back whatever the count, and with `atEnd` taken from the kept
+    place.
+  - "keeps %s as last seen through a size change in the same commit as a
+    change in the number of cards", both cases, and "keeps its end as last
+    seen where a resize clamped the row to it, …": red with the size path
+    keeping no place when the count changed; the last also with `atEnd`
+    taken from the kept place.
+
+**Not driven.** The plan drives no release build: the resize follows the
+rule of the size change the owner already tried (the spec, "Decided").

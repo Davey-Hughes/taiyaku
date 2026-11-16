@@ -81,6 +81,9 @@ size** slider, on the home page's View menu and a series page's alike.
    171 px wide and 16 px apart, the owner chose "Fill on phones"
    (2026-11-15) over keeping the covers exact or capping the gap. From
    900 px up the covers stay exact.
+   *Since 2026-11-16 (O302) the columns below 900 px are
+   `minmax(min(size, 100%), 1fr)`, so a list narrower than one cover lays
+   one column at the list's width; see O302's row in `docs/status.md`.*
 10. **What was stored carries over.** A stored `compact` becomes 104 px (its
     6.5rem tile) and `comfortable` the default 144 px; the next save stores
     the size and drops `density`. A stored size off the scale is drawn at the

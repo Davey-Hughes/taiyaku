@@ -205,6 +205,91 @@ async function frames(count: number) {
   }
 }
 
+/** `count` widths evenly from `from` to `to`, rounded, `from` left out. */
+const ramp = (from: number, to: number, count: number) =>
+  Array.from({ length: count }, (_, i) =>
+    Math.round(from + ((to - from) * (i + 1)) / count),
+  )
+
+/**
+ * Drags the window through `widths` as a drag's sizes arrive: each is set
+ * on the test frame's box from the page around it, in a task between two
+ * frames, so each frame lays a new width. `page.viewport` waits for a
+ * frame before it answers, so it cannot pace a width a frame. Gives the
+ * width each frame was drawn at, from the first to the one that drew the
+ * last.
+ */
+async function dragged(widths: readonly number[]): Promise<number[]> {
+  const box = window.frameElement?.parentElement
+  if (!box) throw new Error('this file is not running in a frame')
+  const outer = window.parent
+  const seen: number[] = []
+  let done = false
+  const watch = () => {
+    if (done) return
+    seen.push(window.innerWidth)
+    requestAnimationFrame(watch)
+  }
+  requestAnimationFrame(watch)
+  await new Promise<void>((resolve) => {
+    let i = 0
+    const step = () => {
+      if (i === widths.length) return resolve()
+      const width = widths[i]
+      i += 1
+      outer.setTimeout(() => {
+        box.style.width = `${width}px`
+        requestAnimationFrame(step)
+      }, 0)
+    }
+    requestAnimationFrame(step)
+  })
+  done = true
+  return seen
+}
+
+/**
+ * Scrolls `row` to `at`, its end or a card at its start edge, checks it
+ * stands there, and lets a mark record the place. `off` is how far the row
+ * lies from that place now. `stepped` is whether its cards step as the
+ * grid's columns do, read from the cards' own edges since the row stands
+ * scrolled: the row is laid for the grid as drawn.
+ */
+async function standAt(
+  host: HTMLElement,
+  row: HTMLElement,
+  at: Element | 'its end',
+) {
+  const list = getComputedStyle(row)
+  const start = () =>
+    row.getBoundingClientRect().left +
+    pxOf(list.borderLeftWidth) +
+    pxOf(list.paddingLeft)
+  const travel = () => row.scrollWidth - row.clientWidth
+  row.scrollLeft =
+    at === 'its end' ? travel() : at.getBoundingClientRect().left - start()
+  // The fixture tells: the row stands where the case names, with cards
+  // past its end only in the middle.
+  expect({
+    before: row.scrollLeft > 1,
+    after: row.scrollLeft < travel() - 1,
+  }).toEqual({ before: true, after: at !== 'its end' })
+  // A mark records the row's place, at most once a frame.
+  await frames(2)
+  return {
+    travel,
+    off: () =>
+      at === 'its end'
+        ? travel() - row.scrollLeft
+        : at.getBoundingClientRect().left - start(),
+    stepped: () => {
+      const [one, two] = gridColumns(host)
+      const [a, b] = [...row.children].map((li) => li.getBoundingClientRect())
+      return Math.abs(b.left - a.left - (two.left - one.left)) <= 0.5
+    },
+  }
+}
+
 /**
  * Real keys on the cover-size slider in the View panel, which this opens
  * where it is closed: `keys` such as `'{ArrowLeft}'.repeat(24)`, an arrow
@@ -306,6 +391,7 @@ describe('the Continue row over the grid (O288 item 2)', () => {
     [390, 104, 6],
     [390, 144, 6],
     [390, 240, 3],
+    [260, 240, 3],
   ] as const)(
     'lays its cards over the grid’s columns and as wide as its tiles at %i px, %i px covers, %i cards',
     async (width, size, entries) => {
@@ -423,36 +509,13 @@ describe('the Continue row over the grid (O288 item 2)', () => {
     'keeps %s across cover-size changes, up and down, also where the grid’s columns change',
     async (place) => {
       const { host, row } = await drawn({ width: 1280, size: 131, entries: 20 })
-      const list = getComputedStyle(row)
-      const start = () =>
-        row.getBoundingClientRect().left +
-        pxOf(list.borderLeftWidth) +
-        pxOf(list.paddingLeft)
-      const travel = () => row.scrollWidth - row.clientWidth
       // The seventh card, the last in view before the row scrolls: its
       // edge lies a whole number of px along at this size and width.
-      const card = row.children[6]
-      row.scrollLeft =
-        place === 'its end'
-          ? travel()
-          : card.getBoundingClientRect().left - start()
-      // The fixture tells: the row stands where the case names, with
-      // cards past its end only in the middle.
-      expect({
-        before: row.scrollLeft > 1,
-        after: row.scrollLeft < travel() - 1,
-      }).toEqual({ before: true, after: place !== 'its end' })
-      // A mark records the row's place, at most once a frame.
-      await frames(2)
-      const off = () =>
-        place === 'its end'
-          ? travel() - row.scrollLeft
-          : card.getBoundingClientRect().left - start()
-      const stepped = () => {
-        const [one, two] = gridColumns(host)
-        const [a, b] = [...row.children].map((li) => li.getBoundingClientRect())
-        return Math.abs(b.left - a.left - (two.left - one.left)) <= 0.5
-      }
+      const { off, stepped } = await standAt(
+        host,
+        row,
+        place === 'its end' ? place : row.children[6],
+      )
       const seen = [{ columns: gridColumns(host).length, off: near(off(), 0) }]
       // [the keys, the size they reach]: up to a column fewer, down to a
       // column more, then a long way up and a long way down, a change a key.
@@ -501,6 +564,115 @@ describe('the Continue row over the grid (O288 item 2)', () => {
       fits,
       overflows: travel() > 1,
       end: near(travel() - row.scrollLeft, 0),
+    }).toEqual({ fits: true, overflows: true, end: 0 })
+  })
+
+  it.each(['its end', 'the card at its start edge'] as const)(
+    'keeps %s across window resizes, a phone turning and back, also across 900 px',
+    async (place) => {
+      const { host, row } = await drawn({ width: 390, size: 144, entries: 12 })
+      // The third card, the first past the two in view at this width.
+      const { off, stepped } = await standAt(
+        host,
+        row,
+        place === 'its end' ? place : row.children[2],
+      )
+      const seen = [{ columns: gridColumns(host).length, off: near(off(), 0) }]
+      // The phone turned, a window with the sidebar, one just under 900 px
+      // without it, and the phone turned back.
+      for (const width of [844, 1280, 899, 390]) {
+        await page.viewport(width, 844)
+        await expect.poll(() => window.innerWidth, POLL).toBe(width)
+        // Laid for the width.
+        await expect.poll(stepped, POLL).toBe(true)
+        seen.push({ columns: gridColumns(host).length, off: near(off(), 0) })
+      }
+      // The columns are the fixture's: each width moves the grid's.
+      expect(seen).toEqual(
+        [2, 5, 6, 5, 2].map((columns) => ({ columns, off: 0 })),
+      )
+    },
+  )
+
+  it('does not creep over a window drag', async () => {
+    const { host, row } = await drawn({ width: 390, size: 144, entries: 12 })
+    const { off, stepped } = await standAt(host, row, row.children[2])
+    // From the phone's width to its width turned, a new width each frame.
+    const widths = ramp(390, 844, 20)
+    const seen = await dragged(widths)
+    await expect.poll(stepped, POLL).toBe(true)
+    // The fixture tells: each frame drew the next width, and the drag moved
+    // the grid's columns.
+    expect({
+      seen,
+      columns: gridColumns(host).length,
+      off: near(off(), 0),
+    }).toEqual({ seen: [390, ...widths], columns: 5, off: 0 })
+  })
+
+  it('keeps a card near the row’s end at its start edge over a window drag out past the row’s reach and back', async () => {
+    const { host, row } = await drawn({ width: 390, size: 144, entries: 12 })
+    // The tenth card, which the row's end stops short of at 844 px.
+    const { off, stepped, travel } = await standAt(host, row, row.children[9])
+    const out = ramp(390, 844, 20)
+    const seenOut = await dragged(out)
+    await expect.poll(stepped, POLL).toBe(true)
+    const short = { end: near(travel() - row.scrollLeft, 0), off: off() > 1 }
+    const back = ramp(844, 390, 20)
+    const seenBack = await dragged(back)
+    await expect.poll(stepped, POLL).toBe(true)
+    // The fixture tells: each frame drew the next width, and at the widest
+    // the row stood at its end with the card still short of its start edge.
+    expect({
+      seen: [...seenOut, ...seenBack],
+      short,
+      off: near(off(), 0),
+    }).toEqual({
+      seen: [390, ...out, 844, ...back],
+      short: { end: 0, off: true },
+      off: 0,
+    })
+  })
+
+  it('keeps a card near the row’s end at its start edge over a window drag across 900 px', async () => {
+    const { host, row } = await drawn({ width: 1000, size: 144, entries: 12 })
+    // The eighth card, which the row brings to its start edge short of its
+    // end.
+    const { off, stepped } = await standAt(host, row, row.children[7])
+    const layouts = [held(row)]
+    const widths = ramp(1000, 800, 20)
+    const seen = await dragged(widths)
+    await expect.poll(stepped, POLL).toBe(true)
+    layouts.push(held(row))
+    // The fixture tells: each frame drew the next width, and the layout
+    // turned as the sidebar's column went.
+    expect({ seen, layouts, off: near(off(), 0) }).toEqual({
+      seen: [1000, ...widths],
+      layouts: [
+        { gap: true, column: false },
+        { gap: false, column: true },
+      ],
+      off: 0,
+    })
+  })
+
+  it('keeps its end through a window at which every card fits', async () => {
+    const { host, row } = await drawn({ width: 1280, size: 144, entries: 7 })
+    const { off, stepped, travel } = await standAt(host, row, 'its end')
+    // Seven columns at this width, one for each card, and back to six.
+    await page.viewport(1400, 844)
+    await expect.poll(() => gridColumns(host).length, POLL).toBe(7)
+    await expect.poll(stepped, POLL).toBe(true)
+    const fits = travel() <= 1
+    await page.viewport(1280, 844)
+    await expect.poll(() => gridColumns(host).length, POLL).toBe(6)
+    await expect.poll(stepped, POLL).toBe(true)
+    // The fixture tells: the row fitted at the wider window and overflows
+    // again at this one.
+    expect({
+      fits,
+      overflows: travel() > 1,
+      end: near(off(), 0),
     }).toEqual({ fits: true, overflows: true, end: 0 })
   })
 

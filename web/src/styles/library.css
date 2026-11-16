@@ -640,17 +640,26 @@
 
 /* On a phone the columns fill the row (O285): as many as fit at the least
  * gap, each grown to an equal share of the row, so the slider sets the
- * least a cover may be. Exact covers would leave a narrow screen's spare
- * room as wide gaps. `--tile-fill` is set in this same block so that a
- * script reads which layout is drawn rather than repeating the breakpoint. */
+ * least a cover may be, except where the list is narrower than one cover.
+ * Exact covers would leave a narrow screen's spare room as wide gaps.
+ * `--tile-fill` is set in this same block so that a script reads which
+ * layout is drawn rather than repeating the breakpoint. */
 @media (width < 900px) {
   .library {
     --tile-fill: 1;
   }
 
+  /* Where the list is narrower than one cover the slider's least size
+   * cannot hold, so the one column takes the list's width rather than
+   * spilling past it sideways (O302). With one column the Continue row's
+   * cards take the list's width too (`continueRow.ts`), so they stay over
+   * this column. */
   .grid,
   .volumes {
-    grid-template-columns: repeat(auto-fill, minmax(var(--tile-min), 1fr));
+    grid-template-columns: repeat(
+        auto-fill,
+        minmax(min(var(--tile-min), 100%), 1fr)
+      );
   }
 }
 

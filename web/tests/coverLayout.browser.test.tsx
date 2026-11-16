@@ -286,6 +286,36 @@ describe('a cover list below 900 px (O285)', () => {
       })
     },
   )
+
+  it.each([HOME, SERIES] as const)(
+    'never lays a cover wider than the list on %s, at a 260 px window and 240 px covers',
+    async (where) => {
+      const { list, tiles } = await drawn(where, 260, 240, twoRowsAndOne(1))
+      const style = getComputedStyle(list)
+      const W =
+        list.clientWidth -
+        parseFloat(style.paddingLeft) -
+        parseFloat(style.paddingRight)
+      // The fixture tells: the list is narrower than one cover, so the
+      // slider's size cannot hold. `clientWidth` is whole pixels, hence the
+      // half pixel below.
+      expect(W).toBeLessThan(240)
+      const within = (actual: number) =>
+        Math.abs(actual - W) <= 0.5 ? W : actual
+      const covers = tiles.map((tile) => rect(tile.querySelector('.cover-box')))
+      expect({
+        rows: rowsOf(tiles).map((row) => row.length),
+        overflows: list.scrollWidth > list.clientWidth,
+        tiles: tiles.map((tile) => within(rect(tile).width)),
+        covers: covers.map((box) => within(box.width)),
+      }).toEqual({
+        rows: [1, 1, 1],
+        overflows: false,
+        tiles: tiles.map(() => W),
+        covers: covers.map(() => W),
+      })
+    },
+  )
 })
 
 describe('the cover size’s tokens (O285)', () => {
