@@ -1,0 +1,26 @@
+volume	Manga/Volumes/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v01 (2018).cbz
+volume	Manga/Volumes/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v02 (2018).cbz
+volume	Manga/Volumes/One Piece/One Piece - v105 (2024).cbz
+volume	Manga/Volumes/One Piece/One Piece - v106 (2024).cbz
+volume	Manga/Volumes/Monster - The Perfect Edition/Monster - The Perfect Edition - v01.cbz
+volume	Manga/Volumes/Bocchi the Rock!/Bocchi the Rock! - v01 (2023).cbz
+raw	Manga/Raw/[Oshi no Ko]/Oshinoko v01
+raw	Manga/Raw/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen/Kaguya-sama_Zunousen_v02
+raw	Manga/Raw/Monster/Monster v01
+raw	Manga/Raw/Kobayashi-san Chi no Meidoragon/DLRAW.TO_Kobayashi-san Maid Drago v02
+raw	Manga/Raw/[Oshi no Ko]/Oshinoko v01-03
+chapter	Manga/Chapters/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - Fan Translated/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v16 c152.cbz
+chapter	Manga/Chapters/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - Fan Translated/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v16 c153.cbz
+chapter	Manga/Chapters/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - Fan Translated/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v16 c154.cbz
+chapter	Manga/Chapters/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - Fan Translated/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v16 c155.cbz
+chapter	Manga/Chapters/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - Fan Translated/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v16 c156.cbz
+chapter	Manga/Chapters/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - Fan Translated/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v16 c157.cbz
+chapter	Manga/Chapters/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - Fan Translated/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v16 c158.cbz
+chapter	Manga/Chapters/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - Fan Translated/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v16 c159.cbz
+chapter	Manga/Chapters/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - Fan Translated/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v16 c160.cbz
+chapter	Manga/Chapters/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - Fan Translated/Kaguya-sama wa Kokurasetai - Tensai-tachi no Ren'ai Zunosen - v16 c161.cbz
+chapter	Manga/Chapters/One Piece/One Piece - c1134 (2024).cbz
+chapter	Manga/Chapters/One Piece/One Piece - c1135 (2025).cbz
+issue	Comics/Issues/Invincible/Invincible (2003-2018)/Invincible 001 (2003) (digital) (Minutemen-InnerDemons).cbz
+issue	Comics/Issues/Invincible/Invincible (2003-2018)/Invincible 002 (2003) (digital) (Minutemen-InnerDemons).cbz
+collected	Comics/Collected/Invincible/Invincible v01 - Family Matters (2005, 3rd Printing) (digital) (Minutemen-Slayer).cbz

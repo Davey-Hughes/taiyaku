@@ -67,6 +67,10 @@ mod fingerprint;
 mod geometry_experiment;
 mod inventory;
 mod library;
+// A gated one-off measurement, declared like the experiments above so no part
+// of it is compiled into the binary.
+#[cfg(test)]
+mod match_experiment;
 mod regions;
 // `sample.rs`'s three items (`DEV_EDITIONS`, `HELD_OUT_EDITIONS`, `dev_pages`)
 // are read by `score --sample` (`score.rs`) from the plain `bin "taiyaku"`

@@ -245,7 +245,7 @@ jobs:
           TAIYAKU_COMMIT: ${{ github.sha }}
         run: |
           cargo llvm-cov nextest --workspace --all-features \
-            --ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
+            --ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|match_experiment[/a-z_]*|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' \
             --fail-under-lines 91
       - name: Install node
         if: success() || steps.rust_coverage.outcome == 'failure'
@@ -301,7 +301,7 @@ jobs:
         # other side, and the two files hash identically.
         run: |
           cargo llvm-cov report --json --output-path target/rust-coverage.json \
-            --ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'
+            --ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|match_experiment[/a-z_]*|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'
           node scripts/coverage-floor.mjs target/rust-coverage.json
 
       # docs/status.md states a total test count twice. That is the only

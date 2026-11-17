@@ -180,7 +180,7 @@ and, for libraries whose directories overlap,
 
 ## What is built
 
-Six crates, 3733 tests, plus 5,214 in `web/`'s TypeScript — 1,848 in the `node`
+Six crates, 3853 tests, plus 5,214 in `web/`'s TypeScript — 1,848 in the `node`
 project and 3,366 in the `jsdom` one — and one thousand three hundred and sixty-two
 more in a **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
@@ -257,8 +257,11 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twenty-five of the 3733 are standing checks gated on
-`TAIYAKU_CORPUS` — seventeen in `crates/taiyaku-cli/src/corpus.rs`, five in
+`rayon` exactly as `align` already did. Twenty-five of the 3853 are standing checks in
+the corpus run (`corpus::`) — seventeen in `crates/taiyaku-cli` (ten in `src/corpus.rs`,
+three in `src/corpus/tests.rs` and four in `src/score_corpus.rs`; the three in
+`corpus/tests.rs` and two of `score_corpus.rs`'s, which run on fixtures, need
+no corpus), five in
 `crates/taiyaku-serve/src/corpus.rs`, two in
 `crates/taiyaku-library/src/corpus.rs`, one in
 `crates/taiyaku-read/src/corpus.rs` (this read "nineteen … ten … five"
@@ -297,8 +300,8 @@ the unit tests are what exercise those and `--corpus-debug` puts the corpus
 checks back under them; `docs/ci.md`, "Two profiles, and the gate that took an
 hour", is the record.
 
-**Seven further tests are gated on `TAIYAKU_CORPUS` and are deliberately not
-among those twelve.** All seven are one-off measurements rather than checks, and
+**Nine further tests are gated on `TAIYAKU_CORPUS` and are deliberately not
+among those twelve.** Seven are one-off measurements rather than checks, and
 all seven are built the same way for the same reason: gated, skipping cleanly
 when the variable is unset, calling the detector's own functions rather than
 copies of them, and asserting only that they measured something — never a
@@ -325,7 +328,17 @@ against 480 hand-drawn boxes" and "Where the band goes, measured at eight bands
 over 478 hand-drawn boxes", are what each one printed. The band sweep is about
 51 seconds under `--release`: it detects all eight bands inside one decode pass,
 where re-entering the decode per band would be 360 full-resolution decodes to
-score 45 pages.
+score 45 pages. The other two measure the reader and the books, and this
+paragraph said "seven" without them until 2026-11-17:
+`crates/taiyaku-cli/src/borrow_frequency.rs`, how often a reader meets a gap
+(`notes.md`, "How often a reader meets a gap, and who actually lends"), and
+`crates/taiyaku-cli/src/book_experiment.rs`, how well two editions of a book
+align, measured against keys.
+
+The `match_experiment` tests gated on `TAIYAKU_MATCH_LIBRARY`, and `nas_timing`,
+gated on `TAIYAKU_MATCH_NAS_ROOT` alone, are the content-matching measurement,
+recorded in `notes.md`, "Edition matching by content: PR 1's measurement
+(2026-11-16)".
 
 `crates/taiyaku-cli/src/region_experiment.rs` is L2a's: why the text-block
 detector fails, run against real pages. It prints, per sampled page, the
@@ -1461,7 +1474,7 @@ both are waiting on L2.
 
 ### Open items
 
-Three hundred and twenty-eight, each found by a whole-branch review, carried as a deferral,
+Three hundred and thirty-one, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -1496,7 +1509,7 @@ faster than the router could commit it, asked for by the owner, or turned up
 by answering a question an earlier item's notes wrote down and left open, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Two hundred and nine are now closed — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20, O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43, O44, O47, O48, O53, O54, O55, O57, O58, O60, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96, O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O112, O113, O114, O115, O116, O117, O119, O120, O121, O133, O134, O135, O137, O138, O140, O141, O145, O146, O148, O149, O150, O151, O153, O154, O155, O156, O157, O158, O159, O160, O161, O163, O164, O165, O166, O171, O172, O173, O174, O175, O176, O177, O178, O179, O180, O182, O183, O184, O185, O186, O190, O191, O192, O193, O194, O195, O196, O197, O198, O199, O204, O205, O206, O207, O208, O210, O212, O213, O216, O218, O219, O220, O221, O223, O224, O228, O229, O231, O232, O233, O234, O235, O236, O237, O239, O240, O241, O244, O245, O247, O248, O250, O251, O252, O253, O254, O255, O256, O257, O262, O263, O264, O266, O267, O269, O273, O274, O275, O276, O277, O278, O279, O280, O281, O282, O283, O284, O285, O286, O288, O299, O301, O302, O310, O311, O312, O313 and O323 — leaving one hundred and nineteen.** *(This sentence carried **two** errors before ⑤c rebuilt it from the table on 2026-09-25: it omitted **O151**, closed on 2026-09-24, and "leaving fifty-seven" stood against sixty-two open rows. It is generated from the table now rather than edited, which is the only reason the list and the word cannot disagree again.* **A larger warning sits in how this note first read.** It claimed six errors — the word disagreeing with its own list, O34 and O39 listed twice each, and O31 named while its row read `[ ]`. None of those four existed. The check that found them anchored on the string `are now closed`, which first matches a sentence about mutation survivors a hundred and fifty lines earlier, and then read everything from there to the next `— leaving` — so it counted O-numbers out of hundreds of lines of unrelated prose and reported them as this list's. The rebuilt sentence was right and the story about why was invented, which is worse than the drift it was describing: a wrong count invites a recount, and a wrong history is believed. Caught by ⑤c's pre-merge claim check, which re-derived it from `git show` rather than from this paragraph.)* *(It read "leaving fifty" against
+visible act rather than a thing someone remembers. **Two hundred and nine are now closed — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20, O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43, O44, O47, O48, O53, O54, O55, O57, O58, O60, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96, O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O112, O113, O114, O115, O116, O117, O119, O120, O121, O133, O134, O135, O137, O138, O140, O141, O145, O146, O148, O149, O150, O151, O153, O154, O155, O156, O157, O158, O159, O160, O161, O163, O164, O165, O166, O171, O172, O173, O174, O175, O176, O177, O178, O179, O180, O182, O183, O184, O185, O186, O190, O191, O192, O193, O194, O195, O196, O197, O198, O199, O204, O205, O206, O207, O208, O210, O212, O213, O216, O218, O219, O220, O221, O223, O224, O228, O229, O231, O232, O233, O234, O235, O236, O237, O239, O240, O241, O244, O245, O247, O248, O250, O251, O252, O253, O254, O255, O256, O257, O262, O263, O264, O266, O267, O269, O273, O274, O275, O276, O277, O278, O279, O280, O281, O282, O283, O284, O285, O286, O288, O299, O301, O302, O310, O311, O312, O313 and O323 — leaving one hundred and twenty-two.** *(This sentence carried **two** errors before ⑤c rebuilt it from the table on 2026-09-25: it omitted **O151**, closed on 2026-09-24, and "leaving fifty-seven" stood against sixty-two open rows. It is generated from the table now rather than edited, which is the only reason the list and the word cannot disagree again.* **A larger warning sits in how this note first read.** It claimed six errors — the word disagreeing with its own list, O34 and O39 listed twice each, and O31 named while its row read `[ ]`. None of those four existed. The check that found them anchored on the string `are now closed`, which first matches a sentence about mutation survivors a hundred and fifty lines earlier, and then read everything from there to the next `— leaving` — so it counted O-numbers out of hundreds of lines of unrelated prose and reported them as this list's. The rebuilt sentence was right and the story about why was invented, which is worse than the drift it was describing: a wrong count invites a recount, and a wrong history is believed. Caught by ⑤c's pre-merge claim check, which re-derived it from `git show` rather than from this paragraph.)* *(It read "leaving fifty" against
 forty-nine open rows from the moment O97 closed: the count of closed items
 moved and the count of open ones did not, which is the drift the sweep at the
 head of this section exists to catch and did not run. Corrected here. **It
@@ -1952,6 +1965,9 @@ each is in the detail below; the table is what a reader scans.
 | O333 | [ ] | **A figure not set in a link cannot be reached from the keyboard.** It opens full size on a tap or a click but takes no focus, so a reader with no pointer cannot open one. A figure set in a link is drawn inside that link, which takes focus and is followed on Enter. | `Figures`, `BookReader.tsx`'s `onPointerUp` | the whole-branch check of the books rich text, 2026-11-15 |
 | O334 | [ ] | **After a restart, or once the book cache has emptied, requests for one book that arrive together each read the whole book.** `read` looks a book up by its file's hash and, on a miss, lets go of the cache's lock while it reads the book, splits its blocks into sentences and lists its archive's images, storing the result only then, so book or image requests that miss at once each do all of that. The cache holds `KEPT`, 32, books, and empties itself whole to store one more. A first `get_book` of one book, the read included, took 18 to 182 ms over the test library's 36 EPUBs, called in-process rather than over HTTP on a release build at 7aebc134, with the machine under load (`serve-loadavg.txt` read 12 and 45); the record is `.superpowers/sdd/book-rich-text-evidence/speed/base-7aebc134/book-times.tsv` (not committed). A first image request was not timed. Two fixes were weighed and left: one read per file hash at a time, a slot per hash in `read`, which is small, though a read that fails must hand its error to the requests waiting on it rather than have each of them try it again in turn; or a cache of image names of the image route's own, which would split the numbering that route takes from `read`'s list on purpose. | `taiyaku_serve::book`'s `read` and `KEPT`, called by `get_book` (through `document`) and `get_book_image` | the review of PR #253, 2026-11-17 |
 | O335 | [ ] | **The notes rule misreads three shapes of notes list, so a link opens a note card where it should jump, or the other way about.** Under a list typed `footnotes`, `endnotes`, `rearnotes` or `notes`, `in_note` reads down from the list: a heading met among its groups (a `div`, `section`, `nav`, `header`, `hgroup`, `ol` or `ul`) is no note, the first element that is no group is one, and a group linked to itself is a note unless `opens_on_heading` finds that it opens on a heading. That misreads (i) a note set in a `div` or `section` that opens on a heading holding its way back: the note reads as a group and the heading as no note, so the back link counts as outside a note and, where it is set as a superscript or typed `noteref`, opens the text it points to in a note card; (ii) a linked group whose first child is no heading, an `ol` or a `ul`, or a group whose heading comes after a page-break `span`, an empty `<a id>` or an `img`: it reads as a note, so a link to it opens a card instead of jumping; and (iii) an `li` that groups notes in nested lists, which reads as a note, its heading with it. The rule was rewritten twice in this PR's review and each rewrite regressed a case the one before it read rightly, which is why these are recorded rather than fixed. The review's script re-implementing this rule and the one before its last rewrite, run over the NAS's EPUBs, found eight books with a notes list; the two rules read every link in them alike, and none of those links lands on a group (`.superpowers/sdd/book-rich-text-evidence/review/notes_scan.py` and `scan-nas.log`, not committed). | `taiyaku_read::book`'s `in_note` and `opens_on_heading`, read by `record_id` and for each link's `from_note`; `join_links` | the review of PR #253, 2026-11-17 |
+| O338 | [ ] | **Editions are matched only by name, so a raw, fan or chapter edition joins a book only where its name agrees.** Copies of one volume under one edition key are joined end to end into one long edition (`derive::place`); a directory of chapters with no volume makes no work, and the `attach-chapters` proposal it raises is refused (`proposals::accept`); and two series are one only when their titles match exactly (`derive::reconcile_series`). The edition-matching-by-content design (`docs/superpowers/specs/2026-11-15-edition-matching-by-content-design.md`) matches by page content instead, over five PRs. Its PR 1, a measurement, found no rule that lets a content match go automatic, so every content match starts as a suggestion (O340; `notes.md`, "Edition matching by content: PR 1's measurement (2026-11-16)"). | `derive::place`; `proposals::accept`'s `attach-chapters` refusal; `derive::reconcile_series` | the owner's ruling to match by content (2026-11-15) |
+| O339 | [ ] | **An omnibus edition is never linked to the ordinary volumes it covers.** A Perfect Edition, Kanzenban or 3-in-1 book stays its own book in its own series (the content-matching design's ruling 5), and an `alignment` row pairs two editions of one work, so nothing records which volumes an omnibus holds. PR 1 of content matching checked only that `is_omnibus_name` tells an omnibus by its name. A follow-up to the content-matching PRs. | the `alignment` table, whose rows sit inside one work (`work_id`) | the content-matching design's ruling 5 (2026-11-16) |
+| O340 | [ ] | **No content rule has passed that can make a match automatic, so every content match is a suggestion until one does, and PR 3 can match nothing automatically before a new measurement passes.** Content matching's PR 1 froze a volume rule on its dev series, and the rule failed on held-out on two pairs of Bisque Doll fan extras the owner judged different (`notes.md`, "Edition matching by content: PR 1's measurement (2026-11-16)", "What it decides"). The owner ruled on 2026-11-17: PR 2, fingerprints in the server, goes next and makes no match; before PR 3, a short new measurement tests a volume rule limited to volume-against-volume pairs, its bar frozen on the series already scored and tested on series never scored. The pack rule passed held-out at its frozen bar; whether pack cuts then go automatic on that bar is the owner's to decide when the new measurement lands, before PR 4. Not started. | `match_experiment`'s volume rule (`Rule::Volume`, `manifest::class`) and `bars.json`; PR 3's matching, not yet written | content matching's PR 1, on held-out (2026-11-17) |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -5458,6 +5474,26 @@ ruling of 2026-11-17.
   rewritten twice in this PR's review and each rewrite regressed a case,
   so these are recorded rather than fixed. Not built.
 
+Content matching's PR 1, a measurement, opened O338, O339 and O340.
+
+- **O338 — editions are matched only by name. Open.** Copies of one
+  volume are joined end to end, a chapter directory with no volume makes
+  no work, and two series join only on an exact title. The
+  content-matching design matches by page content instead, over five PRs;
+  its PR 1 found no rule that lets a content match go automatic (O340).
+- **O339 — an omnibus is never linked to the volumes it covers. Open.**
+  The design's ruling 5 keeps an omnibus whole, in its own series, and an
+  `alignment` row sits inside one work. A follow-up to the
+  content-matching PRs.
+- **O340 — every content match is a suggestion until a volume rule
+  passes. Open.** PR 1's volume rule failed on held-out on two pairs of
+  Bisque Doll fan extras the owner judged different. On the owner's
+  ruling of 2026-11-17, PR 2 goes next and makes no match, and before
+  PR 3 a short measurement tests a rule limited to volume-against-volume
+  pairs, its bar frozen on the series already scored and tested on series
+  never scored. Whether pack cuts then go automatic on the pack rule's
+  frozen bar is the owner's to decide then, before PR 4.
+
 ## What comes next
 
 Roughly in order. All four are now settled — one closed by a measurement that
@@ -5979,7 +6015,7 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the one hundred and nineteen open items tabled above — **a large minority
+What remains: the one hundred and twenty-two open items tabled above — **a large minority
 of them opened by a review** rather than by building something, which is the
 fact worth carrying. **The count that used to stand here is deleted rather
 than corrected**, after three passes over one afternoon produced twenty-five,

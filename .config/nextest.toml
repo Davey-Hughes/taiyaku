@@ -39,7 +39,7 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 
 # The exempt set matches the regex both coverage steps of ci.yml and
 # check-all.sh carry —
-# `--ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'`
+# `--ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|match_experiment[/a-z_]*|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$'`
 # — which matches the files `docs/ci.md` tables under
 # "The ignored Rust files, named". This is not one exempt set shared three ways:
 # the two coverage steps share one regex string, but nextest's `filter` selects
@@ -81,8 +81,11 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 #
 # `test(book_experiment)` aligns whole books at each of its settings against
 # hand-made keys, which no unit test's budget covers.
+#
+# `test(match_experiment)` fingerprints a whole library and aligns its labelled
+# pairs when `TAIYAKU_MATCH_LIBRARY` is set, which no unit test's budget covers.
 [[profile.default.overrides]]
-filter = "test(band_sweep) + test(book_experiment) + test(corpus::) + test(geometry_experiment) + test(model_experiment) + test(region_experiment) + test(score_corpus) + test(truth_population)"
+filter = "test(band_sweep) + test(book_experiment) + test(corpus::) + test(geometry_experiment) + test(match_experiment) + test(model_experiment) + test(region_experiment) + test(score_corpus) + test(truth_population)"
 slow-timeout = { period = "60s" }
 
 # `a_root_that_cannot_be_written_falls_back_to_the_short_interval`

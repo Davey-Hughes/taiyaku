@@ -27708,3 +27708,837 @@ read it in another.
   wrote the works, and the library page and the reader's view read again
   without a reload: the paused line went, Last scan showed the new scan's
   time, and the reader's view listed the series.
+
+## Edition matching by content: PR 1's measurement (2026-11-16)
+
+The spec is
+`docs/superpowers/specs/2026-11-15-edition-matching-by-content-design.md`
+and the plan
+`docs/superpowers/plans/2026-11-16-content-matching-measurement.md`.
+PR 1 aligns pairs of the test library's members with the solver `align`
+uses, scores each pair, and sets a bar for each class of pair so that no
+wrong pair clears it. The harness is `taiyaku-cli`'s
+`#[cfg(test)]` module `match_experiment`.
+
+### Pre-registered before any page was fingerprinted
+
+This subsection was committed before this measurement fingerprinted any
+member of the library, and nothing in it changes once the runs begin.
+Earlier experiments aligned some of these editions
+(`docs/notes.md:2758-2764`), and the design's §3 drew on their results.
+The proof of order at the end of this subsection covers this
+measurement's fingerprint cache only. The subsection serves three
+sentences of the spec, quoted verbatim:
+
+- "The bar is set so that no wrong pair in the measurement clears it."
+- "If PR 1 finds no bar that keeps every wrong chapter pair out, chapter
+  matches start as suggestions only, and volume matches go automatic
+  alone."
+- "If PR 1 measures a first pass over the NAS library at more than a
+  day, this comes back to the owner before PR 2 is planned."
+
+**The truth.** The manifest is
+`crates/taiyaku-cli/src/match_experiment/manifest.json` as committed at
+`d641f069`. It lists 1,905 members of the test library: 1,415 dev and
+490 held-out. It holds no adjudications. It stays as committed there,
+except for the adjudications the owner's rounds add to the same file. A
+member is one entry of a measured directory: an archive, or a directory
+of images or of archives. Its kind and numbers come from its name and
+its directory's row in `manifest.rs`'s `TABLE`. Its series and split
+come from the row. A pair's label comes from its two members' fields
+(`label`).
+
+| Kind | Dev | Held-out |
+| --- | --- | --- |
+| `volume` | 551 | 112 |
+| `pack` (a volume range, `v01-03`) | 36 | 4 |
+| `omnibus` | 28 | 0 |
+| `chapter` | 781 | 356 |
+| `chapter-pack` | 0 | 1 |
+| `issue` | 0 | 14 |
+| `collected` | 0 | 3 |
+| `extra` (One Piece's Cover Stories) | 19 | 0 |
+
+**The split is by series.** The held-out series are `go-toubun`,
+`bocchi*`, `zelda-tp`, `bisque*` and `invincible`, and every other series
+is dev. A pair is held-out when either member is, so a dev pair is one
+whose two members are both dev.
+
+**Where a chapter's place comes from.** 1,040 members carry a `truth`,
+which says how a chapter's place or a collected edition's issues were
+set:
+
+- 514 chapters by their name, which gives the volume (`v16 c152`);
+- 523 chapters by a printed contents page: 352 inside a volume
+  (`in_volume`) and 171 after the last held volume (`after_volume`);
+- 3 collected editions by their indicia, which list their issues.
+
+The other 100 chapters have neither `in_volume` nor `after_volume`, and
+are `Unlabelled` against every volume and pack of their series.
+
+**The printed truth, confirmed by the owner.** Contents pages and indicia
+were transcribed from page images of 67 volumes. The owner confirmed
+every transcribed range on the rendered sheet on 2026-11-16, with no
+corrections. The owner also approved three readings:
+
+- An unnumbered "Final Chapter" printed after Ch.N counts as N+1, so
+  Go-Toubun v14 ends at 122 and Dungeon Meshi v14 at 97.
+- Dungeon Meshi v05 keeps its contents page's number for its first
+  chapter, 29, over the 26 its title page prints.
+- One-Punch Man's fan chapter N is print Punch N+7. Three titles match:
+  fan c150 is print 157, c157 is 164 and c162 is 169. Its fan chapters
+  are labelled through this reading. They are reported as their own
+  sub-class, because the web and print pages may be redrawn.
+
+**Rulings on chapter truth.**
+
+- **After the last held volume.** Call a series' last held volume vM. A
+  whole-numbered chapter past the last chapter vM prints is in no held
+  volume. It gets `after_volume` M. Against any volume or pack of its
+  series it is `ChapterNotIn`. None of these series holds a volume or
+  pack numbered past vM. `explicit_pairs` pairs the chapter with vM in
+  every edition and with every pack holding M (its rule 5).
+- **Fractional and zero chapters** never get `in_volume` or
+  `after_volume`, since an extra may be printed as a volume's bonus or
+  nowhere. Dungeon Meshi c097.5 is v14's printed bonus. Its first page
+  is headed "Monster Tidbits 14" and carries the page number 180. v14's
+  contents page lists "Miscellaneous Monster Tales -14-" at page 180.
+- **No contents page, no label.** Kobayashi's EN v16 and Bocchi's v06
+  and v07 have no contents page in their first 12 pages. Bocchi v07's
+  last 14 pages hold none either. So these three volumes place no
+  chapter. Bocchi's c82 to c87 carry no volume in their names either,
+  and stay unlabelled.
+- **Invincible.** The indicia give v01 issues #1–4, v02 #5–8 and v03
+  #9–12. Issues #0 and #13 are in none of them.
+
+**The explicit pairs.** `explicit_pairs` names 12,062 pairs before any
+page is read, each unordered pair once. The lookup's leaders add more
+(below). By label and split:
+
+| Label | Dev | Held-out |
+| --- | --- | --- |
+| `SameVolume`, in two directories | 182 | 103 |
+| `SameVolume`, copies in one directory | 18 | 0 |
+| `Neighbour` | 344 | 191 |
+| `InPack` | 428 | 18 |
+| `NotInPack` | 147 | 10 |
+| `ChapterIn` | 2,626 | 787 |
+| `ChapterNotIn` | 2,360 | 1,481 |
+| `InCollected` | 0 | 12 |
+| `NotInCollected` | 0 | 30 |
+| `OtherSeries`, one franchise | 49 | 9 |
+| `OtherSeries`, two franchises | 855 | 181 |
+| `CoverStories` | 2,109 | 0 |
+| `Omnibus` | 122 | 0 |
+| total | 9,240 | 2,822 |
+
+No explicit pair is `SameSeriesOther`, `PackOverlap` or `Unlabelled`.
+
+**Orientation and slots.**
+
+- A is the side with fewer slots. On a tie it is the lexically smaller
+  path (`oriented`). So a pair scores the same whichever member names it
+  first.
+- Each member is fingerprinted on its own, as `align` reads an edition
+  (`cached_edition`). Spreads are split against the member's own pages.
+  Pages read right-to-left, except comics, which read left-to-right.
+- A member that is a directory of archives (Raw/Zelda's `v03-05` and
+  others) is fingerprinted as its archives joined end to end, in natural
+  name order.
+
+**Features and scores.** For each pair, `features` reports the solver's
+verdict, the separation and margin, the average run length, the paired
+slots over |A|, and long_paired, the slots in paired runs of at least 4.
+Two scores are computed from them:
+
+- **V = long_paired / max(|A|, |B|)**, which is low unless long runs
+  cover most of both sides.
+- **C = (long_paired / |A|) × (long_paired / span_B)**, where span_B is
+  the stretch of B from the first long run's start to the last one's
+  end. It is the chapter-in-volume test, defined in advance: A's long
+  runs must land in one stretch of B about A's own length.
+- With no long run, both are 0.
+
+**The rules.** Each rule judges one class of pairs on one score
+(`class`). A pair outside a rule's lists is outside the rule.
+
+- **The volume rule, on V.** Positives are `SameVolume` pairs: two
+  members of one series with the same volume number or range. They may
+  be two editions, a colour or fan variant, or copies. Negatives are
+  every other labelled pair except `Omnibus` and `PackOverlap`. So
+  `ChapterIn`, `InPack` and `InCollected` pairs are volume-rule
+  negatives.
+- **The chapter rule, on C**, only where A is a chapter or an issue of
+  at least 8 slots. Positives are `ChapterIn` and `InCollected`.
+  Negatives are `ChapterNotIn`, `NotInCollected`, `OtherSeries` and
+  `CoverStories`. A chapter under 8 slots is never automatic, because a
+  short side always aligns (`docs/notes.md:1904-1916`).
+- **The pack rule, on C**, only where A is a volume and B a pack.
+  Positives are `InPack`. Negatives are `NotInPack` and `OtherSeries`, a
+  volume against another series' pack. The rule reads B's kind as well
+  as A's, since an `OtherSeries` label alone does not say B is a pack.
+- **Omnibus editions** are reported only, and their names decide (the
+  spec's ruling 5). The check is that `is_omnibus_name` marks every
+  omnibus member and no other.
+- **`Omnibus`, `PackOverlap` and `Unlabelled` pairs are neither
+  positive nor negative under any rule.** Two packs of one series whose
+  ranges overlap but differ are `PackOverlap`. Disjoint packs of one
+  series stay `SameSeriesOther`, a volume-rule negative. Packs with the
+  same range are `SameVolume`.
+- **Why `InPack` is a negative and `PackOverlap` is not.** A volume
+  inside a pack scores V of at most |A| / |B|, about 1 / (the volumes in
+  the pack). The smallest packs hold 2 volumes. There are 9 of them: 8
+  dev, and Zelda's `v06-07` held out. So `InPack` pairs can lift the
+  volume bar to about 0.65 at most, which keeps the bar conservative.
+  Two packs whose ranges overlap approach V = 1 as the overlap grows.
+  As negatives they would leave the volume rule unable to pass, on a
+  relation the names already separate. And the product never puts two
+  packs of different ranges to the volume rule, because it cuts packs at
+  the seams (the design's §4, "Range packs").
+- **Chapter against chapter.** `label` makes every pair of one series'
+  chapters, and every pair of one series' issues, `ChapterNotIn`,
+  whatever their numbers. No series holds two chapter or issue files
+  with one number. Such pairs come only from the lookup's leaders. They
+  are chapter-rule negatives when A has at least 8 slots. They are
+  volume-rule negatives too. Two different chapters are a wrong pair
+  even when they share credit pages.
+
+**The bar.** A rule's bar is its highest dev negative plus **0.15**.
+
+- A rule passes only if it passes on both splits.
+- It passes on dev if it has at least one dev negative and its bar is
+  at most 1.0. A rule with no dev negative claims no bar ("no
+  negatives, no bar claimed"). No evidence of safety is not a pass.
+- The bars are committed in
+  `crates/taiyaku-cli/src/match_experiment/bars.json` before any
+  held-out pair is scored.
+- It passes on held-out if no held-out negative scores at or above its
+  frozen bar, and at least one held-out negative is in its class. A
+  rule with no held-out negative is "untested on held-out", which is
+  not a pass either.
+- A rule that passes while no positive on either split is at or above
+  its bar is reported as "passes, matches nothing automatically". It
+  makes no match automatic.
+- The share of positives at or above the bar is reported per rule and
+  per sub-class: raw against EN, colour, fan and copy pairs for volumes,
+  each series for chapters, and packs.
+
+**The comics.** Every comics member is held out. The manga chapter rule
+is the chapter rule over pairs whose A is a chapter. Every issue is
+held out, so on dev the manga chapter rule is the whole chapter rule.
+Its held-out verdict covers the held-out pairs whose A is a chapter.
+The comics sub-class is every pair whose A, the oriented short side, is
+an issue, under any label. It holds an issue against a collected
+edition, against another issue, and against another series. It is
+judged under the frozen chapter bar, on C. The comics fail when any
+chapter-rule negative in the sub-class scores at or above that bar.
+The comics positives clearing the bar are reported beside the verdict.
+Issues go automatic only if the manga chapter rule passes and the
+comics pass. A failed manga chapter rule leaves no trusted frozen bar
+for the comics.
+
+**Unlabelled pairs and possible mislabels.**
+
+- An unlabelled pair is put to a rule only if it passes that rule's
+  gates, the kind and slot gates `class` applies to a labelled pair.
+  The volume rule has no gate, and scores V. The chapter rule needs A
+  to be a chapter or an issue of at least 8 slots, and scores C. The
+  pack rule needs A to be a volume and B a pack, and scores C.
+- On dev, an unlabelled pair is shown to the owner when its score under
+  a rule it passes is at or above that rule's highest labelled dev
+  negative. The rounds repeat while that line moves.
+- On held-out, it is shown when that score is at or above the rule's
+  frozen bar.
+- The owner's verdict turns the pair into a label through the
+  adjudication mapping (`adjudicated`). For a chapter pack such as
+  Zelda's `ch01-15` against a volume, either verdict gives `ChapterIn`
+  or `ChapterNotIn`. Both are volume-rule negatives.
+- On held-out, a "different" or "can't tell" verdict on a shown
+  unlabelled pair is a held-out failure of that rule. It never changes
+  a bar.
+- Labelled negatives scoring at least 0.5 are shown too, on both
+  splits. Each is scored by the rule under which it is a negative: V
+  for the volume rule, C for the chapter and pack rules.
+- The owner may relabel a labelled negative only on "same drawings".
+  Every relabel is counted and reported per split. On held-out, a pass
+  that depends on a relabel is reported as "passes after N relabels",
+  never as a plain pass. Such a pass carries a pass's consequences, and
+  its N is reported with it.
+- A round holds at most 40 pairs. The controller may only split a
+  longer list into further rounds of at most 40. The score, the gap, the
+  classes, the gates and the label function never change.
+- "Can't tell" counts as different. If the owner stops before every
+  shown pair has a verdict, each pair still without one counts as
+  different too.
+
+**What a failure means.**
+
+- If the manga chapter rule fails, chapter matches are suggestions
+  only, and volume matches go automatic alone. Issues are then
+  suggestions only too.
+- If the volume rule fails, nothing is automatic, and the result goes
+  back to the owner before PR 2.
+- If the pack rule fails, PR 4 cuts packs by their names, and content
+  only suggests.
+- If the comics fail, issues are suggestions only. A comics failure
+  demotes issues alone. It does not fail the manga chapter rule.
+
+**Instrument controls**, on the first dev `SameVolume` pair in the
+scored list's order. That list sorts pairs by member index, which is
+manifest order.
+
+- A member of it against itself gives V ≥ 0.99 and C ≥ 0.99. `score_dev`
+  asserts it.
+- The pair with its B shuffled gives V ≤ 0.10. `score_dev` asserts it.
+- Its paired slots, runs and verdict equal `taiyaku align --stats` on
+  the same two members. This is compared by hand, and the comparison is
+  recorded.
+- A failed control stops judgement. No rule is judged until the
+  instrument is fixed and the run is repeated, and the notes say so.
+
+**The lookup.**
+
+- Each informative slot of a member, one with 8 to 248 of its 256 bits
+  set, votes for the member holding its nearest informative slot among
+  all other members. A tie, in distance or in votes, goes to the member
+  listed first in the manifest.
+- Leaders rank by votes. The top 3 of every member are scored with the
+  explicit pairs, each unordered pair once.
+- A query's positives and negatives come from the label, for every kind
+  of query, not from a rule's class. Positive: `SameVolume`, `InPack`,
+  `ChapterIn`, `InCollected`. Negative: `Neighbour`, `SameSeriesOther`,
+  `NotInPack`, `ChapterNotIn`, `NotInCollected`, `OtherSeries`,
+  `CoverStories`. Neither: `Omnibus`, `PackOverlap`, `Unlabelled`. The
+  lookup finds candidates to align, and a pack holding a volume is a
+  candidate, not a wrong pair.
+- Reported: the share of queries whose best positive leads, the depth
+  needed to reach it, the margins, and the time. A query's margin is the
+  votes for its best positive less those for its best negative, over its
+  informative slots.
+- **P1:** every labelled query's best positive is in its top 3. A query
+  with no labelled positive ("no positive") is left out of P1, and so is
+  one whose positives all failed to print ("positive unprinted"), whose
+  count is reported.
+- **P2:** of the chapter queries that have a `ChapterIn` positive, at
+  least 90% are led by a volume or pack holding the chapter, in any
+  edition. The subset with 8 or more slots is reported beside it,
+  without a prediction of its own.
+- P1 and P2 are judged and reported for dev and for held-out
+  separately. Each split's P1 and P2 are judged on the manifest as it
+  stands after that split's last adjudication round. The figures from
+  before any round are reported beside them.
+
+**The cost on the NAS.**
+
+- `nas_timing` runs on the NAS over
+  `crates/taiyaku-cli/src/match_experiment/nas_sample.txt` twice: on
+  all cores, then with `RAYON_NUM_THREADS=4`. A Hamming kernel is
+  benchmarked at both.
+- The sample is 26 members, each with its class: six EN volumes
+  (`volume`: Kaguya v01 and v02, One Piece v105 and v106, Monster - The
+  Perfect Edition v01 and Bocchi v01), five raw members (`raw`:
+  `Oshinoko v01`, `Kaguya-sama_Zunousen_v02`, `Monster v01`,
+  `DLRAW.TO_Kobayashi-san Maid Drago v02` and the pack
+  `Oshinoko v01-03`), twelve chapters (`chapter`: Kaguya v16 c152 to
+  c161, One Piece c1134 and c1135), two issues (`issue`: Invincible #1
+  and #2) and one collected edition (`collected`: Invincible v01).
+- Each path is relative to the NAS's `media 1` share, and each is in the
+  test library at the same place, with `Manga/` read as the library's
+  root and `Comics/` as its `Comics/`.
+- A class stands for one NAS directory: `volume` for `Manga/Volumes`,
+  `raw` for `Manga/Raw`, `chapter` for `Manga/Chapters`, `issue` for
+  `Comics/Issues` and `collected` for `Comics/Collected`.
+- A sample entry's class is its top directory, not its kind. That is
+  why the Perfect Edition, an omnibus, counts as `volume`.
+- A directory with no measured class takes one, and the result flags
+  it. `Ecchi` and `Extras` take `volume`. `Graphic Novels` and
+  `Webcomics` take `collected`. Any other such directory takes the
+  nearest measured class.
+- The first pass's hours are the sum, over the NAS's `Manga/*` and
+  `Comics/*` directories, of bytes ÷ the cold read rate + bytes × the
+  fingerprint seconds per byte of the directory's class, plus the
+  lookup, slots² ÷ the kernel's comparison rate.
+- The lookup's slots² squares the NAS's total slots, searched as one
+  index. It is not a sum of each library's slots².
+- A directory's slots are its bytes × its class's slots per byte,
+  measured on the test library's fingerprint run, leaving out members
+  that could not be read (such a member has 0 bytes and a non-zero
+  time).
+- The cold read rate is the median of the all-cores run's read rates,
+  leaving out its first member, which carries any disk spin-up. The
+  4-thread hours take the 4-thread run's fingerprint and kernel rates,
+  and the all-cores hours the all-cores run's.
+- **If the 4-thread first pass exceeds 24 h, the result says so and the
+  owner is asked before PR 2.** The all-cores figure is reported beside
+  it.
+
+**Fixed from this commit:** the features, the run length 4
+(`LONG_RUN`), the gap 0.15 (`GAP`), the 8-slot minimum
+(`MIN_CHAPTER_SLOTS`), the classes (`class`), the label function
+(`label`), the split and the sample. Anything else in the results is
+descriptive and does not replace V or C in this PR.
+
+**The proof of order.** The fingerprint run's log opens with the run's
+stamp, written before any member is read. Its members line reports
+`cache hits: h`. The proof that this measurement fingerprinted no page
+before this commit is a stamp later than this commit together with
+`cache hits: 0`. If h is above 0, the proof falls back to the
+modification time of the oldest entry in the run's fingerprint cache.
+That cache is keyed by content and written only on a miss.
+
+### Dev: the scores, and the bars frozen
+
+The dev series were scored once the fingerprint run had finished, and
+again after the owner's one round of verdicts. The bars below come from
+the second run. They are frozen in
+`crates/taiyaku-cli/src/match_experiment/bars.json`, before any held-out
+pair is scored.
+
+**What was read and scored.** The fingerprint run fingerprinted all
+1,905 members, dev and held-out, and found none unreadable (the
+fingerprint run's log). Dev scored 11,273 pairs: the 9,240 explicit
+pairs, 1,334 of which the lookup's leaders named as well, and 2,033 more
+that only the leaders named (the dev run's `rules.txt`).
+
+**An instrument fix after the pre-registration, before any score.**
+`label` was changed so that a verdict relabels a pair the names had
+labelled only when it says "same", or "inside". A "different" verdict
+keeps the names' label. This applies the pre-registration's own rule:
+"The owner may relabel a labelled negative only on 'same drawings'."
+`label`, as committed with the pre-registration, did not apply that
+rule. The manifest then held no adjudication, so no label on the
+material changed. In the same change, the sheet began to ask "are all
+of A's pages inside B?" of a pair where one member can hold the other,
+since that is what a verdict on such a pair decides.
+
+**The instrument's controls** ran on the first dev `SameVolume` pair,
+raw Berserk v01 against the EN Berserk v01. Both hold:
+
+- A against itself scores V 1.0000 and C 1.0000.
+- A against B shuffled scores V 0.0921, within the 0.10 bound.
+
+**Parity.** `taiyaku align --stats` on the same two members gives the
+harness's paired slots (224), runs (7) and verdict (Sound).
+
+**The rules on dev**, after the one round of verdicts:
+
+| Rule | Positives | Negatives | Highest negative | Bar | Positives at or above the bar |
+| --- | --- | --- | --- | --- | --- |
+| Volume, on V | 201 | 10,838 | 0.7647 | 0.9147 | 163 |
+| Chapter, on C | 2,642 | 3,243 | 0.8667 | none fits | none |
+| Pack, on C | 428 | 713 | 0.3457 | 0.4957 | 389 |
+
+- The volume and chapter rules' highest negative is the same pair:
+  Kaguya's fan chapters `v20 c201.5` and `v22 c221.5`, two extras
+  whose pages align in long runs. The owner judged them different.
+- The pre-registration expected `InPack` pairs to lift the volume bar
+  to about 0.65 at most, but Kobayashi's raw v10 against the raw pack
+  `v10-11` scores V 0.6638. The bar came from the Kaguya pair above, so
+  nothing changes.
+- The pack rule's highest negative is the raw Kaguya v19 against the
+  raw `[Oshi no Ko]` pack v01–03, a volume of another series.
+- The volume positives clearing the bar, by sub-class: raw against
+  EN, 100 of 126; colour, 27 of 28; fan, 22 of 28; copies, 14 of 19.
+  Each pair counts in one sub-class only: the first of copy, fan,
+  colour and raw against EN that it fits.
+- **The chapter rule fails on dev.** No bar sits 0.15 above its
+  highest negative and at or below 1.0. As pre-registered, chapter
+  matches start as suggestions only, and volume matches go automatic
+  alone; issues are then suggestions only too. The held-out series
+  still test the volume and pack rules.
+
+**Adjudication: one round, then a stop.**
+
+- The rules showed 186 pairs. The owner judged the first 40, in the
+  order the scores listed them: 16 same and 24 different, with no
+  "can't tell".
+- 12 verdicts relabelled a pair, all from `ChapterNotIn` to
+  `ChapterIn`. Kaguya's fan chapters c28, c31, c50 and c51 carry the
+  wrong volume in their names. The owner judged all 12 of these pairs
+  inside: c28 inside v04, c31 inside v03, c50 inside v06 and c51
+  inside v05, in each edition or pack shown.
+- The four pairs of Kobayashi's unlabelled c141.5 and c141.6 with v15
+  took `ChapterIn`.
+- The owner then stopped. The other 146 pairs are labelled volume-rule
+  negatives at V of at least 0.5. They have no verdict, so, as
+  pre-registered, they count as different and keep their names'
+  labels. 54 of them pair neighbouring volumes of one series, 53
+  members of different series, 34 other members of one series, and 5
+  a volume and a pack holding it. The solver finds long runs between
+  unrelated manga pages too, though no pair of different series
+  reaches the volume rule's highest negative.
+- The misnamed chapters' labels against the volume their names give
+  (c28 against v03, and so on) are positives. The pre-registration
+  shows no positive to the owner, so these were never shown and stay
+  positives. There are 14 such pairs: each chapter against the volume
+  its name gives, in every edition, and against each pack holding
+  that volume but not the one the chapter is in. All 14 score C 0.2
+  or less. Only negatives set a bar, so they cannot lift one. They
+  lower the dev positive shares by up to 14 pairs, and an extra
+  positive can only make P1 and P2 easier to pass.
+
+**Omnibus.** `is_omnibus_name` marks all 28 dev omnibus members and no
+other member.
+
+**The lookup on dev**, on the manifest after the round, with the
+figures from before it in brackets:
+
+- P1 fails: 867 of 908 queries with a positive have their best
+  positive in their top 3 (865 of 906).
+- P2 holds: a member holding the chapter leads 543 of 556 chapter
+  queries, 97.7% (538 of 554, 97.1%). On chapters of 8 or more slots
+  the figures are the same.
+- Before the round, the best positive leads 841 of the 906 queries
+  with a positive. Over every vote, their median margin is 0.68, and 44
+  have a margin of 0 or below: their best negative got at least as many
+  votes as their best positive (the fingerprint run's dev `lookup.txt`).
+
+**An exploratory line: chapter in volume. Not pre-registered.** The
+owner's ruling added it after the dev scores and before any held-out
+score. It changes no pre-registered verdict: the chapter rule still
+fails, and chapter matches still start as suggestions only. Its result
+informs PR 5's design only.
+
+- Its pairs are the chapter rule's pairs whose A is a manga chapter (a
+  `Kind::Chapter` of at least 8 slots) and whose B is a volume, an
+  omnibus or a pack, of any edition. Chapters against chapters, and
+  the comics, are left out. That is because the chapter rule's highest
+  negative, C 0.8667, is two chapters (above), and against a volume,
+  an omnibus or a pack a chapter's highest negative is far lower
+  (below).
+- Its bar, on C, is its highest dev negative plus the pre-registered
+  0.15. That negative is Kobayashi's fan `v4 c32` against the raw v05
+  (`ChapterNotIn`), at C 0.4602, so the bar is 0.6102. Its exact value
+  is `chapter_in_volume_exploratory` in `bars.json`.
+- 2,129 of its 2,642 dev positives clear it.
+- On held-out, fixed now:
+  - each chapter-in-volume negative at or above the line is a failure;
+  - each unlabelled chapter-in-volume pair at or above it is shown to
+    the owner, and a "different" or "can't tell" verdict on it is a
+    failure;
+  - the positives clearing it are reported.
+
+### Held out: Go-Toubun, Bocchi, Zelda, Bisque Doll and the comics pair
+
+The held-out series were scored against the bars frozen in
+`bars.json` three times: before the owner's one round of verdicts,
+after it, and again after three of its pairs were asked a second time.
+The figures below are the last run's, except those given as from
+before the round. Before reading any pair, each run checked two things:
+that the bars compiled in are the ones HEAD commits, and that
+exactly one commit touches `bars.json`, the one that froze the bars,
+committed at 2026-11-16 14:21:08 UTC on the branch before its squash
+merge. The first run's log opens at 2026-11-16 15:23:17 UTC, after that
+time. Nothing below changes a bar.
+
+**What was scored.** Held out scored 3,521 pairs: the 2,822 explicit
+pairs, 653 of which the lookup's leaders named as well, and 699 more
+that only the leaders named (the held-out run's `rules.txt`). Its
+members were fingerprinted in the one run that read all 1,905 ("Dev"
+above).
+
+**How the verdicts were given.** The run showed 23 pairs. 7 of them
+could change a result. The other 16 were labelled negatives at 0.50 or
+more, below every bar and the line. The owner judged all 23 on
+2026-11-17.
+
+- Before answering, the owner asked what to answer when some lined-up
+  pages are the same and some are not. The guidance given:
+  - judge the whole of A on its story pages, not each lined-up pair;
+  - pages a scanlator added (credits, recruitment, notes) and blank
+    pages count neither way;
+  - a page matched in the B pages shown either side counts as matched;
+  - answer "same" or "inside" only if every story page of A is the same
+    drawing in B, and otherwise "different" or "not inside";
+  - answer "can't tell" when unsure.
+- The owner answered eight pairs "mostly the same": Bisque Doll fan
+  `c015.1` against v02, fan `c072` against v09 in two editions, fan
+  `c090.5` against v12 in two editions, Go-Toubun fan `c000` against
+  fan `c001`, Invincible #13 against v03, and Zelda's EN v07 against
+  the raw pack `v06-07`. One
+  question, covering all eight, asked which answer that meant. The
+  owner chose "same" or "inside": every story page of A matches a page
+  in B, and what differs is only added pages (scanlator credits, ads,
+  blank pages) or translation, lettering or colour.
+- The two `c072` pairs and `c000` against `c001` were then asked
+  again, one by one, with the evidence beside them. Invincible #13
+  against v03 was not asked again.
+  - The two pairs of fan `c072` against v09 came with three facts:
+    v10's contents page lists chapter 72; `c072` scores C 0.91 against
+    v10; and 17 of its 22 slots paired against v09. The owner kept
+    "inside".
+  - On Go-Toubun fan `c000` against fan `c001`, the owner said:
+
+    > oh I think this is actually because c000 is the "one shot" and
+    > was essentially remade for c001
+
+    A remade one-shot is not the same drawings, so the pair is recorded
+    as "different" and keeps its names' label, `ChapterNotIn`.
+- The verdicts: 7 "same" or "inside", 16 "different" or "not inside",
+  and no "can't tell".
+
+**Relabels: 3 on held-out.**
+
+- Bisque Doll fan `c072` against v09, in two editions: `ChapterNotIn`
+  to `ChapterIn`.
+- Invincible #13 against v03: `NotInCollected` to `InCollected`.
+- Three unlabelled pairs took their first label, `ChapterIn`, and are
+  not relabels: fan `c015.1` against v02, and fan `c090.5` against v12
+  in two editions.
+- Zelda's EN v07, judged inside the raw pack `v06-07`, kept `InPack`.
+
+Two verdicts contradict the manifest's truth:
+
+- The verdicts put fan `c072` inside v09 in both editions. The
+  manifest, from v10's owner-confirmed contents page, places it in v10,
+  so it now holds `c072` inside both v09 and v10.
+- The verdict puts Invincible #13 inside v03, whose owner-confirmed
+  indicia list issues #9–12.
+
+**The rules on held-out**, after the round:
+
+| Rule | Bar | Positives | Negatives | Failures | Positives at or above the bar | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| Volume, on V | 0.9147 | 103 | 3,380 | 2 | 88 | fails |
+| Chapter, on C, A a chapter | none | 790 | 1,982 | none | none | no bar, not tested |
+| Pack, on C | 0.4957 | 18 | 34 | 0 | 18 | passes |
+
+- **The volume rule fails.** Both failures are pairs of Bisque Doll fan
+  chapters labelled `ChapterNotIn` by their names, and the owner judged
+  both different:
+  - `c023.5` against `c055.5`: 12 pages and 12 slots each, 12 slots
+    paired, all 12 in long runs, V 1.0000;
+  - `c063.5` against `c071.5`: 13 pages and 13 slots each, 13 slots
+    paired, all 13 in long runs, V 1.0000.
+- No relabel changed the volume rule's result. As pre-registered: "If
+  the volume rule fails, nothing is automatic, and the result goes back
+  to the owner before PR 2."
+- The volume positives clearing the bar, by sub-class: colour, 69 of
+  84; raw against EN, 19 of 19.
+- **The pack rule passes**, with no relabel. Its highest negative is
+  0.1457, Zelda's raw v08 against the raw pack `v06-07`.
+- **The chapter rule has no bar, so it is not tested on held-out.** Its
+  highest held-out negative is the volume rule's first failure, at C
+  1.0000. Dev's failure still means chapter matches start as
+  suggestions only.
+
+**The comics, reported descriptively.** With no frozen chapter bar,
+issues are suggestions only whatever the comics score.
+
+- 63 pairs have an issue as A: 13 positives and 50 negatives after the
+  round.
+- Before the round the highest negative was Invincible #13 against v03,
+  at C 0.9583. It was judged inside.
+- The highest negative is now 0.1333, and all 13 positives score above
+  it.
+
+**The exploratory line: chapter in volume. Exploratory, not
+pre-registered.**
+
+- Before the round, 5 pairs failed its line of 0.6102:
+  - fan `c072` against v09, in two editions, `ChapterNotIn`, C 0.6818
+    each. `c072` has 22 pages and 22 slots. The Semi-Colored v09 has 195
+    pages and 198 slots, and the other v09 194 pages and 196 slots.
+    Against each, 17 slots paired and 15 fell in long runs.
+  - three unlabelled pairs awaiting a verdict.
+- All 5 were judged inside. The line passes after 2 relabels, the two
+  `c072` pairs.
+- 787 of its 790 positives clear it, and its highest negative is now
+  0.2692.
+
+**The lookup on held-out**, on the manifest after the round, with the
+figures from before it in brackets:
+
+- P1 fails: 436 of 440 queries with a positive have their best positive
+  in their top 3 (433 of 437).
+- P2 holds: a member holding the chapter leads 309 of 314 chapter
+  queries, 98.4% (308 of 312, 98.7%). On chapters of 8 or more slots it
+  is 307 of 312, 98.4% (306 of 310, 98.7%).
+- Before the round, the best positive leads 429 of the 437 queries
+  with a positive. The held-out run reads only the 10 leaders the
+  fingerprint run's `leaders.json` keeps for each member. Over those,
+  their median margin is 0.70, and 5 have a margin of 0 or below (the
+  held-out run's `lookup.txt`).
+
+**Omnibus.** The held-out series hold no omnibus member, and
+`is_omnibus_name` marks none of their members.
+
+### On the NAS
+
+`nas_timing` ran on the NAS in a container of the deployed taiyaku
+image, with the library share mounted read-only and the test at
+`nice 19`. Each run timed the registered sample twice: on all 8 cores,
+then with `RAYON_NUM_THREADS=4`. The sample is 26 members and 2.85 GB,
+and every run found and fingerprinted all 26.
+
+**The quiet run is the result.** It ran on 2026-11-16 from 15:16:58 to
+15:19:15 UTC. No Forgejo Actions job was running when it began, and
+both qBittorrent containers were paused for the run, as the owner
+approved. Before the run, the sample's own pages were advised out of
+the page cache with `dd iflag=nocache count=0`, and no other cache was
+touched. `fincore` then showed 0.00% of the sample cached, both through
+shfs and on the disks behind it. The 1-minute load was 2.51 when the
+all-cores pass began and 4.00 when the 4-thread pass began, and no
+member finished with it above 4.00. The first member read at
+106.71 MB/s, so no disk spin-up shows in it.
+
+**The busy run** ran earlier the same day, from 13:39 to 13:48 UTC.
+`fincore` showed 0.0% of the sample cached before it. It ran beside
+both qBittorrents, and when it ended a `rustc` build was running too.
+Its 1-minute load was 12.62 when the
+all-cores pass began and 32.32 when the 4-thread pass began, and it
+peaked at 34.15. The contention shows in its figures. `Oshinoko v01-03`
+took 133.3 s to digest and 115.2 s to re-read, against 9.6 s and 0.6 s
+in the quiet run. Its 8-thread kernel (17.1 s) was slower than its
+4-thread one (12.6 s), with the test's `nice 19` threads competing with
+that load for the 8 cores.
+
+The extrapolation follows "The cost on the NAS." above:
+
+| | Quiet | Busy |
+| --- | --- | --- |
+| Cold read rate (median, first member left out) | 85.01 MB/s | 15.48 MB/s |
+| Kernel, all cores (comparisons/s) | 1,868,848,727 | 584,595,585 |
+| Kernel, 4 threads (comparisons/s) | 1,147,822,786 | 793,234,094 |
+| Read | 6.73 h | 36.98 h |
+| Fingerprint, 4 threads | 14.66 h | 18.42 h |
+| Fingerprint, all cores | 10.27 h | 17.04 h |
+| Lookup, 4 threads | 0.78 h | 1.13 h |
+| Lookup, all cores | 0.48 h | 1.53 h |
+| **First pass, 4 threads** | **22.18 h** | **56.53 h** |
+| First pass, all cores | 17.48 h | 55.55 h |
+
+These are the quiet run's rates per class. Slots per MB come from the
+test library's fingerprint run, and the lookup squares the NAS's
+1,795,463 slots:
+
+| Class | Fingerprint s/GB, all cores | Fingerprint s/GB, 4 threads | Slots per MB |
+| --- | --- | --- | --- |
+| volume | 9.21 | 15.78 | 0.7181 |
+| raw | 6.71 | 11.93 | 2.2718 |
+| chapter | 14.60 | 17.22 | 1.9788 |
+| issue | 34.98 | 43.64 | 0.9594 |
+| collected | 13.59 | 21.74 | 0.8340 |
+
+The quiet run, per NAS directory. A directory marked * has no class of
+its own and takes the one shown. Ecchi and Extras sit under `Manga/`.
+Rows are rounded; the totals are summed before rounding.
+
+| Library | Directory | GB | Class | Read h | Fingerprint h, 4 threads | Fingerprint h, all cores |
+| --- | --- | --- | --- | --- | --- | --- |
+| Manga | Chapters | 24.8 | chapter | 0.08 | 0.12 | 0.10 |
+| Manga | Ecchi* | 65.0 | volume | 0.21 | 0.29 | 0.17 |
+| Manga | Extras* | 5.0 | volume | 0.02 | 0.02 | 0.01 |
+| Manga | Raw | 36.9 | raw | 0.12 | 0.12 | 0.07 |
+| Manga | Volumes | 578.4 | volume | 1.89 | 2.54 | 1.48 |
+| Comics | Collected | 770.6 | collected | 2.52 | 4.65 | 2.91 |
+| Comics | Graphic Novels* | 17.1 | collected | 0.06 | 0.10 | 0.06 |
+| Comics | Issues | 562.5 | issue | 1.84 | 6.82 | 5.47 |
+| Comics | Webcomics* | 0.3 | collected | 0.00 | 0.00 | 0.00 |
+
+Each library's read and fingerprint hours come to:
+
+- **Manga** (710.2 GB): 5.40 h at 4 threads and 4.15 h on all cores.
+- **Comics** (1,350.6 GB): 15.99 h at 4 threads and 12.86 h on all
+  cores.
+
+The lookup over both libraries adds 0.78 h at 4 threads and 0.48 h on
+all cores.
+
+**One day.** Measured quietly, the first pass takes 22.18 h at
+4 threads, under 24 h, so the pre-registered condition for asking the
+owner before PR 2 is not met. On all 8 cores it takes 17.48 h. The busy
+run puts the same pass at 56.53 h at 4 threads. The quiet figure is the
+NAS with its downloads paused and no CI job when it began. The busy
+figure is the NAS with its downloads running and, by the run's end, a
+build.
+
+**Beside the method, descriptive only.** Neither figure in this
+paragraph replaces those above. The quiet run's size-weighted read rate
+is all bytes over all digest time, the first member included. It is
+97.85 MB/s, which would make the read 5.85 h rather than 6.73 h. The
+method also leaves out the re-read, when `read_edition` unpacks the
+pages again after the digest. In the quiet run that would add 0.68 h at
+4 threads and 0.67 h on all cores.
+
+### What it decides
+
+**Nothing goes automatic.** The volume rule fails on held-out, and the
+pre-registration says what follows: "If the volume rule fails, nothing
+is automatic, and the result goes back to the owner before PR 2."
+
+- **The scores** are V and C as pre-registered, unchanged since.
+- **The volume rule, on V,** froze its bar at 0.9147 on dev and fails
+  on held-out ("Held out" above). Both failures pair two Bisque Doll fan
+  extras, `c023.5` with `c055.5` and `c063.5` with `c071.5`, each at
+  V 1.0000, and the owner judged both different ("Held out" above).
+- **Chapters cannot go automatic.** The chapter rule has no bar: its
+  highest dev negative, C 0.8667, leaves no room below 1.0 for the 0.15
+  gap ("Dev" above). Chapter matches start as suggestions only, and
+  issues with them.
+- **The pack rule, on C,** froze its bar at 0.4957 and passes on
+  held-out at that bar with no relabel, all 18 of its positives clearing
+  it ("Held out" above). Under the volume rule's failure it makes
+  nothing automatic. Whether pack cuts go automatic on that bar once a
+  volume rule passes is the owner's to decide (O340).
+- **The comics** have no frozen chapter bar to be judged by, so they are
+  reported only, and issues are suggestions only ("Held out" above).
+- **The exploratory chapter-in-volume line** passes on held-out after 2
+  relabels ("Held out" above). It is exploratory, not pre-registered,
+  and informs PR 5's design only.
+
+**The owner's ruling (2026-11-17).** PR 2, fingerprints in the server,
+goes next, and makes no match. Before PR 3, a short new measurement
+tests a volume rule limited to volume-against-volume pairs, which is all
+PR 3 compares. Its bar is frozen on the series already scored, and it
+is tested on series never scored. Until a rule passes, every content
+match is a suggestion. Both held-out failures pair two chapters, and
+such a rule leaves them out. O340 holds the measurement.
+
+**How many candidates PR 3 should align.** P1 fails on both splits, and
+P2 holds:
+
+- The top 3 hold the best positive for 867 of 908 dev queries and 436
+  of 440 held-out ones ("Dev" and "Held out" above), so 3 candidates per
+  member miss some.
+- Before any round, 23 dev best positives got no vote at all (the
+  fingerprint run's dev `lookup.txt`, over every vote). On held-out, 1
+  best positive is not among the 10 leaders kept for its member (the
+  held-out run's `lookup.txt`). That member, Zelda's raw pack
+  `v06-07`, voted for only 4 members, so its best positive got no vote
+  either (the fingerprint run's `leaders.json`). No depth reaches those,
+  so the lookup alone cannot supply every candidate.
+- A member holding the chapter leads 97.7% of dev chapter queries and
+  98.4% of held-out ones ("Dev" and "Held out" above): for a chapter,
+  the first candidate is nearly always a volume or pack holding it.
+
+**Names in PR 3 (the owner, 2026-11-16).** PR 3 examines names as a
+penalty across series, or to rank candidates, and never as a boost
+within one series, because a same-series pair sets the volume bar.
+Kaguya's fan extras `v20 c201.5` and `v22 c221.5`, two chapters of one
+series, are dev's highest volume-rule negative at V 0.7647, which sets
+the volume bar, and its highest chapter-rule negative at C 0.8667 ("Dev"
+above).
+
+**The verdict, a lead for PR 3.** Every dev volume-rule negative
+pairing two different series at V 0.5 or more, 54 of them, has the
+verdict Fragmented, which V ignores (the dev run's `scores.tsv`). A gate
+on Fragmented would not do: 33 of the 201 dev volume positives are
+Fragmented too, as are 39 of the 103 held-out ones, and both held-out
+failures are Sound (the dev and held-out runs' `scores.tsv`). It would
+drop true positives and would not have caught the failures.
+
+**The cost on the NAS.** Measured quietly, a first pass takes 22.18 h
+at 4 threads and 17.48 h on all 8 cores, and the busy run puts it at
+56.53 h at 4 threads ("On the NAS" above). The quiet figure is under a
+day, so the cost alone would not send the result back to the owner
+before PR 2. The volume rule's failure did, and the owner has ruled.
+
+**The proof of order**, the test the pre-registration's "The proof of
+order" sets. The fingerprint run's log opens at 2026-11-16
+12:20:06 UTC, after the pre-registration's last commit, at 12:10:45 UTC
+(committed on the branch before its squash merge), and its members line
+reads `cache hits: 0`. `bars.json` was committed at 14:21:08 UTC, before
+the first held-out score at 15:23:17 UTC ("Held out" above). Nothing in
+the test library changed after the comics were copied in, and its
+`library.db` is unchanged.

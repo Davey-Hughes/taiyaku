@@ -134,10 +134,10 @@ doing when touching `PageRange`, `Run::paired`, or arithmetic on page and slot
 indices, and not otherwise. The script says which profile the corpus job used,
 right above the run, so a reader does not have to remember this page.
 
-The two experiment modules are still not filtered out of the test target: a
+The experiment modules are still not filtered out of the test target: a
 one-off measurement that silently stops being *compiled* is the failure their own
 assertions exist to prevent. What changed is the gate's environment, not their
-gating — each module's header names the release-profile command it is meant to
+gating — each module's header names the command it is meant to
 be run with.
 
 **CI stays in debug, and that was measured rather than assumed.** The obvious
@@ -203,14 +203,13 @@ failed it.
 `slow-timeout = { period = "30s", terminate-after = 2 }` marks a test `SLOW`
 at 30 s and kills it at 60 s, both sized off a bisection of the whole
 workspace rather than guessed — nothing in 639 tests exceeds 0.75 s, so 30 s
-is 40x that and 60 s is 80x. An override exempts the tests of **nine** of the
-fourteen files `--ignore-filename-regex` exempts from both coverage steps above:
-its filter names tests, not files, and reaches every one of them but
-`borrow_frequency.rs` and the four `test_support.rs` (read from the filter
-against the files on 2026-11-06; this said twelve, the regex's whole count on
-2026-08-18) — the
-fifteen standing corpus checks, three `corpus::tests::` helpers that only
-assert how `TAIYAKU_CORPUS` is validated and touch no material, and the
+is 40x that and 60 s is 80x. An override exempts the tests in every file
+`--ignore-filename-regex` exempts from both coverage steps above except
+`borrow_frequency.rs` and the four `test_support.rs`: its filter names tests,
+not files (read from the filter against the files on 2026-11-16; this said
+nine of fourteen on 2026-11-06, and twelve, the regex's whole count, on
+2026-08-18) — the standing corpus checks, three `corpus::tests::` helpers that
+only assert how `TAIYAKU_CORPUS` is validated and touch no material, and the
 one-off experiment modules — at a 60 s `SLOW` mark with no `terminate-after`,
 which is what makes a `slow-timeout` advisory rather than a kill:
 `geometry_experiment` in the debug profile against a real corpus runs 40+
@@ -525,7 +524,7 @@ measured 2026-08-14: 72.22% regions on `taiyaku-serve/src/truth.rs` and
 **25.00%** instantiations on `stump/cache.rs`), so they would need their own
 numbers for no signal the line floor does not already give.
 
-The Rust figure is the workspace total with the fourteen files below ignored;
+The Rust figure is the workspace total with the files below ignored;
 without them it read **71.46%** lines on 2026-08-14, when eleven were ignored,
 and the difference is not work anyone did
 — it is code nobody intends to run in CI, which is the whole reason the
@@ -601,6 +600,7 @@ from the day it landed until this one. Here they are, with a reason each:
 | `taiyaku-cli/src/model_experiment.rs` | the same: a gated one-off measurement, scoring phase 3's model candidate against the same 45 pages for a head-to-head table a person reads — asserts only that it measured something, never which detector wins |
 | `taiyaku-cli/src/band_sweep.rs` | the same: a gated one-off measurement, scoring eight component-size bands over those 45 pages so `BAND` is read off a table rather than argued for |
 | `taiyaku-cli/src/book_experiment.rs` | the same: a gated one-off measurement, aligning whole books at sixteen settings and scoring each against hand-made keys, for the tables in `docs/notes.md` |
+| `taiyaku-cli/src/match_experiment.rs` and the files under `match_experiment/` | the same: a gated one-off measurement, scoring whether page fingerprints can match manga and comics editions by content, for the section in `docs/notes.md`; its regex entry, `match_experiment[/a-z_]*`, matches the submodule files too, so one row covers them all |
 | `taiyaku-cli/src/borrow_frequency.rs` | the same: a gated one-off measurement, walking the corpus to count how often a reader meets a gap and who lends the page — added to the regex in `ca20d05` and to this table on 2026-08-14, having matched in between without being listed |
 | `taiyaku-cli/src/corpus.rs` | cannot execute without `TAIYAKU_CORPUS`, which CI does not have |
 | `taiyaku-serve/src/corpus.rs` | the same |
@@ -621,8 +621,10 @@ files without the regex, 43 with it, and the eleven that disappear are exactly
 the eleven above.** *The table has since grown to fourteen — `taiyaku-library`'s
 `corpus.rs` on 2026-08-18, `taiyaku-read`'s `test_support.rs` with O104 and
 `taiyaku-library`'s with the overlapping-libraries PR 3 — then to sixteen with
-the books work's `taiyaku-read` `corpus.rs` and `book_experiment.rs`, and
-the 2026-08-14 figures in this paragraph are left as measured.* The workspace reads **71.46%** lines without the regex
+the books work's `taiyaku-read` `corpus.rs` and `book_experiment.rs`, then to
+seventeen with content matching's row, the one row that names more than one
+file (`match_experiment.rs` and every file under `match_experiment/`). The
+2026-08-14 figures in this paragraph are left as measured.* The workspace reads **71.46%** lines without the regex
 (7,573 of 10,598) against **93.95%** with it (6,735 of 7,169), both
 re-measured the same way.
 
@@ -630,7 +632,7 @@ Both pairs of counts are roughly 40% of what this paragraph carried on
 2026-08-12, and no test was deleted: 2026-08-14 is the day the `#[cfg(test)]`
 modules moved into their own files and left the report. The *gap* between the two
 figures widened from 8.91 points to 22.68, which is the same effect read from
-the other side — the nine ignored files are nearly all test-driven measurement
+the other side — the ignored files are nearly all test-driven measurement
 modules, so removing test code from the report left them looking far worse than
 the code that stays.
 
@@ -653,8 +655,8 @@ for, arriving in the one document that explains that script. **A per-site list
 is checkable; a count is not** — and the fourth drift shows the converse edge:
 the list is only authoritative if something puts new entries *into* it, which is
 why the diff below is worth running when a file joins the regex and not only
-when a crate joins the workspace. The sixteen rows above are the list; every
-number
+when a crate joins the workspace. The seventeen rows above are the list, one of
+them naming every file under `match_experiment/`; every number
 in this paragraph is derived from them and was re-measured, not carried
 forward.
 
@@ -662,7 +664,7 @@ forward.
 used to end "re-run that diff when adding a crate", and asking a reader to
 remember a thing is the weakest form of a check there is. The per-file floor
 script now asserts the file count itself — 82 on 2026-09-13, 40 required — so a
-regex that quietly swallows more than these sixteen fails the job instead of waiting to
+regex that quietly swallows far more files than these rows name fails the job instead of waiting to
 be noticed. Only *half*, because the automated half sees the count and not the
 names: a regex that dropped one file while a new crate added one would net to
 zero and pass. So the diff is still worth running when adding a crate, and it is
@@ -671,7 +673,7 @@ and silent growth:
 
     env -u TAIYAKU_CORPUS cargo llvm-cov --workspace --all-features --summary-only > /tmp/all.txt
     env -u TAIYAKU_CORPUS cargo llvm-cov --workspace --all-features --summary-only \
-      --ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' > /tmp/gated.txt
+      --ignore-filename-regex '(band_sweep|book_experiment|borrow_frequency|geometry_experiment|match_experiment[/a-z_]*|model_experiment|region_experiment|truth_population|score_corpus|/corpus|test_support)\.rs$' > /tmp/gated.txt
     diff <(awk '{print $1}' /tmp/all.txt) <(awk '{print $1}' /tmp/gated.txt)
 
 Both commands above run the tests. To diff the file lists alone against profile
@@ -2105,7 +2107,7 @@ fixes it by making the scratch copy honour the same file `git` already does.
 **`env -u TAIYAKU_CORPUS`, for the reason "Two profiles, and the gate that
 took an hour" above already gives `cargo test`.** `cargo-mutants` rebuilds and
 reruns the test binary once per mutant, so leaving the variable set would run
-the standing corpus checks and the two one-off measurement modules —
+the standing corpus checks and the one-off measurement modules gated on it —
 `geometry_experiment` among them — on every mutant a run tries, rather than
 once. The baseline in `docs/notes.md` was taken with the variable stripped.
 

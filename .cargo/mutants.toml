@@ -58,6 +58,8 @@ exclude_globs = [
     "**/band_sweep.rs",
     "**/borrow_frequency.rs",
     "**/geometry_experiment.rs",
+    "**/match_experiment.rs",
+    "**/match_experiment/**",
     "**/model_experiment.rs",
     "**/region_experiment.rs",
     "**/truth_population.rs",
