@@ -203,7 +203,7 @@ describe('the Series page’s on-select panel while its Title field is edited (O
     await real(() => mouse.moveTo(0, 0))
 
     await real(() => userEvent.keyboard('{Tab}'))
-    const next = tiles()[1].querySelector(':scope > a')
+    const next = tiles()[1].querySelector(':scope > .tile-body > a')
     expect({
       focused: document.activeElement === next,
       editors: editorIn(tiles()),

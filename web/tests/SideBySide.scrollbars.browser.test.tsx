@@ -191,9 +191,10 @@ const PAIRS = [
 ] as const
 
 /**
- * Where the scrollbar is: `main`, at a desktop width, and the document under
- * 900px, where `main` does not scroll (`shell.css`). A root font size of
- * 12px brings the breakpoint, which is in rem, under 900px.
+ * Where the scrollbar is: `main` beside the sidebar, and the document in the
+ * phone layout, where `main` does not scroll (`shell.css`). A root font size
+ * of 12px brings the breakpoint, which is in rem, into the phone layout's
+ * widths.
  */
 const SCROLLERS = [
   { scroller: 'main', rootFont: '', from: 1300 },

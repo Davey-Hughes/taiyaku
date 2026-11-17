@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { PHONE_LAYOUT } from '../src/phoneLayout'
 import {
   requestedTileEdge,
-  STRIP_BREAKPOINT_PX,
   STRIP_TILE_PX,
   stripTileEdge,
   TILE_LADDER,
@@ -46,13 +46,13 @@ describe('requestedTileEdge', () => {
 describe('stripTileEdge', () => {
   const view = (matches: boolean, devicePixelRatio: number) => ({
     matchMedia: (query: string) => {
-      expect(query).toBe(`(width < ${STRIP_BREAKPOINT_PX}px)`)
+      expect(query).toBe(PHONE_LAYOUT)
       return { matches }
     },
     devicePixelRatio,
   })
 
-  it('asks for the narrow tile below the breakpoint and the wide one above', () => {
+  it('asks for the narrow tile in the phone layout and the wide one outside it', () => {
     expect(stripTileEdge(view(true, 3))).toBe(
       requestedTileEdge(STRIP_TILE_PX.narrow, 3),
     )

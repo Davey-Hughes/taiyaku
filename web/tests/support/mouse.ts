@@ -32,20 +32,23 @@ const pointer: { x: number; y: number; down: boolean; by: Kind } = {
 let clock: { since: number; ms: number } | undefined
 
 async function send(
-  type: 'mouseMoved' | 'mousePressed' | 'mouseReleased',
+  type: 'mouseMoved' | 'mousePressed' | 'mouseReleased' | 'mouseWheel',
   kind: Kind,
+  deltaY = 0,
 ) {
   const frame = window.frameElement
   if (!frame) throw new Error('this file is not running in a frame')
   const box = frame.getBoundingClientRect()
+  const pressing = type === 'mousePressed' || type === 'mouseReleased'
   await cdp().send('Input.dispatchMouseEvent', {
     type,
     x: box.left + (pointer.x * box.width) / window.innerWidth,
     y: box.top + (pointer.y * box.height) / window.innerHeight,
-    button: type === 'mouseMoved' && !pointer.down ? 'none' : 'left',
+    button: pressing || pointer.down ? 'left' : 'none',
     buttons: pointer.down ? 1 : 0,
-    clickCount: type === 'mouseMoved' ? 0 : 1,
+    clickCount: pressing ? 1 : 0,
     pointerType: kind,
+    ...(type === 'mouseWheel' && { deltaX: 0, deltaY }),
     ...(clock && { timestamp: clock.since + clock.ms / 1000 }),
   })
 }
@@ -66,6 +69,10 @@ export const mouse = {
   async release() {
     pointer.down = false
     await send('mouseReleased', 'mouse')
+  },
+  /** Turns the wheel `deltaY` px down, where the pointer is. */
+  async wheel(deltaY: number) {
+    await send('mouseWheel', 'mouse', deltaY)
   },
   /**
    * From `from` pixels past `x` to `to` pixels past it, level at `y`, in

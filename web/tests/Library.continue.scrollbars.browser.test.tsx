@@ -3,6 +3,7 @@ import * as aboutApi from '../src/about'
 // **Required**, the same reason `Config.browser.test.tsx` gives.
 import '../src/index.css'
 import * as library from '../src/library'
+import { SIDEBAR_LAYOUT } from '../src/phoneLayout'
 import { ABOUT } from './support/about'
 import { settleUntil } from './support/async'
 import { inProgress, offGrid, seriesCard } from './support/continueRow'
@@ -11,9 +12,9 @@ import { homePage } from './support/homePage'
 /**
  * The Continue row over the grid's columns where a scrollbar takes width
  * (spec O288 item 2): this file runs only in the Chromium launch that draws
- * classic scrollbars (`vite.config.ts`'s `SHOWN_SCROLLBARS`). From 900 px
- * up `main` scrolls, below it the document does, and either narrows the
- * grid and the row alike.
+ * classic scrollbars (`vite.config.ts`'s `SHOWN_SCROLLBARS`). Beside the
+ * sidebar `main` scrolls, in the phone layout the document does, and either
+ * narrows the grid and the row alike.
  */
 
 // The build's label at the sidebar's foot asks for the build; answered here.
@@ -67,11 +68,11 @@ describe('the Continue row over the grid with a scrollbar drawn (O288 item 2)', 
       )
       await document.fonts.ready
       const main = host.querySelector('main') as HTMLElement
-      const scroller = width >= 900 ? main : document.documentElement
-      const bar =
-        width >= 900
-          ? main.offsetWidth - main.clientWidth
-          : window.innerWidth - document.documentElement.clientWidth
+      const sidebar = matchMedia(SIDEBAR_LAYOUT).matches
+      const scroller = sidebar ? main : document.documentElement
+      const bar = sidebar
+        ? main.offsetWidth - main.clientWidth
+        : window.innerWidth - document.documentElement.clientWidth
       // The fixture tells: what scrolls at this width scrolls, and its
       // scrollbar takes width.
       expect({

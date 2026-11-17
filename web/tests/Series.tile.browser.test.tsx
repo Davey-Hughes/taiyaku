@@ -114,7 +114,9 @@ const rect = (el: Element | null) => {
 const coverOf = (tile: Element) => rect(tile.querySelector('.cover-box'))
 
 const iOf = (tile: Element) => {
-  const i = tile.querySelector<HTMLButtonElement>(':scope > .panel-open')
+  const i = tile.querySelector<HTMLButtonElement>(
+    ':scope > .tile-body > .panel-open',
+  )
   if (i === null) throw new Error('no i on this tile')
   return i
 }
@@ -151,9 +153,13 @@ describe('a volume tile’s controls on its cover (O283)', () => {
       onTestFinished(pointerRulesAs(device))
       const { tiles } = await drawn({ width, coverSize, panel: 'button' })
       // The unreadable tile draws its cover in a box, not a link.
-      expect(tiles[0].querySelector(':scope > a .cover-box')).not.toBeNull()
       expect(
-        tiles[1].querySelector(':scope > .tile-unreadable .cover-box'),
+        tiles[0].querySelector(':scope > .tile-body > a .cover-box'),
+      ).not.toBeNull()
+      expect(
+        tiles[1].querySelector(
+          ':scope > .tile-body > .tile-unreadable .cover-box',
+        ),
       ).not.toBeNull()
       for (const tile of tiles.slice(0, 2)) {
         const i = rect(iOf(tile))
@@ -217,7 +223,9 @@ describe('a volume tile’s controls on its cover (O283)', () => {
         panel,
       })
       expect(tiles[0].querySelector('.panel-open')).toBeNull()
-      const get = tiles[0].querySelector<HTMLElement>(':scope > a.get')
+      const get = tiles[0].querySelector<HTMLElement>(
+        ':scope > .tile-body > a.get',
+      )
       if (get === null) throw new Error('no download on the corner')
       const box = rect(get)
       inBottomRight(box, coverOf(tiles[0]))
@@ -231,7 +239,9 @@ describe('a volume tile’s controls on its cover (O283)', () => {
         // Shown by i's rule: waiting at rest, there on hover.
         expect(settled(get).opacity).toBe('0')
         await real(() =>
-          userEvent.hover(tiles[0].querySelector(':scope > a') as Element),
+          userEvent.hover(
+            tiles[0].querySelector(':scope > .tile-body > a') as Element,
+          ),
         )
         expect(settled(get).opacity).toBe('1')
       }
@@ -242,7 +252,9 @@ describe('a volume tile’s controls on its cover (O283)', () => {
     onTestFinished(pointerRulesAs('mouse'))
     const { tiles, heading } = await drawn({ width: 1280, panel: 'button' })
     const tile = tiles[0]
-    const link = tile.querySelector(':scope > a') as HTMLAnchorElement
+    const link = tile.querySelector(
+      ':scope > .tile-body > a',
+    ) as HTMLAnchorElement
     const i = iOf(tile)
 
     // Unseen and laid out: a press at its place lands on the cover's link.
@@ -284,15 +296,20 @@ describe('a volume tile’s controls on its cover (O283)', () => {
     const { tiles } = await drawn({ width: 1280, panel: 'button' })
     const boxes = () =>
       tiles.flatMap((tile) =>
-        [tile, tile.firstElementChild, tile.querySelector('.title')].map((el) =>
-          rect(el).toJSON(),
-        ),
+        [
+          tile,
+          tile.querySelector(':scope > .tile-body'),
+          tile.querySelector(':scope > .tile-body > :is(a, .tile-unreadable)'),
+          tile.querySelector('.title'),
+        ].map((el) => rect(el).toJSON()),
       )
     const i = iOf(tiles[0])
     expect(settled(i).opacity).toBe('0')
     const before = boxes()
     await real(() =>
-      userEvent.hover(tiles[0].querySelector(':scope > a') as Element),
+      userEvent.hover(
+        tiles[0].querySelector(':scope > .tile-body > a') as Element,
+      ),
     )
     expect(settled(i).opacity).toBe('1')
     expect(boxes()).toEqual(before)
@@ -339,7 +356,9 @@ describe('a volume tile’s controls on its cover (O283)', () => {
       onTestFinished(pointerRulesAs(device))
       const { tiles } = await drawn({ width: 1280, panel: 'button' })
       await real(() =>
-        userEvent.hover(tiles[0].querySelector(':scope > a') as Element),
+        userEvent.hover(
+          tiles[0].querySelector(':scope > .tile-body > a') as Element,
+        ),
       )
       await real(() => userEvent.click(iOf(tiles[0])))
       await settleUntil(

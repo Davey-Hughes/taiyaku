@@ -364,9 +364,9 @@ export function Filmstrip({
   // is trying to remove doubled.
   //
   // **Once per mount, and not on resize.** `devicePixelRatio` changes when a
-  // window moves between monitors and the breakpoint changes when one is
-  // dragged across 900 px; re-reading either would refetch every tile in the
-  // window to sharpen a strip nobody is looking at mid-drag.
+  // window moves between monitors and the layout changes when one is dragged
+  // into or out of the phone layout; re-reading either would refetch every
+  // tile in the window to sharpen a strip nobody is looking at mid-drag.
   //
   // A mount is not a reading session: `Chrome` returns `null` while hidden, so
   // this strip unmounts on every chrome hide and reads the rung again on the
@@ -374,9 +374,9 @@ export function Filmstrip({
   // That costs nothing: the rung is a pure function of the viewport and the
   // density, so a re-read on an unchanged screen yields the same URLs and the
   // browser cache answers them. What it does mean is that a reader who hides
-  // the chrome, drags the window across 900 px and shows it again *does* get
-  // the right rung — the stale case this comment guards against is narrower
-  // than it looks, and is only ever within one showing of the bars.
+  // the chrome, drags the window out of the phone layout and shows it again
+  // *does* get the right rung — the stale case this comment guards against is
+  // narrower than it looks, and is only ever within one showing of the bars.
   const [tileEdge] = useState(() =>
     stripTileEdge(typeof window === 'undefined' ? undefined : window),
   )

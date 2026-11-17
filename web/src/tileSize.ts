@@ -10,6 +10,8 @@
  * about a tile being small and numerous where a page is large and single.
  */
 
+import { PHONE_LAYOUT } from './phoneLayout'
+
 /**
  * The long edges the server will make a tile at.
  *
@@ -23,18 +25,17 @@
 export const TILE_LADDER: readonly number[] = [160, 320, 480]
 
 /**
- * The viewport width below which the strip's tile is the shorter one, and the
- * two heights it takes — `styles/reader.css`'s `--strip-tile`.
+ * The two heights the strip's tile takes, the shorter in the phone layout
+ * (`phoneLayout.ts`) — `styles/reader.css`'s `--strip-tile`.
  *
  * **Restated here rather than read from the stylesheet**, because the answer
  * is needed during the strip's first render: reading it back from
  * `getComputedStyle` needs the rail to be in the document, which is one commit
  * too late — every tile would fetch at 160 and then again at its real rung.
- * `styles/reader.css.test.ts` pins the stylesheet against these two constants
+ * `styles/reader.css.test.ts` pins the stylesheet against these constants
  * so the restatement cannot drift, which is the same trade `pageSize.ts` does
  * not have to make because a page's box is measured rather than declared.
  */
-export const STRIP_BREAKPOINT_PX = 900
 export const STRIP_TILE_PX = { wide: 160, narrow: 96 } as const
 
 /**
@@ -108,7 +109,7 @@ export interface TileView {
  * to mean "the wide tile" rather than throw.
  */
 export function stripTileEdge(view: TileView | undefined): number {
-  const query = view?.matchMedia?.(`(width < ${STRIP_BREAKPOINT_PX}px)`)
+  const query = view?.matchMedia?.(PHONE_LAYOUT)
   const height =
     query?.matches === true ? STRIP_TILE_PX.narrow : STRIP_TILE_PX.wide
   return requestedTileEdge(height, view?.devicePixelRatio ?? 1)

@@ -7,10 +7,11 @@ import {
   useNavigate,
 } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { cdp, page } from 'vitest/browser'
+import { cdp, page, userEvent } from 'vitest/browser'
 import '../src/index.css'
 import * as library from '../src/library'
 import { Library } from '../src/Library'
+import { PHONE_LAYOUT } from '../src/phoneLayout'
 import { SEARCH_BOX_ID } from '../src/searchHits'
 import { Series } from '../src/Series'
 import { Shell } from '../src/Shell'
@@ -83,9 +84,13 @@ function locationProbe() {
   return <Probe />
 }
 
-/** The Library view and the series page, each in its shell, at one width. */
-async function at(path: string, width: number): Promise<HTMLElement> {
-  await page.viewport(width, 844)
+/** The Library view and the series page, each in its shell, at one size. */
+async function at(
+  path: string,
+  width: number,
+  height = 844,
+): Promise<HTMLElement> {
+  await page.viewport(width, height)
   let host: HTMLElement | undefined
   await act(async () => {
     host = mount(
@@ -231,6 +236,46 @@ describe('the search box, typed into fast — O223', () => {
     }
     expect(box.value).toBe('oshinoko')
     expect(urlQuery(host)).toBe('oshinoko')
+  })
+})
+
+/**
+ * **A turn into the phone layout and back** (O305) redraws the page around
+ * the box: a box drawn anew at the turn would drop the reader's focus, and
+ * on a phone the keyboard with it, mid-word.
+ */
+describe('the search box through a turn of the layout', () => {
+  it('keeps the search field’s focus and text through a turn by height', async () => {
+    const host = await at('/', 1280, 800)
+    const box = need<HTMLInputElement>(host, `#${SEARCH_BOX_ID}`)
+    await tap(box)
+    await act(async () => {
+      await userEvent.keyboard('oshi')
+    })
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    })
+    const held = () => ({
+      same: document.getElementById(SEARCH_BOX_ID) === box,
+      focused: document.activeElement === box,
+      text: box.value,
+    })
+    // The fixture tells: the click focused the box and the keys reached it.
+    expect(held()).toEqual({ same: true, focused: true, text: 'oshi' })
+    const turned = []
+    for (const height of [440, 800]) {
+      await act(async () => {
+        await page.viewport(1280, height)
+        await new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve))
+        })
+      })
+      turned.push({ phone: matchMedia(PHONE_LAYOUT).matches, ...held() })
+    }
+    expect(turned).toEqual([
+      { phone: true, same: true, focused: true, text: 'oshi' },
+      { phone: false, same: true, focused: true, text: 'oshi' },
+    ])
   })
 })
 

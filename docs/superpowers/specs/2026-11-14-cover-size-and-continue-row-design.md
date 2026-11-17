@@ -84,6 +84,9 @@ size** slider, on the home page's View menu and a series page's alike.
    *Since 2026-11-16 (O302) the columns below 900 px are
    `minmax(min(size, 100%), 1fr)`, so a list narrower than one cover lays
    one column at the list's width; see O302's row in `docs/status.md`.*
+   *Since 2026-11-16 (O305) the phone layout, where the covers fill the
+   row, holds below 900 px wide or below 500 px tall; see O305's row in
+   `docs/status.md`.*
 10. **What was stored carries over.** A stored `compact` becomes 104 px (its
     6.5rem tile) and `comfortable` the default 144 px; the next save stores
     the size and drops `density`. A stored size off the scale is drawn at the
@@ -124,6 +127,8 @@ size** slider, on the home page's View menu and a series page's alike.
 - Lining the heading up on phones: below the shell's 900 px breakpoint the
   sidebar is a drawer, so there is nothing to line up with. Everything else
   here applies at every width, the covers' layout as item 9 says.
+  *Since 2026-11-16 (O305) the phone layout, the drawer's, holds below
+  900 px wide or below 500 px tall; see O305's row in `docs/status.md`.*
 - A size per page, or one that follows the account across devices (my call):
   one size for every list, kept in the browser as `density` was.
 - A double tap on touch (my call): whatever the browser itself reports as a

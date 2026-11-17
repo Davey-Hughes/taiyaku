@@ -16,6 +16,7 @@ import '../src/index.css'
 import * as library from '../src/library'
 import { Library } from '../src/Library'
 import { Licence } from '../src/Licence'
+import { PHONE_LAYOUT, SIDEBAR_LAYOUT } from '../src/phoneLayout'
 import { SEARCH_BOX_ID } from '../src/searchHits'
 import { Series } from '../src/Series'
 import { Shell } from '../src/Shell'
@@ -35,6 +36,7 @@ import {
   pressArea,
 } from './support/pointer'
 import { rootFontAt } from './support/rootFont'
+import { lowered, SIDEBAR_HEIGHT } from './support/shortWindow'
 
 /**
  * The shell and the library's screens at a phone's width and a desktop's —
@@ -170,9 +172,13 @@ const SERIES_PAGE: {
   ),
 }
 
-/** Every screen inside the shell it lives in, at one window width. */
-async function at(path: string, width: number): Promise<HTMLElement> {
-  await page.viewport(width, 844)
+/** Every screen inside the shell it lives in, at one window size. */
+async function at(
+  path: string,
+  width: number,
+  height = 844,
+): Promise<HTMLElement> {
+  await page.viewport(width, height)
   let host: HTMLElement | undefined
   await act(async () => {
     host = mount(
@@ -725,7 +731,7 @@ async function clickWithMouse(el: Element) {
   })
 }
 
-/** The drawer at a phone's width, opened and past its slide. */
+/** The drawer in the phone layout, opened and past its slide. */
 async function openDrawer(host: HTMLElement) {
   await clickWithMouse(need(host, 'button.menu-button'))
   const column = need(host, '#library-menu')
@@ -743,6 +749,84 @@ function tokenIn(host: HTMLElement, token: string): string {
   probe.remove()
   return colour
 }
+
+/**
+ * **The phone layout, narrow or short** (O305): the stylesheets, the drawer
+ * and the cover lists turn on the one condition `phoneLayout.ts` writes, so
+ * at each window here they agree. Each size is a pixel either side of one
+ * bound, or inside a layout by one bound alone, a phone held sideways among
+ * them.
+ */
+describe('the phone layout, narrow or short', () => {
+  it.each([
+    [899, 800, true],
+    [900, 800, false],
+    [1280, 499, true],
+    [1280, 500, false],
+    [956, 440, true],
+    [440, 956, true],
+    [1280, 800, false],
+  ] as const)('agrees on the layout at %ix%i', async (width, height, phone) => {
+    const host = await at('/', width, height)
+    const root = document.documentElement
+    const main = need(host, 'main')
+    const fill = getComputedStyle(need(host, '.library')).getPropertyValue(
+      '--tile-fill',
+    )
+    expect({
+      query: matchMedia(PHONE_LAYOUT).matches,
+      fill: fill.trim() === '1',
+      bar: need(host, '.phone-bar').checkVisibility(),
+      document:
+        root.scrollHeight > root.clientHeight &&
+        getComputedStyle(main).overflowY !== 'auto',
+    }).toEqual({ query: phone, fill: phone, bar: phone, document: phone })
+  })
+
+  it.each([
+    ['width', 899, 800, 900, 800],
+    ['height', 1280, 499, 1280, 500],
+    ['height, from a phone held sideways', 956, 440, 956, 800],
+  ] as const)(
+    'closes the drawer as the window leaves the phone layout by %s',
+    async (_, width, height, toWidth, toHeight) => {
+      const host = await at('/', width, height)
+      const button = need(host, 'button.menu-button')
+      await openDrawer(host)
+      const open = () => ({
+        expanded: button.getAttribute('aria-expanded'),
+        drawer: host.querySelector('.library.menu-open') !== null,
+      })
+      // The fixture tells: the click opened the drawer.
+      expect(open()).toEqual({ expanded: 'true', drawer: true })
+      await act(async () => {
+        await page.viewport(toWidth, toHeight)
+        await new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve))
+        })
+      })
+      expect({
+        sidebar: matchMedia(SIDEBAR_LAYOUT).matches,
+        ...open(),
+      }).toEqual({ sidebar: true, expanded: 'false', drawer: false })
+    },
+  )
+
+  it('scrolls the document rather than <main>, and ☰ opens the drawer onto its first link, at 956×440', async () => {
+    const host = await at('/', 956, 440)
+    const main = need(host, 'main')
+    window.scrollTo(0, 200)
+    main.scrollTop = 200
+    expect([Math.round(window.scrollY), main.scrollTop]).toEqual([200, 0])
+    window.scrollTo(0, 0)
+    await openDrawer(host)
+    expect({
+      expanded: need(host, 'button.menu-button').getAttribute('aria-expanded'),
+      focused:
+        document.activeElement === need(host, '#library-menu nav a[href]'),
+    }).toEqual({ expanded: 'true', focused: true })
+  })
+})
 
 describe('More, with a real mouse and real keys — spec §1', () => {
   const panelOf = (host: HTMLElement) =>
@@ -915,7 +999,7 @@ describe('More, with a real mouse and real keys — spec §1', () => {
     'draws its panel whole and over the label above it, and Escape or a click outside closes it, at %i px',
     async (width) => {
       const host = await shellAt('/', width, true)
-      if (width < 900) await openDrawer(host)
+      if (matchMedia(PHONE_LAYOUT).matches) await openDrawer(host)
       const button = need<HTMLButtonElement>(host, 'button.account-button')
       const label = need(host, '.version-label a')
       await clickWithMouse(button)
@@ -1255,7 +1339,7 @@ describe('the build’s label', () => {
       expect(getComputedStyle(need(host, '.account-button')).minHeight).toBe(
         pointer === 'coarse' ? '44px' : '0px',
       )
-      if (width < 900) {
+      if (matchMedia(PHONE_LAYOUT).matches) {
         await clickWithMouse(need(host, 'button.menu-button'))
         const column = need(host, '#library-menu')
         await act(async () => {
@@ -1310,7 +1394,7 @@ describe('the sidebar’s foot', () => {
     'draws the label, More, then Theme in the window’s bottom corner, at %i px (admin: %s)',
     async (width, admin) => {
       const host = await shellAt('/', width, admin)
-      if (width < 900) await openDrawer(host)
+      if (matchMedia(PHONE_LAYOUT).matches) await openDrawer(host)
       const { foot, label, more, theme } = footOf(host)
       expect(need(label, 'a').checkVisibility()).toBe(true)
       const box = (el: Element) => el.getBoundingClientRect()
@@ -1326,7 +1410,7 @@ describe('the sidebar’s foot', () => {
     'takes Tab from the navigation to the label, More, then Theme, at %i px (admin: %s)',
     async (width, admin) => {
       const host = await shellAt('/', width, admin)
-      if (width < 900) await openDrawer(host)
+      if (matchMedia(PHONE_LAYOUT).matches) await openDrawer(host)
       const { label, more, theme } = footOf(host)
       const stops = new Map<Element, string>([
         [need(label, 'a'), 'the label'],
@@ -1378,20 +1462,24 @@ describe('a screen with the catalog’s address, at a desktop width', () => {
       false,
       <Account placement="page" onSignedOut={() => {}} />,
     )
-    await page.viewport(1280, 300)
+    const row = need(host, '.catalog-address')
+    const main = need(host, 'main')
+    const depth = () =>
+      row.getBoundingClientRect().top -
+      main.getBoundingClientRect().top +
+      main.scrollTop
+    // The row is put lower than a window still tall enough for the sidebar
+    // reaches.
+    lowered(main, depth(), SIDEBAR_HEIGHT + 100)
+    await page.viewport(1280, SIDEBAR_HEIGHT)
     await act(async () => {
       await new Promise((resolve) => {
         setTimeout(resolve, 0)
       })
     })
-    const row = need(host, '.catalog-address')
-    const main = need(host, 'main')
+    expect(matchMedia(SIDEBAR_LAYOUT).matches).toBe(true)
     expect(need(row, '[role="status"]').className).toBe('visually-hidden')
-    expect(
-      row.getBoundingClientRect().top -
-        main.getBoundingClientRect().top +
-        main.scrollTop,
-    ).toBeGreaterThan(innerHeight)
+    expect(depth()).toBeGreaterThan(innerHeight)
     expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(
       innerHeight,
     )
@@ -1893,7 +1981,7 @@ describe('the sidebar’s wordmark', () => {
     async (width) => {
       onTestFinished(coarseRulesOn())
       const host = await shellAt('/config/rules', width, true)
-      if (width < 900) await openDrawer(host)
+      if (matchMedia(PHONE_LAYOUT).matches) await openDrawer(host)
       await document.fonts.ready
       const { mark, link } = wordmarkOf(host)
       const target = fingerArea(link)
@@ -1941,7 +2029,7 @@ describe('the sidebar’s wordmark', () => {
     'stands where the plain wordmark stood, its link as big as the wordmark, at %i px',
     async (width) => {
       const host = await shellAt('/config/rules', width, true)
-      if (width < 900) await openDrawer(host)
+      if (matchMedia(PHONE_LAYOUT).matches) await openDrawer(host)
       const { mark, link } = wordmarkOf(host)
       const column = need(host, '#library-menu').getBoundingClientRect()
       const seal = need(mark, '.seal').getBoundingClientRect()

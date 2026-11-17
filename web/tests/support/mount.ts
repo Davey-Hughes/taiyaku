@@ -15,8 +15,11 @@ import { afterEach } from 'vitest'
 let mounted: { root: Root; host: HTMLElement }[] = []
 /** The newest mount's root, which `rerender` draws onto. */
 let root: Root | undefined
+/** What `beforeUnmount` was handed this test, not yet run. */
+const stops: (() => void)[] = []
 
 afterEach(() => {
+  for (const stop of stops.splice(0)) stop()
   act(() => {
     for (const one of mounted) one.root.unmount()
   })
@@ -24,6 +27,18 @@ afterEach(() => {
   mounted = []
   root = undefined
 })
+
+/**
+ * Has `stop` run after the test, before its mounts are unmounted: for an
+ * observer or a per-frame loop that reads the drawn page and throws on one
+ * no longer drawn. `onTestFinished` is too late: it runs after every
+ * `afterEach`, so after the unmount, and a frame can be drawn in between
+ * while an `afterEach` awaits, as `browser-setup.ts`'s does on its import;
+ * an observer still connected is handed that frame.
+ */
+export function beforeUnmount(stop: () => void): void {
+  stops.push(stop)
+}
 
 /** Mount a component and hand back its host element. */
 export function mount(ui: React.ReactNode): HTMLElement {

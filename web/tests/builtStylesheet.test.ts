@@ -2,8 +2,15 @@ import { fileURLToPath } from 'node:url'
 import type { Rolldown } from 'vite'
 import { build } from 'vite'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { PHONE_LAYOUT, SIDEBAR_LAYOUT } from '../src/phoneLayout'
 import tokensSource from '../src/styles/tokens.css?raw'
-import { atRulesOf, rules, selectors, valuesOf } from './support/css'
+import {
+  atRulesOf,
+  rules,
+  selectors,
+  valuesOf,
+  withoutComments,
+} from './support/css'
 
 /**
  * **The stylesheet as the build ships it, not as it is written (O218).**
@@ -139,6 +146,24 @@ describe('the built stylesheet', () => {
         valuesOf(body, 'transition').map((value) => value.replace(/\s/g, '')),
       ),
     ).toEqual([expect.stringMatching(/^--grow\b/)])
+  })
+
+  // O305. The scripts ask `matchMedia` for the phone layout in the words the
+  // source writes it in, and a target without range syntax or `or` would have
+  // the build rewrite the stylesheet's copy into other words, or other
+  // queries. The two named exceptions are `phoneLayout.css.test.ts`'s; the
+  // build writes `book.css`'s `max-width` in range syntax, as it may.
+  it('keeps the phone layout’s condition and its complement, and no other viewport-size query', () => {
+    const squeezed = (text: string) => text.replace(/\s/g, '')
+    const found = new Set(
+      [...withoutComments(built).matchAll(/@media([^{;]+)\{/g)]
+        .map((m) => squeezed(m[1] ?? ''))
+        .filter((prelude) => /\b(?:width|height)\b/.test(prelude)),
+    )
+    const forms = [PHONE_LAYOUT, SIDEBAR_LAYOUT].map(squeezed)
+    expect(forms.filter((form) => !found.has(form))).toEqual([])
+    const known = [...forms, '(width<=40rem)', '(width<36rem)']
+    expect([...found].filter((prelude) => !known.includes(prelude))).toEqual([])
   })
 
   it('gives no rule the switch properties a compiled pair reads', () => {

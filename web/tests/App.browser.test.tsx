@@ -6,6 +6,7 @@ import { GateContext, type Gated } from '../src/gate'
 import { fakeResolver, whole } from './support/fixtures'
 import '../src/index.css'
 import { paintedBox } from '../src/notes'
+import { PHONE_LAYOUT } from '../src/phoneLayout'
 import { focused } from './support/focused'
 import { mount } from './support/mount'
 import { mouse } from './support/mouse'
@@ -240,8 +241,11 @@ const SIZES: [number, number][] = [
   [390, 844],
 ]
 
-/** The strip's height at a width: 160 px tiles from 900 px up, 96 below, plus 16. */
-const stripAt = (width: number) => (width >= 900 ? 176 : 112)
+/**
+ * The strip's height in the layout drawn: 160 px tiles beside the sidebar,
+ * 96 in the phone layout, plus 16.
+ */
+const stripAt = () => (matchMedia(PHONE_LAYOUT).matches ? 112 : 176)
 
 describe('the reader’s two bars, in a browser', () => {
   it.each(SIZES)(
@@ -304,25 +308,27 @@ describe('the reader’s two bars, in a browser', () => {
         width,
       ])
       // Its 1 px rule, the strip, the 2 px progress line and the 32 px readout.
-      expect(bottom.height).toBe(1 + stripAt(width) + 2 + 32)
+      expect(bottom.height).toBe(1 + stripAt() + 2 + 32)
     },
   )
 
   it.each(SIZES)(
-    'at %i×%i, the strip stands 176 px from 900 px up and 112 below',
+    'at %i×%i, the strip stands 176 px beside the sidebar and 112 in the phone layout',
     async (width, height) => {
       await readerWithChrome(width, height)
       const strip = (
         document.querySelector('.reader-bottom-bar') as HTMLElement
       ).firstElementChild as HTMLElement
-      expect(strip.getBoundingClientRect().height).toBe(stripAt(width))
-      // The strip's own tiles (spec §8.6): 160 px at and above 900 px, 96
-      // below — the rail's height minus its padding and border, measured on
-      // the tile rather than assumed from the rail.
+      expect(strip.getBoundingClientRect().height).toBe(stripAt())
+      // The strip's own tiles (spec §8.6): 160 px beside the sidebar, 96 in
+      // the phone layout — the rail's height minus its padding and border,
+      // measured on the tile rather than assumed from the rail.
       const tile = document.querySelector(
         '.reader-bottom-bar img',
       ) as HTMLElement
-      expect(tile.getBoundingClientRect().height).toBe(width >= 900 ? 160 : 96)
+      expect(tile.getBoundingClientRect().height).toBe(
+        matchMedia(PHONE_LAYOUT).matches ? 96 : 160,
+      )
     },
   )
 

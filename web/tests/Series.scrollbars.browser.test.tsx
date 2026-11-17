@@ -6,6 +6,7 @@ import '../src/index.css'
 import type { Me } from '../src/api'
 import type { BrowsePrefs } from '../src/browseModule'
 import * as library from '../src/library'
+import { SIDEBAR_LAYOUT } from '../src/phoneLayout'
 import { land, settleUntil } from './support/async'
 import { mouse } from './support/mouse'
 import { pointerRulesAs } from './support/pointer'
@@ -169,9 +170,13 @@ const placesOf = (tiles: HTMLElement[]) =>
  * a click on its `i`, and waits for its alignment detail to be read.
  */
 async function open(tile: HTMLElement) {
-  await real(() => userEvent.hover(tile.querySelector(':scope > a') as Element))
   await real(() =>
-    userEvent.click(tile.querySelector(':scope > .panel-open') as Element),
+    userEvent.hover(tile.querySelector(':scope > .tile-body > a') as Element),
+  )
+  await real(() =>
+    userEvent.click(
+      tile.querySelector(':scope > .tile-body > .panel-open') as Element,
+    ),
   )
   await settleUntil(
     'the panel’s alignment detail',
@@ -318,13 +323,14 @@ describe('a volume’s panel run past the end of the page (O283)', () => {
   } as const
 
   /**
-   * What scrolls the page at `width`: `main` at 1280, and below 900 px the
-   * document, where `main` does not scroll (`shell.css`). `element` is it,
-   * the root element for the document; `shown` is the span of the window it
-   * shows its content in, and `end` scrolls it to its end.
+   * What scrolls the page in the layout drawn: `main` beside the sidebar,
+   * and in the phone layout the document, where `main` does not scroll
+   * (`shell.css`). `element` is it, the root element for the document;
+   * `shown` is the span of the window it shows its content in, and `end`
+   * scrolls it to its end.
    */
-  function scroller(main: HTMLElement, width: number) {
-    if (width >= 900) {
+  function scroller(main: HTMLElement) {
+    if (matchMedia(SIDEBAR_LAYOUT).matches) {
       return {
         element: main,
         scrolls: () => main.scrollHeight > main.clientHeight,
@@ -355,7 +361,7 @@ describe('a volume’s panel run past the end of the page (O283)', () => {
       width,
       height: LONG[width].height,
     })
-    const view = scroller(main, width)
+    const view = scroller(main)
     // The fixture tells: with no panel open, the page scrolls.
     expect(view.scrolls(), 'the page scrolls with no panel').toBe(true)
     view.end()

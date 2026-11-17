@@ -35,9 +35,11 @@ import { usePrefsMap } from './hooks'
 import type { LibraryStatus } from './library'
 import { fieldChanged, sliceFor, sliceReset } from './module'
 import { LIBRARY_STATUS } from './pageReads'
+import { SIDEBAR_LAYOUT } from './phoneLayout'
 import { resetPrefs, savePrefs } from './prefs'
 import { InboxRefreshContext, STATUS_FAILED, StatusContext } from './shell'
 import { TO_TOP } from './scrollKeeper'
+import { useScrollerSwap } from './scrollerSwap'
 import { SEARCH_BOX_ID } from './searchHits'
 import { Sidebar } from './Sidebar'
 import { ThemeControl } from './ThemeControl'
@@ -51,9 +53,6 @@ import { messageOf } from './message'
  * depends on `modules` by identity (`[modules, map, save]`, `hooks.ts`).
  */
 const BROWSE_MODULES = browseRegistry.all()
-
-/** Spec 2026-09-17 §2's breakpoint: the sidebar at or above it, the drawer below. */
-const WIDE = '(width >= 900px)'
 
 /**
  * What makes the sidebar column a modal dialog, while — and only while — the
@@ -163,21 +162,24 @@ export function Shell({ children }: { children: React.ReactNode }) {
     }
   }, [admin, inboxReads])
 
-  // **The drawer — spec 2026-09-17 §7.1.** Below 900 px the sidebar column is
-  // off-canvas and ☰ slides it in; at or above, ☰ is not drawn, so this never
-  // becomes true there. While it is open the bar and `<main>` are `inert`,
+  // **The drawer — spec 2026-09-17 §7.1.** In the phone layout the sidebar
+  // column is off-canvas and ☰ slides it in; elsewhere ☰ is not drawn, so this
+  // never becomes true there. While it is open the bar and `<main>` are `inert`,
   // which is what keeps focus and taps inside the column: a browser skips an
   // inert subtree for both. A native `<dialog>` would have done the same, but
-  // this column is also the permanent sidebar at 900 px and up, so its content
-  // would have had to move between the two. The column carries its own Close
-  // button because the scrim sits outside the dialog and ☰ is inert while it is
-  // open, so for a screen reader inside the `aria-modal` region neither is a
-  // way out of it — a pointer can still tap the scrim.
+  // this column is also the permanent sidebar outside the phone layout, so its
+  // content would have had to move between the two. The column carries its own
+  // Close button because the scrim sits outside the dialog and ☰ is inert while
+  // it is open, so for a screen reader inside the `aria-modal` region neither is
+  // a way out of it — a pointer can still tap the scrim.
   const [menuOpen, setMenuOpen] = useState(false)
   const menuButton = useRef<HTMLButtonElement>(null)
   const column = useRef<HTMLDivElement>(null)
   /** Where the skip link sends focus (O174). */
   const mainRef = useRef<HTMLElement>(null)
+  // One owner for every page drawn here: the scroller swaps at the phone
+  // layout's edge whichever page is drawn, and `main` outlives them all.
+  useScrollerSwap(mainRef)
   const wasOpen = useRef(false)
   const location = useLocation()
 
@@ -194,26 +196,26 @@ export function Shell({ children }: { children: React.ReactNode }) {
     wasOpen.current = menuOpen
   }, [menuOpen])
 
-  // Escape closes it, and so does the window widening past the breakpoint,
-  // where the column is the sidebar again and nothing would be left to close
-  // it with. `matchMedia` is checked for because jsdom has none.
+  // Escape closes it, and so does the window leaving the phone layout, where
+  // the column is the sidebar again and nothing would be left to close it
+  // with. `matchMedia` is checked for because jsdom has none.
   useEffect(() => {
     if (!menuOpen) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setMenuOpen(false)
     }
-    const wide =
+    const sidebar =
       typeof window.matchMedia === 'function'
-        ? window.matchMedia(WIDE)
+        ? window.matchMedia(SIDEBAR_LAYOUT)
         : undefined
-    const onWide = () => {
-      if (wide?.matches) setMenuOpen(false)
+    const onSidebar = () => {
+      if (sidebar?.matches) setMenuOpen(false)
     }
     document.addEventListener('keydown', onKey)
-    wide?.addEventListener('change', onWide)
+    sidebar?.addEventListener('change', onSidebar)
     return () => {
       document.removeEventListener('keydown', onKey)
-      wide?.removeEventListener('change', onWide)
+      sidebar?.removeEventListener('change', onSidebar)
     }
   }, [menuOpen])
 

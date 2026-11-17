@@ -80,7 +80,7 @@
   margin-top: var(--space-4);
 }
 
-/* Where the sidebar stands beside the column (`Shell.tsx`'s `WIDE`), this
+/* Where the sidebar stands beside the column (`SIDEBAR_LAYOUT`), this
  * heading's hairline is drawn level with the Libraries heading's. Each sits
  * mid-heading, so the margin is what lies above that one less what lies
  * above this one: the wordmark, as tall as its seal, between two
@@ -88,7 +88,7 @@
  * to any of these moves one hairline and not the other. A coarse pointer
  * makes the Libraries link and the row taller, so `--side-half` and
  * `--row-block` are set again below. */
-@media (width >= 900px) {
+@media (width >= 900px) and (height >= 500px) {
   .continue h2 {
     /* The seal (`shell.css`'s `.wordmark .seal`): two glyphs at
      * `--text-badge`, each tracked 0.1em, in 4px and 3px of padding. */
@@ -106,9 +106,9 @@
  * and a series page's volumes share them. The gap narrows under the
  * default size, since small covers far apart read as scattered. Registered
  * as lengths, so a script reads them in px from the computed style, and
- * `--tile-fill` (set again below 900 px) tells it which layout is in force.
- * Only `library.ts`'s `coverSizes` repeats the breakpoint and the gap's 1rem
- * cap, as an image's `sizes` cannot read CSS; `library.css.test.ts` ties them. */
+ * `--tile-fill` (set again in the phone layout) tells it which layout is in
+ * force. Only `coverSizes` (`library.ts`) repeats the condition and the 1rem
+ * cap, as `sizes` cannot read CSS; `library.css.test.ts` ties them. */
 @property --tile-min {
   syntax: "<length>";
   inherits: true;
@@ -151,43 +151,82 @@
   overflow-x: auto;
 }
 
+/* Registered as numbers, so a side's fade can ease in and out: an
+ * unregistered custom property does not interpolate, and the fade would
+ * flip. */
+@property --edge-before {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+
+@property --edge-after {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+
 /* A side with cards past it (`useContinueRow` marks it) fades out: where
  * scrollbars hide until used, it is the one sign there are more, so it is
  * wide and mostly see-through. `--fade-half` is a colour hint, which eases
  * the ramp without bands. A mask, not a layer over the cards, so they fade
  * to any theme's ground and still take a press; it reads only alpha, so
  * `black` is no colour. One layer a side, intersected, so each side comes
- * and goes on its own. Lifted while a focus ring shows, so it is whole. */
-.continue ul:is([data-more-before], [data-more-after]) {
+ * and goes on its own. */
+.continue ul {
   --fade: 80px;
   --fade-half: 50px;
   --fade-clear: 12px;
-  --mask-before: linear-gradient(black, black);
-  --mask-after: linear-gradient(black, black);
-  mask-image: var(--mask-before), var(--mask-after);
+  --edge-before: 1;
+  --edge-after: 1;
+  mask-image:
+    linear-gradient(
+      to right,
+      rgb(0 0 0 / var(--edge-before)) var(--fade-clear),
+      var(--fade-half),
+      black var(--fade)
+    ),
+    linear-gradient(
+      to left,
+      rgb(0 0 0 / var(--edge-after)) var(--fade-clear),
+      var(--fade-half),
+      black var(--fade)
+    );
   mask-composite: intersect;
+  transition:
+    --edge-before 200ms ease-out,
+    --edge-after 200ms ease-out;
 }
 
 .continue ul[data-more-before] {
-  --mask-before: linear-gradient(
-    to right,
-    transparent var(--fade-clear),
-    var(--fade-half),
-    black var(--fade)
-  );
+  --edge-before: 0;
 }
 
 .continue ul[data-more-after] {
-  --mask-after: linear-gradient(
-    to left,
-    transparent var(--fade-clear),
-    var(--fade-half),
-    black var(--fade)
-  );
+  --edge-after: 0;
 }
 
+/* A focus ring shows whole, so the fade lifts while one is in the row, and
+ * at once: a transition follows the style changed to, so with none set here
+ * the change in is immediate and the row's own transition eases it back. */
 .continue ul:has(:focus-visible) {
-  mask-image: none;
+  --edge-before: 1;
+  --edge-after: 1;
+  transition: none;
+}
+
+@media (width < 900px) or (height < 500px) {
+  .continue ul {
+    --fade: 40px;
+    --fade-half: 25px;
+    --fade-clear: 6px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .continue ul {
+    transition: none;
+  }
 }
 
 .continue a,
@@ -199,11 +238,11 @@
   text-decoration: none;
 }
 
-/* From 900 px up every cover is the slider's width (O285), as many as fit
- * at the least gap, and the spare room spread into the gaps so a row still
- * spans the area; below it the columns fill the row (the block that sets
- * `--tile-fill: 1`). A short last row keeps to the same columns, since
- * `auto-fill` keeps its empty tracks. */
+/* Beside the sidebar every cover is the slider's width (O285), as many as
+ * fit at the least gap, and the spare room spread into the gaps so a row
+ * still spans the area; in the phone layout the columns fill the row (the
+ * block that sets `--tile-fill: 1`). A short last row keeps to the same
+ * columns, since `auto-fill` keeps its empty tracks. */
 .grid {
   list-style: none;
   margin: 0;
@@ -212,6 +251,27 @@
   grid-template-columns: repeat(auto-fill, var(--tile-min));
   justify-content: space-between;
   gap: var(--tile-gap);
+}
+
+/* What moves a cover to its new column (`reseat.ts`) is its tile's content,
+ * never the tile, and it scales about its top-left corner, the point the
+ * move's translation places. The browser holds the page by an element it
+ * anchors to, and corrects nothing while that element or one around it
+ * runs a transform; so the content is kept out of the anchor's choosing,
+ * at rest too, and the tile, which layout alone places, is anchored to.
+ * Were the rule set only while a list moves, the browser would keep an
+ * anchor it had chosen inside the content before. */
+:is(.grid, .volumes) > li > :first-child {
+  transform-origin: 0 0;
+  overflow-anchor: none;
+}
+
+/* While any cover moves its list clips sideways: a cover drawn where it
+ * stood a frame ago can stand a few px past a list that has narrowed since,
+ * which would give the page a sideways scrollbar for the move's length. A
+ * focus ring at the list's edge is clipped meanwhile. */
+:is(.grid, .volumes)[data-reseating] {
+  overflow-x: clip;
 }
 
 /* `.tile-unreadable` alongside `a`, not instead of it: O62's grid and
@@ -273,6 +333,16 @@
   font-size: var(--text-ui);
   line-height: 1.3;
   text-align: center;
+}
+
+/* In the phone layout a Continue card's height follows its column, so a
+ * placeholder's centred title moves by half each change in it. The browser
+ * holds the page by that title while it is in view, so the row's slide would
+ * have it correct the scroll on every frame, and Firefox stops anchoring
+ * after a run of those. Out of the anchor's choosing, the title leaves the
+ * placeholder itself, whose top holds, to anchor to. */
+.continue .cover-missing > span {
+  overflow-anchor: none;
 }
 
 /* Titles in the title face; `anywhere` so a long file name breaks rather
@@ -520,9 +590,11 @@
   cursor: pointer;
 }
 
-/* The box `i` and the corner ↓ are placed in. `> li`: the alignment panel
- * draws a list of its own. */
-.volumes > li {
+/* The boxes the open panel, and `i` and the corner ↓, are placed in: the
+ * tile, and its body, which a glide moves with the cover (`Series.tsx`).
+ * `> li`: the alignment panel draws a list of its own. */
+.volumes > li,
+.volumes > li > .tile-body {
   position: relative;
 }
 
@@ -533,7 +605,7 @@
  * column width; `translate` lifts the control by its own height. Its size
  * is its minimum, border included and no padding, so the ↓, a glyph wider
  * than `i`, is drawn at `i`'s size. */
-.volumes > li > :is(.panel-open, a.get) {
+.volumes > li > .tile-body > :is(.panel-open, a.get) {
   position: absolute;
   top: 0;
   right: 0.25rem;
@@ -550,15 +622,15 @@
  * hovers, and its finger would tap a control it cannot see and land on the
  * cover's link. */
 @media (hover: hover) and (not (any-pointer: coarse)) {
-  .volumes > li > :is(.panel-open, a.get) {
+  .volumes > li > .tile-body > :is(.panel-open, a.get) {
     opacity: 0;
     pointer-events: none;
     transition: opacity 120ms;
   }
 
-  .volumes > li:hover > :is(.panel-open, a.get),
-  .volumes > li:focus-within > :is(.panel-open, a.get),
-  .volumes > li > .panel-open[aria-expanded="true"] {
+  .volumes > li:hover > .tile-body > :is(.panel-open, a.get),
+  .volumes > li:focus-within > .tile-body > :is(.panel-open, a.get),
+  .volumes > li > .tile-body > .panel-open[aria-expanded="true"] {
     opacity: 1;
     pointer-events: auto;
   }
@@ -566,7 +638,7 @@
 
 /* No fade where the system asks for less motion. */
 @media (prefers-reduced-motion: reduce) {
-  .volumes > li > :is(.panel-open, a.get) {
+  .volumes > li > .tile-body > :is(.panel-open, a.get) {
     transition: none;
   }
 }
@@ -606,9 +678,9 @@
   pointer-events: none;
 }
 
-/* Below 900 px, where the document scrolls, the room under the last row
- * holds `.library`'s bottom safe-area inset as well (`shell.css`). */
-@media (width < 900px) {
+/* In the phone layout, where the document scrolls, the room under the last
+ * row holds `.library`'s bottom safe-area inset as well (`shell.css`). */
+@media (width < 900px) or (height < 500px) {
   .tile-panel::after {
     height: calc(var(--page-area-end) + env(safe-area-inset-bottom, 0px));
   }
@@ -617,34 +689,34 @@
 /* Two tiles and the gap before `tilePanel.ts` has measured, the width it
  * then sets wherever the page has room: the Title field is fitted as it
  * mounts, before its panel is laid, and would be fitted at the tile's
- * width. From 900 px up the columns are laid wider apart than this gap
+ * width. Beside the sidebar the columns are laid wider apart than this gap
  * (O285's spread), which the measured width then takes in. */
 .volumes > li > .tile-panel {
   width: calc(200% + var(--tile-gap));
 }
 
 /* What scrolls a series page while it draws the volume grid keeps its
- * scrollbar's gutter whether or not it scrolls (O283): `main`, and below
- * 900px, where `main` does not scroll (`shell.css`), the document. A panel
- * run past the end of a page that did not scroll brings a classic
+ * scrollbar's gutter whether or not it scrolls (O283): `main`, and in the
+ * phone layout, where `main` does not scroll (`shell.css`), the document.
+ * A panel run past the end of a page that did not scroll brings a classic
  * scrollbar, which would narrow the grid and move every tile. */
 .library > main:has(.volumes) {
   scrollbar-gutter: stable;
 }
 
-@media (width < 900px) {
+@media (width < 900px) or (height < 500px) {
   :root:has(.volumes) {
     scrollbar-gutter: stable;
   }
 }
 
-/* On a phone the columns fill the row (O285): as many as fit at the least
- * gap, each grown to an equal share of the row, so the slider sets the
- * least a cover may be, except where the list is narrower than one cover.
- * Exact covers would leave a narrow screen's spare room as wide gaps.
- * `--tile-fill` is set in this same block so that a script reads which
- * layout is drawn rather than repeating the breakpoint. */
-@media (width < 900px) {
+/* In the phone layout the columns fill the row (O285): as many as fit at
+ * the least gap, each grown to an equal share of the row, so the slider
+ * sets the least a cover may be, except where the list is narrower than one
+ * cover. Exact covers would leave a narrow screen's spare room as wide
+ * gaps. `--tile-fill` is set in this same block so that a script reads
+ * which layout is drawn rather than repeating its condition. */
+@media (width < 900px) or (height < 500px) {
   .library {
     --tile-fill: 1;
   }
@@ -858,7 +930,7 @@
   }
 }
 
-@media (width < 900px) {
+@media (width < 900px) or (height < 500px) {
   .search-box input {
     max-width: none;
   }

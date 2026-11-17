@@ -34,8 +34,8 @@ export function panelSpan(
 /**
  * The gap a grid `width` px wide lays its columns apart by, from its
  * resolved `grid-template-columns` (the columns' own widths, with any line
- * names): the width less the columns, over the gaps between them. From
- * 900 px up that is the gap the stylesheet writes and the spare room
+ * names): the width less the columns, over the gaps between them. Beside
+ * the sidebar that is the gap the stylesheet writes and the spare room
  * `justify-content` spreads into the gaps (O285's exact-size covers). One
  * column has no gap between columns to read.
  */

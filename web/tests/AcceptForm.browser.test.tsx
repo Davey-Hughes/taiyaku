@@ -27,11 +27,11 @@ import { mount } from './support/mount'
  * real one is a `rel_path` prefix, and the refusal is the measured `Publisher/`
  * collateral in `refusals`' own sentence.
  *
- * **460 and 1100 for the reason `Proposals.browser.test.tsx` gives**: below
- * 900px the sidebar leaves the flow, and 460 − 2 × 16 gives `main` 428px. The
- * pattern keeps the form's whole width at both; what changes is how many of the
- * four short fields fit on the line beneath it, and whether the prefix is
- * readable end to end or scrolls.
+ * **460 and 1100 for the reason `Proposals.browser.test.tsx` gives**: in the
+ * phone layout the sidebar leaves the flow, and 460 − 2 × 16 gives `main`
+ * 428px. The pattern keeps the form's whole width at both; what changes is how
+ * many of the four short fields fit on the line beneath it, and whether the
+ * prefix is readable end to end or scrolls.
  *
  * **Both colour schemes, set through `color-scheme` on the root.** Everything
  * below `.library` is drawn from the tokens in `styles/tokens.css`, each a

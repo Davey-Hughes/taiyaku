@@ -7,11 +7,11 @@
  * be told apart is a queue with a scrollbar.
  *
  * **The `container-type` on `.proposal-list` below is here because the width
- * that decides this layout is not the viewport's.** At 900px and up
- * `.library` is a fixed 14rem sidebar plus the rest; below 900px the sidebar
- * leaves the flow. A media query would have to hardcode that 14rem a second
- * time and go wrong the day the sidebar changed. The list asks its own
- * width instead.
+ * that decides this layout is not the viewport's.** Beside the sidebar
+ * `.library` is a fixed 14rem sidebar plus the rest; in the phone layout the
+ * sidebar leaves the flow. A media query would have to hardcode that 14rem
+ * a second time and go wrong the day the sidebar changed. The list asks its
+ * own width instead.
  *
  * **The three filter controls are three kinds of control**, and the rules for
  * them are below. The independent toggle is out of the kind row (O150): the
@@ -827,14 +827,14 @@
   align-items: start;
 }
 
-/* One column below the breakpoint, and the source order — list, form — is
+/* One column in the phone layout, and the source order — list, form — is
  * already the order a phone wants, so nothing is reordered. There each box
  * is as wide as the column, as a settings box is.
  *
- * Range syntax, and 900 rather than a number of this file's own: `shell.css`,
- * `library.css` and `reader.css` all turn at `(width < 900px)`, which is where
- * the sidebar becomes the drawer. This is the same turn seen from the other
- * side, so it is written the same way.
+ * The phone layout's complement (`phoneLayout.ts`) rather than a size of
+ * this file's own: the phone layout is where the sidebar becomes the drawer,
+ * and this is the same turn seen from the other side, so it is written in
+ * the same words.
  *
  * **Side by side only where Rules has the room for it** (`@container
  * rules`, here and at the form's rules): 36rem holds the seeded rules' list
@@ -861,11 +861,12 @@
  * Never wider than `main`'s width: a table's narrowest is still wider than
  * `main` where it has many columns, and it scrolls inside its box
  * (`.table-scroll`) only once the column stops there. */
-@media (width >= 900px) {
+@media (width >= 900px) and (height >= 500px) {
   /* The width Rules has, which the queries ask and the list's bound reads
      as `100cqi`: `.config` is as wide as `main`'s content, and nothing in
-     it sets that. A container only from the breakpoint up, so that below
-     it nothing asks it and Rules is one column whatever its width. */
+     it sets that. A container only beside the sidebar, so that in the
+     phone layout nothing asks it and Rules is one column whatever its
+     width. */
   .config:has(> .rule-editor) {
     container: rules / inline-size;
   }
@@ -2311,7 +2312,7 @@
    and on Back to top, and a licence's heading, on a contents link. Each
    lands with `<main>`'s padding above it, as the page's top is at the top
    of the scroll, and below the phone bar, which covers the top of the view
-   at a phone's width (`--sticky-top`). The heading is the top of its
+   in the phone layout (`--sticky-top`). The heading is the top of its
    section, above its box, so nothing of the section is left above the
    view. */
 .licence,

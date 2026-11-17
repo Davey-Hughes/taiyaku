@@ -3,13 +3,15 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { Link, MemoryRouter, Route, Routes, useParams } from 'react-router'
 import { cdp, page, userEvent } from 'vitest/browser'
 import * as aboutApi from '../src/about'
-import { pxOf } from '../src/continueRow'
+import { COVER_TALL, pxOf } from '../src/continueRow'
+import { SIDEBAR_LAYOUT } from '../src/phoneLayout'
 // **Required**, the same reason `Config.browser.test.tsx` gives.
 import '../src/index.css'
 import * as library from '../src/library'
 import { Library } from '../src/Library'
 import { homeRead } from '../src/pageReads'
 import { invalidate } from '../src/reads'
+import { NEAR_PX } from '../src/reseatTiming'
 import { Shell } from '../src/Shell'
 import { ABOUT } from './support/about'
 import { settleUntil } from './support/async'
@@ -21,6 +23,16 @@ import {
   seriesCard,
 } from './support/continueRow'
 import { BROWSE_KEY, homePage } from './support/homePage'
+import {
+  afterMotion,
+  dragged,
+  eachFrame,
+  frames,
+  ramp,
+  reducedMotion,
+  scrollerOf,
+  wheeledTo,
+} from './support/motion'
 import { mount } from './support/mount'
 import { mouse } from './support/mouse'
 import { coarseRulesOn } from './support/pointer'
@@ -28,12 +40,13 @@ import { rootFontAt } from './support/rootFont'
 
 /**
  * The home page's Continue row (spec O288): over the grid's columns (item 2,
- * O285's two layouts), from 900 px up its cards the cover size at the grid's
- * spread gap, below it the grid's filled column at the least gap, also where
- * the row overflows, from its first paint, across the breakpoint, and with
- * no render of `Library` for a resize; its fade (item 3); its heading level
- * with the sidebar's and the line under it (items 1, 4). Every expectation
- * is read from the page as drawn. jsdom lays nothing out.
+ * O285's two layouts), beside the sidebar its cards the cover size at the
+ * grid's spread gap, in the phone layout the grid's filled column at the
+ * least gap, also where the row overflows, from its first paint, across the
+ * phone layout's edge, and with no render of `Library` for a resize; its
+ * fade (item 3, eased by O303); its heading level with the sidebar's and the
+ * line under it (items 1, 4). Every expectation is read from the page as
+ * drawn. jsdom lays nothing out.
  */
 
 // The build's label at the sidebar's foot asks for the build; answered here.
@@ -77,18 +90,23 @@ function need<T extends Element = HTMLElement>(
 }
 
 /**
- * The home page at `width` px, the cover size `size`, `entries` volumes in
- * progress, once the row's cards and the grid's tiles are all drawn.
+ * The home page at `width` px (by `height`, or `homePage`'s default), the
+ * cover size `size`, `entries` volumes in progress, `series` tiles in the
+ * grid, once the row's cards and the grid's tiles are all drawn.
  */
 async function drawn({
   width,
+  height,
   size,
   entries,
+  series = SERIES,
   onCommit,
 }: {
   width: number
+  height?: number
   size: number
   entries: number
+  series?: number
   onCommit?: () => void
 }) {
   vi.mocked(library.home).mockResolvedValue({
@@ -96,12 +114,16 @@ async function drawn({
     added: [],
     read: [],
   })
-  const host = await homePage({ width, coverSize: size, onCommit })
+  vi.mocked(library.grid).mockResolvedValue({
+    series: Array.from({ length: series }, (_, i) => seriesCard(i + 1)),
+    unfiled: [],
+  })
+  const host = await homePage({ width, height, coverSize: size, onCommit })
   await settleUntil(
     'the Continue row and the grid',
     () =>
       host.querySelectorAll('.continue ul > li').length === entries &&
-      host.querySelectorAll('main .grid > li').length === SERIES,
+      host.querySelectorAll('main .grid > li').length === series,
     2000,
   )
   await document.fonts.ready
@@ -198,54 +220,10 @@ function loopErrors(): string[] {
   return loops
 }
 
-/** Lets `count` frames be drawn. */
-async function frames(count: number) {
-  for (let i = 0; i < count; i += 1) {
-    await new Promise(requestAnimationFrame)
-  }
-}
-
-/** `count` widths evenly from `from` to `to`, rounded, `from` left out. */
-const ramp = (from: number, to: number, count: number) =>
-  Array.from({ length: count }, (_, i) =>
-    Math.round(from + ((to - from) * (i + 1)) / count),
-  )
-
-/**
- * Drags the window through `widths` as a drag's sizes arrive: each is set
- * on the test frame's box from the page around it, in a task between two
- * frames, so each frame lays a new width. `page.viewport` waits for a
- * frame before it answers, so it cannot pace a width a frame. Gives the
- * width each frame was drawn at, from the first to the one that drew the
- * last.
- */
-async function dragged(widths: readonly number[]): Promise<number[]> {
-  const box = window.frameElement?.parentElement
-  if (!box) throw new Error('this file is not running in a frame')
-  const outer = window.parent
-  const seen: number[] = []
-  let done = false
-  const watch = () => {
-    if (done) return
-    seen.push(window.innerWidth)
-    requestAnimationFrame(watch)
-  }
-  requestAnimationFrame(watch)
-  await new Promise<void>((resolve) => {
-    let i = 0
-    const step = () => {
-      if (i === widths.length) return resolve()
-      const width = widths[i]
-      i += 1
-      outer.setTimeout(() => {
-        box.style.width = `${width}px`
-        requestAnimationFrame(step)
-      }, 0)
-    }
-    requestAnimationFrame(step)
-  })
-  done = true
-  return seen
+/** Drags the window through `widths`, its height held, and gives the width each frame drew. */
+async function widthsDrawn(widths: readonly number[]): Promise<number[]> {
+  const seen = await dragged(widths.map((width) => ({ width })))
+  return seen.map(({ width }) => width)
 }
 
 /**
@@ -314,16 +292,17 @@ async function slide(host: HTMLElement, keys: string) {
 }
 
 /**
- * The row's two marks and its mask as drawn: `none`, or each side's fading
- * layer as its stops, read from the computed `mask-image`, each a length in
- * px and the alpha there. A colour hint has no colour of its own: the alpha
- * there is halfway between its neighbours', as a hint places the midpoint.
- * A side's layer runs from that side's edge (`to right` from the left, the
- * side before); a side that does not fade is a plain layer with no lengths.
+ * The row's two marks and its mask as drawn, read from the computed
+ * `mask-image`: a layer a side, as the alpha at its first stop and its
+ * stops, each a length in px and the alpha there. A colour hint has no
+ * colour of its own: the alpha there is halfway between its neighbours', as
+ * a hint places the midpoint. A side's layer runs from that side's edge (`to
+ * right` from the left, the side before); a side that does not fade reads
+ * alpha 1 at every stop.
  */
 function fade(row: HTMLElement) {
   const image = getComputedStyle(row).maskImage
-  const sides: Record<string, [number, number][]> = {}
+  const sides: Record<string, { alpha: number; stops: [number, number][] }> = {}
   for (const layer of image.split(/,\s*(?=linear-gradient)/)) {
     const inside = layer.slice(layer.indexOf('(') + 1, layer.lastIndexOf(')'))
     // At the commas between arguments, not those inside a colour.
@@ -341,17 +320,24 @@ function fade(row: HTMLElement) {
       : layer.includes('to left')
         ? 'after'
         : layer
-    sides[side] = stops.map(({ px, alpha }, i) => [
+    const read = stops.map(({ px, alpha }, i): [number, number] => [
       px,
       alpha ??
         ((stops[i - 1]?.alpha ?? NaN) + (stops[i + 1]?.alpha ?? NaN)) / 2,
     ])
+    sides[side] = { alpha: read[0][1], stops: read }
   }
   return {
     before: row.hasAttribute('data-more-before'),
     after: row.hasAttribute('data-more-after'),
-    mask: image === 'none' ? 'none' : sides,
+    mask: sides,
   }
+}
+
+/** Each side's alpha at its first stop: 0 the full fade, 1 none. */
+function edges(row: HTMLElement) {
+  const { mask } = fade(row)
+  return { before: mask.before?.alpha, after: mask.after?.alpha }
 }
 
 /** A computed `rgb()` or `rgba()` colour's alpha. */
@@ -361,23 +347,100 @@ function alphaOf(colour: string): number {
   return parts.length > 3 ? Number(parts[3]) : 1
 }
 
-/**
- * Clear for 12 px at the edge, half see-through at 50 px, solid at 80 px:
- * each stop's length and alpha.
- */
-const STOPS = [
-  [12, 0],
-  [50, 0.5],
-  [80, 1],
-]
-const NONE = { before: false, after: false, mask: 'none' }
-const AFTER = { before: false, after: true, mask: { after: STOPS } }
+/** Where the fade is clear, half see-through and solid, in px from its edge. */
+const WIDE = [12, 50, 80] as const
+/** The same, half width, in the phone layout. */
+const NARROW = [6, 25, 40] as const
+
+/** A side's layer with `alpha` at its clear edge, its stops at those lengths. */
+const side = (
+  alpha: number,
+  [clear, half, solid]: readonly number[] = WIDE,
+) => ({
+  alpha,
+  stops: [
+    [clear, alpha],
+    [half, (alpha + 1) / 2],
+    [solid, 1],
+  ],
+})
+const FADES = side(0)
+const WHOLE = side(1)
+const NONE = {
+  before: false,
+  after: false,
+  mask: { before: WHOLE, after: WHOLE },
+}
+const AFTER = {
+  before: false,
+  after: true,
+  mask: { before: WHOLE, after: FADES },
+}
 const BOTH = {
   before: true,
   after: true,
-  mask: { before: STOPS, after: STOPS },
+  mask: { before: FADES, after: FADES },
 }
-const BEFORE = { before: true, after: false, mask: { before: STOPS } }
+const BEFORE = {
+  before: true,
+  after: false,
+  mask: { before: FADES, after: WHOLE },
+}
+
+/** The fade's transition, as `library.css` times it. */
+const FADE_MS = 200
+
+/**
+ * Resolves as `row`'s mark `name` turns `on`, in the frame callback that sets
+ * it, before that frame's style starts the transition it brings. Fails after
+ * `POLL`'s timeout, so a mark that never comes fails the case with its name.
+ */
+function marked(row: HTMLElement, name: string, on: boolean) {
+  return new Promise<void>((done, fail) => {
+    const late = setTimeout(() => {
+      watch.disconnect()
+      fail(new Error(`${name} did not turn ${on ? 'on' : 'off'}`))
+    }, POLL.timeout)
+    const watch = new MutationObserver(() => {
+      if (row.hasAttribute(name) !== on) return
+      watch.disconnect()
+      clearTimeout(late)
+      done()
+    })
+    watch.observe(row, { attributeFilter: [name] })
+  })
+}
+
+/** `alpha` where it lies strictly between no fade and the full fade. */
+const between = (alpha: number | undefined) =>
+  alpha !== undefined && alpha > 0 && alpha < 1 ? 'between' : alpha
+
+/**
+ * The transition of `side`'s fade just started on `row`, seeked to its
+ * middle: its timing, and the side's alpha there. Seeking, not waiting, so
+ * no timer stands between the start and the read; with no transition, the
+ * alpha as it stands.
+ */
+function halfway(row: HTMLElement, side: 'before' | 'after') {
+  const run = row
+    .getAnimations()
+    .find(
+      (each) =>
+        each instanceof CSSTransition &&
+        each.transitionProperty === `--edge-${side}`,
+    )
+  const declared = run?.effect?.getTiming()
+  const timing = declared && {
+    duration: declared.duration,
+    delay: declared.delay,
+    easing: declared.easing,
+  }
+  if (run) run.currentTime = FADE_MS / 2
+  return { run, timing, midway: between(edges(row)[side]) }
+}
+
+/** `halfway`'s timing for a fade of `FADE_MS` with no delay, eased out. */
+const EASED = { duration: FADE_MS, delay: 0, easing: 'ease-out' }
 
 describe('the Continue row over the grid (O288 item 2)', () => {
   // [window width, the size stored, cards in the row]
@@ -527,6 +590,7 @@ describe('the Continue row over the grid (O288 item 2)', () => {
       ] as const
       for (const [keys, size] of changes) {
         await slide(host, keys)
+        await afterMotion()
         await expect
           .poll(() => gridColumns(host)[0]?.width, POLL)
           .toBeCloseTo(size, 1)
@@ -553,11 +617,13 @@ describe('the Continue row over the grid (O288 item 2)', () => {
     await expect
       .poll(() => gridColumns(host)[0]?.width, POLL)
       .toBeCloseTo(131, 1)
+    await afterMotion()
     const fits = travel() <= 1
     await slide(host, '{ArrowRight}'.repeat(13))
     await expect
       .poll(() => gridColumns(host)[0]?.width, POLL)
       .toBeCloseTo(144, 1)
+    await afterMotion()
     // The fixture tells: the row fitted at the smaller size and overflows
     // again at this one.
     expect({
@@ -583,6 +649,7 @@ describe('the Continue row over the grid (O288 item 2)', () => {
       for (const width of [844, 1280, 899, 390]) {
         await page.viewport(width, 844)
         await expect.poll(() => window.innerWidth, POLL).toBe(width)
+        await afterMotion()
         // Laid for the width.
         await expect.poll(stepped, POLL).toBe(true)
         seen.push({ columns: gridColumns(host).length, off: near(off(), 0) })
@@ -599,7 +666,8 @@ describe('the Continue row over the grid (O288 item 2)', () => {
     const { off, stepped } = await standAt(host, row, row.children[2])
     // From the phone's width to its width turned, a new width each frame.
     const widths = ramp(390, 844, 20)
-    const seen = await dragged(widths)
+    const seen = await widthsDrawn(widths)
+    await afterMotion()
     await expect.poll(stepped, POLL).toBe(true)
     // The fixture tells: each frame drew the next width, and the drag moved
     // the grid's columns.
@@ -615,11 +683,11 @@ describe('the Continue row over the grid (O288 item 2)', () => {
     // The tenth card, which the row's end stops short of at 844 px.
     const { off, stepped, travel } = await standAt(host, row, row.children[9])
     const out = ramp(390, 844, 20)
-    const seenOut = await dragged(out)
+    const seenOut = await widthsDrawn(out)
     await expect.poll(stepped, POLL).toBe(true)
     const short = { end: near(travel() - row.scrollLeft, 0), off: off() > 1 }
     const back = ramp(844, 390, 20)
-    const seenBack = await dragged(back)
+    const seenBack = await widthsDrawn(back)
     await expect.poll(stepped, POLL).toBe(true)
     // The fixture tells: each frame drew the next width, and at the widest
     // the row stood at its end with the card still short of its start edge.
@@ -641,8 +709,9 @@ describe('the Continue row over the grid (O288 item 2)', () => {
     const { off, stepped } = await standAt(host, row, row.children[7])
     const layouts = [held(row)]
     const widths = ramp(1000, 800, 20)
-    const seen = await dragged(widths)
+    const seen = await widthsDrawn(widths)
     await expect.poll(stepped, POLL).toBe(true)
+    await afterMotion()
     layouts.push(held(row))
     // The fixture tells: each frame drew the next width, and the layout
     // turned as the sidebar's column went.
@@ -663,10 +732,12 @@ describe('the Continue row over the grid (O288 item 2)', () => {
     await page.viewport(1400, 844)
     await expect.poll(() => gridColumns(host).length, POLL).toBe(7)
     await expect.poll(stepped, POLL).toBe(true)
+    await afterMotion()
     const fits = travel() <= 1
     await page.viewport(1280, 844)
     await expect.poll(() => gridColumns(host).length, POLL).toBe(6)
     await expect.poll(stepped, POLL).toBe(true)
+    await afterMotion()
     // The fixture tells: the row fitted at the wider window and overflows
     // again at this one.
     expect({
@@ -702,7 +773,9 @@ describe('the Continue row over the grid (O288 item 2)', () => {
       // matter: the router handles the click the same way.
       await act(async () => need(host, 'a[href="/away"]').click())
       await expect.poll(() => host.querySelector('main')).toBeNull()
-      const name = width >= 900 ? '--continue-gap' : '--continue-col'
+      const name = matchMedia(SIDEBAR_LAYOUT).matches
+        ? '--continue-gap'
+        : '--continue-col'
       // What the row held as it was first inserted: a mutation record is
       // delivered after the commit that made it and before the next task.
       let first: string | undefined
@@ -732,7 +805,9 @@ describe('the Continue row over the grid (O288 item 2)', () => {
         globalThis.IS_REACT_ACT_ENVIRONMENT = true
       }
       const [one, two] = gridColumns(host)
-      const expected = width >= 900 ? two.left - one.right : one.width
+      const expected = matchMedia(SIDEBAR_LAYOUT).matches
+        ? two.left - one.right
+        : one.width
       expect(near(pxOf(first ?? ''), expected)).toBe(expected)
     },
   )
@@ -761,6 +836,487 @@ describe('the Continue row over the grid (O288 item 2)', () => {
       })
     },
   )
+})
+
+/** What a glide moves of the grid's tile `index`: its content. */
+function coverOf(host: HTMLElement, index: number): Element {
+  return need(host, `main .grid > li:nth-child(${index + 1}) > :first-child`)
+}
+
+/**
+ * The home page at `from` px, 60 series in its grid, scrolled `down` px by
+ * the wheel, through the window steps `to`, then once at rest `back`, alone
+ * and under reduced motion where `still`: how far down it stood as the steps
+ * began; from the frame before the first step, each frame's scroll, row gap
+ * and row height, and each leg's scrolls from the frame before its own;
+ * whether its covers glid; the row's box in that first frame and at rest,
+ * and its first cover's and that cover's text's in that frame; where the
+ * page rests. Then hides it.
+ */
+async function scrolledThrough({
+  from,
+  to,
+  back = [],
+  down,
+  still,
+}: {
+  from: number
+  to: number[]
+  back?: number[]
+  down: number
+  still: boolean
+}) {
+  if (still) {
+    onTestFinished(async () => {
+      await reducedMotion(false)
+    })
+    await reducedMotion(true)
+  }
+  const { host, row } = await drawn({
+    width: from,
+    size: 144,
+    entries: 12,
+    series: 60,
+  })
+  await wheeledTo(host, down)
+  const scroller = scrollerOf(host)
+  const grid = need(host, 'main .grid')
+  const cover = need(row, ':scope > li :is(img, .cover-missing)')
+  // A placeholder's title; an image's is empty.
+  const text = document.createRange()
+  text.selectNodeContents(cover)
+  const seen: {
+    width: number
+    scroll: number
+    gap: number
+    gliding: boolean
+    row: DOMRect
+    cover: DOMRect
+    text: DOMRect
+  }[] = []
+  eachFrame(() => {
+    seen.push({
+      width: innerWidth,
+      scroll: scroller.scrollTop,
+      gap: pxOf(row.style.getPropertyValue('--continue-gap')),
+      gliding: grid.hasAttribute('data-reseating'),
+      row: row.getBoundingClientRect(),
+      cover: cover.getBoundingClientRect(),
+      text: text.getBoundingClientRect(),
+    })
+  })
+  await frames(2)
+  const start = scroller.scrollTop
+  for (const leg of [to, back]) {
+    if (leg.length === 0) continue
+    await act(async () => {
+      await dragged(leg.map((width) => ({ width })))
+    })
+    await afterMotion()
+  }
+  await frames(4)
+  if (still) await reducedMotion(false)
+  const at = seen.findIndex(({ width }) => width === to[0])
+  if (at < 1) {
+    const widths = seen.map(({ width }) => width).join(', ')
+    throw new Error(`no frame at ${from} px then ${to[0]} px: ${widths}`)
+  }
+  const last = to[to.length - 1]
+  const turn =
+    back.length === 0
+      ? seen.length + 1
+      : seen.findIndex(
+          ({ width }, frame) =>
+            frame > at && width === back[0] && seen[frame - 1].width === last,
+        )
+  if (turn < 1) {
+    const widths = seen.map(({ width }) => width).join(', ')
+    throw new Error(`no frame at ${last} px then ${back[0]} px: ${widths}`)
+  }
+  const scrollsOf = (run: typeof seen) => run.map(({ scroll }) => scroll)
+  const rest = scroller.scrollTop
+  const after = row.getBoundingClientRect()
+  // Where the list's content, and its first cover, begins under its box.
+  const { borderTopWidth, paddingTop } = getComputedStyle(row)
+  const padding =
+    Number.parseFloat(borderTopWidth) + Number.parseFloat(paddingTop)
+  // Out of the way of the next drive's page, which would lie under it.
+  host.hidden = true
+  return {
+    start,
+    scrolls: scrollsOf(seen.slice(at - 1)),
+    legs: [
+      scrollsOf(seen.slice(at - 1, turn - 1)),
+      scrollsOf(seen.slice(turn - 1)),
+    ],
+    gaps: seen.slice(at - 1).map(({ gap }) => gap),
+    heights: seen.slice(at - 1).map(({ row }) => row.height),
+    glid: seen.some(({ gliding }) => gliding),
+    row: {
+      before: seen[at - 1].row,
+      after,
+      cover: seen[at - 1].cover,
+      text: seen[at - 1].text,
+      padding,
+    },
+    rest,
+  }
+}
+
+/**
+ * Whether some frame drew a value strictly between the least drawn and the
+ * most: a row laid at once draws only its two ends, each leg's start and end.
+ */
+function slid(values: number[]): boolean {
+  const [low, high] = [Math.min(...values), Math.max(...values)]
+  return values.some((value) => value > low && value < high)
+}
+
+/**
+ * Each frame of the glide drive's legs whose scroll lies over 0.5 px from
+ * the same frame of the reduced-motion drive's.
+ */
+function offFrom(
+  glide: Awaited<ReturnType<typeof scrolledThrough>>,
+  still: Awaited<ReturnType<typeof scrolledThrough>>,
+): string[] {
+  return glide.legs.flatMap((leg, n) => {
+    const reduced = still.legs[n]
+    return leg
+      .slice(0, reduced.length)
+      .flatMap((scroll, frame) =>
+        Math.abs(scroll - reduced[frame]) > 0.5
+          ? [`leg ${n + 1}, frame ${frame}: ${scroll}, not ${reduced[frame]}`]
+          : [],
+      )
+  })
+}
+
+/**
+ * Through `step`, which drops a column of the home page `host` with its
+ * row's list `row` at its start: each frame where card k is drawn over 0.5
+ * px from the grid's cover k, as spec O304's "In step" bounds it. With it,
+ * what the fixture tells: the row stands at its start, the columns
+ * changed, and a cover the row's cards stand over was drawn away from its
+ * box mid-glide.
+ */
+async function inStepThrough(
+  host: HTMLElement,
+  row: HTMLElement,
+  step: () => Promise<void>,
+) {
+  await expect.poll(() => offGrid(host), POLL).toEqual([])
+  const columns = [gridColumns(host).length]
+  const grid = need(host, 'main .grid')
+  const seen: {
+    gliding: boolean
+    cards: number[]
+    covers: number[]
+    laid: number[]
+  }[] = []
+  eachFrame(() => {
+    seen.push({
+      gliding: grid.hasAttribute('data-reseating'),
+      cards: [...row.children].map((card) => card.getBoundingClientRect().left),
+      covers: [...row.children].map(
+        (_, k) => coverOf(host, k).getBoundingClientRect().left,
+      ),
+      laid: [...row.children].map(
+        (_, k) => grid.children[k].getBoundingClientRect().left,
+      ),
+    })
+  })
+  await frames(2)
+  await step()
+  await afterMotion()
+  columns.push(gridColumns(host).length)
+  const shared = Math.min(...columns)
+  const off = seen.flatMap(({ cards, covers }, frame) =>
+    cards
+      .slice(0, shared)
+      .flatMap((left, k) =>
+        Math.abs(left - covers[k]) > 0.5
+          ? [`frame ${frame}: card ${k + 1} at ${left}, cover ${covers[k]}`]
+          : [],
+      ),
+  )
+  return {
+    start: row.scrollLeft,
+    columns: columns[1] === columns[0] - 1,
+    glid: seen.some(
+      ({ gliding, covers, laid }) =>
+        gliding && Math.abs(covers[shared - 1] - laid[shared - 1]) > 2,
+    ),
+    off,
+  }
+}
+
+const IN_STEP = { start: 0, columns: true, glid: true, off: [] }
+
+describe('the Continue row through a glide (O304)', () => {
+  // [the layout, the window's width before the step and after]: one column
+  // fewer, the row at its start.
+  it.each([
+    ['beside the sidebar', 1280, 1200],
+    ['in the phone layout', 824, 808],
+  ] as const)(
+    'keeps card k over the grid’s cover k through a glide, %s',
+    async (_, from, to) => {
+      const { host, row } = await drawn({ width: from, size: 144, entries: 12 })
+      expect(
+        await inStepThrough(host, row, async () => {
+          await act(async () => {
+            await dragged([{ width: to }])
+          })
+        }),
+      ).toEqual(IN_STEP)
+    },
+  )
+
+  // [the layout, the window's width, the cover size one step short of a
+  // column fewer]. The slider's key lands in a task between frames, so the
+  // row is laid in React's commit there, before the frame the covers'
+  // glide starts in.
+  it.each([
+    ['beside the sidebar', 1280, 131],
+    ['in the phone layout', 824, 144],
+  ] as const)(
+    'keeps card k over the grid’s cover k through a Cover size step’s glide, %s',
+    async (_, width, size) => {
+      const { host, row } = await drawn({ width, size, entries: 12 })
+      await act(async () => {
+        await userEvent.click(page.getByRole('button', { name: 'View' }))
+      })
+      expect(
+        await inStepThrough(host, row, () => slide(host, '{ArrowRight}')),
+      ).toEqual(IN_STEP)
+    },
+  )
+
+  // [the layout, the window's width before the step and after, its
+  // height]: on one side of square, since a window that turns square
+  // snaps, as a phone's turn does.
+  it.each([
+    ['at 1280 px', 1280, 1200, 844],
+    ['in the phone layout', 856, 776, 900],
+  ] as const)(
+    'scrolls nothing sideways in any frame of a glide, %s',
+    async (_, from, to, height) => {
+      const { host } = await drawn({
+        width: from,
+        height,
+        size: 144,
+        entries: 12,
+      })
+      const main = need(host, 'main')
+      const root = document.scrollingElement ?? document.documentElement
+      const grid = need(host, 'main .grid')
+      const seen: { gliding: boolean; main: number[]; page: number[] }[] = []
+      eachFrame(() => {
+        seen.push({
+          gliding: grid.hasAttribute('data-reseating'),
+          main: [main.scrollWidth - main.clientWidth, main.scrollLeft],
+          page: [root.scrollWidth - root.clientWidth, root.scrollLeft],
+        })
+      })
+      await frames(2)
+      await act(async () => {
+        await dragged([{ width: to }])
+      })
+      await afterMotion()
+      expect({
+        glid: seen.some(({ gliding }) => gliding),
+        sideways: seen.filter(
+          (frame) =>
+            frame.main.some((px) => px !== 0) ||
+            frame.page.some((px) => px !== 0),
+        ),
+      }).toEqual({ glid: true, sideways: [] })
+    },
+  )
+
+  it('holds main’s scroll through a glide', async () => {
+    const drive = { from: 1280, to: [1200], down: 500 }
+    const glide = await scrolledThrough({ ...drive, still: false })
+    const still = await scrolledThrough({ ...drive, still: true })
+    const count = Math.min(glide.scrolls.length, still.scrolls.length)
+    const { bottom } = glide.row.before
+    // The fixture tells: both start alike, the row above the view but near
+    // enough to move with the covers, and only one glides, its row too.
+    expect({
+      starts: glide.start === still.start,
+      above: bottom < 0 && bottom > -NEAR_PX,
+      glid: [glide.glid, still.glid],
+      slid: [slid(glide.gaps), slid(still.gaps)],
+      scrolls: glide.scrolls.slice(0, count),
+    }).toEqual({
+      starts: true,
+      above: true,
+      glid: [true, false],
+      slid: [true, false],
+      scrolls: still.scrolls.slice(0, count),
+    })
+  })
+
+  it('moves the page only as the reduced-motion drive does, and rests where it rests, in the phone layout', async () => {
+    const drive = { from: 820, to: [812], down: 1600 }
+    const glide = await scrolledThrough({ ...drive, still: false })
+    const still = await scrolledThrough({ ...drive, still: true })
+    const count = Math.min(glide.scrolls.length, still.scrolls.length)
+    const tall = (row: DOMRect) => row.height
+    // The fixture tells: both start alike, the row lies far above the view,
+    // and its height changes, which the browser corrects the page for. The
+    // frames as well as the rest: Chromium's corrections add up to the one
+    // a row laid at once has it make, so only the frames tell them apart.
+    expect({
+      starts: glide.start === still.start,
+      far: glide.row.before.bottom < -NEAR_PX,
+      grew: tall(still.row.after) - tall(still.row.before) > 20,
+      rest: Math.abs(glide.rest - still.rest) <= 1 ? still.rest : glide.rest,
+      scrolls: glide.scrolls.slice(0, count),
+    }).toEqual({
+      starts: true,
+      far: true,
+      grew: true,
+      rest: still.rest,
+      scrolls: still.scrolls.slice(0, count),
+    })
+  })
+
+  // [where the row lies as the first change is made, how far down the
+  // wheel turns the page]: with its covers above the view, where the
+  // browser anchors the page below them, so the row's height moves it.
+  it.each([
+    ['just above the view', 480],
+    ['across the view’s top edge, its covers above the view', 340],
+  ] as const)(
+    'moves the page only as the reduced-motion drive does with the row %s, in the phone layout',
+    async (where, down) => {
+      const drive = { from: 820, to: [812], back: [820], down }
+      const glide = await scrolledThrough({ ...drive, still: false })
+      const still = await scrolledThrough({ ...drive, still: true })
+      const { before: row, cover, padding } = glide.row
+      const lies = () =>
+        row.bottom < 0 && row.bottom > -NEAR_PX
+          ? 'just above the view'
+          : row.top < 0 && cover.bottom < 0 && row.bottom > 0
+            ? 'across the view’s top edge, its covers above the view'
+            : `from ${row.top} to ${row.bottom}, covers to ${cover.bottom}`
+      const [first] = still.legs
+      // The fixture tells: both start alike, the row lies where the case
+      // says, its covers' foot lies where the row works it out from its box
+      // and column, only one drive glides, and the reduced-motion drive
+      // moves the page, so the browser corrects it for the row's height.
+      const foot = row.top + padding + cover.width * COVER_TALL
+      expect({
+        starts: glide.start === still.start,
+        where: lies(),
+        foot: Math.abs(foot - cover.bottom) <= 0.5,
+        glid: [glide.glid, still.glid],
+        corrected: Math.abs(first[first.length - 1] - first[0]) > 20,
+        off: offFrom(glide, still),
+        rest: Math.abs(glide.rest - still.rest) <= 1 ? still.rest : glide.rest,
+      }).toEqual({
+        starts: true,
+        where,
+        foot: true,
+        glid: [true, false],
+        corrected: true,
+        off: [],
+        rest: still.rest,
+      })
+    },
+  )
+
+  it('moves the page only as the reduced-motion drive does with a card’s placeholder text across the top of the view, in the phone layout', async () => {
+    const drive = { from: 820, to: [812], back: [820], down: 150 }
+    const glide = await scrolledThrough({ ...drive, still: false })
+    const still = await scrolledThrough({ ...drive, still: true })
+    const { before: row, text } = glide.row
+    const across =
+      row.top < 0 &&
+      text.height > 0 &&
+      text.top >= 0 &&
+      text.bottom <= innerHeight
+    const grown = (heights: number[]) =>
+      Math.max(...heights) - Math.min(...heights) > 20
+    // The fixture tells: both start alike, the row's top lies above the view
+    // and its first card's placeholder text wholly in it, the row's height
+    // changes in both drives, and only one glides and slides the row.
+    expect({
+      starts: glide.start === still.start,
+      across:
+        across || `row from ${row.top}, text ${text.top} to ${text.bottom}`,
+      grew: [grown(glide.heights), grown(still.heights)],
+      glid: [glide.glid, still.glid],
+      slid: [slid(glide.heights), slid(still.heights)],
+      off: offFrom(glide, still),
+      rest: Math.abs(glide.rest - still.rest) <= 1 ? still.rest : glide.rest,
+    }).toEqual({
+      starts: true,
+      across: true,
+      grew: [true, true],
+      glid: [true, false],
+      slid: [true, false],
+      off: [],
+      rest: still.rest,
+    })
+  })
+
+  it('starts the covers where they were drawn with the row across the view’s top edge and its covers in view, in the phone layout', async () => {
+    const { host, row } = await drawn({
+      width: 820,
+      size: 144,
+      entries: 12,
+      series: 60,
+    })
+    await wheeledTo(host, 268)
+    const grid = need(host, 'main .grid')
+    const covers = [...grid.children].map((_, k) => coverOf(host, k))
+    const seen: { width: number; gliding: boolean; covers: DOMRect[] }[] = []
+    eachFrame(() => {
+      seen.push({
+        width: innerWidth,
+        gliding: grid.hasAttribute('data-reseating'),
+        covers: covers.map((cover) => cover.getBoundingClientRect()),
+      })
+    })
+    await frames(2)
+    const across = {
+      row: row.getBoundingClientRect().top,
+      covers: need(
+        row,
+        ':scope > li :is(img, .cover-missing)',
+      ).getBoundingClientRect().bottom,
+    }
+    await act(async () => {
+      await dragged([{ width: 812 }])
+    })
+    await afterMotion()
+    const at = seen.findIndex(({ width }) => width === 812)
+    const shown = (box: DOMRect) => box.bottom > 0 && box.top < innerHeight
+    // Each cover in view, in the frame the columns change against the frame
+    // before: a glide starts where the cover was drawn.
+    const off = seen[at].covers.flatMap((box, k) => {
+      const was = seen[at - 1].covers[k]
+      const moved = Math.max(
+        Math.abs(box.top - was.top),
+        Math.abs(box.left - was.left),
+        Math.abs(box.width - was.width),
+      )
+      return (shown(box) || shown(was)) && moved > 0.5
+        ? [`cover ${k + 1}: ${moved} px`]
+        : []
+    })
+    // The fixture tells: the row's top lies above the view and its covers'
+    // foot in it, the change was drawn, and the covers glid.
+    expect({
+      across: across.row < 0 && across.covers > 0,
+      drawn: at >= 1,
+      glid: seen.some(({ gliding }) => gliding),
+      off,
+    }).toEqual({ across: true, drawn: true, glid: true, off: [] })
+  })
 })
 
 describe('the Continue row’s fade (O288 item 3)', () => {
@@ -794,7 +1350,7 @@ describe('the Continue row’s fade (O288 item 3)', () => {
 
   it('does not fade a row that fits', async () => {
     const { row } = await drawn({ width: 1280, size: 144, entries: 1 })
-    await frames(2)
+    await afterMotion(FADE_MS)
     // The fixture tells: the one card leaves the row nowhere to scroll.
     expect({
       fits: row.scrollWidth <= row.clientWidth,
@@ -822,6 +1378,7 @@ describe('the Continue row’s fade (O288 item 3)', () => {
     row.scrollLeft = 0
     await expect.poll(() => fade(row), POLL).toEqual(AFTER)
     await slide(host, '{ArrowLeft}'.repeat(48))
+    await afterMotion()
     // Forty-eight 1 px positions down from 144, the least size.
     await expect
       .poll(() => gridColumns(host)[0]?.width, POLL)
@@ -838,6 +1395,7 @@ describe('the Continue row’s fade (O288 item 3)', () => {
     row.scrollLeft = travel() / 2
     await expect.poll(() => fade(row), POLL).toEqual(BOTH)
     await slide(host, '{ArrowLeft}'.repeat(13))
+    await afterMotion()
     // Thirteen 1 px positions down from 144.
     await expect
       .poll(() => gridColumns(host)[0]?.width, POLL)
@@ -859,6 +1417,7 @@ describe('the Continue row’s fade (O288 item 3)', () => {
     row.scrollLeft = travel()
     await expect.poll(() => fade(row), POLL).toEqual(BEFORE)
     await slide(host, '{ArrowRight}')
+    await afterMotion()
     await expect
       .poll(() => gridColumns(host)[0]?.width, POLL)
       .toBeCloseTo(132, 1)
@@ -914,12 +1473,120 @@ describe('the Continue row’s fade (O288 item 3)', () => {
     await act(async () => {
       await userEvent.keyboard('{Tab}')
     })
+    await afterMotion(FADE_MS)
     const focused = document.activeElement
     expect({
       inRow: focused !== null && row.contains(focused),
       ring: focused?.matches(':focus-visible'),
       fade: fade(row),
-    }).toEqual({ inRow: true, ring: true, fade: { ...AFTER, mask: 'none' } })
+    }).toEqual({
+      inRow: true,
+      ring: true,
+      fade: { ...AFTER, mask: { before: WHOLE, after: WHOLE } },
+    })
+  })
+
+  it('fades in and out over 200 ms', async () => {
+    const { row } = await drawn({ width: 1280, size: 144, entries: 20 })
+    await expect.poll(() => fade(row), POLL).toEqual(AFTER)
+    const travel = row.scrollWidth - row.clientWidth
+    const seen: unknown[] = []
+    // The side before starts fading as the row leaves its start, and stops
+    // as it comes back.
+    for (const left of [travel / 2, 0]) {
+      const changed = marked(row, 'data-more-before', left > 0)
+      row.scrollLeft = left
+      await changed
+      const { run, ...middle } = halfway(row, 'before')
+      await run?.finished
+      await frames(1)
+      seen.push({ ...middle, end: edges(row).before })
+    }
+    expect(seen).toEqual([
+      { timing: EASED, midway: 'between', end: 0 },
+      { timing: EASED, midway: 'between', end: 1 },
+    ])
+  })
+
+  it('lifts the fade at once for a focus ring, and brings it back over 200 ms', async () => {
+    const { host, row } = await drawn({ width: 1280, size: 144, entries: 20 })
+    await expect.poll(() => fade(row), POLL).toEqual(AFTER)
+    // Each read in the first frame drawn after focus moves, before that
+    // frame's style starts any transition the move brings.
+    function firstFrame<T>(type: 'focusin' | 'focusout', read: () => T) {
+      return new Promise<T>((done) => {
+        row.addEventListener(
+          type,
+          () => requestAnimationFrame(() => done(read())),
+          { once: true },
+        )
+      })
+    }
+    const entered = firstFrame('focusin', () => edges(row))
+    const left = firstFrame('focusout', () => halfway(row, 'after'))
+    // Inside the frame first, as `slide` says; a card is next in the order.
+    await act(async () => need(host, '.view-button').focus())
+    await act(async () => {
+      await userEvent.keyboard('{Tab}')
+    })
+    const focused = document.activeElement
+    const ring =
+      focused !== null &&
+      row.contains(focused) &&
+      focused.matches(':focus-visible')
+    const lifted = await entered
+    await act(async () => {
+      await userEvent.keyboard('{Shift>}{Tab}{/Shift}')
+    })
+    const { run, ...middle } = await left
+    await run?.finished
+    await frames(1)
+    expect({
+      ring,
+      lifted,
+      middle,
+      back: edges(row),
+      gone: row.contains(document.activeElement),
+    }).toEqual({
+      ring: true,
+      lifted: { before: 1, after: 1 },
+      middle: { timing: EASED, midway: 'between' },
+      back: { before: 1, after: 0 },
+      gone: false,
+    })
+  })
+
+  it('flips at once under reduced motion', async () => {
+    onTestFinished(async () => {
+      await reducedMotion(false)
+    })
+    await reducedMotion(true)
+    const { row } = await drawn({ width: 1280, size: 144, entries: 20 })
+    await expect.poll(() => fade(row), POLL).toEqual(AFTER)
+    const changed = marked(row, 'data-more-before', true)
+    row.scrollLeft = (row.scrollWidth - row.clientWidth) / 2
+    await changed
+    await frames(1)
+    expect({
+      reduced: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      duration: getComputedStyle(row).transitionDuration,
+      before: edges(row).before,
+    }).toEqual({ reduced: true, duration: '0s', before: 0 })
+  })
+
+  it.each([
+    ['6, 25 and 40', '390×844', 390, 844, NARROW],
+    ['6, 25 and 40', '956×440', 956, 440, NARROW],
+    ['12, 50 and 80', '1280×800', 1280, 800, WIDE],
+  ] as const)('fades %s px at %s', async (_, __, width, height, at) => {
+    const { row } = await drawn({ width, height, size: 144, entries: 20 })
+    await expect
+      .poll(() => fade(row), POLL)
+      .toEqual({
+        before: false,
+        after: true,
+        mask: { before: side(1, at), after: side(0, at) },
+      })
   })
 })
 
@@ -1059,11 +1726,16 @@ describe('the Continue heading and the line under the row (O288 items 1, 4)', ()
     },
   )
 
-  it.each(['fine', 'coarse'] as const)(
-    'leaves the heading as it was below 900 px (%s pointer)',
-    async (pointer) => {
+  it.each([
+    [390, 844, 'fine'],
+    [390, 844, 'coarse'],
+    [956, 440, 'fine'],
+    [956, 440, 'coarse'],
+  ] as const)(
+    'leaves the heading as it was in the phone layout at %ix%i (%s pointer)',
+    async (width, height, pointer) => {
       if (pointer === 'coarse') onTestFinished(coarseRulesOn())
-      const { host } = await drawn({ width: 390, size: 144, entries: 6 })
+      const { host } = await drawn({ width, height, size: 144, entries: 6 })
       expect(getComputedStyle(need(host, '.continue h2')).marginTop).toBe('0px')
     },
   )

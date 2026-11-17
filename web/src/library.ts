@@ -13,6 +13,7 @@
  */
 import { getJson } from './api'
 import type { SeriesTitle } from './metadata'
+import { PHONE_LAYOUT_PARTS } from './phoneLayout'
 
 export interface EditionCard {
   key: string
@@ -214,15 +215,20 @@ export function coverSources(url: string): { src: string; srcSet: string } {
 }
 
 /**
- * `sizes` for a cover drawn `size` px wide. Below the shell's breakpoint
- * (`library.css`'s `(width < 900px)`) a cover fills its column, a width
- * `sizes` cannot write, so it names one the column never reaches: a column
- * two covers and a gap wide would hold a second cover, and the gap is at
- * most 1rem, which 32 px holds up to a 32 px root. A guess under the column
- * would draw a filled cover blurred.
+ * `sizes` for a cover drawn `size` px wide. In the phone layout a cover fills
+ * its column, a width `sizes` cannot write, so it names one the column never
+ * reaches: a column two covers and a gap wide would hold a second cover, and
+ * the gap is at most 1rem, which 32 px holds up to a 32 px root. A guess under
+ * the column would draw a filled cover blurred. The layout's condition goes in
+ * as one entry per part, since `or` inside `sizes` could not be checked in
+ * every browser the app runs in.
  */
 export function coverSizes(size: number): string {
-  return `(width < 900px) ${2 * size + 32}px, ${size}px`
+  const filled = 2 * size + 32
+  return [
+    ...PHONE_LAYOUT_PARTS.map((part) => `${part} ${filled}px`),
+    `${size}px`,
+  ].join(', ')
 }
 
 /**

@@ -25,7 +25,7 @@
  *   is, and saving goes on under the entry it makes.
  *
  * **The scroller is read from the layout**: `<main>` where the stylesheet
- * lets it scroll, at 900 px and wider, else the document.
+ * lets it scroll, beside the sidebar, else the document.
  */
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import { useLocation, useNavigationType } from 'react-router'
@@ -55,7 +55,8 @@ export function forgetScroll(): void {
   library = undefined
 }
 
-function scroller(): Element {
+/** The element that scrolls the shell's pages in the layout drawn. */
+export function scroller(): Element {
   const main = document.getElementById('content')
   if (main !== null) {
     const { overflowY } = getComputedStyle(main)

@@ -175,6 +175,9 @@ replacing every ad hoc size.
 `accent` outline at 2 px offset on `:focus-visible`. **Breakpoint** 900 px:
 below it the drawer, at or above it the sidebar, so a phone and a portrait
 iPad get the drawer and a landscape iPad and a desktop the sidebar.
+*Since 2026-11-16 (O305) the phone layout, the drawer's, holds below
+900 px wide or below 500 px tall, so a phone in landscape gets the drawer
+too; see O305's row in `docs/status.md`.*
 
 **The system colours map one to one**: `Canvas` → `bg`, `CanvasText` →
 `text`, `ButtonFace` → `surface`, `ButtonBorder` → `line-strong`, `GrayText`
@@ -470,6 +473,11 @@ its tile. It lies over the rows below, two tiles and the gap wide, inside
 the page area (O283, O274); see `2026-11-14-compact-series-tiles-design.md`.*
 
 ### 7.1 The shell
+
+*Since 2026-11-16 (O305) the phone layout holds below 900 px wide or below
+500 px tall: what this section says of "below 900 px" holds there, and its
+"900 px and above" needs a window at least 900 px wide and 500 px tall;
+see O305's row in `docs/status.md`.*
 
 **Chosen: one sidebar, which CSS moves off-canvas below 900 px.** The
 alternatives were a native `<dialog>` opened with `showModal()` — the

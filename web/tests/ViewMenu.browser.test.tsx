@@ -7,6 +7,7 @@ import * as library from '../src/library'
 import { ABOUT } from './support/about'
 import { tokenColour } from './support/colour'
 import { homePage, storedBrowse } from './support/homePage'
+import { afterMotion } from './support/motion'
 import { mouse } from './support/mouse'
 import { coarseRulesOn } from './support/pointer'
 
@@ -163,6 +164,7 @@ describe('the cover-size slider in the View panel', () => {
     })
     expect(output.textContent).toBe('144 px')
     await expect.poll(() => storedBrowse().coverSize).toBe(144)
+    await afterMotion()
     expect(tileWidth()).toBe(144)
   })
 
@@ -226,6 +228,7 @@ describe('the cover-size slider in the View panel', () => {
       await mouse.along(x, y, 0, 30)
     })
     await expect.poll(() => storedBrowse().coverSize).not.toBe(144)
+    await afterMotion()
     const shown = Number.parseInt(output.textContent ?? '', 10)
     expect(storedBrowse().coverSize).toBe(shown)
     expect(tileWidth()).toBe(shown)

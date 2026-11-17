@@ -41,7 +41,7 @@
 .reader {
   --reader-top-bar: 52px;
   /* The strip's tiles. 160 px is `cover.rs`'s `THUMB_LONG_EDGE`, a tile's
-   * natural height; below the breakpoint 96, so a phone shows about five pages
+   * natural height; in the phone layout 96, so a phone shows about five pages
    * and the two bars cover about 27% of a 390×844 screen rather than 35% (§8.1,
    * computed from the mockup). Not raised further for a bigger strip:
    * `THUMB_LONG_EDGE` is folded into the cache path, so raising it invalidates
@@ -106,7 +106,7 @@
   font-family: var(--font-ui);
 }
 
-@media (width < 900px) {
+@media (width < 900px) or (height < 500px) {
   .reader {
     --strip-tile: 96px;
     --strip-unit: 64px;

@@ -19,6 +19,7 @@ import * as library from '../src/library'
 import type { LibraryStatus } from '../src/library'
 import { Library } from '../src/Library'
 import { invalidateLibraryViews } from '../src/pageReads'
+import { PHONE_LAYOUT_PARTS } from '../src/phoneLayout'
 import type { ScanFeed } from '../src/scanFeed'
 import { SEARCH_BOX_ID } from '../src/searchHits'
 import { STATUS_FAILED, StatusContext } from '../src/shell'
@@ -1595,9 +1596,11 @@ describe('the library screen', () => {
 
     // The size off the scale is drawn at the nearest position's, so its
     // cover is asked for at that.
+    const filledAt = (width: number) =>
+      PHONE_LAYOUT_PARTS.map((part) => `${part} ${width}px`).join(', ')
     it.each([
-      [240, '(width < 900px) 512px, 240px'],
-      [151, '(width < 900px) 336px, 152px'],
+      [240, `${filledAt(512)}, 240px`],
+      [151, `${filledAt(336)}, 152px`],
     ])(
       'with a %i px cover size in the preferences, asks for its image with sizes %s',
       async (stored, sizes) => {

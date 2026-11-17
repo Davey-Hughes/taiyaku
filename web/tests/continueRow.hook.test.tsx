@@ -1,7 +1,16 @@
 import { act, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useContinueRow } from '../src/continueRow'
+import { pxOf, useContinueRow } from '../src/continueRow'
+import { NEAR_PX, RESEAT_MS, reseatEased } from '../src/reseatTiming'
 import { mount, rerender } from './support/mount'
+
+/** The time the frame being drawn is drawn for, which the test sets. */
+const clock = vi.hoisted(() => ({ now: 0 }))
+
+vi.mock('../src/reseatTiming', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/reseatTiming')>()),
+  frameTime: () => clock.now,
+}))
 
 /**
  * `useContinueRow` reads the layout, which jsdom does not lay out, so
@@ -14,6 +23,8 @@ import { mount, rerender } from './support/mount'
 
 let tokens: Record<string, string>
 let boxWidth: number
+/** Where the list's box lies down the view, and how tall it is. */
+let rowAt: { top: number; height: number }
 /** How far each card's edge lies past the one before it: the row's pitch. */
 let step: number
 let observers: Array<{ answer: () => void; observed: Element[] }>
@@ -149,6 +160,8 @@ beforeEach(() => {
   tokens = { '--tile-min': '144px', '--tile-gap': '16px', '--tile-fill': '0' }
   // 1008 px inside the list's 4 px of padding a side.
   boxWidth = 1016
+  rowAt = { top: 100, height: 300 }
+  clock.now = 0
   observers = []
   frames = new Map()
   vi.spyOn(window, 'getComputedStyle').mockImplementation(
@@ -157,14 +170,23 @@ beforeEach(() => {
         getPropertyValue: (name: string) => tokens[name] ?? '',
         paddingLeft: '4px',
         paddingRight: '4px',
+        paddingTop: '4px',
         borderLeftWidth: '0px',
         borderRightWidth: '0px',
+        borderTopWidth: '0px',
       }) as unknown as CSSStyleDeclaration,
   )
   vi.spyOn(
     HTMLUListElement.prototype,
     'getBoundingClientRect',
-  ).mockImplementation(() => ({ width: boxWidth }) as DOMRect)
+  ).mockImplementation(
+    () =>
+      ({
+        width: boxWidth,
+        top: rowAt.top,
+        bottom: rowAt.top + rowAt.height,
+      }) as DOMRect,
+  )
   step = 0
   vi.spyOn(HTMLLIElement.prototype, 'getBoundingClientRect').mockImplementation(
     function (this: HTMLLIElement) {
@@ -579,5 +601,142 @@ describe('useContinueRow', () => {
     rerender(<Row size={164} />)
     // Two and a half cards along at this pitch.
     expect(ul.scrollLeft).toBe(550)
+  })
+})
+
+describe('useContinueRow at a change in the grid’s column count', () => {
+  /**
+   * The row drawn with its top `top` px down the view, where reduced motion
+   * is not asked for, then a resize to a column fewer at time 1000: six
+   * 144 px columns across 1008 px at a 28.8 px gap, five across 848 px at
+   * 32 px. What it lays at the change, a frame halfway through the move and
+   * a frame at its end.
+   */
+  function columnFewer(top: number) {
+    vi.stubGlobal('matchMedia', () => ({ matches: false }))
+    rowAt.top = top
+    const ul = listIn(mount(<Row />))
+    clock.now = 1000
+    boxWidth = 856
+    resized()
+    const change = laid(ul)
+    clock.now = 1000 + RESEAT_MS / 2
+    frame()
+    const halfway = laid(ul)
+    clock.now = 1000 + RESEAT_MS
+    frame()
+    return { change, halfway, end: laid(ul) }
+  }
+
+  const VIEW = 768
+  const TARGET = { gap: '32px', column: '' }
+
+  it.each([
+    ['on screen', 100],
+    ['within 200 px above the view', -NEAR_PX + 1 - 300],
+    ['within 200 px below it', VIEW + NEAR_PX - 1],
+  ])(
+    'slides the row %s from where it is drawn, on the covers’ clock and curve',
+    (_, top) => {
+      // The fixture tells: jsdom's view is the height the cases take.
+      expect(window.innerHeight).toBe(VIEW)
+      const { change, halfway, end } = columnFewer(top)
+      expect({
+        change,
+        halfway: { ...halfway, gap: pxOf(halfway.gap).toFixed(3) },
+        end,
+      }).toEqual({
+        change: { gap: '28.8px', column: '144px' },
+        halfway: {
+          gap: (28.8 + 3.2 * reseatEased(0.5)).toFixed(3),
+          column: '144px',
+        },
+        end: TARGET,
+      })
+    },
+  )
+
+  it.each([
+    ['more than 200 px above the view', -NEAR_PX - 1 - 300],
+    ['more than 200 px below it', VIEW + NEAR_PX + 1],
+  ])('lays the row’s target at once %s', (_, top) => {
+    expect(window.innerHeight).toBe(VIEW)
+    expect(columnFewer(top)).toEqual({
+      change: TARGET,
+      halfway: TARGET,
+      end: TARGET,
+    })
+  })
+
+  // The fill layout's columns across the same two widths: six of 928 / 6 px
+  // across 1008 px, five of 156.8 px across 848 px, 16 px apart. A cover
+  // 928 / 6 px wide is 232 px tall, under 4 px of padding: its foot lies
+  // 236 px below the row's top.
+  const FILLED = { gap: '', column: '156.8px' }
+
+  it('slides a filled row across the view’s top edge with its covers in view, from where it is drawn', () => {
+    tokens['--tile-fill'] = '1'
+    const { change, halfway, end } = columnFewer(-235)
+    expect({
+      change,
+      halfway: pxOf(halfway.column).toFixed(3),
+      end,
+    }).toEqual({
+      change: { gap: '16px', column: `${928 / 6}px` },
+      halfway: (928 / 6 + (156.8 - 928 / 6) * reseatEased(0.5)).toFixed(3),
+      end: FILLED,
+    })
+  })
+
+  it('lays a filled row’s target at once with its covers above the view and its foot in it', () => {
+    tokens['--tile-fill'] = '1'
+    expect(columnFewer(-237)).toEqual({
+      change: FILLED,
+      halfway: FILLED,
+      end: FILLED,
+    })
+  })
+
+  it('starts a slide a size change begins between frames at the first frame that draws it', () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: false }))
+    const ul = listIn(mount(<Row />))
+    // The commit, between frames, reads the last frame's time; five 168 px
+    // columns across 1008 px lie 42 px apart.
+    clock.now = 1000
+    tokens['--tile-min'] = '168px'
+    rerender(<Row size={168} />)
+    const change = laid(ul)
+    clock.now = 1016
+    frame()
+    const first = laid(ul)
+    clock.now = 1016 + RESEAT_MS / 2
+    frame()
+    const halfway = laid(ul)
+    const along = reseatEased(0.5)
+    expect({
+      change,
+      first,
+      halfway: {
+        gap: pxOf(halfway.gap).toFixed(3),
+        column: pxOf(halfway.column).toFixed(3),
+      },
+    }).toEqual({
+      change: { gap: '28.8px', column: '144px' },
+      first: { gap: '28.8px', column: '144px' },
+      halfway: {
+        gap: (28.8 + 13.2 * along).toFixed(3),
+        column: (144 + 24 * along).toFixed(3),
+      },
+    })
+  })
+
+  it('lays the target at once where reduced motion is asked for', () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(prefers-reduced-motion: reduce)',
+    }))
+    const ul = listIn(mount(<Row />))
+    boxWidth = 856
+    resized()
+    expect(laid(ul)).toEqual(TARGET)
   })
 })

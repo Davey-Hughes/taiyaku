@@ -75,11 +75,12 @@ describe('the Series page’s title field, after the Rules screen hoisted .field
 
 /**
  * An open volume draws the editor inside its tile, `.library` > `main` >
- * `ul.volumes` > `li`, beside the tile's own `span.title`, and the editor's
- * Title field is `label.field.title`: a rule for the tile's title that named
- * any `.title` in `.volumes` would draw the field in the title face too.
- * The label and the box are held to the form's own face: the label inherits
- * it, and the box takes it through `base.css`'s `font: inherit`.
+ * `ul.volumes` > `li`, beside the tile's own `span.title` in its link in
+ * `.tile-body`, as `Series.tsx` draws it, and the editor's Title field is
+ * `label.field.title`: a rule for the tile's title that named any `.title`
+ * in `.volumes` would draw the field in the title face too. The label and
+ * the box are held to the form's own face: the label inherits it, and the
+ * box takes it through `base.css`'s `font: inherit`.
  */
 describe('the editor’s Title field in a volume’s tile', () => {
   it('draws its label and box in the editor’s face, not the tile title’s', async () => {
@@ -90,9 +91,11 @@ describe('the editor’s Title field in a volume’s tile', () => {
           <main>
             <ul className="volumes">
               <li>
-                <a href="/read/w">
-                  <span className="title">t</span>
-                </a>
+                <div className="tile-body">
+                  <a href="/read/w">
+                    <span className="title">t</span>
+                  </a>
+                </div>
                 <MetadataEditor
                   slug="w"
                   title="t"
@@ -119,7 +122,7 @@ describe('the editor’s Title field in a volume’s tile', () => {
         lineHeight: style.lineHeight,
       }
     }
-    const tile = face(need('.volumes li > a > .title'))
+    const tile = face(need('.volumes li > .tile-body > a > .title'))
     const form = face(need('form.metadata-editor'))
 
     // The fixture tells: the tile's title differs from the form's face in

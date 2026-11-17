@@ -11,6 +11,7 @@ import { GateContext } from '../src/gate'
 import * as librariesApi from '../src/libraries'
 import * as library from '../src/library'
 import { LibraryPage } from '../src/LibraryPage'
+import { SIDEBAR_LAYOUT } from '../src/phoneLayout'
 import { Shell } from '../src/Shell'
 import { deferred, flush, settleUntil } from './support/async'
 import {
@@ -33,15 +34,17 @@ import {
   watchDrawn,
 } from './support/wait'
 import { helpOf, row, section } from './support/settingsRows'
+import { lowered, SIDEBAR_HEIGHT } from './support/shortWindow'
 import * as usersApi from '../src/users'
 
 /**
  * The Libraries screen inside the real `Shell`, and the Users screen's line
- * that focus lands on. Below 900px the document scrolls under a sticky phone
- * bar and above it `<main>` scrolls, and what a person can see of a report,
- * a refusal or a failure depends on both: a test shell without the bar
- * cannot tell where the bar covers. The last cases mount a library's page
- * alone, in a real browser for where it moves focus, which no bar changes.
+ * that focus lands on. In the phone layout the document scrolls under a
+ * sticky phone bar and beside the sidebar `<main>` scrolls, and what a person
+ * can see of a report, a refusal or a failure depends on both: a test shell
+ * without the bar cannot tell where the bar covers. The last cases mount a
+ * library's page alone, in a real browser for where it moves focus, which no
+ * bar changes.
  */
 
 vi.mock('../src/library', async (importOriginal) => ({
@@ -322,7 +325,10 @@ async function shell(
   return host
 }
 
-/** To the foot of whatever scrolls: the document below 900px, `main` above. */
+/**
+ * To the foot of whatever scrolls: the document in the phone layout, `main`
+ * beside the sidebar.
+ */
 async function toTheFoot(host: HTMLElement) {
   const main = host.querySelector('main') as HTMLElement
   main.scrollTo(0, main.scrollHeight)
@@ -475,8 +481,8 @@ function holdReload() {
 }
 
 /**
- * Scrolls whatever scrolls, the document below 900px and `main` above, until
- * the top of `el` is `y` from the top of the window.
+ * Scrolls whatever scrolls, the document in the phone layout and `main` beside
+ * the sidebar, until the top of `el` is `y` from the top of the window.
  */
 async function putAt(host: HTMLElement, el: Element, y: number) {
   const delta = el.getBoundingClientRect().top - y
@@ -679,13 +685,18 @@ describe('the Libraries screen in the real Shell', () => {
    * O209: the pressed control at the very foot of the window, and its
    * refusal drawn beneath it, below the fold, is brought into view. A
    * control that is always in view cannot be put at its foot, so the window
-   * is first made shorter than the page down to the control, by `by`.
+   * is first made shorter than the page down to the control, by `by`. In
+   * the sidebar's layout the control is put lower first, so that the shorter
+   * window still draws that layout rather than the phone's.
    */
   async function atTheFoot(width: number, el: HTMLElement, by = 100) {
     const main = document.querySelector('main') as HTMLElement
-    const below =
+    const below = () =>
       el.getBoundingClientRect().bottom + window.scrollY + main.scrollTop
-    await page.viewport(width, Math.floor(below) - by)
+    const sidebar = matchMedia(SIDEBAR_LAYOUT).matches
+    if (sidebar) lowered(main, below(), SIDEBAR_HEIGHT + by)
+    await page.viewport(width, Math.floor(below()) - by)
+    expect(matchMedia(SIDEBAR_LAYOUT).matches).toBe(sidebar)
     await settle()
     el.scrollIntoView({ block: 'end' })
     await new Promise((r) => setTimeout(r, 60))
@@ -1159,6 +1170,16 @@ describe('the Libraries screen in the real Shell', () => {
       vi.mocked(librariesApi.listLibraries).mockRejectedValue(STORE_LOCKED)
       await renameMangaQuietly(host)
       const alert = () => listFailure(host, 'library-page') as HTMLElement
+      // In the sidebar's layout the sentence is put lower, so that the
+      // shorter window below still draws that layout rather than the phone's.
+      const sidebar = matchMedia(SIDEBAR_LAYOUT).matches
+      if (sidebar) {
+        lowered(
+          document.querySelector('main') as HTMLElement,
+          alert().getBoundingClientRect().top,
+          SIDEBAR_HEIGHT,
+        )
+      }
       const top = Math.round(alert().getBoundingClientRect().top)
       expectInSight(alert())
 
@@ -1166,6 +1187,7 @@ describe('the Libraries screen in the real Shell', () => {
       // and the head of the sentence is not.
       await page.viewport(width, top + 10)
       await settle()
+      expect(matchMedia(SIDEBAR_LAYOUT).matches).toBe(sidebar)
       expect(alert().getBoundingClientRect().top).toBeLessThan(
         window.innerHeight,
       )
@@ -2573,21 +2595,22 @@ describe('Move… in its dialog, in the real Shell', () => {
         Math.abs(scanned.getBoundingClientRect().top - before),
       ).toBeLessThanOrEqual(0.5)
       expect(moveBox(host).matches(':modal')).toBe(true)
-      // Its top pinned, at a desk's width `--space-7` from the window's and
-      // on a phone at the page's gutter; across, centred at a desk's width.
-      // Below 900px the document keeps a scrollbar's gutter (`settings.css`),
-      // which the box is centred clear of, so there its sides are held
-      // inside the page's gutter instead.
+      // Its top pinned, beside the sidebar `--space-7` from the window's and
+      // in the phone layout at the page's gutter; across, centred beside the
+      // sidebar. In the phone layout the document keeps a scrollbar's gutter
+      // (`settings.css`), which the box is centred clear of, so there its
+      // sides are held inside the page's gutter instead.
+      const sidebar = matchMedia(SIDEBAR_LAYOUT).matches
       const at = moveBox(host).getBoundingClientRect()
       const doc = document.documentElement
       const step = Number.parseFloat(
         getComputedStyle(doc).getPropertyValue(
-          width === 1280 ? '--space-7' : '--space-4',
+          sidebar ? '--space-7' : '--space-4',
         ),
       )
-      expect(step).toBe(width === 1280 ? 48 : 16)
+      expect(step).toBe(sidebar ? 48 : 16)
       expect(Math.abs(at.top - step)).toBeLessThanOrEqual(0.5)
-      if (width === 1280) {
+      if (sidebar) {
         expect(
           Math.abs(at.left - (doc.clientWidth - at.right)),
         ).toBeLessThanOrEqual(1)
@@ -2639,6 +2662,7 @@ describe('Move… in its dialog, in the real Shell', () => {
     it(`draws Move…’s fields under labels in their own case${width === 1280 ? ', beside them,' : ''} and each of its buttons a row’s gap beneath the last field, at ${width}`, async () => {
       vi.mocked(librariesApi.moveCost).mockResolvedValue(answer(true))
       const host = await shell(width, height, NOVELS_DIR_PAGE)
+      const sidebar = matchMedia(SIDEBAR_LAYOUT).matches
       await click(moveButton(host))
       const box = moveBox(host)
       const gap = Number.parseFloat(
@@ -2659,7 +2683,7 @@ describe('Move… in its dialog, in the real Shell', () => {
           expect
             .soft(getComputedStyle(words(label)).textTransform, label)
             .toBe('none')
-          if (width === 1280) {
+          if (sidebar) {
             expect
               .soft(at.right, `${label} beside its field`)
               .toBeLessThan(control.left)

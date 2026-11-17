@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import indexHtml from '../../index.html?raw'
-import { STRIP_BREAKPOINT_PX, STRIP_TILE_PX } from '../../src/tileSize'
+import { PHONE_LAYOUT } from '../../src/phoneLayout'
+import { STRIP_TILE_PX } from '../../src/tileSize'
 import {
   atRulesOf,
   rules,
@@ -68,7 +69,7 @@ describe('the reader root', () => {
     ])
   })
 
-  it('stands the strip’s tiles at 160 px and 96 below the breakpoint, with a matching starting --strip-unit', () => {
+  it('stands the strip’s tiles at 160 px and 96 in the phone layout, with a matching starting --strip-unit', () => {
     // Built from `tileSize.ts`'s constants rather than written out again:
     // the filmstrip asks the server for a rung derived from those two numbers
     // during its first render, before there is an element to measure, so this
@@ -81,12 +82,12 @@ describe('the reader root', () => {
       '107px',
       '64px',
     ])
-    // Anchored to the phone breakpoint's own `.reader` block, not a search of
+    // Anchored to the phone layout's own `.reader` block, not a search of
     // the whole file — but not exclusive: `--strip-unit` lives in the same
     // block (O140), and this must hold with it there.
     expect(withoutComments(readerSource)).toMatch(
       new RegExp(
-        `@media \\(width < ${STRIP_BREAKPOINT_PX}px\\)\\s*\\{\\s*\\.reader\\s*\\{[^}]*--strip-tile:\\s*${STRIP_TILE_PX.narrow}px;`,
+        `@media ${PHONE_LAYOUT.replace(/[()]/g, '\\$&')}\\s*\\{\\s*\\.reader\\s*\\{[^}]*--strip-tile:\\s*${STRIP_TILE_PX.narrow}px;`,
       ),
     )
   })
@@ -573,9 +574,9 @@ describe('the strip’s rail', () => {
 
   /**
    * `declared` finds a rule by its prelude and cannot see an enclosing
-   * at-rule, so either rule moved inside `@media (width < 900px)` would still
-   * be found, and the scrollbar would come back above that width. A rule at
-   * the top level starts a line.
+   * at-rule, so either rule moved inside the phone layout's `@media` would
+   * still be found, and the scrollbar would come back beside the sidebar. A
+   * rule at the top level starts a line.
    */
   it('stands at the top level of the stylesheet, not inside an at-rule', () => {
     const source = withoutComments(readerSource)

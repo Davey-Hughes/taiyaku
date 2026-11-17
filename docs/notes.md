@@ -28542,3 +28542,527 @@ reads `cache hits: 0`. `bars.json` was committed at 14:21:08 UTC, before
 the first held-out score at 15:23:17 UTC ("Held out" above). Nothing in
 the test library changed after the comics were copied in, and its
 `library.db` is unchanged.
+
+## O303 to O308: the fade, the glide, the phone layout by height and the place across the swap (2026-11-16)
+
+The spec is `docs/superpowers/specs/2026-11-16-resize-polish-design.md`
+and the plan `docs/superpowers/plans/2026-11-16-resize-polish.md`. The
+task reports named below are in
+`.superpowers/sdd/2026-11-16-resize-polish/`, which is not committed. The
+owner settled the design by trying a prototype on a rig served from a
+scratch copy of the test library; the prototype was approved for feel, and
+everything in it was built again under tests.
+
+**H, the height the phone layout turns at: 500 px.** The figures are
+published viewport sizes in CSS px, read from the sources `h-figures.md`
+names (device tables, AOSP's and Chromium's resource files), not measured
+on a device. A phone's height in landscape is at most its width in
+portrait. The widest current phone in those tables is 448 px across, and
+the owner's iPhone 17 Pro Max 440, so every current phone in landscape is
+under 500 with its browser bars shown or hidden, and the bars never flip
+the layout. iPads clear 500 in landscape (an iPad mini's short side is
+744), and so do tablets whose short side is about 700 or more. An Android
+tablet with a 600 dp short side does not: less the status, navigation and
+Chrome's bars, its landscape viewport in Chrome works out at about 432 to
+464 px, which is arithmetic on those resource files and, in both figures,
+on Chrome's toolbar height taken from a 2017 Chromium review; the upper
+figure also assumes a gesture bar. No height separates the two classes,
+since the widest phone is wider than such a tablet is tall. The
+coordinator's ruling: H = 500 stands, and a 600 dp tablet in landscape
+gets the phone layout, since the sidebar would crowd it as it crowds a
+short desktop window; it is put to the owner with the PR. Android's
+Display size setting, which moves every dp figure, was not checked.
+
+**A soft keyboard and H.** `index.html`'s viewport sets no
+`interactive-widget`, so each browser's default holds. Current Chrome on
+Android (from 108), Safari on iOS and Firefox on Android (from 132)
+resize only the visual viewport for a keyboard, so a keyboard moves no
+media query's height there. Older Firefox, an open Firefox bug
+(Bugzilla 1943053) and Samsung Internet, whose default no source gave,
+could turn the layout while someone types. The search field is the same
+element in both layouts, and `SearchBar.browser.test.tsx` holds its focus
+and its text through a turn by height.
+
+**The windows the short-window cases use.** `Shell.browser.test.tsx`'s
+"leaves the document unscrolled on the account screen in a short window"
+drove the account screen at 1280×300. The spec moved it to a height at or
+above H still shorter than the account row's depth, but at 1280 px that
+row is 451 px deep, so no such height exists (`task-2-report.md`). The
+case runs at 1280×500 instead, with `main`'s top padded by
+`tests/support/shortWindow.ts`'s `lowered` until the row lies deeper than
+the window, and checks that the sidebar's layout holds. The
+`Libraries.shell.browser.test.tsx` cases that shorten a 1280 px window
+(`atTheFoot`, and the one for a failure whose head is cut off by the foot
+of the window) lower the page the same way where the sidebar's layout
+holds before the shortening, and assert that the window keeps the layout
+it started in.
+
+**The turn's signal.** A turn is told by the `(orientation: portrait)`
+media feature's state, read inside the observer that lays a change and
+compared with the state the list, or the Continue row, was last laid at;
+no event is listened to (`reseatTiming.ts`'s `uprightNow`, `turnSnaps`).
+A probe in Vitest's frame in Chromium (`task-11-report.md`, Step 1) found
+the lists' `ResizeObserver` running in the frame that lays the new size,
+where the media feature already reads the new orientation, while the
+media query's `change` and the window's `resize` came a frame later and
+`screen.orientation`'s `change` came in no fixed frame against the view.
+The lists never read `screen.orientation`, so for them the screen turn the
+test asks of CDP only makes the drive like a phone's; the scroll keeper
+does read it (below, "A phone turn keeps the place"). A desktop window
+dragged across square turns the orientation and snaps once, as the spec
+accepts; three existing drives crossed square at 844 px tall and were
+given a height on one side of it. Two things only the owner's hand-check
+on the iPhone can show: whether iOS Safari lays a turn's width and height
+in separate frames and so lets a turn glide, and the order of these
+signals in a top-level document, since the probe ran in Vitest's iframe.
+
+**Why a glide moves a tile's content and not the tile.** Chromium makes
+no scroll-anchoring correction while the node it anchors to, or one
+around it, runs a changing transform. With the transform on the tile, a
+column change mid-glide left a scrolled page resting a row from where the
+same drive under reduced motion rests: every cover 282 px off on the home
+grid and 256 px on a series page (`task-7b-report.md`). The glide moves
+the tile's first child, and that content is kept out of the anchor's
+choosing at all times. Kept out only while a list glides, Chromium keeps
+an anchor it chose inside the content before: with the rule scoped so, a
+reversal mid-glide went uncorrected in its frame on both pages. The open
+volume panel, outside the content, then needed no lift and no change to
+`layPanel`: its tile has no transform, so it is no stacking context and
+`layPanel` reads its laid box. **A trade, put to the owner with the PR:** at rest the browser now
+holds a tile's top rather than the caption at the view's top, so where a
+cover's height changes a page scrolled to a caption rests by that change
+from where main leaves it. The review measured it in Chromium with the
+view's top in a caption, against the content left to the anchor's
+choosing as on main (`task-7b-review.md`): a drag from 800 to 730 px in
+the phone layout holding 4 columns, with nothing gliding, rests at scroll
+1999 against 1973, the caption moving 26.5 px; a change from 5 to 4
+columns under reduced motion rests at 2096 against 2130, 34 px apart.
+Not measured: a page whose view's top falls on a tile with its panel open,
+where by reading the browser anchors on the panel.
+
+**The Continue row in the phone layout.** There its cards fill their
+columns, so its height follows the column through a slide, and the
+browser corrects a page scrolled below it every frame instead of once.
+Laid at once where it lies beyond 200 px of the view, the row leaves the
+browser one correction. In Chromium the per-frame corrections add up to
+the one: nine drives with the row sliding while far above the view each
+rested at 0 px from the reduced-motion drive (`task-9-report.md`, "K4
+and its defect"), so "moves the page only as the reduced-motion drive
+does, and rests where it rests, in the phone layout" compares every
+frame's scroll as well as the rest, and its per-frame check is the one
+watched red; its rest check alone cannot go red in Chromium. (The plan
+names that case by an older title.) Firefox need not add them up: the
+Firefox run below found a row 95 px above the view, inside the margin,
+resting 15.25 and 15.23 px off after a change made and unmade, with
+Firefox's warning that it had turned scroll anchoring off "because of too
+many consecutive adjustments"; Chromium crept and rested at 0. So in the
+phone layout the row is now laid at once wherever its covers' foot is at
+or above the view's top (`slidesFrom`). The foot is worked out, not
+read: the row's top, its top border and padding, and its column times
+`COVER_TALL`, 3/2, the inverse of the covers' `aspect-ratio: 2 / 3`,
+which `library.css.test.ts` holds to the stylesheet; a fixture field in
+the test checks the sum against the drawn cover within 0.5 px. The
+broader rule, laid at once wherever the row's top is above the view, was
+tried and broke the covers' start: a cover partly in view is the
+anchor, so the browser corrected nothing, and the row laid at once pushed
+the grid under covers just starting their glide, 57.3 px off in Firefox
+and Chromium (`task-11b-report.md`). This narrows the spec's recommended
+route, which is put to the owner with the PR.
+
+A card whose cover is missing draws a placeholder with the title centred
+in it. With that text in view across the view's top, both engines anchored
+to the text, which moves by half the cover's growth, so the slide made a
+correction each frame; Firefox rested 19.15 and 19.13 px off after a
+change made and unmade, again turning anchoring off, and Chromium 0
+(`task-11b-report.md`, "Zone C in Firefox"). The text is now wrapped in a
+span kept out of the anchor's choosing in the Continue row
+(`.continue .cover-missing > span`), so both engines anchor to the
+placeholder's box, as to a loaded cover; the text moves with the box,
+about 29 px a column step (28.65 from 820 to 812 px), and the
+reduced-motion drive now makes no correction there where it made 29 px.
+Every line of the text is drawn where it was: a probe in Chromium found
+each line's box the same with and without the span at four titles and
+two widths (its log prints `same false` because it lists the span's own
+box first; the line boxes match).
+
+**Firefox, once** (`task-12a-report.md`). Firefox 153.0, headless, through
+Playwright 1.62.1, drove a build of the branch before the Continue row's
+two rules above, served from a scratch copy of the test library, in two
+runs at a load of 2 to 3. Each resize was one step of the viewport, not
+one a frame.
+
+- Where a glide starts: across the home grid, a series page, a Cover size
+  step and the phone layout by width and by height, with a reversal 3
+  frames into a glide and a second change 4 frames in, the largest start
+  error was 0.14 px, against the 0.5 px Chromium's test holds.
+- Where it ends: every cover, Continue card and scroll 0 px from the same
+  drive under reduced motion, in every case and both runs, with nothing
+  left animating, transformed or marked.
+- The page held still, in Smooth with `main` scrolled and in the phone
+  layout with the document scrolled (820 to 812 px wide, and 1320×480):
+  the scroll matched the reduced-motion drive in every frame.
+- Two figures whose cause was not found: a cover's drawn box in a
+  glide's first frame up to 0.48 px from where the frame before drew it,
+  under the 0.5 px Chromium's test holds, where the replayed start was
+  0.02 px; and some glides starting 0.02 ms from the frame's time, where
+  Chromium's test holds 1e-6 ms. Turning Firefox's timer rounding off
+  removed neither.
+- After the two rules, the drives they changed were run again in Firefox
+  twice each (`task-11b-report.md`, `task-11c-report.md`): the near row,
+  the band where only the row's titles are in view, and a placeholder's
+  text across the top each moved the page frame for frame as the
+  reduced-motion drive did and rested at 0 px with no warning; with a
+  cover in view across the top the covers started 0.01 px from where
+  they were drawn.
+
+**Defects no test can see.** A mutant that drops the turn from
+`reseat.ts`'s change gate (`changed`), keeping the phone layout's edge,
+would survive every test, by a reading of the tests; it was not run. Only
+a turn that keeps the column count reaches it, such as a window crossing
+square while a glide runs, which should snap that glide. Two in
+`continueRow.ts`, found by reading too, have no effect today: dropping the
+top border from the covers' foot (the row has no border) and `foot > 0`
+written `foot >= 0` (the jsdom cases sit 1 px either side).
+
+**Known limits, untested.**
+
+- A slide interrupted between frames, such as a second Cover size step
+  mid-slide, starts the Continue row one frame of the old slide behind
+  the covers, and the gap closes over the new glide.
+- At a change in the number of covers that changes the list's height the
+  grid snaps while the Continue row finishes its slide to the same
+  targets: the row has no signal of the grid's count.
+- A change in the number of covers that keeps the list's height snaps
+  nothing at once: no observer runs, so a cover moved to a new box keeps
+  any glide it is running, and the list's next resize snaps, a column
+  change included.
+- A desktop window crossing square by its height alone during the row's
+  slide snaps the Continue row while the covers glide on, and the lists'
+  next resize then snaps, since the row reads the orientation at every
+  measure and the lists only at their resize. Not driven.
+
+**The tests, and the defect each was watched failing against.** Each
+defect was applied to the code by hand, the test run red, and the code
+restored; the task report names each run's log, but for the two
+`reseat.test.ts` runs noted below. Tests that passed when written count
+only through these runs. The browser tests are in the
+browser project, which CI does not run and the local gate does.
+
+- O305, `node` and `jsdom`:
+  - `phoneLayout.css.test.ts`, every stylesheet viewport query the
+    condition, its complement or a named exception: red with `library.css`'s
+    fade block written width-only, and with `admin.css`'s complement
+    written width-only. "is each part of the phone layout's, negated, all
+    of them at once": red with `SIDEBAR_LAYOUT`'s height changed alone.
+  - `builtStylesheet.test.ts`, both conditions after the build: red with a
+    CSS target that has no media range syntax.
+  - The ties moved onto the constants (`library.css.test.ts`,
+    `settings.css.test.ts`, `reader.css.test.ts`, `library.test.ts`,
+    `tileSize.test.ts`, `Library.test.tsx`'s `sizes`, `Shell.test.tsx`'s
+    drawer query): each red against the width-only code they replaced.
+  - `library.css.test.ts`'s "draws a Continue card’s cover, and the
+    placeholder in its place, COVER_TALL times as tall as wide": red with
+    the stylesheet's ratio changed alone, and with `COVER_TALL` inverted.
+- O305, browser:
+  - `Shell.browser.test.tsx`'s "agrees on the layout at %ix%i", "closes
+    the drawer as the window leaves the phone layout by %s" and the case
+    at 956×440 in which the document scrolls rather than `<main>` and ☰
+    opens the drawer onto its first link: red with `shell.css`'s phone block written
+    width-only; the drawer's case also with `Shell.tsx`'s query width-only,
+    red by height and from a phone held sideways. The account case: red
+    with the address row's `position: relative` dropped, and with
+    `lowered` a no-op.
+  - `Libraries.shell.browser.test.tsx`'s short-window cases: all eight
+    red with `reveal` and `bringIntoView` no-ops. The four at 1280 px ran
+    501 and 511 px tall, which shows they run beside the sidebar, and went
+    red with `lowered` a no-op.
+  - At 956×440, `coverLayout`'s filled columns and `Cover`'s image: red
+    with `library.css`'s fill block written width-only; `Cover` also with
+    `coverSizes` naming the width part alone, on the image `coverSizes`
+    names and on the image against the cover drawn alike. `Filmstrip`'s
+    strip: red with `reader.css`'s block written width-only.
+    `Library.continue`'s "leaves the heading as it was in the phone layout
+    at %ix%i (%s pointer)": red with the heading's complement written
+    width-only.
+  - `SearchBar.browser.test.tsx`'s "keeps the search field’s focus and
+    text through a turn by height": red with a `key` on the input that
+    remounts it at the turn.
+- O303, `Library.continue.browser.test.tsx`: "fades in and out over 200
+  ms": red with the `@property` rules removed, and with the easing
+  `linear`. "lifts the fade at once for a focus ring, and brings it back
+  over 200 ms": red with the focus rule's `transition: none` removed, and
+  with each of the two defects before. Both also red with the transition
+  written `150ms ease-out 50ms`, which they passed while their timing
+  check read the end time, the delay and the duration summed, rather than
+  each. "flips at once under reduced motion": red with the reduced-motion
+  block removed. "fades %s px at %s": red at 956×440 with the half-width
+  block written width-only, and at all three sizes with its condition
+  inverted. `colourLiterals.test.ts`, which allows `library.css` two
+  literals for the mask's alpha: red with a colour literal added there.
+- Import with no browser (`jsdom`): `Library.test.tsx`, `Routes.test.tsx`,
+  `Shell.test.tsx` and `continueRow.hook.test.tsx` failed at import, and a
+  `main.test.tsx` case failed, with a module-level `matchMedia` in the
+  glide's timing module; `Library.test.tsx` and `Series.test.tsx` failed
+  at import with a module-level `ResizeObserver` in `reseat.ts`.
+- O304, `reseat.test.ts` (`node`): `geometryOf`'s cases red with the
+  Smooth pitch unspread, the filled pitch without its gap, one Smooth
+  column given a pitch, and its checks for rows the grid did not lay and
+  for a width removed; `moveOf`'s with the snap and margin bounds made
+  inclusive, nearness read at only one end of the move, a running move's
+  offset carried the wrong way, and the new top read from the old row;
+  `reseatEased` with an ease-in-out; `mayReseat` inverted, and true where
+  nothing can be asked; `frameTime` always the clock; `onRowLaid` a single
+  slot, and one signal for it and `onScrollPutBack`. `uprightNow` asking
+  for landscape and `turnSnaps` firing at every change are red by the task
+  report alone (`task-11-report.md`, M6 and M3): no log of either node
+  run was kept.
+- O304, `reseat.hook.test.tsx` (`jsdom`): red with the observer kept past
+  the last list; the scroll listener removed without `capture`; the
+  row-laid listener left; `drawn` ignored; the start time not set to the
+  frame's; a running glide ignored at the next change; positions taken
+  relative to the page instead of the view; places not read again at a
+  scroll or a row laid, or read in a resized frame or at a scroll
+  elsewhere; a width change read as a column change; no snap at a change
+  in the count, at the phone layout's edge, under reduced motion, at the
+  self-check, for rows the grid did not lay, or when a list leaves
+  mid-move; the put-back signal's listener behind the resize guard, or
+  left after the last list; places read at a size the observer has not run
+  for; the tile animated instead of its content; and a tile with nothing
+  in it handed to the animation.
+- O304, `reseat.browser.test.tsx`:
+  - "a glide starts where each cover is drawn" through the scroll Chromium
+    anchors in the change's frame: red with places taken relative to the
+    page, and with the size check removed from the re-read; after the
+    scroller swap's put-back: red with `scrollPutBack` not called, and
+    with an extra frame in the drag.
+  - "%s: each cover starts where it was drawn, and the glide ends clean",
+    on the home grid and a series page, one column each way, a reversal 3
+    frames in and a second change 4 frames in: red with the start time
+    left to the browser, the old box taken without the running glide, a
+    final keyframe other than none, a fill forwards, the transform put
+    back on the tile, the content's `overflow-anchor` removed (no
+    correction in the change's frame), an animation or a transform left at
+    rest, the self-check's probe reading the tile, and the wheel's fixture
+    giving up early.
+  - "a glide ends clean after a chip filter changes the list mid-glide":
+    red with a fill forwards.
+  - The slider: a step that adds a column, red with the tokens read only
+    when the list's width changes; a mouse drag across two changes, red
+    with the old geometry worked out with the new size's tokens.
+  - "follows a click on a cover mid-glide, and Back": red with the
+    observer not made again for the next page, and in its check that
+    nothing listens once the last list is gone, with the listeners kept
+    after the last list (`final-scratch-A/watch-s5.log`). "renders nothing
+    through a glide": red with a state set at each change.
+  - "what snaps": by width across the phone layout's edge and by height
+    where the columns hold, red with the edge's snap removed; beyond 200
+    px, red with the margin removed, set to 0, or the view taken as
+    unbounded; under reduced motion, red with `mayReseat`'s check removed;
+    a chip filter, alone while the covers glide or landing in the frame of
+    a column change, red with the count's check removed or the count
+    change let through. Pressed while nothing glided, the chip alone had
+    stayed green under both, so it now starts a glide first.
+  - "what a frame reads", beside the sidebar, in the phone layout and
+    across a column change, at the fixture's covers and at about 500: red
+    with a cover read every frame; the latter two also with a cover read
+    in the list's style read, and the last with one at a change. Per
+    scroll event: red with every cover read, and with the page's scroll
+    listener removed. Only the per-frame case checks that its list starts
+    in view; the per-scroll count does not depend on where the list is
+    drawn.
+  - "snaps a list not laid where its arithmetic says": red with the
+    self-check's bound made unreachable.
+  - "cancels the glide and keeps the anchor, %s", into the phone layout in
+    both observer orders and out of it while the covers scale: red with
+    the list's mark cleared only at the cancel event; the two into it also
+    with the swap's put-back a frame late, and the one out of it with the
+    swap reading a cover's drawn box.
+  - "starts where drawn after a scroll between two changes" and "…after a
+    scroll while the covers glide, then the next change": red with the
+    page's scroll listener removed. "reads where a list is drawn after a
+    scroll, where its box alone changed size": red with that, and with the
+    lists observed by their content box.
+  - "a phone turn": "snaps the covers and the Continue row on a turn", red
+    with the turn dropped from `reseat.ts` or from `continueRow.ts`, and
+    with `TURN_RESEATS` true; "glides a column change that is not a turn",
+    red with every change counted a turn and with the orientation kept
+    from first sight.
+- O304, `reseatTiming.browser.test.tsx`'s "the animation’s curve and
+  reseatEased agree": red with `RESEAT_EASING` changed alone.
+- O304, the Continue row:
+  - `continueRow.hook.test.tsx` (`jsdom`): the row laid at once beyond
+    200 px above and below the view, red with the row sliding while far
+    off; sliding within 200 px, red with no margin; laid at once under
+    reduced motion, red with reduced motion ignored; either side of the
+    covers' foot at the view's top, red with the row's bottom tested
+    instead, with its top tested instead, and with the top padding left
+    out of the foot.
+  - `Library.continue.browser.test.tsx`: "keeps card k over the grid’s
+    cover k through a glide, %s", red with `RESEAT_EASING` changed without
+    `reseatEased`, and in the phone layout with that layout's rule for the
+    row inverted; "keeps card k over the grid’s cover k through a Cover
+    size step’s glide, %s", red with the row's slide started in the commit
+    that measures the step rather than in the first frame that draws it;
+    "scrolls nothing sideways in any frame of a glide, %s", red with the
+    sideways clip removed; "holds main’s scroll through a glide", red with
+    a Smooth card taking the filled column, with the near row laid at once
+    (watched again after its check of whether the row slid changed,
+    `final-scratch-A/watch-k3.log`), and with the phone layout's rule for
+    the row applied beside the sidebar too; "moves the page only as the
+    reduced-motion drive does, and rests where it rests, in the phone
+    layout", red on its frames with the row sliding while far off, and
+    with the phone layout's rule inverted; "moves the page only as the
+    reduced-motion drive does with the row %s, in the phone layout", red
+    with the row sliding wherever it lies within 200 px of the view, as
+    before the narrowing, its case just above the view also with the phone
+    layout's rule inverted, and its titles-band case with the row's bottom
+    tested instead of the covers' foot; "starts the covers where they were
+    drawn with the row across the view’s top edge and its covers in view,
+    in the phone layout", red with the row laid at once wherever its top
+    is above the view; "moves the page only as the reduced-motion drive
+    does with a card’s placeholder text across the top of the view, in the
+    phone layout", red with the span's rule removed and with the whole
+    placeholder kept out instead. The three O288 item 2 cases that wait
+    for the motion to end: red with that wait made a no-op. Where the
+    phone layout's rule is inverted in these cases, or applied beside the
+    sidebar too, it was the broader rule above, the row laid at once
+    wherever its top is above the view.
+- O304, the final review's fixes: `continueRow.hook.test.tsx`'s "starts a
+  slide a size change begins between frames at the first frame that draws
+  it", red with the slide started in the commit; `reseat.hook.test.tsx`'s
+  two cases where the number of covers changes, a cover still moving
+  included, red with the count's check removed.
+- O304, `Series.panel.browser.test.tsx`: "stays over the covers
+  mid-glide", red with the transform put back on the tile holding the
+  panel; "is laid where the reduced-motion drive lays it after a glide",
+  red with that, and with `layPanel` reading the moving content's box.
+  Five of `Series.test.tsx`'s Escape cases: red with the focus return
+  looking for `i` as the tile's own child, which the content wrapper would
+  have broken. `MetadataEditor.browser.test.tsx`'s Title field case, its
+  tile now drawn with the content wrapper: red with the title face's rule
+  written as a child of the tile, which it passed before.
+- O306, `scrollerSwap.hook.test.tsx` (`jsdom`): red with out-of-flow
+  children kept as anchors; a top page's at-top rule dropped; no walk back
+  to the row's first cover; a row gap taken as crossed; a detached anchor
+  put back; a pixel offset in place of the share; a negative share where
+  the anchor stands below the top; a put-back at every observer run; a
+  new place at every scroll; a page change keeping the place, or no
+  `MutationObserver`; the resize flag not read, set at
+  every resize, not cleared by the observer, or cleared in the resize's
+  own frame, with no fallback clear, or with a newer resize not cancelling
+  the older clear; the swap guard in the frame's read removed; no window
+  `resize` listener; the guards for a window with no `ResizeObserver` or
+  no `<main>` removed; the unmount's cleanup removed; and the
+  `MutationObserver`, the scroll or `resize` listener, or the pending
+  clear left on unmount.
+- O306, `scrollKeeper.browser.test.tsx`'s "the place across the scroller
+  swap, from 1280 × 800": each case red with the put-back removed, except
+  "leaves a page at its top at its top", which a top page passes without
+  it and which goes red with the at-top rule dropped and the phone bar
+  ignored. The width and height drags on Configuration's Libraries: red
+  with out-of-flow children kept as anchors. With a pixel offset in place
+  of the share, ten of the thirteen went red. "lands Back after a swap at
+  the place put back": red with a place kept from the page left put back
+  over Back's landing. The plan, and the spec as first written, named
+  another defect for it, the swap's 0 saved under the history entry,
+  which cannot happen here: the scroll keeper saves the live scroller at
+  every scroll and as the view goes (`scrollKeeper.ts`'s `useKeptScroll`),
+  so the put-back's own scroll overwrites the 0; a scroll dispatched
+  before the put-back left the case green.
+
+### A phone turn keeps the place (2026-11-17)
+
+**What iOS Safari does at a turn.** A hand-check rig built from this
+branch before the keeper handled a turn logged the page's scroll, size
+and events on the owner's iPhone 17 Pro Max through a run of turns
+(`rig-d-report.md`, `diag-iphone-1.txt`). Safari set the page's scroll
+itself by the turn's `resize` event. From near the home's top, with a
+sliver of the Continue row in view, a turn upright went to the top; from
+the home's middle the place drifted from one round trip to the next. A
+reading of WebKit's source (`diag-series-turn.md`) gives the rule:
+Safari keeps the point at the view's centre, but goes to the top where
+the page is short or the view starts near its top; it was not checked on
+the device. Chromium keeps the place at a turn by scroll anchoring, so
+no Chromium test could show this. An earlier report of a series page
+going to its top, from another rig, fits two full loads of that page in
+that rig's log.
+
+**What the keeper does at a turn.** `useScrollerSwap` puts the kept
+place back at a turn as at a swap, in the root's `ResizeObserver`,
+before paint. A turn is a change in `screen.orientation.type`
+(`facingNow`), which a desktop window dragged across square does not
+make; where the screen cannot be asked, as in jsdom, it is a change in
+`(orientation: portrait)`. The put-back moves the scroll by how far the
+anchor stands from its place, so it lands the same from whatever scroll
+iOS or the browser's anchoring left. The Continue row lays a new column
+in its own observer, after the keeper's, and the row's new height moves
+the grid below it, so in a put-back's frame the keeper puts the place
+back again when the row says it laid one (`onRowLaid`, checked against
+`frameTime`). A cover whose top stood below the view's top, the top line
+falling in the gap above its row, goes back as far below it at a turn; a
+swap puts it at the top, as the spec's swap rule says.
+
+**The rule against drift.** The owner, 2026-11-17: a turn and its return
+land where the reader started. While the anchor is drawn where it was put
+back the keeper does not read the place again (`drawnAsKept`): read in
+the other orientation it can be another cover of its row, or a clamped
+end, and the return would land elsewhere. So the return puts back the
+place the first turn kept, and a page whose end stops the put-back comes
+back on the way back. A scroll that moves the anchor ends this pairing,
+and so does a Cover size step, which the keeper sees as a change to the
+`style` of `main`'s parent, where the shell sets `--cover-n`: where the
+page does not anchor, a step moves no scroll and draws no child, so
+nothing else would end it. A sideways scroll of the Continue row, which a
+turn itself makes, runs the keeper's read but leaves the pairing, since
+the anchor is still drawn where it was kept.
+
+**On the phone.** The rig was rebuilt twice with the keeper's turn and
+the logger (`rig-d2-report.md`, `rig-d3-report.md`). On the first build
+every turn's put-back held, with no later scroll from iOS. The second
+also keeps a cover below the top as far below it, and there each logged
+home round trip came back to its starting scroll. The owner's three
+re-checks on it passed: the home turned from its middle, the home with a
+sliver of the Continue row in view, and a Cover size change after a
+turn. The Cover size was changed on the phone, but every turn around the
+step was at the page's top, so the phone does not show the pairing after
+a step; the browser test below holds it.
+
+**Known limits.**
+
+- A turn is counted at the root observer's first run after
+  `screen.orientation.type` changes. Were iOS to resize the window for its
+  toolbar between `orientationchange` and the turn's new size, that run
+  would count as the turn and the turn's own would not. The logged turns
+  show nothing between the two.
+- A window moved to a rotated monitor changes `screen.orientation.type`
+  without a resize, so its next resize counts as a turn and puts the
+  place back once where Chromium already anchors: a step, not a drift.
+- Whether iOS Safari anchors the page through a turn is not settled: the
+  first log reads as if it did not, a later one as if it did. The
+  put-back lands the same either way, and the tests run every turn with
+  the page anchoring and with it not.
+
+**The tests, and the defect each was watched failing against**
+(`task-13-report.md`, `task-13-rereview-1.md`, `task-13-rereview-2.md`).
+Chromium sends a frame's `resize` after its observers, so the browser
+tests' turn sets iOS's landing (the top, the same share of the page, or
+the same offset) and sends `resize` itself in the turn's task, which
+puts iOS's order first.
+
+- `scrollKeeper.browser.test.tsx`'s "the place across a phone turn",
+  where the page anchors and where it does not, and
+  `scrollerSwap.hook.test.tsx`'s "at a phone turn, which keeps the layout"
+  (`jsdom`): red with the turn's put-back removed; with the return reading
+  the place again; with a scroll not ending the pairing; with the put-back
+  a frame late (every browser turn case, the step case as it stood before
+  its rework, by its first-frame check); with the row's put-back removed,
+  made at any row lay rather than in the put-back's frame, or a frame
+  late; with `below` ignored; with `drawn` recorded where the put-back
+  aimed rather than where the page's end stopped it; with the `style`
+  observation removed; and with `stepped` never cleared, by the step
+  case's second round trip. A swap keeping `below`: red in `jsdom`.
+- "the place through a desktop window dragged across square", and the
+  hook's "puts nothing back where the screen faces as it did": red with a
+  turn told by `(orientation: portrait)` alone.
+- The swap's case with a sliver of the Continue row at the top: red with
+  the row's put-back removed, where the page does not anchor.

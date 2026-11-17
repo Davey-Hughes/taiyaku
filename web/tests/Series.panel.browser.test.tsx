@@ -7,11 +7,19 @@ import type { Me } from '../src/api'
 import * as derive from '../src/libraries'
 import * as library from '../src/library'
 import * as metadata from '../src/metadata'
+import { PHONE_LAYOUT, SIDEBAR_LAYOUT } from '../src/phoneLayout'
 import * as stamp from '../src/stamp'
 import { deferred, settleUntil } from './support/async'
 import { columnsOf } from './support/columns'
 import { holdOf } from './support/held'
 import { lineCount, lineOf, oneLineIn, pastTheEdgeOf } from './support/lines'
+import {
+  afterMotion,
+  dragged,
+  eachFrame,
+  reducedMotion,
+  scriptedIn,
+} from './support/motion'
 import { areaOf, overlapOf, pointerRulesAs } from './support/pointer'
 import { seriesPage } from './support/seriesPage'
 
@@ -162,7 +170,9 @@ const contentOf = (area: Element) => {
 }
 
 const iOf = (tile: Element) => {
-  const i = tile.querySelector<HTMLButtonElement>(':scope > .panel-open')
+  const i = tile.querySelector<HTMLButtonElement>(
+    ':scope > .tile-body > .panel-open',
+  )
   if (i === null) throw new Error('no i on this tile')
   return i
 }
@@ -217,7 +227,9 @@ async function drawn({
 async function open(tile: HTMLElement) {
   await real(() =>
     userEvent.hover(
-      tile.querySelector(':scope > :is(a, .tile-unreadable)') as Element,
+      tile.querySelector(
+        ':scope > .tile-body > :is(a, .tile-unreadable)',
+      ) as Element,
     ),
   )
   await real(() => userEvent.click(iOf(tile)))
@@ -244,7 +256,7 @@ describe('a volume’s panel over the rows below (O283)', () => {
       tiles.flatMap((tile) =>
         [
           tile,
-          tile.querySelector(':scope > a'),
+          tile.querySelector(':scope > .tile-body > a'),
           tile.querySelector('.title'),
         ].map((el) => rect(el).toJSON()),
       )
@@ -274,18 +286,19 @@ describe('a volume’s panel over the rows below (O283)', () => {
       const columns = columnsOf(main.querySelector('.volumes') as Element, size)
       const tile = rect(tiles[0])
       const gap = rect(tiles[1]).left - tile.right
-      // The fixture tells: from 900 px up the tile is the size and the gap
-      // the spread one, wider than the least; below, the gap is the least
-      // and the tile the filled column, wider than the size. Either way
-      // two tiles and the gap fit right of the tile's left edge.
+      // The fixture tells: beside the sidebar the tile is the size and the
+      // gap the spread one, wider than the least; in the phone layout the
+      // gap is the least and the tile the filled column, wider than the
+      // size. Either way two tiles and the gap fit right of the tile's left
+      // edge.
       const spread = (columns.width - columns.n * size) / (columns.n - 1)
       const filled = (columns.width - (columns.n - 1) * columns.gap) / columns.n
       expect(
-        width >= 900
+        matchMedia(SIDEBAR_LAYOUT).matches
           ? { tile: tile.width, gap, wider: gap > columns.gap + 1 }
           : { tile: tile.width, gap, wider: tile.width > size + 1 },
       ).toEqual(
-        width >= 900
+        matchMedia(SIDEBAR_LAYOUT).matches
           ? { tile: size, gap: expect.closeTo(spread, 1), wider: true }
           : {
               tile: expect.closeTo(filled, 1),
@@ -461,6 +474,7 @@ describe('a volume’s panel over the rows below (O283)', () => {
 
     await page.viewport(1100, 800)
     await expect.poll(() => window.innerWidth).toBe(1100)
+    await afterMotion()
     // The fixture tells: five columns, so the tile opens the second row as
     // wide as it was, and the gap the columns are laid apart by moved; two
     // tiles and that gap fit right of its left edge.
@@ -517,12 +531,13 @@ describe('a volume’s panel over the rows below (O283)', () => {
       // The fixture tells: below 900 px the tile is the filled column, wider
       // than the size; at 900 px it is the size again.
       expect(tile, `the tile at ${width} px`).toBeCloseTo(
-        width < 900
+        matchMedia(PHONE_LAYOUT).matches
           ? (columns.width - (columns.n - 1) * columns.gap) / columns.n
           : 144,
         1,
       )
-      if (width < 900) expect(tile).toBeGreaterThan(144 + 1)
+      if (matchMedia(PHONE_LAYOUT).matches)
+        expect(tile).toBeGreaterThan(144 + 1)
 
       await expect
         .poll(() => rect(panel).width, {
@@ -700,6 +715,153 @@ describe('a volume’s panel over the rows below (O283)', () => {
   })
 })
 
+/** What a glide moves in a volume's tile: its body, which holds the cover. */
+const bodyOf = (tile: Element) => {
+  const body = tile.querySelector(':scope > .tile-body')
+  if (body === null) throw new Error('no body on this tile')
+  return body
+}
+
+/**
+ * Through a glide (O304), the open panel stands at its tile's laid box while
+ * the covers move to theirs. The drive is one step of a drag from six
+ * columns to five.
+ */
+describe('a volume’s panel through a glide (O304)', () => {
+  it('stays over the covers mid-glide', async () => {
+    onTestFinished(pointerRulesAs('mouse'))
+    const { main, tiles } = await drawn({ width: 1280 })
+    const list = main.querySelector('.volumes') as HTMLElement
+    // The third: a tile further along its row moves further as the gap
+    // between the columns changes, and one that moved less than a snap's
+    // threshold would not glide.
+    const which = 2
+    const tile = tiles[which]
+    const panel = await open(tile)
+    const seen: {
+      glides: boolean
+      under: number[]
+      hit: string
+    }[] = []
+    eachFrame(() => {
+      if (!list.hasAttribute('data-reseating')) return
+      const box = rect(panel)
+      const x = box.left + box.width / 2
+      const y = box.top + box.height / 2
+      const at = document.elementFromPoint(x, y)
+      const hitTile = at?.closest('.volumes > li')
+      seen.push({
+        glides: scriptedIn(tile) > 0,
+        // Each later cover drawn under the point while it glides.
+        under: tiles.flatMap((later, i) => {
+          if (i <= which || scriptedIn(later) === 0) return []
+          const drawnAt = rect(bodyOf(later))
+          const over =
+            x > drawnAt.left &&
+            x < drawnAt.right &&
+            y > drawnAt.top &&
+            y < drawnAt.bottom
+          return over ? [i] : []
+        }),
+        hit:
+          at?.closest('.tile-panel') === panel
+            ? 'panel'
+            : `tile ${hitTile ? tiles.indexOf(hitTile as HTMLElement) : '-'}`,
+      })
+    })
+    await act(async () => {
+      await dragged([{ width: 1100 }])
+    })
+    await afterMotion()
+
+    // The fixture tells: the page went from six columns to five, the tile
+    // holding the panel glided, and a later cover, gliding, was drawn under
+    // the panel's centre in a frame.
+    const covered = seen.filter(({ under }) => under.length > 0)
+    expect({
+      n: columnsOf(list, 144).n,
+      tileGlides: seen.some(({ glides }) => glides),
+      covered: covered.length > 0,
+    }).toEqual({ n: 5, tileGlides: true, covered: true })
+    expect(
+      covered.map(({ hit }) => hit),
+      'what is hit at the panel’s centre in each frame a gliding cover is drawn under it',
+    ).toEqual(covered.map(() => 'panel'))
+  })
+
+  it('is laid where the reduced-motion drive lays it after a glide', async () => {
+    onTestFinished(pointerRulesAs('mouse'))
+    onTestFinished(async () => {
+      await reducedMotion(false)
+    })
+    /**
+     * The sixth tile's panel opened at 1280 px, where the tile ends the
+     * first row, and its left edge and width once a step to 1100 px has
+     * come to rest, where it opens the second.
+     */
+    const laidAfter = async () => {
+      const { host, main, tiles } = await drawn({ width: 1280 })
+      const list = main.querySelector('.volumes') as HTMLElement
+      const tile = tiles[5]
+      const panel = await open(tile)
+      const before = {
+        n: columnsOf(list, 144).n,
+        tile: rect(tile),
+        area: contentOf(main),
+      }
+      let glided = false
+      eachFrame(() => {
+        glided ||= scriptedIn(tile) > 0
+      })
+      await act(async () => {
+        await dragged([{ width: 1100 }])
+      })
+      await afterMotion()
+      const box = rect(panel)
+      const laid = {
+        before,
+        n: columnsOf(list, 144).n,
+        tile: rect(tile),
+        area: contentOf(main),
+        glided,
+        left: box.left,
+        width: box.width,
+      }
+      // Out of the way of the next drive's page, which would lie under it.
+      host.hidden = true
+      return laid
+    }
+    const glide = await laidAfter()
+    await reducedMotion(true)
+    const still = await laidAfter()
+    await reducedMotion(false)
+
+    // The fixture tells: from the last of six columns to the first of five,
+    // so the panel lies back from the tile's right edge before and from its
+    // left edge after; and the tile glided in the first drive alone.
+    for (const drive of [glide, still]) {
+      expect({
+        before: drive.before.n,
+        endsRow:
+          Math.abs(drive.before.tile.right - drive.before.area.right) < 0.5,
+        after: drive.n,
+        opensRow: Math.abs(drive.tile.left - drive.area.left) < 0.5,
+      }).toEqual({ before: 6, endsRow: true, after: 5, opensRow: true })
+    }
+    expect({ glide: glide.glided, still: still.glided }).toEqual({
+      glide: true,
+      still: false,
+    })
+    expect(
+      { left: glide.left, width: glide.width },
+      'the panel’s left edge and width after the glide',
+    ).toEqual({
+      left: expect.closeTo(still.left, 0),
+      width: expect.closeTo(still.width, 0),
+    })
+  })
+})
+
 /**
  * Its closes, each waiting for the Title field's save (O283). A real press
  * outside reaches the document as `pointerdown` before the field's blur,
@@ -848,7 +1010,9 @@ describe('closing a volume’s panel (O283)', () => {
     vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
     const { tiles } = await typed()
     await real(() =>
-      userEvent.hover(tiles[1].querySelector(':scope > a') as Element),
+      userEvent.hover(
+        tiles[1].querySelector(':scope > .tile-body > a') as Element,
+      ),
     )
     await real(() => userEvent.click(iOf(tiles[1])))
     expect({ drawn: drawnIn(tiles).slice(0, 2), calls: calls() }).toEqual({

@@ -42,11 +42,11 @@ import { TopBar } from './TopBar'
 /// too.
 const previewMaxHeight = '55vh'
 
-// The strip: its tiles at the breakpoint's size plus the rail's padding and
-// the tiles' borders. `--strip-tile` in `styles/reader.css` has the two sizes
-// and why each — 160 px, the thumbnail's own height, from 900 px up, and 96 on
-// a phone — and a height that depends on the viewport is a custom property
-// because an inline style cannot hold a media query.
+// The strip: its tiles at the layout's size plus the rail's padding and the
+// tiles' borders. `--strip-tile` in `styles/reader.css` has the two sizes and
+// why each — 160 px, the thumbnail's own height, and 96 in the phone layout —
+// and a height that depends on the viewport is a custom property because an
+// inline style cannot hold a media query.
 const stripStyle: CSSProperties = { height: 'var(--strip-height)' }
 
 // The mark on the progress line (O216): where along the volume the strip

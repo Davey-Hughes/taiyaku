@@ -255,14 +255,15 @@ describe.each([1280, 390])('a failed cover’s tile at %i px', (width) => {
 
 /**
  * **A cover asks for the image its drawn width needs** (`library.ts`'s
- * `coverSources` and `coverSizes`): from 900 px up a cover is the size, and
- * below it fills its column, up to the whole row. The address is a blob's
- * with the size after a `#`, so it loads with no server; a data address would
- * not do, as Chromium counts one as held already and picks the largest. A
- * blob per case, since a size the page already holds is picked the same way.
+ * `coverSources` and `coverSizes`): beside the sidebar a cover is the size,
+ * and in the phone layout it fills its column, up to the whole row. The
+ * address is a blob's with the size after a `#`, so it loads with no server;
+ * a data address would not do, as Chromium counts one as held already and
+ * picks the largest. A blob per case, since a size the page already holds is
+ * picked the same way.
  */
 describe('a cover’s image', () => {
-  async function drawn(width: number, coverSize: number) {
+  async function drawn(width: number, coverSize: number, height?: number) {
     const png = Uint8Array.from(
       atob(LOADS.slice(LOADS.indexOf(',') + 1)),
       (c) => c.charCodeAt(0),
@@ -279,7 +280,7 @@ describe('a cover’s image', () => {
       added: [],
       read: [],
     })
-    const host = await homePage({ width, coverSize })
+    const host = await homePage({ width, height, coverSize })
     const img = () => host.querySelector<HTMLImageElement>('.grid img')
     await expect
       .poll(() => (img()?.complete ? img()?.currentSrc : ''))
@@ -301,6 +302,32 @@ describe('a cover’s image', () => {
       expect(await drawn(width, size)).toEqual({ picked, width: drawnWidth })
     },
   )
+
+  // A phone held sideways: the phone layout by its height alone, its covers
+  // grown to fill their columns. The browser picks by `sizes`, not by the
+  // drawn width: the least of the server's three whose `srcset` width
+  // reaches the width `coverSizes` names, which no filled column passes. So
+  // the picked image is also no narrower than the cover drawn, or the filled
+  // cover would draw blurred.
+  it('at 956×440 px with a 144 px cover filling its column is the one for the filled width', async () => {
+    const { picked, width } = await drawn(956, 144, 440)
+    if (width === undefined) throw new Error('no cover drawn')
+    const reaching = (wide: number) =>
+      [256, 512, 768].find((edge) => Math.round((edge * 2) / 3) >= wide)
+    const named = reaching(2 * 144 + 32)
+    // The fixture tells: the cover is wider than its size, and the width
+    // `coverSizes` names in the phone layout calls for a larger image than
+    // the size alone would.
+    expect({
+      filled: width > 144 + 1,
+      larger: named !== reaching(144),
+    }).toEqual({ filled: true, larger: true })
+    expect(picked).toBe(`?w=${named}`)
+    expect(
+      Math.round((Number(picked?.slice('?w='.length)) * 2) / 3),
+      'the picked image against the cover drawn',
+    ).toBeGreaterThanOrEqual(width)
+  })
 
   /**
    * The page's density, set over the DevTools session: it is the page's, not

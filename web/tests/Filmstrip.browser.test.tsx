@@ -25,11 +25,8 @@ import type { Group } from '../src/pairing'
 import type { Position } from '../src/resolver'
 import { mount, rerender } from './support/mount'
 import { mouse } from './support/mouse'
-import {
-  requestedTileEdge,
-  STRIP_BREAKPOINT_PX,
-  STRIP_TILE_PX,
-} from '../src/tileSize'
+import { PHONE_LAYOUT } from '../src/phoneLayout'
+import { requestedTileEdge, STRIP_TILE_PX } from '../src/tileSize'
 import { type GlideSample, releaseSpeed } from '../src/tiles'
 
 /**
@@ -221,6 +218,7 @@ describe("the strip's rung follows the stylesheet's drawn tile height", () => {
   for (const [width, height] of [
     [1440, 900],
     [390, 844],
+    [956, 440],
   ] as const) {
     it(`asks for the rung its own drawn tile height calls for, ${width}x${height}`, async () => {
       await page.viewport(width, height)
@@ -230,7 +228,9 @@ describe("the strip's rung follows the stylesheet's drawn tile height", () => {
         getComputedStyle(rail).getPropertyValue('--strip-tile'),
       )
       expect(drawn).toBe(
-        width < STRIP_BREAKPOINT_PX ? STRIP_TILE_PX.narrow : STRIP_TILE_PX.wide,
+        matchMedia(PHONE_LAYOUT).matches
+          ? STRIP_TILE_PX.narrow
+          : STRIP_TILE_PX.wide,
       )
 
       const expected = requestedTileEdge(drawn, window.devicePixelRatio)

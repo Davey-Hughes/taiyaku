@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { PHONE_LAYOUT } from '../../src/phoneLayout'
 import { atRulesOf, rules, selectors } from '../support/css'
 import adminSource from '../../src/styles/admin.css?raw'
 import settingsSource from '../../src/styles/settings.css?raw'
@@ -26,12 +27,12 @@ describe('settings.css holds a split still near its breakpoint', () => {
     ])
   })
 
-  it('keeps the document’s gutter under shell.css’s own breakpoint, below which the document scrolls and main does not', () => {
+  it('keeps the document’s gutter in shell.css’s phone layout, where the document scrolls and main does not', () => {
     expect(
       atRulesOf(settingsSource, ':root:has(.config, .split)').map(
         ({ at }) => at,
       ),
-    ).toEqual(['@media (width < 900px)'])
+    ).toEqual([`@media ${PHONE_LAYOUT}`])
     // Where shell.css stops `main` scrolling, so the document scrolls instead.
     expect(
       atRulesOf(shellSource, '.library > main')
@@ -39,7 +40,7 @@ describe('settings.css holds a split still near its breakpoint', () => {
           /(?:^|;)\s*overflow-y:\s*visible\s*(?:;|$)/.test(body),
         )
         .map(({ at }) => at),
-    ).toEqual(['@media (width < 900px)'])
+    ).toEqual([`@media ${PHONE_LAYOUT}`])
   })
 })
 

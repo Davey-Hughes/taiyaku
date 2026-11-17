@@ -907,7 +907,7 @@ describe('a tab row and a pill row stay two different rows', () => {
 describe('a volume tile’s controls on the cover (O283)', () => {
   it('hides i only where every pointer hovers', () => {
     const hiding = withoutComments(librarySource).match(
-      /@media([^{]*)\{\s*\.volumes > li > :is\(\.panel-open, a\.get\)\s*\{[^}]*\bopacity:\s*0;/,
+      /@media([^{]*)\{\s*\.volumes > li > \.tile-body > :is\(\.panel-open, a\.get\)\s*\{[^}]*\bopacity:\s*0;/,
     )
     expect(hiding?.[1].trim()).toBe(
       '(hover: hover) and (not (any-pointer: coarse))',

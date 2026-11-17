@@ -19,6 +19,7 @@ import {
   work,
   type WorkCard,
 } from '../src/library'
+import { PHONE_LAYOUT_PARTS } from '../src/phoneLayout'
 
 const edition = (over: Partial<EditionCard> = {}): EditionCard => ({
   key: 'raw',
@@ -351,13 +352,15 @@ describe('cover sources', () => {
 })
 
 /**
- * Below 900 px a cover fills its column, which is narrower than two covers
- * and a gap; from 900 px up it is the size.
+ * In the phone layout a cover fills its column, which is narrower than two
+ * covers and a gap; beside the sidebar it is the size.
  */
 describe('cover sizes', () => {
+  const filled = (width: number) =>
+    PHONE_LAYOUT_PARTS.map((part) => `${part} ${width}px`).join(', ')
   it.each([
-    [144, '(width < 900px) 320px, 144px'],
-    [240, '(width < 900px) 512px, 240px'],
+    [144, `${filled(320)}, 144px`],
+    [240, `${filled(512)}, 240px`],
   ])('for a %i px cover is %s', (size, sizes) => {
     expect(coverSizes(size)).toBe(sizes)
   })

@@ -42,6 +42,7 @@ import {
 } from './library'
 import { messageOf } from './message'
 import { invalidateLibraryViews, seriesRead } from './pageReads'
+import { useReseat } from './reseat'
 import { useKeptScroll } from './scrollKeeper'
 import { PageLoading } from './settingsLayout'
 import { layPanel } from './tilePanel'
@@ -518,8 +519,8 @@ export function Series() {
   // The open panel lies over the rows below its tile (O283), laid from the
   // tile's width and place and the gap its grid lays the columns apart by,
   // and laid again when either's width changes. The tile's width follows
-  // the cover size, and below 900 px the page area's too, as a filled
-  // column; from 900 px up it is the size, so only the grid, which fills
+  // the cover size, and in the phone layout the page area's too, as a filled
+  // column; beside the sidebar it is the size, so only the grid, which fills
   // the area (`main` has no `max-width`), follows a window or sidebar that
   // changes the area, and the gap and the tile's column follow the grid.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `open` and `layout` are triggers; the body reads the refs.
@@ -557,6 +558,11 @@ export function Series() {
   // reach alignment detail at all is a deferred gap, tracked separately —
   // this comment does not claim otherwise.)
   const showEditionSelector = editionSelector && layout !== 'table'
+
+  // The covers move to their new columns in the grid only: the table has
+  // no columns of covers to move.
+  const volumes = useRef<HTMLUListElement>(null)
+  useReseat(volumes, loaded !== undefined && layout !== 'table')
   // **`'all'` rather than the first edition**, so the page with the selector
   // on renders identically to the page with it off until the reader chooses.
   // A default of "the first edition" would silently dim every volume the hub
@@ -628,10 +634,14 @@ export function Series() {
   const focusBack = (tile: HTMLElement) =>
     refocus(
       panel === 'button'
-        ? tile.querySelector<HTMLElement>(':scope > .panel-open')
-        : (tile.querySelector<HTMLElement>(':scope > a:not(.get)') ??
-            tile.querySelector<HTMLElement>(':scope > a.get') ??
-            tile.querySelector<HTMLElement>(':scope > .tile-unreadable')),
+        ? tile.querySelector<HTMLElement>(':scope > .tile-body > .panel-open')
+        : (tile.querySelector<HTMLElement>(
+            ':scope > .tile-body > a:not(.get)',
+          ) ??
+            tile.querySelector<HTMLElement>(':scope > .tile-body > a.get') ??
+            tile.querySelector<HTMLElement>(
+              ':scope > .tile-body > .tile-unreadable',
+            )),
     )
 
   // The open panel's closes, as `usePopover`'s are: an Escape, caught on
@@ -733,7 +743,7 @@ export function Series() {
           {layout === 'table' ? (
             <Table works={loaded.works} mayDownload={mayDownload} />
           ) : (
-            <ul className="volumes">
+            <ul ref={volumes} className="volumes">
               {loaded.works.map((w) => {
                 // `undefined` under `'all'` means "whatever this volume leads
                 // with", which is `editions[0]` — the hub, by `derive.rs`'s
@@ -819,63 +829,73 @@ export function Series() {
                         : undefined
                     }
                   >
-                    {unreadable(w) ? (
-                      // **O62 — the link is the treatment, not a badge.** This
-                      // is the grid, the *default* layout
-                      // (`browseModule.defaults.layout` is `'grid'`), so the
-                      // guard `Table` carries has to be applied here too. Same
-                      // rule as `Table`'s cell: a work whose members are gone
-                      // must not offer a link that fails at the first page, and
-                      // the volume keeps its name — withholding that too would
-                      // read as a library that has lost the work rather than
-                      // one that cannot open it.
-                      <span
-                        className="tile-unreadable"
-                        tabIndex={panel === 'on-select' ? -1 : undefined}
-                      >
-                        <VolumeCover w={w} shown={shown} />
-                        <span className="title">{w.title}</span>{' '}
-                        <span className="unreadable">
-                          files missing — cannot be opened
+                    {/* Everything the tile draws but its panel, as the one
+                        element a glide moves (`reseat.ts`): the tile stays
+                        where layout puts it, for the browser to hold the page
+                        by. The open panel stays out of it, under the tile's
+                        laid box and above every cover. */}
+                    <div className="tile-body">
+                      {unreadable(w) ? (
+                        // **O62 — the link is the treatment, not a badge.** This
+                        // is the grid, the *default* layout
+                        // (`browseModule.defaults.layout` is `'grid'`), so the
+                        // guard `Table` carries has to be applied here too. Same
+                        // rule as `Table`'s cell: a work whose members are gone
+                        // must not offer a link that fails at the first page, and
+                        // the volume keeps its name — withholding that too would
+                        // read as a library that has lost the work rather than
+                        // one that cannot open it.
+                        <span
+                          className="tile-unreadable"
+                          tabIndex={panel === 'on-select' ? -1 : undefined}
+                        >
+                          <VolumeCover w={w} shown={shown} />
+                          <span className="title">{w.title}</span>{' '}
+                          <span className="unreadable">
+                            files missing — cannot be opened
+                          </span>
                         </span>
-                      </span>
-                    ) : (
-                      <Link to={readerPath(w)}>
-                        <VolumeCover w={w} shown={shown} />
-                        <span className="title">{w.title}</span>
-                      </Link>
-                    )}
-                    {panel !== 'button' && download}
-                    {panel === 'button' && (
-                      <button
-                        type="button"
-                        className="panel-open"
-                        aria-expanded={open === w.slug}
-                        aria-label={`details for ${w.title}`}
-                        // **Toggle lives here, not inside `reveal`.** `reveal`
-                        // is also `on-select`'s hover/focus handler, where
-                        // pointing at a tile a second time must still show
-                        // it — toggling there would close the panel on the
-                        // second hover instead. The button is the one caller
-                        // that means "open *or* close this one", so this is
-                        // the only place that decides between them; `reveal`
-                        // stays a plain "make this the open one" and the
-                        // per-slug `detail` cache and `pending` guard are
-                        // untouched either way, so closing loses nothing
-                        // fetched and reopening never refetches.
-                        onClick={(event) => {
-                          if (open === w.slug) {
-                            // A click need not focus the button, and focus
-                            // in the panel would go with it.
-                            choosePanel(undefined, refocus(event.currentTarget))
-                          } else {
-                            reveal(w.slug)
-                          }
-                        }}
-                      >
-                        i
-                      </button>
-                    )}
+                      ) : (
+                        <Link to={readerPath(w)}>
+                          <VolumeCover w={w} shown={shown} />
+                          <span className="title">{w.title}</span>
+                        </Link>
+                      )}
+                      {panel !== 'button' && download}
+                      {panel === 'button' && (
+                        <button
+                          type="button"
+                          className="panel-open"
+                          aria-expanded={open === w.slug}
+                          aria-label={`details for ${w.title}`}
+                          // **Toggle lives here, not inside `reveal`.** `reveal`
+                          // is also `on-select`'s hover/focus handler, where
+                          // pointing at a tile a second time must still show
+                          // it — toggling there would close the panel on the
+                          // second hover instead. The button is the one caller
+                          // that means "open *or* close this one", so this is
+                          // the only place that decides between them; `reveal`
+                          // stays a plain "make this the open one" and the
+                          // per-slug `detail` cache and `pending` guard are
+                          // untouched either way, so closing loses nothing
+                          // fetched and reopening never refetches.
+                          onClick={(event) => {
+                            if (open === w.slug) {
+                              // A click need not focus the button, and focus
+                              // in the panel would go with it.
+                              choosePanel(
+                                undefined,
+                                refocus(event.currentTarget),
+                              )
+                            } else {
+                              reveal(w.slug)
+                            }
+                          }}
+                        >
+                          i
+                        </button>
+                      )}
+                    </div>
                     {open === w.slug && (
                       // The drawn panel, placed absolutely by `library.css`
                       // under its tile and over the rows below, so nothing

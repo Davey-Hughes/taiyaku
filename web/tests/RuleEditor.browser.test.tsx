@@ -12,6 +12,7 @@ import { Config } from '../src/Config'
 import * as curation from '../src/curation'
 import * as derive from '../src/libraries'
 import { WAIT_DRAWN_AFTER_MS } from '../src/hooks'
+import { SIDEBAR_LAYOUT } from '../src/phoneLayout'
 import { RuleEditor } from '../src/RuleEditor'
 import * as rulesApi from '../src/rules'
 import { deferred, settleUntil } from './support/async'
@@ -835,8 +836,8 @@ describe('the Rules screen’s width', () => {
   /**
    * The identifier, wider than any line here, is broken inside, while the
    * seeded rules' names, whose pieces fit, break only between their words.
-   * Nothing runs past the list or `main`, and from the breakpoint up the
-   * rule's pane keeps `--rule-pane-narrowest` beside the list.
+   * Nothing runs past the list or `main`, and beside the sidebar the rule's
+   * pane keeps `--rule-pane-narrowest` beside the list.
    */
   it.each([390, 900, 1024, 1920])(
     'breaks inside a name’s piece too wide for any line, the seeded names only between their words, with nothing past the list or main and the pane kept, with a rule picked and without, at %ipx',
@@ -858,7 +859,7 @@ describe('the Rules screen’s width', () => {
         expect
           .soft(main.scrollWidth, `nothing past main, picked: ${picked}`)
           .toBe(main.clientWidth)
-        if (width >= 900) {
+        if (matchMedia(SIDEBAR_LAYOUT).matches) {
           expect
             .soft(
               pane.getBoundingClientRect().width,
@@ -880,12 +881,12 @@ describe('the Rules screen’s width', () => {
 
   /**
    * A larger root font widens the sidebar, `main`'s padding, the names and
-   * the rule's pane, and leaves the breakpoint at 900px, so past it Rules
-   * has less room than the window's width says. Side by side, the rule's
-   * pane keeps `--rule-pane-narrowest` and the seeded names break only
-   * between their words; where Rules has not the room for that, it is one
-   * column, the list as wide as Rules, the most room a name can be given.
-   * Nothing runs past the list or `main` either way.
+   * the rule's pane but moves no px bound of the phone layout, so beside
+   * the sidebar Rules has less room than the window's width says. Side by
+   * side, the rule's pane keeps `--rule-pane-narrowest` and the seeded
+   * names break only between their words; where Rules has not the room for
+   * that, it is one column, the list as wide as Rules, the most room a name
+   * can be given. Nothing runs past the list or `main` either way.
    *
    * The turn, the narrowest window that puts the panes side by side, is
    * found by halving and checked with the window a pixel either side of it:
@@ -973,9 +974,9 @@ describe('the Rules screen’s width', () => {
   )
 
   /**
-   * Below the breakpoint the sidebar is a drawer and Rules is one column at
+   * In the phone layout the sidebar is a drawer and Rules is one column at
    * any width, though at these widths it has more than the room the panes
-   * are side by side in above the breakpoint.
+   * are side by side in beside the sidebar.
    */
   it.each([800, 899])(
     'draws the list above the rule’s pane, each as wide as Rules, with a rule picked and without, at %ipx',

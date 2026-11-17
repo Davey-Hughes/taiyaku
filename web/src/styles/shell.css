@@ -5,15 +5,15 @@
  * the artwork on purpose. The tokens follow `color-scheme` — the OS's, or the
  * reader's choice through `data-theme` — the way a hardcoded palette would not.
  *
- * At 900px and up, `.library` does not touch `html`, `body` or `#root`'s
+ * Beside the sidebar, `.library` does not touch `html`, `body` or `#root`'s
  * `height: 100%` chain — that chain exists so `PageView` can constrain a page
  * to the viewport, and this screen wants the opposite: it scrolls. So
  * `.library` gets its own `height: 100%` (inherited from that chain) and its
  * own `overflow-y: auto` on `main`, rather than changing the chain or setting
- * `height: auto` on the three selectors it feeds. Below 900px the document
- * scrolls instead — `.library` takes its content's height and `main` stops
- * scrolling — for the reason the `@media (width < 900px)` block below gives
- * (iOS Safari's toolbar and status-bar tap). */
+ * `height: auto` on the three selectors it feeds. In the phone layout the
+ * document scrolls instead — `.library` takes its content's height and `main`
+ * stops scrolling — for the reason the phone layout's `@media` block below
+ * gives (iOS Safari's toolbar and status-bar tap). */
 .library {
   /* A page's heading row (`.page-head`, below), named because `library.css`
    * sets the Continue heading level with the sidebar's from it. */
@@ -549,22 +549,23 @@ a.account-button {
   text-decoration: underline;
 }
 
-/* The phone bar, the scrim and the drawer's Close button exist below 900 px
- * only — the `@media` block below draws them. */
+/* The phone bar, the scrim and the drawer's Close button exist in the phone
+ * layout only — the `@media` block below draws them. */
 .phone-bar,
 .scrim,
 .menu-close {
   display: none;
 }
 
-/* Below 900 px — spec 2026-09-17 §7.1. The sidebar column becomes a drawer
- * that ☰ slides in, and the *document* scrolls rather than `<main>`: iOS
- * Safari shrinks its toolbar, and scrolls to the top on a tap on the status
- * bar, only for the document's own scroll. So `.library` takes its content's
- * height here and the bar sticks. While the drawer is open — `menu-open`,
- * set by `Shell.tsx` — the bar and `<main>` are `inert` and the root stops
- * scrolling. `Shell.browser.test.tsx` measures all three. */
-@media (width < 900px) {
+/* The phone layout, narrow or short (`phoneLayout.ts`), spec 2026-09-17
+ * §7.1. The sidebar column becomes a drawer that ☰ slides in, and the
+ * *document* scrolls rather than `<main>`: iOS Safari shrinks its toolbar,
+ * and scrolls to the top on a tap on the status bar, only for the document's
+ * own scroll. So `.library` takes its content's height here and the bar
+ * sticks. While the drawer is open — `menu-open`, set by `Shell.tsx` — the
+ * bar and `<main>` are `inert` and the root stops scrolling.
+ * `Shell.browser.test.tsx` measures all three. */
+@media (width < 900px) or (height < 500px) {
   /* How much of the top of the window the phone bar covers. Anything that is
      scrolled to the top of the view clears it by this much. */
   :root {

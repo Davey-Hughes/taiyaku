@@ -11,6 +11,7 @@ import { Library } from '../src/Library'
 import { LIBRARY_STATUS } from '../src/pageReads'
 import { invalidate } from '../src/reads'
 import { Series } from '../src/Series'
+import { SIDEBAR_LAYOUT } from '../src/phoneLayout'
 import { Shell } from '../src/Shell'
 import {
   useInboxRefresh,
@@ -289,8 +290,8 @@ function openMenu(host: HTMLElement) {
 
 /**
  * A `matchMedia` for jsdom, which has none: one list whose `matches` the test
- * flips, calling its listeners the way a window resized across the
- * breakpoint would.
+ * flips, calling its listeners the way a window resized out of the phone
+ * layout would.
  */
 function fakeMatchMedia() {
   const listeners = new Set<() => void>()
@@ -975,7 +976,7 @@ describe('Shell', () => {
    * browser does with them: where Tab can go, whether the page scrolls
    * behind the drawer, where the column sits.
    */
-  describe('the menu below 900 px', () => {
+  describe('the menu in the phone layout', () => {
     it('draws ☰ closed, naming the column it opens, with nothing inert', async () => {
       const host = await settle(
         <Shell>
@@ -1087,7 +1088,7 @@ describe('Shell', () => {
       expect(menuButton(host).getAttribute('aria-expanded')).toBe('false')
     })
 
-    it('closes when the window widens past the breakpoint, where the column is the sidebar again', async () => {
+    it('closes when the window leaves the phone layout, where the column is the sidebar again', async () => {
       const media = fakeMatchMedia()
       vi.stubGlobal('matchMedia', media.matchMedia)
       const host = await settle(
@@ -1096,7 +1097,7 @@ describe('Shell', () => {
         </Shell>,
       )
       openMenu(host)
-      expect(media.matchMedia).toHaveBeenCalledWith('(width >= 900px)')
+      expect(media.matchMedia).toHaveBeenCalledWith(SIDEBAR_LAYOUT)
       act(() => {
         media.widen()
       })

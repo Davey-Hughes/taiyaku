@@ -41,7 +41,11 @@ export function Cover({ src, title }: { src: string | null; title: string }) {
   if (src === null || failed === src)
     return (
       <span className="cover-missing" aria-hidden="true">
-        {title}
+        {/* An element of its own, so a list can keep the title out of the
+            browser's scroll anchoring (`.continue .cover-missing > span`):
+            centred, it moves with the placeholder's height, and only an
+            element can be excluded, not its text. */}
+        <span>{title}</span>
       </span>
     )
   const sources = coverSources(src)

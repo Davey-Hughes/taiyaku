@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { Link } from 'react-router'
 import { Cover } from './Cover'
 import {
@@ -7,6 +8,7 @@ import {
   unreadable,
   type WorkCard,
 } from './library'
+import { useReseat } from './reseat'
 
 /** "42 volumes", "1 volume": a series' `works`, as its tile says it. */
 function volumeCount(works: number): string {
@@ -35,8 +37,10 @@ export function SeriesGrid({
    */
   library?: number
 }) {
+  const list = useRef<HTMLUListElement>(null)
+  useReseat(list, true)
   return (
-    <ul className="grid">
+    <ul ref={list} className="grid">
       {series.map((s) => (
         <li key={s.id}>
           <Link to={narrowedTo(`/series/${s.id}`, library)}>

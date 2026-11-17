@@ -23,8 +23,8 @@ import { mount } from './support/mount'
  * `reason` strings the server never emits. Both widths are here because a
  * defect can sit at exactly one of them.
  *
- * **460 and 1100 are not arbitrary.** Below 900px the sidebar leaves the
- * flow, and 460 − 2 × 16 gives `main` 428px. At 1100px `.library` is still
+ * **460 and 1100 are not arbitrary.** In the phone layout the sidebar leaves
+ * the flow, and 460 − 2 × 16 gives `main` 428px. At 1100px `.library` is still
  * the fixed 14rem sidebar plus `main`'s 1.5rem padding, so the list is 828px
  * there — either side of the 32rem container query that reflows the row.
  * The `@container inbox` comment in `styles/admin.css` says why it is 32rem.

@@ -690,10 +690,10 @@ section:has(.callout[data-over-focus], .linked[data-over-focus])
   color: var(--text);
 }
 
-/* The phone bar's layout (`shell.css`, below 900px), on a phone or in a
-   narrow window: the top at the page's gutter, which leaves a short window
-   the most of its height. */
-@media (width < 900px) {
+/* The phone layout (`shell.css`), on a phone or in a narrow or short
+   window: the top at the page's gutter, which leaves a short window the
+   most of its height. */
+@media (width < 900px) or (height < 500px) {
   .settings-dialog {
     --dialog-top: var(--space-4);
   }
@@ -1024,20 +1024,20 @@ section:has(.callout[data-over-focus], .linked[data-over-focus])
 }
 
 /* The scroller a split is drawn in keeps its scrollbar's gutter whether or
-   not it scrolls: `main`, and below 900px, where `main` does not scroll
-   (`shell.css`), the document. The pair can be taller than the window
-   where the page alone is not, so within a scrollbar's width of the
+   not it scrolls: `main`, and in the phone layout, where `main` does not
+   scroll (`shell.css`), the document. The pair can be taller than the
+   window where the page alone is not, so within a scrollbar's width of the
    breakpoint a scrollbar that came with the pair would narrow the split
    below the breakpoint, and going with it would widen it again: the
-   layout would change every frame. The breakpoint is in rem, so a small
-   root font size can bring it under 900px. Every Configuration screen
-   keeps the same gutter, the ones with no split among them, so that going
-   from one tab or page to another moves nothing. */
+   layout would change every frame. A small root font (the breakpoint is in
+   rem) or a short window puts it in the phone layout. Every Configuration
+   screen keeps the same gutter, the ones with no split among them, so that
+   going from one tab or page to another moves nothing. */
 .library > main:has(.config, .split) {
   scrollbar-gutter: stable;
 }
 
-@media (width < 900px) {
+@media (width < 900px) or (height < 500px) {
   :root:has(.config, .split) {
     scrollbar-gutter: stable;
   }

@@ -69,6 +69,14 @@ vi.mock('../src/tilePanel', async (importOriginal) => ({
   layPanel: vi.fn(),
 }))
 
+// The volumes' own observer (`useReseat`) has its suite in
+// `reseat.hook.test.tsx`; left out here, so a stubbed `ResizeObserver` is
+// the open panel's alone.
+vi.mock('../src/reseat', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/reseat')>()),
+  useReseat: vi.fn(),
+}))
+
 /** What `oneSeries` answers: a series page's body. */
 type SeriesPage = { series: library.SeriesDetail; works: library.WorkCard[] }
 
@@ -375,11 +383,9 @@ describe('Series, grid layout', () => {
     const host = await settleWith({ panel: 'button' }, who())
     const tiles = [...host.querySelectorAll('.volumes > li')]
     expect(tiles).toHaveLength(3)
-    expect(tiles.map((li) => li.querySelector(':scope > a.get'))).toEqual([
-      null,
-      null,
-      null,
-    ])
+    expect(
+      tiles.map((li) => li.querySelector(':scope > .tile-body > a.get')),
+    ).toEqual([null, null, null])
     await openTile(host, 1)
     expect(
       tiles.map((li) => li.querySelectorAll('.tile-panel a.get').length),
@@ -406,7 +412,7 @@ describe('Series, grid layout', () => {
       const tiles = [...host.querySelectorAll('.volumes > li')]
       expect(
         tiles.map((li) => {
-          const get = li.querySelector(':scope > a.get')
+          const get = li.querySelector(':scope > .tile-body > a.get')
           return [
             get?.getAttribute('href'),
             get?.textContent,
@@ -1490,7 +1496,9 @@ describe('Series, the edition selector', () => {
     const downloads = (host: HTMLElement) =>
       [...host.querySelectorAll('.volumes > li')].map(
         (li) =>
-          li.querySelector(':scope > a.get')?.getAttribute('href') ?? null,
+          li
+            .querySelector(':scope > .tile-body > a.get')
+            ?.getAttribute('href') ?? null,
       )
 
     const choose = (host: HTMLElement, key: string) =>
@@ -2420,9 +2428,19 @@ describe('Series, closing a volume’s panel (O283)', () => {
   }
   const panelIn = (tile: Element) => tile.querySelector('.tile-panel')
   const iOf = (tile: Element) =>
-    need(tile.querySelector<HTMLButtonElement>(':scope > .panel-open'), 'i')
+    need(
+      tile.querySelector<HTMLButtonElement>(
+        ':scope > .tile-body > .panel-open',
+      ),
+      'i',
+    )
   const linkOf = (tile: Element) =>
-    need(tile.querySelector<HTMLAnchorElement>(':scope > a:not(.get)'), 'link')
+    need(
+      tile.querySelector<HTMLAnchorElement>(
+        ':scope > .tile-body > a:not(.get)',
+      ),
+      'link',
+    )
   const fieldOf = (tile: Element) =>
     need(
       tile.querySelector<HTMLTextAreaElement>(
@@ -2590,7 +2608,7 @@ describe('Series, closing a volume’s panel (O283)', () => {
     const host = await page('on-select', [lost, third])
     const [tile] = tilesOf(host)
     const box = need(
-      tile.querySelector<HTMLElement>(':scope > .tile-unreadable'),
+      tile.querySelector<HTMLElement>(':scope > .tile-body > .tile-unreadable'),
       'unreadable box',
     )
     await hoverOn(box)
@@ -2617,12 +2635,18 @@ describe('Series, closing a volume’s panel (O283)', () => {
     const host = await page('on-select', [lost, third])
     const [tile] = tilesOf(host)
     await hoverOn(
-      need(tile.querySelector(':scope > .tile-unreadable'), 'unreadable box'),
+      need(
+        tile.querySelector(':scope > .tile-body > .tile-unreadable'),
+        'unreadable box',
+      ),
     )
-    const get = need(tile.querySelector<HTMLElement>(':scope > a.get'), '↓')
+    const get = need(
+      tile.querySelector<HTMLElement>(':scope > .tile-body > a.get'),
+      '↓',
+    )
     // The fixture tells: the panel is open, and the tile has no link.
     expect(panelIn(tile)).not.toBeNull()
-    expect(tile.querySelector(':scope > a:not(.get)')).toBeNull()
+    expect(tile.querySelector(':scope > .tile-body > a:not(.get)')).toBeNull()
 
     await pressEscape()
     expect(document.activeElement).toBe(get)

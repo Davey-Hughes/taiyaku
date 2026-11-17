@@ -15,11 +15,12 @@ import { seriesPage } from './support/seriesPage'
 
 /**
  * The cover lists' two layouts (spec O285 item 9), on the home page's grid
- * through the shell and on a series page's volumes: from 900 px up every
+ * through the shell and on a series page's volumes: beside the sidebar every
  * cover is exactly the slider's size, the spare room spread into the gaps;
- * below the shell's 900 px breakpoint the columns fill the row at the least
- * gap. jsdom lays nothing out. `W` is the list's content width and `g` its
- * least gap, both as drawn, and a row holds `max(1, ⌊(W + g)/(size + g)⌋)`.
+ * in the phone layout, narrow or short, the columns fill the row at the
+ * least gap. jsdom lays nothing out. `W` is the list's content width and `g`
+ * its least gap, both as drawn, and a row holds
+ * `max(1, ⌊(W + g)/(size + g)⌋)`.
  */
 
 // The build's label at the sidebar's foot asks for the build; answered here.
@@ -98,16 +99,23 @@ type Where = typeof HOME | typeof SERIES
 /**
  * `where` at `width` px holding `count` covers, the cover size `size`: on
  * the home grid stored where the shell reads it, on a series page set as
- * the shell would. Its list, and the list's tiles once all are drawn.
+ * the shell would. The window is `height` px tall, or the page's own default
+ * where none is given. Its list, and the list's tiles once all are drawn.
  */
-async function drawn(where: Where, width: number, size: number, count: number) {
+async function drawn(
+  where: Where,
+  width: number,
+  size: number,
+  count: number,
+  height?: number,
+) {
   let host: HTMLElement
   if (where === HOME) {
     vi.mocked(library.grid).mockResolvedValue({
       series: Array.from({ length: count }, (_, i) => series(i + 1)),
       unfiled: [],
     })
-    host = await homePage({ width, coverSize: size })
+    host = await homePage({ width, height, coverSize: size })
   } else {
     const works = Array.from({ length: count }, (_, i) => work(i + 1))
     vi.mocked(library.oneSeries).mockResolvedValue({
@@ -126,6 +134,7 @@ async function drawn(where: Where, width: number, size: number, count: number) {
     })
     host = await seriesPage({
       width,
+      height,
       panel: 'button',
       coverSize: size,
       who: READER,
@@ -159,7 +168,7 @@ const rect = (el: Element | null) => {
  */
 const twoRowsAndOne = (perRow: number) => 2 * perRow + 1
 
-describe('a cover list from 900 px up (O285)', () => {
+describe('a cover list beside the sidebar (O285)', () => {
   // [where, window width, the size stored or set, the size drawn, perRow]
   it.each([
     [HOME, 1280, 96, 96, 9],
@@ -237,25 +246,28 @@ describe('a cover list from 900 px up (O285)', () => {
   )
 })
 
-describe('a cover list below 900 px (O285)', () => {
-  // [where, window width, the size, perRow]
+describe('a cover list in the phone layout (O285)', () => {
+  // [where, window width, window height, the size, perRow]
   it.each([
-    [HOME, 390, 104, 3],
-    [HOME, 390, 144, 2],
-    [HOME, 390, 240, 1],
-    [HOME, 899, 144, 5],
-    [SERIES, 390, 104, 3],
-    [SERIES, 390, 144, 2],
-    [SERIES, 390, 240, 1],
-    [SERIES, 899, 144, 5],
+    [HOME, 390, 844, 104, 3],
+    [HOME, 390, 844, 144, 2],
+    [HOME, 390, 844, 240, 1],
+    [HOME, 899, 844, 144, 5],
+    [HOME, 956, 440, 144, 5],
+    [SERIES, 390, 800, 104, 3],
+    [SERIES, 390, 800, 144, 2],
+    [SERIES, 390, 800, 240, 1],
+    [SERIES, 899, 800, 144, 5],
+    [SERIES, 956, 440, 144, 5],
   ] as const)(
-    'fills the row on %s at %i px with columns no narrower than %i px, at the least gap',
-    async (where, width, size, perRow) => {
+    'fills the row on %s at %ix%i px with columns no narrower than %i px, at the least gap',
+    async (where, width, height, size, perRow) => {
       const { list, tiles } = await drawn(
         where,
         width,
         size,
         twoRowsAndOne(perRow),
+        height,
       )
       const { left, right, width: W, gap, n } = columnsOf(list, size)
       const rows = rowsOf(tiles)
