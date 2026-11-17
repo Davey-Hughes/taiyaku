@@ -399,12 +399,49 @@ fn library_scan_add_with_a_library_says_whether_it_made_the_library() {
     );
 }
 
+/// What `library scan` says on stderr while another derive holds the lease.
+const WAITING_FOR_THE_LEASE: &str = "taiyaku: waiting for another derive of this library \
+                                     (the server's scan, or another `library scan`) to finish";
+
+/// `taiyaku <args>` spawned, its stderr read until it says
+/// [`WAITING_FOR_THE_LEASE`] or 10 s pass without a line: the running child
+/// and every line it said, the waiting line last where it said it.
+fn spawned_until_waiting(args: &[&str]) -> (std::process::Child, Vec<String>) {
+    use std::io::BufRead;
+
+    let mut child = taiyaku()
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the binary runs");
+    let stderr = child.stderr.take().expect("the child's stderr");
+    let (lines, read) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            // Drained to the end once nobody listens: a closed pipe would fail
+            // the child's next line to stderr.
+            let _ = lines.send(line);
+        }
+    });
+    let mut said = Vec::new();
+    while let Ok(line) = read.recv_timeout(std::time::Duration::from_secs(10)) {
+        let done = line == WAITING_FOR_THE_LEASE;
+        said.push(line);
+        if done {
+            break;
+        }
+    }
+    (child, said)
+}
+
 /// O51: `library scan` derives only once no other derive holds the store's
 /// derive lease, and says that it waits.
 #[test]
 fn library_scan_waits_for_another_derive_and_says_so() {
-    use std::io::BufRead;
-
     let tree = TempDir::new("cli-scan-waits-for-the-lease");
     let db_dir = TempDir::new("cli-scan-waits-for-the-lease-db");
     let db = db_path(&db_dir);
@@ -416,35 +453,10 @@ fn library_scan_waits_for_another_derive_and_says_so() {
         .expect("takes the lease")
         .expect("the lease is free");
 
-    let mut scan = taiyaku()
-        .args(["library", "scan", "--db", &db])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("the binary runs");
-    let stderr = scan.stderr.take().expect("the scan's stderr");
-    let (lines, read) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stderr)
-            .lines()
-            .map_while(Result::ok)
-        {
-            if lines.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    let waiting = "taiyaku: waiting for another derive of this library (the server's scan, \
-                   or another `library scan`) to finish";
-    let mut said = Vec::new();
-    while let Ok(line) = read.recv_timeout(std::time::Duration::from_secs(10)) {
-        let done = line == waiting;
-        said.push(line);
-        if done {
-            break;
-        }
-    }
-    let said_it = said.last().is_some_and(|line| line == waiting);
+    let (mut scan, said) = spawned_until_waiting(&["library", "scan", "--db", &db]);
+    let said_it = said
+        .last()
+        .is_some_and(|line| line == WAITING_FOR_THE_LEASE);
     std::thread::sleep(std::time::Duration::from_millis(500));
     let still_running = scan.try_wait().expect("asks after the scan").is_none();
 
@@ -724,6 +736,109 @@ fn library_scan_root_of_another_directory_leaves_a_pause() {
         [paused_at(&db, &comics), paused_at(&db, &volumes)],
         [Some("2026-11-16 03:33:10".to_string()), None],
         "(the other directory, the one scanned)"
+    );
+}
+
+/// `<dir>/<series>/<series> v01.cbz`, 3 pages from `seed`.
+fn a_volume_in(dir: &str, series: &str, seed: u32) {
+    let at = Path::new(dir).join(series);
+    std::fs::create_dir_all(&at).expect("mkdir");
+    cbz_pages(&at, &format!("{series} v01.cbz"), 3, seed);
+}
+
+/// The entries under the directory at `dir` that hold a digest, and the works
+/// in the database at `db`.
+fn digests_under_and_works(db: &str, dir: &str) -> (i64, i64) {
+    let conn = rusqlite::Connection::open(db).expect("open the same database taiyaku wrote");
+    let digests = conn
+        .query_row(
+            "SELECT count(*) FROM scan_entry e JOIN root r ON r.id = e.root_id
+              WHERE r.path = ?1 AND e.sha256 IS NOT NULL",
+            [dir],
+            |r| r.get(0),
+        )
+        .expect("counts the digests");
+    let works = conn
+        .query_row("SELECT count(*) FROM work", [], |r| r.get(0))
+        .expect("counts the works");
+    (digests, works)
+}
+
+/// O320: a paused directory is frozen for a `library scan` of another one,
+/// whose derive hashes none of its files and writes none of its works.
+#[test]
+fn library_scan_of_another_directory_hashes_none_of_a_paused_one() {
+    let tree = TempDir::new("cli-scan-frozen-other");
+    let db_dir = TempDir::new("cli-scan-frozen-other-db");
+    let db = db_path(&db_dir);
+    let (comics, _) = add_dir(&tree, &db, "Comics", None);
+    let (volumes, _) = add_dir(&tree, &db, "Volumes", None);
+    a_volume_in(&volumes, "Series", 1);
+    a_volume_in(&comics, "Other", 10);
+    taiyaku_stdout(&[
+        "library",
+        "scan",
+        "--root",
+        &volumes,
+        "--no-derive",
+        "--db",
+        &db,
+    ]);
+    pause(&db, &[&volumes]);
+    assert_eq!(
+        (
+            paused_at(&db, &volumes).is_some(),
+            digests_under_and_works(&db, &volumes)
+        ),
+        (true, (0, 0)),
+        "the fixture: Volumes walked, not hashed, and paused"
+    );
+
+    taiyaku_stdout(&["library", "scan", "--root", &comics, "--db", &db]);
+
+    assert_eq!(
+        digests_under_and_works(&db, &volumes),
+        (0, 1),
+        "(Volumes' digests, works): Comics' work alone"
+    );
+}
+
+/// O320: `library scan` reads the directories it selected fresh, so one
+/// paused while the scan waits for the derive lease is still hashed and
+/// written, and stays paused.
+#[test]
+fn library_scan_reads_its_directory_fresh_though_paused_while_it_waits_for_the_lease() {
+    let tree = TempDir::new("cli-scan-fresh-though-paused");
+    let db_dir = TempDir::new("cli-scan-fresh-though-paused-db");
+    let db = db_path(&db_dir);
+    let (volumes, _) = add_dir(&tree, &db, "Volumes", None);
+    a_volume_in(&volumes, "Series", 1);
+    let elsewhere =
+        taiyaku_library::Library::open(Path::new(&db)).expect("another process's connection");
+    let held = elsewhere
+        .derive_lease(taiyaku_library::lease::Wait::No)
+        .expect("takes the lease")
+        .expect("the lease is free");
+    let (mut scan, said) =
+        spawned_until_waiting(&["library", "scan", "--root", &volumes, "--db", &db]);
+    assert_eq!(
+        said.last().map(String::as_str),
+        Some(WAITING_FOR_THE_LEASE),
+        "the fixture: the scan walked and waits for the lease"
+    );
+
+    pause(&db, &[&volumes]);
+    drop(held);
+    let ended = scan.wait().expect("the scan ends");
+
+    assert_eq!(
+        (
+            ended.success(),
+            paused_at(&db, &volumes).is_some(),
+            digests_under_and_works(&db, &volumes).1
+        ),
+        (true, true, 1),
+        "(the scan succeeds, paused, works): {said:?}"
     );
 }
 

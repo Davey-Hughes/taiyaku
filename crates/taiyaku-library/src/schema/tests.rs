@@ -1466,8 +1466,8 @@ fn migration_20_adds_missing_since_leaving_existing_works_present() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_twenty_six() {
-    assert_eq!(SCHEMA_VERSION, 26);
+fn the_schema_version_is_twenty_seven() {
+    assert_eq!(SCHEMA_VERSION, 27);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -3321,13 +3321,214 @@ fn the_migration_gives_every_directory_a_paused_at_of_null() {
     )
     .expect("seeds a scanned and a never-scanned schema-25 directory");
 
-    migrate(&conn).expect("migrates to 26");
+    migrate_with(&conn, &MIGRATIONS[..26]).expect("migrates to 26");
 
     assert_eq!(version(&conn).expect("reads the version"), 26);
     assert_eq!(
         rows_of(&conn, "SELECT id, paused_at FROM root ORDER BY id"),
         [["Integer(7)", "Null"], ["Integer(8)", "Null"]],
         "no directory is paused"
+    );
+}
+
+/// An entry no member names holds no reading: a reading held here is what a
+/// paused directory's derive reads in place of the entry's own (O320), and no
+/// work was written from one.
+#[test]
+fn migration_27_holds_no_reading_for_an_entry_no_member_names() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..26]).expect("migrates to 26");
+    let digest = "d".repeat(64);
+    conn.execute_batch(&format!(
+        "INSERT INTO root (id, path) VALUES (7, '/srv/manga');
+         INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime, pages, sha256)
+         VALUES (7, 'a.cbz', 'file', 'zip', 10, 100, 3, '{digest}'),
+                (7, 'b.cbz', 'file', 'zip', 10, 100, 2, NULL);"
+    ))
+    .expect("seeds a hashed and an unhashed schema-26 entry");
+
+    migrate(&conn).expect("migrates to 27");
+
+    assert_eq!(version(&conn).expect("reads the version"), 27);
+    let hashed = format!("Text({digest:?})");
+    assert_eq!(
+        rows_of(
+            &conn,
+            "SELECT rel_path, sha256, pages, held_sha256, held_format, held_pages, held_title
+               FROM scan_entry ORDER BY rel_path"
+        ),
+        [
+            [
+                r#"Text("a.cbz")"#,
+                hashed.as_str(),
+                "Integer(3)",
+                "Null",
+                "Null",
+                "Null",
+                "Null"
+            ],
+            [
+                r#"Text("b.cbz")"#,
+                "Null",
+                "Integer(2)",
+                "Null",
+                "Null",
+                "Null",
+                "Null"
+            ]
+        ],
+        "each entry keeps its own reading and holds none"
+    );
+}
+
+/// A schema-26 store as a walk and a stamp left it under `/srv/manga`: one
+/// work's members c001 (`a`, 2 pages), c002 (`b`, 3) and c003 (`c`, 4), and
+/// an older edition's member at c001's path (`z`, 9, a lower id). c001's
+/// entry is a changed file whose digest the walk cleared, c002's still names
+/// the digest a stamp replaced on its member, and c003's names its member's.
+fn store_at_26_beside_its_members() -> Connection {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..26]).expect("migrates to 26");
+    let [a, b, c, o, z] = ["a", "b", "c", "o", "z"].map(|digit| digit.repeat(64));
+    conn.execute_batch(&format!(
+        "INSERT INTO root (id, path) VALUES (7, '/srv/manga');
+         INSERT INTO series (id, sort_title) VALUES (1, 'A');
+         INSERT INTO work (id, content_key, slug, series_id, title, reading, hub)
+             VALUES (1, 'k', 's', 1, 't', 'rtl', 'raw');
+         INSERT INTO edition (id, work_id, key, label)
+             VALUES (1, 1, 'old', 'Old'), (2, 1, 'raw', 'Raw');
+         INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, root_id) VALUES
+             (1, 1, 0, '/srv/manga/A/A - v01 - c001.cbz', '{z}', 9, 7),
+             (2, 2, 0, '/srv/manga/A/A - v01 - c001.cbz', '{a}', 2, 7),
+             (3, 2, 1, '/srv/manga/A/A - v01 - c002.cbz', '{b}', 3, 7),
+             (4, 2, 2, '/srv/manga/A/A - v01 - c003.cbz', '{c}', 4, 7);
+         INSERT INTO scan_entry
+             (root_id, rel_path, kind, format, size, mtime, pages, sha256, title) VALUES
+             (7, 'A/A - v01 - c001.cbz', 'file', 'zip', 10, 100, 5, NULL, 'Now'),
+             (7, 'A/A - v01 - c002.cbz', 'file', 'zip', 10, 100, 3, '{o}', NULL),
+             (7, 'A/A - v01 - c003.cbz', 'file', 'zip', 10, 100, 4, '{c}', NULL);"
+    ))
+    .expect("seeds a schema-26 work and its directory's entries");
+    assert_eq!(
+        rows_of(
+            &conn,
+            "SELECT member_id, root_id FROM member_root ORDER BY member_id"
+        )
+        .len(),
+        4,
+        "the fixture: each member is held under the directory"
+    );
+    conn
+}
+
+/// The held reading `/srv/manga`'s entry at `rel_path` has after migrating:
+/// its digest, format, pages and title.
+fn held_after_27(conn: &Connection, rel_path: &str) -> Vec<Vec<String>> {
+    rows_of(
+        conn,
+        &format!(
+            "SELECT held_sha256, held_format, held_pages, held_title FROM scan_entry
+              WHERE root_id = 7 AND rel_path = '{rel_path}'"
+        ),
+    )
+}
+
+/// A store paused before this version may hold a changed file whose digest
+/// the walk cleared. Frozen, it would be passed over and its work rewritten
+/// without it, so it holds its member's reading: the latest member written
+/// at its path where two are.
+#[test]
+fn migration_27_holds_the_members_reading_for_an_entry_a_walk_cleared() {
+    let conn = store_at_26_beside_its_members();
+
+    migrate(&conn).expect("migrates to 27");
+
+    assert_eq!(
+        held_after_27(&conn, "A/A - v01 - c001.cbz"),
+        [[
+            format!("Text({:?})", "a".repeat(64)).as_str(),
+            r#"Text("zip")"#,
+            "Integer(2)",
+            r#"Text("Now")"#
+        ]],
+        "member 2's digest and pages, beside the entry's own format and title"
+    );
+}
+
+/// A stamp before this version wrote its new digest to the member alone, so
+/// an entry can still name the old one; frozen, it would be passed over.
+#[test]
+fn migration_27_holds_the_members_digest_for_an_entry_on_the_one_a_stamp_replaced() {
+    let conn = store_at_26_beside_its_members();
+
+    migrate(&conn).expect("migrates to 27");
+
+    assert_eq!(
+        held_after_27(&conn, "A/A - v01 - c002.cbz"),
+        [[
+            format!("Text({:?})", "b".repeat(64)).as_str(),
+            r#"Text("zip")"#,
+            "Integer(3)",
+            "Null"
+        ]],
+        "the member's digest, not the one the entry still names"
+    );
+}
+
+/// An entry that names its member's digest is read as it is; a reading held
+/// beside it would only be dropped again.
+#[test]
+fn migration_27_holds_no_reading_for_an_entry_on_its_members_digest() {
+    let conn = store_at_26_beside_its_members();
+
+    migrate(&conn).expect("migrates to 27");
+
+    assert_eq!(
+        held_after_27(&conn, "A/A - v01 - c003.cbz"),
+        [["Null", "Null", "Null", "Null"]],
+        "nothing held"
+    );
+}
+
+/// The upgrade end to end: a directory paused on schema 26 after a walk
+/// cleared a changed file's digest keeps that file's member through the
+/// first derive after the upgrade, which freezes the directory (O320).
+#[test]
+fn a_directory_paused_before_migration_27_keeps_its_members() {
+    let tree = crate::tests::tempdir("schema-27-paused");
+    let c002 = "Alpha/Alpha - v01 - c002.cbz";
+    crate::scan::tests::write_archive(&tree.path().join("Alpha/Alpha - v01 - c001.cbz"), 2);
+    crate::scan::tests::write_archive(&tree.path().join(c002), 3);
+    let library = crate::Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = crate::scan::add_root(&conn, tree.path()).expect("adds the directory");
+    crate::scan::scan_root(&conn, &root).expect("walks it");
+    crate::derive::derive(&conn).expect("derives");
+    let members = "SELECT path, sha256, pages FROM member ORDER BY path";
+    let before = rows_of(&conn, members);
+    assert_eq!(before.len(), 2, "the fixture: one work of two members");
+    conn.execute_batch(&format!(
+        "ALTER TABLE scan_entry DROP COLUMN held_sha256;
+         ALTER TABLE scan_entry DROP COLUMN held_format;
+         ALTER TABLE scan_entry DROP COLUMN held_pages;
+         ALTER TABLE scan_entry DROP COLUMN held_title;
+         UPDATE meta SET value = '26' WHERE key = 'schema_version';
+         UPDATE scan_entry SET sha256 = NULL, pages = 4 WHERE rel_path = '{c002}';"
+    ))
+    .expect("puts the store back to schema 26, c002 changed and walked");
+    crate::scan::pause(&conn, std::slice::from_ref(&root)).expect("pauses it");
+
+    migrate(&conn).expect("migrates to 27");
+    crate::derive::derive(&conn).expect("derives with the directory frozen");
+
+    assert_eq!(
+        rows_of(&conn, members),
+        before,
+        "c002's member stands at its digest and pages"
     );
 }
 

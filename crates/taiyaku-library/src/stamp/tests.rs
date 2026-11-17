@@ -2633,6 +2633,218 @@ fn a_stamp_giving_both_copies_one_digest_keeps_each_copys_rows() {
     );
 }
 
+/// [`one_work`]'s archive stamped, then derived before the next walk of its
+/// directory, as a scan of another directory or a rule save derives. Answers
+/// the archive's digest after the stamp.
+fn stamp_then_derive(conn: &Connection, fixture: &Fixture) -> String {
+    let work_id = fixture.work_id;
+    let before = member_digests(conn, work_id);
+    apply(conn, work_id, 1, &plan(conn, work_id).expect("plans")).expect("stamps");
+    let new = digest_of(&fixture.archive("Series - v01.cbz"));
+    assert_ne!(
+        before,
+        vec![("raw".to_string(), new.clone())],
+        "the fixture: the stamp gave the archive a new digest"
+    );
+    crate::derive::derive(conn).expect("derives");
+    new
+}
+
+/// O270: the derive reads the archive's directory row, which the stamp moved
+/// with the member, so it leaves the member on the stamp's digest.
+#[test]
+fn a_derive_before_the_next_walk_keeps_a_stamps_digest() {
+    let fixture = one_work();
+    let conn = fixture.conn();
+    let new = stamp_then_derive(&conn, &fixture);
+
+    assert_eq!(
+        member_digests(&conn, fixture.work_id),
+        vec![("raw".to_string(), new)],
+        "after the derive"
+    );
+}
+
+/// O270: a position and a note written between that derive and the next walk
+/// are anchored on the stamp's digest, which the walk's derive hashes again.
+#[test]
+fn the_rows_written_before_the_next_walk_stay_on_a_stamps_digest() {
+    let fixture = one_work();
+    let conn = fixture.conn();
+    let work_id = fixture.work_id;
+    let new = stamp_then_derive(&conn, &fixture);
+    put_position(&conn, work_id, "raw", 1);
+    hold_notes(&conn, work_id, vec![a_note("n1", "raw", 1)]);
+
+    let roots = crate::scan::roots(&conn).expect("lists the roots");
+    assert_eq!(roots.len(), 1, "the fixture: one directory");
+    crate::scan::scan_root(&conn, &roots[0]).expect("walks the directory again");
+    crate::derive::derive(&conn).expect("derives");
+    assert_eq!(
+        (position_anchors(&conn, work_id), notes_on(&conn, work_id)),
+        (
+            vec![("raw".to_string(), new)],
+            vec![on("n1", "raw", 1, false)]
+        ),
+        "the rows written in the window stay on the new digest"
+    );
+}
+
+/// Each archive's directory row as `(rel_path, sha256)`.
+fn entry_digests(conn: &Connection) -> Vec<(String, Option<String>)> {
+    conn.prepare(
+        "SELECT rel_path, sha256 FROM scan_entry WHERE rel_path LIKE '%.cbz' ORDER BY rel_path",
+    )
+    .and_then(|mut statement| {
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+    })
+    .expect("reads the directory rows")
+}
+
+/// O270: c001 and c002 lie under one directory with one digest, so the stamp
+/// finds c001's row by its path; by its digest it would move c002's too.
+#[test]
+fn a_stamp_writes_its_digest_to_the_row_at_the_stamped_path_alone() {
+    let copies = two_copies();
+    let conn = copies.fixture.conn();
+    let work_id = copies.fixture.work_id;
+    let old = member_digests(&conn, work_id).remove(0).1;
+    assert_eq!(
+        entry_digests(&conn),
+        vec![
+            (
+                "Series/Series - v01 - c001.cbz".to_string(),
+                Some(old.clone())
+            ),
+            (
+                "Series/Series - v01 - c002.cbz".to_string(),
+                Some(old.clone())
+            ),
+        ],
+        "the fixture: both rows on the one digest"
+    );
+    record_digests(&conn, work_id, &[(copies.c001, "1".repeat(64))]);
+
+    assert_eq!(
+        entry_digests(&conn),
+        vec![
+            (
+                "Series/Series - v01 - c001.cbz".to_string(),
+                Some("1".repeat(64))
+            ),
+            ("Series/Series - v01 - c002.cbz".to_string(), Some(old)),
+        ],
+        "c001's row takes the new digest; c002's keeps the old"
+    );
+}
+
+/// A second directory holds other bytes at the same path within it, so the
+/// stamp finds the row by the member's directory as well as by its path.
+#[test]
+fn a_stamp_writes_no_row_of_another_directory_at_the_same_path() {
+    let fixture = one_work();
+    let other = crate::tests::tempdir("stamp-other");
+    let theirs = other.path().join("Series").join("Series - v01.cbz");
+    crate::scan::tests::write_archive(&theirs, 3);
+    let conn = fixture.conn();
+    let root = crate::scan::add_root(&conn, other.path()).expect("adds the other directory");
+    crate::scan::scan_root(&conn, &root).expect("scans it");
+    crate::derive::derive(&conn).expect("derives");
+    let rows = || -> Vec<Option<String>> {
+        conn.prepare(
+            "SELECT sha256 FROM scan_entry WHERE rel_path = 'Series/Series - v01.cbz'
+              ORDER BY root_id",
+        )
+        .and_then(|mut statement| statement.query_map([], |row| row.get(0))?.collect())
+        .expect("reads the directory rows")
+    };
+    let ours = digest_of(&fixture.archive("Series - v01.cbz"));
+    let theirs = digest_of(&theirs);
+    assert_eq!(
+        rows(),
+        vec![Some(ours.clone()), Some(theirs.clone())],
+        "the fixture: a row in each directory, each on its own digest"
+    );
+    let first = crate::scan::roots(&conn)
+        .expect("lists the roots")
+        .into_iter()
+        .map(|listed| listed.id)
+        .find(|id| *id != root.id)
+        .expect("the fixture: the first directory");
+    let members: Vec<(i64, i64, Option<i64>)> = conn
+        .prepare(
+            "SELECT m.id, e.work_id, m.root_id FROM member m
+               JOIN edition e ON e.id = m.edition_id WHERE m.sha256 = ?1",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map([&ours], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect()
+        })
+        .expect("reads the members");
+    assert_eq!(
+        members
+            .iter()
+            .map(|(_, _, root_id)| *root_id)
+            .collect::<Vec<_>>(),
+        vec![Some(first)],
+        "the fixture: one member is the first directory's archive"
+    );
+    let (member_id, work_id, _) = members[0];
+    record_digests(&conn, work_id, &[(member_id, "1".repeat(64))]);
+
+    assert_eq!(
+        rows(),
+        vec![Some("1".repeat(64)), Some(theirs)],
+        "the stamped directory's row takes the new digest; the other keeps its own"
+    );
+}
+
+/// A held reading is the one the works were written from. Where it is the
+/// digest the stamp replaced, the works now hold the new digest, so it moves;
+/// a held reading of other bytes is not the stamp's to move. Each row holds a
+/// whole reading beside the digest a walk leaves: c001's taken since by a
+/// derive that wrote no work, and c002's cleared, so the row's own digest
+/// decides nothing.
+#[test]
+fn a_stamp_moves_a_held_reading_only_where_it_is_the_digest_replaced() {
+    let copies = two_copies();
+    let conn = copies.fixture.conn();
+    let work_id = copies.fixture.work_id;
+    let old = member_digests(&conn, work_id).remove(0).1;
+    let c001 = "Series/Series - v01 - c001.cbz";
+    let c002 = "Series/Series - v01 - c002.cbz";
+    for (rel_path, digest, held) in [
+        (c001, Some("e".repeat(64)), old),
+        (c002, None, "7".repeat(64)),
+    ] {
+        let set = conn
+            .execute(
+                "UPDATE scan_entry SET sha256 = ?1, held_sha256 = ?2, held_format = 'zip',
+                        held_pages = 3, held_title = NULL
+                  WHERE root_id = ?3 AND rel_path = ?4",
+                rusqlite::params![digest, held, copies.root.id, rel_path],
+            )
+            .expect("holds a reading");
+        assert_eq!(set, 1, "the fixture: one row at {rel_path}");
+    }
+    record_digests(
+        &conn,
+        work_id,
+        &[(copies.c001, "1".repeat(64)), (copies.c002, "2".repeat(64))],
+    );
+
+    let held = |rel_path| crate::scan::tests::held_reading(&conn, copies.root.id, rel_path);
+    let reading = |sha256: String| (Some(sha256), Some("zip".to_string()), Some(3), None);
+    assert_eq!(
+        (held(c001), held(c002)),
+        (reading("1".repeat(64)), reading("7".repeat(64))),
+        "c001's held reading moves to its new digest, the rest kept; c002's, of other bytes, stays"
+    );
+}
+
 /// Two accounts can hold a note with one id on one work (migration 005): here
 /// account 2's n1 is on c002's second page and account 1's on c001's. Each
 /// account's note moves by its own anchor, not by the other's.

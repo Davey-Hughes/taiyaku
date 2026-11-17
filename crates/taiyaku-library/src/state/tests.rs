@@ -2254,19 +2254,24 @@ fn a_stamp_keeps_a_note_and_a_position_on_their_page() {
     );
 }
 
-/// A derive before the next scan writes c002's old digest back onto its
-/// member, from the scan's entry; the scan then records the new one, and the
-/// rows the stamp moved to it name their page again.
+/// A derive before the next scan keeps c002's new digest, which the stamp
+/// wrote to the scan's entry too (O270), so the rows the stamp moved to it
+/// stay on their page through the scan.
 #[test]
 fn a_derive_between_a_stamp_and_the_next_scan_leaves_the_rows_on_their_page() {
     let answered = after_a_stamp_and_a_removal(|volume| {
         let unstamped = digest_of(&volume.conn(), "c002");
         stamp_the_volume(volume);
+        let stamped = digest_of(&volume.conn(), "c002");
+        assert_ne!(
+            stamped, unstamped,
+            "the fixture: the stamp moved c002's digest"
+        );
         crate::derive::derive(&volume.conn()).expect("derives before the next scan");
         assert_eq!(
             digest_of(&volume.conn(), "c002"),
-            unstamped,
-            "the fixture: the derive put c002's old digest back"
+            stamped,
+            "the derive keeps c002's stamped digest"
         );
         rescan_the_volume(volume);
     });

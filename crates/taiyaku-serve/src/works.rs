@@ -391,11 +391,11 @@ fn find_row_by_slug(conn: &rusqlite::Connection, slug: &str) -> Result<Option<i6
 /// `at`, a page a save names on `edition` of the work `work_id`, forwarded
 /// to the digest and occurrence the stamps moved it to, its page and half
 /// kept, as a stamp keeps every page (O240). Only where `at` names nothing in
-/// the document `view` sends: a derive before the next scan puts a stamped
-/// member's old digest back (O270), and an `at` naming it stays. An alias's
-/// occurrence is the full edition's and `at`'s the account's, which agree: a
-/// stamp rewrites a member under one directory, and derive gives every copy
-/// of its digest a file there. No answer sends an alias.
+/// the document `view` sends: one that resolves stays, for a member showing a
+/// stamped-away digest again, as a file put back from before the stamp does
+/// once walked. An alias's occurrence is the full edition's and `at`'s the
+/// account's, which agree: a stamp rewrites a member under one directory, and
+/// derive gives each copy of its digest a file there. No answer sends an alias.
 ///
 /// # Errors
 ///

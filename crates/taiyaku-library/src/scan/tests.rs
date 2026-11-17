@@ -152,6 +152,22 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
+/// The reading `root_id`'s row at `rel_path` holds: its `held_sha256`,
+/// `held_format`, `held_pages` and `held_title`, in that order.
+pub(crate) fn held_reading(
+    conn: &Connection,
+    root_id: i64,
+    rel_path: &str,
+) -> (Option<String>, Option<String>, Option<i64>, Option<String>) {
+    conn.query_row(
+        "SELECT held_sha256, held_format, held_pages, held_title
+           FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+        rusqlite::params![root_id, rel_path],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .unwrap_or_else(|e| panic!("{rel_path} has a row: {e}"))
+}
+
 #[test]
 fn a_hand_written_archive_lists_its_pages() {
     // [`write_archive`] is a zip writer in a test module, so nothing else
@@ -985,6 +1001,216 @@ fn a_scan_that_overlaps_another_keeps_the_entry_and_digest_the_first_wrote() {
     assert_eq!(status_of(&conn, &root).as_deref(), Some("ok"));
 }
 
+// --- the held reading (O320) ---------------------------------------------
+
+/// The file the held-reading tests write, change and scan again.
+const REL: &str = "Alpha/Alpha v01.cbz";
+
+/// A directory holding [`REL`] at `pages` pages, added and scanned once.
+fn scanned_alpha(label: &str, pages: usize) -> (crate::tests::TempDir, Library, Root) {
+    let tree = crate::tests::tempdir(label);
+    write_archive(&tree.path().join(REL), pages);
+    let library = Library::open_in_memory().expect("open");
+    let root = {
+        let conn = library.conn();
+        let root = add_root(&conn, tree.path()).expect("add");
+        scan_root(&conn, &root).expect("the first scan");
+        root
+    };
+    (tree, library, root)
+}
+
+/// [`scanned_alpha`] at 3 pages and derived, then rewritten at 4 pages and
+/// scanned again; with the digest the derive took, which that walk replaced.
+fn changed_alpha(label: &str) -> (crate::tests::TempDir, Library, Root, String) {
+    let (tree, library, root) = scanned_alpha(label, 3);
+    let digest = {
+        let conn = library.conn();
+        crate::derive::derive(&conn).expect("derives");
+        let digest = digest_at(&conn, &root, REL).expect("the fixture: the derive hashed it");
+        assert_eq!(
+            held_reading(&conn, root.id, REL),
+            (None, None, None, None),
+            "the fixture: nothing is held before the change"
+        );
+        rescan_rewritten(&conn, &tree, &root, 4);
+        digest
+    };
+    (tree, library, root, digest)
+}
+
+/// [`REL`] written again at `pages` pages, which moves its size, and scanned.
+fn rescan_rewritten(conn: &Connection, tree: &crate::tests::TempDir, root: &Root, pages: usize) {
+    write_archive(&tree.path().join(REL), pages);
+    assert_eq!(
+        scan_root(conn, root).expect("scans the change").updated,
+        1,
+        "the fixture: the walk sees the file changed"
+    );
+}
+
+/// `root`'s row at [`REL`]: its own digest and page count.
+fn own_reading(conn: &Connection, root: &Root) -> (Option<String>, Option<i64>) {
+    conn.query_row(
+        "SELECT sha256, pages FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+        rusqlite::params![root.id, REL],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .expect("the row")
+}
+
+/// The walk clears a changed entry's digest, and keeps what it clears with
+/// the format and page count read beside it: the reading the works were
+/// written from, which a paused directory's derive reads until Scan.
+#[test]
+fn a_changed_entry_holds_the_reading_its_digest_was_taken_from() {
+    let (_tree, library, root, d) = changed_alpha("held-changed");
+    let conn = library.conn();
+
+    assert_eq!(
+        held_reading(&conn, root.id, REL),
+        (Some(d), Some("zip".into()), Some(3), None)
+    );
+    assert_eq!(
+        own_reading(&conn, &root),
+        (None, Some(4)),
+        "the entry reads as the walk found it, to be hashed again"
+    );
+}
+
+/// A book's work is named by its `dc:title`, so the title read with the
+/// digest is held with it, not the one the changed file now declares: a
+/// paused directory's book keeps its name.
+#[test]
+fn a_changed_book_holds_the_title_its_digest_was_read_with() {
+    let tree = crate::tests::tempdir("held-book");
+    let series = tree.path().join("Story");
+    std::fs::create_dir_all(&series).expect("mkdir");
+    let book = "Story/Story v01.epub";
+    let write = |title: &str, paragraphs: &[&str]| {
+        taiyaku_read::test_support::epub_with(
+            &series,
+            "Story v01.epub",
+            &format!("<dc:title>{title}</dc:title>"),
+            paragraphs,
+        );
+    };
+    write("The Story", &["One.", "Two.", "Three."]);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("add");
+    scan_root(&conn, &root).expect("the first scan");
+    crate::derive::derive(&conn).expect("derives");
+    let d = digest_at(&conn, &root, book).expect("the fixture: the derive hashed it");
+
+    write("Another Story", &["One.", "Two."]);
+    assert_eq!(
+        scan_root(&conn, &root).expect("scans the change").updated,
+        1,
+        "the fixture: the walk sees the book changed"
+    );
+    let title: Option<String> = conn
+        .query_row(
+            "SELECT title FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+            rusqlite::params![root.id, book],
+            |r| r.get(0),
+        )
+        .expect("the row");
+    assert_eq!(
+        title.as_deref(),
+        Some("Another Story"),
+        "the fixture: the walk read the new title"
+    );
+
+    assert_eq!(
+        held_reading(&conn, root.id, book),
+        (
+            Some(d),
+            Some("epub-reflow".into()),
+            Some(3),
+            Some("The Story".into())
+        )
+    );
+}
+
+/// A digest taken after the change and never written (a cancelled derive
+/// leaves one) is not what the works hold, so a second change keeps the
+/// reading held already rather than that one.
+#[test]
+fn a_held_reading_survives_a_second_change() {
+    let (tree, library, root, d) = changed_alpha("held-twice");
+    let conn = library.conn();
+    assert_eq!(
+        conn.execute(
+            "UPDATE scan_entry SET sha256 = ?3 WHERE root_id = ?1 AND rel_path = ?2",
+            rusqlite::params![root.id, REL, "e".repeat(64)],
+        ),
+        Ok(1),
+        "the fixture: the digest a cancelled derive leaves"
+    );
+
+    rescan_rewritten(&conn, &tree, &root, 5);
+
+    assert_eq!(
+        held_reading(&conn, root.id, REL),
+        (Some(d), Some("zip".into()), Some(3), None)
+    );
+}
+
+/// A walk that finds the entry unchanged leaves what it holds alone.
+#[test]
+fn an_unchanged_entry_keeps_its_held_reading() {
+    let (_tree, library, root, d) = changed_alpha("held-unchanged");
+    let conn = library.conn();
+    let held = held_reading(&conn, root.id, REL);
+    assert_eq!(held.0, Some(d), "the fixture: a reading is held");
+
+    assert_eq!(
+        scan_root(&conn, &root).expect("scans again").updated,
+        0,
+        "the fixture: nothing changed"
+    );
+
+    assert_eq!(held_reading(&conn, root.id, REL), held);
+}
+
+/// The pages held are those read with the digest held. An entry changed
+/// before any digest was taken holds nothing; once one is taken, the next
+/// change holds it with the page count of its own reading.
+#[test]
+fn a_reading_is_held_with_its_own_page_count() {
+    let (tree, library, root) = scanned_alpha("held-own-pages", 3);
+    let conn = library.conn();
+    assert_eq!(
+        own_reading(&conn, &root),
+        (None, Some(3)),
+        "the fixture: never hashed"
+    );
+
+    rescan_rewritten(&conn, &tree, &root, 4);
+    assert_eq!(
+        held_reading(&conn, root.id, REL),
+        (None, None, None, None),
+        "no digest was replaced"
+    );
+
+    let taken = "e".repeat(64);
+    assert_eq!(
+        conn.execute(
+            "UPDATE scan_entry SET sha256 = ?3 WHERE root_id = ?1 AND rel_path = ?2",
+            rusqlite::params![root.id, REL, taken],
+        ),
+        Ok(1),
+        "the fixture: the digest taken at 4 pages"
+    );
+    rescan_rewritten(&conn, &tree, &root, 5);
+
+    assert_eq!(
+        held_reading(&conn, root.id, REL),
+        (Some(taken), Some("zip".into()), Some(4), None)
+    );
+}
+
 // --- add_root_checked ----------------------------------------------------
 
 /// Overlapping-libraries spec §4's W: a directory inside one of the library it
@@ -1613,6 +1839,63 @@ fn a_dir_inside_a_directory_member_of_any_root_is_refused() {
     }
     add_root_checked_in(&conn, &m.join("S"), InLibrary::Named("Kids"))
         .expect("a series folder holding a member is not one");
+}
+
+/// A paused directory's changed folder volume keeps its digest only as the
+/// held reading, which no derive replaces until Scan, and a directory added
+/// inside it is still refused: it would split the volume's pages (O91).
+#[test]
+fn a_dir_added_inside_a_paused_folder_volume_is_refused() {
+    let top = crate::tests::tempdir("scan-add-inside-a-paused-member");
+    let r = top.path().join("r");
+    let volume = r.join("S").join("S - v01");
+    std::fs::create_dir_all(&volume).expect("mkdir");
+    for (page, bytes) in [("000.jpg", "one"), ("001.jpg", "two")] {
+        std::fs::write(volume.join(page), bytes).expect("write");
+    }
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let manga = add_root_checked_in(&conn, &r, InLibrary::Named("Manga"))
+        .expect("adds")
+        .root;
+    scan_root(&conn, &manga).expect("scans");
+    crate::derive::derive(&conn).expect("derives");
+    let d: String = conn
+        .query_row("SELECT sha256 FROM member", [], |row| row.get(0))
+        .expect("the fixture: the folder is the one member");
+
+    let extra = volume.join("extra");
+    std::fs::create_dir_all(&extra).expect("mkdir");
+    std::fs::write(extra.join("000.jpg"), "three").expect("write");
+    let apart = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    std::fs::File::open(&volume)
+        .expect("opens the folder")
+        .set_times(std::fs::FileTimes::new().set_modified(apart))
+        .expect("moves its mtime");
+    scan_root(&conn, &manga).expect("scans the change");
+    pause(&conn, std::slice::from_ref(&manga)).expect("pauses");
+    crate::derive::derive(&conn).expect("derives");
+    let rel = "S/S - v01";
+    assert_eq!(
+        (
+            digest_at(&conn, &manga, rel),
+            held_reading(&conn, manga.id, rel).0
+        ),
+        (None, Some(d)),
+        "the fixture: the walk cleared the folder's digest, and the derive left it held"
+    );
+    let member = volume.canonicalize().unwrap();
+    let extra = member.join("extra");
+
+    assert_eq!(
+        add_root_checked_in(&conn, &extra, InLibrary::Named("Kids")).map(|a| a.root),
+        Err(AddRootError::Unusable(format!(
+            "{} is inside {}, which the library `Manga` reads as the pages of one volume",
+            extra.display(),
+            member.display()
+        ))),
+        "refused as when the folder held its digest"
+    );
 }
 
 /// The member check names every library holding the directory the member is
@@ -3264,6 +3547,52 @@ fn removing_one_root_leaves_the_other_roots_works_alone() {
     for path in kept {
         assert!(after.contains_key(&path), "{path} went with the other root");
     }
+}
+
+/// O320: a removal's derives freeze a paused directory as every derive does,
+/// so the removal of another directory hashes none of its files and writes
+/// none of its works.
+#[test]
+fn removing_another_directory_hashes_none_of_a_paused_one() {
+    let (t_dir, r_dir) = (
+        crate::tests::tempdir("remove-other-t"),
+        crate::tests::tempdir("remove-other-r"),
+    );
+    write_archive(&t_dir.path().join("Beta").join("Beta v01.cbz"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let t = add_root(&conn, t_dir.path()).expect("adds T");
+    scan_root(&conn, &t).expect("scans T");
+    crate::derive::derive(&conn).expect("derives T");
+    write_archive(
+        &r_dir.path().join("Alpha").join("Alpha - v01 - c001.cbz"),
+        2,
+    );
+    write_archive(
+        &r_dir.path().join("Alpha").join("Alpha - v01 - c002.cbz"),
+        3,
+    );
+    let r = add_root(&conn, r_dir.path()).expect("adds R");
+    scan_root(&conn, &r).expect("scans R, no derive");
+    pause(&conn, std::slice::from_ref(&r)).expect("pauses R");
+    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |row| row.get(0)).expect("counts") };
+    let r_digests = format!(
+        "SELECT count(*) FROM scan_entry WHERE root_id = {} AND sha256 IS NOT NULL",
+        r.id
+    );
+    assert_eq!(
+        (count(&r_digests), count("SELECT count(*) FROM work")),
+        (0, 1),
+        "the fixture: R walked and not hashed, T's one work"
+    );
+
+    remove_root(&conn, t.id).expect("removes T");
+
+    assert_eq!(
+        (count(&r_digests), count("SELECT count(*) FROM work")),
+        (0, 0),
+        "(R's digests, works)"
+    );
 }
 
 /// `remove_root` must send `DELETE FROM root` *inside* an already-open
@@ -7238,7 +7567,28 @@ fn a_members_file_gone_before_the_derive_hashes_it_is_named_once() {
         .root;
     scan_root(&conn, &manga).expect("scans Manga");
     crate::derive::derive(&conn).expect("derives");
+    // A file unchanged since Manga's walk would be taken over with its digest,
+    // and the derive would hash nothing: moved, its digest is held instead.
+    let moved = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    for name in ["S 01.cbz", "S - v02.cbz"] {
+        std::fs::File::options()
+            .write(true)
+            .open(top.path().join("m/S").join(name))
+            .and_then(|file| file.set_times(std::fs::FileTimes::new().set_modified(moved)))
+            .expect("moves the file's mtime");
+    }
     scan_root(&conn, &inner).expect("scans Inner");
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM scan_entry WHERE root_id = ?1 AND sha256 IS NULL
+               AND held_sha256 IS NOT NULL",
+            [inner.id],
+            |r| r.get::<_, i64>(0)
+        )
+        .expect("counts Inner's held rows"),
+        2,
+        "the fixture: Inner holds both files' digests, to hash them again"
+    );
     for name in ["S 01.cbz", "S - v02.cbz"] {
         std::fs::remove_file(top.path().join("m/S").join(name)).expect("the file goes");
     }
@@ -9841,6 +10191,38 @@ fn removing_a_nested_directory_hands_its_files_to_the_directory_around_it() {
         assert!(h.series_before.contains(&"kids".to_string()), "the fixture");
         assert_eq!(series_names(&conn), h.series_before);
     }
+}
+
+/// The row handed back carries the reading the works were written from (O320).
+#[test]
+fn a_hand_back_carries_an_entrys_held_reading() {
+    let h = handed_over("hand-back-held");
+    let conn = h.library.conn();
+    let held = (
+        Some("h".repeat(64)),
+        Some("zip".to_string()),
+        Some(7),
+        Some("held title".to_string()),
+    );
+    assert_eq!(
+        conn.execute(
+            "UPDATE scan_entry
+                SET held_sha256 = ?3, held_format = ?4, held_pages = ?5, held_title = ?6
+              WHERE root_id = ?1 AND rel_path = ?2",
+            rusqlite::params![h.kids.id, "Bleach/v01.cbz", held.0, held.1, held.2, held.3],
+        ),
+        Ok(1),
+        "the fixture: Kids' row holds a reading"
+    );
+
+    let tx = crate::Nested::open(&conn, "hand_back").expect("opens a transaction");
+    assert_eq!(
+        hand_back(&tx, h.kids.id, &HashSet::new(), &mut Carried::new()).expect("hands back"),
+        4,
+        "the fixture: kids, kids/Bleach and its two files"
+    );
+
+    assert_eq!(held_reading(&tx, h.manga.id, "kids/Bleach/v01.cbz"), held);
 }
 
 /// A removal of `root`: its directory, or its library, rehearsed (what the

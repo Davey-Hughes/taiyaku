@@ -384,10 +384,10 @@ fn move_document(
     Ok((now_at, crate::hand::rename_from(conn, work_id, old)?))
 }
 
-/// [`record`]'s transaction: each stamped member's new digest, the rows
-/// anchored on the members of the editions it holds and the aliases of their
-/// old digests ([`rekey_anchors`]), and the work's key where the hub's digests
-/// moved it. Answers that moved key.
+/// [`record`]'s transaction: each stamped member's new digest, on the member
+/// and on its archive's directory row, the rows anchored on the members of the
+/// editions it holds and the aliases of their old digests ([`rekey_anchors`]),
+/// and the work's key where the hub's digests moved it. Answers that moved key.
 fn record_rows(
     conn: &Connection,
     work_id: i64,
@@ -403,6 +403,27 @@ fn record_rows(
         rekey_anchors(&tx, work_id, &key, &members, written)?;
     }
     for (member_id, digest) in written {
+        // The archive's directory row too, or the next derive would put the
+        // old digest back on the member (O270). Found by path, never by
+        // digest: two copies under one directory share one. A held reading of
+        // the digest replaced moves with it, since the works now hold the new
+        // one. It is compared with the member's digest, not the row's, which
+        // the walk cleared; so this runs before the member's own update. The
+        // other held fields stay: a stamp keeps a zip's format, adds no page
+        // and gives no title.
+        tx.execute(
+            "UPDATE scan_entry SET sha256 = ?1,
+                    held_sha256 = CASE WHEN held_sha256 =
+                                           (SELECT sha256 FROM member WHERE id = ?2)
+                                       THEN ?1 ELSE held_sha256 END
+              WHERE (root_id, rel_path) = (
+                    SELECT r.id, substr(m.path, length(r.path) + 2)
+                      FROM member m JOIN root r ON r.id = m.root_id
+                     WHERE m.id = ?2
+                       AND substr(m.path, 1, length(r.path) + 1) = r.path || '/')",
+            rusqlite::params![digest, member_id],
+        )
+        .map_err(|e| format!("recording the new digest of member {member_id}'s file: {e}"))?;
         tx.execute(
             "UPDATE member SET sha256 = ?1 WHERE id = ?2",
             rusqlite::params![digest, member_id],
@@ -484,8 +505,6 @@ fn occurrences(members: &[(i64, String)]) -> Vec<(String, u32)> {
 /// (O244): a stamp keeps every page byte for byte, so the page is still
 /// there. `members` is the edition's members before the stamp. A copy the
 /// stamp does not rewrite moves too when a copy before it leaves its digest.
-/// A derive before the next scan of the archive's directory puts the old
-/// digest back on the member; O270 says what the rows read until then.
 /// Then [`remember_moves`] keeps the moves, for a tab read before it (O240).
 fn rekey_anchors(
     tx: &Connection,

@@ -835,14 +835,15 @@ fn at_a_member(conn: &Connection, held: &[Root], dir: &Path) -> Result<Option<St
 /// Whether root `root_id`'s directory at `rel_path` is a directory member (a
 /// folder of page images read as one volume) or a byte-identical copy of one,
 /// as the last derive left them: the derive hashes only what it stages, onto
-/// each copy's own row, so a copy is found at its own path too. A root inside
-/// one leaves the member's page count short of what the reader serves. A root
-/// at one makes the folder its own nameless top entry, which the seeded rules
-/// read no series from, while spec §4 has the outer's walk skip a nested root,
-/// so the volume would be in neither library.
+/// each copy's own row, so a copy is found at its own path too, and a paused
+/// directory's changed folder by its held digest, the only one it keeps until
+/// Scan (O320). A root inside one leaves the member's page count short of what
+/// the reader serves. A root at one is a nameless top entry no seeded rule
+/// names a series for, which spec §4 has the outer's walk skip: in no library.
 fn reads_as_one_volume(conn: &Connection, root_id: i64, rel_path: &str) -> Result<bool, String> {
     conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM scan_entry e JOIN member m ON m.sha256 = e.sha256
+        "SELECT EXISTS (SELECT 1 FROM scan_entry e
+                          JOIN member m ON m.sha256 IN (e.sha256, e.held_sha256)
                          WHERE e.root_id = ?1 AND e.rel_path = ?2 AND e.kind = ?3)",
         rusqlite::params![root_id, rel_path, Kind::Dir.as_str()],
         |r| r.get(0),
@@ -1635,10 +1636,43 @@ fn copy_entry(
     tx.execute(
         "INSERT INTO scan_entry
              (root_id, rel_path, kind, format, size, mtime, pages, title, sha256, first_seen,
-              last_seen)
-         SELECT ?1, ?2, kind, format, size, mtime, pages, title, sha256, first_seen, last_seen
+              last_seen, held_sha256, held_format, held_pages, held_title)
+         SELECT ?1, ?2, kind, format, size, mtime, pages, title, sha256, first_seen, last_seen,
+                held_sha256, held_format, held_pages, held_title
            FROM scan_entry WHERE root_id = ?3 AND rel_path = ?4
          ON CONFLICT (root_id, rel_path) DO NOTHING",
+        rusqlite::params![to, to_rel, from, rel_path],
+    )
+}
+
+/// Give the row directory `to`'s walk recorded at `to_rel` the reading of
+/// directory `from`'s row at `rel_path`, as [`record`] would have left it on
+/// `from`'s: the digest where size and mtime are the same, the held reading,
+/// and where the file changed and nothing is held yet, the reading the change
+/// clears. A taken-over row otherwise holds no reading, and a nested directory
+/// paused before its first derive would freeze its works with nothing they are
+/// held by (O320). A row that already holds a reading of its own keeps it.
+fn carry_reading(
+    tx: &Connection,
+    from: i64,
+    rel_path: &str,
+    to: i64,
+    to_rel: &str,
+) -> rusqlite::Result<usize> {
+    let same = "o.size = n.size AND o.mtime = n.mtime";
+    let holds = format!("NOT ({same}) AND o.held_sha256 IS NULL AND o.sha256 IS NOT NULL");
+    tx.execute(
+        &format!(
+            "UPDATE scan_entry AS n
+                SET sha256 = CASE WHEN {same} THEN o.sha256 END,
+                    held_sha256 = CASE WHEN {holds} THEN o.sha256 ELSE o.held_sha256 END,
+                    held_format = CASE WHEN {holds} THEN o.format ELSE o.held_format END,
+                    held_pages = CASE WHEN {holds} THEN o.pages ELSE o.held_pages END,
+                    held_title = CASE WHEN {holds} THEN o.title ELSE o.held_title END
+               FROM scan_entry AS o
+              WHERE n.root_id = ?1 AND n.rel_path = ?2 AND o.root_id = ?3 AND o.rel_path = ?4
+                AND n.sha256 IS NULL AND n.held_sha256 IS NULL"
+        ),
         rusqlite::params![to, to_rel, from, rel_path],
     )
 }
@@ -3351,10 +3385,22 @@ fn record(
         }
         (true, Some(resolved)) => {
             report.updated += 1;
+            // The reading cleared here is held, so a paused directory's derive
+            // still reads what its works were written from (O320). Only the
+            // first is held: a digest taken since and never written is not the
+            // works', and no digest means no reading to hold. Each right-hand
+            // side reads the row as it was before this statement.
             conn.execute(
                 "UPDATE scan_entry
                     SET kind = ?3, format = ?4, size = ?5, mtime = ?6, pages = ?7,
-                        title = ?8, sha256 = NULL, last_seen = datetime('now')
+                        title = ?8, sha256 = NULL, last_seen = datetime('now'),
+                        held_sha256 = COALESCE(held_sha256, sha256),
+                        held_format = CASE WHEN held_sha256 IS NULL AND sha256 IS NOT NULL
+                                           THEN format ELSE held_format END,
+                        held_pages = CASE WHEN held_sha256 IS NULL AND sha256 IS NOT NULL
+                                          THEN pages ELSE held_pages END,
+                        held_title = CASE WHEN held_sha256 IS NULL AND sha256 IS NOT NULL
+                                          THEN title ELSE held_title END
                   WHERE root_id = ?1 AND rel_path = ?2",
                 rusqlite::params![
                     root.id,
@@ -3798,6 +3844,8 @@ fn take_over(
             let is_dir = kind == Kind::Dir.as_str();
             if recorded.contains(own) {
                 taken.recorded += 1;
+                carry_reading(conn, outer.id, rel_path, root.id, own)
+                    .map_err(|e| failed(rel_path, e))?;
             } else if let Some((to, to_rel)) =
                 outer_holder(enclosing.as_ref(), excluder, own, is_dir)
             {

@@ -456,8 +456,20 @@ fn scan(args: &[String]) -> Result<(), String> {
         // One raiser, like one writer: `derive` already calls
         // `proposals::raise` once, at the end of its own pass, and returns
         // the count it opened.
+        //
+        // Its own directories read fresh, as a pressed Scan's are, and every
+        // other paused one frozen (O320).
+        let fresh: Vec<i64> = selected.iter().map(|root| root.id).collect();
         let derived = lease
-            .holding(|| taiyaku_library::derive::derive(&conn))
+            .holding(|| {
+                taiyaku_library::derive::derive_watched(
+                    &conn,
+                    taiyaku_library::derive::Documents::Reconcile,
+                    &fresh,
+                    &taiyaku_library::progress::Unwatched,
+                )
+                .and_then(taiyaku_library::derive::done)
+            })
             .map_err(|e| format!("deriving: {e}"))?;
         println!("{}", derive_summary(&derived, derived.raised));
     }

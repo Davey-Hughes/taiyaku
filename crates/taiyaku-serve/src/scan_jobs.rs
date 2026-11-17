@@ -415,7 +415,9 @@ pub(crate) fn run(
         job_lock,
         running,
         scan::scan_root_watched,
-        |conn, watch| derive::derive_watched(conn, derive::Documents::Reconcile, watch),
+        |conn, fresh, watch| {
+            derive::derive_watched(conn, derive::Documents::Reconcile, fresh, watch)
+        },
     )
 }
 
@@ -438,12 +440,13 @@ pub(crate) fn run_with(
         job_lock,
         &Running::new(&job, None),
         |conn, root, _| walk(conn, root).map(Outcome::Done),
-        |conn, _| derive(conn).map(Outcome::Done),
+        |conn, _, _| derive(conn).map(Outcome::Done),
     )
 }
 
 /// [`run`]'s whole body, over a caller-supplied walk and derive, each handed
-/// `running` to report through and to read the cancel flag from.
+/// `running` to report through and to read the cancel flag from, and the
+/// derive the ids of the directories it reads fresh.
 ///
 /// **Split out as `schema::migrate_with` is**: what is worth pinning is the
 /// status each directory reads *during* the job, which only a walk or derive
@@ -462,6 +465,7 @@ pub(crate) fn run_watched(
     ) -> Result<Outcome<scan::ScanReport>, String>,
     derive: impl FnOnce(
         &rusqlite::Connection,
+        &[i64],
         &dyn Watch,
     ) -> Result<Outcome<derive::DeriveReport>, String>,
 ) -> Result<Vec<serde_json::Value>, String> {
@@ -582,8 +586,17 @@ pub(crate) fn run_watched(
         }
         Err(why) => Err(why),
     };
+    // A pressed job reads what it covers fresh, paused or not: its unpause is
+    // best-effort, and a directory left paused would otherwise be frozen by
+    // the very Scan pressed for it, nothing hashed or written (O320). A batch
+    // runs no paused directory, so it has none to read fresh.
+    let fresh: Vec<i64> = if reread.pressed() {
+        asked.iter().map(|root| root.id).collect()
+    } else {
+        Vec::new()
+    };
     let outcome = match &lease {
-        Ok(lease) => lease.holding(|| derive(&working, running)),
+        Ok(lease) => lease.holding(|| derive(&working, &fresh, running)),
         Err(why) => Err(why.clone()),
     };
     let derived = match outcome {

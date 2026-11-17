@@ -330,12 +330,21 @@ or the listing it is in, keeps what it has hashed and written, and pauses
 each of its directories, which the schedule then passes over, its setting
 unchanged, and whose page says "Paused until Scan is pressed" and since
 when, until a press of Scan directory or Scan library, or a `library scan`
-from the host, covers it. A scan started from the screen reports both halves
-of what it did in full: the walk and the derivation, every field (a walk's
-**Taken over** only when it is not zero), with what it *could not* do listed
-before what it did, and an empty list drawn as `0` rather than left out — so
-"nothing was unreadable this time" cannot be mistaken for "this version does
-not say".
+from the host, covers it. Until then every other scan, a rules preview or
+save and a removal of another directory or library hash none of its files
+and read it as its works last held it: a change to a file they hold waits
+for the Scan, and so does any other file that would join a work unless its
+bytes are ones they already hold there. Its works can still change: a
+folder volume's page count follows its folder, a rules save regroups them
+by the new rules, and another directory's file can join one of them. After
+an upgrade to this version, a copy there of another directory's file that
+a walk found changed before the upgrade can take its work out of the
+directory's library until the Scan. A scan started from the screen reports
+both halves of what it did in full: the walk and the derivation, every
+field (a walk's **Taken over** only when it is not zero), with what it
+*could not* do listed before what it did, and an empty list drawn as `0`
+rather than left out — so "nothing was unreadable this time" cannot be
+mistaken for "this version does not say".
 
 **The rule editor is built too**, at `/config/rules` — the screen the whole
 preview mechanism exists for. An ordered

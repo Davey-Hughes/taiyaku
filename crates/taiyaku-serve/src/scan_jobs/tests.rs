@@ -660,7 +660,9 @@ fn a_job_of(
         &crate::LibraryJob::default(),
         &super::Running::new(job, Some(scans)),
         scan::scan_root_watched,
-        |conn, watch| derive::derive_watched(conn, derive::Documents::Reconcile, watch),
+        |conn, fresh, watch| {
+            derive::derive_watched(conn, derive::Documents::Reconcile, fresh, watch)
+        },
     )
 }
 
@@ -848,7 +850,7 @@ fn a_scan_held_in_its_derive(
                 &state.library_job,
                 running,
                 |conn, root, _| scan::scan_root(conn, root).map(Outcome::Done),
-                |conn, _| {
+                |conn, _, _| {
                     let _ = said.send(());
                     let _ = released.recv();
                     derive::derive(conn).map(Outcome::Done)
@@ -903,7 +905,7 @@ async fn a_scan_queued_behind_another_reads_waiting_until_it_holds_the_job_lock(
                     let _ = gone_on.recv();
                     scan::scan_root(conn, root).map(Outcome::Done)
                 },
-                |conn, _| derive::derive(conn).map(Outcome::Done),
+                |conn, _, _| derive::derive(conn).map(Outcome::Done),
             )
         },
     );
@@ -1070,10 +1072,11 @@ fn cancelled_after_one_digest(
         &crate::LibraryJob::default(),
         &super::Running::new(&job, None),
         scan::scan_root_watched,
-        |conn, watch| {
+        |conn, fresh, watch| {
             derive::derive_watched(
                 conn,
                 derive::Documents::Reconcile,
+                fresh,
                 &CancelWhen {
                     inner: watch,
                     job: &job,
@@ -1107,7 +1110,9 @@ fn cancelled_after_the_first_walk(
             job.request_cancel();
             walk
         },
-        |conn, watch| derive::derive_watched(conn, derive::Documents::Reconcile, watch),
+        |conn, fresh, watch| {
+            derive::derive_watched(conn, derive::Documents::Reconcile, fresh, watch)
+        },
     )
 }
 
@@ -1189,10 +1194,11 @@ async fn a_job_reports_its_directory_and_step_as_it_goes() {
                         },
                     )
                 },
-                |conn, watch| {
+                |conn, fresh, watch| {
                     derive::derive_watched(
                         conn,
                         derive::Documents::Reconcile,
+                        fresh,
                         &Recording {
                             inner: watch,
                             job,
@@ -1331,6 +1337,173 @@ fn a_cancelled_first_scan_reads_never_cancelled_and_paused_with_its_digests_kept
     );
 }
 
+/// `root`'s entries that hold a digest.
+fn digests_in(conn: &rusqlite::Connection, root: &scan::Root) -> i64 {
+    count(
+        conn,
+        &format!(
+            "SELECT count(*) FROM scan_entry WHERE root_id = {} AND sha256 IS NOT NULL",
+            root.id
+        ),
+    )
+}
+
+/// The members held under `root`.
+fn member_roots_in(conn: &rusqlite::Connection, root: &scan::Root) -> i64 {
+    count(
+        conn,
+        &format!(
+            "SELECT count(*) FROM member_root WHERE root_id = {}",
+            root.id
+        ),
+    )
+}
+
+/// Each report `watch` was given at `step`, in order.
+fn reports_at(
+    watch: &taiyaku_library::test_support::Recording,
+    step: Step,
+) -> Vec<taiyaku_library::test_support::Report> {
+    watch
+        .reports()
+        .into_iter()
+        .filter(|(at, _, _)| *at == step)
+        .collect()
+}
+
+/// `a` with a second volume, `Alpha - v02` (3 pages), its first import
+/// cancelled after one digest: one of its files hashed, none written, paused.
+fn a_cancelled_first_import(library: &Library, fixture: &test_support::Fixture, a: &scan::Root) {
+    test_support::write_pages(
+        &fixture.path().join("a").join("Alpha").join("Alpha - v02"),
+        3,
+    );
+    cancelled_after_one_digest(library, std::slice::from_ref(a), Reread::Dir)
+        .expect("the job answers");
+    let conn = library.conn();
+    assert_eq!(
+        (
+            digests_in(&conn, a),
+            member_roots_in(&conn, a),
+            paused(&conn, a)
+        ),
+        (1, 0, true),
+        "the fixture: a's first import hashed one file, wrote nothing and paused it"
+    );
+}
+
+/// Spec §9, O320: another library's scan freezes a directory a cancel paused,
+/// so it hashes none of it (its Hashing total is the other library's bytes
+/// alone) and writes none of its works; a pressed Scan of it writes them all.
+#[test]
+fn a_cancelled_first_import_is_hashed_by_no_other_librarys_scan_and_whole_by_its_own() {
+    let (library, fixture, a, b) = two_dirs("job-frozen-other-library");
+    a_cancelled_first_import(&library, &fixture, &a);
+    let b_bytes: u64 = std::fs::read_dir(fixture.path().join("b").join("Beta").join("Beta - v01"))
+        .expect("lists b's volume")
+        .map(|page| page.expect("a page").metadata().expect("its size").len())
+        .sum();
+    let watch = taiyaku_library::test_support::Recording::default();
+    let job = super::Job::new(
+        std::time::Instant::now(),
+        Vec::new(),
+        std::sync::Arc::default(),
+    );
+
+    super::run_watched(
+        &library,
+        std::slice::from_ref(&b),
+        Reread::Library(b.libraries[0]),
+        &crate::LibraryJob::default(),
+        &super::Running::new(&job, None),
+        scan::scan_root_watched,
+        |conn, fresh, _| derive::derive_watched(conn, derive::Documents::Reconcile, fresh, &watch),
+    )
+    .expect("b's library's scan answers");
+
+    assert_eq!(
+        reports_at(&watch, Step::Hashing).last(),
+        Some(&(Step::Hashing, b_bytes, Some(b_bytes))),
+        "b's bytes hashed of b's bytes"
+    );
+    {
+        let conn = library.conn();
+        assert_eq!(
+            (digests_in(&conn, &a), member_roots_in(&conn, &a)),
+            (1, 0),
+            "a's (digests, members) as its cancel left them"
+        );
+    }
+    let job = super::Job::new(
+        std::time::Instant::now(),
+        Vec::new(),
+        std::sync::Arc::default(),
+    );
+    super::run(
+        &library,
+        std::slice::from_ref(&a),
+        Reread::Dir,
+        &crate::LibraryJob::default(),
+        &super::Running::new(&job, None),
+    )
+    .expect("a's scan answers");
+    let conn = library.conn();
+    assert_eq!(
+        (member_roots_in(&conn, &a), paused(&conn, &a)),
+        (2, false),
+        "after a's own Scan: (a's members, paused)"
+    );
+}
+
+/// Spec §7, "Who is frozen": a pressed Scan reads what it covers fresh, so a
+/// directory whose unpause the store refused, as a rules save holding the
+/// write lock refuses it, is still hashed and written whole.
+#[test]
+fn a_pressed_scan_whose_unpause_is_refused_still_reads_its_directory_fresh() {
+    let (library, fixture, a, _b) = two_dirs("job-unpause-refused");
+    a_cancelled_first_import(&library, &fixture, &a);
+    library
+        .conn()
+        .execute_batch(
+            "CREATE TRIGGER refuse_unpause BEFORE UPDATE OF paused_at ON root
+             WHEN NEW.paused_at IS NULL
+             BEGIN SELECT RAISE(ABORT, 'the store refuses the write, as one a rules save holds'); END;",
+        )
+        .expect("refuses every unpause");
+    let job = super::Job::new(
+        std::time::Instant::now(),
+        Vec::new(),
+        std::sync::Arc::default(),
+    );
+
+    let errors = super::run(
+        &library,
+        std::slice::from_ref(&a),
+        Reread::Dir,
+        &crate::LibraryJob::default(),
+        &super::Running::new(&job, None),
+    )
+    .map(|slots| {
+        slots
+            .iter()
+            .map(|slot| slot.get("error").cloned())
+            .collect::<Vec<_>>()
+    });
+
+    let conn = library.conn();
+    assert_eq!(
+        (
+            errors,
+            paused(&conn, &a),
+            member_roots_in(&conn, &a),
+            digests_in(&conn, &a)
+        ),
+        (Ok(vec![None]), true, 2, 2),
+        "(each slot's error; still paused, so the unpause was refused; all of a written and \
+         hashed)"
+    );
+}
+
 /// Spec §7: a cancel writes back the last scan each directory had before
 /// the job, which its walk replaced.
 #[test]
@@ -1413,7 +1586,9 @@ fn a_job_cancelled_while_a_walk_resolves_records_nothing() {
                 },
             )
         },
-        |conn, watch| derive::derive_watched(conn, derive::Documents::Reconcile, watch),
+        |conn, fresh, watch| {
+            derive::derive_watched(conn, derive::Documents::Reconcile, fresh, watch)
+        },
     );
 
     assert_eq!(

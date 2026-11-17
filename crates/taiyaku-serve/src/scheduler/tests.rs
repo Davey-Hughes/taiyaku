@@ -371,7 +371,7 @@ async fn a_startup_scan_queued_behind_another_reads_waiting_until_it_runs() {
                             scan::scan_root(conn, root)
                                 .map(taiyaku_library::progress::Outcome::Done)
                         },
-                        |conn, _| {
+                        |conn, _, _| {
                             let _ = said.send(());
                             let _ = released.recv();
                             taiyaku_library::derive::derive(conn)
@@ -560,7 +560,9 @@ fn a_batch_does_not_walk_a_directory_paused_after_its_tick_read_the_schedule() {
             walked.push(root.id);
             scan::scan_root_watched(conn, root, watch)
         },
-        |conn, watch| derive::derive_watched(conn, derive::Documents::Reconcile, watch),
+        |conn, fresh, watch| {
+            derive::derive_watched(conn, derive::Documents::Reconcile, fresh, watch)
+        },
     )
     .expect("the batch answers");
 
@@ -582,4 +584,68 @@ fn a_batch_does_not_walk_a_directory_paused_after_its_tick_read_the_schedule() {
         ),
         "a's (pause, last scan, word)"
     );
+}
+
+/// Spec §9, O320: the batch's one derive freezes a directory paused after its
+/// tick read the schedule, so a file the directory's last walk found waits
+/// for Scan: no digest, no member.
+#[test]
+fn a_batch_hashes_none_of_a_directory_paused_after_its_tick_read_the_schedule() {
+    let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let (a, b) = a_and_b(&state);
+    schedule_of(&state, &a, None, AN_HOUR_BEFORE);
+    schedule_of(&state, &b, None, AN_HOUR_BEFORE);
+    let mut taken = Vec::new();
+    Scheduler::new()
+        .tick(&state, NOW, |roots, _| taken = roots)
+        .expect("the tick reads the store");
+    assert_eq!(
+        ids(&taken),
+        [a.id, b.id],
+        "sanity: the startup tick takes both"
+    );
+    let gamma = "Gamma/Gamma - v01";
+    let gamma_path = a.path.join(gamma).display().to_string();
+    test_support::write_pages(&a.path.join(gamma), 2);
+    scan::scan_root(&state.library.conn(), &a).expect("walks a");
+    scan::pause(&state.library.conn(), std::slice::from_ref(&a)).expect("pauses a");
+    let gamma_of = |state: &ServeState| -> (Option<String>, i64) {
+        let conn = state.library.conn();
+        let digest = conn
+            .query_row(
+                "SELECT sha256 FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+                rusqlite::params![a.id, gamma],
+                |r| r.get(0),
+            )
+            .expect("a's walk recorded Gamma");
+        let members = conn
+            .query_row(
+                "SELECT count(*) FROM member WHERE path = ?1",
+                [&gamma_path],
+                |r| r.get(0),
+            )
+            .expect("counts Gamma's members");
+        (digest, members)
+    };
+    assert_eq!(
+        gamma_of(&state),
+        (None, 0),
+        "the fixture: Gamma walked, not hashed"
+    );
+    let job = test_support::a_planted_job();
+
+    scan_jobs::run_watched(
+        &state.library,
+        &taken,
+        Reread::Batch,
+        &state.library_job,
+        &scan_jobs::Running::new(&job, None),
+        scan::scan_root_watched,
+        |conn, fresh, watch| {
+            derive::derive_watched(conn, derive::Documents::Reconcile, fresh, watch)
+        },
+    )
+    .expect("the batch answers");
+
+    assert_eq!(gamma_of(&state), (None, 0), "Gamma's (digest, members)");
 }

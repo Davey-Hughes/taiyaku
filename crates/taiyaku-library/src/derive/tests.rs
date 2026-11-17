@@ -5912,6 +5912,7 @@ fn write_roots_survives_a_root_deleted_after_its_own_group_was_built() {
             kind: None,
             language: None,
             copies: Vec::new(),
+            frozen: false,
         }],
     );
     let mut report = derive::DeriveReport::default();
@@ -6013,6 +6014,7 @@ fn write_roots_propagates_a_non_foreign_key_error_rather_than_treating_it_as_a_v
             kind: None,
             language: None,
             copies: Vec::new(),
+            frozen: false,
         }],
     );
     let mut report = derive::DeriveReport::default();
@@ -8685,7 +8687,10 @@ fn copied_group(conn: &Connection, primary: (i64, &str), copy: (i64, &str)) -> s
             copies: vec![super::CopyAt {
                 root_id: copy.0,
                 path: copy.1.to_string(),
+                rel_path: "Foo/Foo v01.cbz".to_string(),
+                frozen: false,
             }],
+            frozen: false,
         }],
     );
     group
@@ -9751,10 +9756,11 @@ fn a_watched_derive_counts_bytes_hashed_of_bytes_to_hash_then_works_written() {
     let total = a + b + c;
 
     let first = Recording::default();
-    let outcome =
-        derive::derive_watched(&conn, derive::Documents::Reconcile, &first).expect("first derive");
+    let outcome = derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &first)
+        .expect("first derive");
     let second = Recording::default();
-    derive::derive_watched(&conn, derive::Documents::Reconcile, &second).expect("second derive");
+    derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &second)
+        .expect("second derive");
 
     assert!(matches!(outcome, Outcome::Done(_)), "{outcome:?}");
     assert_eq!(
@@ -9812,7 +9818,7 @@ fn the_bytes_to_hash_leave_out_what_classify_does_not_hash() {
     let watch = Recording::default();
 
     let outcome =
-        derive::derive_watched(&conn, derive::Documents::Reconcile, &watch).expect("derives");
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &watch).expect("derives");
 
     let Outcome::Done(report) = outcome else {
         panic!("{outcome:?}")
@@ -9844,7 +9850,7 @@ fn a_derive_cancelled_after_one_digest_keeps_it_and_writes_no_work() {
     let watch = Recording::cancelling(|(step, hashed, _)| step == Step::Hashing && hashed > 0);
 
     let outcome =
-        derive::derive_watched(&conn, derive::Documents::Reconcile, &watch).expect("derives");
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &watch).expect("derives");
 
     assert_eq!(
         (
@@ -9872,7 +9878,7 @@ fn a_derive_cancelled_after_one_work_keeps_that_work() {
     let watch = Recording::cancelling(|(step, written, _)| step == Step::Writing && written > 0);
 
     let outcome =
-        derive::derive_watched(&conn, derive::Documents::Reconcile, &watch).expect("derives");
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &watch).expect("derives");
 
     assert!(
         matches!(outcome, Outcome::Cancelled(Step::Writing)),
@@ -9917,7 +9923,7 @@ fn a_derive_cancelled_before_the_tail_raises_and_marks_nothing() {
         Recording::cancelling(|(step, written, of)| step == Step::Writing && Some(written) == of);
 
     let outcome =
-        derive::derive_watched(&conn, derive::Documents::Reconcile, &watch).expect("derives");
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &watch).expect("derives");
     let cancelled = (
         scalar(&conn, "SELECT count(*) FROM work"),
         scalar(&conn, proposals),
@@ -9963,7 +9969,7 @@ fn a_folder_members_bytes_to_hash_are_its_page_files_sizes() {
     let total = 6000 + archived;
     let watch = Recording::default();
 
-    derive::derive_watched(&conn, derive::Documents::Reconcile, &watch).expect("derives");
+    derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &watch).expect("derives");
 
     assert_eq!(
         reports_at(&watch, Step::Hashing),
@@ -9991,7 +9997,7 @@ fn a_derive_cancelled_while_folders_are_sized_reports_no_total_and_hashes_nothin
     let watch = Recording::cancelling(|(step, _, of)| step == Step::Hashing && of.is_none());
 
     let outcome =
-        derive::derive_watched(&conn, derive::Documents::Reconcile, &watch).expect("derives");
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &watch).expect("derives");
 
     assert_eq!(
         (
@@ -10008,4 +10014,1275 @@ fn a_derive_cancelled_while_folders_are_sized_reports_no_total_and_hashes_nothin
         matches!(outcome, Outcome::Cancelled(Step::Hashing)),
         "{outcome:?}"
     );
+}
+
+// --- A paused directory is frozen (O320) ---------------------------------------
+
+/// What a freeze must leave as it stands, each sorted: the works as
+/// `(id, content_key)`, the members as `(work_id, edition key, ordinal, path,
+/// sha256, pages)`, and the `member_root` rows as `(member path, root_id)`.
+#[derive(Debug, PartialEq)]
+struct Standing {
+    works: Vec<(i64, String)>,
+    members: Vec<(i64, String, i64, String, String, i64)>,
+    member_roots: Vec<(String, i64)>,
+}
+
+fn standing(conn: &Connection) -> Standing {
+    let mut works: Vec<(i64, String)> = conn
+        .prepare("SELECT id, content_key FROM work")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })
+        .expect("reads the works");
+    let mut members: Vec<(i64, String, i64, String, String, i64)> = conn
+        .prepare(
+            "SELECT e.work_id, e.key, m.ordinal, m.path, m.sha256, m.pages
+               FROM member m JOIN edition e ON e.id = m.edition_id",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })?
+            .collect()
+        })
+        .expect("reads the members");
+    let mut member_roots: Vec<(String, i64)> = conn
+        .prepare(
+            "SELECT m.path, mr.root_id FROM member_root mr JOIN member m ON m.id = mr.member_id",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })
+        .expect("reads the member_root rows");
+    works.sort();
+    members.sort();
+    member_roots.sort();
+    Standing {
+        works,
+        members,
+        member_roots,
+    }
+}
+
+/// `Alpha/Alpha - v01 - c001.cbz` (2 pages) and `c002.cbz` (3 pages) under
+/// `dir`: one work of two members once derived.
+fn two_file_volume(dir: &std::path::Path) {
+    write_archive(&dir.join("Alpha").join("Alpha - v01 - c001.cbz"), 2);
+    write_archive(&dir.join("Alpha").join("Alpha - v01 - c002.cbz"), 3);
+}
+
+fn pause(conn: &Connection, root: &scan::Root) {
+    scan::pause(conn, std::slice::from_ref(root)).expect("pauses the directory");
+}
+
+/// The digest `root_id`'s row at `rel_path` holds.
+fn digest_at(conn: &Connection, root_id: i64, rel_path: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT sha256 FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+        rusqlite::params![root_id, rel_path],
+        |r| r.get(0),
+    )
+    .unwrap_or_else(|e| panic!("{rel_path} has a row: {e}"))
+}
+
+fn digests_under(conn: &Connection, root_id: i64) -> i64 {
+    scalar(
+        conn,
+        &format!(
+            "SELECT count(*) FROM scan_entry WHERE root_id = {root_id} AND sha256 IS NOT NULL"
+        ),
+    )
+}
+
+fn member_roots_under(conn: &Connection, root_id: i64) -> i64 {
+    scalar(
+        conn,
+        &format!("SELECT count(*) FROM member_root WHERE root_id = {root_id}"),
+    )
+}
+
+/// Every member's path, in path order.
+fn member_paths(conn: &Connection) -> Vec<String> {
+    conn.prepare("SELECT path FROM member ORDER BY path")
+        .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+        .expect("reads the members")
+}
+
+#[test]
+fn a_derive_of_another_directory_hashes_none_of_a_paused_one() {
+    let (tree, _) = three_undigested_archives("frozen-not-hashed");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    let cancel = Recording::cancelling(|(step, done, _)| step == Step::Hashing && done > 0);
+    derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &cancel).expect("derives");
+    pause(&conn, &r);
+    let other = crate::tests::tempdir("frozen-not-hashed-other");
+    let delta = other.path().join("Delta").join("Delta v01.cbz");
+    write_archive(&delta, 5);
+    scanned_root(&conn, other.path(), None);
+    let [s] = sizes_of(&[delta])[..] else {
+        panic!("one size")
+    };
+    assert_eq!(
+        digests_under(&conn, r.id),
+        1,
+        "the fixture: the cancelled derive kept one of R's digests"
+    );
+    let watch = Recording::default();
+
+    derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &watch).expect("derives");
+
+    assert_eq!(
+        reports_at(&watch, Step::Hashing),
+        vec![
+            (Step::Hashing, 0, None),
+            (Step::Hashing, 0, Some(s)),
+            (Step::Hashing, s, Some(s)),
+        ],
+        "only the other directory's archive is to hash"
+    );
+    assert_eq!(
+        (digests_under(&conn, r.id), member_roots_under(&conn, r.id)),
+        (1, 0),
+        "R's digest stays and none of its works is written"
+    );
+}
+
+#[test]
+fn a_paused_directorys_works_stand_as_they_were_after_a_cancelled_rescan() {
+    for hashed in [false, true] {
+        let (s_dir, r_dir) = crate::tests::a_copy_of("Foo v01.cbz");
+        two_file_volume(r_dir.path());
+        let library = Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        scanned_root(&conn, s_dir.path(), None);
+        let r = scanned_root(&conn, r_dir.path(), None);
+        derive::derive(&conn).expect("derives");
+        let before = standing(&conn);
+        assert_eq!(
+            (
+                before.works.len(),
+                before.members.len(),
+                before.member_roots.len()
+            ),
+            (2, 3, 4),
+            "the fixture: Alpha's work of two members, and Foo's one member held by both"
+        );
+        let c002 = "Alpha/Alpha - v01 - c002.cbz";
+        let old = digest_at(&conn, r.id, c002);
+        write_archive(&r_dir.path().join(c002), 4);
+        write_archive(&r_dir.path().join("Foo").join("Foo v01.cbz"), 5);
+        scan::scan_root(&conn, &r).expect("walks R again");
+        assert_eq!(
+            scan::tests::held_reading(&conn, r.id, c002).0,
+            old,
+            "the fixture: the walk holds c002's old digest"
+        );
+        if hashed {
+            let cancel = Recording::cancelling(|(step, _, _)| step == Step::Writing);
+            derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &cancel)
+                .expect("derives");
+            assert!(
+                digest_at(&conn, r.id, c002).is_some_and(|new| Some(&new) != old.as_ref()),
+                "the fixture: the cancelled derive hashed c002's new bytes"
+            );
+        }
+        pause(&conn, &r);
+
+        derive::derive(&conn).expect("derives");
+
+        assert_eq!(standing(&conn), before, "hashed: {hashed}");
+    }
+}
+
+#[test]
+fn a_held_reading_survives_a_second_cancelled_scan() {
+    let tree = crate::tests::tempdir("frozen-second-cancel");
+    two_file_volume(tree.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    let before = standing(&conn);
+    let c002 = "Alpha/Alpha - v01 - c002.cbz";
+    write_archive(&tree.path().join(c002), 4);
+    scan::scan_root(&conn, &r).expect("walks R again");
+    let cancel = Recording::cancelling(|(step, _, _)| step == Step::Writing);
+    derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &cancel).expect("derives");
+    assert!(
+        digest_at(&conn, r.id, c002).is_some(),
+        "the fixture: the first cancelled derive hashed c002"
+    );
+    pause(&conn, &r);
+    scan::unpause(&conn, std::slice::from_ref(&r)).expect("Scan is pressed");
+    write_archive(&tree.path().join(c002), 5);
+    scan::scan_root(&conn, &r).expect("walks R a third time");
+    pause(&conn, &r);
+
+    derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        standing(&conn),
+        before,
+        "c002's member holds its first digest"
+    );
+}
+
+#[test]
+fn a_cancel_while_writing_leaves_exactly_the_works_written() {
+    let (tree, paths) = three_undigested_archives("frozen-cancel-writing");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    let cancel = Recording::cancelling(|(step, done, _)| step == Step::Writing && done > 0);
+    derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &cancel).expect("derives");
+    assert_eq!(
+        (
+            digests_under(&conn, r.id),
+            scalar(&conn, "SELECT count(*) FROM work")
+        ),
+        (3, 1),
+        "the fixture: every archive hashed, and one work written"
+    );
+    pause(&conn, &r);
+
+    derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        (
+            scalar(&conn, "SELECT count(*) FROM work"),
+            member_paths(&conn)
+        ),
+        (
+            1,
+            vec![
+                paths[0].to_string_lossy().into_owned(),
+                paths[1].to_string_lossy().into_owned()
+            ]
+        ),
+        "Alpha's work stands, and Beta's is not written"
+    );
+}
+
+#[test]
+fn a_paused_directory_keeps_its_chapter_only_entries() {
+    let tree = crate::tests::tempdir("frozen-chapter-only");
+    write_archive(&tree.path().join("Kaguya").join("Kaguya - c001.cbz"), 2);
+    write_archive(&tree.path().join("Alpha").join("Alpha v01.cbz"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    let first = derive::derive(&conn).expect("derives");
+    assert_eq!(
+        (first.series, first.unattached_chapter_dirs),
+        (2, 1),
+        "the fixture: Kaguya's unattached chapter names a series beside Alpha's"
+    );
+    pause(&conn, &r);
+
+    let second = derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        (second.series, second.unattached_chapter_dirs),
+        (first.series, first.unattached_chapter_dirs),
+        "the chapter still names its series and is still unattached"
+    );
+}
+
+/// A folder volume added to a paused directory waits, and its chapter
+/// folders, chapter-only entries that would otherwise pass as they are, wait
+/// with it rather than stand under no claim.
+#[test]
+fn a_paused_directorys_waiting_folder_volume_keeps_its_chapters_with_it() {
+    let tree = crate::tests::tempdir("frozen-waiting-volume");
+    write_archive(&tree.path().join("Alpha").join("Alpha v01.cbz"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    let volume = tree.path().join("Series").join("Series - v01");
+    for chapter in ["c001", "c002", "c003"] {
+        write_pages(&volume.join(chapter), 2);
+    }
+    scan::scan_root(&conn, &r).expect("walks R again");
+    pause(&conn, &r);
+    let (engine, _) = crate::rules::Engine::load(&conn).expect("loads the rules");
+    assert!(
+        ["c001", "c002", "c003"].iter().all(|chapter| {
+            let resolved = engine.resolve(&r, &format!("Series/Series - v01/{chapter}"));
+            resolved.volume.is_none() && resolved.chapter.is_some()
+        }),
+        "the fixture: each chapter folder resolves a chapter and no volume"
+    );
+    assert_eq!(
+        derive::unattached_chapter_dirs(&conn).map(|dirs| dirs.len()),
+        Ok(0),
+        "the fixture: read as the walk saved them, the volume claims its chapters"
+    );
+
+    let report = derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        (
+            report.unattached_chapter_dirs,
+            report.series,
+            scalar(&conn, "SELECT count(*) FROM series")
+        ),
+        (0, 1, 1),
+        "the volume's chapters wait with it: none counted, and no series named for them"
+    );
+}
+
+/// Only chapters wait with a waiting entry, and only with one that waits: the
+/// archives a folder now claims still make their work while it waits, and a
+/// held volume still suppresses its chapters.
+#[test]
+fn only_chapters_beneath_a_waiting_folder_wait_with_it() {
+    let tree = crate::tests::tempdir("frozen-beneath-waiting");
+    let series = tree.path().join("Series");
+    let v01 = series.join("Series - v01");
+    write_archive(&v01.join("Series - v01 - c001.cbz"), 2);
+    write_archive(&v01.join("Series - v01 - c002.cbz"), 3);
+    for chapter in ["c001", "c002"] {
+        write_pages(&series.join("Series - v02").join(chapter), 2);
+    }
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    let first = derive::derive(&conn).expect("derives");
+    assert_eq!(
+        (first.works, first.members, first.suppressed),
+        (2, 3, 2),
+        "the fixture: v01's two archives, v02's folder, and v02's chapters suppressed"
+    );
+    write_pages(&v01, 1);
+    scan::scan_root(&conn, &r).expect("walks R again");
+    pause(&conn, &r);
+    assert_eq!(
+        conn.query_row(
+            "SELECT pages, sha256, held_sha256 FROM scan_entry
+              WHERE root_id = ?1 AND rel_path = 'Series/Series - v01'",
+            [r.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ),
+        Ok((Some(1), None::<String>, None::<String>)),
+        "the fixture: a page makes v01 a folder volume, and nothing is held for it"
+    );
+
+    let second = derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        (second.works, second.members, second.suppressed),
+        (first.works, first.members, first.suppressed),
+        "v01's archives still make its work, and v02 still suppresses its chapters"
+    );
+}
+
+#[test]
+fn digest_held_members_passes_over_a_paused_directory() {
+    let tree = crate::tests::tempdir("frozen-held-members");
+    let alpha = "Alpha/Alpha v01.cbz";
+    write_archive(&tree.path().join(alpha), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    write_archive(&tree.path().join(alpha), 4);
+    scan::scan_root(&conn, &r).expect("walks R again");
+    pause(&conn, &r);
+    assert!(
+        digest_at(&conn, r.id, alpha).is_none()
+            && scan::tests::held_reading(&conn, r.id, alpha).0.is_some(),
+        "the fixture: the walk cleared the digest and holds the old one"
+    );
+
+    derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        digest_at(&conn, r.id, alpha),
+        None,
+        "the changed file is not hashed"
+    );
+}
+
+#[test]
+fn a_fresh_directory_is_read_as_the_walk_saved_it_though_paused() {
+    let (tree, _) = three_undigested_archives("frozen-fresh");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    pause(&conn, &r);
+    assert!(
+        scan::paused(&conn).expect("reads").contains(&r.id),
+        "the fixture: R is paused"
+    );
+    let works = |fresh: &[i64]| {
+        derive::derive_watched(
+            &conn,
+            derive::Documents::Reconcile,
+            fresh,
+            &Recording::default(),
+        )
+        .expect("derives");
+        scalar(&conn, "SELECT count(*) FROM work")
+    };
+
+    let counts = (works(&[]), works(&[r.id]));
+
+    assert_eq!(counts, (0, 2), "frozen, then read fresh");
+}
+
+/// `Series - v01 - c001.cbz` (2 pages) and the folder `Series - v01 - c002`
+/// (3 pages), one work of two members, with c001 stamped: the stamp leaves the
+/// folder alone, as it leaves every member that is not a zip.
+#[test]
+fn a_stamped_file_in_a_paused_directory_keeps_its_member() {
+    let tree = crate::tests::tempdir("frozen-stamped");
+    write_archive(
+        &tree.path().join("Series").join("Series - v01 - c001.cbz"),
+        2,
+    );
+    write_pages(&tree.path().join("Series").join("Series - v01 - c002"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    let unstamped = standing(&conn);
+    assert_eq!(
+        (unstamped.works.len(), unstamped.members.len()),
+        (1, 2),
+        "the fixture: one work of two members"
+    );
+    let work_id = unstamped.works[0].0;
+    let planned = crate::stamp::plan(&conn, work_id).expect("plans");
+    assert_eq!(
+        planned.len(),
+        1,
+        "the fixture: the stamp rewrites c001 alone"
+    );
+    crate::stamp::apply(&conn, work_id, 1, &planned).expect("stamps");
+    let stamped = standing(&conn).members;
+    pause(&conn, &r);
+
+    derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        standing(&conn).members,
+        stamped,
+        "c001's member keeps its new digest, and c002's its own"
+    );
+}
+
+/// A paused directory's rows that make no structure, an unreadable file, an
+/// archive that would not open and a folder of no pages, are still counted:
+/// they hash and write nothing, and a report that dropped them would read as
+/// the directory having lost them.
+#[test]
+fn a_paused_directory_still_counts_what_makes_no_structure() {
+    let tree = crate::tests::tempdir("frozen-unreadable");
+    write_archive(&tree.path().join("Alpha").join("Alpha v01.cbz"), 3);
+    std::fs::write(tree.path().join("Alpha").join("notes.pdf"), b"%PDF-1.7\n").expect("writes");
+    std::fs::write(
+        tree.path().join("Alpha").join("Alpha v02.cbz"),
+        b"PK\x03\x04",
+    )
+    .expect("four bytes of zip signature and nothing behind them");
+    let pageless = tree.path().join("Gamma").join("Gamma v01");
+    std::fs::create_dir_all(&pageless).expect("mkdir");
+    std::fs::write(pageless.join("notes.txt"), "no pages here").expect("writes");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    let first = derive::derive(&conn).expect("derives").unreadable;
+    assert_eq!(
+        (
+            first.by_format.get("pdf"),
+            first.uncounted.len(),
+            first.no_pages
+        ),
+        (Some(&1), 1, 1),
+        "the fixture: the PDF, the archive that would not open and the folder of no pages"
+    );
+    pause(&conn, &r);
+
+    let second = derive::derive(&conn).expect("derives").unreadable;
+
+    assert_eq!(
+        second.by_format, first.by_format,
+        "the PDF and the file of no known format"
+    );
+    assert_eq!(
+        second.uncounted, first.uncounted,
+        "the archive that would not open"
+    );
+    assert_eq!(second.no_pages, first.no_pages, "the folder of no pages");
+}
+
+// --- The held reading is dropped when its work is written (O320) --------------
+
+const C001: &str = "Alpha/Alpha - v01 - c001.cbz";
+const C002: &str = "Alpha/Alpha - v01 - c002.cbz";
+const C003: &str = "Alpha/Alpha - v01 - c003.cbz";
+const BETA: &str = "Beta/Beta v01.cbz";
+const FOO: &str = "Foo/Foo v01.cbz";
+const BAR: &str = "Bar/Bar v01.cbz";
+
+/// The digest of the reading `root_id`'s row at `rel_path` holds.
+fn held_of(conn: &Connection, root_id: i64, rel_path: &str) -> Option<String> {
+    scan::tests::held_reading(conn, root_id, rel_path).0
+}
+
+/// The digest of the member at `rel_path` under `root`, if one is there.
+fn member_digest_at(conn: &Connection, root: &scan::Root, rel_path: &str) -> Option<String> {
+    use rusqlite::OptionalExtension as _;
+    conn.query_row(
+        "SELECT sha256 FROM member WHERE path = ?1",
+        [root.path.join(rel_path).to_string_lossy().into_owned()],
+        |r| r.get(0),
+    )
+    .optional()
+    .expect("reads the member")
+}
+
+/// Each member of `work_id` as `(path, sha256)`, by edition and then in page
+/// order.
+fn members_by_ordinal(conn: &Connection, work_id: i64) -> Vec<(String, String)> {
+    conn.prepare(
+        "SELECT m.path, m.sha256 FROM member m JOIN edition e ON e.id = m.edition_id
+          WHERE e.work_id = ?1 ORDER BY e.key, m.ordinal",
+    )
+    .and_then(|mut stmt| {
+        stmt.query_map([work_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect()
+    })
+    .expect("reads the work's members")
+}
+
+/// A pressed Scan reads its directory fresh and writes its works from the
+/// current readings, so it drops the readings they replace: a later freeze
+/// would otherwise read the work by one it no longer holds.
+#[test]
+fn a_pressed_scan_drops_the_held_readings_of_what_it_writes() {
+    let tree = crate::tests::tempdir("frozen-pressed-drops");
+    two_file_volume(tree.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    let a2 = digest_at(&conn, r.id, C002);
+    write_archive(&tree.path().join(C002), 4);
+    scan::scan_root(&conn, &r).expect("walks R again");
+    pause(&conn, &r);
+    assert_eq!(
+        (held_of(&conn, r.id, C002), a2.is_some()),
+        (a2.clone(), true),
+        "the fixture: the walk holds c002's old digest"
+    );
+
+    derive::derive_watched(
+        &conn,
+        derive::Documents::Reconcile,
+        &[r.id],
+        &Recording::default(),
+    )
+    .expect("derives");
+
+    let entry = digest_at(&conn, r.id, C002);
+    assert_eq!(
+        (member_digest_at(&conn, &r, C002) == entry, entry == a2),
+        (true, false),
+        "c002's member and entry hold one digest, and it is not the old one"
+    );
+    assert_eq!(
+        scan::tests::held_reading(&conn, r.id, C002),
+        (None, None, None, None),
+        "c002's held reading is dropped"
+    );
+}
+
+/// The drop is in the write, so a derive cancelled before it writes keeps the
+/// reading the works still hold, which a freeze after it reads them by.
+#[test]
+fn a_derive_cancelled_before_writing_keeps_the_held_reading() {
+    let tree = crate::tests::tempdir("frozen-cancel-keeps");
+    two_file_volume(tree.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    let a2 = digest_at(&conn, r.id, C002);
+    write_archive(&tree.path().join(C002), 4);
+    scan::scan_root(&conn, &r).expect("walks R again");
+    assert_eq!(
+        (held_of(&conn, r.id, C002), a2.is_some()),
+        (a2.clone(), true),
+        "the fixture: the walk holds c002's old digest"
+    );
+    let cancel = Recording::cancelling(|(step, _, _)| step == Step::Writing);
+
+    let outcome =
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &cancel).expect("derives");
+
+    assert!(
+        matches!(outcome, Outcome::Cancelled(Step::Writing))
+            && digest_at(&conn, r.id, C002).is_some(),
+        "the fixture: the derive hashed c002 and was cancelled before writing"
+    );
+    assert_eq!(
+        held_of(&conn, r.id, C002),
+        a2,
+        "c002 still holds its old digest"
+    );
+}
+
+/// Per work: a cancel between two works drops the readings of the one written
+/// and keeps those of the one not, which a freeze after it still reads it by.
+#[test]
+fn a_cancel_between_works_drops_only_the_written_works_readings() {
+    let tree = crate::tests::tempdir("frozen-cancel-between");
+    two_file_volume(tree.path());
+    write_archive(&tree.path().join(BETA), 4);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    let (a2, b1) = (digest_at(&conn, r.id, C002), digest_at(&conn, r.id, BETA));
+    write_archive(&tree.path().join(C002), 5);
+    write_archive(&tree.path().join(BETA), 6);
+    scan::scan_root(&conn, &r).expect("walks R again");
+    assert_eq!(
+        (
+            held_of(&conn, r.id, C002),
+            held_of(&conn, r.id, BETA),
+            a2.is_some() && b1.is_some(),
+            scalar(&conn, "SELECT count(*) FROM work"),
+        ),
+        (a2, b1.clone(), true, 2),
+        "the fixture: Alpha's and Beta's works, and the walk holds both old digests"
+    );
+    let cancel = Recording::cancelling(|(step, done, _)| step == Step::Writing && done > 0);
+
+    derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &cancel).expect("derives");
+
+    assert_eq!(
+        (held_of(&conn, r.id, C002), held_of(&conn, r.id, BETA)),
+        (None, b1),
+        "Alpha's work is written and drops c002's; Beta's is not and keeps its own"
+    );
+}
+
+/// A copy's entry is read for the work as the primary's is, so writing the
+/// work drops the copy's held reading too.
+#[test]
+fn writing_a_copy_drops_its_entrys_held_reading() {
+    let (s_dir, r_dir) = a_copy_of("Foo v01.cbz");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let s = scanned_root(&conn, s_dir.path(), None);
+    let r = scanned_root(&conn, r_dir.path(), None);
+    derive::derive(&conn).expect("derives");
+    for dir in [&s_dir, &r_dir] {
+        write_archive_labelled(&dir.path().join(FOO), 4, "jpg", "same");
+    }
+    scan::scan_root(&conn, &s).expect("walks S again");
+    scan::scan_root(&conn, &r).expect("walks R again");
+    let old = held_of(&conn, s.id, FOO);
+    assert_eq!(
+        (
+            old.is_some(),
+            held_of(&conn, r.id, FOO) == old,
+            member_root_ids(&conn)
+        ),
+        (true, true, vec![s.id, r.id]),
+        "the fixture: one member held by both, and both walks hold its old digest"
+    );
+
+    derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        (
+            held_of(&conn, s.id, FOO),
+            held_of(&conn, r.id, FOO),
+            member_root_ids(&conn)
+        ),
+        (None, None, vec![s.id, r.id]),
+        "both held readings are dropped, R's as the member's copy"
+    );
+}
+
+/// A paused directory's entries keep their held readings when another
+/// directory's file joins their work: the derive that writes it is frozen for
+/// them, and read them by those readings.
+#[test]
+fn a_paused_directorys_files_keep_their_held_reading_when_another_directory_changes_their_work() {
+    let r_dir = crate::tests::tempdir("frozen-joined-r");
+    two_file_volume(r_dir.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, r_dir.path(), None);
+    derive::derive(&conn).expect("derives");
+    let (a1, a2) = (digest_at(&conn, r.id, C001), digest_at(&conn, r.id, C002));
+    write_archive(&r_dir.path().join(C002), 4);
+    scan::scan_root(&conn, &r).expect("walks R again");
+    pause(&conn, &r);
+    let s_dir = crate::tests::tempdir("frozen-joined-s");
+    write_archive(&s_dir.path().join(C003), 4);
+    let s = scanned_root(&conn, s_dir.path(), None);
+    let work_id = scalar(&conn, "SELECT id FROM work");
+    assert_eq!(
+        (
+            held_of(&conn, r.id, C002),
+            a1.is_some() && a2.is_some(),
+            scalar(&conn, "SELECT count(*) FROM work"),
+        ),
+        (a2.clone(), true, 1),
+        "the fixture: Alpha's one work, and the walk holds c002's old digest"
+    );
+
+    derive::derive(&conn).expect("a derive elsewhere");
+
+    let at = |root: &scan::Root, rel_path: &str, sha256: Option<String>| {
+        (
+            root.path.join(rel_path).to_string_lossy().into_owned(),
+            sha256.expect("a digest"),
+        )
+    };
+    let c3 = digest_at(&conn, s.id, C003);
+    assert_eq!(
+        members_by_ordinal(&conn, work_id),
+        vec![at(&r, C001, a1), at(&r, C002, a2.clone()), at(&s, C003, c3)],
+        "S's file joins R's work, which holds c002 at its old digest"
+    );
+    assert_eq!(
+        held_of(&conn, r.id, C002),
+        a2,
+        "c002 keeps its held reading"
+    );
+}
+
+/// A file gone from a paused directory is marked missing as it would be
+/// unpaused (no removal is frozen), and when its bytes come back and Scan is
+/// pressed it rejoins its work, read fresh, whose reading stays.
+#[test]
+fn a_file_gone_from_a_paused_directory_is_marked_missing_and_returns_with_its_work_position_and_note()
+ {
+    let (dir, paths) = a_series_of("frozen-missing-rejoin", 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = root_in(&conn, dir.path(), "Manga", None);
+    derive::derive(&conn).expect("derives");
+    let (id, slug) = volume_work(&conn, 2);
+    crate::state::put_progress(
+        &conn,
+        id,
+        1,
+        &crate::Progress {
+            edition: "raw".into(),
+            slot: 2,
+        },
+    )
+    .expect("a position");
+    seed_notes(&conn, id, 1, "raw", &["n1"]);
+    let bytes = std::fs::read(&paths[1]).expect("reads volume 2");
+    std::fs::remove_file(&paths[1]).expect("volume 2 goes");
+    scan::scan_root(&conn, &root).expect("scans without it");
+    pause(&conn, &root);
+    assert!(
+        scan::paused(&conn).expect("reads").contains(&root.id),
+        "the fixture: the directory is paused"
+    );
+
+    derive::derive(&conn).expect("a derive elsewhere");
+
+    assert_eq!(
+        (marked(&conn, 1), marked(&conn, 2)),
+        (false, true),
+        "volume 2 is marked, volume 1 is not"
+    );
+    std::fs::write(&paths[1], &bytes).expect("volume 2 returns, the same bytes");
+    scan::unpause(&conn, std::slice::from_ref(&root)).expect("Scan is pressed");
+    scan::scan_root(&conn, &root).expect("scans with it again");
+    derive::derive_watched(
+        &conn,
+        derive::Documents::Reconcile,
+        &[root.id],
+        &Recording::default(),
+    )
+    .expect("derives");
+    let positions: Vec<(String, u32)> = crate::state::progress(&conn, id, 1)
+        .expect("reads the positions")
+        .into_iter()
+        .map(|p| (p.edition, p.slot))
+        .collect();
+    let notes: Vec<String> = crate::state::notes(&conn, id, 1)
+        .expect("reads the notes")
+        .notes
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(
+        (
+            (marked(&conn, 1), marked(&conn, 2)),
+            volume_work(&conn, 2),
+            digest_at(&conn, root.id, "Series/Series v02.cbz").is_some(),
+            positions,
+            notes,
+        ),
+        (
+            (false, false),
+            (id, slug),
+            true,
+            vec![("raw".to_string(), 2)],
+            vec!["n1".to_string()],
+        ),
+        "volume 2's mark is cleared on the same work, read fresh, with its position and note"
+    );
+}
+
+/// A copy at another path than its primary's has a row of its own: writing
+/// the work drops that row's held reading, and while the copy's directory is
+/// frozen it keeps it.
+#[test]
+fn a_copy_at_another_path_has_its_own_rows_held_reading_dropped_or_kept() {
+    let x_dir = crate::tests::tempdir("frozen-copy-path-x");
+    let r_dir = crate::tests::tempdir("frozen-copy-path-r");
+    write_archive_labelled(&x_dir.path().join(FOO), 3, "jpg", "first");
+    write_archive_labelled(&r_dir.path().join(BAR), 3, "jpg", "first");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let x = scanned_root(&conn, x_dir.path(), None);
+    let r = scanned_root(&conn, r_dir.path(), None);
+    derive::derive(&conn).expect("derives");
+    write_archive_labelled(&x_dir.path().join(FOO), 4, "jpg", "second");
+    write_archive_labelled(&r_dir.path().join(BAR), 4, "jpg", "second");
+    scan::scan_root(&conn, &x).expect("walks X again");
+    scan::scan_root(&conn, &r).expect("walks R again");
+    assert_eq!(
+        (
+            scalar(&conn, "SELECT count(*) FROM member"),
+            member_root_ids(&conn),
+            held_of(&conn, r.id, BAR).is_some(),
+        ),
+        (1, vec![x.id, r.id], true),
+        "the fixture: R's Bar is a copy of X's Foo, and the walk holds its old digest"
+    );
+
+    derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        (held_of(&conn, r.id, BAR), member_root_ids(&conn)),
+        (None, vec![x.id, r.id]),
+        "writing the work drops the held reading of R's copy at its own path"
+    );
+
+    let second = digest_at(&conn, r.id, BAR);
+    write_archive_labelled(&r_dir.path().join(BAR), 5, "jpg", "third");
+    scan::scan_root(&conn, &r).expect("walks R a third time");
+    pause(&conn, &r);
+    write_archive(&x_dir.path().join("Foo").join("Foo - v01 - c002.cbz"), 2);
+    scan::scan_root(&conn, &x).expect("walks X a third time");
+    assert_eq!(
+        (held_of(&conn, r.id, BAR), second.is_some()),
+        (second.clone(), true),
+        "the fixture: the walk holds Bar's second digest"
+    );
+
+    derive::derive(&conn).expect("a derive elsewhere");
+
+    assert_eq!(
+        (held_of(&conn, r.id, BAR), member_root_ids(&conn)),
+        (second, vec![x.id, x.id, r.id]),
+        "X's new file rewrites the work, and R's frozen copy keeps its held reading"
+    );
+}
+
+/// A file whose mtime moved and whose bytes did not leaves its work as it
+/// stands, so no write drops its held reading; the digest found equal to it
+/// does, since the held reading is then the current one.
+#[test]
+fn a_pressed_scan_over_a_file_whose_bytes_did_not_change_drops_its_held_reading() {
+    let tree = crate::tests::tempdir("frozen-touched");
+    two_file_volume(tree.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    let a2 = digest_at(&conn, r.id, C002);
+    // The walk compares `mtime` to the second.
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+    std::fs::File::open(tree.path().join(C002))
+        .expect("open c002")
+        .set_times(std::fs::FileTimes::new().set_modified(later))
+        .expect("stamp it as changed");
+    scan::scan_root(&conn, &r).expect("walks R again");
+    pause(&conn, &r);
+    assert_eq!(
+        (
+            digest_at(&conn, r.id, C002),
+            held_of(&conn, r.id, C002),
+            a2.is_some()
+        ),
+        (None, a2, true),
+        "the fixture: the walk read c002 as changed and holds its digest"
+    );
+    scan::unpause(&conn, std::slice::from_ref(&r)).expect("Scan is pressed");
+    scan::scan_root(&conn, &r).expect("walks R a third time");
+
+    derive::derive_watched(
+        &conn,
+        derive::Documents::Reconcile,
+        &[r.id],
+        &Recording::default(),
+    )
+    .expect("derives");
+
+    assert_eq!(
+        scan::tests::held_reading(&conn, r.id, C002),
+        (None, None, None, None),
+        "c002 holds no reading"
+    );
+}
+
+/// Copies at one path under two directories hold a reading each, on a row of
+/// their own. S's goes when its work is written from new bytes, or when its
+/// bytes are found equal to it; R's, while R is paused, is what R is read by
+/// and stays.
+#[test]
+fn a_paused_copy_at_the_same_path_keeps_its_held_reading_when_the_others_goes() {
+    for rewritten in [false, true] {
+        let (s_dir, r_dir) = crate::tests::a_copy_of("Foo v01.cbz");
+        let library = Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        let s = scanned_root(&conn, s_dir.path(), None);
+        let r = scanned_root(&conn, r_dir.path(), None);
+        derive::derive(&conn).expect("derives");
+        let old = digest_at(&conn, r.id, FOO);
+        // The walk compares `mtime` to the second.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+        for dir in [s_dir.path(), r_dir.path()] {
+            if rewritten {
+                write_archive_labelled(&dir.join(FOO), 4, "jpg", "second");
+            } else {
+                std::fs::File::open(dir.join(FOO))
+                    .expect("open Foo")
+                    .set_times(std::fs::FileTimes::new().set_modified(later))
+                    .expect("stamp it as changed");
+            }
+        }
+        scan::scan_root(&conn, &s).expect("walks S again");
+        scan::scan_root(&conn, &r).expect("walks R again");
+        pause(&conn, &r);
+        assert_eq!(
+            (
+                held_of(&conn, s.id, FOO),
+                held_of(&conn, r.id, FOO),
+                old.is_some(),
+                member_root_ids(&conn),
+            ),
+            (old.clone(), old.clone(), true, vec![s.id, r.id]),
+            "the fixture: one member under both, and each walk holds its old digest"
+        );
+
+        derive::derive(&conn).expect("derives");
+
+        assert_eq!(
+            (held_of(&conn, s.id, FOO), held_of(&conn, r.id, FOO)),
+            (None, old),
+            "rewritten: {rewritten}: S's row drops its held reading and R's keeps its own"
+        );
+    }
+}
+
+/// Migration 27 holds a reading on an entry of a directory that is not paused
+/// too, where its digest differs from its member's; the first derive that
+/// writes the work from the entry's own reading drops it.
+#[test]
+fn a_reading_migration_27_held_is_dropped_by_the_derive_that_writes_its_work() {
+    let tree = crate::tests::tempdir("frozen-backfilled");
+    two_file_volume(tree.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    let a2 = digest_at(&conn, r.id, C002);
+    write_archive(&tree.path().join(C002), 4);
+    conn.execute_batch(&format!(
+        "ALTER TABLE scan_entry DROP COLUMN held_sha256;
+         ALTER TABLE scan_entry DROP COLUMN held_format;
+         ALTER TABLE scan_entry DROP COLUMN held_pages;
+         ALTER TABLE scan_entry DROP COLUMN held_title;
+         UPDATE meta SET value = '26' WHERE key = 'schema_version';
+         UPDATE scan_entry SET sha256 = NULL, pages = 4 WHERE rel_path = '{C002}';"
+    ))
+    .expect("puts the store back to schema 26, c002 changed and walked");
+    crate::schema::migrate(&conn).expect("migrates to 27");
+    assert_eq!(
+        (
+            held_of(&conn, r.id, C002),
+            a2.is_some(),
+            scan::paused(&conn).expect("reads").is_empty(),
+        ),
+        (a2, true, true),
+        "the fixture: the upgrade holds c002's member digest, and nothing is paused"
+    );
+
+    derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        scan::tests::held_reading(&conn, r.id, C002),
+        (None, None, None, None),
+        "the derive that writes c002's new bytes drops its held reading"
+    );
+}
+
+/// A changed file whose new bytes, hashed before the cancel, are another
+/// member's under the same directory is read by its held reading, not as that
+/// member's bytes, so its own member stays.
+#[test]
+fn a_paused_file_hashed_as_another_members_bytes_is_read_by_its_held_reading() {
+    let tree = crate::tests::tempdir("frozen-held-first");
+    two_file_volume(tree.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    let before = standing(&conn);
+    let (a1, a2) = (digest_at(&conn, r.id, C001), digest_at(&conn, r.id, C002));
+    std::fs::copy(tree.path().join(C001), tree.path().join(C002)).expect("copies c001 over c002");
+    scan::scan_root(&conn, &r).expect("walks R again");
+    let cancel = Recording::cancelling(|(step, _, _)| step == Step::Writing);
+    derive::derive_watched(&conn, derive::Documents::Reconcile, &[], &cancel).expect("derives");
+    pause(&conn, &r);
+    assert_eq!(
+        (
+            digest_at(&conn, r.id, C002),
+            held_of(&conn, r.id, C002),
+            a1.is_some() && a1 != a2
+        ),
+        (a1.clone(), a2.clone(), true),
+        "the fixture: c002 was hashed as c001's bytes, and holds its own old digest"
+    );
+
+    derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        standing(&conn),
+        before,
+        "c002's member keeps its own digest"
+    );
+}
+
+/// A held reading no work holds is not read: a row whose work was written
+/// without it keeps a stale one (spec §11.3), and a freeze that read it would
+/// bring back a member its work no longer has.
+#[test]
+fn a_paused_directory_reads_no_held_reading_its_works_no_longer_hold() {
+    let tree = crate::tests::tempdir("frozen-stale-held");
+    two_file_volume(tree.path());
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    let a2 = digest_at(&conn, r.id, C002);
+    write_archive(&tree.path().join(C002), 0);
+    scan::scan_root(&conn, &r).expect("walks R again");
+    derive::derive(&conn).expect("derives");
+    let before = standing(&conn);
+    assert_eq!(
+        (
+            held_of(&conn, r.id, C002),
+            member_digest_at(&conn, &r, C002),
+            a2.is_some()
+        ),
+        (a2, None, true),
+        "the fixture: c002's work was written without it, and it keeps its old reading held"
+    );
+    pause(&conn, &r);
+
+    derive::derive(&conn).expect("derives");
+
+    assert_eq!(standing(&conn), before, "c002 makes no member");
+}
+
+// --- A nested directory takes over the outer rows' readings (O320) -----------
+
+/// The reading `root_id`'s row at `rel_path` holds now, as `(sha256, format,
+/// pages, title)`.
+fn reading_at(
+    conn: &Connection,
+    root_id: i64,
+    rel_path: &str,
+) -> (Option<String>, Option<String>, Option<i64>, Option<String>) {
+    conn.query_row(
+        "SELECT sha256, format, pages, title FROM scan_entry
+          WHERE root_id = ?1 AND rel_path = ?2",
+        rusqlite::params![root_id, rel_path],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .unwrap_or_else(|e| panic!("{rel_path} has a row: {e}"))
+}
+
+/// The nested walk records each file it takes over as a new row, and the row
+/// takes the outer row's reading as the walk would have kept it: a file
+/// unchanged since keeps its digest, one changed since holds the reading the
+/// change clears, and one the outer walk already held keeps that.
+#[test]
+fn a_nested_directory_takes_over_each_rows_reading_as_the_walk_would_keep_it() {
+    let tree = crate::tests::tempdir("take-over-reading");
+    let kids = tree.path().join("kids");
+    two_file_volume(&kids);
+    write_archive(&kids.join(BETA), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let outer = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    write_archive(&kids.join(BETA), 5);
+    scan::scan_root(&conn, &outer).expect("walks the outer directory again");
+    let under = |rel_path: &str| format!("kids/{rel_path}");
+    let c001 = reading_at(&conn, outer.id, &under(C001));
+    let c002 = reading_at(&conn, outer.id, &under(C002));
+    let beta = scan::tests::held_reading(&conn, outer.id, &under(BETA));
+    assert_eq!(
+        (
+            c001.0.is_some(),
+            c002.0.is_some(),
+            beta.0.is_some(),
+            digest_at(&conn, outer.id, &under(BETA))
+        ),
+        (true, true, true, None),
+        "the fixture: c001 and c002 hashed, and Beta's digest held by the outer walk"
+    );
+    write_archive(&kids.join(C002), 4);
+
+    let q = scanned_root(&conn, &kids, None);
+
+    assert_eq!(
+        (
+            (digest_at(&conn, q.id, C001), held_of(&conn, q.id, C001)),
+            (
+                digest_at(&conn, q.id, C002),
+                scan::tests::held_reading(&conn, q.id, C002)
+            ),
+            (
+                digest_at(&conn, q.id, BETA),
+                scan::tests::held_reading(&conn, q.id, BETA)
+            ),
+        ),
+        ((c001.0, None), (None, c002), (None, beta)),
+        "c001 keeps its digest, c002 holds the reading it changed from, Beta keeps its held one"
+    );
+}
+
+/// A nested directory's first scan cancelled after hashing part of a volume it
+/// took over leaves the volume whole, paused or not.
+#[test]
+fn a_nested_directorys_cancelled_first_scan_keeps_the_volume_it_took_over_whole() {
+    for paused in [false, true] {
+        let tree = crate::tests::tempdir("frozen-take-over");
+        let kids = tree.path().join("kids");
+        two_file_volume(&kids);
+        let library = Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        let outer = scanned_root(&conn, tree.path(), None);
+        derive::derive(&conn).expect("derives");
+        // Touched, so Q's walk holds each digest rather than keeping it, and
+        // Q's derive has both files to hash. The walk compares `mtime` to the
+        // second.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+        for rel_path in [C001, C002] {
+            std::fs::File::open(kids.join(rel_path))
+                .expect("open the file")
+                .set_times(std::fs::FileTimes::new().set_modified(later))
+                .expect("stamp it as changed");
+        }
+        let q = scanned_root(&conn, &kids, None);
+        assert_eq!(
+            (
+                member_paths(&conn).len(),
+                member_roots_under(&conn, outer.id),
+                member_roots_under(&conn, q.id)
+            ),
+            (2, 0, 2),
+            "the fixture: one work of two members, taken over by Q"
+        );
+        let cancel = Recording::cancelling(|(step, done, _)| step == Step::Hashing && done > 0);
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &[q.id], &cancel)
+            .expect("derives");
+        assert_eq!(
+            (
+                digest_at(&conn, q.id, C001).is_some(),
+                digest_at(&conn, q.id, C002).is_some()
+            ),
+            (true, false),
+            "the fixture: Q's first derive cancelled after hashing c001 alone"
+        );
+        let before = standing(&conn);
+        if paused {
+            pause(&conn, &q);
+        }
+
+        derive::derive(&conn).expect("a derive of the store");
+
+        assert_eq!(standing(&conn), before, "paused: {paused}");
+    }
+}
+
+/// A nested directory's first scan cancelled before it hashes a file it took
+/// over, whose copy is in another directory, keeps the primary, paused or not:
+/// the copy is not left the only reading, to become the primary at the Scan.
+#[test]
+fn a_nested_directorys_cancelled_first_scan_keeps_the_primary_it_took_over() {
+    for paused in [false, true] {
+        let outer = crate::tests::tempdir("frozen-take-over-outer");
+        let kids = outer.path().join("kids");
+        write_archive(&kids.join(FOO), 3);
+        let other = crate::tests::tempdir("frozen-take-over-other");
+        std::fs::create_dir_all(other.path().join("Foo")).expect("mkdir");
+        std::fs::copy(kids.join(FOO), other.path().join(FOO)).expect("copies");
+        let library = Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        scanned_root(&conn, outer.path(), None);
+        scanned_root(&conn, other.path(), None);
+        derive::derive(&conn).expect("derives");
+        let q = scanned_root(&conn, &kids, None);
+        assert_eq!(
+            crate::tests::the_member(&conn).0,
+            Some(q.id),
+            "the fixture: Q took over the primary"
+        );
+        let cancel = Recording::cancelling(|(step, _, _)| step == Step::Hashing);
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &[q.id], &cancel)
+            .expect("derives");
+        if paused {
+            pause(&conn, &q);
+        }
+        derive::derive(&conn).expect("a derive of the store");
+
+        scan::unpause(&conn, std::slice::from_ref(&q)).expect("Scan is pressed");
+        scan::scan_root(&conn, &q).expect("walks Q");
+        derive::derive_watched(
+            &conn,
+            derive::Documents::Reconcile,
+            &[q.id],
+            &crate::progress::Unwatched,
+        )
+        .expect("derives");
+
+        assert_eq!(
+            crate::tests::the_member(&conn).0,
+            Some(q.id),
+            "paused: {paused}"
+        );
+    }
 }

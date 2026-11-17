@@ -5023,10 +5023,11 @@ async fn a_cancelled_directorys_status_says_cancelled_and_at_which_step() {
                 &state.library_job,
                 running,
                 taiyaku_library::scan::scan_root_watched,
-                |conn, watch| {
+                |conn, fresh, watch| {
                     taiyaku_library::derive::derive_watched(
                         conn,
                         taiyaku_library::derive::Documents::Reconcile,
+                        fresh,
                         &CancelAtHashing {
                             inner: watch,
                             job: &asked,

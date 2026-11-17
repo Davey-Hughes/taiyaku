@@ -10447,15 +10447,22 @@ mod narrowing {
     }
 
     /// Part3 stamped as `stamp::record_rows` stamps it: a new digest on its
-    /// member, every row anchored on the old one moved to it, and the move
-    /// remembered; then the server re-reads the work. Answers the old digest
-    /// and the new.
+    /// directory row and its member, every row anchored on the old one moved
+    /// to it, and the move remembered; then the server re-reads the work.
+    /// Answers the old digest and the new.
     fn stamp_part3(merged: &EditionMergedFromTwoLibraries) -> (String, String) {
         let old = digest(merged, "m/Foo v01 part3.cbz");
         // Hashed from the old, so a second stamp names a third digest.
         let new = crate::notes::etag_for(&old).trim_matches('"').to_string();
         {
             let conn = merged.state.library.conn();
+            let entries = conn
+                .execute(
+                    "UPDATE scan_entry SET sha256 = ?1 WHERE rel_path = 'Foo v01 part3.cbz'",
+                    [&new],
+                )
+                .expect("stamps part3's directory row");
+            assert_eq!(entries, 1, "the fixture: one directory row is part3");
             let stamped = conn
                 .execute(
                     "UPDATE member SET sha256 = ?1 WHERE path LIKE '%/m/Foo v01 part3.cbz'",
@@ -10633,10 +10640,8 @@ mod narrowing {
     }
 
     /// Manga alone reads n2 at its slot 3. Part3 is then stamped and Manga
-    /// granted Kids, so n2 is slot 6. A grant, not a removal: a removal
-    /// derives, which puts the old digest back (O270). Forwarded, n2's old
-    /// digest finds the held note; unforwarded, its slot is not the one
-    /// held.
+    /// granted Kids, so n2 is slot 6. Forwarded, n2's old digest finds the
+    /// held note; unforwarded, its slot is not the one held.
     #[tokio::test]
     async fn an_untouched_note_after_a_stamp_and_a_renumbering_saves() {
         let merged = test_support::router_over_an_edition_merged_from_two_libraries();
@@ -10733,10 +10738,10 @@ mod narrowing {
         );
     }
 
-    /// O270: a derive before the next scan puts part3's old digest back on
-    /// its member, and the alias stays. A new note on the old digest is on a
-    /// page the document sent shows, so it is placed there, not forwarded off
-    /// it.
+    /// Part3's old digest back on its member, as a file put back from before
+    /// the stamp shows once walked, and the alias stays. A new note on the old
+    /// digest is on a page the document sent shows, so it is placed there, not
+    /// forwarded off it.
     #[tokio::test]
     async fn a_digest_the_member_still_shows_is_not_forwarded() {
         let merged = test_support::router_over_an_edition_merged_from_two_libraries();
@@ -10745,6 +10750,13 @@ mod narrowing {
         let (old, new) = stamp_part3(&merged);
         {
             let conn = merged.state.library.conn();
+            let entries = conn
+                .execute(
+                    "UPDATE scan_entry SET sha256 = ?1 WHERE rel_path = 'Foo v01 part3.cbz'",
+                    [&old],
+                )
+                .expect("puts part3's old digest back on its directory row");
+            assert_eq!(entries, 1, "the fixture: one directory row is part3");
             let restored = conn
                 .execute(
                     "UPDATE member SET sha256 = ?1 WHERE path LIKE '%/m/Foo v01 part3.cbz'",

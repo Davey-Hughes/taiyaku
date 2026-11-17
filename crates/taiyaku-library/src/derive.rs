@@ -605,10 +605,19 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
 /// pattern cannot leave a library underived. Neither is a file that has gone
 /// or a container that will not open; see [`DeriveReport`].
 pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveReport, String> {
-    match derive_watched(conn, documents, &Unwatched)? {
+    done(derive_watched(conn, documents, &[], &Unwatched)?)
+}
+
+/// The report of a derive watched by [`Unwatched`], for a caller that never
+/// cancels one.
+///
+/// # Errors
+///
+/// `Unwatched` is never cancelled; a cancel is an `Err` rather than a panic
+/// all the same, as `scan::scan_root` answers it.
+pub fn done(outcome: Outcome<DeriveReport>) -> Result<DeriveReport, String> {
+    match outcome {
         Outcome::Done(report) => Ok(report),
-        // `Unwatched` is never cancelled; an `Err` rather than a panic all
-        // the same, as `scan::scan_root` answers it.
         Outcome::Cancelled(step) => Err(format!("the derive stopped while {}", step.as_str())),
     }
 }
@@ -622,12 +631,15 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
 /// half-written, and the tail waits for the next derive
 /// (spec 2026-11-15-first-scan-progress-and-cancel §5).
 ///
+/// A paused directory that `fresh` does not name is frozen ([`frozen_entries`]).
+///
 /// # Errors
 ///
 /// As [`derive_with`].
 pub fn derive_watched(
     conn: &Connection,
     documents: Documents,
+    fresh: &[i64],
     watch: &dyn Watch,
 ) -> Result<Outcome<DeriveReport>, String> {
     // Once, for the whole library. `Engine::compile` is where every regex in
@@ -641,6 +653,14 @@ pub fn derive_watched(
     // the same thing.
     let (engine, _complaints) = Engine::load(conn)?;
     let roots = crate::scan::roots(conn)?;
+    // On `conn`, so a caller's transaction sees the pauses it wrote. A root
+    // `fresh` names is read as the walk saved it whatever its pause says: a
+    // pressed Scan's unpause is best-effort, and freezing the directory it was
+    // pressed for would hash and write nothing of what it walked.
+    let frozen: HashSet<i64> = crate::scan::paused(conn)?
+        .into_iter()
+        .filter(|id| !fresh.contains(id))
+        .collect();
 
     let mut report = DeriveReport::default();
     let mut staged: Vec<Staged> = Vec::new();
@@ -660,8 +680,13 @@ pub fn derive_watched(
     // any whose ancestor does. See [`nested_in_claim`].
     let mut to_classify = Vec::with_capacity(roots.len());
     for root in &roots {
+        let read = if frozen.contains(&root.id) {
+            frozen_entries(conn, &engine, root)?
+        } else {
+            entries(conn, root.id)?
+        };
         let mut seen = Vec::new();
-        for entry in entries(conn, root.id)? {
+        for entry in read {
             let Some(admitted) = admit(&engine, root, entry, &mut report) else {
                 continue;
             };
@@ -724,6 +749,7 @@ pub fn derive_watched(
                     chapter_dirs: &mut chapter_dirs,
                     named_series: &mut named_series,
                     report: &mut report,
+                    frozen: &frozen,
                 },
             )?;
             // After the digest, and for a file found gone too, the figure the
@@ -901,7 +927,7 @@ pub fn derive_watched(
     // After the folds, so a work folded away this pass is gone rather than
     // marked or counted found again. Under both `Documents` modes: a
     // rolled-back preview predicts the mark as it predicts everything else.
-    digest_held_members(conn, &roots, &mut report.unreadable)?;
+    digest_held_members(conn, &roots, &frozen, &mut report.unreadable)?;
     (report.marked_missing, report.found_again) = mark_missing(conn)?;
 
     // After the folds, because a fold is what empties a series — but over the
@@ -1032,6 +1058,7 @@ enum Alone {
 }
 
 /// One `scan_entry` row, as derivation reads it.
+#[derive(Clone)]
 struct Entry {
     rel_path: String,
     format: Option<String>,
@@ -1088,6 +1115,9 @@ struct Candidate {
     /// a grant on any of those directories reaches it. `path`, `rel_path` and
     /// `root_id` above are the primary copy, the one `member.path` names.
     copies: Vec<CopyAt>,
+    /// Whether this derive reads the entry's directory frozen
+    /// ([`frozen_entries`]), so [`drop_held`] keeps its held reading.
+    frozen: bool,
 }
 
 /// Where one more copy of a [`Candidate`]'s bytes sits. Named for its place
@@ -1095,6 +1125,11 @@ struct Candidate {
 struct CopyAt {
     root_id: i64,
     path: String,
+    /// The copy's own `scan_entry` row, which may sit at another path than
+    /// the primary's; [`drop_held`] finds it by this.
+    rel_path: String,
+    /// As [`Candidate::frozen`], for the copy's directory.
+    frozen: bool,
 }
 
 /// One work, before it is a work: every entry across every root, whichever
@@ -1119,8 +1154,8 @@ impl Group {
     }
 }
 
-/// The four things [`classify`] accumulates into, gathered so it takes one
-/// `&mut` rather than four.
+/// The four things [`classify`] accumulates into, and the directories this
+/// derive reads frozen, gathered so it takes one argument rather than five.
 ///
 /// `clippy::too_many_arguments` is on by default rather than merely pedantic
 /// and refuses at eight, which is exactly what `classify` would take; a struct
@@ -1131,30 +1166,114 @@ struct Sorting<'a> {
     chapter_dirs: &'a mut BTreeSet<(i64, String)>,
     named_series: &'a mut BTreeSet<String>,
     report: &'a mut DeriveReport,
+    frozen: &'a HashSet<i64>,
+}
+
+/// The `scan_entry` columns [`entry_of`] reads, first in a select and in order.
+const ENTRY_COLUMNS: &str = "rel_path, format, pages, sha256, title, size";
+
+fn entry_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
+    Ok(Entry {
+        rel_path: r.get(0)?,
+        format: r.get(1)?,
+        pages: r.get(2)?,
+        sha256: r.get(3)?,
+        title: r.get(4)?,
+        size: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
+    })
 }
 
 /// Every `scan_entry` under one root, in path order.
 fn entries(conn: &Connection, root_id: i64) -> Result<Vec<Entry>, String> {
-    let mut stmt = conn
+    conn.prepare(&format!(
+        "SELECT {ENTRY_COLUMNS} FROM scan_entry WHERE root_id = ?1 ORDER BY rel_path"
+    ))
+    .and_then(|mut stmt| stmt.query_map([root_id], entry_of)?.collect())
+    .map_err(|e| format!("reading the facts for root {root_id}: {e}"))
+}
+
+/// Every `scan_entry` under a paused root, in path order, so a derive hashes
+/// none of it and reads each held file by the reading its works hold (O320).
+/// Held is each digest of a member whose `member_root` names the root, a
+/// copy's too. A chapter-only entry passes as it is; else one whose held
+/// reading is held, read by it; else one whose digest is; else one of no
+/// pages. Any other entry waits, with the chapter-only entries it claims. Its
+/// works can still change: by a folder volume's page count the walk rewrote,
+/// a rules save, or another directory's file joining one (spec §7, §8).
+fn frozen_entries(conn: &Connection, engine: &Engine, root: &Root) -> Result<Vec<Entry>, String> {
+    type Row = (
+        Entry,
+        Option<String>,
+        Option<String>,
+        Option<u32>,
+        Option<String>,
+    );
+    let failed = |e: rusqlite::Error| format!("reading what root {}'s works hold: {e}", root.id);
+    let held: HashSet<String> = conn
         .prepare(
-            "SELECT rel_path, format, pages, sha256, title, size FROM scan_entry \
-             WHERE root_id = ?1 ORDER BY rel_path",
+            "SELECT m.sha256 FROM member m JOIN member_root mr ON mr.member_id = m.id
+              WHERE mr.root_id = ?1",
         )
-        .map_err(|e| format!("reading the facts for root {root_id}: {e}"))?;
-    let rows = stmt
-        .query_map([root_id], |r| {
-            Ok(Entry {
-                rel_path: r.get(0)?,
-                format: r.get(1)?,
-                pages: r.get(2)?,
-                sha256: r.get(3)?,
-                title: r.get(4)?,
-                size: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
-            })
+        .and_then(|mut stmt| stmt.query_map([root.id], |r| r.get(0))?.collect())
+        .map_err(failed)?;
+    let rows: Vec<Row> = conn
+        .prepare(&format!(
+            "SELECT {ENTRY_COLUMNS}, held_sha256, held_format, held_pages, held_title
+               FROM scan_entry WHERE root_id = ?1 ORDER BY rel_path"
+        ))
+        .and_then(|mut stmt| {
+            stmt.query_map([root.id], |r| {
+                Ok((entry_of(r)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?))
+            })?
+            .collect()
         })
-        .map_err(|e| format!("reading the facts for root {root_id}: {e}"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("reading the facts for root {root_id}: {e}"))
+        .map_err(failed)?;
+    let saved: Vec<Entry> = rows.iter().map(|row| row.0.clone()).collect();
+    let mut kept = Vec::with_capacity(rows.len());
+    let mut chapters = HashSet::new();
+    for (mut entry, held_sha256, format, pages, title) in rows {
+        let chapter = chapter_only(&engine.resolve(root, &entry.rel_path));
+        if chapter {
+            chapters.insert(entry.rel_path.clone());
+        } else {
+            match held_sha256.filter(|sha256| held.contains(sha256)) {
+                // Before the digest: by the drop, a held reading the root holds
+                // is what its works hold for this row, and bytes hashed since
+                // may equal another member's.
+                Some(sha256) => {
+                    (entry.sha256, entry.format, entry.pages, entry.title) =
+                        (Some(sha256), format, pages, title);
+                }
+                None if entry
+                    .sha256
+                    .as_ref()
+                    .is_some_and(|sha256| held.contains(sha256)) => {}
+                // After the held reading: a member truncated since its write
+                // would pass at no pages, not the reading it was written from.
+                None if holds_no_pages(&entry) => {}
+                None => continue,
+            }
+        }
+        kept.push(entry);
+    }
+    // What waits is what the rows claim as the walk saved them, less what
+    // passed: a new folder volume, say. A chapter-only entry passed beneath it
+    // would stand under no claim, counted unattached and naming a series no
+    // work holds. Proposals read `entries`, where the volume still claims it.
+    let passed: HashSet<&str> = kept.iter().map(|entry| entry.rel_path.as_str()).collect();
+    let mut thrown_away = DeriveReport::default();
+    let admitted: Vec<Seen> = saved
+        .into_iter()
+        .filter_map(|entry| admit(engine, root, entry, &mut thrown_away))
+        .collect();
+    let waiting: BTreeSet<String> = claims_of(&admitted)
+        .into_iter()
+        .filter(|claim| !passed.contains(claim.as_str()))
+        .collect();
+    kept.retain(|entry| {
+        !(chapters.contains(&entry.rel_path) && nested_in_claim(&waiting, &entry.rel_path))
+    });
+    Ok(kept)
 }
 
 /// One entry, resolved, if it is something derivation could make structure
@@ -1366,9 +1485,23 @@ fn nested_in_claim(claims: &BTreeSet<String>, rel_path: &str) -> bool {
 /// holds pages, and no digest is held for it. A watched derive sums the bytes
 /// to hash over the same test, so its count and its total cannot disagree.
 fn hashes(seen: &Seen) -> bool {
-    !(seen.resolved.volume.is_none() && seen.resolved.chapter.is_some())
+    !chapter_only(&seen.resolved)
         && seen.entry.pages.is_some_and(|pages| pages > 0)
         && seen.entry.sha256.is_none()
+}
+
+/// Whether an entry holds no pages: a container found empty or not counted,
+/// or a file in a format nothing reads, which the walk gives no count. Such an
+/// entry makes no structure: [`admit`] or [`classify`] counts it, nothing
+/// hashes or writes it, and it claims nothing beneath it.
+fn holds_no_pages(entry: &Entry) -> bool {
+    !entry.pages.is_some_and(|pages| pages > 0)
+}
+
+/// A chapter with no volume, §7's case: [`classify`] counts it and never
+/// hashes it or makes it a member.
+fn chapter_only(resolved: &crate::rules::Resolved) -> bool {
+    resolved.volume.is_none() && resolved.chapter.is_some()
 }
 
 /// Whether the walk recorded this entry as a folder, which its digest reads
@@ -1481,6 +1614,7 @@ fn classify(
             kind: resolved.kind,
             language: resolved.language,
             copies: Vec::new(),
+            frozen: into.frozen.contains(&root.id),
         },
         series,
         volume: resolved.volume,
@@ -1577,6 +1711,8 @@ fn place(
                 candidate.copies.push(CopyAt {
                     root_id: copy.candidate.root_id,
                     path: copy.candidate.path,
+                    rel_path: copy.candidate.rel_path,
+                    frozen: copy.candidate.frozen,
                 });
             }
         }
@@ -1652,6 +1788,17 @@ fn digest(conn: &Connection, root: &Root, entry: &Entry) -> Result<Option<String
         rusqlite::params![hash, root.id, entry.rel_path],
     )
     .map_err(|e| format!("recording the digest of {}: {e}", entry.rel_path))?;
+    // Bytes equal to the held reading's make it the current one, so it goes
+    // here, safely even if this derive is then cancelled: [`drop_held`] runs
+    // only where the entry's work is written, which an unchanged reading
+    // alone does not cause (O320).
+    conn.execute(
+        "UPDATE scan_entry
+            SET held_sha256 = NULL, held_format = NULL, held_pages = NULL, held_title = NULL
+          WHERE root_id = ?1 AND rel_path = ?2 AND held_sha256 = ?3",
+        rusqlite::params![root.id, entry.rel_path, hash],
+    )
+    .map_err(|e| format!("dropping the held reading of {}: {e}", entry.rel_path))?;
     Ok(Some(hash))
 }
 
@@ -2080,6 +2227,10 @@ fn write_work(
     // below would rewrite a held work's rows, and the `BEGIN IMMEDIATE` holds
     // the lock a page turn's save waits for, so a scan where no file changed
     // would hold it work by work for the whole derive.
+    //
+    // **Nor is a held reading dropped here**, which would take that lock
+    // (O320). An entry hashed equal to its held reading had it cleared by
+    // [`digest`].
     if let Some(held) = unchanged(conn, series_id, group, placed)? {
         report.kept_editions += held.kept;
         report.unrecognised_kinds += group
@@ -2162,6 +2313,9 @@ fn write_work(
     // interaction: nothing the guard or the read-back writes touches
     // `member.root_id`.
     write_roots(conn, work_id, group, report)?;
+    // In the work's first scope, so it commits with the rows written from the
+    // current readings and a cancel before this work keeps them held.
+    drop_held(conn, group)?;
 
     // **The document follows the row here, after `write_roots` and after the
     // work's first commit — never inside it.** A rollback that left the file
@@ -3060,6 +3214,37 @@ fn write_roots(
     Ok(())
 }
 
+/// Drop the held reading of each entry `group` was read from, a copy's too,
+/// once its work is written from their current readings (O320): a later
+/// frozen derive would otherwise read the work by a reading it no longer
+/// holds. Per work, so a cancel between two works keeps the readings of the
+/// one not written. An entry whose directory this derive reads frozen keeps
+/// its own.
+fn drop_held(conn: &Connection, group: &Group) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare_cached(
+            "UPDATE scan_entry
+                SET held_sha256 = NULL, held_format = NULL, held_pages = NULL, held_title = NULL
+              WHERE root_id = ?1 AND rel_path = ?2 AND held_sha256 IS NOT NULL",
+        )
+        .map_err(|e| format!("dropping the held readings of `{}`: {e}", group.series))?;
+    for candidate in group.editions.values().flatten() {
+        let primary = (candidate.root_id, &candidate.rel_path, candidate.frozen);
+        let copies = candidate
+            .copies
+            .iter()
+            .map(|k| (k.root_id, &k.rel_path, k.frozen));
+        for (root_id, rel_path, frozen) in std::iter::once(primary).chain(copies) {
+            if frozen {
+                continue;
+            }
+            stmt.execute(rusqlite::params![root_id, rel_path])
+                .map_err(|e| format!("dropping the held reading of {rel_path}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// Whether SQLite refused a statement because it would have written a value
 /// with no matching row on the other end of a foreign key — [`write_roots`]'s
 /// own use is the only one: a root deleted out from under an in-flight derive.
@@ -3082,9 +3267,11 @@ fn is_foreign_key_violation(e: &rusqlite::Error) -> bool {
 fn digest_held_members(
     conn: &Connection,
     roots: &[Root],
+    frozen: &HashSet<i64>,
     unreadable: &mut Unreadable,
 ) -> Result<(), String> {
-    for root in roots {
+    // A frozen root's changed files wait for Scan, hashed by no derive (O320).
+    for root in roots.iter().filter(|root| !frozen.contains(&root.id)) {
         let failed = |e: rusqlite::Error| format!("reading the members of root {}: {e}", root.id);
         let held: HashSet<String> = conn
             .prepare(
@@ -3094,23 +3281,10 @@ fn digest_held_members(
             .and_then(|mut stmt| stmt.query_map([root.id], |r| r.get(0))?.collect())
             .map_err(failed)?;
         let undigested: Vec<Entry> = conn
-            .prepare(
-                "SELECT rel_path, format, pages, sha256, title, size FROM scan_entry
-                  WHERE root_id = ?1 AND sha256 IS NULL",
-            )
-            .and_then(|mut stmt| {
-                stmt.query_map([root.id], |r| {
-                    Ok(Entry {
-                        rel_path: r.get(0)?,
-                        format: r.get(1)?,
-                        pages: r.get(2)?,
-                        sha256: r.get(3)?,
-                        title: r.get(4)?,
-                        size: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
-                    })
-                })?
-                .collect()
-            })
+            .prepare(&format!(
+                "SELECT {ENTRY_COLUMNS} FROM scan_entry WHERE root_id = ?1 AND sha256 IS NULL"
+            ))
+            .and_then(|mut stmt| stmt.query_map([root.id], entry_of)?.collect())
             .map_err(failed)?;
         for entry in undigested {
             // Joined as `classify` joins a candidate's path.

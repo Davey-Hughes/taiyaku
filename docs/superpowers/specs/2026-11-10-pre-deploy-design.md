@@ -506,7 +506,8 @@ Resolution lives in the core alone. Serve's `View` does not resolve.
   and occurrence before the stamp to its pair after it
   (`stamp::rekey_anchors`), a copy the stamp did not rewrite included. A
   derive before the next scan of the archive's directory puts the old digest
-  back on the member (O270).
+  back on the member (O270). *O270 has since closed, on 2026-11-17 — see its
+  entry in `docs/status.md`.*
 
 ### Reads
 

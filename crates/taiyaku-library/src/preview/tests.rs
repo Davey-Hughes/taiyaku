@@ -2529,3 +2529,130 @@ fn apply_reads_the_rule_table_back_after_committing_not_before() {
         *statements
     );
 }
+
+const C001: &str = "Series/Series - v01 - c001.cbz";
+const C002: &str = "Series/Series - v01 - c002.cbz";
+
+/// One volume of two files, [`C001`] (2 pages) and [`C002`] (3), added,
+/// scanned and derived; then `C002` rewritten at 4 pages and scanned, and the
+/// directory paused, as a re-scan cancelled after its walk leaves it. With
+/// the two digests the derive took, which the work still holds.
+fn a_paused_rescan(
+    label: &str,
+) -> (
+    crate::tests::TempDir,
+    crate::Library,
+    crate::scan::Root,
+    (String, String),
+) {
+    let tree = crate::tests::tempdir(label);
+    crate::scan::tests::write_archive(&tree.path().join(C001), 2);
+    crate::scan::tests::write_archive(&tree.path().join(C002), 3);
+    let library = crate::Library::open_in_memory().expect("an in-memory library opens");
+    let (root, digests) = {
+        let conn = library.conn();
+        let root = crate::scan::add_root(&conn, tree.path()).expect("adds the directory");
+        crate::scan::scan_root(&conn, &root).expect("scans it");
+        crate::derive::derive(&conn).expect("derives it");
+        let digest = |rel: &str| -> String {
+            conn.query_row(
+                "SELECT sha256 FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+                rusqlite::params![root.id, rel],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("the fixture: {rel} is hashed: {e}"))
+        };
+        let digests = (digest(C001), digest(C002));
+        crate::scan::tests::write_archive(&tree.path().join(C002), 4);
+        assert_eq!(
+            crate::scan::scan_root(&conn, &root)
+                .expect("scans the change")
+                .updated,
+            1,
+            "the fixture: the walk sees c002 changed"
+        );
+        assert_eq!(
+            crate::scan::tests::held_reading(&conn, root.id, C002).0,
+            Some(digests.1.clone()),
+            "the fixture: the walk holds c002's old digest"
+        );
+        crate::scan::pause(&conn, std::slice::from_ref(&root)).expect("pauses the directory");
+        (root, digests)
+    };
+    assert_eq!(
+        members(&library.conn()),
+        [
+            (
+                root.path.join(C001).display().to_string(),
+                digests.0.clone()
+            ),
+            (
+                root.path.join(C002).display().to_string(),
+                digests.1.clone()
+            ),
+        ],
+        "the fixture: one work of both files, by their first digests"
+    );
+    (tree, library, root, digests)
+}
+
+/// Every member as `(path, sha256)`, by path.
+fn members(conn: &rusqlite::Connection) -> Vec<(String, String)> {
+    conn.prepare("SELECT path, sha256 FROM member ORDER BY path")
+        .expect("prepares")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("reads")
+        .collect::<rusqlite::Result<_>>()
+        .expect("reads")
+}
+
+/// O320: a preview's derive freezes a paused directory, so it hashes none of
+/// its files: c002 is gone from disk, and a preview that hashed it would find
+/// it gone and orphan its member.
+#[test]
+fn a_preview_hashes_none_of_a_paused_directory() {
+    let (tree, library, _root, _) = a_paused_rescan("preview-paused");
+    std::fs::remove_file(tree.path().join(C002)).expect("deletes c002");
+    let conn = library.conn();
+
+    assert_eq!(
+        preview(&conn, &crate::rules::read(&conn).unwrap().0).unwrap(),
+        Impact {
+            series_before: 1,
+            series_after: 1,
+            ..Impact::default()
+        }
+    );
+}
+
+/// O320: a rules save regroups a paused directory's held files at once, each
+/// by the reading its work was written from, not by the bytes the walk found
+/// changed.
+#[test]
+fn a_save_regroups_a_paused_directorys_files_by_their_held_readings() {
+    let (_tree, library, root, (a1, a2)) = a_paused_rescan("save-paused");
+    let conn = library.conn();
+    let mut proposed = crate::rules::read(&conn).unwrap().0;
+    proposed.push(crate::tests::a_rule_setting_series("Moved"));
+    let (c001, c002) = (
+        root.path.join(C001).display().to_string(),
+        root.path.join(C002).display().to_string(),
+    );
+
+    crate::preview::apply(&conn, &proposed).expect("saves the rules");
+
+    assert_eq!(
+        members(&conn),
+        [(c001.clone(), a1), (c002.clone(), a2)],
+        "each file holds the reading its work was written from"
+    );
+    let placed: Vec<(String, String)> = grouping(&conn)
+        .unwrap()
+        .into_iter()
+        .map(|(path, placement)| (path, placement.series))
+        .collect();
+    assert_eq!(
+        placed,
+        [(c001, "Moved".to_string()), (c002, "Moved".to_string())]
+    );
+}
