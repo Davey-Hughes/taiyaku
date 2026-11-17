@@ -60,7 +60,8 @@ export type PageGesture =
  * These four numbers are **chosen, not measured** (spec §9.2). A thumb on a
  * phone is what says whether 10 px is too tight to hold still for and whether
  * 40 px is far enough to be deliberate; a figure that changes is changed here
- * and in §9.2 together.
+ * and in §9.2 together. The book reader tells a tap from a text selection by
+ * `TAP_SLOP` and `TAP_HOLD` too, so a change moves that line as well (O325).
  */
 export const TAP_SLOP = 10
 

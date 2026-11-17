@@ -37,8 +37,8 @@ use std::{
 
 use serde::Deserialize;
 use taiyaku_core::{
-    AnchorScorer, Anchors, BlockLink, BlockParams, BlockScorer, GALE_CHURCH_VARIANCE, LengthScorer,
-    align_blocks, english_number,
+    AnchorScorer, Anchors, Band, BlockLink, BlockParams, BlockScorer, GALE_CHURCH_VARIANCE,
+    LengthScorer, align_blocks, english_number,
 };
 use taiyaku_read::{Block, read_book};
 
@@ -287,6 +287,18 @@ fn measure(pair: &Path) {
         assert!(
             shifted.is_lower_everywhere_than(&perfect),
             "{name}: a metric did not drop when shifted"
+        );
+        // Reported rather than asserted: the band is a figure the notes rest
+        // on, and a key a band would cut is a reason to widen it.
+        let band = Band::new(a.len(), b.len(), BASELINE.band);
+        let outside = truth
+            .iter()
+            .filter(|l| !band.holds(l.a.end, l.b.end))
+            .count();
+        println!(
+            "{name}: {outside} of {} links end outside the ±{} band",
+            truth.len(),
+            BASELINE.band
         );
     }
     let anchors = chapter_anchors(&pair_name, a, b);

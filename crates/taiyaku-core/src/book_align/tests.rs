@@ -126,18 +126,6 @@ fn a_merge_costs_more_than_the_same_lengths_unmerged() {
 }
 
 #[test]
-fn refitting_estimates_the_variance_from_one_to_one_links() {
-    let scorer = LengthScorer::new(&[100, 100], &[110, 90], GALE_CHURCH_VARIANCE);
-    let refitted = scorer.refit(&[link(0..1, 0..1), link(1..2, 1..2), link(0..2, 0..2)]);
-    assert!(
-        (refitted.variance() - 1.0).abs() < 1e-12,
-        "{}",
-        refitted.variance()
-    );
-    assert!((scorer.refit(&[]).variance() - GALE_CHURCH_VARIANCE).abs() < 1e-12);
-}
-
-#[test]
 fn ln_erfc_matches_known_values_and_stays_finite_far_out() {
     for (x, erfc) in [
         (0.0, 1.0_f64),
@@ -322,4 +310,17 @@ fn a_pin_out_of_order_or_past_the_end_is_passed_over() {
 #[test]
 fn two_empty_books_have_no_links() {
     assert_eq!(align_texts_pinned(&[], &[], &[]), []);
+}
+
+#[test]
+fn a_pair_of_straight_quotes_is_one_quotation_as_a_curly_pair_is() {
+    let curly = Anchors::of("“Who?” he said. “Me.”");
+    let straight = Anchors::of("\"Who?\" he said. \"Me.\"");
+    assert_eq!(straight.quotes, curly.quotes);
+    assert_eq!(straight.quotes, 2);
+    assert_eq!(
+        Anchors::of("\"Who? he began").quotes,
+        1,
+        "opened, not yet closed"
+    );
 }

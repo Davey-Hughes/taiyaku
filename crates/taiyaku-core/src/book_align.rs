@@ -303,31 +303,6 @@ impl LengthScorer {
         self.ratio
     }
 
-    #[must_use]
-    pub fn variance(&self) -> f64 {
-        self.variance
-    }
-
-    /// The same scorer with its variance re-estimated from `links`' one-to-one
-    /// pairings, the ones least likely to hide a split. Unchanged when `links`
-    /// holds no one-to-one pairing.
-    #[must_use]
-    pub fn refit(&self, links: &[BlockLink]) -> Self {
-        let mut sum = 0.0;
-        let mut count = 0.0;
-        for link in links.iter().filter(|l| l.a.len() == 1 && l.b.len() == 1) {
-            let (la, lb) = (self.length_a(&link.a), self.length_b(&link.b));
-            let residual = lb - la * self.ratio;
-            sum += residual * residual / la.max(1.0);
-            count += 1.0;
-        }
-        let mut refitted = self.clone();
-        if count > 0.0 {
-            refitted.variance = (sum / count).max(f64::EPSILON);
-        }
-        refitted
-    }
-
     fn length_a(&self, range: &Range<usize>) -> f64 {
         self.a[range.end] - self.a[range.start]
     }
@@ -360,8 +335,8 @@ pub struct Anchors {
 impl Anchors {
     /// Opening curly quotation marks are counted, so a closing mark and an
     /// apostrophe (both `’`) are not; a straight `"` opens and closes alike, so
-    /// it counts at both ends of a quotation. An ellipsis is one however it is
-    /// typeset: `…`, `……`, `...` or `. . .`.
+    /// two of them are one quotation, as one curly pair is. An ellipsis is one
+    /// however it is typeset: `…`, `……`, `...` or `. . .`.
     ///
     /// A number is a run of digits, or an English number word set in capitals:
     /// a heading's `CHAPTER THIRTEEN` is the `13장` of its translation, which is
@@ -370,11 +345,13 @@ impl Anchors {
     #[must_use]
     pub fn of(text: &str) -> Self {
         let mut anchors = Self::default();
+        let mut straight: u32 = 0;
         let chars: Vec<char> = text.chars().collect();
         let mut i = 0;
         while i < chars.len() {
             match chars[i] {
-                '“' | '‘' | '"' => anchors.quotes += 1,
+                '“' | '‘' => anchors.quotes += 1,
+                '"' => straight += 1,
                 '?' => anchors.questions += 1,
                 '!' => anchors.exclamations += 1,
                 '…' | '.' => {
@@ -404,6 +381,9 @@ impl Anchors {
             .count()
             .try_into()
             .unwrap_or(u32::MAX);
+        // An unpaired one is taken for a quotation opened, though it may close
+        // one an earlier block opened, where a curly `”` counts nothing (O326).
+        anchors.quotes += straight.div_ceil(2);
         anchors
     }
 

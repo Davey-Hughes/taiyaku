@@ -84,7 +84,7 @@ import { BookProgress } from './BookProgress'
 import { Contents } from './Contents'
 import { debounce } from './debounce'
 import { useGate } from './gate'
-import { TAP_HOLD } from './gestures'
+import { TAP_HOLD, TAP_SLOP } from './gestures'
 import { Help } from './Help'
 import { usePrefsMap } from './hooks'
 import { controlKind, inPanel, type Intent } from './keys'
@@ -173,18 +173,27 @@ const PANELS: Record<string, Panel> = {
 }
 
 /**
- * The most characters one move of the text may carry and still count as
- * reading: a jump by the contents, the progress line or a swap is not.
+ * The most characters one move of the text by hand may carry and still count
+ * as reading, so a drag of the scrollbar past chapters is not; a jump by the
+ * contents, the progress line or a swap counts nothing, `place` having moved
+ * `top` with it. A guess at a page's worth, which may be short of one at small
+ * text on a tall screen (O324).
  */
 const MOST_READ_AT_ONCE = 3000
 
-/** How long scrolling must stop before the position is saved. */
+/**
+ * How long scrolling must stop before the position is saved. Longer than the
+ * page reader's `PROGRESS_DEBOUNCE_MS`, which waits out a burst of arrow
+ * presses: a scrolled text sends a stream of scroll events for as long as it
+ * moves, and a slow steady scroll should not write at every pause for breath.
+ */
 const SAVE_AFTER_MS = 1000
 
-/** How far a press may travel and still be a tap rather than a scroll. */
-const TAP_SLOP_PX = 8
-
-/** How soon a second tap must follow the first to make them a double tap. */
+/**
+ * How soon a second tap must follow the first to make them a double tap.
+ * Like `gestures.ts`' figures, this and the ones below were chosen by hand
+ * while reading, not measured; one that feels wrong is changed here.
+ */
 const DOUBLE_TAP_MS = 300
 
 /**
@@ -193,7 +202,7 @@ const DOUBLE_TAP_MS = 300
  */
 const TAP_MS = 200
 
-/** How long a swap's blocks stay lit. */
+/** How long a swap's blocks stay lit: long enough to find where it landed. */
 const LIT_MS = 1500
 
 /** How long a swap's light takes to fade, with motion on. */
@@ -1009,8 +1018,8 @@ export function BookReader({ work, onLeave }: Props) {
           const down = pressed.current
           if (
             !down ||
-            Math.hypot(event.clientX - down.x, event.clientY - down.y) >
-              TAP_SLOP_PX ||
+            Math.abs(event.clientX - down.x) > TAP_SLOP ||
+            Math.abs(event.clientY - down.y) > TAP_SLOP ||
             event.timeStamp - down.at > TAP_HOLD
           ) {
             if (notes.ready) setSelected(selectionIn(text.current))

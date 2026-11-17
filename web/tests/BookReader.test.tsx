@@ -569,6 +569,16 @@ describe('BookReader', () => {
     expect(host.querySelector('.reader-top-bar')).toBeNull()
   })
 
+  it('takes a press that moves as far as the page reader allows on each axis as a tap', async () => {
+    const { host } = await opened()
+    touch(host, { travel: 10, sideways: 10 })
+    expect(host.querySelector('.reader-top-bar')).not.toBeNull()
+    touch(host, { travel: 11 })
+    expect(host.querySelector('.reader-top-bar')).not.toBeNull()
+    touch(host, { sideways: 11 })
+    expect(host.querySelector('.reader-top-bar')).not.toBeNull()
+  })
+
   it('shows the bars on Tab, and hides them on Escape', async () => {
     const { host } = await opened()
     press('Tab')

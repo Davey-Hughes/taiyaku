@@ -26607,8 +26607,9 @@ Chamber of Secrets as a preview, so neither has text the other lacks there.
 
 **The controls held.** The key scored against itself is 100% on every metric,
 and shifted by one Korean block it falls to 23.9% exact landing, 0% strict F1
-and 23.4% lax F1. No key link ends outside the ±400 band. The fitted ratio is
-0.585 Korean characters to an English one.
+and 23.4% lax F1. No key link ends outside the ±400 band: the experiment
+counts them through `Band::holds`, and found none of 821 across the five keys
+on 2026-11-15. The fitted ratio is 0.585 Korean characters to an English one.
 
 **Length alone lands 99.6% of swaps exactly**, at groups of up to four and a
 one-sided cost of 4.5 (Gale and Church's 1:0 prior) or 9. The other 0.4%, one
