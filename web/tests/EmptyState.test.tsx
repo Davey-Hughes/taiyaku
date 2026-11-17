@@ -47,6 +47,37 @@ describe('the empty states', () => {
     expect(host.textContent).toContain('五等分の花嫁')
   })
 
+  it('says a library is being scanned, and the step it is in, as its own state', () => {
+    const host = mount(
+      <EmptyState kind="scanning" step="Hashing · 1.2 GB of 3.4 GB" />,
+    )
+    expect(host.querySelector('h2')?.textContent).toBe('Scanning')
+    expect([...host.querySelectorAll('p')].map((p) => p.textContent)).toEqual([
+      'Hashing · 1.2 GB of 3.4 GB',
+    ])
+  })
+
+  it('adds to a no-match state that a scan is still running, only when one is', () => {
+    const lines = (host: HTMLElement) =>
+      [...host.querySelectorAll('p')].map((p) => p.textContent)
+    const running = mount(
+      <EmptyState kind="no-matches" query="花嫁" scanning />,
+    )
+    expect(running.querySelector('h2')?.textContent).toBe('Nothing here')
+    expect(lines(running)).toEqual([
+      'Nothing matched 花嫁.',
+      'A scan is still running.',
+    ])
+    const filtered = mount(<EmptyState kind="no-matches" scanning />)
+    expect(lines(filtered)).toEqual([
+      'No series match this filter.',
+      'A scan is still running.',
+    ])
+    expect(lines(mount(<EmptyState kind="no-matches" query="花嫁" />))).toEqual(
+      ['Nothing matched 花嫁.'],
+    )
+  })
+
   it('names the kind whose tab has just been answered out, and the control that undoes it', () => {
     const host = mount(
       <EmptyState kind="kind-answered" label="Attach Chapters" />,
@@ -133,6 +164,7 @@ describe('the empty states', () => {
       'no-grant',
       'no-library',
       'not-scanned',
+      'scanning',
       'no-matches',
       'inbox-clear',
       'inbox-weak-hidden',

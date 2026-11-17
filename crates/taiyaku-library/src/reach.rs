@@ -60,6 +60,24 @@ pub fn of_libraries(roots: &[scan::Root], libraries: &[i64]) -> Vec<i64> {
     reach(roots, &own)
 }
 
+/// Each library whose directories ([`of_libraries`]) include one of `dirs`,
+/// ascending: the libraries whose pages show a scan of `dirs`, an outer
+/// library among them wherever one of `dirs` is nested in its reach.
+pub fn libraries_reaching(all: &[scan::Root], dirs: &[i64]) -> Vec<i64> {
+    let libraries: BTreeSet<i64> = all
+        .iter()
+        .flat_map(|root| root.libraries.iter().copied())
+        .collect();
+    libraries
+        .into_iter()
+        .filter(|library| {
+            of_libraries(all, &[*library])
+                .iter()
+                .any(|dir| dirs.contains(dir))
+        })
+        .collect()
+}
+
 /// The directories a scan of `library` walks: every one it shows
 /// ([`of_libraries`]), each walked as its own root by its own rules (the
 /// overlapping-libraries spec's decision 16).

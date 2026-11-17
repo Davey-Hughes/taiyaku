@@ -880,12 +880,11 @@ async fn the_status_lists_libraries_and_nothing_else() {
         let conn = state.library.conn();
         test_support::plant_root(&conn, 5, "/shelf");
         test_support::plant_root(&conn, 6, "/walked");
-        conn.execute(
-            "INSERT INTO dir_state (root_id, rel_path, mtime, entry_count) \
-             VALUES (6, '', 0, 0)",
-            [],
+        conn.execute_batch(
+            "INSERT INTO dir_state (root_id, rel_path, mtime, entry_count) VALUES (6, '', 0, 0); \
+             UPDATE root SET last_scan_at = '2026-11-10 12:00:00' WHERE id = 6;",
         )
-        .expect("the second directory walked");
+        .expect("the second directory walked, its rows and its last scan");
         (library_of(&conn, 5), library_of(&conn, 6))
     };
     assert!(

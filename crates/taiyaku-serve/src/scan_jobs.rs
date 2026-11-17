@@ -13,14 +13,211 @@
 //! changed or cannot be walked ends the job, and in the words of what it
 //! answers where that fails.
 
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::io::Write;
-use std::sync::Arc;
-use std::time::Instant;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
+use std::time::{Duration, Instant};
 
-use taiyaku_library::{derive, lease, libraries, scan};
+use taiyaku_library::progress::{Outcome, Step, Watch};
+use taiyaku_library::{derive, lease, libraries, reach, scan};
 
 use crate::ServeState;
 use crate::config_api::finished_scan_json;
+
+/// How often a job queued behind another tries the job lock again, reading
+/// its cancel flag between tries.
+const JOB_LOCK_POLL: Duration = Duration::from_millis(100);
+
+/// The next job's id. Ids start at 1 and are never reused in a process.
+static NEXT_JOB: AtomicU64 = AtomicU64::new(1);
+
+/// One scan job: what [`reserve`] reserved, and where it is as it runs. Every
+/// directory's slot in [`crate::ServeState::scans`] holds the same one.
+#[derive(Debug)]
+pub(crate) struct Job {
+    /// Unique in this process, for a page to name the job it cancels.
+    pub(crate) id: u64,
+    /// The instant that names the job's reservations ([`finish_reservation`]).
+    pub(crate) started: Instant,
+    /// Each directory reserved, id and path, in the order reserved.
+    pub(crate) dirs: Vec<(i64, PathBuf)>,
+    /// The libraries whose pages show the job, id and name: empty until
+    /// [`spawn_job`] reads them ([`held_libraries`]).
+    pub(crate) libraries: Mutex<Vec<(i64, String)>>,
+    cancel: AtomicBool,
+    snapshot: Mutex<Snapshot>,
+    ended: Mutex<Option<JobEnded>>,
+    /// The server's count of ended jobs ([`crate::ServeState::jobs_ended`]),
+    /// which [`Job::end`] raises.
+    jobs_ended: Arc<AtomicU64>,
+}
+
+/// Where a job is: its step, that step's count, and the directory it walks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Snapshot {
+    pub(crate) step: Step,
+    /// The count so far; `None` while the job waits.
+    pub(crate) done: Option<u64>,
+    /// What the count runs to, where that is known before the step ends.
+    pub(crate) of: Option<u64>,
+    /// The directory walked, from 1, of the job's: set while listing and
+    /// resolving, since hashing and writing cover every directory at once.
+    pub(crate) dir: Option<(usize, usize)>,
+}
+
+/// How a job ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JobEnded {
+    /// It ran to its end, whatever each directory's report says.
+    Finished,
+    /// A cancel stopped it in this step.
+    Cancelled(Step),
+}
+
+impl Job {
+    /// A job of `dirs` reserved at `started`, waiting, with the next id,
+    /// counted in `jobs_ended` once it ends.
+    pub(crate) fn new(
+        started: Instant,
+        dirs: Vec<(i64, PathBuf)>,
+        jobs_ended: Arc<AtomicU64>,
+    ) -> Self {
+        Self {
+            id: NEXT_JOB.fetch_add(1, Ordering::SeqCst),
+            started,
+            dirs,
+            libraries: Mutex::default(),
+            cancel: AtomicBool::new(false),
+            snapshot: Mutex::new(Snapshot {
+                step: Step::Waiting,
+                done: None,
+                of: None,
+                dir: None,
+            }),
+            ended: Mutex::new(None),
+            jobs_ended,
+        }
+    }
+
+    /// Ask the job to stop at its next check. Asking twice is asking once.
+    pub(crate) fn request_cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the job has been asked to stop.
+    pub(crate) fn cancelling(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn snapshot(&self) -> Snapshot {
+        *locked(&self.snapshot)
+    }
+
+    /// How the job ended, once every one of its slots holds its report.
+    pub(crate) fn ended(&self) -> Option<JobEnded> {
+        *locked(&self.ended)
+    }
+
+    /// Mark the job ended, then count it: whoever reads the count raised
+    /// reads the job ended.
+    fn end(&self, ended: JobEnded) {
+        *locked(&self.ended) = Some(ended);
+        self.jobs_ended.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// `mutex`'s value, whether or not a holder panicked: every value guarded
+/// here is whole between statements.
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What a job reports through as it runs: each step and count on its [`Job`],
+/// cheaply, since the walk and the derive report per file, entry and digest;
+/// and on each of its slots in a registry, whether it waits.
+#[derive(Debug)]
+pub(crate) struct Running<'a> {
+    job: &'a Job,
+    /// The registry whose slots reserved at the job's instant say it waits;
+    /// `None` for a job no slot was reserved for.
+    scans: Option<&'a Mutex<HashMap<i64, crate::ScanProgress>>>,
+    /// The step a cancel stopped the job in, once one has.
+    stopped: Cell<Option<Step>>,
+}
+
+impl<'a> Running<'a> {
+    pub(crate) fn new(
+        job: &'a Job,
+        scans: Option<&'a Mutex<HashMap<i64, crate::ScanProgress>>>,
+    ) -> Self {
+        Self {
+            job,
+            scans,
+            stopped: Cell::new(None),
+        }
+    }
+
+    /// Mark each of `roots`' slot as waiting (`true`) or not: for the job
+    /// lock, every directory asked; for the derive lease, those whose walks
+    /// recorded something. While it waits, the job is in the step Waiting.
+    pub(crate) fn waiting(&self, roots: &[scan::Root], waiting: bool) {
+        if let Some(scans) = self.scans {
+            let mut scans = locked(scans);
+            for root in roots {
+                if let Some(entry) = scans.get_mut(&root.id)
+                    && entry.started == self.job.started
+                {
+                    entry.waiting = waiting;
+                }
+            }
+        }
+        if waiting {
+            *locked(&self.job.snapshot) = Snapshot {
+                step: Step::Waiting,
+                done: None,
+                of: None,
+                dir: None,
+            };
+        }
+    }
+
+    /// The job starts to walk directory `at`, from 1, of `of`: listing it,
+    /// with nothing found yet, so no count of the last directory's shows
+    /// against this one.
+    pub(crate) fn at_dir(&self, at: usize, of: usize) {
+        *locked(&self.job.snapshot) = Snapshot {
+            step: Step::Listing,
+            done: Some(0),
+            of: None,
+            dir: Some((at, of)),
+        };
+    }
+}
+
+impl Watch for Running<'_> {
+    /// The latest report, whatever came before: a walk that walks again
+    /// counts from 0 again.
+    fn at(&self, step: Step, done: u64, of: Option<u64>) {
+        let mut snapshot = locked(&self.job.snapshot);
+        let dir = match step {
+            Step::Listing | Step::Resolving => snapshot.dir,
+            Step::Waiting | Step::Hashing | Step::Writing | Step::Finishing => None,
+        };
+        *snapshot = Snapshot {
+            step,
+            done: Some(done),
+            of,
+            dir,
+        };
+    }
+
+    fn cancelled(&self) -> bool {
+        self.job.cancelling()
+    }
+}
 
 /// What a directory's report says of a scan that found its directory gone, or
 /// another directory holding its id, once the scan could start.
@@ -32,6 +229,11 @@ pub(crate) const DIR_CHANGED: &str =
 /// changed what the library reaches.
 pub(crate) const CHANGED: &str = "the directories the library shows changed while the scan \
                                   waited to start, so nothing was scanned";
+
+/// What a directory's report says of a scheduled scan that found it paused
+/// once the scan could start.
+pub(crate) const PAUSED: &str =
+    "the directory was paused while the scheduled scan waited to start, so it was not scanned";
 
 /// What a scan reads again once it holds the job lock, to know that the directories
 /// it was asked to walk are still the ones it reserved.
@@ -49,7 +251,8 @@ pub(crate) enum Reread {
     /// cannot be walked must not hold back the others, or the derive: it is
     /// answered with its own error, a failed walk keeps the `failed` it
     /// records, and the one derive runs over what was walked, or not at all
-    /// where nothing was.
+    /// where nothing was. One paused since the tick read the schedule is
+    /// answered so too, unwalked ([`PAUSED`]).
     Batch,
 }
 
@@ -62,10 +265,18 @@ impl Reread {
         matches!(self, Self::Batch)
     }
 
+    /// Whether someone pressed Scan for this job, so that it clears the
+    /// pause of what it covers. The scheduler never runs a paused directory,
+    /// so its batch leaves every pause as it is (spec §7, "Pause").
+    fn pressed(self) -> bool {
+        !matches!(self, Self::Batch)
+    }
+
     /// `asked` as the store holds it now, one entry per directory in order:
     /// the directory to walk, or the sentence its slot answers where it
-    /// changed. The `Err` is the store's own words where a read failed, or,
-    /// outside a batch, the sentence that ends a scan whose directories changed.
+    /// changed or, in a batch, is paused. The `Err` is the store's own words
+    /// where a read failed, or, outside a batch, the sentence that ends a scan
+    /// whose directories changed.
     ///
     /// Where the two readings agree the second is what is walked, with the
     /// settings the directories hold now.
@@ -77,13 +288,30 @@ impl Reread {
         match self {
             Self::Dir | Self::Batch => {
                 let held = scan::roots(conn)?;
+                // A tick reads the schedule before it reserves its batch, so a
+                // job cancelled in between may have paused one of the batch's
+                // directories, which the scheduler never runs. That job writes
+                // its pause before its slots are marked done, and the batch can
+                // reserve them only after, so this read, later than the
+                // reservation, sees the pause.
+                let paused = if self.pressed() {
+                    std::collections::HashSet::new()
+                } else {
+                    scan::paused(conn)?
+                };
                 let now: Vec<Result<scan::Root, String>> = asked
                     .iter()
                     .map(|asked| {
-                        held.iter()
+                        let now = held
+                            .iter()
                             .find(|now| now.id == asked.id && now.path == asked.path)
                             .cloned()
-                            .ok_or_else(|| DIR_CHANGED.to_string())
+                            .ok_or_else(|| DIR_CHANGED.to_string())?;
+                        if paused.contains(&now.id) {
+                            Err(PAUSED.to_string())
+                        } else {
+                            Ok(now)
+                        }
                     })
                     .collect();
                 match now.iter().find_map(|now| now.as_ref().err()) {
@@ -150,12 +378,12 @@ impl Reread {
 /// the library is file-backed `working` is a second connection, so an ordinary
 /// request proceeds the whole time this runs.
 ///
-/// **Holds `job`, [`crate::ServeState::library_job`], for its whole length,
-/// walks and derive both.** See that field's own doc comment for the
-/// interleaving this closes. Unlike a rules save's `try_lock`, this blocks,
-/// reading `waiting` meanwhile ([`the_job_lock`]): a scan runs unwatched in
-/// the background, so there is nobody to answer a refusal to, and its status
-/// route says how long the wait and the scan took together.
+/// **Holds `job_lock`, [`crate::ServeState::library_job`], for its whole
+/// length, walks and derive both.** See that field's own doc comment for the
+/// interleaving this closes. Unlike a rules save's `try_lock`, this waits,
+/// saying so through `running` meanwhile ([`the_job_lock`]): a scan runs
+/// unwatched in the background, so there is nobody to answer a refusal to,
+/// and its status route says how long the wait and the scan took together.
 ///
 /// **The directories are read again once the lock is held**, as `reread` says:
 /// `asked` is what the request found, and a directory removed while the scan
@@ -177,38 +405,45 @@ pub(crate) fn run(
     library: &taiyaku_library::Library,
     asked: &[scan::Root],
     reread: Reread,
-    job: &crate::LibraryJob,
-    waiting: &dyn Fn(&[scan::Root], bool),
+    job_lock: &crate::LibraryJob,
+    running: &Running<'_>,
 ) -> Result<Vec<serde_json::Value>, String> {
     run_watched(
         library,
         asked,
         reread,
-        job,
-        waiting,
-        scan::scan_root,
-        derive::derive,
+        job_lock,
+        running,
+        scan::scan_root_watched,
+        |conn, watch| derive::derive_watched(conn, derive::Documents::Reconcile, watch),
     )
 }
 
-/// [`run_watched`], telling no one that it waits, for the tests that do not
-/// ask.
+/// [`run_watched`] over a walk and derive that neither report nor stop, as a
+/// job no slot was reserved for, for the tests that do not watch.
 #[cfg(test)]
 pub(crate) fn run_with(
     library: &taiyaku_library::Library,
     asked: &[scan::Root],
     reread: Reread,
-    job: &crate::LibraryJob,
-    walk: impl FnMut(&rusqlite::Connection, &scan::Root) -> Result<scan::ScanReport, String>,
+    job_lock: &crate::LibraryJob,
+    mut walk: impl FnMut(&rusqlite::Connection, &scan::Root) -> Result<scan::ScanReport, String>,
     derive: impl FnOnce(&rusqlite::Connection) -> Result<derive::DeriveReport, String>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    run_watched(library, asked, reread, job, &|_, _| {}, walk, derive)
+    let job = Job::new(Instant::now(), dirs_of(asked), Arc::default());
+    run_watched(
+        library,
+        asked,
+        reread,
+        job_lock,
+        &Running::new(&job, None),
+        |conn, root, _| walk(conn, root).map(Outcome::Done),
+        |conn, _| derive(conn).map(Outcome::Done),
+    )
 }
 
-/// [`run`]'s whole body, over a caller-supplied walk and derive, telling
-/// `waiting` when it waits (`true`) and when it no longer does (`false`):
-/// with every directory of `asked` for the job lock, and with the directories
-/// whose walks recorded something (not refused) for the derive lease.
+/// [`run`]'s whole body, over a caller-supplied walk and derive, each handed
+/// `running` to report through and to read the cancel flag from.
 ///
 /// **Split out as `schema::migrate_with` is**: what is worth pinning is the
 /// status each directory reads *during* the job, which only a walk or derive
@@ -218,12 +453,43 @@ pub(crate) fn run_watched(
     library: &taiyaku_library::Library,
     asked: &[scan::Root],
     reread: Reread,
-    job: &crate::LibraryJob,
-    waiting: &dyn Fn(&[scan::Root], bool),
-    mut walk: impl FnMut(&rusqlite::Connection, &scan::Root) -> Result<scan::ScanReport, String>,
-    derive: impl FnOnce(&rusqlite::Connection) -> Result<derive::DeriveReport, String>,
+    job_lock: &crate::LibraryJob,
+    running: &Running<'_>,
+    mut walk: impl FnMut(
+        &rusqlite::Connection,
+        &scan::Root,
+        &dyn Watch,
+    ) -> Result<Outcome<scan::ScanReport>, String>,
+    derive: impl FnOnce(
+        &rusqlite::Connection,
+        &dyn Watch,
+    ) -> Result<Outcome<derive::DeriveReport>, String>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let (_job, queued) = the_job_lock(library, asked, job, waiting);
+    if reread.pressed() {
+        // Accepted, so it clears the pause before it waits: a cancel while it
+        // waits pauses again. Best-effort, as `mark_queued` is.
+        if let Ok(conn) = library.working() {
+            let _ = scan::unpause(&conn, asked);
+        }
+    }
+    let (held, queued) = the_job_lock(library, asked, job_lock, running);
+    let Some(_held) = held else {
+        // Nothing was walked, so each directory's last scan is as read here.
+        if let Ok(conn) = library.working() {
+            let _ = scan::unmark_queued(&conn, &queued);
+            let unfinished = scan::last_scans(&conn, asked).unwrap_or_default();
+            return Ok(cancel(
+                &conn,
+                asked,
+                &unfinished,
+                Vec::new(),
+                running,
+                Step::Waiting,
+            ));
+        }
+        running.stopped.set(Some(Step::Waiting));
+        return Ok(cancelled_reports(asked.len(), Vec::new(), Step::Waiting));
+    };
     let working = match library.working() {
         Ok(working) => working,
         Err(why) => {
@@ -235,7 +501,16 @@ pub(crate) fn run_watched(
         }
     };
     let _ = scan::unmark_queued(&working, &queued);
+    if reread.pressed() {
+        // Again, once held: a holder's write that outlasts the busy timeout,
+        // as a rules save's derive can, refuses the clearing before the wait.
+        let _ = scan::unpause(&working, asked);
+    }
     let roots = reread.read_again(&working, asked)?;
+    // Read before any walk writes its own: a cancel writes each back.
+    let kept: Vec<scan::Root> = roots.iter().filter_map(|root| root.clone().ok()).collect();
+    let mut unfinished = scan::last_scans(&working, &kept)?;
+    let of = roots.len();
     // One per directory asked for, in order: its walk's report, or the error
     // its slot answers.
     let mut slots = Vec::with_capacity(roots.len());
@@ -247,7 +522,7 @@ pub(crate) fn run_watched(
     // Every status write below is best-effort, as `scan_root`'s own is: a
     // walk or derive that succeeded is not reported failed because a
     // bookkeeping write did not land, and one that failed keeps its own error.
-    for root in roots {
+    for (at, root) in roots.into_iter().enumerate() {
         let root = match root {
             Ok(root) => root,
             Err(changed) => {
@@ -255,16 +530,30 @@ pub(crate) fn run_watched(
                 continue;
             }
         };
-        match walk(&working, &root) {
-            Ok(report) => {
+        // A walk with nothing new to read never reads the flag itself.
+        if running.cancelled() {
+            let step = running.job.snapshot().step;
+            return Ok(cancel(&working, asked, &unfinished, slots, running, step));
+        }
+        running.at_dir(at + 1, of);
+        match walk(&working, &root, running) {
+            Ok(Outcome::Done(report)) => {
                 let _ = scan::mark_deriving(&working, &root);
                 if report.refused.is_none() {
                     recorded.push(root.clone());
+                } else {
+                    // A refusal is the walk's last word, kept as it is.
+                    unfinished.retain(|unfinished| unfinished.root.id != root.id);
                 }
                 slots.push(Ok(report));
                 walked.push(root);
             }
+            Ok(Outcome::Cancelled(step)) => {
+                return Ok(cancel(&working, asked, &unfinished, slots, running, step));
+            }
             Err(why) if reread.answers_each_slot() => {
+                // Its `failed` is its last word, kept as it is.
+                unfinished.retain(|unfinished| unfinished.root.id != root.id);
                 slots.push(Err(reread.walk_failed(&root, &why)));
             }
             Err(why) => {
@@ -285,15 +574,25 @@ pub(crate) fn run_watched(
             .map(|why| serde_json::json!({ "error": why }))
             .collect());
     }
-    let lease = lease_for_the_derive(library, &working, &recorded, waiting);
+    let lease = match lease_for_the_derive(library, &working, &recorded, running) {
+        Ok(Some(lease)) => Ok(lease),
+        Ok(None) => {
+            let step = running.job.snapshot().step;
+            return Ok(cancel(&working, asked, &unfinished, slots, running, step));
+        }
+        Err(why) => Err(why),
+    };
     let outcome = match &lease {
-        Ok(lease) => lease.holding(|| derive(&working)),
+        Ok(lease) => lease.holding(|| derive(&working, running)),
         Err(why) => Err(why.clone()),
     };
     let derived = match outcome {
-        Ok(report) => {
+        Ok(Outcome::Done(report)) => {
             let _ = scan::mark_derived(&working, &walked);
             Ok(report)
+        }
+        Ok(Outcome::Cancelled(step)) => {
+            return Ok(cancel(&working, asked, &unfinished, slots, running, step));
         }
         Err(why) => {
             for root in &walked {
@@ -319,9 +618,54 @@ pub(crate) fn run_watched(
         .collect())
 }
 
-/// The job lock, waiting for it where another job holds it, and the
-/// directories the store marked `waiting` meanwhile, for the caller to write
-/// back ([`scan::unmark_queued`]) before its walk.
+/// End a job cancelled in `step` (spec §5, "What a cancel keeps and loses"):
+/// mark each of `unfinished` `cancelled` with the last scan it had, so a
+/// directory never scanned still reads Never, and pause every one of `asked`
+/// until a pressed scan covers it. What was written stays; the derive's tail
+/// is left to the next derive.
+///
+/// Best-effort, as every status write of the job is.
+fn cancel(
+    conn: &rusqlite::Connection,
+    asked: &[scan::Root],
+    unfinished: &[scan::Unfinished],
+    slots: Vec<Result<scan::ScanReport, String>>,
+    running: &Running<'_>,
+    step: Step,
+) -> Vec<serde_json::Value> {
+    let _ = scan::mark_cancelled(conn, unfinished);
+    let _ = scan::pause(conn, asked);
+    running.stopped.set(Some(step));
+    cancelled_reports(asked.len(), slots, step)
+}
+
+/// What each of `count` directories answers of a job cancelled in `step`,
+/// given the `slots` answered so far, in order: a slot already answered keeps
+/// its error or its walk's refusal, the job's last word on it, and every
+/// other says where the job stopped. The refusal is sent as an error, a
+/// shape a page already shows, since no derive ran to complete a finished one.
+fn cancelled_reports(
+    count: usize,
+    slots: Vec<Result<scan::ScanReport, String>>,
+    step: Step,
+) -> Vec<serde_json::Value> {
+    let mut slots = slots.into_iter();
+    (0..count)
+        .map(|_| match slots.next() {
+            Some(
+                Err(why)
+                | Ok(scan::ScanReport {
+                    refused: Some(why), ..
+                }),
+            ) => serde_json::json!({ "error": why }),
+            Some(Ok(_)) | None => serde_json::json!({ "cancelled": { "step": step.as_str() } }),
+        })
+        .collect()
+}
+
+/// The job lock, waiting for it where another job holds it, or `None` where
+/// the job was cancelled first; and the directories the store marked `waiting`
+/// meanwhile, for the caller to write back ([`scan::unmark_queued`]).
 ///
 /// **While it waits, every directory of `asked` reads `waiting`**, on its
 /// reservation and in the store, which a restart reads as `interrupted`
@@ -331,35 +675,43 @@ pub(crate) fn run_watched(
 fn the_job_lock<'a>(
     library: &taiyaku_library::Library,
     asked: &[scan::Root],
-    job: &'a crate::LibraryJob,
-    waiting: &dyn Fn(&[scan::Root], bool),
-) -> (crate::JobGuard<'a>, Vec<scan::Queued>) {
-    let (held, queued) = match job.try_lock() {
-        Ok(held) => (held, Vec::new()),
-        Err(std::sync::TryLockError::Poisoned(poisoned)) => (poisoned.into_inner(), Vec::new()),
-        Err(std::sync::TryLockError::WouldBlock) => {
-            waiting(asked, true);
-            let queued = library
-                .working()
-                .map(|conn| scan::mark_queued(&conn, asked))
-                .unwrap_or_default();
-            let held = job
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            (held, queued)
+    job_lock: &'a crate::LibraryJob,
+    running: &Running<'_>,
+) -> (Option<crate::JobGuard<'a>>, Vec<scan::Queued>) {
+    let mut queued = None;
+    let held = loop {
+        match job_lock.try_lock() {
+            Ok(held) => break Some(held),
+            Err(TryLockError::Poisoned(poisoned)) => break Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => {}
         }
+        if queued.is_none() {
+            running.waiting(asked, true);
+            queued = Some(
+                library
+                    .working()
+                    .map(|conn| scan::mark_queued(&conn, asked))
+                    .unwrap_or_default(),
+            );
+        }
+        // Polled, never a blocking `lock`: a job cancelled while another holds
+        // the lock ends at once, not once the holder lets go.
+        if running.cancelled() {
+            break None;
+        }
+        std::thread::sleep(JOB_LOCK_POLL);
     };
-    waiting(asked, false);
-    (held, queued)
+    running.waiting(asked, false);
+    (held, queued.unwrap_or_default())
 }
 
 /// The derive lease for the derive after the walks of `recorded`, waiting for
-/// it where another derive holds it.
+/// it where another derive holds it; `None` where the job was cancelled first.
 ///
 /// **While it waits, the directories of `recorded` read `waiting`**, and `deriving`
 /// again once it is held, so a page tells a scan held up by another derive
-/// from one deriving. The wait has no end: a derive elsewhere always ends, and
-/// a scan's own status route says how long it has run.
+/// from one deriving. The wait has no end but a cancel: a derive elsewhere
+/// always ends, and a scan's own status route says how long it has run.
 ///
 /// Taken after the job lock and with no store transaction open, so nothing
 /// that waits for either is waited for here. An error fails the derive (O51).
@@ -367,25 +719,28 @@ fn lease_for_the_derive<'a>(
     library: &'a taiyaku_library::Library,
     conn: &rusqlite::Connection,
     recorded: &[scan::Root],
-    waiting: &dyn Fn(&[scan::Root], bool),
-) -> Result<lease::DeriveLease<'a>, String> {
+    running: &Running<'_>,
+) -> Result<Option<lease::DeriveLease<'a>>, String> {
     if let Some(lease) = library.derive_lease(lease::Wait::No)? {
-        return Ok(lease);
+        return Ok(Some(lease));
     }
-    waiting(recorded, true);
+    running.waiting(recorded, true);
     let _ = scan::mark_waiting(conn, recorded);
     // Not `eprintln!`, which panics when nothing reads stderr.
     let _ = writeln!(
         std::io::stderr(),
         "taiyaku: a scan is waiting for another derive of this library to finish"
     );
+    // Each try waits the lease's own short budget, so the flag is read
+    // between tries.
     loop {
-        if let Some(lease) =
-            library.derive_lease(lease::Wait::Yes(&mut |_: std::time::Duration| {}))?
-        {
+        if running.cancelled() {
+            return Ok(None);
+        }
+        if let Some(lease) = library.derive_lease(lease::Wait::No)? {
             let _ = scan::mark_waited(conn, recorded);
-            waiting(recorded, false);
-            return Ok(lease);
+            running.waiting(recorded, false);
+            return Ok(Some(lease));
         }
     }
 }
@@ -499,8 +854,9 @@ pub(crate) fn waits_for(root: &scan::Root, to_do: &str) -> String {
 }
 
 /// Reserve the registry slot of each of `roots` for one scan that started at
-/// `started` at the request of `library`, where one asked, or answer the
-/// sentence that refuses it, naming a directory already being scanned.
+/// `started` at the request of `library`, where one asked, and answer the job
+/// every slot holds, waiting; or answer the sentence that refuses it, naming
+/// a directory already being scanned.
 ///
 /// The check and the reservations are one lock: a refusal reserves nothing,
 /// and two requests racing for the same directories cannot both find them free.
@@ -509,11 +865,8 @@ pub(crate) fn reserve(
     roots: &[scan::Root],
     started: Instant,
     library: Option<i64>,
-) -> Result<(), String> {
-    let mut scans = state
-        .scans
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+) -> Result<Arc<Job>, String> {
+    let mut scans = locked(&state.scans);
     if let Some(busy) = roots.iter().find(|root| held(&scans, root)) {
         return Err(format!(
             "a scan of {} is already running",
@@ -523,6 +876,11 @@ pub(crate) fn reserve(
     // A scan accepted while the job lock is held waits from now, and reads so
     // until its job holds the lock (`the_job_lock`).
     let waiting = state.library_job.is_held();
+    let job = Arc::new(Job::new(
+        started,
+        dirs_of(roots),
+        Arc::clone(&state.jobs_ended),
+    ));
     for root in roots {
         scans.insert(
             root.id,
@@ -532,10 +890,19 @@ pub(crate) fn reserve(
                 done: false,
                 report: None,
                 library,
+                job: Arc::clone(&job),
             },
         );
     }
-    Ok(())
+    Ok(job)
+}
+
+/// Each of `roots`' id and path, as a [`Job`] holds them.
+fn dirs_of(roots: &[scan::Root]) -> Vec<(i64, PathBuf)> {
+    roots
+        .iter()
+        .map(|root| (root.id, root.path.clone()))
+        .collect()
 }
 
 /// Mark the scan reserved on `id` at `started` done, with `report`.
@@ -545,7 +912,7 @@ pub(crate) fn reserve(
 /// holds an entry of its own. A report with no reservation of its own to land
 /// on is dropped, since nothing is waiting for it.
 pub(crate) fn finish_reservation(
-    scans: &mut std::collections::HashMap<i64, crate::ScanProgress>,
+    scans: &mut HashMap<i64, crate::ScanProgress>,
     id: i64,
     started: Instant,
     report: serde_json::Value,
@@ -553,14 +920,33 @@ pub(crate) fn finish_reservation(
     if let Some(entry) = scans.get_mut(&id)
         && entry.started == started
     {
-        *entry = crate::ScanProgress {
-            waiting: false,
-            started,
-            done: true,
-            report: Some(report),
-            library: entry.library,
-        };
+        entry.waiting = false;
+        entry.done = true;
+        entry.report = Some(report);
     }
+}
+
+/// The libraries whose pages show a job holding `roots`, id and name,
+/// ascending by id: each library whose directories include one of them
+/// ([`reach::libraries_reaching`]), an outer library a nested one reaches
+/// among them.
+///
+/// # Errors
+///
+/// The store's own words where a read failed.
+pub(crate) fn held_libraries(
+    conn: &rusqlite::Connection,
+    roots: &[scan::Root],
+) -> Result<Vec<(i64, String)>, String> {
+    let all = scan::roots(conn)?;
+    let ids: Vec<i64> = roots.iter().map(|root| root.id).collect();
+    let mut held = Vec::new();
+    for id in reach::libraries_reaching(&all, &ids) {
+        if let Some(name) = libraries::name_of(conn, id)? {
+            held.push((id, name));
+        }
+    }
+    Ok(held)
 }
 
 /// Scan the directories `reserve` reserved at `started`, as `reread` says, on the
@@ -576,14 +962,15 @@ pub(crate) fn spawn(
     started: Instant,
     reread: Reread,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_job(state, roots, started, move |state, roots, waiting| {
-        run(&state.library, roots, reread, &state.library_job, waiting)
+    spawn_job(state, roots, started, move |state, roots, running| {
+        run(&state.library, roots, reread, &state.library_job, running)
     })
 }
 
-/// [`spawn`] with the job given: run `job` on the blocking pool, and when it
-/// ends, however it ends, mark every one of `roots` done with its report, or
-/// with an error where the job answered none for it.
+/// [`spawn`] with the job given: run `job` on the blocking pool over the
+/// [`Job`] reserved at `started`, and when it ends, however it ends, mark
+/// every one of `roots` done with its report, or with an error where the job
+/// answered none for it; then mark the [`Job`] ended.
 ///
 /// A reservation is identified by its `started`: an entry that another scan
 /// started, or that a removal cleared, is left as it is.
@@ -594,48 +981,61 @@ pub(crate) fn spawn_job<F>(
     job: F,
 ) -> tokio::task::JoinHandle<()>
 where
-    F: FnOnce(
-            &ServeState,
-            &[scan::Root],
-            &dyn Fn(&[scan::Root], bool),
-        ) -> Result<Vec<serde_json::Value>, String>
+    F: FnOnce(&ServeState, &[scan::Root], &Running<'_>) -> Result<Vec<serde_json::Value>, String>
         + Send
         + 'static,
 {
     tokio::task::spawn_blocking(move || {
-        // Marks this job's own reservations, as `finish_reservation` does, of
-        // the directories the job names: each one asked for while it waits
-        // for the job lock, and for the derive lease only those whose walk
-        // recorded something, since one it could not walk, or whose walk was
-        // refused, has nothing to derive.
-        let waiting = |recorded: &[scan::Root], waiting: bool| {
-            let mut scans = state
-                .scans
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for root in recorded {
-                if let Some(entry) = scans.get_mut(&root.id)
-                    && entry.started == started
-                {
-                    entry.waiting = waiting;
-                }
-            }
-        };
+        let reserved = reserved_job(&state, &roots, started);
+        // Best-effort: a job whose libraries cannot be read still runs, and
+        // shows on its directories' pages alone.
+        if let Ok(conn) = state.library.working()
+            && let Ok(held) = held_libraries(&conn, &roots)
+        {
+            *locked(&reserved.libraries) = held;
+        }
+        let running = Running::new(&reserved, Some(&state.scans));
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            job(&state, &roots, &waiting)
+            job(&state, &roots, &running)
         }));
         let mut reports = reports_of(roots.len(), outcome).into_iter();
-        let mut scans = state
-            .scans
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for root in &roots {
-            let report = reports.next().unwrap_or_else(
-                || serde_json::json!({ "error": "the scan ended without a report for this directory" }),
-            );
-            finish_reservation(&mut scans, root.id, started, report);
+        {
+            let mut scans = locked(&state.scans);
+            for root in &roots {
+                let report = reports.next().unwrap_or_else(
+                    || serde_json::json!({ "error": "the scan ended without a report for this directory" }),
+                );
+                finish_reservation(&mut scans, root.id, started, report);
+            }
         }
+        reserved.end(
+            running
+                .stopped
+                .get()
+                .map_or(JobEnded::Finished, JobEnded::Cancelled),
+        );
     })
+}
+
+/// The [`Job`] reserved at `started` on one of `roots`, or, where a removal
+/// cleared every slot first, a job of their own that no page shows.
+fn reserved_job(state: &ServeState, roots: &[scan::Root], started: Instant) -> Arc<Job> {
+    let scans = locked(&state.scans);
+    roots
+        .iter()
+        .find_map(|root| {
+            scans
+                .get(&root.id)
+                .filter(|entry| entry.started == started)
+                .map(|entry| Arc::clone(&entry.job))
+        })
+        .unwrap_or_else(|| {
+            Arc::new(Job::new(
+                started,
+                dirs_of(roots),
+                Arc::clone(&state.jobs_ended),
+            ))
+        })
 }
 
 #[cfg(test)]

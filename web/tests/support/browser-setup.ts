@@ -1,7 +1,7 @@
 /**
  * Tells React it is running inside a test that uses `act`, and empties the
- * read store (`reads.ts`) and the scroll keeper (`scrollKeeper.ts`) after
- * each test.
+ * read store (`reads.ts`), the scan feed (`scanFeed.ts`) and the scroll
+ * keeper (`scrollKeeper.ts`) after each test.
  *
  * **The flag changes what React reports, not what `act` does.** Without it,
  * `act` still flushes the updates and effects it wraps before it returns; the
@@ -31,11 +31,16 @@ declare global {
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
-// The read store and the scroll keeper are module-level, so they outlive a
-// test's unmount; emptied after every test, so one case's answers and
-// scrolls never reach the next. A router's first entry has the same key in
-// every test, so a scroll kept under it would be restored by the next.
-afterEach(() => {
+// The read store, the scan feed and the scroll keeper are module-level, so
+// they outlive a test's unmount; emptied after every test, so one case's
+// answers, polls and scrolls never reach the next. A router's first entry
+// has the same key in every test, so a scroll kept under it would be
+// restored by the next.
+afterEach(async () => {
   emptyReads()
+  // Imported here, once the test file's `vi.mock`s apply: imported above,
+  // the feed would load `pageReads` first, bound to the real clients.
+  const { resetScanFeed } = await import('../../src/scanFeed')
+  resetScanFeed()
   forgetScroll()
 })

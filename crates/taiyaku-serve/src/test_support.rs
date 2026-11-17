@@ -178,6 +178,7 @@ fn router_over(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -483,6 +484,7 @@ pub(crate) fn state(root: &std::path::Path) -> ServeState {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     }
@@ -809,6 +811,7 @@ fn state_over(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     })
@@ -1106,6 +1109,7 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1192,6 +1196,7 @@ fn two_editions_in_a_library(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1375,6 +1380,7 @@ pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<Serv
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1562,6 +1568,7 @@ fn router_over_a_written_tree_with(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1640,6 +1647,7 @@ pub(crate) fn router_over_a_scanned_cbz() -> (axum::Router, std::sync::Arc<Serve
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1861,6 +1869,7 @@ fn two_scanned_roots_over(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1983,6 +1992,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -2162,6 +2172,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -2267,6 +2278,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -2354,6 +2366,7 @@ pub(crate) fn router_over_a_series_in_two_libraries() -> (
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -2478,6 +2491,7 @@ fn nested_libraries(inner_first: bool) -> NestedLibraries {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -3081,6 +3095,7 @@ pub(crate) fn router_over_a_granted_two_dir_library(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -3211,6 +3226,7 @@ fn work_whose_editions_sit_in_two_libraries(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -3514,6 +3530,7 @@ fn an_edition_merged_from_two_libraries(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -3619,6 +3636,7 @@ pub(crate) fn router_over_a_copy_granted_through_its_second_directory()
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -3682,6 +3700,36 @@ pub(crate) fn holding_the_job(state: &std::sync::Arc<crate::ServeState>) -> Held
         release: Some(release),
         holder: Some(holder),
     }
+}
+
+/// A job of no directories, for a slot a test plants in the registry itself.
+pub(crate) fn a_planted_job() -> std::sync::Arc<crate::scan_jobs::Job> {
+    std::sync::Arc::new(crate::scan_jobs::Job::new(
+        std::time::Instant::now(),
+        Vec::new(),
+        std::sync::Arc::default(),
+    ))
+}
+
+/// [`crate::scan_jobs::run`], as a job no slot was reserved for runs it.
+pub(crate) fn run_unreserved(
+    library: &taiyaku_library::Library,
+    asked: &[taiyaku_library::scan::Root],
+    reread: crate::scan_jobs::Reread,
+    job_lock: &crate::LibraryJob,
+) -> Result<Vec<serde_json::Value>, String> {
+    let job = crate::scan_jobs::Job::new(
+        std::time::Instant::now(),
+        Vec::new(),
+        std::sync::Arc::default(),
+    );
+    crate::scan_jobs::run(
+        library,
+        asked,
+        reread,
+        job_lock,
+        &crate::scan_jobs::Running::new(&job, None),
+    )
 }
 
 /// `state`'s store opened again, as another process would open it, so a test

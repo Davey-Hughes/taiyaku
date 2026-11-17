@@ -42,6 +42,7 @@ import { Unauthenticated, me, whenSignedOut, type Me } from './api'
 import { GateContext } from './gate'
 import { Login } from './Login'
 import { emptyReads } from './reads'
+import { resetScanFeed } from './scanFeed'
 import { forgetScroll } from './scrollKeeper'
 
 export interface GateProps {
@@ -67,9 +68,11 @@ export function Gate({ children }: GateProps) {
     me()
       .then((account) => {
         if (asked.current !== id) return
-        // The read store and the scroll keeper outlive the unmount below the
-        // gate, and what they keep was the account's that read it.
+        // The read store, the scan feed and the scroll keeper outlive the
+        // unmount below the gate, and what they keep was the account's that
+        // read it: the feed's may be an administrator's, naming paths.
         emptyReads()
+        resetScanFeed()
         forgetScroll()
         setWho(account)
       })
@@ -87,6 +90,7 @@ export function Gate({ children }: GateProps) {
   // in flight for the account signing out is dropped when it lands.
   const signOut = useCallback(() => {
     emptyReads()
+    resetScanFeed()
     forgetScroll()
     setWho(null)
   }, [])

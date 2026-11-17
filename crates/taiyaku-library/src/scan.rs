@@ -57,6 +57,8 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension as _};
 
+use crate::progress::{Outcome, Step, Unwatched, Watch};
+
 // --- roots ---------------------------------------------------------------
 
 /// A scan root: a directory taiyaku watches, and the defaults a scan applies
@@ -401,6 +403,9 @@ pub struct Added {
     pub last_scan_at: Option<String>,
     /// The row's `last_scan_status`, read with [`Added::last_scan_at`].
     pub last_scan_status: Option<String>,
+    /// The row's `paused_at`, read with [`Added::last_scan_at`]: a link is no
+    /// pressed scan, so a paused directory stays paused.
+    pub paused_at: Option<String>,
 }
 
 /// Why [`add_root_checked`] could not add a root.
@@ -625,11 +630,11 @@ fn linked(conn: &Connection, into: i64, held: Root, asked: Option<i64>) -> Resul
     )
     .map_err(|e| format!("linking {} into library {into}: {e}", held.path.display()))?;
     let also_in = names_of(conn, &held.libraries)?;
-    let (last_scan_at, last_scan_status) = conn
+    let (last_scan_at, last_scan_status, paused_at) = conn
         .query_row(
-            "SELECT last_scan_at, last_scan_status FROM root WHERE id = ?1",
+            "SELECT last_scan_at, last_scan_status, paused_at FROM root WHERE id = ?1",
             [held.id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|e| format!("reading the scan status of {}: {e}", held.path.display()))?;
     let mut libraries = held.libraries.clone();
@@ -646,6 +651,7 @@ fn linked(conn: &Connection, into: i64, held: Root, asked: Option<i64>) -> Resul
         also_in,
         last_scan_at,
         last_scan_status,
+        paused_at,
     })
 }
 
@@ -858,6 +864,7 @@ fn probed(root: Root) -> Added {
         also_in: Vec::new(),
         last_scan_at: None,
         last_scan_status: None,
+        paused_at: None,
     }
 }
 
@@ -2542,11 +2549,11 @@ impl ScanReport {
 /// so rather than leaving the column to read as "never scanned"), or
 /// `"failed"` (an `Err` below — a permission refusal on the root's own
 /// directory, a symlink cycle past [`MAX_DEPTH`], or a database statement
-/// failing outright). `taiyaku-serve`'s scan job adds `"waiting"` and
-/// `"deriving"`, and its start `"interrupted"`, through the functions beside
-/// this one (O51, O186). The write is a separate statement, after the scan's
-/// own transaction has committed or rolled back, so a scan that rolled back
-/// still leaves a truthful `"failed"`.
+/// failing outright). `taiyaku-serve`'s scan job adds `"waiting"`,
+/// `"deriving"` and `"cancelled"`, and its start `"interrupted"`, through the
+/// functions beside this one (O51, O186; `cancelled`, O313). The write is a
+/// separate statement, after the scan's own transaction has committed or
+/// rolled back, so a scan that rolled back still leaves a truthful `"failed"`.
 ///
 /// # Errors
 ///
@@ -2574,16 +2581,45 @@ impl ScanReport {
 /// transaction that writes them, `root.id` still names `root.path`, and the
 /// status write here asks the same, so neither lands on another root.
 pub fn scan_root(conn: &Connection, root: &Root) -> Result<ScanReport, String> {
+    match scan_root_watched(conn, root, &Unwatched)? {
+        Outcome::Done(report) => Ok(report),
+        // `Unwatched` is never cancelled; an `Err` rather than a panic all
+        // the same, as the module's other unreachable paths are.
+        Outcome::Cancelled(step) => Err(format!(
+            "the scan of {} stopped while {}",
+            root.path.display(),
+            step.as_str()
+        )),
+    }
+}
+
+/// [`scan_root`], reporting to `watch` the files found while listing, then
+/// the entries read of those to read while resolving.
+///
+/// **A cancel records nothing.** The flag is read before each entry is read,
+/// all before `BEGIN`, so [`Outcome::Cancelled`] leaves no row, and
+/// `last_scan_at` and `last_scan_status` as they were: a directory never
+/// scanned still reads as never scanned.
+///
+/// # Errors
+///
+/// As [`scan_root`].
+pub fn scan_root_watched(
+    conn: &Connection,
+    root: &Root,
+    watch: &dyn Watch,
+) -> Result<Outcome<ScanReport>, String> {
     // A pass that walks again follows another writer's commit to this
     // directory's entries, so the loop ends once they stop moving.
     let result = loop {
-        if let Some(walked) = scan_root_inner(conn, root).transpose() {
+        if let Some(walked) = scan_root_inner(conn, root, watch).transpose() {
             break walked;
         }
     };
     let status = match &result {
-        Ok(report) if report.refused.is_some() => "refused",
-        Ok(_) => "ok",
+        Ok(Outcome::Cancelled(_)) => return result,
+        Ok(Outcome::Done(report)) if report.refused.is_some() => "refused",
+        Ok(Outcome::Done(_)) => "ok",
         Err(_) => "failed",
     };
     // Best-effort in the sense that a failure here is not folded into
@@ -2783,6 +2819,136 @@ pub fn unmark_queued(conn: &Connection, queued: &[Queued]) -> Result<(), String>
     first_refusal.map_or(Ok(()), Err)
 }
 
+/// A directory of a job that may be cancelled before it finishes, with the
+/// `last_scan_at` [`last_scans`] read before its walk, which
+/// [`mark_cancelled`] writes back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unfinished {
+    pub root: Root,
+    pub last_scan_at: Option<String>,
+}
+
+/// Each of `roots` with its `last_scan_at`, read before the job walks it,
+/// since [`scan_root`] writes a new one as each walk commits, before the
+/// derive. A directory whose id no longer names its path is left out.
+///
+/// # Errors
+///
+/// Returns the first refused read.
+pub fn last_scans(conn: &Connection, roots: &[Root]) -> Result<Vec<Unfinished>, String> {
+    let mut held = Vec::with_capacity(roots.len());
+    for root in roots {
+        let last_scan_at: Option<Option<String>> = conn
+            .query_row(
+                "SELECT last_scan_at FROM root WHERE id = ?1 AND path = ?2",
+                rusqlite::params![root.id, root.path.to_string_lossy()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| {
+                format!(
+                    "reading when directory {} was last scanned: {e}",
+                    root.path.display()
+                )
+            })?;
+        if let Some(last_scan_at) = last_scan_at {
+            held.push(Unfinished {
+                root: root.clone(),
+                last_scan_at,
+            });
+        }
+    }
+    Ok(held)
+}
+
+/// Mark each of `unfinished` `"cancelled"` and write back the `last_scan_at`
+/// it held: the job did not scan it, so one never scanned still reads Never
+/// (spec §7). The word ends the job, so [`interrupt_derives`] keeps it.
+///
+/// # Errors
+///
+/// As [`mark_derived`].
+pub fn mark_cancelled(conn: &Connection, unfinished: &[Unfinished]) -> Result<(), String> {
+    let mut first_refusal = None;
+    for Unfinished { root, last_scan_at } in unfinished {
+        if let Err(e) = conn.execute(
+            "UPDATE root SET last_scan_status = 'cancelled', last_scan_at = ?3 \
+             WHERE id = ?1 AND path = ?2",
+            rusqlite::params![root.id, root.path.to_string_lossy(), last_scan_at],
+        ) {
+            first_refusal.get_or_insert_with(|| {
+                format!(
+                    "recording that the scan of directory {} was cancelled: {e}",
+                    root.path.display()
+                )
+            });
+        }
+    }
+    first_refusal.map_or(Ok(()), Err)
+}
+
+/// Pause each of `roots` from now until a pressed scan covers it:
+/// [`crate::schedule::scheduled`] passes a paused directory over, and its
+/// schedule setting stays as it is (spec §7, "Pause").
+///
+/// # Errors
+///
+/// As [`mark_derived`].
+pub fn pause(conn: &Connection, roots: &[Root]) -> Result<(), String> {
+    write_pause(
+        conn,
+        roots,
+        "UPDATE root SET paused_at = datetime('now') WHERE id = ?1 AND path = ?2",
+        "is paused",
+    )
+}
+
+/// Clear each of `roots`' pause, for a pressed scan that covers it.
+///
+/// # Errors
+///
+/// As [`mark_derived`].
+pub fn unpause(conn: &Connection, roots: &[Root]) -> Result<(), String> {
+    write_pause(
+        conn,
+        roots,
+        "UPDATE root SET paused_at = NULL WHERE id = ?1 AND path = ?2",
+        "is no longer paused",
+    )
+}
+
+/// Run `sql` for each of `roots`, with its id as `?1` and its path as `?2`;
+/// `done` says what the write records, in the error.
+fn write_pause(conn: &Connection, roots: &[Root], sql: &str, done: &str) -> Result<(), String> {
+    let mut first_refusal = None;
+    for root in roots {
+        if let Err(e) = conn.execute(sql, rusqlite::params![root.id, root.path.to_string_lossy()]) {
+            first_refusal.get_or_insert_with(|| {
+                format!(
+                    "recording that directory {} {done}: {e}",
+                    root.path.display()
+                )
+            });
+        }
+    }
+    first_refusal.map_or(Ok(()), Err)
+}
+
+/// The id of every paused directory ([`pause`]).
+///
+/// # Errors
+///
+/// If the store refuses the read.
+pub fn paused(conn: &Connection) -> Result<HashSet<i64>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id FROM root WHERE paused_at IS NOT NULL")
+        .map_err(|e| format!("reading which directories are paused: {e}"))?;
+    stmt.query_map([], |r| r.get(0))
+        .map_err(|e| format!("reading which directories are paused: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("reading which directories are paused: {e}"))
+}
+
 /// Rewrite each of `roots` to `to`, where it reads one of `from` and its id
 /// still names its path, as [`scan_root`] writes; `done` says what the write
 /// records, in the error.
@@ -2836,13 +3002,18 @@ pub fn interrupt_derives(conn: &Connection) -> Result<usize, String> {
     .map_err(|e| format!("rewriting the deriving and waiting statuses to interrupted: {e}"))
 }
 
-/// The walk itself — see [`scan_root`], which wraps this to record the
-/// outcome on `root.last_scan_at`/`last_scan_status` regardless of which of
-/// the three ways out below this function takes.
+/// The walk itself — see [`scan_root_watched`], which wraps this to record
+/// the outcome on `root.last_scan_at`/`last_scan_status` regardless of which
+/// of the three ways out below this function takes.
 ///
 /// `Ok(None)` is a fourth, which records nothing: another writer changed this
-/// directory's entries after the walk read them, so [`scan_root`] walks again.
-fn scan_root_inner(conn: &Connection, root: &Root) -> Result<Option<ScanReport>, String> {
+/// directory's entries after the walk read them, so it walks again.
+/// [`Outcome::Cancelled`] is a fifth, which records nothing either.
+fn scan_root_inner(
+    conn: &Connection,
+    root: &Root,
+    watch: &dyn Watch,
+) -> Result<Option<Outcome<ScanReport>>, String> {
     let excluder = Excluder::build(root.exclude_globs.as_deref());
     // Spec §4: a file under a directory nested in this one is that
     // directory's to scan, by its rules, so this walk does not descend into
@@ -2853,7 +3024,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<Option<ScanReport>,
         .filter(|other| crate::reach::nested_in(&other.path, &root.path).is_some())
         .map(|other| other.path.clone())
         .collect();
-    let (measured, walk) = measure(&root.path, 0, &excluder, &nested)?;
+    let (measured, walk) = measure(&root.path, 0, &excluder, &nested, watch)?;
     let seen = flatten(&measured);
     // Every filesystem operation an entry might need — `sniff`, `member_pages`
     // — happens below, before `BEGIN`. `held_for` is one query rather than one
@@ -2943,7 +3114,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<Option<ScanReport>,
                      it held."
                 )
             };
-            return Ok(Some(ScanReport {
+            return Ok(Some(Outcome::Done(ScanReport {
                 root: root.path.clone(),
                 dirs: 0,
                 files: 0,
@@ -2965,26 +3136,34 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<Option<ScanReport>,
                      reading positions and notes attached to them. {remedy}",
                     root.path.display()
                 )),
-            }));
+            })));
         }
     }
 
-    let resolved: HashMap<String, Resolved> = seen
+    let to_read: Vec<&Seen> = seen
         .iter()
         .filter(|entry| !unchanged(held.get(&entry.rel_path).copied(), entry))
-        .map(|entry| {
-            let format = format_of(root, entry);
-            let (pages, title) = pages_of(root, entry, format);
-            (
-                entry.rel_path.clone(),
-                Resolved {
-                    format,
-                    pages,
-                    title,
-                },
-            )
-        })
         .collect();
+    let of = Some(to_read.len() as u64);
+    watch.at(Step::Resolving, 0, of);
+    let mut resolved: HashMap<String, Resolved> = HashMap::with_capacity(to_read.len());
+    for (read, entry) in (1..).zip(to_read) {
+        // Before `BEGIN`, so a cancel here leaves the store as it was.
+        if watch.cancelled() {
+            return Ok(Some(Outcome::Cancelled(Step::Resolving)));
+        }
+        let format = format_of(root, entry);
+        let (pages, title) = pages_of(root, entry, format);
+        resolved.insert(
+            entry.rel_path.clone(),
+            Resolved {
+                format,
+                pages,
+                title,
+            },
+        );
+        watch.at(Step::Resolving, read, of);
+    }
 
     let tx = conn
         .unchecked_transaction()
@@ -3070,7 +3249,7 @@ fn scan_root_inner(conn: &Connection, root: &Root) -> Result<Option<ScanReport>,
             root.path.display()
         )
     })?;
-    Ok(Some(report))
+    Ok(Some(Outcome::Done(report)))
 }
 
 /// One thing the walk found, before anything has been decided about it.
@@ -3766,6 +3945,17 @@ struct Walk {
     /// hand-over takes the rows recorded through one, so `forget_unseen`
     /// forgets them; §8.1 does not count them, since the walk met the link.
     aliases: Vec<String>,
+    /// Files found so far, page images included: a progress figure, so it
+    /// need not match [`ScanReport::files`], and a library of loose images
+    /// must not read as stalled while it lists.
+    files: u64,
+}
+
+impl Walk {
+    fn found_file(&mut self, watch: &dyn Watch) {
+        self.files += 1;
+        watch.at(Step::Listing, self.files, None);
+    }
 }
 
 /// Measure `path` and everything beneath it, recursively, and every directory
@@ -3786,16 +3976,26 @@ struct Walk {
 /// the first is when it happens below the top.
 ///
 /// A directory in `nested`, which holds canonical paths, is not descended
-/// into: see [`measure_dir`].
+/// into: see [`measure_dir`]. Each file found is reported to `watch`.
 fn measure(
     path: &Path,
     depth: u32,
     excluder: &Excluder,
     nested: &HashSet<PathBuf>,
+    watch: &dyn Watch,
 ) -> Result<(Measured, Walk), String> {
     let mut walk = Walk::default();
-    let measured = measure_dir(path, String::new(), depth, excluder, nested, &mut walk)
-        .map_err(MeasureError::into_message)?;
+    watch.at(Step::Listing, 0, None);
+    let measured = measure_dir(
+        path,
+        String::new(),
+        depth,
+        excluder,
+        nested,
+        &mut walk,
+        watch,
+    )
+    .map_err(MeasureError::into_message)?;
     // `walk.excluded_dirs` is appended in `read_dir` order, which is not stable
     // across identical scans of an unchanged tree. Sorted here, once, over the
     // flat accumulator rather than inside `measure_dir`'s own loop, so the
@@ -3818,6 +4018,7 @@ fn measure_dir(
     excluder: &Excluder,
     nested: &HashSet<PathBuf>,
     walk: &mut Walk,
+    watch: &dyn Watch,
 ) -> Result<Measured, MeasureError> {
     if depth > MAX_DEPTH {
         return Err(MeasureError::TooDeep(format!(
@@ -3898,6 +4099,7 @@ fn measure_dir(
             dir_entries.push((child_rel, child_path));
         } else if taiyaku_read::is_page_name(&name) {
             here += 1;
+            walk.found_file(watch);
         } else {
             file_entries.push((child_rel, child_path));
         }
@@ -3908,7 +4110,15 @@ fn measure_dir(
     let mut pages = here;
     let mut children = Vec::new();
     for (child_rel, child_path) in dir_entries {
-        match measure_dir(&child_path, child_rel, depth + 1, excluder, nested, walk) {
+        match measure_dir(
+            &child_path,
+            child_rel,
+            depth + 1,
+            excluder,
+            nested,
+            walk,
+            watch,
+        ) {
             Ok(child) => {
                 if let Some(child_pages) = child.pages {
                     pages += child_pages;
@@ -3930,6 +4140,7 @@ fn measure_dir(
     for (child_rel, child_path) in file_entries {
         if let Some(file) = measure_file(&child_path, child_rel) {
             children.push(file);
+            walk.found_file(watch);
         }
     }
 

@@ -27,7 +27,7 @@
  * one set, so a return draws what was kept in its first render and reads it
  * again, and a first visit draws both in one step.
  */
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Link,
   useLocation,
@@ -55,6 +55,15 @@ import {
 } from './library'
 import { useDrawnWait } from './hooks'
 import { gridRead, homeRead } from './pageReads'
+import {
+  askScanFeed,
+  jobsHolding,
+  libraryStep,
+  type ScanFeed,
+  stepLine,
+  stepWord,
+  useScanFeed,
+} from './scanFeed'
 import { SeriesGrid } from './SeriesGrid'
 import { PageLoading } from './settingsLayout'
 import { useLibraryStatus, useStatusFailed } from './shell'
@@ -110,18 +119,128 @@ function ContinueCard({ w }: { w: WorkCard }) {
 function emptyKind(
   status: LibraryStatus,
   library: number | undefined,
+  held: boolean,
+  filtered: boolean,
 ): EmptyKind {
-  if (library !== undefined) {
-    const entry = status.libraries.find((l) => l.id === library)
-    if (entry === undefined)
-      return status.libraries.length === 0 && status.restricted
-        ? 'no-grant'
-        : 'no-library'
-    return entry.scanned ? 'no-matches' : 'not-scanned'
-  }
-  if (status.libraries.length === 0)
+  const entry =
+    library === undefined
+      ? undefined
+      : status.libraries.find((l) => l.id === library)
+  if (library !== undefined && entry === undefined)
+    return status.libraries.length === 0 && status.restricted
+      ? 'no-grant'
+      : 'no-library'
+  if (library === undefined && status.libraries.length === 0)
     return status.restricted ? 'no-grant' : 'no-libraries'
-  return status.libraries.some((l) => l.scanned) ? 'no-matches' : 'not-scanned'
+  // A filter or a search hides works, so under one `scanned` false says
+  // nothing of whether the library has any (a first scan cancelled between
+  // works leaves some), and a scan holding it is a line beside no match.
+  if (filtered) return 'no-matches'
+  // `held`: a scan holds what this asks of, which is neither unread nor
+  // empty while it runs (O311).
+  if (held) return 'scanning'
+  const read =
+    entry === undefined
+      ? status.libraries.some((l) => l.scanned)
+      : entry.scanned
+  return read ? 'no-matches' : 'not-scanned'
+}
+
+/**
+ * The step of a scan holding one of `libraries`, `undefined` while none
+ * does: with its count for an administrator, whom the feed sends its jobs,
+ * and the word alone for anyone else, who is sent no count.
+ */
+function scanLine(
+  feed: ScanFeed | undefined,
+  libraries: readonly number[],
+): string | undefined {
+  for (const id of libraries) {
+    const step = libraryStep(feed, id)
+    if (step === undefined) continue
+    const job = jobsHolding(feed, id)[0]
+    return job === undefined ? stepWord(step) : stepLine(job)
+  }
+  return undefined
+}
+
+/**
+ * An empty view's state, and a search's that found nothing, with the scan
+ * holding its library. Only this reads the feed, so a tab polls it only
+ * while the view is empty: a view drawing works has no scan to show, and a
+ * reader's tab left on one would otherwise poll for as long as it is open.
+ * A search can find nothing before the status lands, and is then no match.
+ */
+function EmptyView({
+  status,
+  library,
+  filtered,
+  query,
+}: {
+  status: LibraryStatus | undefined
+  library: number | undefined
+  /** A chip or a search hides works the view would otherwise draw. */
+  filtered: boolean
+  query?: string
+}) {
+  const feed = useScanFeed()
+  // An answer kept from before the view was drawn was read for a page that
+  // has gone, at any age: no feed page beside this one keeps it fresh. So
+  // only an answer since then says whether a scan holds the library.
+  const [kept] = useState(feed)
+  const since = feed === kept ? undefined : feed
+  const [answered, setAnswered] = useState(false)
+  useEffect(() => {
+    let drawn = true
+    // Settles on a failure too, so a feed that cannot be read never holds
+    // the view: it then draws the status's state.
+    const ask = () => {
+      void askScanFeed().then(() => {
+        if (drawn) setAnswered(true)
+      })
+    }
+    // A hidden tab asks nothing, so its ask settles at once with no answer,
+    // and the status's state would stand for a scan until the tab is shown:
+    // the view waits, and asks then.
+    const onShown = () => {
+      if (document.visibilityState === 'hidden') return
+      document.removeEventListener('visibilitychange', onShown)
+      ask()
+    }
+    if (document.visibilityState === 'hidden')
+      document.addEventListener('visibilitychange', onShown)
+    else ask()
+    return () => {
+      drawn = false
+      document.removeEventListener('visibilitychange', onShown)
+    }
+  }, [])
+  const scan = scanLine(
+    since,
+    library !== undefined
+      ? [library]
+      : (status?.libraries.map((l) => l.id) ?? []),
+  )
+  const kind =
+    status === undefined
+      ? 'no-matches'
+      : emptyKind(status, library, scan !== undefined, filtered)
+  // Only a state a scan would replace waits: drawn first, "Not read yet"
+  // would stand for a library being scanned until the answer lands.
+  const waiting =
+    !answered &&
+    status !== undefined &&
+    emptyKind(status, library, true, filtered) === 'scanning'
+  const waitDrawn = useDrawnWait(waiting)
+  if (waiting) return <PageLoading drawn={waitDrawn} />
+  return (
+    <EmptyState
+      kind={kind}
+      query={query}
+      step={scan}
+      scanning={scan !== undefined}
+    />
+  )
 }
 
 export function Library() {
@@ -294,7 +413,12 @@ export function Library() {
           {hits === undefined ? (
             <PageLoading drawn={searchLoadingDrawn} />
           ) : hits.series.length === 0 && hits.unfiled.length === 0 ? (
-            <EmptyState kind="no-matches" query={hits.query} />
+            <EmptyView
+              status={status}
+              library={narrowed}
+              filtered
+              query={hits.query}
+            />
           ) : (
             <SeriesGrid
               series={hits.series}
@@ -369,7 +493,11 @@ export function Library() {
             status &&
             visible.length === 0 &&
             gridData.unfiled.length === 0 ? (
-            <EmptyState kind={emptyKind(status, library)} />
+            <EmptyView
+              status={status}
+              library={library}
+              filtered={chip !== 'all'}
+            />
           ) : (
             <SeriesGrid
               series={visible}

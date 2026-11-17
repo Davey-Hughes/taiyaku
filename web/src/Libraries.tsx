@@ -137,6 +137,7 @@ import {
 } from './pageReads'
 import { entryOf, invalidate, readSet } from './reads'
 import { reveal } from './reveal'
+import { onScanEnd } from './scanFeed'
 import { DeriveSection } from './ScanReport'
 import { PageHeader } from './settingsLayout'
 import { SideBySide } from './SideBySide'
@@ -231,9 +232,19 @@ export function Libraries() {
 
   /**
    * Whether the failure of the newest read is brought into view: not for a
-   * re-read `reread(true)` sent, which no press started (`quiet`).
+   * re-read `reread(true)` sent, or the scan feed sent at a scan's end, which
+   * no press started (`quiet`).
    */
   const revealFailure = useRef(true)
+  // The read at a scan's end is the feed's, sent as the scan is seen to end,
+  // so the flag is set before it goes.
+  useEffect(
+    () =>
+      onScanEnd(() => {
+        revealFailure.current = false
+      }),
+    [],
+  )
   /** Reads the list and the sidebar's status again, as one set. */
   const reread = useCallback((quiet = false) => {
     revealFailure.current = !quiet
@@ -286,12 +297,9 @@ export function Libraries() {
    */
   const answering = useRef(false)
 
-  const changed = useCallback(
-    (quiet?: boolean) => {
-      if (!answering.current) reread(quiet)
-    },
-    [reread],
-  )
+  const changed = useCallback(() => {
+    if (!answering.current) reread()
+  }, [reread])
 
   /**
    * Takes the answer to a removal or a move started on the page `from`: its

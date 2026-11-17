@@ -27585,3 +27585,125 @@ which CI does not run and the local gate does.
 
 **Not driven.** The plan drives no release build: the resize follows the
 rule of the size change the owner already tried (the spec, "Decided").
+
+## The first scan: the walk on NFS, the guard, and Cancel (2026-11-16)
+
+**The walk, over NFS.** `crates/taiyaku-read/examples/walk.rs`, a release
+build, lists every fourth series of the share's `Manga/Volumes` and
+resolves each file, `sniff` and then `member_pages` for one that sniffs as
+a zip, opening each file read-only and running no server. It ran
+over this machine's NFS mount of the share (nfs4,
+`/mnt/daveynet/nfs/media 1`), so these are NFS figures: the seek a page
+cost belongs to that substrate, and the deployment's own figure comes from
+the owner's redo of the import. Each run's lines, with the load average
+read at its start and its end:
+
+Before, at 09ca3ca3, reading each page's local header (series offset 0):
+
+```
+loadavg at start: 39.75 29.30 31.90 32/5333 675393
+files=605 archives=604 pages=119524 list_secs=0.22 resolve_secs=2703.15 per_archive_ms mean=4475.33 p50=4257.55 p90=7061.30 max=19482.09
+loadavg at end: 28.87 26.78 24.51 21/5233 1302216, 2026-11-15T21:39:34-08:00
+```
+
+After, at 0de28945, reading the central directory through one 64 KiB
+buffer, first over series the bench had not read (offset 1):
+
+```
+loadavg at start: 55.68 58.54 44.66 43/5048 1821774
+files=568 archives=563 pages=121067 list_secs=2.69 resolve_secs=94.48 per_archive_ms mean=167.08 p50=139.77 p90=325.48 max=1031.18
+loadavg at end: 45.05 54.41 44.61 42/5122 1852407, 2026-11-15T21:58:32-08:00
+```
+
+and then over the "before" run's series (offset 0), which may have been in
+this client's page cache:
+
+```
+loadavg at start: 45.05 54.41 44.61 48/5122 1852410
+files=605 archives=604 pages=119524 list_secs=4.86 resolve_secs=100.27 per_archive_ms mean=165.92 p50=132.44 p90=333.30 max=1045.46
+loadavg at end: 51.83 55.52 46.17 42/5565 1921760, 2026-11-15T22:00:18-08:00
+```
+
+The runs are not like for like: the before run's one-minute load average
+read 39.75 and 28.87, the after runs' between 45.05 and 55.68, and the series the
+bench had not read came out about the same as those it had. The fix round
+after 0de28945 (205f90c2), which leaves out the entries `by_index` refuses,
+adds checks on the central directory already read and no read, and the
+figures were not taken again for it.
+
+**The guard.** Listing from the central directory lists an entry whose
+local header is damaged, where reading each local header dropped it, so it
+could move later pages' indices. Before the walk changed, `walk guard`
+opened every zip archive in the manga-test copy of `Volumes` (since
+trimmed) and
+counted the pages the old listing dropped for that reason:
+
+```
+files=1918 archives=1915 pages=380772 dropped_by_local_header=0 lists_differ_otherwise=0 unopened=0
+```
+
+None, so no page index moves in that library and there was nothing for the
+owner to decide.
+
+**Reads per listing.** `listing_an_archive_reads_no_more_for_four_hundred_pages_than_for_four`
+runs again as a child under `strace` and counts the reads on each
+archive's own path, for a `.cbz` of 4 pages and one of 400. As first
+written, the child listed each archive alone (`member_pages`). Before the
+change:
+
+```
+reads: 16 for 4 pages, 1204 for 400 pages
+```
+
+and after it, and after its fix round:
+
+```
+reads: 5 for 4 pages, 5 for 400 pages
+```
+
+The final review had the child sniff each archive first, as a scan's walk
+does (`sniff`, then `member_pages`), so that `zip_flavour`'s buffer is
+counted too. Sniffing and listing:
+
+```
+reads: 10 for 4 pages, 10 for 400 pages
+```
+
+and with `zip_flavour` reading unbuffered (`ZipArchive::new(file)`), the
+test failing:
+
+```
+reads: 17 for 4 pages, 809 for 400 pages
+```
+
+(`.superpowers/sdd/first-scan-evidence/FW-rust-read-green.log` and
+`FW-rust-read-mutant.log`, not committed.)
+
+**Cancel, driven.** A debug build served a scratch copy of six series of
+the manga-test library, its CPU held down by a cgroup quota so that each
+step stayed on screen long enough to press Cancel in. An administrator
+drove it in one browser context, and an account granted only that library
+read it in another.
+
+- **In Reading files**, on a first scan the scheduler started and again on
+  one Scan library started: the job stopped after the file it was on, and
+  the walk did not commit. The library page read "Cancelling…" where a
+  feed poll fell before the job stopped, then "Paused until Scan is
+  pressed, since …", and its button read Scan library again. The
+  directory's Last scan read Never, the tab that pressed Cancel showed the
+  report "Cancelled while reading files", and the directory's status word
+  was `cancelled`. The reader's view, not reloaded, read "Not read yet".
+  The scheduler passed the directory over at every tick after that.
+- **In Hashing**, on a first scan the scheduler started and on one Scan
+  library started, after the walk had committed: "Cancelling…" in the
+  library's line and the directory's while the job finished its file, then
+  the same paused line, Never, and the report "Cancelled while hashing". The
+  reader's view went from Scanning, over the step's word alone, to "Not
+  read yet", never to "Nothing here".
+- **Across a restart**, stopped and started again by its PID, the server
+  started no scan, and the library page still read the paused line with
+  the same time.
+- **Scan library** then hashed only what the cancelled job had not hashed,
+  wrote the works, and the library page and the reader's view read again
+  without a reload: the paused line went, Last scan showed the new scan's
+  time, and the reader's view listed the series.

@@ -70,6 +70,7 @@ const lib = (id: number, name: string, paths: string[]): Library => ({
     last_scan_at: null,
     last_scan_status: null,
     next_scan_at: null,
+    paused_at: null,
     libraries: [{ id, name }],
     nested: [],
     inside: [],

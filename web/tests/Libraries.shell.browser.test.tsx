@@ -24,6 +24,7 @@ import { emptyDerive } from './support/derive'
 import { holdOf } from './support/held'
 import { press, submit, typeInto } from './support/input'
 import { boxOf, expectKept } from './support/kept'
+import { feedJob, serveFeed } from './support/scanFeed'
 import { mount, rerender } from './support/mount'
 import {
   holdTheClock,
@@ -89,6 +90,25 @@ vi.mock('../src/about', async (importOriginal) => {
 })
 
 const TABLE = '/config/libraries'
+
+/** The feed while no job runs. */
+const NO_SCAN = { ended: 0, libraries: [] }
+
+/** The feed once a job has ended and none runs. */
+const SCAN_ENDED = { ended: 1, libraries: [] }
+
+/** The feed while a scan of each of `library`'s directories runs. */
+const scanOf = (library: librariesApi.Library) => ({
+  ended: 0,
+  libraries: [{ id: library.id, step: 'resolving' as const }],
+  jobs: [
+    feedJob({
+      id: 4,
+      dirs: library.dirs.map(({ id, path }) => ({ id, path })),
+      libraries: [{ id: library.id, name: library.name }],
+    }),
+  ],
+})
 /** The page that makes a library, outside the names' space. */
 const NEW_LIBRARY = '/config/new-library'
 /** Manga's page, where its own controls and its directories' table are. */
@@ -112,6 +132,7 @@ const dir = (
   last_scan_at: '2026-10-05T21:14:09Z',
   last_scan_status: 'ok',
   next_scan_at: null,
+  paused_at: null,
   libraries: [{ id: 1, name: 'Manga' }],
   nested: [],
   inside: [],
@@ -1172,7 +1193,7 @@ describe('the Libraries screen in the real Shell', () => {
 
   for (const [width, height] of SIZES) {
     it(`keeps the Last scan column as wide, and each path on as many lines, while a scan runs as once it ends, at ${width}`, async () => {
-      let scanning = true
+      const feed = serveFeed(NO_SCAN)
       vi.mocked(librariesApi.startLibraryScan).mockResolvedValue({
         library_id: 1,
         status_url: '/x',
@@ -1180,18 +1201,7 @@ describe('the Libraries screen in the real Shell', () => {
       })
       listLongManga()
       const host = await shell(width, height, MANGA_PAGE)
-      vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
-        Promise.resolve({
-          library_id: id,
-          held_removals: [],
-          moves_held: false,
-          derive_running: false,
-          scans: [],
-          running: id === 1 && scanning,
-          elapsed_secs: 1,
-          dirs: [],
-        }),
-      )
+      feed.answer(scanOf(LONG_MANGA))
       await click(host.querySelector('button[name="scan-library"]') as Element)
       await settle()
       const rows = () => [
@@ -1232,7 +1242,7 @@ describe('the Libraries screen in the real Shell', () => {
         expect(style.userSelect).toBe('none')
         expect((held as Element).getBoundingClientRect().height).toBe(0)
       }
-      scanning = false
+      feed.answer(SCAN_ENDED)
       await settleUntil(
         'the scan’s end',
         () => !drawn().said.includes(`${label}Scanning…`),
@@ -1290,6 +1300,7 @@ describe('the Libraries screen in the real Shell', () => {
     // The label is drawn only where the headings are not.
     const label = width === 390 ? 'Last scan: ' : ''
     let ended = false
+    const feed = serveFeed(NO_SCAN)
     vi.mocked(librariesApi.listLibraries).mockImplementation(async () => ({
       libraries: [NOVELS, mangaScanned(ended ? after.scan : before.scan)],
     }))
@@ -1325,6 +1336,7 @@ describe('the Libraries screen in the real Shell', () => {
       { childList: true, subtree: true, characterData: true },
     )
     try {
+      feed.answer(scanOf(MANGA))
       await click(host.querySelector('button[name="scan-library"]') as Element)
       await settle()
       expect(lastScanSaid(host)).toEqual(
@@ -1332,6 +1344,7 @@ describe('the Libraries screen in the real Shell', () => {
       )
       const atPress = lastScanColumn(host)
       ended = true
+      feed.answer(SCAN_ENDED)
       await settleUntil(
         'the scan’s end, and the list read again',
         () =>
@@ -1525,6 +1538,7 @@ describe('the Libraries screen in the real Shell', () => {
         '8888-88-88 88:88:88 UTC\u00a0·\u00a0deriving',
         '8888-88-88 88:88:88 UTC\u00a0·\u00a0interrupted',
         '8888-88-88 88:88:88 UTC\u00a0·\u00a0waiting',
+        '8888-88-88 88:88:88 UTC\u00a0·\u00a0cancelled',
       ])
       for (const one of held) {
         expect(getComputedStyle(one).display).toBe('none')
@@ -1546,7 +1560,7 @@ describe('the Libraries screen in the real Shell', () => {
 
   for (const [width, height] of SIZES) {
     it(`does not scroll a person typing at the foot when a scan ends and the list cannot be read, at ${width}`, async () => {
-      let scanning = true
+      const feed = serveFeed(NO_SCAN)
       vi.mocked(librariesApi.startLibraryScan).mockResolvedValue({
         library_id: 1,
         status_url: '/x',
@@ -1554,18 +1568,7 @@ describe('the Libraries screen in the real Shell', () => {
       })
       listLongManga()
       const host = await shell(width, height, MANGA_PAGE)
-      vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
-        Promise.resolve({
-          library_id: id,
-          held_removals: [],
-          moves_held: false,
-          derive_running: false,
-          scans: [],
-          running: id === 1 && scanning,
-          elapsed_secs: 1,
-          dirs: [],
-        }),
-      )
+      feed.answer(scanOf(LONG_MANGA))
       await click(host.querySelector('button[name="scan-library"]') as Element)
       await settle()
       const picker = await openAddDir(host)
@@ -1576,7 +1579,7 @@ describe('the Libraries screen in the real Shell', () => {
       const reveal = vi.spyOn(Element.prototype, 'scrollIntoView')
       try {
         vi.mocked(librariesApi.listLibraries).mockRejectedValue(STORE_LOCKED)
-        scanning = false
+        feed.answer(SCAN_ENDED)
         // The poll that finds the scan ended, and the list read after it.
         await settleUntil(
           'the list’s failure',
@@ -1638,28 +1641,13 @@ describe('the Libraries screen in the real Shell', () => {
 
   it('keeps a long path over a directory’s report inside its box, and the page from scrolling sideways, at 390', async () => {
     const long = `/mnt/user/media 1/Manga/${'Volumes'.repeat(12)}`
-    let scanning = true
+    const feed = serveFeed(scanOf(MANGA))
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
       libraries: [NOVELS, { ...MANGA, dirs: [dir(1, long), MANGA.dirs[1]] }],
     })
     // A scan of both of Manga's directories is running when the page is
-    // drawn, so the page takes it up, and the poll after `scanning` goes
-    // false ends it and reads each directory's report.
-    vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
-      Promise.resolve({
-        library_id: id,
-        held_removals: [],
-        moves_held: false,
-        derive_running: false,
-        scans: [],
-        running: id === 1 && scanning,
-        elapsed_secs: scanning ? 1 : null,
-        dirs:
-          id === 1
-            ? [1, 2].map((root_id) => ({ root_id, running: scanning }))
-            : [],
-      }),
-    )
+    // drawn, so the page takes it up, and the feed's answer of its end reads
+    // each directory's report.
     vi.mocked(config.scanStatus).mockImplementation((id) =>
       Promise.resolve({
         root_id: id,
@@ -1687,7 +1675,7 @@ describe('the Libraries screen in the real Shell', () => {
       }),
     )
     const host = await shell(390, 844, MANGA_PAGE)
-    scanning = false
+    feed.answer(SCAN_ENDED)
     const heading = () =>
       [...host.querySelectorAll<HTMLElement>('.dir-report > h4')].find(
         (h) => h.textContent === long,

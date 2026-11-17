@@ -351,6 +351,19 @@ describe('ScanReport', () => {
     expect(host.querySelectorAll('[data-field]')).toHaveLength(0)
   })
 
+  it('draws a cancelled scan as the step it stopped in, with no counts and no alert', () => {
+    const host = mount(
+      <ScanReport outcome={{ cancelled: { step: 'resolving' } }} />,
+    )
+    expect(
+      [...host.querySelectorAll('.scan-report > p')].map((p) => [
+        p.textContent,
+        p.getAttribute('role'),
+      ]),
+    ).toEqual([['Cancelled while reading files', null]])
+    expect(host.querySelectorAll('[data-field]')).toHaveLength(0)
+  })
+
   it('lists a declined document, which is not an orphan', async () => {
     // A root that stopped keeping documents reports the file rather than
     // deleting it, and rather than calling it orphaned.

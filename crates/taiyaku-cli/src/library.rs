@@ -396,6 +396,9 @@ fn scan(args: &[String]) -> Result<(), String> {
         None => None,
     };
     let selected = select_roots(roots, root_filter, library_filter)?;
+    // The CLI is how an operator presses Scan, so it resumes what a cancel
+    // paused, on the directories it covers alone (spec §7, "Pause").
+    taiyaku_library::scan::unpause(&library.conn(), &selected)?;
     let total = selected.len();
     let mut failed: Vec<String> = Vec::new();
 

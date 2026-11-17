@@ -58,6 +58,7 @@ export type EmptyKind =
   | 'no-grant'
   | 'no-library'
   | 'not-scanned'
+  | 'scanning'
   | 'no-matches'
   | 'inbox-clear'
   | 'inbox-weak-hidden'
@@ -77,9 +78,20 @@ export interface EmptyStateProps {
   label?: string
   /** Which decided state the inbox is showing, for the three `decided-*` kinds. */
   decided?: 'accepted' | 'dismissed'
+  /** The scan's step, for `scanning`: with its count for an administrator. */
+  step?: string
+  /** A scan holds the library, for `no-matches`. */
+  scanning?: boolean
 }
 
-export function EmptyState({ kind, query, label, decided }: EmptyStateProps) {
+export function EmptyState({
+  kind,
+  query,
+  label,
+  decided,
+  step,
+  scanning = false,
+}: EmptyStateProps) {
   if (kind === 'no-libraries') {
     return (
       <section className="empty">
@@ -117,6 +129,17 @@ export function EmptyState({ kind, query, label, decided }: EmptyStateProps) {
           library, on Configuration → Libraries, reads them, and so does:
         </p>
         <pre>taiyaku library scan</pre>
+      </section>
+    )
+  }
+  // A library a scan holds (O311): a first scan's works come only after its
+  // hashing, so "Not read yet", or "Nothing here" once a directory's walk is
+  // saved, would stand for it until then.
+  if (kind === 'scanning') {
+    return (
+      <section className="empty">
+        <h2>Scanning</h2>
+        <p>{step}</p>
       </section>
     )
   }
@@ -207,6 +230,7 @@ export function EmptyState({ kind, query, label, decided }: EmptyStateProps) {
           ? 'No series match this filter.'
           : `Nothing matched ${query}.`}
       </p>
+      {scanning && <p>A scan is still running.</p>}
     </section>
   )
 }

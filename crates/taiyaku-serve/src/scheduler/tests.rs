@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use taiyaku_library::{scan, schedule};
+use taiyaku_library::{derive, scan, schedule};
 
 use super::Scheduler;
 use crate::scan_jobs::Reread;
@@ -360,18 +360,22 @@ async fn a_startup_scan_queued_behind_another_reads_waiting_until_it_runs() {
                 std::sync::Arc::clone(&state),
                 roots,
                 started,
-                move |state, roots, waiting| {
+                move |state, roots, running| {
                     scan_jobs::run_watched(
                         &state.library,
                         roots,
                         Reread::Batch,
                         &state.library_job,
-                        waiting,
-                        scan::scan_root,
-                        |conn| {
+                        running,
+                        |conn, root, _| {
+                            scan::scan_root(conn, root)
+                                .map(taiyaku_library::progress::Outcome::Done)
+                        },
+                        |conn, _| {
                             let _ = said.send(());
                             let _ = released.recv();
                             taiyaku_library::derive::derive(conn)
+                                .map(taiyaku_library::progress::Outcome::Done)
                         },
                     )
                 },
@@ -440,6 +444,7 @@ async fn a_scan_cut_while_queued_reads_interrupted_until_the_next_startup_scan()
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -472,5 +477,109 @@ async fn a_scan_cut_while_queued_reads_interrupted_until_the_next_startup_scan()
             Some("ok".to_string())
         ),
         "(queued, at the next start, after its startup scan)"
+    );
+}
+
+/// Spec §3, Goal 5: the startup scan, which takes every directory not Off,
+/// passes over one a cancel paused.
+#[test]
+fn the_first_tick_after_a_start_passes_over_a_paused_directory() {
+    let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let (a, b) = a_and_b(&state);
+    schedule_of(&state, &a, None, NOW);
+    schedule_of(&state, &b, None, NOW);
+    scan::pause(&state.library.conn(), std::slice::from_ref(&a)).expect("pauses a");
+
+    let calls = started_ids(&mut Scheduler::new(), &state, NOW).expect("the tick reads the store");
+
+    assert_eq!(calls, [vec![b.id]], "b alone; a is paused");
+}
+
+/// Spec §3, Goal 5: a later tick passes over a paused directory however due.
+#[test]
+fn a_later_tick_passes_over_a_paused_directory_that_is_due() {
+    let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let (a, b) = a_and_b(&state);
+    schedule_of(&state, &a, None, AN_HOUR_BEFORE);
+    schedule_of(&state, &b, None, AN_HOUR_BEFORE);
+    scan::pause(&state.library.conn(), std::slice::from_ref(&a)).expect("pauses a");
+
+    let calls = started_ids(&mut Scheduler { first: false }, &state, NOW)
+        .expect("the tick reads the store");
+
+    assert_eq!(calls, [vec![b.id]], "b alone; a is paused though due");
+}
+
+/// `root`'s pause, last scan and stored word.
+fn pause_and_last_scan(
+    state: &ServeState,
+    root: &scan::Root,
+) -> (bool, Option<String>, Option<String>) {
+    state
+        .library
+        .conn()
+        .query_row(
+            "SELECT paused_at IS NOT NULL, last_scan_at, last_scan_status FROM root WHERE id = ?1",
+            [root.id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("reads the directory")
+}
+
+/// Spec §7, "Pause": a directory that a cancelled job pauses after a tick
+/// read the schedule, as one can before the batch holds the job lock, is not
+/// walked: the batch answers it on its own slot, leaves its pause and its
+/// last scan as they are, and walks the rest.
+#[test]
+fn a_batch_does_not_walk_a_directory_paused_after_its_tick_read_the_schedule() {
+    let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let (a, b) = a_and_b(&state);
+    // Dated, so a walk of a would move its last scan.
+    schedule_of(&state, &a, None, AN_HOUR_BEFORE);
+    schedule_of(&state, &b, None, AN_HOUR_BEFORE);
+    let mut taken = Vec::new();
+    Scheduler::new()
+        .tick(&state, NOW, |roots, _| taken = roots)
+        .expect("the tick reads the store");
+    assert_eq!(
+        ids(&taken),
+        [a.id, b.id],
+        "sanity: the startup tick takes both"
+    );
+    scan::pause(&state.library.conn(), std::slice::from_ref(&a)).expect("pauses a");
+    let job = test_support::a_planted_job();
+    let mut walked = Vec::new();
+
+    let reports = scan_jobs::run_watched(
+        &state.library,
+        &taken,
+        Reread::Batch,
+        &state.library_job,
+        &scan_jobs::Running::new(&job, None),
+        |conn, root, watch| {
+            walked.push(root.id);
+            scan::scan_root_watched(conn, root, watch)
+        },
+        |conn, watch| derive::derive_watched(conn, derive::Documents::Reconcile, watch),
+    )
+    .expect("the batch answers");
+
+    assert_eq!(
+        (walked, &reports[0], reports[1].get("error")),
+        (
+            vec![b.id],
+            &serde_json::json!({ "error": scan_jobs::PAUSED }),
+            None
+        ),
+        "(the walks entered, a's slot, b's error)"
+    );
+    assert_eq!(
+        pause_and_last_scan(&state, &a),
+        (
+            true,
+            Some(AN_HOUR_BEFORE.to_string()),
+            Some("ok".to_string())
+        ),
+        "a's (pause, last scan, word)"
     );
 }

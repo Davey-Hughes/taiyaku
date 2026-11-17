@@ -390,6 +390,7 @@ async fn the_list_gives_each_library_its_own_dirs_works_and_books() {
                 "nested",
                 "next_scan_at",
                 "path",
+                "paused_at",
                 "scan_interval_secs",
             ],
             "a directory is root_json's shape, the libraries holding it and nesting_json's \
@@ -1277,6 +1278,7 @@ async fn a_librarys_dry_run_counts_and_removes_nothing_and_the_removal_removes()
                 done: true,
                 report: Some(serde_json::json!({})),
                 library: None,
+                job: crate::test_support::a_planted_job(),
             },
         );
     }
@@ -1613,6 +1615,7 @@ fn a_scan_running_on(state: &crate::ServeState, dir: i64) {
             done: false,
             report: None,
             library: None,
+            job: crate::test_support::a_planted_job(),
         },
     );
 }
@@ -5066,6 +5069,7 @@ async fn removing_a_library_leaves_a_shared_dir_to_the_other_library_with_its_sc
                 done: true,
                 report: Some(report.clone()),
                 library: root_a["id"].as_i64(),
+                job: crate::test_support::a_planted_job(),
             },
         );
     }
@@ -5797,6 +5801,7 @@ async fn a_dir_unlinked_while_its_library_is_removed_keeps_its_scan_report() {
                 done: true,
                 report: Some(report.clone()),
                 library: None,
+                job: crate::test_support::a_planted_job(),
             },
         );
     }
@@ -5952,8 +5957,8 @@ async fn a_jobs_word_that_it_waits_lands_on_its_reservations() {
         std::sync::Arc::clone(&state),
         roots.clone(),
         started,
-        move |_, roots, waiting| {
-            waiting(roots, true);
+        move |_, roots, running| {
+            running.waiting(roots, true);
             said.send(()).expect("the test is listening");
             let _ = released.recv();
             Ok(roots.iter().map(|_| serde_json::json!({})).collect())
@@ -5987,8 +5992,8 @@ async fn both_lists_read_waiting_where_a_directorys_scan_waits_and_only_there() 
         std::sync::Arc::clone(&state),
         reserved.to_vec(),
         started,
-        move |_, roots, waiting| {
-            waiting(roots, true);
+        move |_, roots, running| {
+            running.waiting(roots, true);
             said.send(()).expect("the test is listening");
             let _ = released.recv();
             Ok(roots.iter().map(|_| serde_json::json!({})).collect())
@@ -6061,5 +6066,150 @@ async fn a_library_scan_queued_behind_the_job_lock_reads_waiting_on_each_directo
         [queued, after],
         [[waiting.clone(), waiting], [ok.clone(), ok]],
         "(queued, after) for (m, m/kids)"
+    );
+}
+
+/// Spec §7, "Pause": a press refused because a scan already holds one of the
+/// library's directories clears nothing, so its pause stands.
+#[tokio::test]
+async fn a_refused_scan_library_leaves_the_pause() {
+    const PAUSED: &str = "2026-11-01 00:00:00";
+    let (router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let (dir, library): (i64, i64) = state
+        .library
+        .conn()
+        .query_row("SELECT root_id, library_id FROM library_root", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .expect("the fixture's one directory and library");
+    state
+        .library
+        .conn()
+        .execute(
+            "UPDATE root SET paused_at = ?2 WHERE id = ?1",
+            rusqlite::params![dir, PAUSED],
+        )
+        .expect("pauses it");
+    a_scan_running_on(&state, dir);
+
+    let (status, refused) = answered(
+        &router,
+        Method::POST,
+        &the_scan_of(library),
+        &serde_json::json!({}),
+    )
+    .await;
+
+    let paused: Option<String> = state
+        .library
+        .conn()
+        .query_row("SELECT paused_at FROM root WHERE id = ?1", [dir], |r| {
+            r.get(0)
+        })
+        .expect("reads its pause");
+    assert_eq!(
+        (status, paused.as_deref()),
+        (StatusCode::CONFLICT, Some(PAUSED)),
+        "{refused}"
+    );
+}
+
+/// Spec §7, "Pause", and §3, Goal 3: a directory two libraries share says
+/// when it was paused on both libraries' cards, and a directory not paused
+/// sends `null`, not nothing.
+#[tokio::test]
+async fn a_paused_directory_lists_when_it_was_paused() {
+    const PAUSED: &str = "2026-11-16 03:33:10";
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let first = get_json(&router, "/api/library/libraries").await;
+    let a_id = the_library(&first, "root-a")["id"].as_i64().expect("an id");
+    let b_id = the_library(&first, "root-b")["id"].as_i64().expect("an id");
+    let shared = the_library(&first, "root-a")["dirs"][0]["id"]
+        .as_i64()
+        .expect("an id");
+    let own = the_library(&first, "root-b")["dirs"][0]["id"]
+        .as_i64()
+        .expect("an id");
+    {
+        let conn = state.library.conn();
+        let path: String = conn
+            .query_row("SELECT path FROM root WHERE id = ?1", [shared], |r| {
+                r.get(0)
+            })
+            .expect("reads the path");
+        taiyaku_library::scan::add_root_checked_in(
+            &conn,
+            std::path::Path::new(&path),
+            taiyaku_library::scan::InLibrary::Id(b_id),
+        )
+        .expect("links root-a's directory into root-b");
+        conn.execute(
+            "UPDATE root SET paused_at = ?2 WHERE id = ?1",
+            rusqlite::params![shared, PAUSED],
+        )
+        .expect("pauses it");
+    }
+
+    let listed = get_json(&router, "/api/library/libraries").await;
+
+    let paused_at = |library: &str, dir: i64| -> Option<serde_json::Value> {
+        the_library(&listed, library)["dirs"]
+            .as_array()
+            .expect("a dirs array")
+            .iter()
+            .find(|listed| listed["id"] == dir)
+            .unwrap_or_else(|| panic!("{library} lists directory {dir}"))
+            .get("paused_at")
+            .cloned()
+    };
+    assert_eq!(
+        [
+            paused_at("root-a", shared),
+            paused_at("root-b", shared),
+            paused_at("root-b", own),
+        ],
+        [
+            Some(serde_json::json!(PAUSED)),
+            Some(serde_json::json!(PAUSED)),
+            Some(serde_json::Value::Null),
+        ],
+        "(root-a's shared directory, root-b's, root-b's own): {listed}"
+    );
+    assert_ne!(a_id, b_id, "the fixture: two libraries");
+}
+
+/// An add that links a paused directory answers its pause as the add read
+/// it: a link is no pressed scan, so the pause stays.
+#[test]
+fn a_links_answer_sends_the_directorys_pause() {
+    use taiyaku_library::scan::{InLibrary, add_root_checked_in};
+    const PAUSED: &str = "2026-11-16 03:33:10";
+    let fixture = test_support::Fixture::new("added-sends-the-pause");
+    let m = fixture.path().join("m");
+    std::fs::create_dir_all(&m).expect("mkdir");
+    let library = taiyaku_library::Library::open_in_memory().expect("a library");
+    let conn = library.conn();
+    let held = add_root_checked_in(&conn, &m, InLibrary::Named("Manga")).expect("Manga holds m");
+    let made = crate::config_api::added_json(&held);
+    conn.execute(
+        "UPDATE root SET paused_at = ?2 WHERE id = ?1",
+        rusqlite::params![held.root.id, PAUSED],
+    )
+    .expect("pauses m");
+
+    let linked =
+        add_root_checked_in(&conn, &m, InLibrary::Named("Kids")).expect("links m into Kids");
+    let answer = crate::config_api::added_json(&linked);
+
+    assert_eq!(
+        (
+            made["root"].get("paused_at"),
+            answer["root"].get("paused_at")
+        ),
+        (
+            Some(&serde_json::Value::Null),
+            Some(&serde_json::json!(PAUSED))
+        ),
+        "(a new directory's, the link's): {made} {answer}"
     );
 }

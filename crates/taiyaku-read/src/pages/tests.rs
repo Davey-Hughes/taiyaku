@@ -252,10 +252,24 @@ fn a_utf8_page_name_without_the_utf8_flag_lists_under_its_real_name() {
 /// page after it would move to the index before.
 #[test]
 fn a_codepage_437_page_name_lists_in_its_sort_position() {
+    let dir = TempDir::new("cp437");
+    let path = cp437_cbz(&dir);
+
+    let pages = read_member(&path).unwrap();
+    let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["001.jpg", "002 été.jpg", "003.jpg"]);
+    assert_eq!(
+        pages[1].bytes, b"two",
+        "the decoded name reads back its own entry"
+    );
+}
+
+/// Write a three-page cbz whose middle page is named in codepage 437
+/// bytes, `002 été.jpg` once decoded, with the UTF-8 flag clear.
+fn cp437_cbz(dir: &Path) -> PathBuf {
     use std::io::Write as _;
     const CP437_NAME: &[u8] = b"002 \x82t\x82.jpg";
     const PLACEHOLDER: &str = "002 _t_.jpg";
-    let dir = TempDir::new("cp437");
     let path = dir.join("cp437.cbz");
     let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
     for (name, bytes) in [
@@ -280,14 +294,7 @@ fn a_codepage_437_page_name_lists_in_its_sort_position() {
         raw[at..at + CP437_NAME.len()].copy_from_slice(CP437_NAME);
     }
     std::fs::write(&path, &raw).unwrap();
-
-    let pages = read_member(&path).unwrap();
-    let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["001.jpg", "002 été.jpg", "003.jpg"]);
-    assert_eq!(
-        pages[1].bytes, b"two",
-        "the decoded name reads back its own entry"
-    );
+    path
 }
 
 /// Clear the UTF-8 flag, general purpose bit 11, in a one-entry archive's
@@ -311,6 +318,298 @@ fn clear_utf8_flag(path: &Path) {
         raw[field..field + 2].copy_from_slice(&(flags & !UTF8).to_le_bytes());
     }
     std::fs::write(path, &raw).unwrap();
+}
+
+/// **A scan's walk reads an archive the same for four hundred pages as for
+/// four**: sniffing its format and listing its pages each read only the
+/// central directory, through one buffer. A walk that opened each entry's
+/// local header, or parsed the directory unbuffered, reads once or more per
+/// page, a round trip each over a network share.
+///
+/// The test runs itself again as a child under `strace`, as O104's tests do,
+/// sniffing and listing each archive, and counts the reads on its own path.
+#[cfg(target_os = "linux")]
+#[test]
+fn listing_an_archive_reads_no_more_for_four_hundred_pages_than_for_four() {
+    const CHILD: &str = "TAIYAKU_TEST_PAGES_LISTING_READS_CHILD";
+    const COUNTS: [u32; 2] = [4, 400];
+    if let Some(dir) = std::env::var_os(CHILD) {
+        for count in COUNTS {
+            let path = Path::new(&dir).join(format!("{count}.cbz"));
+            assert_eq!(
+                crate::sniff(&path),
+                Ok(crate::Format::Zip),
+                "{}",
+                path.display()
+            );
+            assert_eq!(member_pages(&path), Ok(count), "{}", path.display());
+        }
+        return;
+    }
+
+    let scratch = TempDir::new("listing-reads");
+    // Canonical, because strace prints the path behind each descriptor.
+    let dir = std::fs::canonicalize(&scratch).unwrap();
+    for count in COUNTS {
+        numbered_cbz(&dir, count);
+    }
+
+    let log = crate::test_support::strace(
+        "pages::tests::listing_an_archive_reads_no_more_for_four_hundred_pages_than_for_four",
+        (CHILD, dir.as_os_str()),
+        "read,pread64",
+        &dir.join("strace.log"),
+    );
+    let [four, four_hundred] =
+        COUNTS.map(|count| reads_of(&log, &dir.join(format!("{count}.cbz"))));
+    eprintln!("reads: {four} for 4 pages, {four_hundred} for 400 pages");
+    assert!(
+        four > 0,
+        "no read of the four-page archive was seen, so the counts prove nothing:\n{log}"
+    );
+    assert_eq!(
+        four_hundred, four,
+        "listing 400 pages read {four_hundred} times where 4 pages read {four}"
+    );
+}
+
+/// Write a cbz of `count` stored pages named `p001.jpg` onward.
+///
+/// Each page carries 128 bytes so that even the smallest archive is longer
+/// than the 512-byte header `open_archive` sniffs: a shorter file costs that
+/// sniff a second read, at end of file, and the counts would differ by it.
+fn numbered_cbz(dir: &Path, count: u32) -> PathBuf {
+    use std::io::Write as _;
+    let path = dir.join(format!("{count}.cbz"));
+    let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for n in 1..=count {
+        zip.start_file(format!("p{n:03}.jpg"), stored).unwrap();
+        zip.write_all(&[0; 128]).unwrap();
+    }
+    zip.finish().unwrap();
+    assert!(
+        std::fs::metadata(&path).unwrap().len() > 512,
+        "{} must outlast the header sniff",
+        path.display()
+    );
+    path
+}
+
+/// How many `read` and `pread64` calls in an `strace -y` log were made on
+/// `file`, whose path strace prints after the descriptor.
+fn reads_of(log: &str, file: &Path) -> usize {
+    let on_file = format!("<{}>", file.display());
+    log.lines()
+        .filter(|line| {
+            ["read(", "pread64("].iter().any(|call| {
+                line.split_once(call).is_some_and(|(before, args)| {
+                    (before.is_empty() || before.ends_with(' '))
+                        && args
+                            .trim_start_matches(|c: char| c.is_ascii_digit())
+                            .starts_with(&on_file)
+                })
+            })
+        })
+        .count()
+}
+
+/// The listing reads each entry from the central directory, never its local
+/// header, so for a well-formed archive it must list exactly what reading
+/// through each local header listed. Every fixture the order and skip tests
+/// use is here, plus a directory entry named like an image, and a middle
+/// page `by_index` refuses: flagged encrypted, AES-encrypted, AES with its
+/// flag clear, and in a method `zip` cannot decode. All but the AES page are
+/// each kept out by one check alone, so each fails when its check goes.
+#[test]
+fn a_central_directory_listing_matches_one_read_through_each_local_header() {
+    let dir = TempDir::new("central");
+    let unflagged = cbz(&dir, "unflagged.cbz", &["カラー版.jpg"]);
+    clear_utf8_flag(&unflagged);
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let aes = stored.with_aes_encryption(zip::AesMode::Aes256, "password");
+    let flagged = middle_page_cbz(&dir, "flagged.cbz", stored);
+    edit_middle_headers(&flagged, FLAGS, |flags| flags | ENCRYPTED);
+    let aes_unflagged = middle_page_cbz(&dir, "aes-unflagged.cbz", aes);
+    edit_middle_headers(&aes_unflagged, FLAGS, |flags| {
+        assert_ne!(flags & ENCRYPTED, 0, "the writer flagged its AES page");
+        flags & !ENCRYPTED
+    });
+    let jpeg_method = middle_page_cbz(&dir, "jpeg-method.cbz", stored);
+    edit_middle_headers(&jpeg_method, METHOD, |_| WINZIP_JPEG);
+    let archives = [
+        cbz(
+            &dir,
+            "order.cbz",
+            &["p10.jpg", "ComicInfo.xml", "p2.jpg", "p1.jpg"],
+        ),
+        cbz(
+            &dir,
+            "nested.cbz",
+            &[
+                "Chapter 2/001.jpg",
+                "Chapter 1/ZBlank (1).jpg",
+                "Chapter 1/001.jpg",
+            ],
+        ),
+        cbz(
+            &dir,
+            "skips.cbz",
+            &[
+                "__MACOSX/p1.jpg",
+                ".hidden.jpg",
+                "__MACOSX/._p2.jpg",
+                "p1.jpg",
+                "p2.jpg",
+            ],
+        ),
+        unflagged,
+        cp437_cbz(&dir),
+        directory_entry_cbz(&dir),
+        flagged,
+        middle_page_cbz(&dir, "aes.cbz", aes),
+        aes_unflagged,
+        jpeg_method,
+    ];
+
+    let differing: Vec<String> = archives
+        .iter()
+        .filter_map(|path| {
+            let expected = listed_through_each_local_header(path);
+            assert!(!expected.is_empty(), "{} lists no page", path.display());
+            let listed = member_page_names(path).unwrap();
+            (listed != expected).then(|| {
+                format!(
+                    "{}: listed {listed:?}, by_index {expected:?}",
+                    path.display()
+                )
+            })
+        })
+        .collect();
+    assert!(
+        differing.is_empty(),
+        "the listing differs from one read through each local header:\n{}",
+        differing.join("\n")
+    );
+}
+
+/// Write a cbz holding a directory entry `scans.png/` beside its pages.
+fn directory_entry_cbz(dir: &Path) -> PathBuf {
+    use std::io::Write as _;
+    let path = dir.join("directory.cbz");
+    let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+    let options = zip::write::SimpleFileOptions::default();
+    zip.add_directory("scans.png/", options).unwrap();
+    for name in ["scans.png/002.png", "001.png"] {
+        zip.start_file(name, options).unwrap();
+        zip.write_all(name.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+    path
+}
+
+/// General purpose bit 0, set on an encrypted entry (APPNOTE.TXT §4.4.4).
+const ENCRYPTED: u16 = 1;
+/// WinZip's JPEG compression method, one `zip` cannot decode.
+const WINZIP_JPEG: u16 = 96;
+/// A header field's offset from the local header's signature and from the
+/// central directory header's (APPNOTE.TXT §4.3.7, §4.3.12).
+const FLAGS: (usize, usize) = (6, 8);
+const METHOD: (usize, usize) = (8, 10);
+
+/// Write a cbz of `p1.jpg`, `p2.jpg` and `p3.jpg`, stored, with the middle
+/// page written with `middle`.
+fn middle_page_cbz(dir: &Path, name: &str, middle: zip::write::SimpleFileOptions) -> PathBuf {
+    use std::io::Write as _;
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let path = dir.join(name);
+    let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+    for (page, options) in [("p1.jpg", stored), ("p2.jpg", middle), ("p3.jpg", stored)] {
+        zip.start_file(page, options).unwrap();
+        zip.write_all(page.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+    path
+}
+
+/// Rewrite one 16-bit field of `p2.jpg`'s local and central headers in a
+/// cbz from [`middle_page_cbz`], to what `edit` makes of its value.
+fn edit_middle_headers(path: &Path, (local, central): (usize, usize), edit: impl Fn(u16) -> u16) {
+    let fields = {
+        let zip = zip::ZipArchive::new(File::open(path).unwrap()).unwrap();
+        let entry = zip.by_index_data(1).unwrap();
+        assert_eq!(entry.name().unwrap(), "p2.jpg");
+        [
+            usize::try_from(entry.header_start()).unwrap() + local,
+            usize::try_from(entry.central_header_start()).unwrap() + central,
+        ]
+    };
+    let mut raw = std::fs::read(path).unwrap();
+    for at in fields {
+        let value = u16::from_le_bytes([raw[at], raw[at + 1]]);
+        raw[at..at + 2].copy_from_slice(&edit(value).to_le_bytes());
+    }
+    std::fs::write(path, &raw).unwrap();
+}
+
+/// An archive's page names as listing found them by opening each entry's
+/// local header: `by_index`, then the filters and sort `page_names_from`
+/// applies. The oracle for the central-directory listing.
+fn listed_through_each_local_header(path: &Path) -> Vec<String> {
+    let mut zip = zip::ZipArchive::new(File::open(path).unwrap()).unwrap();
+    let mut names: Vec<String> = (0..zip.len())
+        .filter_map(|i| {
+            let entry = zip.by_index(i).ok()?;
+            if !entry.is_file() {
+                return None;
+            }
+            let name = entry.name().ok()?.into_owned();
+            if name.starts_with("__MACOSX") || name.rsplit('/').next()?.starts_with('.') {
+                return None;
+            }
+            is_page_name(&name).then_some(name)
+        })
+        .collect();
+    names.sort_by(|a, b| natural_cmp(a, b));
+    names
+}
+
+/// An entry whose local header does not parse is still a page: it is
+/// listed in its sort position, and reading it fails naming it. Dropping it
+/// from the list instead would move every later page to the index before,
+/// so a bookmark or an alignment past it would land on the wrong page.
+#[test]
+fn an_entry_whose_local_header_is_damaged_is_listed_and_fails_when_read() {
+    const LOCAL_HEADER: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
+    let dir = TempDir::new("damaged");
+    let path = cbz(&dir, "damaged.cbz", &["p3.jpg", "p2.jpg", "p1.jpg"]);
+    let mut raw = std::fs::read(&path).unwrap();
+    let headers: Vec<usize> = raw
+        .windows(4)
+        .enumerate()
+        .filter(|(_, window)| *window == LOCAL_HEADER)
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(headers.len(), 3, "one local header per entry");
+    // The second stored entry is p2.jpg, the middle page.
+    raw[headers[1]..headers[1] + 4].copy_from_slice(b"XXXX");
+    std::fs::write(&path, &raw).unwrap();
+
+    assert_eq!(
+        member_page_names(&path).unwrap(),
+        ["p1.jpg", "p2.jpg", "p3.jpg"],
+        "the damaged page keeps its place"
+    );
+    let error = member_page(&path, 1).unwrap_err();
+    assert!(
+        error.contains(&path.display().to_string()) && error.contains("p2.jpg"),
+        "the error names the archive and the page: {error}"
+    );
+    assert_eq!(member_page(&path, 0).unwrap().bytes, b"p1.jpg");
+    assert_eq!(member_page(&path, 2).unwrap().bytes, b"p3.jpg");
 }
 
 /// What `serve` does on every page request. Reading the whole edition to

@@ -4403,6 +4403,7 @@ fn router_with_two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, A
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -4517,6 +4518,17 @@ fn get_for(pattern: &str, held_library: i64) -> (String, Shows) {
     (uri, shows)
 }
 
+/// A scan job reserved on every directory of `state`, holding the libraries a
+/// spawned job reads, so the scan feed has a library to show.
+fn a_job_on_every_directory(state: &crate::ServeState) {
+    let conn = state.library.conn();
+    let roots = taiyaku_library::scan::roots(&conn).expect("reads the directories");
+    let held = crate::scan_jobs::held_libraries(&conn, &roots).expect("reads the libraries");
+    let job = crate::scan_jobs::reserve(state, &roots, std::time::Instant::now(), None)
+        .expect("reserves");
+    *job.libraries.lock().expect("unpoisoned") = held;
+}
+
 /// **An account granted only a library with no directory sees nothing**, through
 /// the real guard, on every `GET` route [`grant_postures`] says reads the
 /// grant (spec §3), each asked as [`get_for`] says. The grant is written by
@@ -4544,6 +4556,7 @@ async fn an_account_granted_only_a_library_with_no_dir_sees_nothing() {
         crate::test_support::grant_root(&conn, 1);
         crate::test_support::library_of_root(&conn, 1)
     };
+    a_job_on_every_directory(&state);
     let router =
         crate::test_support::authenticating(build_router(Arc::clone(&state)), &state.library);
     let routes: Vec<(String, Shows)> = grant_postures()
@@ -4595,6 +4608,7 @@ async fn a_request_with_no_principal_sees_nothing() {
 
     let (state, _fixture) = crate::test_support::state_whose_grant_waits_on_the_library();
     let held_library = crate::test_support::library_of_root(&state.library.conn(), 1);
+    a_job_on_every_directory(&state);
 
     let mut wrong = Vec::new();
     for (who, extensions, sees) in [
@@ -4631,6 +4645,15 @@ async fn a_request_with_no_principal_sees_nothing() {
                     )
                     .await,
                     &Shows::Entries,
+                )
+                .await,
+            ),
+            (
+                "scan_feed::feed",
+                what_it_shows(
+                    "scan_feed::feed",
+                    crate::scan_feed::feed(State(Arc::clone(&state)), extensions.clone()).await,
+                    &Shows::Lists,
                 )
                 .await,
             ),
@@ -5118,6 +5141,7 @@ fn router_over_a_scanned_work_under_a_withheld_root(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -10119,10 +10143,10 @@ mod narrowing {
         );
     }
 
-    /// Review Focus 2: Kids alone is not sent `en`, and echoes k3 there with
-    /// the page its row names, then with another, as a tab that read it
-    /// before a stamp re-keyed the row would. `at` is cleared on both sides
-    /// before `as_stored` compares k3 with the note held, so each is kept.
+    /// Kids alone is not sent `en`, and echoes k3 there with the page its row
+    /// names, then with another, as a tab that read it before a stamp
+    /// re-keyed the row would. `at` is cleared on both sides before
+    /// `as_stored` compares k3 with the note held, so each is kept.
     #[tokio::test]
     async fn an_echo_of_a_note_the_account_is_not_sent_carrying_an_at_is_accepted() {
         let merged = test_support::router_over_an_edition_merged_from_two_libraries();
@@ -10703,10 +10727,10 @@ mod narrowing {
         );
     }
 
-    /// Review Focus 9, O270: a derive before the next scan puts part3's
-    /// old digest back on its member, and the alias stays. A new note on
-    /// the old digest is on a page the document sent shows, so it is placed
-    /// there, not forwarded off it.
+    /// O270: a derive before the next scan puts part3's old digest back on
+    /// its member, and the alias stays. A new note on the old digest is on a
+    /// page the document sent shows, so it is placed there, not forwarded off
+    /// it.
     #[tokio::test]
     async fn a_digest_the_member_still_shows_is_not_forwarded() {
         let merged = test_support::router_over_an_edition_merged_from_two_libraries();

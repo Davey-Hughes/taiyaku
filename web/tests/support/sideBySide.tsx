@@ -56,6 +56,7 @@ export const dir = (id: number): librariesApi.LibraryDir => ({
   last_scan_at: '2026-10-05 21:14:09',
   last_scan_status: 'ok',
   next_scan_at: null,
+  paused_at: null,
   libraries: [{ id: 1, name: 'Manga' }],
   nested: [],
   inside: [],

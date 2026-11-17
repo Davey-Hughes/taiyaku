@@ -3,7 +3,9 @@ use std::cell::Cell;
 use serde_json::json;
 use taiyaku_library::{Library, derive, scan};
 
-use super::{Reread, run, run_with};
+use taiyaku_library::progress::{Outcome, Step, Watch};
+
+use super::{Reread, run_with};
 use crate::test_support;
 
 /// Two page directories, `a` walked before `b`, added to an in-memory library
@@ -174,14 +176,9 @@ fn a_batch_walks_past_a_directory_it_cannot_walk() {
     std::fs::remove_dir_all(&a.path).expect("deletes a's directory");
     let job = crate::LibraryJob::default();
 
-    let reports = run(
-        &library,
-        &[a.clone(), b.clone()],
-        Reread::Batch,
-        &job,
-        &|_, _| {},
-    )
-    .expect("a batch answers each directory on its own slot");
+    let reports =
+        crate::test_support::run_unreserved(&library, &[a.clone(), b.clone()], Reread::Batch, &job)
+            .expect("a batch answers each directory on its own slot");
 
     assert_eq!(reports.len(), 2, "{reports:?}");
     let a_said = reports[0]["error"]
@@ -208,14 +205,9 @@ fn a_batch_keeps_what_it_walked_before_a_failed_walk() {
     std::fs::remove_dir_all(&b.path).expect("deletes b's directory");
     let job = crate::LibraryJob::default();
 
-    let reports = run(
-        &library,
-        &[a.clone(), b.clone()],
-        Reread::Batch,
-        &job,
-        &|_, _| {},
-    )
-    .expect("a batch answers each directory on its own slot");
+    let reports =
+        crate::test_support::run_unreserved(&library, &[a.clone(), b.clone()], Reread::Batch, &job)
+            .expect("a batch answers each directory on its own slot");
 
     assert_eq!(reports.len(), 2, "{reports:?}");
     assert!(
@@ -246,7 +238,7 @@ fn a_batch_answers_a_directory_changed_while_it_waited_on_its_own_slot() {
     scan::remove_root(&library.conn(), a.id).expect("removes a from the store");
     let job = crate::LibraryJob::default();
 
-    let reports = run(&library, &asked, Reread::Batch, &job, &|_, _| {})
+    let reports = crate::test_support::run_unreserved(&library, &asked, Reread::Batch, &job)
         .expect("a batch answers each directory on its own slot");
 
     assert_eq!(reports.len(), 2, "{reports:?}");
@@ -469,12 +461,11 @@ fn a_lease_that_cannot_be_held_fails_the_derive() {
     let lock = std::path::PathBuf::from(format!("{}.derive-lock", store.display()));
     std::fs::create_dir_all(&lock).expect("a directory where the lock file goes");
 
-    let why = run(
+    let why = crate::test_support::run_unreserved(
         &library,
         std::slice::from_ref(&a),
         Reread::Dir,
         &crate::LibraryJob::default(),
-        &|_, _| {},
     )
     .expect_err("the derive fails");
 
@@ -601,9 +592,9 @@ fn a_queued_scan_that_cannot_open_its_connection_reads_its_last_word_again() {
     });
 }
 
-/// O51: the job tells its caller that it holds the job lock, then when its
-/// derive starts to wait for the lease and when it holds it, which the store,
-/// whose write lock another derive may hold, cannot always be told.
+/// O51: the job says on its slot when its derive starts to wait for the lease
+/// and when it holds it, which the store, whose write lock another derive may
+/// hold, cannot always be told; and while it waits, it is in the step Waiting.
 #[test]
 fn a_scan_says_when_it_waits_for_the_lease_and_when_it_holds_it() {
     let (library, _fixture, store, a) = one_dir_on_disk("job-says-it-waits");
@@ -612,35 +603,114 @@ fn a_scan_says_when_it_waits_for_the_lease_and_when_it_holds_it() {
         .derive_lease(taiyaku_library::lease::Wait::No)
         .expect("takes the lease")
         .expect("the lease is free");
-    let (told, heard) = std::sync::mpsc::channel::<bool>();
+    let started = std::time::Instant::now();
+    let job = test_support::a_planted_job();
+    let scans = a_registry_holding(&job, &a);
+    let waits = || scans.lock().expect("the registry")[&a.id].waiting;
 
-    let job = std::thread::spawn(move || {
-        let told = std::sync::Mutex::new(told);
-        super::run_watched(
-            &library,
-            std::slice::from_ref(&a),
-            Reread::Dir,
-            &crate::LibraryJob::default(),
-            &|_, waiting| {
-                let _ = told.lock().expect("one teller").send(waiting);
-            },
-            scan::scan_root,
-            derive::derive,
-        )
-        .map(|reports| reports.len())
+    std::thread::scope(|scope| {
+        let scan =
+            scope.spawn(|| a_job_of(&library, &a, &job, &scans).map(|reports| reports.len()));
+        while !waits() && started.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let in_the_wait = (waits(), job.snapshot().step, scan.is_finished());
+        drop(held);
+        let ran = scan.join().expect("the scan did not panic");
+
+        assert_eq!(
+            (in_the_wait, ran, waits()),
+            ((true, Step::Waiting, false), Ok(1), false),
+            "(waiting, its step and whether it ended while the lease is held elsewhere), \
+             what it answered, and waiting once it ended"
+        );
     });
-    let locked = heard.recv_timeout(std::time::Duration::from_secs(10));
-    let first = heard.recv_timeout(std::time::Duration::from_secs(10));
-    let still_waiting = !job.is_finished();
-    drop(held);
-    let second = heard.recv_timeout(std::time::Duration::from_secs(10));
+}
+
+/// A registry holding `root`'s slot for `job`, not yet waiting.
+fn a_registry_holding(
+    job: &std::sync::Arc<super::Job>,
+    root: &scan::Root,
+) -> std::sync::Mutex<std::collections::HashMap<i64, crate::ScanProgress>> {
+    std::sync::Mutex::new(std::collections::HashMap::from([(
+        root.id,
+        crate::ScanProgress {
+            waiting: false,
+            started: job.started,
+            done: false,
+            report: None,
+            library: None,
+            job: std::sync::Arc::clone(job),
+        },
+    )]))
+}
+
+/// `job`, a scan of `root` with the real walk and derive, saying on `scans`
+/// whether it waits.
+fn a_job_of(
+    library: &Library,
+    root: &scan::Root,
+    job: &super::Job,
+    scans: &std::sync::Mutex<std::collections::HashMap<i64, crate::ScanProgress>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    super::run_watched(
+        library,
+        std::slice::from_ref(root),
+        Reread::Dir,
+        &crate::LibraryJob::default(),
+        &super::Running::new(job, Some(scans)),
+        scan::scan_root_watched,
+        |conn, watch| derive::derive_watched(conn, derive::Documents::Reconcile, watch),
+    )
+}
+
+/// Spec §7, "Cancel checks", and §10.5: a job cancelled while its derive
+/// waits for the lease another process holds, as the CLI's derive can, ends
+/// at once, not once that derive ends: it answers that it stopped while
+/// waiting, and its directory reads `cancelled` and is paused.
+#[test]
+fn a_job_cancelled_while_it_waits_for_the_lease_ends_without_the_holder() {
+    let (library, _fixture, store, a) = one_dir_on_disk("job-cancelled-on-the-lease");
+    let elsewhere = Library::open(&store).expect("another connection, as another process");
+    let held = elsewhere
+        .derive_lease(taiyaku_library::lease::Wait::No)
+        .expect("takes the lease")
+        .expect("the lease is free");
+    let started = std::time::Instant::now();
+    let job = test_support::a_planted_job();
+    let scans = a_registry_holding(&job, &a);
+    let waits = || scans.lock().expect("the registry")[&a.id].waiting;
+
+    let (ended_while_held, ran) = std::thread::scope(|scope| {
+        let scan = scope.spawn(|| a_job_of(&library, &a, &job, &scans));
+        while !waits() && started.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        job.request_cancel();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !scan.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let ended_while_held = scan.is_finished();
+        drop(held);
+        (
+            ended_while_held,
+            scan.join().expect("the scan did not panic"),
+        )
+    });
 
     assert_eq!(
-        (locked, first, still_waiting, second),
-        (Ok(false), Ok(true), true, Ok(false)),
-        "holding the job lock; waiting while the lease is held elsewhere, then holding it"
+        (ended_while_held, ran),
+        (true, Ok(vec![cancelled_in("waiting")])),
+        "(whether it ended within two seconds, the lease still held elsewhere; \
+         what it answered)"
     );
-    assert_eq!(job.join().expect("the scan did not panic"), Ok(1));
+    let conn = library.conn();
+    assert_eq!(
+        (status(&conn, &a), paused(&conn, &a)),
+        (word("cancelled"), true),
+        "(its word, paused)"
+    );
 }
 
 /// O51: a scan [`super::spawn`] started says it waits for the lease on the
@@ -770,18 +840,18 @@ fn a_scan_held_in_its_derive(
         std::sync::Arc::clone(state),
         vec![root.clone()],
         started,
-        move |state, roots, waiting| {
+        move |state, roots, running| {
             super::run_watched(
                 &state.library,
                 roots,
                 Reread::Dir,
                 &state.library_job,
-                waiting,
-                scan::scan_root,
-                |conn| {
+                running,
+                |conn, root, _| scan::scan_root(conn, root).map(Outcome::Done),
+                |conn, _| {
                     let _ = said.send(());
                     let _ = released.recv();
-                    derive::derive(conn)
+                    derive::derive(conn).map(Outcome::Done)
                 },
             )
         },
@@ -821,19 +891,19 @@ async fn a_scan_queued_behind_another_reads_waiting_until_it_holds_the_job_lock(
         std::sync::Arc::clone(&state),
         vec![second.clone()],
         started,
-        move |state, roots, waiting| {
+        move |state, roots, running| {
             super::run_watched(
                 &state.library,
                 roots,
                 Reread::Dir,
                 &state.library_job,
-                waiting,
-                |conn, root| {
+                running,
+                |conn, root, _| {
                     let _ = walks.send(());
                     let _ = gone_on.recv();
-                    scan::scan_root(conn, root)
+                    scan::scan_root(conn, root).map(Outcome::Done)
                 },
-                derive::derive,
+                |conn, _| derive::derive(conn).map(Outcome::Done),
             )
         },
     );
@@ -920,5 +990,618 @@ async fn a_scan_queued_behind_a_job_writing_the_store_reads_waiting() {
         stored,
         word("ok"),
         "the store still holds the last scan's word"
+    );
+}
+
+/// A [`crate::ServeState`] over `library`, whose directories are in `fixture`.
+fn state_over(
+    library: std::sync::Arc<Library>,
+    fixture: &test_support::Fixture,
+) -> std::sync::Arc<crate::ServeState> {
+    std::sync::Arc::new(crate::ServeState {
+        library,
+        ..test_support::state(fixture.path())
+    })
+}
+
+/// Each step a job showed, with the directory it was on.
+type Seen = Vec<(Step, Option<(usize, usize)>)>;
+
+/// A watch that passes each report on to `inner`, then keeps `job`'s step and
+/// directory wherever they changed.
+struct Recording<'a> {
+    inner: &'a dyn Watch,
+    job: &'a super::Job,
+    seen: &'a std::sync::Mutex<Seen>,
+}
+
+impl Watch for Recording<'_> {
+    fn at(&self, step: Step, done: u64, of: Option<u64>) {
+        self.inner.at(step, done, of);
+        let now = self.job.snapshot();
+        let mut seen = self.seen.lock().expect("one recorder");
+        if seen.last() != Some(&(now.step, now.dir)) {
+            seen.push((now.step, now.dir));
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.inner.cancelled()
+    }
+}
+
+/// A watch that passes each report on to `inner`, and asks `job` to cancel
+/// at the first report `when` names, by its step and count.
+struct CancelWhen<'a> {
+    inner: &'a dyn Watch,
+    job: &'a super::Job,
+    when: fn(Step, u64) -> bool,
+}
+
+impl Watch for CancelWhen<'_> {
+    fn at(&self, step: Step, done: u64, of: Option<u64>) {
+        self.inner.at(step, done, of);
+        if (self.when)(step, done) {
+            self.job.request_cancel();
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.inner.cancelled()
+    }
+}
+
+/// A job of `asked`, as `reread` says, cancelled at the first count of
+/// hashing after one digest.
+fn cancelled_after_one_digest(
+    library: &Library,
+    asked: &[scan::Root],
+    reread: Reread,
+) -> Result<Vec<serde_json::Value>, String> {
+    let job = super::Job::new(
+        std::time::Instant::now(),
+        Vec::new(),
+        std::sync::Arc::default(),
+    );
+    super::run_watched(
+        library,
+        asked,
+        reread,
+        &crate::LibraryJob::default(),
+        &super::Running::new(&job, None),
+        scan::scan_root_watched,
+        |conn, watch| {
+            derive::derive_watched(
+                conn,
+                derive::Documents::Reconcile,
+                &CancelWhen {
+                    inner: watch,
+                    job: &job,
+                    when: |step, done| step == Step::Hashing && done > 0,
+                },
+            )
+        },
+    )
+}
+
+/// A job of `asked` that asks itself to cancel as each walk returns.
+fn cancelled_after_the_first_walk(
+    library: &Library,
+    asked: &[scan::Root],
+    walked: &mut Vec<i64>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let job = super::Job::new(
+        std::time::Instant::now(),
+        Vec::new(),
+        std::sync::Arc::default(),
+    );
+    super::run_watched(
+        library,
+        asked,
+        Reread::Dir,
+        &crate::LibraryJob::default(),
+        &super::Running::new(&job, None),
+        |conn, root, watch| {
+            walked.push(root.id);
+            let walk = scan::scan_root_watched(conn, root, watch);
+            job.request_cancel();
+            walk
+        },
+        |conn, watch| derive::derive_watched(conn, derive::Documents::Reconcile, watch),
+    )
+}
+
+fn count(conn: &rusqlite::Connection, sql: &str) -> i64 {
+    conn.query_row(sql, [], |r| r.get(0)).expect("counts")
+}
+
+const DIGESTS: &str = "SELECT count(*) FROM scan_entry WHERE sha256 IS NOT NULL";
+
+fn last_scan_at(conn: &rusqlite::Connection, root: &scan::Root) -> Option<String> {
+    conn.query_row(
+        "SELECT last_scan_at FROM root WHERE id = ?1",
+        [root.id],
+        |r| r.get(0),
+    )
+    .expect("reads when it was last scanned")
+}
+
+fn paused(conn: &rusqlite::Connection, root: &scan::Root) -> bool {
+    conn.query_row(
+        "SELECT paused_at IS NOT NULL FROM root WHERE id = ?1",
+        [root.id],
+        |r| r.get(0),
+    )
+    .expect("reads whether it is paused")
+}
+
+fn both_paused(library: &Library, a: &scan::Root, b: &scan::Root) -> (bool, bool) {
+    let conn = library.conn();
+    (paused(&conn, a), paused(&conn, b))
+}
+
+/// `root`'s slot in `state`'s registry: whether it is done, and its report.
+fn slot(state: &crate::ServeState, root: &scan::Root) -> (bool, Option<serde_json::Value>) {
+    let scans = state.scans.lock().expect("the registry");
+    let slot = &scans[&root.id];
+    (slot.done, slot.report.clone())
+}
+
+fn cancelled_in(step: &str) -> serde_json::Value {
+    json!({ "cancelled": { "step": step } })
+}
+
+/// Spec §3, Goal 2: a job shows its step, and while it walks, which of its
+/// directories it is on, from its reservation to its end; and the libraries
+/// whose pages show it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_job_reports_its_directory_and_step_as_it_goes() {
+    let (library, fixture, a, b) = two_dirs("job-reports-its-step");
+    let state = state_over(library, &fixture);
+    let roots = vec![a.clone(), b.clone()];
+    let started = std::time::Instant::now();
+    let job = super::reserve(&state, &roots, started, None).expect("reserves");
+    let reserved = job.snapshot();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(vec![(reserved.step, reserved.dir)]));
+    let ended_before = state.jobs_ended.load(std::sync::atomic::Ordering::SeqCst);
+
+    let recorder = (std::sync::Arc::clone(&job), std::sync::Arc::clone(&seen));
+    super::spawn_job(
+        std::sync::Arc::clone(&state),
+        roots,
+        started,
+        move |state, roots, running| {
+            let (job, seen) = (&*recorder.0, &*recorder.1);
+            super::run_watched(
+                &state.library,
+                roots,
+                Reread::Dir,
+                &state.library_job,
+                running,
+                |conn, root, watch| {
+                    scan::scan_root_watched(
+                        conn,
+                        root,
+                        &Recording {
+                            inner: watch,
+                            job,
+                            seen,
+                        },
+                    )
+                },
+                |conn, watch| {
+                    derive::derive_watched(
+                        conn,
+                        derive::Documents::Reconcile,
+                        &Recording {
+                            inner: watch,
+                            job,
+                            seen,
+                        },
+                    )
+                },
+            )
+        },
+    )
+    .await
+    .expect("the job ends");
+
+    let seen = seen.lock().expect("the record").clone();
+    assert_eq!(
+        seen,
+        [
+            (Step::Waiting, None),
+            (Step::Listing, Some((1, 2))),
+            (Step::Resolving, Some((1, 2))),
+            (Step::Listing, Some((2, 2))),
+            (Step::Resolving, Some((2, 2))),
+            (Step::Hashing, None),
+            (Step::Writing, None),
+            (Step::Finishing, None),
+        ],
+        "each step and directory, in order"
+    );
+    assert_eq!(
+        (
+            job.ended(),
+            ended_before,
+            state.jobs_ended.load(std::sync::atomic::Ordering::SeqCst)
+        ),
+        (Some(super::JobEnded::Finished), 0, 1),
+        "(how it ended, the server's count of ended jobs once it was reserved, once it ended)"
+    );
+    assert_eq!(
+        (job.dirs.clone(), job.id == test_support::a_planted_job().id),
+        (vec![(a.id, a.path.clone()), (b.id, b.path.clone())], false),
+        "(its directories, whether a later job took its id)"
+    );
+    assert_eq!(
+        *job.libraries.lock().expect("its libraries"),
+        [
+            (a.libraries[0], "a".to_string()),
+            (b.libraries[0], "b".to_string())
+        ],
+        "the library each directory is in"
+    );
+}
+
+/// Spec §7, "Cancel checks", and §10.5: a job cancelled while it waits for
+/// the job lock never starts, and ends at once, not after the holder:
+/// nothing walked, each directory `cancelled` and paused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_job_cancelled_while_it_waits_for_the_job_lock_ends_without_the_holder() {
+    let (library, fixture, a, b) = two_dirs("job-cancelled-waiting");
+    let state = state_over(library, &fixture);
+    let held = test_support::holding_the_job(&state);
+    let roots = vec![a.clone(), b.clone()];
+    let started = std::time::Instant::now();
+    let job = super::reserve(&state, &roots, started, None).expect("reserves");
+    let spawned = super::spawn(std::sync::Arc::clone(&state), roots, started, Reread::Dir);
+    let queued = until_stored(&state, &a, "waiting").await;
+
+    job.request_cancel();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !slot(&state, &a).0 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let in_time = (slot(&state, &a).0, state.library_job.is_held());
+    let reports = (slot(&state, &a).1, slot(&state, &b).1);
+    drop(held);
+    spawned.await.expect("the job ends");
+
+    assert_eq!(queued, word("waiting"), "queued behind the holder");
+    assert_eq!(
+        in_time,
+        (true, true),
+        "(its slot is done within two seconds, the holder still holds the lock)"
+    );
+    assert_eq!(
+        reports,
+        (Some(cancelled_in("waiting")), Some(cancelled_in("waiting")))
+    );
+    let conn = state.library.conn();
+    assert_eq!(
+        (
+            count(&conn, "SELECT count(*) FROM scan_entry"),
+            (status(&conn, &a), status(&conn, &b)),
+            (paused(&conn, &a), paused(&conn, &b)),
+        ),
+        (0, (word("cancelled"), word("cancelled")), (true, true)),
+        "(rows, statuses, paused)"
+    );
+    assert_eq!(job.ended(), Some(super::JobEnded::Cancelled(Step::Waiting)));
+}
+
+/// Spec §5, §7 and §10.2: a first scan cancelled while it hashes keeps the
+/// digests it computed and writes no work; each directory still reads
+/// Never, says `cancelled` and is paused.
+#[test]
+fn a_cancelled_first_scan_reads_never_cancelled_and_paused_with_its_digests_kept() {
+    let (library, _fixture, a, b) = two_dirs("job-cancelled-hashing");
+
+    let reports = cancelled_after_one_digest(&library, &[a.clone(), b.clone()], Reread::Dir);
+
+    assert_eq!(
+        reports,
+        Ok(vec![cancelled_in("hashing"), cancelled_in("hashing")])
+    );
+    let conn = library.conn();
+    let of = |root: &scan::Root| {
+        (
+            last_scan_at(&conn, root),
+            status(&conn, root),
+            paused(&conn, root),
+        )
+    };
+    assert_eq!(
+        (of(&a), of(&b)),
+        (
+            (None, word("cancelled"), true),
+            (None, word("cancelled"), true)
+        ),
+        "(last scan, status, paused) of each"
+    );
+    assert_eq!(
+        (
+            count(&conn, DIGESTS),
+            count(&conn, "SELECT count(*) FROM work")
+        ),
+        (1, 0),
+        "(digests, works)"
+    );
+}
+
+/// Spec §7: a cancel writes back the last scan each directory had before
+/// the job, which its walk replaced.
+#[test]
+fn a_cancelled_scan_puts_back_the_last_scan_a_directory_had() {
+    const BEFORE: &str = "2026-11-01 00:00:00";
+    let (library, _fixture, a, b) = two_dirs("job-cancelled-rescan");
+    {
+        let conn = library.conn();
+        scan::scan_root(&conn, &a).expect("a's earlier scan");
+        conn.execute(
+            "UPDATE root SET last_scan_at = ?2 WHERE id = ?1",
+            rusqlite::params![a.id, BEFORE],
+        )
+        .expect("dates it");
+    }
+
+    cancelled_after_one_digest(&library, &[a.clone(), b.clone()], Reread::Dir)
+        .expect("the job answers");
+
+    let conn = library.conn();
+    assert_eq!(
+        (last_scan_at(&conn, &a), last_scan_at(&conn, &b)),
+        (Some(BEFORE.to_string()), None)
+    );
+}
+
+/// Spec §7, "Cancel checks": a cancel between directories walks no more, so
+/// the directory not yet walked records nothing.
+#[test]
+fn a_job_cancelled_between_directories_walks_no_more() {
+    let (library, _fixture, a, b) = two_dirs("job-cancelled-between");
+    let mut walked = Vec::new();
+
+    let reports = cancelled_after_the_first_walk(&library, &[a.clone(), b.clone()], &mut walked);
+
+    let conn = library.conn();
+    let b_rows = count(
+        &conn,
+        &format!("SELECT count(*) FROM scan_entry WHERE root_id = {}", b.id),
+    );
+    assert_eq!(
+        (walked, b_rows),
+        (vec![a.id], 0),
+        "(the walks entered, b's rows)"
+    );
+    assert_eq!(
+        reports,
+        Ok(vec![cancelled_in("resolving"), cancelled_in("resolving")])
+    );
+    assert_eq!(
+        (status(&conn, &a), status(&conn, &b)),
+        (word("cancelled"), word("cancelled"))
+    );
+}
+
+/// Spec §7, "Cancel checks": a cancel between the entries a walk resolves
+/// stops that walk before it records anything, and the job with it: no
+/// later directory is walked, and every slot says the job stopped resolving.
+#[test]
+fn a_job_cancelled_while_a_walk_resolves_records_nothing() {
+    let (library, _fixture, a, b) = two_dirs("job-cancelled-resolving");
+    let job = test_support::a_planted_job();
+    let mut walked = Vec::new();
+
+    let reports = super::run_watched(
+        &library,
+        &[a.clone(), b.clone()],
+        Reread::Dir,
+        &crate::LibraryJob::default(),
+        &super::Running::new(&job, None),
+        |conn, root, watch| {
+            walked.push(root.id);
+            scan::scan_root_watched(
+                conn,
+                root,
+                &CancelWhen {
+                    inner: watch,
+                    job: &job,
+                    when: |step, done| step == Step::Resolving && done >= 1,
+                },
+            )
+        },
+        |conn, watch| derive::derive_watched(conn, derive::Documents::Reconcile, watch),
+    );
+
+    assert_eq!(
+        reports,
+        Ok(vec![cancelled_in("resolving"), cancelled_in("resolving")])
+    );
+    let rows = count(&library.conn(), "SELECT count(*) FROM scan_entry");
+    assert_eq!(
+        (walked, rows, statuses(&library, &a, &b)),
+        (vec![a.id], 0, (word("cancelled"), word("cancelled"))),
+        "(the walks entered, rows, statuses)"
+    );
+}
+
+/// Spec §7, "Pause": every directory of a cancelled job is paused, one whose
+/// walk was refused among them, though `refused` stays its word and its slot
+/// keeps the refusal; only the directory not finished answers cancelled.
+#[test]
+fn a_cancelled_job_pauses_a_directory_whose_walk_was_refused() {
+    let (library, _fixture, a, b) = two_dirs("job-cancelled-refused");
+    refuse_next_walk(&library, &a);
+
+    let reports =
+        cancelled_after_the_first_walk(&library, &[a.clone(), b.clone()], &mut Vec::new())
+            .expect("the job answers");
+
+    let refusal = reports[0]["error"].as_str().unwrap_or_default();
+    assert!(
+        refusal.starts_with(&format!(
+            "{} scanned empty while the library holds",
+            a.path.display()
+        )),
+        "a's slot keeps its refusal: {}",
+        reports[0]
+    );
+    assert_eq!(reports[1], cancelled_in("listing"), "b's slot");
+    assert_eq!(
+        (statuses(&library, &a, &b), both_paused(&library, &a, &b)),
+        ((word("refused"), word("cancelled")), (true, true)),
+        "(statuses, paused)"
+    );
+}
+
+/// Spec §7, "Pause": a pressed scan, of a directory or of a library, clears
+/// the pause of each directory it covers, and of no other.
+#[test]
+fn a_pressed_scan_clears_the_pause_of_what_it_covers() {
+    let (library, _fixture, a, b) = two_dirs("job-pressed-unpauses");
+    scan::pause(&library.conn(), &[a.clone(), b.clone()]).expect("pauses both");
+    let job = crate::LibraryJob::default();
+
+    run_with(
+        &library,
+        std::slice::from_ref(&a),
+        Reread::Dir,
+        &job,
+        scan::scan_root,
+        derive::derive,
+    )
+    .expect("the directory's scan");
+    let after_the_directory = both_paused(&library, &a, &b);
+    run_with(
+        &library,
+        std::slice::from_ref(&b),
+        Reread::Library(b.libraries[0]),
+        &job,
+        scan::scan_root,
+        derive::derive,
+    )
+    .expect("the library's scan");
+
+    assert_eq!(
+        (after_the_directory, both_paused(&library, &a, &b)),
+        ((false, true), (false, false)),
+        "(after a's scan, after b's library's scan)"
+    );
+}
+
+/// Spec §7, "Pause": nobody pressed for a scheduled batch, so it clears no
+/// pause.
+#[test]
+fn a_scheduled_batch_leaves_a_pause() {
+    let (library, _fixture, a, b) = two_dirs("job-batch-keeps-the-pause");
+    scan::pause(&library.conn(), std::slice::from_ref(&a)).expect("pauses a");
+
+    run_with(
+        &library,
+        &[a.clone(), b.clone()],
+        Reread::Batch,
+        &crate::LibraryJob::default(),
+        scan::scan_root,
+        derive::derive,
+    )
+    .expect("the batch");
+
+    assert_eq!(both_paused(&library, &a, &b), (true, false));
+}
+
+/// Spec §3, Goal 3, and §7, "Pause": a directory two libraries share is
+/// shown by both while a job holds it, and a cancelled scan of either
+/// library pauses it.
+#[test]
+fn a_cancelled_library_scan_pauses_a_directory_another_library_shares() {
+    let (library, _fixture, a, b) = two_dirs("job-cancelled-shared");
+    let (scanned, other) = (a.libraries[0], b.libraries[0]);
+    library
+        .conn()
+        .execute(
+            "INSERT INTO library_root (library_id, root_id) VALUES (?1, ?2)",
+            [scanned, b.id],
+        )
+        .expect("puts b in a's library too");
+
+    let reports =
+        cancelled_after_one_digest(&library, &[a.clone(), b.clone()], Reread::Library(scanned));
+
+    assert_eq!(
+        reports,
+        Ok(vec![cancelled_in("hashing"), cancelled_in("hashing")])
+    );
+    assert_eq!(both_paused(&library, &a, &b), (true, true));
+    assert_eq!(
+        super::held_libraries(&library.conn(), std::slice::from_ref(&b)),
+        Ok(vec![(scanned, "a".to_string()), (other, "b".to_string())])
+    );
+}
+
+/// Spec §3, Goal 3: a job holding a directory nested in another library's
+/// directory, which that library reaches, is shown by both libraries.
+#[test]
+fn held_libraries_names_the_outer_library_that_reaches_a_nested_directory() {
+    let fixture = test_support::Fixture::new("held-nested");
+    let library = test_support::library();
+    let conn = library.conn();
+    let outer_dir = fixture.path().join("outer");
+    let inner_dir = outer_dir.join("inner");
+    test_support::write_pages(&inner_dir.join("Inner").join("Inner - v01"), 2);
+    let outer = scan::add_root_in(&conn, &outer_dir, scan::InLibrary::Named("Outer"))
+        .expect("adds the outer directory");
+    let inner = scan::add_root_in(&conn, &inner_dir, scan::InLibrary::Named("Inner"))
+        .expect("adds the nested directory");
+
+    assert_eq!(
+        super::held_libraries(&conn, std::slice::from_ref(&inner)),
+        Ok(vec![
+            (outer.libraries[0], "Outer".to_string()),
+            (inner.libraries[0], "Inner".to_string())
+        ])
+    );
+}
+
+/// Spec §7, "Pause": an accepted press clears the pause again once it holds
+/// the job lock, so a press whose first clearing was refused while it
+/// waited, as a rules save's long write can refuse it, still runs and ends
+/// unpaused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pressed_scan_clears_its_pause_again_once_it_holds_the_job_lock() {
+    let (library, fixture, a, _b) = two_dirs("job-unpauses-again");
+    let state = state_over(library, &fixture);
+    scan::pause(&state.library.conn(), std::slice::from_ref(&a)).expect("pauses a");
+    let held = test_support::holding_the_job(&state);
+    let started = std::time::Instant::now();
+    super::reserve(&state, std::slice::from_ref(&a), started, None).expect("reserves");
+    let spawned = super::spawn(
+        std::sync::Arc::clone(&state),
+        vec![a.clone()],
+        started,
+        Reread::Dir,
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while paused(&state.library.conn(), &a) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let cleared_before_the_lock = !paused(&state.library.conn(), &a);
+    // Stands in for a first clearing the store refused: the lock is still
+    // held, so the job has not passed it.
+    scan::pause(&state.library.conn(), std::slice::from_ref(&a)).expect("pauses a again");
+    drop(held);
+    spawned.await.expect("the job ends");
+
+    let conn = state.library.conn();
+    assert_eq!(
+        (
+            cleared_before_the_lock,
+            paused(&conn, &a),
+            status(&conn, &a)
+        ),
+        (true, false, word("ok")),
+        "(cleared before the lock, paused once it ended, its word)"
     );
 }

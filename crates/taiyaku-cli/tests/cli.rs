@@ -654,6 +654,79 @@ fn library_scan_with_a_library_walks_only_its_dirs() {
     );
 }
 
+/// When the directory at `dir` in the database at `db` was paused, if it is.
+fn paused_at(db: &str, dir: &str) -> Option<String> {
+    rusqlite::Connection::open(db)
+        .expect("open the same database taiyaku wrote")
+        .query_row("SELECT paused_at FROM root WHERE path = ?1", [dir], |r| {
+            r.get(0)
+        })
+        .expect("reads the pause")
+}
+
+/// Pause each of `dirs` in the database at `db`, as a cancelled job does.
+fn pause(db: &str, dirs: &[&str]) {
+    let conn = rusqlite::Connection::open(db).expect("open the same database taiyaku wrote");
+    for dir in dirs {
+        conn.execute(
+            "UPDATE root SET paused_at = '2026-11-16 03:33:10' WHERE path = ?1",
+            [dir],
+        )
+        .expect("pauses the directory");
+    }
+}
+
+/// The CLI is how an operator presses Scan (spec §7, "Pause"), so a scan
+/// clears the pause a cancelled job left on the directory it walks.
+#[test]
+fn library_scan_of_a_paused_directory_clears_its_pause() {
+    let tree = TempDir::new("cli-scan-paused");
+    let db_dir = TempDir::new("cli-scan-paused-db");
+    let db = db_path(&db_dir);
+    let (dir, _) = add_dir(&tree, &db, "Volumes", None);
+    pause(&db, &[&dir]);
+
+    taiyaku_stdout(&[
+        "library",
+        "scan",
+        "--root",
+        &dir,
+        "--no-derive",
+        "--db",
+        &db,
+    ]);
+
+    assert_eq!(paused_at(&db, &dir), None);
+}
+
+/// A pause is cleared on the directories the scan covers and on no other, which
+/// stays paused until a scan covers it.
+#[test]
+fn library_scan_root_of_another_directory_leaves_a_pause() {
+    let tree = TempDir::new("cli-scan-paused-other");
+    let db_dir = TempDir::new("cli-scan-paused-other-db");
+    let db = db_path(&db_dir);
+    let (comics, _) = add_dir(&tree, &db, "Comics", None);
+    let (volumes, _) = add_dir(&tree, &db, "Volumes", None);
+    pause(&db, &[&comics, &volumes]);
+
+    taiyaku_stdout(&[
+        "library",
+        "scan",
+        "--root",
+        &volumes,
+        "--no-derive",
+        "--db",
+        &db,
+    ]);
+
+    assert_eq!(
+        [paused_at(&db, &comics), paused_at(&db, &volumes)],
+        [Some("2026-11-16 03:33:10".to_string()), None],
+        "(the other directory, the one scanned)"
+    );
+}
+
 #[test]
 fn library_scan_refuses_a_library_it_does_not_hold_and_root_with_library() {
     let tree = TempDir::new("cli-scan-library-refusals");

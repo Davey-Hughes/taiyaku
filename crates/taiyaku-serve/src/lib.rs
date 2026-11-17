@@ -49,6 +49,7 @@ mod progress;
 mod registry;
 mod reqlog;
 mod routes;
+mod scan_feed;
 mod scan_jobs;
 mod scheduler;
 pub mod session;
@@ -143,6 +144,11 @@ pub struct ServeState {
     /// only to write its finished report back. A crate this size gains
     /// nothing from a lock-free map for that shape of access.
     pub scans: Arc<std::sync::Mutex<std::collections::HashMap<i64, ScanProgress>>>,
+    /// How many scan jobs have ended in this server, raised as each is marked
+    /// ended: the scan feed's `ended` marker, so a page that polls between two
+    /// readings learns that one ended although it never saw it run. One per
+    /// server, as [`Self::scans`] is, so the count is this server's alone.
+    pub jobs_ended: Arc<std::sync::atomic::AtomicU64>,
     /// The store's job lock: [`LibraryJob`] names the jobs that take it, a
     /// scan's derive and a save's `preview::apply` among them.
     ///
@@ -230,6 +236,9 @@ pub struct ScanProgress {
     /// ([`scan_jobs::status_sent`]): a holder in this process may hold the
     /// store's write lock for its whole derive, and the store's word with it.
     pub waiting: bool,
+    /// The job this slot is one directory of: its step, counts, libraries and
+    /// cancel flag. Every slot the job reserved holds the same one.
+    pub(crate) job: std::sync::Arc<scan_jobs::Job>,
 }
 
 impl ServeState {
@@ -543,6 +552,7 @@ pub async fn serve(
         log,
         auth,
         scans: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        jobs_ended: Arc::default(),
         library_job: Arc::default(),
         dirs,
     });

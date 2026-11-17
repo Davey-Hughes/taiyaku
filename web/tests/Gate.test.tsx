@@ -14,8 +14,10 @@ import { getJson, type Me } from '../src/api'
 import { Gate } from '../src/Gate'
 import { useGate } from '../src/gate'
 import { entryOf, read, readSet } from '../src/reads'
+import { type ScanFeed, useScanFeed } from '../src/scanFeed'
 import { lastLibraryAddress, useKeptScroll } from '../src/scrollKeeper'
-import { mount } from './support/mount'
+import { mount, rerender } from './support/mount'
+import { feedJob, serveFeed } from './support/scanFeed'
 
 const ADMIN: Me = {
   user_id: 7,
@@ -127,6 +129,48 @@ function keepALibraryView() {
       <Kept />
     </MemoryRouter>,
   )
+}
+
+/**
+ * A page drawing the scan feed, its `ended` and its jobs' ids, or `none`
+ * before an answer. Declared inside a function for the reason `probe` gives.
+ */
+function feedProbe() {
+  function Feed() {
+    const feed = useScanFeed()
+    return (
+      <p data-testid="feed">
+        {feed === undefined
+          ? 'none'
+          : `${feed.ended}: ${(feed.jobs ?? []).map((job) => job.id).join(',')}`}
+      </p>
+    )
+  }
+  return <Feed />
+}
+
+/** An administrator's feed, which names a job and its directory's path. */
+const ADMIN_FEED: ScanFeed = {
+  ended: 3,
+  libraries: [{ id: 7, step: 'resolving' }],
+  jobs: [feedJob({ id: 7 })],
+}
+
+/** A reader's feed, with no job in it. */
+const READER_FEED: ScanFeed = { ended: 4, libraries: [] }
+
+const feedDrawn = (host: HTMLElement) =>
+  host.querySelector('[data-testid="feed"]')?.textContent
+
+/** Submit the sign-in form, which the stub server always accepts. */
+const signIn = async (host: HTMLElement) => {
+  await act(async () => {
+    form(host)?.dispatchEvent(
+      new Event('submit', { bubbles: true, cancelable: true }),
+    )
+    await Promise.resolve()
+  })
+  await settle()
 }
 
 const form = (host: HTMLElement) => host.querySelector('form')
@@ -307,6 +351,65 @@ describe('the sign-in gate', () => {
     await settle()
     expect(guarded(host)).toBe('7/true')
     expect(lastLibraryAddress()).toBeUndefined()
+  })
+
+  // The feed's last answer may be an administrator's, with paths and counts
+  // a reader is never sent; held polls show what is drawn before the next
+  // account's own first answer.
+  it('forgets the scan feed’s last answer on signing out', async () => {
+    server(ADMIN)
+    const feed = serveFeed(ADMIN_FEED)
+    const host = mount(
+      <Gate>
+        {probe()}
+        {feedProbe()}
+      </Gate>,
+    )
+    await settle()
+    const drawn = [feedDrawn(host)]
+
+    await click(host, 'sign-out')
+    expect(form(host), 'the sign-in form').not.toBeNull()
+    feed.answer(READER_FEED)
+    const signedOut = feed.hold()
+    // A page drawing the feed while no one is signed in, as nothing else can.
+    drawn.push(feedDrawn(mount(feedProbe())))
+    rerender(null)
+    signedOut()
+
+    const signedIn = feed.hold()
+    await signIn(host)
+    drawn.push(feedDrawn(host))
+    signedIn()
+    await settle()
+    drawn.push(feedDrawn(host))
+    expect(drawn).toEqual(['3: 7', 'none', 'none', '4: '])
+  })
+
+  it('forgets the scan feed’s last answer on signing in', async () => {
+    server(ADMIN)
+    const feed = serveFeed(READER_FEED)
+    const host = mount(
+      <Gate>
+        {probe()}
+        {feedProbe()}
+      </Gate>,
+    )
+    await settle()
+    await click(host, 'sign-out')
+    feed.answer(ADMIN_FEED)
+    const outside = mount(feedProbe())
+    await settle()
+    const kept = feedDrawn(outside)
+    rerender(null)
+
+    feed.answer(READER_FEED)
+    const signedIn = feed.hold()
+    await signIn(host)
+    const atSignIn = feedDrawn(host)
+    signedIn()
+    await settle()
+    expect([kept, atSignIn, feedDrawn(host)]).toEqual(['3: 7', 'none', '4: '])
   })
 
   it('logs a failure that is not a 401, and still offers the sign-in screen', async () => {

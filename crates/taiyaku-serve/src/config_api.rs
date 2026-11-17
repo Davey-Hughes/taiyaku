@@ -1216,18 +1216,17 @@ pub(crate) fn admin_panicked(what: &str, why: &tokio::task::JoinError) -> Respon
 /// One `root` row, as [`list_roots`] sends it and `libraries_api` sends the
 /// directories of a library.
 ///
-/// **The scan columns are passed in**, as [`scan::Root`] has neither, so every
-/// key is present, `null` for a root never scanned: C4 §3's regime line needs
-/// them present, not populated. **`next_scan_at` is computed from them**
-/// ([`schedule::next_scan_at`]), as [`added_json`] has no connection to ask
-/// SQLite's `datetime()` for the arithmetic. It is `null` for Off, and for a
-/// root never scanned or whose `last_scan_at` does not read as
-/// `YYYY-MM-DD HH:MM:SS`, both of which are due; `scan_interval_secs` tells Off
-/// from the other two.
+/// **The scan columns are passed in**, as [`scan::Root`] has none of them; each
+/// key is present, `null` where unset, as C4 §3's regime line needs.
+/// **`next_scan_at` is computed from them** ([`schedule::next_scan_at`]), as
+/// [`added_json`] has no connection to ask SQLite's `datetime()`: `null` for
+/// Off, and for a root never scanned or whose `last_scan_at` does not read as
+/// `YYYY-MM-DD HH:MM:SS`, both due; `scan_interval_secs` tells Off from them.
 pub(crate) fn root_json(
     root: &scan::Root,
     last_scan_at: Option<&str>,
     last_scan_status: Option<&str>,
+    paused_at: Option<&str>,
 ) -> serde_json::Value {
     serde_json::json!({
         "id": root.id,
@@ -1241,6 +1240,7 @@ pub(crate) fn root_json(
         "last_scan_at": last_scan_at,
         "last_scan_status": last_scan_status,
         "next_scan_at": schedule::next_scan_at(last_scan_at, root.scan_interval_secs),
+        "paused_at": paused_at,
     })
 }
 
@@ -1259,6 +1259,7 @@ pub(crate) fn added_json(added: &scan::Added) -> serde_json::Value {
             &added.root,
             added.last_scan_at.as_deref(),
             added.last_scan_status.as_deref(),
+            added.paused_at.as_deref(),
         ),
         "watching": added.probe.as_ref().map(|probe| probe.watching),
         "watch_reason": added.probe.as_ref().and_then(|probe| probe.reason.as_deref()),
@@ -1808,35 +1809,60 @@ pub(crate) async fn scan_status(
 
 // --- roots: routes -----------------------------------------------------
 
-/// A root, with its `last_scan_at` and `last_scan_status`.
-pub(crate) type RootWithScan = (scan::Root, Option<String>, Option<String>);
+/// A root, with the scan columns [`scan::Root`] does not carry.
+pub(crate) struct RootWithScan {
+    pub(crate) root: scan::Root,
+    pub(crate) last_scan_at: Option<String>,
+    /// As a page is sent it ([`crate::scan_jobs::status_sent`]).
+    pub(crate) last_scan_status: Option<String>,
+    /// When a cancel paused the directory until a pressed scan covers it.
+    pub(crate) paused_at: Option<String>,
+}
 
-/// Every root with the two scan columns [`scan::Root`] does not carry, in
-/// [`scan::roots`]'s order: the root, `last_scan_at`, and `last_scan_status` as
-/// a page is sent it, `waiting` for each directory in `waiting`
-/// ([`crate::scan_jobs::status_sent`]).
+impl RootWithScan {
+    /// The root in [`root_json`]'s shape.
+    pub(crate) fn json(&self) -> serde_json::Value {
+        root_json(
+            &self.root,
+            self.last_scan_at.as_deref(),
+            self.last_scan_status.as_deref(),
+            self.paused_at.as_deref(),
+        )
+    }
+}
+
+/// Every root with the scan columns [`scan::Root`] does not carry, in
+/// [`scan::roots`]'s order, `last_scan_status` reading `waiting` for each
+/// directory in `waiting` ([`crate::scan_jobs::status_sent`]).
 ///
-/// `scan::Root` carries neither column — see [`root_json`]'s own doc comment —
+/// `scan::Root` carries none of them — see [`root_json`]'s own doc comment —
 /// so they are read here, in one extra query rather than one per root.
 pub(crate) fn roots_with_last_scan(
     conn: &rusqlite::Connection,
     waiting: &std::collections::HashSet<i64>,
 ) -> Result<Vec<RootWithScan>, String> {
+    type Columns = (Option<String>, Option<String>, Option<String>);
     let roots = scan::roots(conn)?;
     let mut stmt = conn
-        .prepare("SELECT id, last_scan_at, last_scan_status FROM root")
+        .prepare("SELECT id, last_scan_at, last_scan_status, paused_at FROM root")
         .map_err(|e| format!("reading scan status: {e}"))?;
-    let mut meta: std::collections::HashMap<i64, (Option<String>, Option<String>)> = stmt
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?))))
+    let mut meta: std::collections::HashMap<i64, Columns> = stmt
+        .query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?)))
+        })
         .map_err(|e| format!("reading scan status: {e}"))?
         .collect::<Result<_, _>>()
         .map_err(|e| format!("reading scan status: {e}"))?;
     Ok(roots
         .into_iter()
         .map(|root| {
-            let (at, status) = meta.remove(&root.id).unwrap_or_default();
-            let status = crate::scan_jobs::status_sent(waiting, root.id, status);
-            (root, at, status)
+            let (last_scan_at, status, paused_at) = meta.remove(&root.id).unwrap_or_default();
+            RootWithScan {
+                last_scan_status: crate::scan_jobs::status_sent(waiting, root.id, status),
+                root,
+                last_scan_at,
+                paused_at,
+            }
         })
         .collect())
 }
@@ -1858,7 +1884,7 @@ pub(crate) async fn list_roots(
         Ok::<_, AdminAnswer>(serde_json::json!({
             "roots": roots
                 .iter()
-                .map(|(root, at, status)| root_json(root, at.as_deref(), status.as_deref()))
+                .map(RootWithScan::json)
                 .collect::<Vec<_>>(),
         }))
     })

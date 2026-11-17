@@ -7,7 +7,11 @@
 //! this workspace ships. The file name is the one the coverage report and
 //! `.cargo/mutants.toml` exclude.
 
+use std::sync::Mutex;
+
 use rusqlite::Connection;
+
+use crate::progress::{Step, Watch};
 
 /// Link directory `root_id` into library `library_id` as well, by SQL: for a
 /// fixture whose directory need not exist, so cannot be linked by the add.
@@ -54,4 +58,65 @@ pub fn library_of_root(conn: &Connection, root_id: i64) -> i64 {
         |r| r.get(0),
     )
     .unwrap_or_else(|e| panic!("directory {root_id} is in a library: {e}"))
+}
+
+/// One report a [`Recording`] was given: the step, the count done, the count
+/// of.
+pub type Report = (Step, u64, Option<u64>);
+
+/// A [`Watch`] that keeps every report, in order, and answers cancelled from
+/// the first report `stop` matches on, as a job asked to stop stays asked.
+pub struct Recording {
+    reports: Mutex<Vec<Report>>,
+    stop: Box<dyn Fn(Report) -> bool + Send + Sync>,
+}
+
+impl Recording {
+    /// A recording that answers cancelled once a report matches `stop`.
+    #[must_use]
+    pub fn cancelling(stop: impl Fn(Report) -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            reports: Mutex::new(Vec::new()),
+            stop: Box::new(stop),
+        }
+    }
+
+    /// Every report so far, in the order given.
+    ///
+    /// # Panics
+    ///
+    /// If a thread panicked while it held the reports.
+    #[must_use]
+    pub fn reports(&self) -> Vec<Report> {
+        self.reports.lock().expect("the reports").clone()
+    }
+}
+
+/// Never cancelled.
+impl Default for Recording {
+    fn default() -> Self {
+        Self::cancelling(|_| false)
+    }
+}
+
+impl std::fmt::Debug for Recording {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Recording")
+            .field("reports", &self.reports)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Watch for Recording {
+    fn at(&self, step: Step, done: u64, of: Option<u64>) {
+        self.reports
+            .lock()
+            .expect("the reports")
+            .push((step, done, of));
+    }
+
+    fn cancelled(&self) -> bool {
+        let reports = self.reports.lock().expect("the reports");
+        reports.iter().any(|report| (self.stop)(*report))
+    }
 }

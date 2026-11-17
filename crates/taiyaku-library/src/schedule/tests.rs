@@ -101,6 +101,51 @@ fn an_off_directory_is_not_listed() {
     );
 }
 
+/// A cancelled job's directories wait for Scan to be pressed, so the
+/// scheduler passes a paused one over though it is due, and lists the one
+/// beside it.
+#[test]
+fn a_paused_directory_is_not_scheduled_though_never_scanned_and_due() {
+    let dir = crate::tests::tempdir("schedule-paused");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let paused = dir_with(&conn, dir.path(), "paused", None, None);
+    let beside = dir_with(&conn, dir.path(), "beside", None, None);
+
+    scan::pause(&conn, std::slice::from_ref(&paused)).expect("pauses it");
+
+    let now = "2026-11-10 12:00:00";
+    assert_eq!(
+        [due_at(&conn, now, paused.id), due_at(&conn, now, beside.id)],
+        [None, Some(true)],
+        "(paused, beside)"
+    );
+}
+
+/// The pause leaves the schedule setting alone, so once unpaused the
+/// directory is listed exactly as before it.
+#[test]
+fn a_paused_directory_is_scheduled_again_once_unpaused() {
+    let dir = crate::tests::tempdir("schedule-unpaused");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = dir_with(&conn, dir.path(), "a", Some(3600), None);
+    let listed = |conn: &Connection| scheduled(conn, "2026-11-10 12:00:00").expect("reads");
+    let before = listed(&conn);
+    let roots = std::slice::from_ref(&root);
+
+    scan::pause(&conn, roots).expect("pauses it");
+    let paused = listed(&conn);
+    scan::unpause(&conn, roots).expect("unpauses it");
+
+    assert!(
+        matches!(&before[..], [one] if one.due && one.root.scan_interval_secs == Some(3600)),
+        "sanity: listed hourly and due before the pause: {before:?}"
+    );
+    assert_eq!(paused, [], "sanity: not listed while paused");
+    assert_eq!(listed(&conn), before);
+}
+
 #[test]
 fn a_stored_interval_under_the_minimum_is_read_as_the_minimum() {
     let dir = crate::tests::tempdir("schedule-under-minimum");

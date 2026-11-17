@@ -7,6 +7,7 @@ import { cdp, type Locator, page, userEvent } from 'vitest/browser'
 // `index.css`. Without this the boxes below are unstyled and the assertions
 // measure browser defaults.
 import '../src/index.css'
+import { resetScanFeed } from '../src/scanFeed'
 import { Config } from '../src/Config'
 import * as config from '../src/config'
 import type { Derived, FinishedScan, Unreadable, Walk } from '../src/config'
@@ -42,6 +43,7 @@ import { press, submit, typeInto } from './support/input'
 import { boxOf, expectKept } from './support/kept'
 import { buttonSaying, byRole } from './support/located'
 import { mount, rerender } from './support/mount'
+import { feedJob, serveFeed } from './support/scanFeed'
 import {
   areaOf,
   coarseRulesOn,
@@ -128,6 +130,7 @@ const root = (
   last_scan_at: null,
   last_scan_status: null,
   next_scan_at: null,
+  paused_at: null,
   libraries: [{ id: 1, name: 'Manga' }],
   nested: [],
   inside: [],
@@ -3260,7 +3263,7 @@ describe('the Configuration screens at desktop width', () => {
       act(() => rerender(<div />))
     }
   })
-  it('draws the library page’s scan lines alike, muted at the UI size, its own scan’s and another library’s, and keeps both within the page at a phone’s width', async () => {
+  it('draws the library page’s scan lines and its paused line alike, muted at the UI size, a scan of its own and of another library’s, and keeps each within the page at a phone’s width', async () => {
     const outer: librariesApi.LibraryDir = {
       ...longPathRoot,
       nested: [
@@ -3273,41 +3276,121 @@ describe('the Configuration screens at desktop width', () => {
         },
       ],
     }
-    const status = (own: boolean): librariesApi.LibraryScanStatus => ({
-      library_id: 1,
-      running: true,
-      elapsed_secs: 3,
-      dirs: [
-        { root_id: 3, running: own },
-        { root_id: 9, running: true },
+    const job = (libraries: { id: number; name: string }[], ids: number[]) =>
+      feedJob({
+        dirs: ids.map((id) => ({ id, path: `/dir/${id}` })),
+        libraries,
+      })
+    const fed = {
+      own: [job([{ id: 1, name: 'Manga' }], [3, 9])],
+      Kids: [
+        job(
+          [
+            { id: 1, name: 'Manga' },
+            { id: 2, name: 'Kids' },
+          ],
+          [9],
+        ),
       ],
-      held_removals: own ? [] : [3],
-      moves_held: false,
-      derive_running: false,
-      scans: own
-        ? [{ library_id: 1, library: 'Manga', root_ids: [3, 9] }]
-        : [{ library_id: 2, library: 'Kids', root_ids: [9] }],
-    })
-    for (const own of [false, true]) {
+      paused: [],
+    }
+    for (const kind of ['own', 'Kids', 'paused'] as const) {
       for (const [width, height] of [
         [1280, 900],
         [390, 844],
       ]) {
-        const at = `${own ? 'own' : 'Kids'}, ${width}`
+        const at = `${kind}, ${width}`
         await page.viewport(width, height)
-        vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(outer))
-        vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue(status(own))
+        serveFeed({ ended: 0, libraries: [], jobs: fed[kind] })
+        vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+          holding(
+            kind === 'paused'
+              ? { ...outer, paused_at: '2026-11-16 03:33:10' }
+              : outer,
+          ),
+        )
         const host = await opened(LIBRARY)
-        const line = host.querySelector(
-          '.library-page > .scanning',
-        ) as HTMLElement
-        expect(line?.textContent, at).toMatch(
-          own
-            ? /^A scan is running in this library…/
-            : /^Kids is scanning Kids in a long directory name\/weekly\/, which Manga shows\.$/,
+        await expect
+          .poll(() =>
+            host.querySelector(
+              '.library-page > .scanning, .library-page > .paused',
+            ),
+          )
+          .not.toBeNull()
+        const lines = [
+          ...host.querySelectorAll<HTMLElement>(
+            '.library-page > .scanning, .library-page > .paused',
+          ),
+        ]
+        expect(
+          lines.map((line) => line.textContent),
+          at,
+        ).toEqual(
+          kind === 'own'
+            ? ['Reading files · 120 of 2,097 · directory 1 of 1']
+            : kind === 'Kids'
+              ? [
+                  'Reading files · 120 of 2,097 · directory 1 of 1',
+                  'This scan covers Kids too.',
+                ]
+              : ['Paused until Scan is pressed, since 2026-11-16 03:33:10 UTC'],
         )
         const muted = getComputedStyle(
           host.querySelector('.library-page .page-description') as Element,
+        )
+        const main = (
+          host.querySelector('main') as HTMLElement
+        ).getBoundingClientRect()
+        for (const line of lines) {
+          const drawn = getComputedStyle(line)
+          expect(drawn.color, at).toBe(muted.color)
+          expect(drawn.fontSize, at).toBe(muted.fontSize)
+          expect(line.getBoundingClientRect().right, at).toBeLessThanOrEqual(
+            main.right,
+          )
+        }
+        assertNoSidewaysScroll(host)
+        act(() => rerender(<div />))
+        resetScanFeed()
+      }
+    }
+  })
+
+  it('draws the directory page’s step line and its paused line alike, muted at the UI size, and keeps each within the page at a phone’s width', async () => {
+    for (const kind of ['scanning', 'paused'] as const) {
+      for (const [width, height] of [
+        [1280, 900],
+        [390, 844],
+      ]) {
+        const at = `${kind}, ${width}`
+        await page.viewport(width, height)
+        serveFeed({
+          ended: 0,
+          libraries: [],
+          jobs:
+            kind === 'scanning'
+              ? [feedJob({ dirs: [{ id: 3, path: longPathRoot.path }] })]
+              : [],
+        })
+        vi.mocked(librariesApi.listLibraries).mockResolvedValue(
+          holding(
+            kind === 'paused'
+              ? { ...longPathRoot, paused_at: '2026-11-16 03:33:10' }
+              : longPathRoot,
+          ),
+        )
+        const host = await opened(DIR)
+        await expect
+          .poll(() => host.querySelector(`.dir-page > .${kind}`))
+          .not.toBeNull()
+        const line = host.querySelector(`.dir-page > .${kind}`) as HTMLElement
+        expect(line.textContent, at).toBe(
+          kind === 'scanning'
+            ? 'Reading files · 120 of 2,097 · directory 1 of 1'
+            : 'Paused until Scan is pressed, since 2026-11-16 03:33:10 UTC',
+        )
+        const muted = getComputedStyle(
+          host.querySelector('.dir-page .page-description') as Element,
         )
         const drawn = getComputedStyle(line)
         expect(drawn.color, at).toBe(muted.color)
@@ -3320,13 +3403,14 @@ describe('the Configuration screens at desktop width', () => {
         )
         assertNoSidewaysScroll(host)
         act(() => rerender(<div />))
+        resetScanFeed()
       }
     }
   })
 })
 
 describe('a library page’s lines for a directory another library holds too', () => {
-  it('draws another library’s scan of a directory it holds too as its other scan lines are, muted at the UI size, and keeps it within the page at a phone’s width', async () => {
+  it('names the other library a scan of a directory it holds too covers as its other scan lines are drawn, muted at the UI size, and keeps it within the page at a phone’s width', async () => {
     const shared = root({
       ...longPathRoot,
       libraries: [
@@ -3340,23 +3424,27 @@ describe('a library page’s lines for a directory another library holds too', (
     ]) {
       await page.viewport(width, height)
       vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(shared))
-      vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
-        library_id: 1,
-        running: true,
-        elapsed_secs: 3,
-        dirs: [{ root_id: 3, running: true }],
-        held_removals: [],
-        moves_held: false,
-        derive_running: false,
-        scans: [{ library_id: 2, library: 'Kids', root_ids: [3] }],
+      serveFeed({
+        ended: 0,
+        libraries: [],
+        jobs: [
+          feedJob({
+            dirs: [{ id: 3, path: shared.path }],
+            libraries: [
+              { id: 1, name: 'Manga' },
+              { id: 2, name: 'Kids' },
+            ],
+          }),
+        ],
       })
       const host = await opened(LIBRARY)
-      const line = host.querySelector(
+      await expect
+        .poll(() => host.querySelectorAll('.library-page > .scanning').length)
+        .toBe(2)
+      const line = host.querySelectorAll<HTMLElement>(
         '.library-page > .scanning',
-      ) as HTMLElement
-      expect(line?.textContent, `${width}`).toBe(
-        'Kids is scanning /home/davey/temp/manga-test/Volumes, which Manga holds too.',
-      )
+      )[1]
+      expect(line.textContent, `${width}`).toBe('This scan covers Kids too.')
       const muted = getComputedStyle(
         host.querySelector('.library-page .page-description') as Element,
       )
@@ -3372,6 +3460,7 @@ describe('a library page’s lines for a directory another library holds too', (
       ).toBeLessThanOrEqual(main.right)
       assertNoSidewaysScroll(host)
       act(() => rerender(<div />))
+      resetScanFeed()
     }
   })
 

@@ -6,14 +6,17 @@
  * go, and the name is what a screen reader reads it as.
  *
  * **Last scan is the latest of its directories'**, since a library is scanned
- * through its directories and each keeps its own.
+ * through its directories and each keeps its own, and while a scan holds any
+ * of them it is that scan's step and count, from the feed (O312).
  */
 import { type ReactNode, useEffect, useRef } from 'react'
 import { Link } from 'react-router'
 import { lastScan } from './config'
 import { libraryPath, NEW_LIBRARY } from './configAddress'
+import { JOINING_DOT } from './joiningDot'
 import type { Library } from './libraries'
 import { ROW_CELLS, useLineEnds } from './lineEnds'
+import { jobsHolding, stepLine, useScanFeed } from './scanFeed'
 import { PageHeader, PageLoading, Section } from './settingsLayout'
 
 export interface LibraryTableProps {
@@ -55,6 +58,7 @@ export function LibraryTable({
   const heading = useRef<HTMLHeadingElement>(null)
   /** Which cells end a line where a row is drawn in two. */
   const cellEnds = useLineEnds<HTMLTableElement>(ROW_CELLS)
+  const feed = useScanFeed()
   useEffect(() => {
     if (arrived) heading.current?.focus()
   }, [arrived])
@@ -92,6 +96,7 @@ export function LibraryTable({
               <tbody>
                 {libraries.map((library) => {
                   const latest = latestScanned(library)
+                  const job = jobsHolding(feed, library.id)[0]
                   return (
                     // By id: a library's id is never given to a later library.
                     <tr key={library.id}>
@@ -121,7 +126,11 @@ export function LibraryTable({
                       </td>
                       <td>
                         <span className="cell-label">Last scan: </span>
-                        {latest === undefined ? 'Never' : lastScan(latest)}
+                        {job !== undefined
+                          ? `Scanning${JOINING_DOT}${stepLine(job)}`
+                          : latest === undefined
+                            ? 'Never'
+                            : lastScan(latest)}
                       </td>
                     </tr>
                   )

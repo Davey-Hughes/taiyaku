@@ -583,6 +583,7 @@ async fn a_percent_encoded_edition_key_in_the_feed_routes_back_to_the_same_editi
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1244,6 +1245,7 @@ async fn the_cover_cache_key_follows_locate_past_a_pageless_first_member() {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1445,6 +1447,7 @@ fn router_with_a_real_page_under_a_withheld_root(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1555,6 +1558,7 @@ fn router_with_two_editions_split_across_roots(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1638,6 +1642,7 @@ fn router_with_two_works_one_withheld(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });

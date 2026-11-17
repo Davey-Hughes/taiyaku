@@ -320,11 +320,22 @@ a rule save, a stamp, another move or a removal from a library is running. A lib
 the directory is not offered. **Scan library** on a library
 walks in turn each directory the library shows — its own, and each nested in
 one of them that its walk would reach, each by its own rules — and derives
-once. A scan started from the screen reports both halves of what it did in
-full: the walk and the derivation, every field (a walk's **Taken over** only
-when it is not zero), with what it *could not* do listed before what it did,
-and an empty list drawn as `0` rather than left out — so "nothing was
-unreadable this time" cannot be mistaken for "this version does not say".
+once. While the server runs a scan, whether the schedule, another tab or
+this page started it, the Libraries table, the library's page and the
+directory's page show the step it is in with the count the server keeps
+for it — files found, entries read, bytes hashed, works written — and the
+reader's view of an empty library it holds says it is scanning. **Scan library**, and each held directory's **Scan directory**,
+reads **Cancel** then: Cancel stops the whole scan after the file it is on,
+or the listing it is in, keeps what it has hashed and written, and pauses
+each of its directories, which the schedule then passes over, its setting
+unchanged, and whose page says "Paused until Scan is pressed" and since
+when, until a press of Scan directory or Scan library, or a `library scan`
+from the host, covers it. A scan started from the screen reports both halves
+of what it did in full: the walk and the derivation, every field (a walk's
+**Taken over** only when it is not zero), with what it *could not* do listed
+before what it did, and an empty list drawn as `0` rather than left out — so
+"nothing was unreadable this time" cannot be mistaken for "this version does
+not say".
 
 **The rule editor is built too**, at `/config/rules` — the screen the whole
 preview mechanism exists for. An ordered
@@ -552,7 +563,8 @@ writable by 99:100; when it is not, they stay in the database and the save
 answers `persisted: false`. The server scans each directory when it starts,
 unless its schedule is Off, and again on its schedule, which the directory's
 page sets: Automatic, every 15 minutes; Every, at least 5 minutes; or Off, only
-when Scan directory or Scan library is pressed. A choice is saved at once.
+when Scan directory or Scan library is pressed. A directory a Cancel paused
+is passed over by both until Scan is pressed. A choice is saved at once.
 Every saves the last Every interval the page has read or saved, at least 5
 minutes, or 24 hours where there is none, and the count and unit beside it
 change that. A directory added on Configuration → Libraries, which no other

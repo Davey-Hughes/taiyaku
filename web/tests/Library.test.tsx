@@ -19,12 +19,14 @@ import * as library from '../src/library'
 import type { LibraryStatus } from '../src/library'
 import { Library } from '../src/Library'
 import { invalidateLibraryViews } from '../src/pageReads'
+import type { ScanFeed } from '../src/scanFeed'
 import { SEARCH_BOX_ID } from '../src/searchHits'
 import { STATUS_FAILED, StatusContext } from '../src/shell'
 import { Sidebar } from '../src/Sidebar'
 import { deferred, flush, land } from './support/async'
 import { FirstCommit } from './support/firstCommit'
 import { mount, rerender } from './support/mount'
+import { feedJob, serveFeed } from './support/scanFeed'
 import {
   holdTheClock,
   pass,
@@ -526,6 +528,307 @@ describe('the library screen', () => {
       restricted: true,
     })
     expect(unread.querySelector('.empty h2')?.textContent).toBe('Not read yet')
+  })
+
+  describe('the empty view while a scan holds its library (O311)', () => {
+    /** Lets `ms` of the clock run, and the reads sent meanwhile land. */
+    const clock = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
+
+    /** Manga, library 1, read or not. */
+    const manga = (scanned: boolean): LibraryStatus => ({
+      libraries: [{ id: 1, name: 'Manga', scanned }],
+      restricted: false,
+    })
+
+    /** The feed as an administrator is sent it, while job 7 reads library `id`'s files. */
+    const adminFeed = (id = 1): ScanFeed => ({
+      ended: 0,
+      libraries: [{ id, step: 'resolving' }],
+      jobs: [feedJob({ libraries: [{ id, name: 'Manga' }] })],
+    })
+
+    /** What the empty state says, its heading and each line under it. */
+    const said = (host: HTMLElement) => {
+      const empty = host.querySelector('.empty')
+      return [
+        empty?.querySelector('h2')?.textContent,
+        ...[...(empty?.querySelectorAll('p') ?? [])].map((p) => p.textContent),
+      ]
+    }
+
+    /** `showAt`, and the feed's first answer landed. */
+    const shownAt = async (path: string, status: LibraryStatus) => {
+      const host = await showAt(path, status)
+      await clock(0)
+      return host
+    }
+
+    let probe: MutationObserver | undefined
+
+    /**
+     * Every heading an empty state draws from now on, in order, once each as
+     * it changes: what is seen on the way, not only where the view ends.
+     */
+    const headingsDrawn = () => {
+      const drawn: string[] = []
+      probe = new MutationObserver(() => {
+        const now = document.querySelector('.empty h2')?.textContent
+        if (now != null && now !== drawn.at(-1)) drawn.push(now)
+      })
+      probe.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      })
+      return drawn
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+    })
+
+    afterEach(() => {
+      probe?.disconnect()
+      probe = undefined
+      vi.useRealTimers()
+      // jsdom's own getter, on the prototype, answers again.
+      Reflect.deleteProperty(document, 'visibilityState')
+    })
+
+    /** The tab turns `state`, as the browser tells a page. */
+    const turn = (state: DocumentVisibilityState) =>
+      act(async () => {
+        Object.defineProperty(document, 'visibilityState', {
+          value: state,
+          configurable: true,
+        })
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+
+    it('a library a job holds draws Scanning, never Not read yet', async () => {
+      const drawn = headingsDrawn()
+      serveFeed(adminFeed())
+      const host = await shownAt('/?library=1', manga(false))
+      expect(drawn).toEqual(['Scanning'])
+      expect(said(host)).toEqual([
+        'Scanning',
+        'Reading files · 120 of 2,097 · directory 1 of 1',
+      ])
+    })
+
+    it('a library a job holds draws Scanning, never nothing here', async () => {
+      const drawn = headingsDrawn()
+      serveFeed(adminFeed())
+      const host = await shownAt('/?library=1', manga(true))
+      expect(drawn).toEqual(['Scanning'])
+      expect(said(host)).toEqual([
+        'Scanning',
+        'Reading files · 120 of 2,097 · directory 1 of 1',
+      ])
+    })
+
+    it('a view drawn in a hidden tab waits for the feed until the tab is shown, and never says Not read yet', async () => {
+      const drawn = headingsDrawn()
+      const feed = serveFeed(adminFeed())
+      Object.defineProperty(document, 'visibilityState', {
+        value: 'hidden',
+        configurable: true,
+      })
+      const host = await shownAt('/?library=1', manga(false))
+      await clock(WAIT_DRAWN_AFTER_MS)
+      const whileHidden = [
+        host.querySelector('[role="status"]')?.textContent,
+        feed.polls(),
+      ]
+      await turn('visible')
+      await clock(0)
+      expect([whileHidden, drawn]).toEqual([['Loading…', 0], ['Scanning']])
+      expect(said(host)[0]).toBe('Scanning')
+    })
+
+    it('a view drawn in a hidden tab falls back to the status when the feed cannot be read once shown', async () => {
+      serveFeed(500)
+      Object.defineProperty(document, 'visibilityState', {
+        value: 'hidden',
+        configurable: true,
+      })
+      const host = await shownAt('/?library=1', manga(false))
+      const whileHidden = host.querySelector('.empty')
+      await turn('visible')
+      await clock(0)
+      expect([whileHidden, said(host)[0]]).toEqual([null, 'Not read yet'])
+    })
+
+    it('a job that starts while the view is drawn shows within one idle poll', async () => {
+      const feed = serveFeed({ ended: 0, libraries: [] })
+      const host = await shownAt('/?library=1', manga(false))
+      const atMount = said(host)[0]
+      feed.answer(adminFeed())
+      // The pinned idle poll, not the constant, so that a slower poll fails.
+      await clock(5000)
+      expect([atMount, said(host)[0]]).toEqual(['Not read yet', 'Scanning'])
+    })
+
+    it('an arrival draws nothing from a feed answer kept from a view that has gone', async () => {
+      const feed = serveFeed({ ended: 0, libraries: [] })
+      await shownAt('/?library=1', manga(false))
+      // The view goes, and the feed's last answer, no job, is kept.
+      act(() => rerender(<div />))
+      feed.answer(adminFeed())
+      const drawn = headingsDrawn()
+      const host = await shownAt('/?library=1', manga(false))
+      expect(drawn).toEqual(['Scanning'])
+      expect(said(host)[0]).toBe('Scanning')
+    })
+
+    it('draws the wait, and no state, until the feed answers', async () => {
+      serveFeed(adminFeed())
+      // Every ask for the feed held until `answer` is called.
+      const answer = deferred<void>()
+      const served = globalThis.fetch
+      vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
+        String(input) === '/api/library/scans'
+          ? answer.promise.then(() => served(input, init))
+          : served(input, init),
+      )
+      const host = await shownAt('/?library=1', manga(false))
+      await clock(WAIT_DRAWN_AFTER_MS)
+      expect(host.querySelector('.empty')).toBeNull()
+      expect(host.querySelector('[role="status"]')?.textContent).toBe(
+        'Loading…',
+      )
+      answer.resolve()
+      await clock(0)
+      expect(host.querySelector('[role="status"]')).toBeNull()
+      expect(said(host)[0]).toBe('Scanning')
+    })
+
+    it('draws the status’s state when the feed cannot be read, and no scan an answer kept from before showed', async () => {
+      const feed = serveFeed(adminFeed())
+      await shownAt('/?library=1', manga(false))
+      act(() => rerender(<div />))
+      feed.answer(500)
+      const host = await shownAt('/?library=1', manga(false))
+      expect(said(host)[0]).toBe('Not read yet')
+      const filtered = await shownAt('/?library=1&show=unread', manga(false))
+      expect(said(filtered)).toEqual([
+        'Nothing here',
+        'No series match this filter.',
+      ])
+    })
+
+    it('a library’s page draws Scanning for a job holding its own library, and the page of every library for one holding any it lists', async () => {
+      serveFeed(adminFeed(2))
+      const status: LibraryStatus = {
+        libraries: [
+          { id: 1, name: 'Manga', scanned: false },
+          { id: 2, name: 'Comics', scanned: true },
+        ],
+        restricted: false,
+      }
+      const own = await shownAt('/?library=1', status)
+      expect(said(own)[0]).toBe('Not read yet')
+      const every = await shownAt('/', status)
+      expect(said(every)).toEqual([
+        'Scanning',
+        'Reading files · 120 of 2,097 · directory 1 of 1',
+      ])
+    })
+
+    it('a reader sees the step alone', async () => {
+      serveFeed({ ended: 0, libraries: [{ id: 1, step: 'hashing' }] })
+      const host = await shownAt('/?library=1', manga(false))
+      expect(said(host)).toEqual(['Scanning', 'Hashing'])
+      expect(host.querySelector('.empty')?.textContent).not.toMatch(/\d/)
+    })
+
+    it('a paused never-scanned library shows Not read yet to a reader', async () => {
+      // A cancelled first scan: no job holds the library, and the feed sends a
+      // reader nothing of the pause.
+      serveFeed({ ended: 3, libraries: [] })
+      const host = await shownAt('/?library=1', manga(false))
+      expect(said(host)[0]).toBe('Not read yet')
+    })
+
+    it('with a search active the view keeps its no-match state and says a scan is still running', async () => {
+      vi.mocked(library.search).mockResolvedValue({
+        series: [],
+        unfiled: [],
+        query: '花嫁',
+      })
+      serveFeed(adminFeed())
+      const host = await shownAt('/?library=1&q=花嫁', manga(false))
+      expect(said(host)).toEqual([
+        'Nothing here',
+        'Nothing matched 花嫁.',
+        'A scan is still running.',
+      ])
+    })
+
+    it('a search that finds nothing before the status lands is no match, and says a scan is still running', async () => {
+      // The box is offered on the grid's rows before the status lands.
+      vi.mocked(library.grid).mockResolvedValue({
+        series: [series()],
+        unfiled: [],
+      })
+      vi.mocked(library.search).mockResolvedValue({
+        series: [],
+        unfiled: [],
+        query: '花嫁',
+      })
+      serveFeed(adminFeed())
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(
+          <MemoryRouter initialEntries={['/?library=1&q=花嫁']}>
+            <Library />
+          </MemoryRouter>,
+        )
+      })
+      await clock(0)
+      expect(said(host)).toEqual([
+        'Nothing here',
+        'Nothing matched 花嫁.',
+        'A scan is still running.',
+      ])
+    })
+
+    it('with a chip filter active the view keeps its no-match state and says a scan is still running', async () => {
+      serveFeed(adminFeed())
+      const host = await shownAt('/?library=1&show=unread', manga(false))
+      expect(said(host)).toEqual([
+        'Nothing here',
+        'No series match this filter.',
+        'A scan is still running.',
+      ])
+    })
+
+    it('with a chip filter active and no scan, a library not read yet draws no match, never Not read yet', async () => {
+      // A first scan cancelled between works leaves works and `scanned`
+      // false: Not read yet under a filter could sit over a library with
+      // works the filter hides.
+      serveFeed({ ended: 1, libraries: [] })
+      const host = await shownAt('/?library=1&show=unread', manga(false))
+      expect(said(host)).toEqual([
+        'Nothing here',
+        'No series match this filter.',
+      ])
+    })
+
+    it('the view asks the feed nothing while it draws works', async () => {
+      vi.mocked(library.grid).mockResolvedValue({
+        series: [series()],
+        unfiled: [],
+      })
+      const feed = serveFeed(adminFeed())
+      const host = await shownAt('/?library=1', manga(true))
+      expect(host.querySelectorAll('a[href^="/series/"]')).toHaveLength(1)
+      await clock(20000)
+      expect(feed.polls()).toBe(0)
+    })
   })
 
   it('asks the server for the library in the URL, for the grid and for home', async () => {

@@ -238,6 +238,13 @@ best. The interval is a guess; nothing has measured what a full scan of a real
 root costs, which is the gap both spec B and the server half's build design
 already carry.
 
+*Replaced 2026-11-16 by the first-scan design:* live progress is the step a
+scan's job is in and a count the server keeps for that step, which every
+page that shows the scan reads from one scan feed, `GET /api/library/scans`
+(`2026-11-15-first-scan-progress-and-cancel-design.md`, §7). No page draws
+elapsed time, and a page reads `GET .../scan` once a scan it showed has
+ended, for its report, rather than polling it while the scan runs.
+
 **`ScanReport.tsx` renders both structures whole, in the two sections the
 server already separates them into** — `scan` (the walk) and `derive` (what
 was made of it). C4 §3's discipline is the whole of this component's contract:
@@ -666,6 +673,12 @@ are cheapest to pin.
 - **No progress bar.** `ScanProgress` carries elapsed time and a done flag;
   drawing a bar over a number nobody computes would be an invented figure on
   the screen whose own discipline is that a report names what it did not do.
+
+  *Replaced 2026-11-16 by the first-scan design:* a scan's job carries its
+  step and a count the server keeps for that step, and every page that
+  shows the scan draws them as a line. There is still no bar: that design
+  rules out a bar over a guessed total and a percentage that weighs the
+  steps against each other (its §4).
 - **No re-probe of the watcher on list.** §3.1.
 - **No client-side path, nesting or pattern validation.** The server owns all
   three, and a regex that compiles in JS is not the regex the store compiles.

@@ -11,13 +11,15 @@ import { DirPage } from '../src/DirPage'
 import { WAIT_DRAWN_AFTER_MS } from '../src/hooks'
 import * as librariesApi from '../src/libraries'
 import { LibraryPage } from '../src/LibraryPage'
+import { FEED_IDLE_MS, type ScanFeed } from '../src/scanFeed'
 import { deferred, settleUntil } from './support/async'
 import { expectCallout, liesOver, pressAt, pressOn } from './support/callout'
 import { holdOf } from './support/held'
-import { counted, dir, idle, scanningIn } from './support/libraries'
+import { counted, dir, idle } from './support/libraries'
 import { tapWhereOver } from './support/touch'
 import { typeInto } from './support/input'
 import { mount, rerender } from './support/mount'
+import { feedJob, serveFeed } from './support/scanFeed'
 import * as usersApi from '../src/users'
 
 /**
@@ -139,7 +141,8 @@ const named = (host: HTMLElement, name: string) =>
 const words = (host: HTMLElement) => host.querySelector('.holds') as HTMLElement
 
 describe('a library’s page, held controls in a real browser', () => {
-  it('keeps focus on Scan library, pressed with Enter, while the scan it starts holds it and once that scan ends; Enter on it sends nothing while it is held', async () => {
+  it('keeps focus on Scan library, pressed with Enter, while its start holds it, as it reads Cancel, and once that scan ends; Enter on it sends nothing while it is held', async () => {
+    const feed = serveFeed({ ended: 0, libraries: [] })
     const started = deferred<librariesApi.LibraryScanStarted>()
     vi.mocked(librariesApi.startLibraryScan).mockReturnValue(started.promise)
     const host = await libraryPage()
@@ -153,6 +156,16 @@ describe('a library’s page, held controls in a real browser', () => {
     await keys('{Enter}')
     expect(librariesApi.startLibraryScan).toHaveBeenCalledTimes(1)
 
+    feed.answer({
+      ended: 0,
+      libraries: [{ id: 1, step: 'resolving' }],
+      jobs: [
+        feedJob({
+          dirs: MANGA.dirs.map(({ id, path }) => ({ id, path })),
+          libraries: [{ id: 1, name: 'Manga' }],
+        }),
+      ],
+    })
     await act(async () => {
       started.resolve({
         library_id: 1,
@@ -160,14 +173,16 @@ describe('a library’s page, held controls in a real browser', () => {
         root_ids: MANGA.dirs.map((one) => one.id),
       })
     })
+    await settleUntil('Cancel', () => scan.textContent === 'Cancel', 1000)
     expect(host.querySelector('.scanning')).not.toBeNull()
     expect(document.activeElement).toBe(scan)
-    expect(holdOf(scan)).toBe('held')
+    expect(holdOf(scan)).toBe('free')
 
-    // The poll finds the scan ended.
+    // The feed finds the scan ended.
+    feed.answer({ ended: 1, libraries: [] })
     await settleUntil(
       'Scan library, free',
-      () => holdOf(scan) === 'free',
+      () => scan.textContent === 'Scan library' && holdOf(scan) === 'free',
       config.SCAN_POLL_MS * 3,
     )
     expect(host.querySelector('.scanning')).toBeNull()
@@ -283,15 +298,8 @@ describe('a library’s page, held controls in a real browser', () => {
     expect(holdOf(cancel)).toBe('free')
   })
 
-  it('keeps focus on the removal’s confirm when a scan found under the open removal holds it; Enter on it sends nothing then', async () => {
-    // A return to the page: its body is drawn at once from the status its
-    // first visit kept, and the status read again answers late.
-    await libraryPage()
-    act(() => rerender(<div />))
-    const status = deferred<librariesApi.LibraryScanStatus>()
-    vi.mocked(librariesApi.libraryScanStatus).mockReturnValueOnce(
-      status.promise,
-    )
+  it('keeps focus on the removal’s confirm when a scan the feed finds under the open removal holds it; Enter on it sends nothing then', async () => {
+    const feed = serveFeed({ ended: 0, libraries: [] })
     const host = await libraryPage()
     await focusFirst(words(host), named(host, 'remove-library'))
     await keys('{Enter}')
@@ -302,13 +310,24 @@ describe('a library’s page, held controls in a real browser', () => {
     act(() => confirm.focus())
     expect(holdOf(confirm)).toBe('free')
 
-    // The status read again on the return answers: a scan is running.
-    await act(async () => {
-      status.resolve({ ...idle(1), running: true, elapsed_secs: 4 })
+    // The feed's next idle poll finds a scan of one of its directories.
+    feed.answer({
+      ended: 0,
+      libraries: [{ id: 1, step: 'resolving' }],
+      jobs: [
+        feedJob({
+          id: 9,
+          dirs: [{ id: 2, path: MANGA.dirs[1].path }],
+          libraries: [{ id: 1, name: 'Manga' }],
+        }),
+      ],
     })
-    await settle()
+    await settleUntil(
+      'the confirm, held',
+      () => holdOf(confirm) === 'held',
+      FEED_IDLE_MS * 2,
+    )
     expect(document.activeElement).toBe(confirm)
-    expect(holdOf(confirm)).toBe('held')
     await keys('{Enter}')
     expect(librariesApi.removeLibrary).not.toHaveBeenCalled()
   })
@@ -346,23 +365,34 @@ const called = (host: HTMLElement, text: string) =>
   ) as HTMLButtonElement
 const regime = (host: HTMLElement) =>
   host.querySelector('.regime') as HTMLElement
+/** The feed's answer while job 7, of Manga, holds the directories named by id. */
+const scanningOf = (...ids: number[]): ScanFeed => ({
+  ended: 0,
+  libraries: [{ id: MANGA.id, step: 'resolving' }],
+  jobs: [
+    feedJob({
+      dirs: MANGA.dirs
+        .filter((one) => ids.includes(one.id))
+        .map(({ id, path }) => ({ id, path })),
+      libraries: [{ id: MANGA.id, name: MANGA.name }],
+    }),
+  ],
+})
 
 describe('a directory’s page, held controls in a real browser', () => {
   it('keeps focus on Move… while another directory’s scan holds it and once that scan ends; Enter on it opens nothing while it is held', async () => {
-    // The page's first read of the library's status answers once Move… has
-    // focus: the other directory is scanning, for which the server refuses
-    // a move. The poll that follows finds it ended.
-    const status = deferred<librariesApi.LibraryScanStatus>()
-    vi.mocked(librariesApi.libraryScanStatus).mockReturnValueOnce(
-      status.promise,
-    )
+    // The feed's first answer lands once Move… has focus: a job holds the
+    // other directory, for which the server refuses a move. A poll after it
+    // finds the job ended.
+    const feed = serveFeed(scanningOf(2))
+    const answer = feed.hold()
     const host = await dirPage()
     const move = called(host, 'Move…')
     await focusFirst(regime(host), move)
     expect(holdOf(move)).toBe('free')
 
     await act(async () => {
-      status.resolve(scanningIn(MANGA, 2))
+      answer()
     })
     await settle()
     expect(document.activeElement).toBe(move)
@@ -370,6 +400,7 @@ describe('a directory’s page, held controls in a real browser', () => {
     await keys('{Enter}')
     expect(host.querySelector('.move-root')).toBeNull()
 
+    feed.answer({ ended: 1, libraries: [] })
     await settleUntil(
       'Move…, free',
       () => holdOf(move) === 'free',
@@ -378,35 +409,41 @@ describe('a directory’s page, held controls in a real browser', () => {
     expect(document.activeElement).toBe(move)
   })
 
-  it('keeps focus on Scan directory while a scan of its whole library holds it and once that scan ends; Enter on it sends nothing while it is held', async () => {
-    // The page's first read of the library's status answers once Scan
-    // directory has focus: the library's scan holds this directory and its
-    // sibling, and the server refuses a scan of either. The poll that
-    // follows finds it ended.
-    const status = deferred<librariesApi.LibraryScanStatus>()
-    vi.mocked(librariesApi.libraryScanStatus).mockReturnValueOnce(
-      status.promise,
-    )
+  it('keeps focus on Scan directory as a scan of its whole library turns it to Cancel, free, through a cancel pressed on it with Enter, and once that scan ends; Enter on it sends nothing while the cancel holds it', async () => {
+    // The feed's first answer lands once Scan directory has focus: a job,
+    // which this page did not start, holds this directory and its sibling.
+    // A poll after the cancel finds the job ended.
+    const feed = serveFeed(scanningOf(1, 2))
+    const answer = feed.hold()
     const host = await dirPage()
     const scan = called(host, 'Scan directory')
     await focusFirst(regime(host), scan)
     expect(holdOf(scan)).toBe('free')
 
     await act(async () => {
-      status.resolve(scanningIn(MANGA, 1, 2))
+      answer()
     })
     await settle()
     expect(document.activeElement).toBe(scan)
-    expect(holdOf(scan)).toBe('held')
-    await keys('{Enter}')
-    expect(config.startScan).not.toHaveBeenCalled()
+    expect([scan.textContent, holdOf(scan)]).toEqual(['Cancel', 'free'])
 
+    await keys('{Enter}')
+    await settle()
+    expect(config.startScan).not.toHaveBeenCalled()
+    expect(feed.cancels).toEqual([7])
+    expect(document.activeElement).toBe(scan)
+    expect([scan.textContent, holdOf(scan)]).toEqual(['Cancel', 'held'])
+    await keys('{Enter}')
+    expect(feed.cancels).toEqual([7])
+
+    feed.answer({ ended: 1, libraries: [] })
     await settleUntil(
       'Scan directory, free',
-      () => holdOf(scan) === 'free',
+      () => scan.textContent === 'Scan directory' && holdOf(scan) === 'free',
       config.SCAN_POLL_MS * 3,
     )
     expect(document.activeElement).toBe(scan)
+    expect(config.startScan).not.toHaveBeenCalled()
   })
 
   it('keeps focus on Remove… while a derive’s hold comes on, and a real mouse press on it opens nothing until a poll finds the lease free (O51)', async () => {
@@ -473,10 +510,9 @@ describe('a directory’s page, held controls in a real browser', () => {
       ...MANGA,
       dirs: [dir(1, '/srv/manga/volumes', both), MANGA.dirs[1]],
     }
-    const status = deferred<librariesApi.LibraryScanStatus>()
-    vi.mocked(librariesApi.libraryScanStatus).mockReturnValueOnce(
-      status.promise,
-    )
+    // The feed's first answer lands once the dialog is open: a job holds
+    // the other directory, for which the server refuses an unlink.
+    const answer = serveFeed(scanningOf(2)).hold()
     vi.mocked(librariesApi.unlinkCost).mockResolvedValue({
       unlinked: {
         loses_sight: [],
@@ -516,7 +552,7 @@ describe('a directory’s page, held controls in a real browser', () => {
     expect(librariesApi.unlinkCost).toHaveBeenCalledTimes(1)
 
     await act(async () => {
-      status.resolve(scanningIn(shared, 2))
+      answer()
     })
     await settle()
     expect(host.querySelector('.unlink-root')).toBeNull()
@@ -1009,10 +1045,9 @@ describe('Move…’s dialog, held controls in a real browser', () => {
   })
 
   it('hands focus to Move…, held, when another directory’s scan cancels the dialog', async () => {
-    const status = deferred<librariesApi.LibraryScanStatus>()
-    vi.mocked(librariesApi.libraryScanStatus).mockReturnValueOnce(
-      status.promise,
-    )
+    // The feed's first answer lands once the dialog is open: a job holds
+    // the other directory.
+    const answer = serveFeed(scanningOf(2)).hold()
     const host = await dirPage()
     const move = called(host, 'Move…')
     await focusFirst(regime(host), move)
@@ -1020,7 +1055,7 @@ describe('Move…’s dialog, held controls in a real browser', () => {
     expect(host.querySelector('dialog.move-root')).not.toBeNull()
 
     await act(async () => {
-      status.resolve(scanningIn(MANGA, 2))
+      answer()
     })
     await settle()
     expect(host.querySelector('dialog.move-root')).toBeNull()

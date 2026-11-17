@@ -813,19 +813,21 @@ section:has(.callout[data-over-focus], .linked[data-over-focus])
   color: var(--muted);
 }
 
-/* What scan is running, a line each, muted as the directory page's lines of
-   the directories around and inside it are. */
-.library-page .scanning {
+/* What scan is running, a line each, and the pause a cancel left, muted as
+   the directory page's lines of the directories around and inside it are. */
+.library-page .scanning,
+.library-page .paused {
   margin: var(--space-1) 0 0;
   color: var(--muted);
   font-size: var(--text-ui);
 }
 
 /* What holds the directory's actions for now, under its header: its own
-   scan, and why Move… waits for a scan or another library job (O250).
-   Muted as the library page's scan lines are: each goes as its hold ends,
-   and none is a fault to act on. */
+   scan, and why Move… waits for a scan or another library job (O250), and
+   the pause a cancel left. Muted as the library page's scan lines are: each
+   goes as its hold ends, and none is a fault to act on. */
 .dir-page .scanning,
+.dir-page .paused,
 .dir-page .move-waits {
   margin: var(--space-2) 0 0;
   color: var(--muted);

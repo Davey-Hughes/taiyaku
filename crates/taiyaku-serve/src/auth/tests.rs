@@ -129,6 +129,8 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/libraries/{id}/dirs",
         "/api/library/libraries/{id}/dirs/{dir}",
         "/api/library/libraries/{id}/scan",
+        "/api/library/scans",
+        "/api/library/scans/{job}/cancel",
         "/api/library/derive",
         "/api/library/split-editions",
         "/api/library/dirs",
@@ -1263,6 +1265,7 @@ fn router_with_material_under_a_withheld_root(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1363,6 +1366,7 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1494,6 +1498,7 @@ fn one_work_two_editions_split_across_roots(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1574,6 +1579,7 @@ fn one_book_two_editions_split_across_roots(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1651,8 +1657,8 @@ async fn every_route_declares_its_grant_posture() {
         })
         .count();
     assert_eq!(
-        driven, 26,
-        "26 of the guarded routes must be classified Refuses, Filters or \
+        driven, 27,
+        "27 of the guarded routes must be classified Refuses, Filters or \
          RefusesAndFilters and driven by the proofs below — a route's \
          posture changed without this count moving to match, so a route \
          this suite believes it proves may no longer be one it does. It was \
@@ -1672,11 +1678,11 @@ async fn every_route_declares_its_grant_posture() {
          the alignments route is one fewer, `GrantIndependent` for O86's \
          reason: O58 makes it admin-only, so no caller of it holds a grant to \
          refuse against. The book route raised it to 26, `Filters` as the work \
-         document it mirrors is"
+         document it mirrors is, and the scan feed to 27, `Filters` by library"
     );
     assert_eq!(
         table.len() - driven,
-        43,
+        44,
         "the remaining guarded routes must be GrantIndependent — \
          see the `driven` assertion just above, which this one is the other \
          half of. A new admin-only route is GrantIndependent: it changes who \
@@ -1995,6 +2001,34 @@ async fn every_route_declares_its_grant_posture() {
          edition is under the other library's directory: {body}"
     );
     proven_filters.insert("/opds/v1.2/libraries/{library}/works/by-work");
+
+    // The scan feed: one job holding both directories shows on both
+    // libraries' pages, and the caller is sent the granted library alone.
+    {
+        let roots = taiyaku_library::scan::roots(&works_state.library.conn()).expect("reads");
+        let job = crate::scan_jobs::reserve(&works_state, &roots, std::time::Instant::now(), None)
+            .expect("reserves both directories");
+        *job.libraries.lock().expect("unpoisoned") = vec![
+            (works_visible, "visible-root".to_string()),
+            (works_hidden, "hidden-root".to_string()),
+        ];
+    }
+    let (status, body) = get_with_credential("/api/library/scans").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let sent: serde_json::Value = serde_json::from_str(&body).expect("a JSON body");
+    let libraries: Vec<&serde_json::Value> = sent["libraries"]
+        .as_array()
+        .expect("a libraries array")
+        .iter()
+        .map(|library| &library["id"])
+        .collect();
+    assert_eq!(
+        libraries,
+        [&serde_json::json!(works_visible)],
+        "/api/library/scans is classified Filters and must name the granted \
+         library and no other: {body}"
+    );
+    proven_filters.insert("/api/library/scans");
 
     // ---- The split-across-roots case, for every `Refuses` and `Filters`
     // entry that can usefully be driven against it. ----
@@ -2962,7 +2996,7 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
     );
     assert_eq!(
         counted(|p| matches!(p, NarrowingPosture::NoPages { .. })),
-        44,
+        46,
         "the NoPages routes, declared and not driven: a route moved here from a driven posture \
          moves this count and one above, and a new route that reads no pages moves this alone"
     );
@@ -3597,6 +3631,7 @@ const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
     "/api/library/libraries/{id}/dirs",
     "/api/library/libraries/{id}/dirs/{dir}",
     "/api/library/libraries/{id}/scan",
+    "/api/library/scans/{job}/cancel",
     "/api/library/derive",
     "/api/library/split-editions",
     "/api/library/dirs",

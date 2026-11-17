@@ -697,8 +697,14 @@ fn a_files_modification_time_reaches_its_scan_entry() {
         .set_times(std::fs::FileTimes::new().set_modified(when))
         .expect("stamps it");
 
-    let (measured, walk) =
-        measure(dir.path(), 0, &Excluder::build(None), &HashSet::new()).expect("measures the tree");
+    let (measured, walk) = measure(
+        dir.path(),
+        0,
+        &Excluder::build(None),
+        &HashSet::new(),
+        &Unwatched,
+    )
+    .expect("measures the tree");
     assert!(
         walk.unreadable.is_empty(),
         "unexpected unreadable dirs: {:?}",
@@ -2030,6 +2036,90 @@ fn a_queued_scan_reads_waiting_and_then_its_word_before() {
         ),
         "(queued, started)"
     );
+}
+
+/// Each of `roots`' `last_scan_at` and `last_scan_status`.
+fn last_scan_and_status(
+    conn: &Connection,
+    roots: &[Root],
+) -> Vec<(Option<String>, Option<String>)> {
+    roots
+        .iter()
+        .map(|root| {
+            conn.query_row(
+                "SELECT last_scan_at, last_scan_status FROM root WHERE id = ?1",
+                [root.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("reads the last scan")
+        })
+        .collect()
+}
+
+/// A cancelled job's walks committed and each wrote its `last_scan_at`, yet
+/// the job did not finish: the stamp read before the walk goes back, so a
+/// directory never scanned still reads Never, and one scanned before reads
+/// that scan.
+#[test]
+fn a_cancelled_directory_keeps_its_last_scan_and_reads_cancelled() {
+    let dir = crate::tests::tempdir("scan-cancelled");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let roots: Vec<Root> = ["never", "before"]
+        .into_iter()
+        .map(|name| {
+            let path = dir.path().join(name);
+            write_pages(&path.join("Series").join("c001"), 1);
+            super::add_root(&conn, &path).expect("adds the directory")
+        })
+        .collect();
+    let before = "2026-11-01 00:00:00".to_string();
+    conn.execute(
+        "UPDATE root SET last_scan_at = ?2, last_scan_status = 'ok' WHERE id = ?1",
+        rusqlite::params![roots[1].id, before],
+    )
+    .expect("an earlier scan");
+
+    let held = super::last_scans(&conn, &roots).expect("reads the last scans");
+    for root in &roots {
+        super::scan_root(&conn, root).expect("walks");
+    }
+    let walked = last_scan_and_status(&conn, &roots);
+    super::mark_cancelled(&conn, &held).expect("marks them cancelled");
+
+    assert_eq!(
+        held.iter()
+            .map(|one| (one.root.id, one.last_scan_at.clone()))
+            .collect::<Vec<_>>(),
+        [(roots[0].id, None), (roots[1].id, Some(before.clone()))],
+        "the stamps read before the walks"
+    );
+    assert!(
+        walked
+            .iter()
+            .all(|(at, _)| at.as_ref().is_some_and(|at| *at != before)),
+        "sanity: each walk wrote a last scan of its own: {walked:?}"
+    );
+    let cancelled = Some("cancelled".to_string());
+    assert_eq!(
+        last_scan_and_status(&conn, &roots),
+        [(None, cancelled.clone()), (Some(before), cancelled)]
+    );
+}
+
+/// The start rewrites a word a stop left standing, and `cancelled` is the
+/// last word of a job that ended: rewritten, the page would lose its cancel.
+#[test]
+fn a_cancelled_status_survives_the_servers_start() {
+    let dir = crate::tests::tempdir("scan-cancelled-start");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let roots = dirs_reading(&conn, dir.path(), &["deriving"]);
+    let held = super::last_scans(&conn, &roots).expect("reads the last scan");
+    super::mark_cancelled(&conn, &held).expect("marks it cancelled");
+
+    assert_eq!(super::interrupt_derives(&conn), Ok(0));
+    assert_eq!(statuses_of(&conn, &roots), [Some("cancelled".to_string())]);
 }
 
 /// The probe runs on adding, so the regime is known before the first scan
@@ -5718,6 +5808,69 @@ fn marking_deriving_or_derived_leaves_the_dir_that_took_a_removed_ones_id_alone(
         status_and_entries(&conn, new.id).0.as_deref(),
         Some("deriving"),
         "the mark after the derive may not land on the new directory"
+    );
+}
+
+/// A cancel's reads and marks, and the pause, ask the same of each directory
+/// they name.
+#[test]
+fn cancelling_and_pausing_leave_the_dir_that_took_a_removed_ones_id_alone() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let (stale, new, _walked, _other) =
+        stale_root_and_the_dir_that_took_its_id(&conn, "stale-cancel");
+    let stale = std::slice::from_ref(&stale);
+    let scanned = (
+        Some("2026-11-01 00:00:00".to_string()),
+        Some("ok".to_string()),
+    );
+    conn.execute(
+        "UPDATE root SET last_scan_at = ?2, last_scan_status = ?3 WHERE id = ?1",
+        rusqlite::params![new.id, scanned.0, scanned.1],
+    )
+    .expect("the new directory was scanned");
+    let paused_at = |conn: &Connection| -> Option<String> {
+        conn.query_row("SELECT paused_at FROM root WHERE id = ?1", [new.id], |r| {
+            r.get(0)
+        })
+        .expect("reads the pause")
+    };
+
+    let held = super::last_scans(&conn, stale).expect("a read of nothing is not a fault");
+    assert!(
+        held.is_empty(),
+        "the new directory's stamp is not the removed one's: {held:?}"
+    );
+
+    let unfinished = [super::Unfinished {
+        root: stale[0].clone(),
+        last_scan_at: None,
+    }];
+    super::mark_cancelled(&conn, &unfinished).expect("a no-op is not a fault");
+    assert_eq!(
+        last_scan_and_status(&conn, std::slice::from_ref(&new)),
+        [scanned],
+        "the cancel may not land on the new directory"
+    );
+
+    super::pause(&conn, stale).expect("a no-op is not a fault");
+    assert_eq!(
+        paused_at(&conn),
+        None,
+        "the pause may not land on the new directory"
+    );
+
+    let since = "2026-11-02 00:00:00";
+    conn.execute(
+        "UPDATE root SET paused_at = ?2 WHERE id = ?1",
+        rusqlite::params![new.id, since],
+    )
+    .expect("the new directory is paused");
+    super::unpause(&conn, stale).expect("a no-op is not a fault");
+    assert_eq!(
+        paused_at(&conn).as_deref(),
+        Some(since),
+        "the unpause may not land on the new directory"
     );
 }
 
@@ -11694,4 +11847,123 @@ fn removing_a_library_whose_every_dir_is_shared_removes_only_the_library() {
     let mut wanted = before;
     wanted.retain(|row| !row.starts_with(&format!("library {kids} ")));
     assert_eq!(all_but_the_links(&conn), wanted, "only Kids' row went");
+}
+
+/// One subdirectory and three archives: `a.cbz` at the top, `b.cbz` and
+/// `c.cbz` in `Series`. A walk reads five entries, the root's own among them.
+fn three_archives_in_a_root_and_its_subdirectory(label: &str) -> crate::tests::TempDir {
+    let dir = crate::tests::tempdir(label);
+    write_archive(&dir.path().join("a.cbz"), 2);
+    write_archive(&dir.path().join("Series").join("b.cbz"), 2);
+    write_archive(&dir.path().join("Series").join("c.cbz"), 2);
+    dir
+}
+
+#[test]
+fn a_watched_walk_counts_files_found_then_entries_read_of_entries_to_read() {
+    use crate::test_support::Recording;
+    let tree = three_archives_in_a_root_and_its_subdirectory("scan-watched-counts");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("add");
+    let listing = (0..=3).map(|found| (Step::Listing, found, None));
+
+    let first = Recording::default();
+    let outcome = scan_root_watched(&conn, &root, &first).expect("first walk");
+    let second = Recording::default();
+    scan_root_watched(&conn, &root, &second).expect("second walk");
+
+    assert!(matches!(outcome, Outcome::Done(_)), "{outcome:?}");
+    let read = (0..=5).map(|read| (Step::Resolving, read, Some(5)));
+    assert_eq!(
+        first.reports(),
+        listing.clone().chain(read).collect::<Vec<_>>(),
+        "files found while listing, then entries read of the five to read"
+    );
+    assert_eq!(
+        second.reports(),
+        listing
+            .chain([(Step::Resolving, 0, Some(0))])
+            .collect::<Vec<_>>(),
+        "every entry is unchanged, so none is to read"
+    );
+}
+
+#[test]
+fn a_walk_cancelled_between_entries_records_nothing() {
+    use crate::test_support::Recording;
+    let tree = three_archives_in_a_root_and_its_subdirectory("scan-watched-cancel");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("add");
+    let watch = Recording::cancelling(|(step, read, _)| step == Step::Resolving && read >= 2);
+
+    let outcome = scan_root_watched(&conn, &root, &watch).expect("walk");
+
+    assert!(
+        matches!(outcome, Outcome::Cancelled(Step::Resolving)),
+        "{outcome:?}"
+    );
+    let read: Vec<_> = watch
+        .reports()
+        .into_iter()
+        .filter(|(step, _, _)| *step == Step::Resolving)
+        .collect();
+    assert_eq!(
+        read,
+        (0..=2)
+            .map(|read| (Step::Resolving, read, Some(5)))
+            .collect::<Vec<_>>(),
+        "the third entry is never read"
+    );
+    let rows: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM scan_entry WHERE root_id = ?1), \
+                    (SELECT count(*) FROM dir_state WHERE root_id = ?1)",
+            [root.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("counts");
+    assert_eq!(rows, (0, 0), "no scan_entry and no dir_state row");
+    let (at, status): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT last_scan_at, last_scan_status FROM root WHERE id = ?1",
+            [root.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("reads the root row back");
+    assert_eq!(
+        (at, status),
+        (None, None),
+        "the walk is not recorded as run"
+    );
+}
+
+/// A folder of loose page images is a scan's files too, so a library of them
+/// does not read as stalled while it lists.
+#[test]
+fn a_listing_counts_loose_page_images_as_files_found() {
+    use crate::test_support::Recording;
+    let tree = crate::tests::tempdir("scan-watched-loose-pages");
+    write_pages(&tree.path().join("Vol 1"), 4);
+    write_archive(&tree.path().join("a.cbz"), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("add");
+    let watch = Recording::default();
+
+    scan_root_watched(&conn, &root, &watch).expect("walk");
+
+    let listing: Vec<_> = watch
+        .reports()
+        .into_iter()
+        .filter(|(step, _, _)| *step == Step::Listing)
+        .collect();
+    assert_eq!(
+        listing,
+        (0..=5)
+            .map(|found| (Step::Listing, found, None))
+            .collect::<Vec<_>>(),
+        "four page images and one archive, each reported as it is found"
+    );
 }

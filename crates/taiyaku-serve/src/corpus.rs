@@ -112,6 +112,7 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     };
@@ -407,6 +408,7 @@ fn a_corpus_edition_with_members(
                 log: None,
                 auth: crate::session::AuthConfig::default(),
                 scans: Default::default(),
+                jobs_ended: Default::default(),
                 library_job: Default::default(),
                 dirs: Vec::new(),
             });
@@ -461,6 +463,7 @@ fn a_corpus_edition_of_one_file(root: &Path) -> (axum::Router, String, String, P
                 log: None,
                 auth: crate::session::AuthConfig::default(),
                 scans: Default::default(),
+                jobs_ended: Default::default(),
                 library_job: Default::default(),
                 dirs: Vec::new(),
             });

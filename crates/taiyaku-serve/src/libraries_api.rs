@@ -47,7 +47,7 @@ use taiyaku_library::{libraries, relocate, scan};
 
 use crate::config_api::{
     AdminAnswer, DryRunQuery, added_json, admin_panicked, derive_report_json, removal_json,
-    root_json, roots_with_last_scan, scan_interval_from_json,
+    roots_with_last_scan, scan_interval_from_json,
 };
 use crate::{ServeState, auth::Principal};
 
@@ -119,9 +119,9 @@ fn roots_if_held(conn: &rusqlite::Connection, id: i64) -> Result<Vec<scan::Root>
 
 /// Every library as the screen draws it, by name: its id, name, works, the
 /// EPUB and PDF entries its scans recorded, and each directory in
-/// [`root_json`]'s shape, oldest first, with `libraries`, every library holding
-/// it as `{id, name}`, ascending by id, this one too, and [`nesting_json`]'s
-/// two keys. A directory among `waiting` reads `waiting`
+/// [`crate::config_api::root_json`]'s shape, oldest first, with `libraries`,
+/// every library holding it as `{id, name}`, ascending by id, this one too,
+/// and [`nesting_json`]'s two keys. A directory among `waiting` reads `waiting`
 /// ([`roots_with_last_scan`]).
 fn libraries_json(
     conn: &rusqlite::Connection,
@@ -137,14 +137,15 @@ fn libraries_json(
         .iter()
         .map(|library| (library.id, library.name.as_str()))
         .collect();
-    let plain: Vec<scan::Root> = roots.iter().map(|(root, _, _)| root.clone()).collect();
+    let plain: Vec<scan::Root> = roots.iter().map(|listed| listed.root.clone()).collect();
     let mut rendered = Vec::new();
     for listed in &every {
         let dirs: Vec<serde_json::Value> = roots
             .iter()
-            .filter(|(root, _, _)| root.libraries.contains(&listed.id))
-            .map(|(root, at, status)| {
-                let mut dir = root_json(root, at.as_deref(), status.as_deref());
+            .filter(|scanned| scanned.root.libraries.contains(&listed.id))
+            .map(|scanned| {
+                let root = &scanned.root;
+                let mut dir = scanned.json();
                 dir["libraries"] = libraries_holding(root, &names)?
                     .into_iter()
                     .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))

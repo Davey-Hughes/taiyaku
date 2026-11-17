@@ -7,8 +7,9 @@ import * as config from '../src/config'
 import * as librariesApi from '../src/libraries'
 import { deferred } from './support/async'
 import { holdOf } from './support/held'
-import { counted, dir, idle, scanningIn } from './support/libraries'
+import { counted, dir, idle } from './support/libraries'
 import { buttonSaying, byRole } from './support/located'
+import { feedJob, serveFeed } from './support/scanFeed'
 import { click, linkIn, openedAt } from './support/typedAddress'
 
 /**
@@ -67,6 +68,7 @@ const LIBRARIES: librariesApi.Library[] = NAMES.map(([name], i) => ({
       last_scan_at: null,
       last_scan_status: null,
       next_scan_at: null,
+      paused_at: null,
       libraries: [{ id: i + 1, name }],
       nested: [],
       inside: [],
@@ -228,13 +230,21 @@ describe('one directory in two libraries, through the app’s own router', () =>
   it('draws Kids’ page of a directory afresh after Manga’s: the removal opened on Manga’s is gone, and Manga’s scan holds nothing there', async () => {
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({ libraries })
     vi.mocked(config.removalCost).mockResolvedValue(counted())
-    // A scan of Manga's other directory holds Manga's Move…; Kids' status
-    // is not answered until the end.
+    // A job, which the feed shows, holding Manga's other directory holds
+    // Manga's Move…; Kids' status is not answered until the end.
+    serveFeed({
+      ended: 0,
+      libraries: [{ id: MANGA.id, step: 'resolving' }],
+      jobs: [
+        feedJob({
+          dirs: [{ id: 301, path: '/srv/manga' }],
+          libraries: [MANGA],
+        }),
+      ],
+    })
     const kids = deferred<librariesApi.LibraryScanStatus>()
     vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
-      id === MANGA.id
-        ? Promise.resolve(scanningIn(libraries[0], 301))
-        : kids.promise,
+      id === MANGA.id ? Promise.resolve(idle(MANGA.id)) : kids.promise,
     )
     const host = await openedAt('/config/libraries/Manga/dirs/300', who)
     const page = () => host.querySelector('.dir-page') as HTMLElement

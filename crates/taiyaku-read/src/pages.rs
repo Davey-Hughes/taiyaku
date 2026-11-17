@@ -3,7 +3,7 @@
 use std::{
     fmt::Write as _,
     fs::File,
-    io::{Read, Seek},
+    io::{BufReader, Read, Seek},
     path::{Path, PathBuf},
 };
 
@@ -277,11 +277,17 @@ fn unsupported_container(bytes: &[u8]) -> Option<&'static str> {
 /// a re-download, say). Two handles on two different files agreeing only by
 /// name is a silent content mismatch, not a clean error, so this is the one
 /// place — for both listing and reading — that decides archive page order.
-fn page_names_from(zip: &mut zip::ZipArchive<File>) -> Vec<String> {
+fn page_names_from<R: Read + Seek>(zip: &zip::ZipArchive<R>) -> Vec<String> {
     let mut names: Vec<String> = (0..zip.len())
         .filter_map(|i| {
-            let entry = zip.by_index(i).ok()?;
-            if !entry.is_file() {
+            // From the central directory the open already parsed, never the
+            // entry's local header: `by_index` seeks to each local header, a
+            // round trip per page on a network share. The shared borrow holds
+            // this, since nothing reaches the reader through it. So an entry
+            // whose local header is damaged is listed and fails when read,
+            // rather than dropping out and moving every later page back one.
+            let entry = zip.by_index_data(i).ok()?;
+            if !entry.is_file() || !zip_can_read(&entry) {
                 return None;
             }
             let name = entry.name().ok()?.into_owned();
@@ -295,6 +301,22 @@ fn page_names_from(zip: &mut zip::ZipArchive<File>) -> Vec<String> {
     // Central-directory order is not guaranteed to be page order.
     names.sort_by(|a, b| natural_cmp(a, b));
     names
+}
+
+/// Whether `zip` will open an entry for reading with no password, judged
+/// from the central directory alone: the refusals `by_index` makes before it
+/// reads a byte of the entry's data. An encrypted entry, one carrying AES
+/// settings whatever its flag says, and one in a method `zip` cannot decode
+/// are not pages. Listing them would give a locked archive pages that all
+/// fail, and move every page after one to a new index.
+fn zip_can_read(entry: &zip::read::ZipFileEntry<'_>) -> bool {
+    use zip::HasZipMetadata as _;
+    #[expect(
+        deprecated,
+        reason = "`Unsupported` is how `zip` marks a method it has no decoder for"
+    )]
+    let undecodable = matches!(entry.compression(), zip::CompressionMethod::Unsupported(_));
+    !entry.encrypted() && entry.get_metadata().aes_settings().is_none() && !undecodable
 }
 
 /// Refuse a file whose leading bytes name a container taiyaku cannot read.
@@ -321,7 +343,7 @@ fn refuse_unsupported_container(source: &mut impl Read, path: &Path) -> Result<(
 /// does not support. Going straight to `ZipArchive::new` would report a
 /// perfectly good RAR file as an unreadable cbz — and `member_pages`, which
 /// lists rather than reads, is the path `align` takes when it records a member.
-fn open_archive(path: &Path) -> Result<zip::ZipArchive<File>, String> {
+fn open_archive(path: &Path) -> Result<zip::ZipArchive<BufReader<File>>, String> {
     let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
 
     // Look at the bytes before handing them to the zip reader, so an archive in
@@ -330,17 +352,27 @@ fn open_archive(path: &Path) -> Result<zip::ZipArchive<File>, String> {
     file.rewind()
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
-    zip::ZipArchive::new(file).map_err(|e| format!("{}: not a readable cbz: {e}", path.display()))
+    zip::ZipArchive::new(BufReader::with_capacity(ARCHIVE_BUFFER, file))
+        .map_err(|e| format!("{}: not a readable cbz: {e}", path.display()))
 }
+
+/// The buffer every archive is opened through.
+///
+/// `zip` parses each central-directory entry with several small reads, so
+/// an unbuffered file pays reads per page even when no local header is
+/// touched, each a round trip on a network share. Through this buffer a
+/// central directory that fits in it arrives in one read, whatever the page
+/// count. `format::zip_flavour` opens through it too.
+pub(crate) const ARCHIVE_BUFFER: usize = 64 * 1024;
 
 /// The names of an archive's page entries, in reading order.
 fn archive_page_names(path: &Path) -> Result<Vec<String>, String> {
-    Ok(page_names_from(&mut open_archive(path)?))
+    Ok(page_names_from(&open_archive(path)?))
 }
 
 fn read_archive(path: &Path) -> Result<Vec<Page>, String> {
     let mut zip = open_archive(path)?;
-    let names = page_names_from(&mut zip);
+    let names = page_names_from(&zip);
 
     names
         .into_iter()
@@ -463,7 +495,7 @@ pub fn member_page(path: &Path, index: u32) -> Result<Page, String> {
         });
     }
     let mut zip = open_archive(path)?;
-    let names = page_names_from(&mut zip);
+    let names = page_names_from(&zip);
     let name = names
         .get(i)
         .cloned()
@@ -585,7 +617,7 @@ pub fn member_page_sizes(path: &Path) -> Result<Vec<u64>, String> {
             .collect();
     }
     let mut zip = open_archive(path)?;
-    let names = page_names_from(&mut zip);
+    let names = page_names_from(&zip);
     names
         .iter()
         .map(|name| {
@@ -668,7 +700,7 @@ pub fn member_page_entries(path: &Path) -> Result<Vec<PageEntry>, String> {
             .collect();
     }
     let mut zip = open_archive(path)?;
-    let names = page_names_from(&mut zip);
+    let names = page_names_from(&zip);
     names
         .iter()
         .map(|name| {
@@ -734,7 +766,7 @@ pub fn for_each_member_page(path: &Path, f: &mut PageVisitor<'_>) -> Result<(), 
     }
 
     let mut zip = open_archive(path)?;
-    let names = page_names_from(&mut zip);
+    let names = page_names_from(&zip);
     for name in names {
         let mut handle = zip
             .by_name(&name)

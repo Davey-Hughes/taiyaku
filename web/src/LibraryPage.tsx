@@ -8,71 +8,52 @@
  * move and its removal are `RootRow`'s, on `DirPage`.
  *
  * **Its body waits for the library's scan status** (`pageReads.ts`'s
- * `libraryScan`), for `RootRow`'s reason: a scan started before this page
- * was drawn is still running, and the first body of a first visit says so
- * (spec §4.5). A return draws its body at once from the status kept, and
- * reads it again (below), where that status is not stale; where it is, the
- * return waits for its read as a first visit does. A press of Scan library
- * answered once the page had gone leaves it stale, and so does a directory's
- * own scan, which the directory's page marks (`DirPage`). While the body
- * waits, and while the screen reads the list that names the library, the
- * page draws its header, named as its address spells it until the list names
- * the library and as the list does then, and "Loading…" in its body's place
- * once the wait has held. That header is the one the drawn page keeps, so
- * whatever has focus in it keeps it as the body comes. A status that cannot
- * be read, with none kept, is drawn as no scan running, as `RootRow`'s is:
- * pressing Scan library is what surfaces a real fault; a failed re-read
- * keeps the status kept. The status says whether any directory a scan of the
- * library walks is scanning: its own, and each directory inside them that it
- * shows, which the list names (`LibraryDir`'s `nested`). So a directory's
- * own scan, in a status this page reads, holds its Scan library and Remove…
- * as a scan of the library does, and the directories it names as running say
- * "Scanning…" in the table. A scan running only in directories inside them,
- * which the table does not list, is said a line for each library whose
- * request the status names (`scans`), with the topmost folders it walks
- * here: it is that library's scan, not this one's, which holds its own
- * directories too. Scan library is held all the same, since the server
- * refuses it while any directory it walks is being scanned. A page drawn
- * beside the directory's is not told of that scan and reads nothing for it,
- * so it keeps both free: told, it would take the scan up and draw its report
- * a second time beside the directory's own (spec §9's call 9).
+ * `libraryScan`), which says what holds its removal. A return draws its body
+ * at once from the status kept, and reads it again, where that status is not
+ * stale; where it is, the return waits for its read as a first visit does.
+ * While the body waits, and while the screen reads the list that names the
+ * library, the page draws its header, named as its address spells it until
+ * the list names the library and as the list does then, and "Loading…" in its
+ * body's place once the wait has held. That header is the one the drawn page
+ * keeps, so whatever has focus in it keeps it as the body comes. A status
+ * that cannot be read, with none kept, is drawn as nothing holding it.
  *
- * **A running scan is polled through the store, one read at a time.** The
- * next read is sent a poll's interval after the last has answered: the store
- * keeps only the newest request's answer, so polls that overlapped could each
- * be overtaken and leave the kept status behind. The status read again on a
- * return lands whole, in one step: a scan it finds is taken up as one found
- * on arrival is, and one the kept status said was running is drawn ended or
- * further on, as it says. An end that this visit's first read of the status
- * finds draws no report, reads no list and marks no Library view: that scan
- * ended before this visit, and `RootRow`'s mount read adopts only a running
- * scan. A scan the page started itself is followed by its poll alone.
+ * **A scan is drawn from the scan feed** (`scanFeed.ts`), whoever started
+ * it: each job the feed says holds one of the library's directories, or one
+ * it shows inside them. Scan library reads Cancel while one does, and the
+ * directories each job walks say "Scanning…" in the table. Each job's line
+ * is its step and count, and names the other libraries it holds. Once none
+ * holds the library, a directory a cancel paused says so, and since when.
+ * Its own press, or a 409, which is proof of a scan in flight, asks the feed
+ * at once, and Scan library is held until that answer lands: the button goes
+ * from Scan library to Cancel with no free press between.
  *
- * **A 409 from Scan library is proof a scan is in flight**, of the library or
- * of one directory, so the page draws the sentence and polls. The sentence goes
- * when that scan ends.
+ * **The reports of a scan are drawn here when it ends**: when a job holding
+ * the library leaves the feed, or the answer its press asked for holds none,
+ * since the scan ended before any poll saw it. The status of each directory
+ * the job held, of those a scan of the library walks, is read, and whatever
+ * report each holds is drawn under its path. Only those: any other
+ * directory's status holds a report from another scan, if any. Nor, for a
+ * job the feed showed, the one whose page is open beside this one: that
+ * page's row saw the job too and draws its report, which side by side would
+ * be said twice. Of a scan no poll saw, the row draws nothing. What a scan
+ * changed in the list and the Library views is read again by the feed.
  *
- * **The reports of a scan this page watched are drawn here when it ends.**
- * A report is held by its directory's own status, which this page does not
- * otherwise read, so once the library's says nothing is running the status
- * of each directory the page saw the scan hold is read, and whatever report
- * each holds is drawn under its path, a directory inside one of the
- * library's among them. Only those: any other directory's status
- * holds a report from another scan, if any, and a directory that joined the
- * library while the scan ran is not in it.
- *
- * **Scans and removals exclude each other.** Scan library and Remove… are
- * held while a scan is known, starting, or the removal dialog is open; the
- * removal's confirm is held while a scan is known. Remove… and the confirm
- * are held too while the status names a removal waiting for a scan around or
- * inside one of the library's directories (`held_removals`), or a derive
- * holding the lease (`derive_running`, O51), which the server refuses the
- * removal for; the status is read again each poll's
- * interval until it names none, and once at a refusal of the removal for a
- * hold, which the page may not be drawing. A scan holds neither Rename… nor
- * Add directory…; the removal holds both, and the Directories table draws
- * its paths without links while it is open: a directory's page offers Scan
- * directory, Move… and Remove… on a directory the removal is taking.
+ * **Scans and removals exclude each other.** Remove… is held while a scan
+ * is known or starting, and Scan library while one is starting or the
+ * removal dialog is open; the removal's confirm is held while a scan is
+ * known. Remove… and the confirm are held too while the status names a
+ * removal waiting for a scan around or inside one of the library's
+ * directories (`held_removals`), or a derive holding the lease
+ * (`derive_running`, O51), which the server refuses the removal for. While
+ * the feed shows no job, the status is read again each poll's interval until
+ * it names none; a hold a job explains is read again as the feed marks the
+ * status stale at the job's end. It is read once, too, at a refusal of the
+ * removal for a hold, which the page may not be drawing. A scan holds
+ * neither Rename… nor Add directory…; the removal holds both, and the
+ * Directories table draws its paths without links while it is open: a
+ * directory's page offers Scan directory, Move… and Remove… on a directory
+ * the removal is taking.
  */
 import {
   Fragment,
@@ -83,7 +64,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { NavLink, useLocation } from 'react-router'
+import { NavLink, useLocation, useMatch } from 'react-router'
 import {
   type Added,
   keptSchedule,
@@ -104,7 +85,6 @@ import { HeldButton } from './HeldButton'
 import { useDrawn, useDrawnWait, useFocusLeavesHeld } from './hooks'
 import {
   addDir,
-  folderIn,
   type Library,
   type LibraryDir,
   type LibraryScanStatus,
@@ -119,12 +99,20 @@ import {
 import { linkedPlace } from './linkedPlace'
 import { messageOf, sentenceOf } from './message'
 import { NameClash } from './NameClash'
-import { invalidateLibraryViews, libraryScan, ROOTS } from './pageReads'
+import { libraryScan, ROOTS } from './pageReads'
 import { PathWithBreaks } from './PathWithBreaks'
 import { Refusal } from './Refusal'
-import { entryOf, invalidate, readNow, readSet } from './reads'
+import { entryOf, invalidate, readNow } from './reads'
 import { bringIntoView } from './reveal'
 import { RemoveLibrary } from './RemoveLibrary'
+import {
+  askScanFeed,
+  cancelScan,
+  coversToo,
+  jobsHolding,
+  stepLine,
+  useScanFeed,
+} from './scanFeed'
 import { ScanReport } from './ScanReport'
 import {
   PageHeader,
@@ -134,6 +122,7 @@ import {
   Section,
 } from './settingsLayout'
 import { usePage } from './usePage'
+import { inUtc } from './utc'
 import { WaitWords } from './WaitWords'
 import { ROW_CELLS, useLineEnds } from './lineEnds'
 import { count } from './count'
@@ -190,10 +179,10 @@ export interface LibraryPageProps {
    */
   onScan?: () => void
   /**
-   * The list reloads on a rename, an added directory or a finished scan.
-   * `quiet` is a scan that ended by itself: no press started that read.
+   * The list reloads on a rename or an added directory; the scan feed reads
+   * it again when a scan ends.
    */
-  onChanged: (quiet?: boolean) => void
+  onChanged: () => void
   /**
    * Library `id` was renamed to `name`, the server's answer, called just
    * before `onChanged`: its address is its name, which the screen follows.
@@ -216,18 +205,6 @@ export interface LibraryPageProps {
    * takes focus, since the link that had it may be hidden beside it.
    */
   onOpen?: (to: string) => void
-}
-
-/**
- * A scan the page watches, numbered from 1, and what it learnt of it from:
- * `kept`, the status an earlier visit kept, which a return draws its body
- * from at once, until a read of this visit finds the scan still running;
- * `status`, a status this visit read; or `press`, its own press of Scan
- * library (the start, or a 409).
- */
-interface Watch {
-  readonly n: number
-  readonly from: 'kept' | 'status' | 'press'
 }
 
 /**
@@ -269,62 +246,6 @@ function shownInside(library: Library): (NestedDir & { outer: string })[] {
       .filter((one) => one.shown)
       .map((one) => ({ ...one, outer: root.path })),
   )
-}
-
-/**
- * One line's worth for each of `scans` that walks directories inside
- * `library`'s own: the library that asked for it, `null` where none did
- * (spec decision 27), and the folders it walks here, the topmost only, each
- * once, so two of its directories of one name inside two of this library's
- * are said once.
- */
-function scansInside(
-  library: Library,
-  scans: LibraryScanStatus['scans'],
-): { key: string; by: string | null; folders: string[] }[] {
-  const inside = shownInside(library)
-  return scans.flatMap((scan) => {
-    const walked = inside.filter((one) => scan.root_ids.includes(one.id))
-    const topmost = walked.filter(
-      (one) => !walked.some((other) => one.path.startsWith(`${other.path}/`)),
-    )
-    if (topmost.length === 0) return []
-    const by = scan.library
-    const folders = [
-      ...new Set(topmost.map((one) => folderIn(one.path, one.outer))),
-    ]
-    return [{ key: `${by ?? ''}\u0000${folders.join('\u0000')}`, by, folders }]
-  })
-}
-
-/**
- * One line's worth for each of `scans` that another library asked for, or
- * none did, which walks directories of `library`'s own that another library
- * holds too: who asked, `null` where none did, and those directories, by id
- * and path (spec decision 27). A scan `library` asked for is its own, told by
- * its id, so a rename while it runs leaves it its own.
- */
-function scansShared(
-  library: Library,
-  scans: LibraryScanStatus['scans'],
-): { key: string; by: string | null; ids: number[]; folders: string[] }[] {
-  return scans.flatMap((scan) => {
-    if (scan.library_id === library.id) return []
-    const walked = library.dirs.filter(
-      (dir) => dir.libraries.length > 1 && scan.root_ids.includes(dir.id),
-    )
-    if (walked.length === 0) return []
-    const by = scan.library
-    const folders = walked.map((dir) => dir.path)
-    return [
-      {
-        key: `shared\u0000${by ?? ''}\u0000${folders.join('\u0000')}`,
-        by,
-        ids: walked.map((dir) => dir.id),
-        folders,
-      },
-    ]
-  })
 }
 
 /**
@@ -431,21 +352,15 @@ const removalHoldIn = (status: LibraryScanStatus | undefined): RemovalHold =>
     ? undefined
     : removalHold(status.held_removals.length > 0, status.derive_running)
 
-/** The directories a library's status names as scanning, by id. */
-function runningIds(status: LibraryScanStatus): ReadonlySet<number> {
-  return new Set(
-    status.dirs.filter((one) => one.running).map((one) => one.root_id),
-  )
-}
-
 /**
  * A time as a Last scan cell says it after each end a scan can have but ok, in
  * figures no time the server writes draws wider: it writes
  * `YYYY-MM-DD HH:MM:SS`, and eights are the UI face's widest figures. A scan
  * fails or is refused; one the server runs reads `waiting` while it waits for
- * the job lock or the lease (O51), `deriving` until its derive ends, and
- * `interrupted` where a restart found either (O186). An ok time, their
- * opening words, is narrower than any of them.
+ * the job lock or the lease (O51), `deriving` until its derive ends,
+ * `interrupted` where a restart found either (O186), and `cancelled` where
+ * Cancel stopped it. An ok time, their opening words, is narrower than any
+ * of them.
  */
 const WIDEST_ENDS = [
   'failed',
@@ -453,6 +368,7 @@ const WIDEST_ENDS = [
   'deriving',
   'interrupted',
   'waiting',
+  'cancelled',
 ].map((status) =>
   lastScan({ last_scan_at: '8888-88-88 88:88:88', last_scan_status: status }),
 )
@@ -463,9 +379,9 @@ const WIDEST_ENDS = [
  * widest in whatever face draws them, so the column widens as the page first
  * draws the row scanning, and the end of no scan it draws as scanning moves
  * it (O253).
- * A scan it never draws, one the scheduler, another tab or the CLI runs while
- * the page is idle, still moves the column when the list is next read: an
- * idle page reads no status to see it by.
+ * A scan it never draws, one the CLI runs, or one that starts and ends
+ * between two of the feed's polls, still moves the column when the list is
+ * next read.
  */
 const heldWhileScanning = (dir: LibraryDir): string[] => [
   lastScan(dir),
@@ -504,6 +420,8 @@ export function LibraryPage({
    * the library.
    */
   const named = nameAt(useLocation().pathname, LIBRARIES)?.name
+  /** The id, as the router reads it, of the directory open beside this page. */
+  const beside = useMatch(`${LIBRARIES}/:name/dirs/:did`)?.params.did
 
   /** Why the page's last scan could not start, or its poll failed. */
   const [failure, setFailure] = useState<string | undefined>()
@@ -592,24 +510,34 @@ export function LibraryPage({
   const saidClash = renameFailure === clash ? undefined : clash
   const clashNote = useId()
   const [removing, setRemoving] = useState(false)
-  const [running, setRunning] = useState(false)
+  /**
+   * Scan library was pressed, and the start, or the feed's answer asked for
+   * after it, is still out.
+   */
   const [starting, setStarting] = useState(false)
-  const [elapsed, setElapsed] = useState<number | null>(null)
-  /** The directories the library's status last named as scanning, by id. */
-  const [scanning, setScanning] = useState<ReadonlySet<number>>(new Set())
-  /** The scans the library's status last named, by the library that asked. */
-  const [scans, setScans] = useState<LibraryScanStatus['scans']>([])
+  /** Cancel was pressed, and its sends, or the feed's answer after them, are out. */
+  const [cancelSent, setCancelSent] = useState(false)
+  const feed = useScanFeed()
+  const libraryId = library?.id
+  /** Each job holding one of the directories a scan of the library walks. */
+  const jobs = libraryId === undefined ? [] : jobsHolding(feed, libraryId)
+  const running = jobs.length > 0
+  /**
+   * An answer since Scan library was last pressed showed a job of the
+   * library: its end is the feed's to see, with the row beside it.
+   */
+  const sawJob = useRef(false)
+  if (running) sawJob.current = true
+  /** The directories the jobs holding the library walk, by id. */
+  const scanning = new Set(jobs.flatMap((job) => job.dirs.map((one) => one.id)))
+  /** Cancel was pressed for every job holding the library, and none has stopped. */
+  const cancelling = running && jobs.every((job) => job.cancelling)
   /** Why the status last read held the library's removal (`removalHoldIn`). */
   const [removalHeld, setRemovalHeld] = useState<RemovalHold>()
   /** Bumped as each read made for `removalHeld` settles, to ask again. */
   const [heldReads, setHeldReads] = useState(0)
   /** Consecutive failed reads made for `removalHeld`. */
   const heldMisses = useRef(0)
-  /** Every directory drawn as scanning since the scan this page watches began. */
-  const covered = useRef<Set<number>>(new Set())
-  useEffect(() => {
-    for (const id of scanning) covered.current.add(id)
-  }, [scanning])
   /**
    * The words each directory's Last scan cell has held while it scanned, by
    * path, since the page was entered. They stay unseen beside what it says
@@ -618,6 +546,7 @@ export function LibraryPage({
    * draws moves it (O253; `heldWhileScanning` says which it does not draw).
    */
   const heldWords = useRef(new Map<string, Set<string>>())
+  // After every render: `scanning` is made anew by each.
   useEffect(() => {
     for (const dir of library?.dirs ?? []) {
       if (!scanning.has(dir.id)) continue
@@ -625,20 +554,18 @@ export function LibraryPage({
       for (const words of heldWhileScanning(dir)) held.add(words)
       heldWords.current.set(dir.path, held)
     }
-  }, [scanning, library])
+  })
   /**
-   * The scan the page watches. While it came from a status, kept or read,
-   * each newer status is taken whole; one the page started is followed by
-   * its poll alone.
+   * The scans that have ended since the page was drawn, counted, the
+   * directories the last of them held, by id, and the one of those whose
+   * report this page leaves to the row beside it.
    */
-  const [watch, setWatch] = useState<Watch>({ n: 0, from: 'status' })
-  /**
-   * The number of the watched scan that last ended. A number rather than a
-   * count, so that a scan the store and the poll both say has ended ends
-   * once.
-   */
-  const [ended, setEnded] = useState(0)
-  /** What each directory's status held when the scan this page watched ended. */
+  const [ended, setEnded] = useState<{
+    n: number
+    dirs: ReadonlySet<number>
+    skip?: string
+  }>({ n: 0, dirs: new Set() })
+  /** What each directory's status held when the scan the page drew ended. */
   const [reports, setReports] = useState<
     { path: string; outcome: ScanOutcome }[] | undefined
   >()
@@ -649,20 +576,11 @@ export function LibraryPage({
    */
   const startingRef = useRef(false)
   const writing = useRef(false)
-  const misses = useRef(0)
-  /** The poll's reads sent by this mount, for a read the poll overtook. */
-  const pollsSent = useRef(0)
-  // Held in refs for the reason `RootRow` holds its own: the poll's interval
-  // must not restart each time the parent hands over a fresh closure, nor
-  // each time the list reads again.
-  const changed = useRef(onChanged)
-  changed.current = onChanged
-  const watchNow = useRef(watch)
-  watchNow.current = watch
+  // Held in a ref so that the reports read at a scan's end are of the
+  // directories the list names then, without the end waiting on a render.
   const walked = useRef(library === undefined ? [] : walkedBy(library))
   walked.current = library === undefined ? [] : walkedBy(library)
 
-  const libraryId = library?.id
   // Its address is known only once the list has named the library (§4.5),
   // and the body waits for it.
   const {
@@ -673,159 +591,58 @@ export function LibraryPage({
     libraryId === undefined ? undefined : libraryScan(libraryId),
   ])
   /**
-   * The page waited for this visit's read of its scan status, so the status
-   * its body is first drawn from is one this visit read, not one an earlier
-   * visit kept.
+   * Ends a scan that held `dirs`: the 409's sentence was true while it ran,
+   * and the reports of those dirs but `skip` are read.
    */
-  const [waited, setWaited] = useState(false)
-  if (library !== undefined && !ready && !waited) setWaited(true)
-  /**
-   * Ends `ending` once, whichever of the store and the poll says so first.
-   * A scan taken up from a kept status and found over by this visit's first
-   * read of it ended before this visit: it is drawn as not running, with no
-   * report and no read of the list, as `RootRow`'s mount read adopts only a
-   * running scan.
-   */
-  const endWatch = (ending: Watch) => {
-    setRunning(false)
+  const endScan = (dirs: number[], skip?: string) => {
     setConflict(undefined)
-    if (ending.from !== 'kept') setEnded(ending.n)
+    setEnded((was) => ({ n: was.n + 1, dirs: new Set(dirs), skip }))
   }
   /**
-   * The scan status the page last took. The one its body is first drawn
-   * from says whether a scan is running, and so does each read after it:
-   * the read a return sends, and each of the poll's, which comes here
-   * through the store as well as to the poll. A scan it finds is watched;
-   * one watched from a status is drawn as each newer status says, ended or
-   * further on, in the render that status lands. An answer in the words of
-   * the status taken keeps the answer the store holds, the same object, so
-   * it comes here not at all.
+   * The status the page last took, which says what holds its removal: the
+   * one its body is first drawn from, and each read after it.
    */
   const [taken, setTaken] = useState<LibraryScanStatus | undefined>()
   if (ready && status !== taken) {
     setTaken(status)
     setRemovalHeld(removalHoldIn(status))
-    if (running && watch.from !== 'press') {
-      if (status !== undefined) {
-        setElapsed(status.elapsed_secs)
-        setScanning(runningIds(status))
-        setScans(status.scans)
-        if (!status.running) endWatch(watch)
-        else if (watch.from === 'kept') setWatch({ ...watch, from: 'status' })
+  }
+  /**
+   * The feed's answer the page last compared with the one before it, and
+   * the library it compared them for: a job holding the library in that
+   * answer and in none since has ended, in the render the answer lands.
+   */
+  const [compared, setCompared] = useState({ feed, libraryId })
+  if (compared.feed !== feed || compared.libraryId !== libraryId) {
+    setCompared({ feed, libraryId })
+    if (libraryId !== undefined && compared.libraryId === libraryId) {
+      const now = new Set(jobs.map((job) => job.id))
+      const gone = jobsHolding(compared.feed, libraryId).filter(
+        (job) => !now.has(job.id),
+      )
+      // The row of a directory open beside this page saw the job too, and
+      // draws its report as the job leaves the feed.
+      if (gone.length > 0) {
+        endScan(
+          gone.flatMap((job) => job.dirs.map((one) => one.id)),
+          beside,
+        )
       }
-    } else if (status?.running === true && !running) {
-      setElapsed(status.elapsed_secs)
-      setScanning(runningIds(status))
-      setScans(status.scans)
-      setRunning(true)
-      setWatch({
-        n: watch.n + 1,
-        // The first status of a return that did not wait is the kept one.
-        from: !waited && taken === undefined ? 'kept' : 'status',
-      })
     }
   }
 
-  /** The watched scan's number while it is one taken up from a kept status. */
-  const keptWatch = watch.from === 'kept' ? watch.n : undefined
-  // This visit saw a scan taken up from a kept status running once its read
-  // of the status has settled saying so. An answer in the kept status's own
-  // words keeps the answer the store holds, the same object, so `taken`
-  // cannot see it; the read is joined here instead. It is out, as
-  // `usePage`'s effect sent it in the commit that took the scan up, so
-  // joining it sends nothing. A read that failed saw nothing, and so did
-  // one the store dropped for a newer request: while the watch is kept only
-  // the poll sends one, so a poll sent since the join means the entry is
-  // not this read's answer. One that found the scan over ends it through
-  // `taken` with no report, which a move made here before that render
-  // would turn into a report.
-  useEffect(() => {
-    if (keptWatch === undefined || libraryId === undefined) return
-    const scan = libraryScan(libraryId)
-    const pollsBefore = pollsSent.current
-    let gone = false
-    void readSet([scan]).then(() => {
-      const entry = entryOf(scan)
-      if (
-        gone ||
-        pollsSent.current !== pollsBefore ||
-        entry?.failure !== undefined ||
-        entry?.answer?.running !== true
-      ) {
-        return
-      }
-      setWatch((was) =>
-        was.n === keptWatch && was.from === 'kept'
-          ? { ...was, from: 'status' }
-          : was,
-      )
-    })
-    return () => {
-      gone = true
-    }
-  }, [keptWatch, libraryId])
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `endWatch` is made anew each render and calls only state setters, which never change.
-  useEffect(() => {
-    if (!running || libraryId === undefined) return
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    // Called as the watch starts and once the last read has answered, never
-    // on a clock of its own.
-    const next = () => {
-      timer = setTimeout(() => {
-        pollsSent.current += 1
-        readNow(libraryScan(libraryId))
-          .then((now) => {
-            if (cancelled) return
-            misses.current = 0
-            setElapsed(now.elapsed_secs)
-            setScanning(runningIds(now))
-            setScans(now.scans)
-            // Remove…'s hold is `taken`'s to draw, from the answer the store
-            // applied: this one may be an answer it dropped as overtaken.
-            if (now.running) {
-              setWatch((was) =>
-                was.from === 'kept' ? { ...was, from: 'status' } : was,
-              )
-              next()
-              return
-            }
-            endWatch(watchNow.current)
-          })
-          .catch((err: unknown) => {
-            if (cancelled) return
-            misses.current += 1
-            if (misses.current < POLL_MISSES_ALLOWED) {
-              next()
-              return
-            }
-            setRunning(false)
-            setScanning(new Set())
-            setScans([])
-            // The 409's sentence is true while the scan it named is watched,
-            // and nothing watches it now.
-            setConflict(undefined)
-            setFailure(sentenceOf(err))
-          })
-      }, SCAN_POLL_MS)
-    }
-    next()
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [running, libraryId])
-
+  /** The feed shows a job, which reads the status again as it ends. */
+  const feedShowsJob = (feed?.jobs ?? []).length > 0
   // A scan around or inside one of the library's directories, or a derive,
-  // holds its removal and is no scan this page watches, so while it holds
-  // and none of the library's runs, the status is read again each poll's
-  // interval. The read lands in the store, which hands it to `taken`; the
-  // count asks again whether or not that answer changed anything. Failed
-  // reads give the hold up as the main poll does, and say so.
+  // holds its removal and is no scan of the library's, so while it holds and
+  // the feed shows no job to read the status again at its end, the status is
+  // read again each poll's interval. The read lands in the store, which hands
+  // it to `taken`; the count asks again whether or not that answer changed
+  // anything. Failed reads give the hold up, and say so.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `heldReads` is what asks again once a read has settled.
   useEffect(() => {
-    if (removalHeld === undefined || running || libraryId === undefined) return
+    if (removalHeld === undefined || feedShowsJob || libraryId === undefined)
+      return
     let cancelled = false
     const timer = setTimeout(() => {
       readNow(libraryScan(libraryId)).then(
@@ -851,21 +668,20 @@ export function LibraryPage({
       cancelled = true
       clearTimeout(timer)
     }
-  }, [removalHeld, running, libraryId, heldReads])
+  }, [removalHeld, feedShowsJob, libraryId, heldReads])
 
-  // The list is read again for what the scan changed, quietly: no press
-  // started that read. A read that fails draws no report for that directory:
-  // the table still says when it was last scanned. What the scan found
-  // changes what the Library views draw, so they are marked too.
+  // The report of each directory the ended scan held, of those a scan of the
+  // library walks, is read: a directory that joined the library while it ran
+  // was not in it. A read that fails draws no report for that directory: the
+  // table still says when it was last scanned.
   useEffect(() => {
-    if (ended === 0) return
-    changed.current(true)
-    invalidateLibraryViews()
+    if (ended.n === 0) return
     let cancelled = false
-    const scanned = covered.current
     Promise.all(
       walked.current
-        .filter((root) => scanned.has(root.id))
+        .filter(
+          (root) => ended.dirs.has(root.id) && String(root.id) !== ended.skip,
+        )
         .map((root) =>
           scanStatus(root.id).then(
             (one) =>
@@ -1047,72 +863,81 @@ export function LibraryPage({
         ? linked
         : undefined
   /**
-   * While no scan of the library's own is running, a line for each scan
-   * another library asked for, or none did, that walks its directories:
-   * those another library holds too, by path, and those inside its own,
-   * which the table does not list, the topmost only, each once. A directory
-   * of its own scanning in none of those is its own scan's.
+   * When a cancel paused the first of the library's directories it paused,
+   * while one is paused: the earliest, since the store writes a time that
+   * sorts as a string.
    */
-  const shared = scansShared(library, scans)
-  const sharedIds = new Set(shared.flatMap((line) => line.ids))
-  const scanLines = library.dirs.some(
-    (root) => scanning.has(root.id) && !sharedIds.has(root.id),
-  )
-    ? []
-    : [
-        ...shared.map((line) => ({ ...line, holds: true })),
-        ...scansInside(library, scans).map((line) => ({
-          ...line,
-          holds: false,
-        })),
-      ]
+  const pausedSince = library.dirs
+    .flatMap((dir) => (dir.paused_at === null ? [] : [dir.paused_at]))
+    .sort()[0]
+
+  /**
+   * Scan library is held until the feed's answer asked for after the start,
+   * or after a 409, lands: the button goes from Scan library to Cancel with
+   * no free press between. An answer asked for after the start that holds no
+   * job of the library's means the scan has already ended, and ends it here
+   * where no poll saw it (`sawJob`); a 409 names no directories.
+   */
+  const followScan = (dirs: number[]) =>
+    askScanFeed().then((answer) => {
+      startingRef.current = false
+      setStarting(false)
+      if (
+        answer !== undefined &&
+        jobsHolding(answer, library.id).length === 0 &&
+        !sawJob.current
+      )
+        endScan(dirs)
+    })
 
   const scan = () => {
     if (startingRef.current) return
     startingRef.current = true
+    sawJob.current = false
     setStarting(true)
     setFailure(undefined)
     setConflict(undefined)
     setReports(undefined)
     onScan?.()
-    covered.current = new Set()
-    misses.current = 0
-    // A start, or a 409, which is proof of a scan, leaves the status the
-    // store keeps saying none is running until it is read again, and a
-    // return before the first poll would draw that.
-    const keptStatusStale = () => void invalidate(libraryScan(library.id))
-    startLibraryScan(library.id)
-      .then((started) => {
-        keptStatusStale()
-        startingRef.current = false
-        setStarting(false)
-        // The server's own list: the page's can predate a pattern edit or a
-        // nested add, and a directory it names that the scan did not walk
-        // would have an earlier report drawn as this scan's.
-        setScanning(new Set(started.root_ids))
-        setScans([])
-        setRunning(true)
-        setWatch((was) => ({ n: was.n + 1, from: 'press' }))
-      })
-      .catch((err: unknown) => {
-        startingRef.current = false
-        setStarting(false)
+    startLibraryScan(library.id).then(
+      // The server's own list: the page's can predate a pattern edit or a
+      // nested add, and a directory it names that the scan did not walk
+      // would have an earlier report drawn as this scan's.
+      (started) => followScan(started.root_ids),
+      (err: unknown) => {
         const conflict = statusOf(messageOf(err)) === 409
-        if (conflict) keptStatusStale()
-        if (!drawn.current) {
+        if (drawn.current && conflict) {
+          setConflict(sentenceOf(err))
+          void followScan([])
+          return
+        }
+        startingRef.current = false
+        setStarting(false)
+        if (drawn.current) setFailure(sentenceOf(err))
+        else
           onLateRefusal?.(
             `A scan of ${library.name} did not start (${sentenceOf(err)}).`,
           )
-          return
-        }
-        if (conflict) {
-          setConflict(sentenceOf(err))
-          setRunning(true)
-          setWatch((was) => ({ n: was.n + 1, from: 'press' }))
-        } else {
-          setFailure(sentenceOf(err))
-        }
-      })
+      },
+    )
+  }
+
+  /**
+   * Cancels each job holding the library, with no dialog: a cancel costs at
+   * most one directory's unsaved walk, and Scan resumes the rest (spec §7).
+   * Held until the feed's answer after the sends lands.
+   */
+  const cancel = () => {
+    setCancelSent(true)
+    setFailure(undefined)
+    Promise.all(jobs.map((job) => cancelScan(job.id)))
+      .then(
+        () => askScanFeed(),
+        (err: unknown) => {
+          if (drawn.current) setFailure(sentenceOf(err))
+        },
+      )
+      .then(() => setCancelSent(false))
   }
 
   /**
@@ -1294,7 +1119,8 @@ export function LibraryPage({
             >
               Rename…
             </button>
-            {/* Scan library and Remove… are held by a scan and by a press of
+            {/* Scan library, which reads Cancel while a scan holds the
+                library, and Remove… are held by a scan and by a press of
                 their own, either of which can come while the button has
                 focus, so each is a `HeldButton` and keeps it. A press of the
                 other holds it by `disabled`: focus is on the button pressed
@@ -1303,11 +1129,11 @@ export function LibraryPage({
             <HeldButton
               type="button"
               name="scan-library"
-              onClick={scan}
-              held={running || starting}
+              onClick={running ? cancel : scan}
+              held={starting || cancelSent || cancelling}
               disabled={removing}
             >
-              Scan library
+              {running ? 'Cancel' : 'Scan library'}
             </HeldButton>
           </>
         }
@@ -1353,32 +1179,22 @@ export function LibraryPage({
           library will need then.
         </p>
       )}
-      {running && scanLines.length === 0 && (
-        <p className="scanning">
-          A scan is running in this library…
-          {elapsed === null ? '' : ` ${Math.round(elapsed)}s`}
+      {jobs.map((job) => {
+        const covers = coversToo(job, library.id)
+        return (
+          <Fragment key={job.id}>
+            <p className="scanning">
+              {job.cancelling ? 'Cancelling…' : stepLine(job)}
+            </p>
+            {covers !== undefined && <p className="scanning">{covers}</p>}
+          </Fragment>
+        )
+      })}
+      {!running && pausedSince !== undefined && (
+        <p className="paused">
+          Paused until Scan is pressed, since {inUtc(pausedSince)}
         </p>
       )}
-      {running &&
-        scanLines.map((line) => (
-          <p key={line.key} className="scanning">
-            {line.by === null ? '' : `${line.by} is scanning `}
-            {line.folders.map((folder, i) => (
-              <Fragment key={folder}>
-                {i === 0 ? '' : i === line.folders.length - 1 ? ' and ' : ', '}
-                <code>
-                  <PathWithBreaks path={folder} />
-                </code>
-              </Fragment>
-            ))}
-            {line.by === null
-              ? line.folders.length === 1
-                ? ' is being scanned'
-                : ' are being scanned'
-              : ''}
-            , which {library.name} {line.holds ? 'holds too' : 'shows'}.
-          </p>
-        ))}
       <Fragment key="notices">{notices}</Fragment>
       {failure !== undefined && <p role="alert">{failure}</p>}
       {conflict !== undefined && <p role="alert">{conflict}</p>}

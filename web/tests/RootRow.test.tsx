@@ -4,12 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from '../src/config'
 import * as api from '../src/libraries'
 import { RootRow } from '../src/RootRow'
+import type { FeedJob, ScanFeed } from '../src/scanFeed'
+import { inUtc } from '../src/utc'
 import { emptyDerive } from './support/derive'
 import { deferred, flush } from './support/async'
 import './support/dialog'
 import { holdOf } from './support/held'
 import { mount, rerender } from './support/mount'
-import { keptGrid } from './support/reads'
+import { feedJob, serveFeed } from './support/scanFeed'
 import { helpOf, row, section } from './support/settingsRows'
 
 vi.mock('../src/libraries', async (importOriginal) => ({
@@ -40,6 +42,7 @@ const root = (over: Partial<config.Root> = {}): config.Root => ({
   last_scan_at: null,
   last_scan_status: null,
   next_scan_at: null,
+  paused_at: null,
   ...over,
 })
 
@@ -148,6 +151,49 @@ async function settle(over: Partial<config.Root> = {}, onChanged = vi.fn()) {
   return host
 }
 
+/** The scan feed every test's row polls, idle until a test answers otherwise. */
+let feed: ReturnType<typeof serveFeed>
+
+/** The feed while no job runs, with its marker at `ended`. */
+const idleFeed = (ended = 0): ScanFeed => ({ ended, libraries: [], jobs: [] })
+
+/** The feed while `jobs` run, each library they hold at its job's step. */
+const runningFeed = (...jobs: FeedJob[]): ScanFeed => ({
+  ended: 0,
+  libraries: jobs.flatMap((job) =>
+    job.libraries.map(({ id }) => ({ id, step: job.step })),
+  ),
+  jobs,
+})
+
+/** A job holding the row's directory, 3, unless `over` names others. */
+const dirJob = (over: Partial<FeedJob> = {}) =>
+  feedJob({ dirs: [{ id: 3, path: '/srv/manga' }], ...over })
+
+/** Lets `ms` of the clock run, and the feed's polls sent meanwhile land. */
+const clock = (ms: number) =>
+  act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
+
+/** Scan directory, which reads Cancel while a job holds the directory. */
+const scanButton = (host: HTMLElement) =>
+  host.querySelector('.page-actions button') as HTMLButtonElement
+
+/** Its words and whether it is held. */
+const scanDrawn = (host: HTMLElement) => [
+  scanButton(host).textContent,
+  holdOf(scanButton(host)),
+]
+
+/** The line under the header saying what the job holding it is doing. */
+const scanLine = (host: HTMLElement) =>
+  host.querySelector('.scanning')?.textContent
+
+/** The line saying the directory is paused, if it is drawn. */
+const pausedLine = (host: HTMLElement) =>
+  host.querySelector('.paused')?.textContent
+
 beforeEach(() => {
   // `mockResolvedValue` sets an implementation and leaves the call log
   // alone, and this project sets no `clearMocks` in `vite.config.ts` — so a
@@ -155,6 +201,7 @@ beforeEach(() => {
   // calls and fail, or worse, pass on them.
   vi.clearAllMocks()
   vi.useFakeTimers({ shouldAdvanceTime: true })
+  feed = serveFeed(idleFeed())
   vi.mocked(config.patchRoot).mockResolvedValue(undefined)
   // `RemoveRoot` is mounted by this component, so its two routes are mocked
   // here as well — otherwise the dialog reaches the real client, `fetch` is
@@ -260,6 +307,7 @@ describe('RootRow', () => {
       ),
     )
     const host = await settle()
+    feed.answer(runningFeed(dirJob()))
     await act(async () => {
       press(host, 'Scan directory').click()
       await Promise.resolve()
@@ -326,10 +374,8 @@ describe('RootRow', () => {
       (b) => b.textContent === 'Cancel',
     ) as HTMLButtonElement
     act(() => cancel.focus())
-    await act(async () => {
-      rerender(<RootRow root={root()} held onChanged={vi.fn()} />)
-      await Promise.resolve()
-    })
+    feed.answer(runningFeed(dirJob()))
+    await clock(5000)
     expect(host.querySelector('.remove-root')).toBeNull()
     expect(document.activeElement).toBe(press(host, 'Remove…'))
     expect(holdOf(press(host, 'Remove…'))).toBe('held')
@@ -346,10 +392,8 @@ describe('RootRow', () => {
       'input[name="edition_key"]',
     ) as HTMLInputElement
     act(() => box.focus())
-    await act(async () => {
-      rerender(<RootRow root={root()} held onChanged={vi.fn()} />)
-      await Promise.resolve()
-    })
+    feed.answer(runningFeed(dirJob()))
+    await clock(5000)
     expect(host.querySelector('.remove-root')).toBeNull()
     expect(document.activeElement).toBe(box)
   })
@@ -365,57 +409,17 @@ describe('RootRow', () => {
     expect(host.querySelector('.last-dir')).toBeNull()
   })
 
-  it('closes an open removal dialog when its own mount read finds a scan running', async () => {
-    let answer: (v: config.ScanStatus) => void = () => {}
-    vi.mocked(config.scanStatus).mockReturnValue(
-      new Promise((resolve) => {
-        answer = resolve
-      }),
-    )
+  it('is held while a job holds its directory: Remove… is held and sends nothing, and Scan directory reads Cancel and starts nothing', async () => {
     const host = await settle()
-    await act(async () => {
-      press(host, 'Remove…').click()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.remove-root .confirm')).not.toBeNull()
-    act(() =>
-      (host.querySelector('.remove-root .confirm') as HTMLElement).focus(),
-    )
-    await act(async () => {
-      answer({
-        root_id: 3,
-        running: true,
-        elapsed_secs: 7,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.remove-root')).toBeNull()
-    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 7s')
-    expect(config.removeRoot).not.toHaveBeenCalled()
-    // Focus was in the confirm the scan took away: it goes back to Remove…,
-    // which the scan holds.
-    expect(document.activeElement).toBe(press(host, 'Remove…'))
+    feed.answer(runningFeed(dirJob()))
+    await clock(5000)
     expect(holdOf(press(host, 'Remove…'))).toBe('held')
-  })
-
-  it('is held while its library’s status says it is being scanned: Scan directory and Remove… are held and send nothing', async () => {
-    const host = await settle()
-    await act(async () => {
-      rerender(<RootRow root={root()} held onChanged={vi.fn()} />)
-      await Promise.resolve()
-    })
-    for (const label of ['Scan directory', 'Remove…']) {
-      expect(holdOf(press(host, label)), label).toBe('held')
-      await act(async () => {
-        press(host, label).click()
-        await Promise.resolve()
-      })
-    }
+    await act(async () => press(host, 'Remove…').click())
+    expect(scanDrawn(host)).toEqual(['Cancel', 'free'])
+    await act(async () => scanButton(host).click())
+    await clock(0)
     expect(config.startScan).not.toHaveBeenCalled()
+    expect(feed.cancels).toEqual([7])
     // The removal asks what it would cost as it opens. The row's hold closes
     // a removal it finds open, so the dialog's absence alone cannot show
     // that Remove… did nothing.
@@ -423,81 +427,9 @@ describe('RootRow', () => {
     expect(host.querySelector('.remove-root')).toBeNull()
   })
 
-  it('says after Scanning… that its scan waits while its status reads waiting, and nothing more once it reads deriving (O51)', async () => {
-    const scanning = (elapsed_secs: number, last_scan_status: string) => ({
-      root_id: 3,
-      running: true,
-      elapsed_secs,
-      report: null,
-      last_scan_at: '2026-11-10 12:00:00',
-      last_scan_status,
-    })
-    vi.mocked(config.scanStatus).mockResolvedValue(scanning(12, 'waiting'))
-    const host = await settle()
-    expect(host.querySelector('.scanning')?.textContent).toBe(
-      'Scanning… 12s · waiting',
-    )
-
-    vi.mocked(config.scanStatus).mockResolvedValue(scanning(13, 'deriving'))
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 13s')
-  })
-
-  it('says no waiting after Scanning… for a scan pressed once the watch of a waiting one was given up (O51)', async () => {
-    vi.mocked(config.scanStatus).mockResolvedValueOnce({
-      root_id: 3,
-      running: true,
-      elapsed_secs: 12,
-      report: null,
-      last_scan_at: '2026-11-10 12:00:00',
-      last_scan_status: 'waiting',
-    })
-    const host = await settle()
-    expect(host.querySelector('.scanning')?.textContent).toBe(
-      'Scanning… 12s · waiting',
-    )
-    vi.mocked(config.scanStatus).mockRejectedValue(
-      new Error('/api/library/roots/3/scan: 500 the store is locked'),
-    )
-    for (const _ of [1, 2, 3]) {
-      await act(async () => {
-        vi.advanceTimersByTime(config.SCAN_POLL_MS)
-        await Promise.resolve()
-        await Promise.resolve()
-      })
-    }
-    expect(host.querySelector('.scanning')).toBeNull()
-
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning…')
-  })
-
   it('says its Off directory never scanned waits for no press while the scan pressed here is drawn running (O275)', async () => {
-    vi.mocked(config.scanStatus)
-      .mockResolvedValueOnce({
-        root_id: 3,
-        running: false,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      .mockResolvedValue({
-        root_id: 3,
-        running: true,
-        elapsed_secs: 2,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
     const host = await settle({ scan_interval_secs: 0 })
+    await clock(0)
     const facts = () =>
       [...host.querySelectorAll('.regime > div')].map((one) => [
         one.querySelector('dt')?.textContent,
@@ -510,25 +442,15 @@ describe('RootRow', () => {
     ])
 
     // The list the facts come from is not read again until the scan ends.
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning…')
+    feed.answer(runningFeed(dirJob()))
+    await act(async () => scanButton(host).click())
+    await clock(0)
+    expect(scanLine(host)).not.toBeUndefined()
     expect(facts().slice(1)).toEqual([
       ['scan every', 'off'],
       ['last scan', 'never'],
       ['next scan', 'off'],
     ])
-
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 2s')
-    expect(facts()[2]).toEqual(['last scan', 'never'])
   })
 
   describe('Move…', () => {
@@ -658,9 +580,7 @@ describe('RootRow', () => {
       expect(host.querySelector('dialog')).toBeNull()
     })
 
-    it('closes its dialog when a scan the mount read finds begins', async () => {
-      const status = deferred<config.ScanStatus>()
-      vi.mocked(config.scanStatus).mockReturnValue(status.promise)
+    it('closes its dialog when a job comes to hold the directory', async () => {
       const host = await mounted()
       await act(async () => {
         press(host, 'Move…').click()
@@ -671,41 +591,11 @@ describe('RootRow', () => {
       act(() =>
         (host.querySelector('.move-root select') as HTMLElement).focus(),
       )
-      await flush(() =>
-        status.resolve({
-          root_id: 3,
-          running: true,
-          elapsed_secs: 1,
-          report: null,
-          last_scan_at: null,
-          last_scan_status: null,
-        }),
-      )
+      feed.answer(runningFeed(dirJob()))
+      await clock(5000)
       expect(host.querySelector('.move-root')).toBeNull()
       expect(document.activeElement).toBe(press(host, 'Move…'))
       expect(holdOf(press(host, 'Move…'))).toBe('held')
-    })
-
-    it('closes its dialog when the row becomes held', async () => {
-      const host = await mounted()
-      await act(async () => {
-        press(host, 'Move…').click()
-        await Promise.resolve()
-      })
-      expect(host.querySelector('.move-root')).not.toBeNull()
-      await act(async () => {
-        rerender(
-          <RootRow
-            root={root()}
-            library={library}
-            moveTo={moveTo}
-            held
-            onChanged={vi.fn()}
-          />,
-        )
-        await Promise.resolve()
-      })
-      expect(host.querySelector('.move-root')).toBeNull()
     })
 
     it('reloads once the directory has moved', async () => {
@@ -763,218 +653,6 @@ describe('RootRow', () => {
     expect(host.querySelector('.removal-report')).toBeNull()
   })
 
-  it('keeps a 409’s sentence only until the scan it named has ended', async () => {
-    vi.mocked(config.startScan).mockRejectedValue(
-      new Error(
-        '/api/library/roots/3/scan: 409 {"error":"a scan of /srv/manga is already running"}',
-      ),
-    )
-    const host = await settle()
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
-      'a scan of /srv/manga is already running',
-    )
-    expect(host.querySelector('.scanning')).not.toBeNull()
-
-    vi.mocked(config.scanStatus).mockResolvedValue({
-      root_id: 3,
-      running: false,
-      report: { error: 'the scan panicked' },
-      last_scan_at: '2026-09-04 12:00:00',
-      last_scan_status: 'failed',
-    })
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.scanning')).toBeNull()
-    expect(host.textContent).not.toContain('is already running')
-  })
-
-  it('asks for the list again, quietly, when its scan ends', async () => {
-    const changed = vi.fn()
-    const host = await settle({}, changed)
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('.scanning')).toBeNull()
-    expect(changed).toHaveBeenCalledTimes(1)
-    expect(changed).toHaveBeenCalledWith(true)
-  })
-
-  // What a scan found changes what the Library views draw; one the server
-  // has no record of may have written some of it before a restart.
-  it.each([
-    [
-      'reports what it found',
-      {
-        scan: {
-          root: '/srv/manga',
-          dirs: 1,
-          files: 2,
-          added: 2,
-          updated: 0,
-          gone: 0,
-          refused: null,
-          unreadable_dirs: [],
-          excluded_dirs: [],
-          excluded_files: 0,
-          bad_exclude_patterns: [],
-          forgotten_by_exclusion: 0,
-          taken_over: 0,
-        },
-        derive: emptyDerive,
-      } as config.ScanOutcome,
-      false,
-    ],
-    ['the server has no record of', null, true],
-  ] as const)(
-    'marks the Library views stale when its scan ends, as one that %s',
-    async (_, report, noRecord) => {
-      vi.mocked(config.scanStatus).mockResolvedValue({
-        root_id: 3,
-        running: false,
-        elapsed_secs: 2,
-        report,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      const grid = await keptGrid()
-      const host = await settle()
-      await act(async () => {
-        press(host, 'Scan directory').click()
-        await Promise.resolve()
-        await Promise.resolve()
-      })
-      expect(host.querySelector('.scanning')).not.toBeNull()
-      expect(grid.stale()).toBe(false)
-      await act(async () => {
-        vi.advanceTimersByTime(config.SCAN_POLL_MS)
-        await Promise.resolve()
-        await Promise.resolve()
-      })
-      expect(host.querySelector('.scanning')).toBeNull()
-      // Which of the two ends the poll took.
-      expect(
-        [...host.querySelectorAll('[role="alert"]')].some((p) =>
-          p.textContent?.includes('no record'),
-        ),
-      ).toBe(noRecord)
-      expect(grid.stale()).toBe(true)
-      expect(grid.sent()).toBe(1)
-    },
-  )
-
-  it('keeps a 409’s sentence through a poll that finds the scan still running', async () => {
-    vi.mocked(config.startScan).mockRejectedValue(
-      new Error(
-        '/api/library/roots/3/scan: 409 {"error":"a scan of /srv/manga is already running"}',
-      ),
-    )
-    const host = await settle()
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    const poll = async () => {
-      await act(async () => {
-        vi.advanceTimersByTime(config.SCAN_POLL_MS)
-        await Promise.resolve()
-        await Promise.resolve()
-      })
-    }
-    vi.mocked(config.scanStatus).mockResolvedValueOnce({
-      root_id: 3,
-      running: true,
-      elapsed_secs: 4,
-      report: null,
-      last_scan_at: null,
-      last_scan_status: null,
-    })
-    await poll()
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
-      'a scan of /srv/manga is already running',
-    )
-    expect(host.querySelector('.scanning')).not.toBeNull()
-
-    await poll()
-    expect(host.querySelector('.scanning')).toBeNull()
-    expect(host.textContent).not.toContain('is already running')
-  })
-
-  it('drops a 409’s sentence when its poll is abandoned, since nothing can keep it true', async () => {
-    vi.mocked(config.startScan).mockRejectedValue(
-      new Error(
-        '/api/library/roots/3/scan: 409 {"error":"a scan of /srv/manga is already running"}',
-      ),
-    )
-    const host = await settle()
-    vi.mocked(config.scanStatus).mockRejectedValue(
-      new Error('/api/library/roots/3/scan: 502 bad gateway'),
-    )
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    for (let i = 0; i < 3; i++) {
-      await act(async () => {
-        vi.advanceTimersByTime(config.SCAN_POLL_MS)
-        await Promise.resolve()
-        await Promise.resolve()
-      })
-    }
-    expect(
-      [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
-    ).toEqual(['bad gateway'])
-    expect(holdOf(press(host, 'Scan directory'))).toBe('free')
-  })
-
-  it('draws the sentence of the refusal that ends a run of failed polls', async () => {
-    vi.mocked(config.scanStatus)
-      .mockResolvedValueOnce({
-        root_id: 3,
-        running: false,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      .mockRejectedValue(
-        new Error(
-          '/api/library/roots/3/scan: 500 {"error":"the registry is unreadable"}',
-        ),
-      )
-    const host = await settle()
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    for (let i = 0; i < 3; i++) {
-      await act(async () => {
-        vi.advanceTimersByTime(config.SCAN_POLL_MS)
-        await Promise.resolve()
-        await Promise.resolve()
-      })
-    }
-    expect(host.querySelector('.scan-notice')?.textContent).toBe(
-      'the registry is unreadable',
-    )
-  })
-
   it("draws a refusal's sentence, not the response it came in", async () => {
     vi.mocked(config.startScan).mockRejectedValue(
       new Error(
@@ -982,6 +660,7 @@ describe('RootRow', () => {
       ),
     )
     const host = await settle()
+    feed.answer(runningFeed(dirJob()))
     await act(async () => {
       press(host, 'Scan directory').click()
       await Promise.resolve()
@@ -990,91 +669,6 @@ describe('RootRow', () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toBe(
       'a scan of /srv/manga is already running',
     )
-    // The 409 is still read from the message, so the row still polls.
-    expect(host.querySelector('.scanning')).not.toBeNull()
-  })
-
-  it('polls while a scan runs and stops when it finishes', async () => {
-    vi.mocked(config.scanStatus)
-      // **The mount read takes the first answer.** The card asks the status
-      // route once when it mounts, so a queued `…Once` chain that does not
-      // account for it has the poll reading the answer meant for the mount.
-      // Every test in this file that queues answers has to respect that shape.
-      .mockResolvedValueOnce({
-        root_id: 3,
-        running: false,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      .mockResolvedValueOnce({
-        root_id: 3,
-        running: true,
-        elapsed_secs: 1.2,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      .mockResolvedValue({
-        root_id: 3,
-        running: false,
-        elapsed_secs: 4.5,
-        report: { error: 'the scan panicked' },
-        last_scan_at: '2026-09-04 12:00:00',
-        last_scan_status: 'failed',
-      })
-
-    const host = await settle()
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.textContent).toContain('Scanning')
-
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.textContent).toContain('the scan panicked')
-
-    const calls = vi.mocked(config.scanStatus).mock.calls.length
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS * 3)
-      await Promise.resolve()
-    })
-    expect(vi.mocked(config.scanStatus).mock.calls.length).toBe(calls)
-  })
-
-  it('reloads the list once a scan finishes', async () => {
-    const onChanged = vi.fn()
-    vi.mocked(config.scanStatus).mockResolvedValue({
-      root_id: 3,
-      running: false,
-      elapsed_secs: 4.5,
-      report: { error: 'nope' },
-      last_scan_at: '2026-09-04 12:00:00',
-      last_scan_status: 'failed',
-    })
-    const host = await settle({}, onChanged)
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(onChanged).toHaveBeenCalled()
   })
 
   it('draws the failure when a patch is refused', async () => {
@@ -1100,86 +694,6 @@ describe('RootRow', () => {
       await Promise.resolve()
     })
     expect(config.patchRoot).toHaveBeenCalledWith(3, { keeps_documents: true })
-  })
-
-  it('keeps watching a scan through a single failed poll', async () => {
-    // A `.catch` that did `setRunning(false)` would let one blip — a proxy
-    // 502, a `SQLITE_BUSY` while the scan's own writes hold the file — tear
-    // the interval down for good: no progress, no eventual report, and a
-    // re-enabled "Scan directory" whose only answer is a 409 about the scan
-    // still running. That is precisely the state this file's mount-read exists
-    // to prevent, reached by a different door.
-    vi.mocked(config.scanStatus)
-      .mockResolvedValueOnce({
-        root_id: 3,
-        running: false,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      .mockRejectedValueOnce(new Error('502 Bad Gateway'))
-      .mockResolvedValue({
-        root_id: 3,
-        running: true,
-        elapsed_secs: 3,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-
-    const host = await settle()
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    // The failing poll.
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    // Still watching, and the next poll recovers.
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.textContent).toContain('Scanning')
-  })
-
-  it('gives up after a run of failed polls, and says which error', async () => {
-    vi.mocked(config.scanStatus)
-      .mockResolvedValueOnce({
-        root_id: 3,
-        running: false,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      .mockRejectedValue(new Error('500 reading the registry'))
-    const host = await settle()
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    for (let i = 0; i < 4; i++) {
-      await act(async () => {
-        vi.advanceTimersByTime(config.SCAN_POLL_MS)
-        await Promise.resolve()
-        await Promise.resolve()
-      })
-    }
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'reading the registry',
-    )
-    const calls = vi.mocked(config.scanStatus).mock.calls.length
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS * 3)
-      await Promise.resolve()
-    })
-    expect(vi.mocked(config.scanStatus).mock.calls.length).toBe(calls)
   })
 
   it('will not start a scan while the removal dialog is quoting counts', async () => {
@@ -1290,17 +804,11 @@ describe('RootRow', () => {
       last_scan_at: '2026-09-04 12:00:00',
       last_scan_status: 'ok',
     })
+    feed.answer(runningFeed(dirJob()))
     const host = await settle()
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
+    await clock(0)
+    feed.answer(idleFeed(1))
+    await clock(config.SCAN_POLL_MS)
     // After the settings and before the removal box, which stays the page's
     // last box.
     expect(
@@ -1414,100 +922,6 @@ describe('RootRow', () => {
     expect(config.patchRoot).toHaveBeenCalledWith(3, { exclude_globs: null })
   })
 
-  it('picks up a scan that was already running when it mounted', async () => {
-    // Without the mount read, `scanStatus` is reached only from the interval,
-    // and the interval only exists once `begin()` has run — so an admin who
-    // navigated away during a scan and came back would see no progress, no
-    // eventual report, and an enabled "Scan directory" that answers 409. The
-    // server keeps its registry precisely so a client can poll across requests.
-    vi.mocked(config.scanStatus).mockResolvedValue({
-      root_id: 3,
-      running: true,
-      elapsed_secs: 12.4,
-      report: null,
-      last_scan_at: null,
-      last_scan_status: null,
-    })
-    const host = await settle()
-    expect(config.scanStatus).toHaveBeenCalledWith(3)
-    expect(host.textContent).toContain('Scanning')
-    expect(host.textContent).toContain('12s')
-  })
-
-  it('says so when the server has no record of the scan it was watching', async () => {
-    // The registry is in-memory: a `serve` restarted mid-scan answers
-    // `{running: false, report: null}`. Writing that through unconditionally
-    // would clear "Scanning…" and draw nothing — a died-with-the-process scan
-    // reading as a clean finish.
-    vi.mocked(config.scanStatus)
-      .mockResolvedValueOnce({
-        root_id: 3,
-        running: true,
-        elapsed_secs: 1,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      .mockResolvedValue({
-        root_id: 3,
-        running: false,
-        elapsed_secs: 2,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-    const host = await settle()
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain(
-      'no record',
-    )
-  })
-
-  it('does not show the previous scan elapsed time when a new one starts', async () => {
-    vi.mocked(config.scanStatus).mockResolvedValue({
-      root_id: 3,
-      running: false,
-      elapsed_secs: 47,
-      report: { error: 'done' },
-      last_scan_at: null,
-      last_scan_status: null,
-    })
-    const host = await settle()
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    vi.mocked(config.scanStatus).mockResolvedValue({
-      root_id: 3,
-      running: true,
-      elapsed_secs: 0.1,
-      report: null,
-      last_scan_at: null,
-      last_scan_status: null,
-    })
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.textContent).not.toContain('47s')
-  })
-
   it('sends one POST for a double-pressed Scan directory', async () => {
     // `disabled={running}` with `running` set in the `.then` would let two
     // rapid presses both send — and the second's 409, about the admin's own
@@ -1555,56 +969,12 @@ describe('RootRow', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(host.textContent).toContain('no record')
+    const notice = () => host.querySelector('.scan-notice')?.textContent
+    expect(notice()).toEqual(expect.stringContaining('no record'))
 
     await edit(host, 'default_language', 'ja')
     expect(config.patchRoot).toHaveBeenCalled()
-    expect(host.textContent).toContain('no record')
-  })
-
-  it('starts watching when a 409 says a scan is already running', async () => {
-    // A 409 is positive proof a scan is in flight. If `begin`'s catch only
-    // alerted, the card would stay blind: no progress, no report, no reload
-    // when it finished, and the same 409 on every retry. That is verbatim the
-    // state `misses`' own doc comment exists to prevent.
-    vi.mocked(config.startScan).mockRejectedValue(
-      new Error(
-        '/api/library/roots/3/scan: 409 a scan of /srv/manga is already running',
-      ),
-    )
-    // **The mount read must say "not running", or this passes for the wrong
-    // reason**: the card would already be watching before the 409 fired, and
-    // the assertion below would hold with `begin`'s catch doing nothing at all.
-    vi.mocked(config.scanStatus)
-      .mockResolvedValueOnce({
-        root_id: 3,
-        running: false,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      .mockResolvedValue({
-        root_id: 3,
-        running: true,
-        elapsed_secs: 8,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-    const host = await settle()
-    expect(host.textContent).not.toContain('Scanning')
-    await act(async () => {
-      press(host, 'Scan directory').click()
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    await act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(host.textContent).toContain('Scanning')
-    expect(holdOf(press(host, 'Scan directory'))).toBe('held')
+    expect(notice()).toEqual(expect.stringContaining('no record'))
   })
 
   it('does not wipe a write-only column just because the box was focused', async () => {
@@ -2732,13 +2102,15 @@ describe('RootRow, a directory another library holds too', () => {
       'Remove from Manga…': 'free',
       'Remove…': 'held',
     })
-    await redrawn({ held: true })
-    expect(holds(host)).toEqual({
-      'Scan directory': 'held',
-      'Move…': 'held',
-      'Remove from Manga…': 'held',
-      'Remove…': 'held',
-    })
+    await redrawn({})
+    feed.answer(runningFeed(dirJob()))
+    await clock(5000)
+    expect(scanDrawn(host)).toEqual(['Cancel', 'free'])
+    expect(
+      ['Move…', 'Remove from Manga…', 'Remove…'].map((label) =>
+        holdOf(press(host, label)),
+      ),
+    ).toEqual(['held', 'held', 'held'])
   })
 
   it('holds the other actions by disabled while its dialog is open, and is itself held then', async () => {
@@ -3080,115 +2452,40 @@ describe('RootRow, a directory another library holds too', () => {
     expect(told()).toEqual([2, 2])
   })
 
-  /** One poll's interval, and what it started settles. */
-  const polled = () =>
-    act(async () => {
-      vi.advanceTimersByTime(config.SCAN_POLL_MS)
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-  const RUNNING: config.ScanStatus = {
-    root_id: 3,
-    running: true,
-    elapsed_secs: 2,
-    report: null,
-    last_scan_at: null,
-    last_scan_status: null,
-  }
-  /** Remove from Manga…'s rehearsal refused for a hold, and its own read answered. */
-  const refusedForItsScan = async (host: HTMLElement) => {
-    vi.mocked(config.scanStatus).mockResolvedValue(RUNNING)
+  /** Remove from Manga…'s rehearsal, refused for a hold. */
+  const refusedForAHold = async (host: HTMLElement) => {
     vi.mocked(api.unlinkCost).mockRejectedValueOnce(
       new Error(
         `/api/library/libraries/7/dirs/3?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or another library job is running; remove the directory from this library once it has finished' })}`,
       ),
     )
     await clicked(unlink(host))
-    await flush()
+    await clock(0)
   }
 
-  it('closes its dialog when a scan the mount read finds begins, and hands focus to Remove from Manga…, held', async () => {
-    const status = deferred<config.ScanStatus>()
-    vi.mocked(config.scanStatus).mockReturnValue(status.promise)
+  it('closes its dialog when a job comes to hold the directory, and hands focus to Remove from Manga…, held', async () => {
     const host = await mounted()
     await clicked(unlink(host))
     const confirm = host.querySelector('.unlink-root .confirm') as HTMLElement
     act(() => confirm.focus())
-    await flush(() => status.resolve(RUNNING))
-    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 2s')
+    feed.answer(runningFeed(dirJob()))
+    await clock(5000)
+    expect(scanLine(host)).toBe(
+      'Reading files · 120 of 2,097 · directory 1 of 1',
+    )
     expect(host.querySelector('.unlink-root')).toBeNull()
     expect(document.activeElement).toBe(unlink(host))
     expect(holdOf(unlink(host))).toBe('held')
   })
 
-  it('takes a scan up after a refusal with no report of an earlier scan beside Scanning…, as Scan directory does', async () => {
+  it('asks the feed on a refusal for a hold, and leaves itself as it was where no job holds the directory', async () => {
     const host = await mounted()
-    await clicked(press(host, 'Scan directory'))
-    vi.mocked(config.scanStatus).mockResolvedValue({
-      ...RUNNING,
-      running: false,
-      report: { error: 'the scan panicked' },
-    })
-    await polled()
-    expect(section(host, 'Scan report').textContent).toContain(
-      'the scan panicked',
-    )
-
-    await refusedForItsScan(host)
-    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 2s')
-    expect(host.textContent).not.toContain('the scan panicked')
-  })
-
-  it('takes a scan up after a refusal with no notice of a watch given up, and its failed polls counted afresh, as Scan directory does', async () => {
-    const host = await mounted()
-    await clicked(press(host, 'Scan directory'))
-    vi.mocked(config.scanStatus).mockRejectedValue(
-      new Error('/api/library/roots/3/scan: 502 bad gateway'),
-    )
-    for (let i = 0; i < config.POLL_MISSES_ALLOWED; i++) await polled()
+    await clock(0)
+    const polls = feed.polls()
+    await refusedForAHold(host)
+    expect(feed.polls()).toBe(polls + 1)
+    expect(config.scanStatus).not.toHaveBeenCalled()
     expect(host.querySelector('.scanning')).toBeNull()
-    expect(host.querySelector('.scan-notice')?.textContent).toBe('bad gateway')
-
-    await refusedForItsScan(host)
-    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 2s')
-    expect(host.querySelector('.scan-notice')).toBeNull()
-    // One failed poll is a blip, which the watch outlasts.
-    vi.mocked(config.scanStatus).mockRejectedValueOnce(
-      new Error('/api/library/roots/3/scan: 502 bad gateway'),
-    )
-    await polled()
-    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 2s')
-    expect(host.querySelector('.scan-notice')).toBeNull()
-  })
-
-  it('reads its own status on a refusal for a hold, and leaves itself as it was where no scan of its own is running', async () => {
-    const host = await mounted()
-    expect(config.scanStatus).toHaveBeenCalledTimes(1)
-    // A finished scan's report, which only a scan this row watched is drawn
-    // with.
-    vi.mocked(config.scanStatus).mockResolvedValue({
-      root_id: 3,
-      running: false,
-      report: { error: 'the scan panicked' },
-      last_scan_at: null,
-      last_scan_status: null,
-    })
-    vi.mocked(api.unlinkCost).mockRejectedValueOnce(
-      new Error(
-        `/api/library/libraries/7/dirs/3?dry_run=true: 409 ${JSON.stringify({ error: 'a scan or another library job is running; remove the directory from this library once it has finished' })}`,
-      ),
-    )
-    await clicked(unlink(host))
-    await flush()
-    expect(config.scanStatus).toHaveBeenCalledTimes(2)
-    expect(host.querySelector('.scanning')).toBeNull()
-    expect(
-      [
-        ...host.querySelectorAll(
-          '.settings-section > .settings-section-head > .settings-section-title',
-        ),
-      ].map((title) => title.textContent),
-    ).toEqual(['How it is scanned', 'How it is read', 'Removal'])
     expect(holds(host)).toEqual({
       'Scan directory': 'free',
       'Move…': 'free',
@@ -3197,64 +2494,17 @@ describe('RootRow, a directory another library holds too', () => {
     })
   })
 
-  it('reads no status of its own on a refusal for a hold while it watches its own scan, so that the answer cannot take that scan up again once it has ended (O252)', async () => {
+  it('draws the job a refusal for a hold finds holding the directory, at once: Cancel, and the rest held', async () => {
     const host = await mounted()
-    /** Move…'s rehearsal, asked for Comics and refused for a hold. */
-    const refusedMove = async () => {
-      vi.mocked(api.moveCost).mockRejectedValueOnce(
-        new Error(
-          `/api/library/roots/3/move?dry_run=true: 409 ${JSON.stringify({ error: 'a scan of /srv/manga is running; move the directory once it has finished', volumes: [] })}`,
-        ),
-      )
-      await clicked(
-        host.querySelector('button[name="rehearse"]') as HTMLElement,
-      )
-      await flush()
-    }
-    await clicked(press(host, 'Move…'))
-    await act(async () => {
-      const box = host.querySelector(
-        'select[name="move-target"]',
-      ) as HTMLSelectElement
-      Object.getOwnPropertyDescriptor(
-        HTMLSelectElement.prototype,
-        'value',
-      )?.set?.call(box, '8')
-      box.dispatchEvent(new Event('change', { bubbles: true }))
-    })
-    vi.mocked(config.scanStatus).mockResolvedValue(RUNNING)
-    await refusedMove()
-    expect(host.querySelector('.scanning')?.textContent).toBe('Scanning… 2s')
-
-    // The dialog keeps its refusal, and the rehearsal is asked for again
-    // while the scan is watched. A read sent for it answers only once the
-    // poll has seen the scan end.
-    const late = deferred<config.ScanStatus>()
-    let polling = false
-    vi.mocked(config.scanStatus).mockImplementation(() =>
-      polling
-        ? Promise.resolve({
-            ...RUNNING,
-            running: false,
-            report: { error: 'the scan panicked' },
-          })
-        : late.promise,
-    )
-    const before = vi.mocked(config.scanStatus).mock.calls.length
-    await refusedMove()
-    polling = true
-    await polled()
-    polling = false
-    expect(host.querySelector('.scanning')).toBeNull()
-    expect(section(host, 'Scan report').textContent).toContain(
-      'the scan panicked',
-    )
-    await flush(() => late.resolve(RUNNING))
-    expect(host.querySelector('.scanning')).toBeNull()
-    expect(section(host, 'Scan report').textContent).toContain(
-      'the scan panicked',
-    )
-    expect(vi.mocked(config.scanStatus).mock.calls.length - before).toBe(1)
+    await clock(0)
+    feed.answer(runningFeed(dirJob()))
+    await refusedForAHold(host)
+    expect(scanDrawn(host)).toEqual(['Cancel', 'free'])
+    expect(
+      ['Move…', 'Remove from Manga…', 'Remove…'].map((label) =>
+        holdOf(press(host, label)),
+      ),
+    ).toEqual(['held', 'held', 'held'])
   })
 
   it('takes no focus as a page of a directory no other library holds is first drawn', async () => {
@@ -3266,7 +2516,7 @@ describe('RootRow, a directory another library holds too', () => {
 })
 
 describe('RootRow, telling its page that the library’s scan status no longer holds (§9’s call 9)', () => {
-  /** The row with `onScanMoved` a mock, once its mount read has answered. */
+  /** The row with `onScanMoved` a mock, once it is drawn. */
   async function settleTelling() {
     const moved = vi.fn()
     let host: HTMLElement | undefined
@@ -3280,7 +2530,7 @@ describe('RootRow, telling its page that the library’s scan status no longer h
     return { host, moved }
   }
 
-  /** Lets what a press, a poll or an answer started settle. */
+  /** Lets what a press or an answer started settle. */
   const settled = (work: () => void) =>
     act(async () => {
       work()
@@ -3290,23 +2540,6 @@ describe('RootRow, telling its page that the library’s scan status no longer h
 
   const scan = (host: HTMLElement) =>
     settled(() => press(host, 'Scan directory').click())
-  const poll = () => settled(() => vi.advanceTimersByTime(config.SCAN_POLL_MS))
-
-  const running: config.ScanStatus = {
-    root_id: 3,
-    running: true,
-    elapsed_secs: 3,
-    report: null,
-    last_scan_at: null,
-    last_scan_status: null,
-  }
-  const over: config.ScanStatus = {
-    root_id: 3,
-    running: false,
-    report: { error: 'the scan panicked' },
-    last_scan_at: '2026-10-27 12:00:00',
-    last_scan_status: 'failed',
-  }
   const conflict = () =>
     new Error(
       '/api/library/roots/3/scan: 409 {"error":"a scan of /srv/manga is already running"}',
@@ -3352,71 +2585,6 @@ describe('RootRow, telling its page that the library’s scan status no longer h
     await unmountRow()
     expect(moved).toHaveBeenCalledTimes(1)
     await settled(() => start.reject(conflict()))
-    expect(moved).toHaveBeenCalledTimes(2)
-  })
-
-  it.each([
-    {
-      what: 'tells it when its mount read takes up a running scan',
-      status: running,
-      calls: 1,
-    },
-    {
-      what: 'tells it nothing when its mount read finds the scan over',
-      status: over,
-      calls: 0,
-    },
-  ])('$what', async ({ status, calls }) => {
-    vi.mocked(config.scanStatus).mockResolvedValue(status)
-    const { moved } = await settleTelling()
-    expect(moved).toHaveBeenCalledTimes(calls)
-  })
-
-  it('tells it once when its poll finds the scan over, and not for a poll that finds it running', async () => {
-    const { host, moved } = await settleTelling()
-    vi.mocked(config.scanStatus).mockResolvedValue(running)
-    await scan(host)
-    expect(moved).toHaveBeenCalledTimes(2)
-    await poll()
-    expect(moved).toHaveBeenCalledTimes(2)
-
-    vi.mocked(config.scanStatus).mockResolvedValue(over)
-    await poll()
-    expect(host.querySelector('.scanning')).toBeNull()
-    expect(moved).toHaveBeenCalledTimes(3)
-    await poll()
-    await unmountRow()
-    expect(moved).toHaveBeenCalledTimes(3)
-  })
-
-  it('tells it when the row goes while its scan runs, and not when it goes with none running', async () => {
-    const idle = await settleTelling()
-    await unmountRow()
-    expect(idle.moved).not.toHaveBeenCalled()
-
-    vi.mocked(config.scanStatus).mockResolvedValue(running)
-    const { host, moved } = await settleTelling()
-    expect(moved).toHaveBeenCalledTimes(1)
-    expect(host.querySelector('.scanning')).not.toBeNull()
-    await unmountRow()
-    expect(moved).toHaveBeenCalledTimes(2)
-  })
-
-  it('tells it nothing more when its polls fail until it gives up, nor when it goes after that', async () => {
-    const { host, moved } = await settleTelling()
-    await scan(host)
-    expect(moved).toHaveBeenCalledTimes(2)
-
-    vi.mocked(config.scanStatus).mockRejectedValue(
-      new Error('/api/library/roots/3/scan: 500 the store is locked'),
-    )
-    for (let miss = 0; miss < config.POLL_MISSES_ALLOWED; miss++) await poll()
-    expect(host.querySelector('.scanning')).toBeNull()
-    expect(host.querySelector('.scan-notice')?.textContent).toBe(
-      'the store is locked',
-    )
-    expect(moved).toHaveBeenCalledTimes(2)
-    await unmountRow()
     expect(moved).toHaveBeenCalledTimes(2)
   })
 })
@@ -3789,5 +2957,313 @@ describe('RootRow, an edit still in its box when the row goes', () => {
       ['Default language for /srv/manga was not saved (the store is locked).'],
       ['Scan schedule for /srv/manga was not saved (the store is locked).'],
     ])
+  })
+})
+
+describe('RootRow, a scan the feed shows (O273)', () => {
+  /** A report of a scan that failed, as the status read at its end holds it. */
+  const panicked: config.ScanStatus = {
+    root_id: 3,
+    running: false,
+    report: { error: 'the scan panicked' },
+    last_scan_at: '2026-11-16 03:40:00',
+    last_scan_status: 'failed',
+  }
+  /** The status of a job cancelled in `step`, which draws no alert. */
+  const cancelledAt = (step: 'hashing'): config.ScanStatus => ({
+    root_id: 3,
+    running: false,
+    report: { cancelled: { step } },
+    last_scan_at: null,
+    last_scan_status: 'cancelled',
+  })
+
+  it('Scan directory reads Cancel while any job holds the directory, whoever started it', async () => {
+    const host = await settle()
+    await clock(0)
+    expect(scanDrawn(host)).toEqual(['Scan directory', 'free'])
+    // A job of the same library walking another of its directories.
+    feed.answer(runningFeed(dirJob({ dirs: [{ id: 1, path: '/srv/other' }] })))
+    await clock(5000)
+    expect(scanDrawn(host)).toEqual(['Scan directory', 'free'])
+
+    // A scan of the library, which this page did not start, walks it too.
+    feed.answer(
+      runningFeed(
+        dirJob({
+          dirs: [
+            { id: 1, path: '/srv/other' },
+            { id: 3, path: '/srv/manga' },
+          ],
+        }),
+      ),
+    )
+    // The pinned idle poll, not the constant, so that a slower poll fails.
+    await clock(5000)
+    expect(scanDrawn(host)).toEqual(['Cancel', 'free'])
+  })
+
+  it('the step line replaces elapsed seconds', async () => {
+    feed.answer(runningFeed(dirJob({ elapsed_secs: 12.4 })))
+    const host = await settle()
+    await clock(0)
+    expect(scanLine(host)).toBe(
+      'Reading files · 120 of 2,097 · directory 1 of 1',
+    )
+    expect(host.textContent).not.toMatch(/\d+s\b/)
+  })
+
+  it('Cancelling… while the cancel is pending, then the paused line', async () => {
+    feed.answer(runningFeed(dirJob()))
+    const host = await settle()
+    await clock(0)
+    await act(async () => scanButton(host).click())
+    await clock(0)
+    expect(feed.cancels).toEqual([7])
+    expect(scanLine(host)).toBe('Cancelling…')
+    expect(scanDrawn(host)).toEqual(['Cancel', 'held'])
+
+    feed.answer(idleFeed(1))
+    await clock(config.SCAN_POLL_MS)
+    // The list, read again as the job ends, says the cancel paused it.
+    await act(async () => {
+      rerender(
+        <RootRow
+          root={root({
+            last_scan_status: 'cancelled',
+            paused_at: '2026-11-16 03:33:10',
+          })}
+          onChanged={vi.fn()}
+        />,
+      )
+    })
+    expect(scanLine(host)).toBeUndefined()
+    expect(pausedLine(host)).toBe(
+      `Paused until Scan is pressed, since ${inUtc('2026-11-16 03:33:10')}`,
+    )
+    expect(scanDrawn(host)).toEqual(['Scan directory', 'free'])
+  })
+
+  it('names each other library a job holding the directory covers, as Cancel stops their scans too', async () => {
+    const lines = (host: HTMLElement) =>
+      [...host.querySelectorAll('.scanning')].map((p) => p.textContent)
+    // Library 7's own scan, which covers no other.
+    feed.answer(runningFeed(dirJob()))
+    let host: HTMLElement | undefined
+    await act(async () => {
+      host = mount(
+        <RootRow
+          root={root()}
+          library={{ id: 7, name: 'Manga' }}
+          onChanged={vi.fn()}
+        />,
+      )
+    })
+    await clock(0)
+    const alone = lines(host as HTMLElement)
+    // Comics' scan, which holds this directory as Comics holds it too.
+    feed.answer(
+      runningFeed(
+        dirJob({
+          dirs: [
+            { id: 3, path: '/srv/manga' },
+            { id: 9, path: '/srv/comics' },
+          ],
+          libraries: [
+            { id: 7, name: 'Manga' },
+            { id: 8, name: 'Comics' },
+          ],
+        }),
+      ),
+    )
+    await clock(config.SCAN_POLL_MS)
+    expect([alone, lines(host as HTMLElement)]).toEqual([
+      ['Reading files · 120 of 2,097 · directory 1 of 1'],
+      [
+        'Reading files · 120 of 2,097 · directory 1 of 1',
+        'This scan covers Comics too.',
+      ],
+    ])
+  })
+
+  it('draws no paused line while a job holds its paused directory', async () => {
+    const host = await settle({ paused_at: '2026-11-16 03:33:10' })
+    await clock(0)
+    expect(pausedLine(host)).toBe(
+      `Paused until Scan is pressed, since ${inUtc('2026-11-16 03:33:10')}`,
+    )
+    // The list is read again only as the job ends, so it still says paused.
+    feed.answer(runningFeed(dirJob()))
+    await clock(5000)
+    expect(scanDrawn(host)).toEqual(['Cancel', 'free'])
+    expect(pausedLine(host)).toBeUndefined()
+  })
+
+  it('reads its report once when the job ends, and polls nothing while it runs', async () => {
+    feed.answer(runningFeed(dirJob()))
+    const host = await settle()
+    for (let i = 0; i < 5; i++) await clock(config.SCAN_POLL_MS)
+    expect(scanLine(host)).not.toBeUndefined()
+    expect(config.scanStatus).toHaveBeenCalledTimes(0)
+
+    vi.mocked(config.scanStatus).mockResolvedValue(panicked)
+    feed.answer(idleFeed(1))
+    await clock(config.SCAN_POLL_MS)
+    await clock(5000)
+    await clock(5000)
+    expect(scanLine(host)).toBeUndefined()
+    expect(config.scanStatus).toHaveBeenCalledTimes(1)
+    expect(config.scanStatus).toHaveBeenCalledWith(3)
+    expect(
+      section(host, 'Scan report').querySelector('.scan-report')?.textContent,
+    ).toBe('the scan panicked')
+  })
+
+  it('a cancelled report says at which step', async () => {
+    feed.answer(runningFeed(dirJob({ step: 'hashing', cancelling: true })))
+    const host = await settle()
+    await clock(0)
+    vi.mocked(config.scanStatus).mockResolvedValue(cancelledAt('hashing'))
+    feed.answer(idleFeed(1))
+    await clock(config.SCAN_POLL_MS)
+    expect(
+      section(host, 'Scan report').querySelector('.scan-report')?.textContent,
+    ).toBe('Cancelled while hashing')
+  })
+
+  it('says the server has no record of a job it saw end whose status holds no report', async () => {
+    feed.answer(runningFeed(dirJob()))
+    const host = await settle()
+    await clock(0)
+    feed.answer(idleFeed(1))
+    await clock(config.SCAN_POLL_MS)
+    expect(host.querySelector('.scan-notice')?.textContent).toBe(
+      'This server has no record of that scan. It was most likely ' +
+        'interrupted by a restart; nothing here says whether it ' +
+        'finished. Scan again to be sure.',
+    )
+  })
+
+  it('draws nothing from the status read at a job’s end that finds the next job already holding the directory, and draws that job’s report at its own end', async () => {
+    feed.answer(runningFeed(dirJob()))
+    const host = await settle()
+    await clock(0)
+    // Job 7 ends and job 8 reserves the directory within one poll, so the
+    // read at 7's end finds 8's reservation: running, its report empty.
+    vi.mocked(config.scanStatus).mockResolvedValue({
+      root_id: 3,
+      running: true,
+      report: null,
+      last_scan_at: null,
+      last_scan_status: null,
+    })
+    feed.answer(runningFeed(dirJob({ id: 8 })))
+    await clock(config.SCAN_POLL_MS)
+    expect(config.scanStatus).toHaveBeenCalledTimes(1)
+    expect(scanDrawn(host)).toEqual(['Cancel', 'free'])
+    expect(host.querySelector('.scan-notice')).toBeNull()
+
+    vi.mocked(config.scanStatus).mockResolvedValue(panicked)
+    feed.answer(idleFeed(1))
+    await clock(config.SCAN_POLL_MS)
+    expect(config.scanStatus).toHaveBeenCalledTimes(2)
+    expect(
+      section(host, 'Scan report').querySelector('.scan-report')?.textContent,
+    ).toBe('the scan panicked')
+    expect(host.querySelector('.scan-notice')).toBeNull()
+  })
+
+  it('holds Scan directory from the press until the feed answers, then reads Cancel', async () => {
+    const host = await settle()
+    await clock(0)
+    const release = feed.hold()
+    feed.answer(runningFeed(dirJob()))
+    await act(async () => scanButton(host).click())
+    await clock(0)
+    expect(config.startScan).toHaveBeenCalledTimes(1)
+    expect(scanDrawn(host)).toEqual(['Scan directory', 'held'])
+
+    release()
+    await clock(0)
+    expect(scanDrawn(host)).toEqual(['Cancel', 'free'])
+  })
+
+  it('draws the report of a scan it started that ended before the feed saw it', async () => {
+    vi.mocked(config.scanStatus).mockResolvedValue(panicked)
+    const host = await settle()
+    await clock(0)
+    feed.answer(idleFeed(1))
+    await act(async () => scanButton(host).click())
+    await clock(0)
+    expect(scanDrawn(host)).toEqual(['Scan directory', 'free'])
+    expect(config.scanStatus).toHaveBeenCalledTimes(1)
+    expect(
+      section(host, 'Scan report').querySelector('.scan-report')?.textContent,
+    ).toBe('the scan panicked')
+  })
+
+  it('keeps a 409’s sentence while the job it names runs, and drops it as the job ends', async () => {
+    vi.mocked(config.startScan).mockRejectedValue(
+      new Error(
+        '/api/library/roots/3/scan: 409 {"error":"a scan of /srv/manga is already running"}',
+      ),
+    )
+    const host = await settle()
+    await clock(0)
+    feed.answer(runningFeed(dirJob()))
+    await act(async () => scanButton(host).click())
+    await clock(0)
+    const alerts = () =>
+      [...host.querySelectorAll('[role="alert"]')].map((p) => p.textContent)
+    expect(alerts()).toEqual(['a scan of /srv/manga is already running'])
+    expect(scanDrawn(host)).toEqual(['Cancel', 'free'])
+    await clock(config.SCAN_POLL_MS)
+    expect(alerts()).toEqual(['a scan of /srv/manga is already running'])
+
+    vi.mocked(config.scanStatus).mockResolvedValue(cancelledAt('hashing'))
+    feed.answer(idleFeed(1))
+    await clock(config.SCAN_POLL_MS)
+    expect(alerts()).toEqual([])
+    expect(scanDrawn(host)).toEqual(['Scan directory', 'free'])
+  })
+
+  it('draws the sentence of a refused cancel, and frees Cancel', async () => {
+    feed.answer(runningFeed(dirJob()))
+    const host = await settle()
+    await clock(0)
+    const served = globalThis.fetch
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+        String(input).endsWith('/cancel')
+          ? Promise.resolve(
+              new Response(JSON.stringify({ error: 'the store is locked' }), {
+                status: 500,
+                headers: { 'content-type': 'application/json' },
+              }),
+            )
+          : served(input, init),
+      ),
+    )
+    await act(async () => scanButton(host).click())
+    await clock(0)
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'the store is locked',
+    )
+    expect(scanDrawn(host)).toEqual(['Cancel', 'free'])
+  })
+
+  it('draws no refusal for a cancel of a job that had ended, and reads Scan directory once the feed says so', async () => {
+    feed.answer(runningFeed(dirJob()))
+    const host = await settle()
+    await clock(0)
+    // The job ends before the next poll, so the row still offers Cancel.
+    vi.mocked(config.scanStatus).mockResolvedValue(cancelledAt('hashing'))
+    feed.answer(idleFeed(1))
+    await act(async () => scanButton(host).click())
+    await clock(0)
+    expect(feed.cancels).toEqual([7])
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    expect(scanDrawn(host)).toEqual(['Scan directory', 'free'])
   })
 })

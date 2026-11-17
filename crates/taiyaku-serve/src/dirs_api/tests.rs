@@ -480,6 +480,7 @@ fn a_router_browsing(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs,
     });

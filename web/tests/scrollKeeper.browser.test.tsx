@@ -151,6 +151,7 @@ const dir = (
   last_scan_at: '2026-10-05T21:14:09Z',
   last_scan_status: 'ok',
   next_scan_at: null,
+  paused_at: null,
   libraries: [{ id, name }],
   nested: [],
   inside: [],

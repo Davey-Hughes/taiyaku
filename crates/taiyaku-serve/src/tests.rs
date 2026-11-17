@@ -273,6 +273,7 @@ fn a_resolved_root_keeps_covers_and_thumbs_as_siblings() {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     };

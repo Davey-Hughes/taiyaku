@@ -31,6 +31,7 @@ import {
   settle,
   who,
 } from './support/sideBySide'
+import { feedJob, serveFeed } from './support/scanFeed'
 import type * as usersApi from '../src/users'
 
 /**
@@ -585,31 +586,34 @@ const AT_A_PHONE: Array<{
     holds: '.dir-page',
     long: true,
     open: async () => {
-      // Running when the page is drawn, so the page takes it up, and the
-      // poll after it ends reads its report.
-      let scanning = true
+      // A scan of the directory is running when the page is drawn, as the
+      // feed says, and its end reads the directory's report.
+      const feed = serveFeed({
+        ended: 0,
+        libraries: [{ id: MANGA.id, step: 'resolving' }],
+        jobs: [
+          feedJob({
+            dirs: [{ id: 3, path: dir(3).path }],
+            libraries: [{ id: MANGA.id, name: MANGA.name }],
+          }),
+        ],
+      })
       vi.mocked(config.scanStatus).mockImplementation((id) =>
-        Promise.resolve(
-          scanning
-            ? {
-                root_id: id,
-                running: true,
-                elapsed_secs: 1,
-                report: null,
-                last_scan_at: null,
-                last_scan_status: null,
-              }
-            : {
-                root_id: id,
-                running: false,
-                report: scanned(dir(id).path),
-                last_scan_at: null,
-                last_scan_status: null,
-              },
-        ),
+        Promise.resolve({
+          root_id: id,
+          running: false,
+          report: scanned(dir(id).path),
+          last_scan_at: null,
+          last_scan_status: null,
+        }),
       )
       const host = await shell(PHONE, dirPath(MANGA.name, 3))
-      scanning = false
+      await settleUntil(
+        'the scan’s step line',
+        () => host.querySelector('.dir-page .scanning') !== null,
+        config.SCAN_POLL_MS,
+      )
+      feed.answer({ ended: 1, libraries: [] })
       await settleUntil(
         'the directory’s report',
         () => host.querySelector('.dir-page .scan-report') !== null,
@@ -624,21 +628,17 @@ const AT_A_PHONE: Array<{
     long: true,
     open: async () => {
       // A scan of two of Manga's directories is running when the page is
-      // drawn, so the page takes it up, and the poll after it ends reads
-      // each directory's report.
-      let scanning = true
-      vi.mocked(librariesApi.libraryScanStatus).mockImplementation((id) =>
-        Promise.resolve({
-          library_id: id,
-          held_removals: [],
-          moves_held: false,
-          derive_running: false,
-          scans: [],
-          running: scanning,
-          elapsed_secs: scanning ? 1 : null,
-          dirs: [1, 2].map((root_id) => ({ root_id, running: scanning })),
-        }),
-      )
+      // drawn, as the feed says, and its end reads each directory's report.
+      const feed = serveFeed({
+        ended: 0,
+        libraries: [{ id: MANGA.id, step: 'resolving' }],
+        jobs: [
+          feedJob({
+            dirs: [1, 2].map((id) => ({ id, path: dir(id).path })),
+            libraries: [{ id: MANGA.id, name: MANGA.name }],
+          }),
+        ],
+      })
       vi.mocked(config.scanStatus).mockImplementation((id) =>
         Promise.resolve({
           root_id: id,
@@ -649,7 +649,7 @@ const AT_A_PHONE: Array<{
         }),
       )
       const host = await shell(PHONE, libraryPath(MANGA.name))
-      scanning = false
+      feed.answer({ ended: 1, libraries: [] })
       await settleUntil(
         'both directories’ reports',
         () => host.querySelectorAll('.library-page .dir-report').length === 2,

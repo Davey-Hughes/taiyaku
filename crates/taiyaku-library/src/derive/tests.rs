@@ -2,9 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::Connection;
 
+use crate::progress::{Outcome, Step};
 use crate::scan::tests::{
     fixture, write_archive, write_archive_labelled, write_archive_of, write_pages,
 };
+use crate::test_support::{Recording, Report};
 use crate::{Library, derive, scan};
 
 /// A root whose volumes are **archives inside volume directories** —
@@ -9697,5 +9699,313 @@ fn a_derive_that_skips_documents_marks_a_work_whose_file_went() {
         (report.marked_missing, marked(&conn, 1), marked(&conn, 2)),
         (1, false, true),
         "volume 2's work is marked and counted; volume 1's is not"
+    );
+}
+
+/// Three archives no derive has hashed, in two series: two chapters of
+/// `Alpha` volume 1, which make one work, and `Beta` volume 1. Their paths are
+/// in the order a derive reads them.
+fn three_undigested_archives(label: &str) -> (crate::tests::TempDir, Vec<std::path::PathBuf>) {
+    let dir = crate::tests::tempdir(label);
+    let paths: Vec<_> = [
+        ("Alpha/Alpha - v01 - c001.cbz", 2),
+        ("Alpha/Alpha - v01 - c002.cbz", 3),
+        ("Beta/Beta v01.cbz", 4),
+    ]
+    .into_iter()
+    .map(|(rel_path, pages)| {
+        let path = dir.path().join(rel_path);
+        write_archive(&path, pages);
+        path
+    })
+    .collect();
+    (dir, paths)
+}
+
+/// Each file's size on disk, which is what the walk records.
+fn sizes_of(paths: &[std::path::PathBuf]) -> Vec<u64> {
+    paths
+        .iter()
+        .map(|path| std::fs::metadata(path).expect("stats").len())
+        .collect()
+}
+
+/// The reports `watch` was given for `step`, in order.
+fn reports_at(watch: &Recording, step: Step) -> Vec<Report> {
+    watch
+        .reports()
+        .into_iter()
+        .filter(|(at, _, _)| *at == step)
+        .collect()
+}
+
+#[test]
+fn a_watched_derive_counts_bytes_hashed_of_bytes_to_hash_then_works_written() {
+    let (tree, paths) = three_undigested_archives("derive-watched-counts");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    scanned_root(&conn, tree.path(), None);
+    let [a, b, c] = sizes_of(&paths)[..] else {
+        panic!("three sizes")
+    };
+    let total = a + b + c;
+
+    let first = Recording::default();
+    let outcome =
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &first).expect("first derive");
+    let second = Recording::default();
+    derive::derive_watched(&conn, derive::Documents::Reconcile, &second).expect("second derive");
+
+    assert!(matches!(outcome, Outcome::Done(_)), "{outcome:?}");
+    assert_eq!(
+        first.reports(),
+        vec![
+            (Step::Hashing, 0, None),
+            (Step::Hashing, 0, Some(total)),
+            (Step::Hashing, a, Some(total)),
+            (Step::Hashing, a + b, Some(total)),
+            (Step::Hashing, total, Some(total)),
+            (Step::Writing, 0, Some(2)),
+            (Step::Writing, 1, Some(2)),
+            (Step::Writing, 2, Some(2)),
+            (Step::Finishing, 0, None),
+        ],
+        "hashing with no total while folders are sized, then the bytes hashed before each \
+         digest and after the last, then the works written before each work and after the \
+         last, then the tail"
+    );
+    assert_eq!(
+        reports_at(&second, Step::Hashing),
+        vec![(Step::Hashing, 0, None), (Step::Hashing, 0, Some(0))],
+        "every archive is digested, so there is nothing to hash"
+    );
+}
+
+#[test]
+fn the_bytes_to_hash_leave_out_what_classify_does_not_hash() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let held = crate::tests::tempdir("derive-watched-held");
+    write_archive(&held.path().join("Delta").join("Delta v01.cbz"), 5);
+    scanned_root(&conn, held.path(), None);
+    derive::derive(&conn).expect("digests Delta's archive");
+    let (tree, paths) = three_undigested_archives("derive-watched-left-out");
+    write_archive(&tree.path().join("Kaguya").join("Kaguya - c001.cbz"), 2);
+    let pageless = tree.path().join("Gamma").join("Gamma v01");
+    std::fs::create_dir_all(&pageless).expect("mkdir");
+    std::fs::write(pageless.join("notes.txt"), "no pages here").expect("writes");
+    scanned_root(&conn, tree.path(), None);
+    let [a, b, c] = sizes_of(&paths)[..] else {
+        panic!("three sizes")
+    };
+    let total = a + b + c;
+    assert_eq!(
+        scalar(
+            &conn,
+            "SELECT count(*) FROM scan_entry WHERE size > 0 AND (
+                 rel_path = 'Kaguya/Kaguya - c001.cbz'
+                 OR (rel_path = 'Delta/Delta v01.cbz' AND sha256 IS NOT NULL))"
+        ),
+        2,
+        "the fixture: the chapter-only and the digested entry have bytes a total could count"
+    );
+    let watch = Recording::default();
+
+    let outcome =
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &watch).expect("derives");
+
+    let Outcome::Done(report) = outcome else {
+        panic!("{outcome:?}")
+    };
+    assert_eq!(
+        (report.unattached_chapter_dirs, report.unreadable.no_pages),
+        (1, 1),
+        "the fixture: one chapter-only entry and one directory of no pages"
+    );
+    assert_eq!(
+        reports_at(&watch, Step::Hashing),
+        vec![
+            (Step::Hashing, 0, None),
+            (Step::Hashing, 0, Some(total)),
+            (Step::Hashing, a, Some(total)),
+            (Step::Hashing, a + b, Some(total)),
+            (Step::Hashing, total, Some(total)),
+        ],
+        "only the three undigested archives are to hash, each reported before its digest"
+    );
+}
+
+#[test]
+fn a_derive_cancelled_after_one_digest_keeps_it_and_writes_no_work() {
+    let (tree, _) = three_undigested_archives("derive-cancel-hashing");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    scanned_root(&conn, tree.path(), None);
+    let watch = Recording::cancelling(|(step, hashed, _)| step == Step::Hashing && hashed > 0);
+
+    let outcome =
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &watch).expect("derives");
+
+    assert_eq!(
+        (
+            scalar(
+                &conn,
+                "SELECT count(*) FROM scan_entry WHERE sha256 IS NOT NULL"
+            ),
+            scalar(&conn, "SELECT count(*) FROM work"),
+        ),
+        (1, 0),
+        "the first archive's digest is kept, and no work is written"
+    );
+    assert!(
+        matches!(outcome, Outcome::Cancelled(Step::Hashing)),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn a_derive_cancelled_after_one_work_keeps_that_work() {
+    let (tree, _) = three_undigested_archives("derive-cancel-writing");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    scanned_root(&conn, tree.path(), None);
+    let watch = Recording::cancelling(|(step, written, _)| step == Step::Writing && written > 0);
+
+    let outcome =
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &watch).expect("derives");
+
+    assert!(
+        matches!(outcome, Outcome::Cancelled(Step::Writing)),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        scalar(&conn, "SELECT count(*) FROM work"),
+        1,
+        "the first work stays, and the second is not written"
+    );
+}
+
+/// Under a directory of its own, a work whose one file went after it was
+/// derived; beside it, two volumes and an unattached chapter directory, walked
+/// and not derived. The tail would mark the first work missing and raise a
+/// proposal for the chapters.
+#[test]
+fn a_derive_cancelled_before_the_tail_raises_and_marks_nothing() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let away = crate::tests::tempdir("derive-cancel-tail-away");
+    let file = away.path().join("Other").join("Other v01.cbz");
+    write_archive(&file, 2);
+    let other = scanned_root(&conn, away.path(), None);
+    derive::derive(&conn).expect("derives Other's work");
+    std::fs::remove_file(&file).expect("its file goes");
+    scan::scan_root(&conn, &other).expect("walks without it");
+    let tree = crate::tests::tempdir("derive-cancel-tail");
+    write_archive(&tree.path().join("Alpha").join("Alpha v01.cbz"), 2);
+    write_archive(&tree.path().join("Alpha").join("Alpha v02.cbz"), 3);
+    write_pages(&tree.path().join("Kaguya").join("Kaguya - c001"), 1);
+    write_pages(&tree.path().join("Kaguya").join("Kaguya - c002"), 1);
+    scanned_root(&conn, tree.path(), None);
+    let marked = "SELECT count(*) FROM work WHERE missing_since IS NOT NULL";
+    let proposals = "SELECT count(*) FROM proposal";
+    assert_eq!(
+        (scalar(&conn, proposals), scalar(&conn, marked)),
+        (0, 0),
+        "the fixture: nothing raised and nothing marked yet"
+    );
+    let watch =
+        Recording::cancelling(|(step, written, of)| step == Step::Writing && Some(written) == of);
+
+    let outcome =
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &watch).expect("derives");
+    let cancelled = (
+        scalar(&conn, "SELECT count(*) FROM work"),
+        scalar(&conn, proposals),
+        scalar(&conn, marked),
+    );
+    let report = derive::derive(&conn).expect("derives to the end");
+
+    assert_eq!(
+        cancelled,
+        (3, 0, 0),
+        "Other's work and both of Alpha's stand; nothing is raised and nothing is marked"
+    );
+    assert!(
+        matches!(outcome, Outcome::Cancelled(Step::Writing)),
+        "{outcome:?}"
+    );
+    assert!(
+        report.raised >= 1,
+        "uncancelled, the same store raises the chapters' proposal: {report:?}"
+    );
+    assert_eq!(scalar(&conn, marked), 1, "and marks Other's work missing");
+}
+
+/// A folder member's bytes to hash are those of the page files its digest
+/// reads: not the directory's own size, and not a file that is no page.
+#[test]
+fn a_folder_members_bytes_to_hash_are_its_page_files_sizes() {
+    let tree = crate::tests::tempdir("derive-watched-folder");
+    let folder = tree.path().join("Gamma").join("Gamma v01");
+    std::fs::create_dir_all(&folder).expect("mkdir");
+    for (name, size) in [("001.jpg", 1000), ("002.jpg", 2000), ("003.jpg", 3000)] {
+        std::fs::write(folder.join(name), vec![b'p'; size]).expect("writes a page");
+    }
+    std::fs::write(folder.join("notes.txt"), vec![b'n'; 500]).expect("writes a file");
+    let archive = tree.path().join("Gamma").join("Gamma v02.cbz");
+    write_archive(&archive, 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    scanned_root(&conn, tree.path(), None);
+    let [archived] = sizes_of(&[archive])[..] else {
+        panic!("one size")
+    };
+    let total = 6000 + archived;
+    let watch = Recording::default();
+
+    derive::derive_watched(&conn, derive::Documents::Reconcile, &watch).expect("derives");
+
+    assert_eq!(
+        reports_at(&watch, Step::Hashing),
+        vec![
+            (Step::Hashing, 0, None),
+            (Step::Hashing, 0, Some(total)),
+            (Step::Hashing, 6000, Some(total)),
+            (Step::Hashing, total, Some(total)),
+        ],
+        "the folder's three pages, then the archive, of the two together"
+    );
+}
+
+/// Sizing a folder lists it and stats each page, so a cancel is read before
+/// each folder is sized: the derive stops with no total reported and nothing
+/// hashed.
+#[test]
+fn a_derive_cancelled_while_folders_are_sized_reports_no_total_and_hashes_nothing() {
+    let tree = crate::tests::tempdir("derive-cancel-sizing");
+    write_pages(&tree.path().join("Gamma").join("Gamma v01"), 2);
+    write_pages(&tree.path().join("Gamma").join("Gamma v02"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    scanned_root(&conn, tree.path(), None);
+    let watch = Recording::cancelling(|(step, _, of)| step == Step::Hashing && of.is_none());
+
+    let outcome =
+        derive::derive_watched(&conn, derive::Documents::Reconcile, &watch).expect("derives");
+
+    assert_eq!(
+        (
+            watch.reports(),
+            scalar(
+                &conn,
+                "SELECT count(*) FROM scan_entry WHERE sha256 IS NOT NULL"
+            ),
+        ),
+        (vec![(Step::Hashing, 0, None)], 0),
+        "hashing begins with no total, and stops before a folder is sized or hashed"
+    );
+    assert!(
+        matches!(outcome, Outcome::Cancelled(Step::Hashing)),
+        "{outcome:?}"
     );
 }

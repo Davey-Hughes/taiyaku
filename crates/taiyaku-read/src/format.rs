@@ -232,7 +232,8 @@ fn zip_flavour(path: &Path) -> Format {
     let Ok(file) = std::fs::File::open(path) else {
         return Format::Zip;
     };
-    let Ok(mut zip) = zip::ZipArchive::new(file) else {
+    let buffered = std::io::BufReader::with_capacity(crate::pages::ARCHIVE_BUFFER, file);
+    let Ok(mut zip) = zip::ZipArchive::new(buffered) else {
         return Format::Zip;
     };
     let mut mimetype = String::new();

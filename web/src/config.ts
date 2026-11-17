@@ -19,6 +19,7 @@
 import { getJson, sendJson } from './api'
 import { NEW_ACCOUNT, NEW_LIBRARY } from './configAddress'
 import { JOINING_DOT } from './joiningDot'
+import type { ScanStep } from './scanFeed'
 import { inUtc } from './utc'
 
 /** One tab of the settings area. */
@@ -92,10 +93,16 @@ export interface Root {
   /**
    * `ok`, `refused` or `failed`; `waiting` from the server's scan while
    * another job holds the job lock or another derive the lease (O51),
-   * `deriving` until its derive ends, and `interrupted` where a restart found
-   * either (O186) — `null` alongside `last_scan_at`.
+   * `deriving` until its derive ends, `interrupted` where a restart found
+   * either (O186), and `cancelled` where a cancelled job had not finished
+   * it, which leaves `last_scan_at` as it was — `null` before any of these.
    */
   last_scan_status: string | null
+  /**
+   * When a cancel paused it, UTC as the store writes `datetime('now')`: the
+   * scheduler leaves it alone until Scan is pressed. `null` while not paused.
+   */
+  paused_at: string | null
   /**
    * `last_scan_at` plus the interval the scheduler scans it at: `null` for
    * Off, and for a directory the scheduler takes at its next tick, one never
@@ -276,22 +283,35 @@ export interface FinishedScan {
   derive: Derived
 }
 
-/** A scan that failed or panicked: a scan report's other shape. */
+/** A scan that failed or panicked, or whose walk was refused. */
 export interface FailedScan {
   error: string
 }
 
-export type ScanOutcome = FinishedScan | FailedScan
+/**
+ * A directory a cancelled job had not finished, with the job's step. One
+ * whose walk was refused before the cancel keeps its `FailedScan`.
+ */
+export interface CancelledScan {
+  cancelled: { step: ScanStep }
+}
+
+export type ScanOutcome = FinishedScan | FailedScan | CancelledScan
 
 /**
- * Which of the two shapes `report` holds.
+ * Whether `report` holds a failure; `scanCancelled` tells the third shape.
  *
- * A type guard rather than a field: the server sends two different objects
- * under one key and neither carries a discriminant, so the narrowing has to
+ * A type guard rather than a field: the server sends different objects
+ * under one key and none carries a discriminant, so the narrowing has to
  * be structural. Written once here so no screen invents a second test for it.
  */
 export function scanFailed(outcome: ScanOutcome): outcome is FailedScan {
   return 'error' in outcome
+}
+
+/** Whether `report` is a cancelled job's, by the key only that shape has. */
+export function scanCancelled(outcome: ScanOutcome): outcome is CancelledScan {
+  return 'cancelled' in outcome
 }
 
 /** `GET /api/library/roots/{id}/scan`. */
@@ -363,8 +383,9 @@ export interface RemovalAnswer {
  * here rather than by overloading `sendJson`, for the reason `curation.ts`'s
  * own copy of this helper gives: teaching the shared plumbing that a body
  * argument implies a non-empty reply would be a lie told to every caller.
+ * Exported for `scanFeed.ts`'s cancel, rather than copied there too.
  */
-async function expectBody<T>(sent: Promise<T | undefined>): Promise<T> {
+export async function expectBody<T>(sent: Promise<T | undefined>): Promise<T> {
   const body = await sent
   if (body === undefined)
     throw new Error('expected a JSON body, got an empty 204')
@@ -419,19 +440,24 @@ export const scanStatus = (id: number) =>
   getJson<ScanStatus>(`/api/library/roots/${id}/scan`)
 
 /**
- * How often `RootRow` asks a running scan how it is doing.
+ * How often the scan feed (`scanFeed.ts`) is asked while a job runs, and a
+ * hold a page drew from a status read is read again: a held removal on
+ * `LibraryPage` and `DirPage` while the feed shows no job to end it, and a
+ * derive or the job lock in `deriveHold.ts`.
  *
- * **One second, and it is a guess.** The route reads an in-memory registry
- * entry plus one indexed row, so a second is generous rather than tight. The
- * interval is chosen against the cost of asking rather than against the scan
- * being watched, whose cost O210 records.
+ * **One second, and it is a guess**, chosen against the cost of asking
+ * rather than against the scan being watched, whose cost O210 records.
  */
 export const SCAN_POLL_MS = 1000
 
 /**
- * How many consecutive failed polls of a running scan are survived before
- * the screen stops watching it. One blip must not drop a scan that is still
- * running; see `RootRow`'s `misses` for why three.
+ * How many failed reads of a hold in a row (`SCAN_POLL_MS`'s) are survived
+ * before the page gives the hold up and says so.
+ *
+ * **One blip must not free what still holds**: a proxy 502, or `SQLITE_BUSY`
+ * while a scan's writes hold the file, would free buttons the server still
+ * refuses. Three is chosen, not measured: long enough to ride out a blip at
+ * a second apiece, short enough that a broken route says so.
  */
 export const POLL_MISSES_ALLOWED = 3
 
@@ -543,9 +569,9 @@ export function lastScan(
  * one more `·`-separated piece on the line than there are facts — the last
  * scan appending its own outcome — and a bare value does not say what it is:
  * `unknown — probed when a directory is added` is only legible beside the word
- * `watch`, `never` beside `last scan`, and `due` beside `next scan`. Nothing
- * here is ever absent; each arm has a fallback, which is why labels rather
- * than omission are what make a missing fact readable (spec §11.6).
+ * `watch`, `never` beside `last scan`, and `due` beside `next scan`. Each arm
+ * has a fallback, as labels rather than omission are what make a missing fact
+ * readable (spec §11.6); only a paused directory's next scan is left out.
  *
  * **`probe` is optional and its absence is stated, not defaulted.** Only
  * the two routes that add a directory run the probe, so a directory loaded from
@@ -575,7 +601,12 @@ export function regimeFacts(
     { label: 'watch', value: watch },
     { label: 'scan every', value: scanEvery(root) },
     { label: 'last scan', value: last },
-    { label: 'next scan', value: nextScan(root) },
+    // The scheduler passes a paused directory over until Scan is pressed, as
+    // the page's paused line says: `due` or a time would promise a scan that
+    // never comes.
+    ...(root.paused_at === null
+      ? [{ label: 'next scan', value: nextScan(root) }]
+      : []),
   ]
 }
 

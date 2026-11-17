@@ -2497,6 +2497,14 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             axum::routing::get(crate::libraries_api::library_scan_status)
                 .post(crate::libraries_api::start_library_scan),
         ),
+        // The scan feed is any signed-in account's, shaped inside its handler
+        // by `session::administers`; Cancel is an administrator's, gated
+        // inside its handler like the routes above.
+        ("/api/library/scans", get(crate::scan_feed::feed)),
+        (
+            "/api/library/scans/{job}/cancel",
+            axum::routing::post(crate::scan_feed::cancel),
+        ),
         (
             "/api/library/derive",
             get(crate::libraries_api::derive_status),
@@ -2958,6 +2966,16 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
                           does for one directory",
             },
         ),
+        // Any caller but an administrator in a browser is sent only the
+        // libraries it is granted, and no directory.
+        ("/api/library/scans", Filters),
+        (
+            "/api/library/scans/{job}/cancel",
+            GrantIndependent {
+                reason: "admin-only; stops one scan job by its id, a job of \
+                          the whole store that names no work",
+            },
+        ),
         (
             "/api/library/derive",
             GrantIndependent {
@@ -3171,6 +3189,13 @@ pub(crate) fn narrowing_postures() -> Vec<(&'static str, NarrowingPosture)> {
         ("/api/library/libraries/{id}/dirs", ADMIN),
         ("/api/library/libraries/{id}/dirs/{dir}", ADMIN),
         ("/api/library/libraries/{id}/scan", ADMIN),
+        (
+            "/api/library/scans",
+            NoPages {
+                reason: "names the libraries a scan holds and its step, and no work",
+            },
+        ),
+        ("/api/library/scans/{job}/cancel", ADMIN),
         ("/api/library/derive", ADMIN),
         ("/api/library/split-editions", ADMIN),
         ("/api/library/dirs", ADMIN),

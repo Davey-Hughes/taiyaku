@@ -1466,8 +1466,8 @@ fn migration_20_adds_missing_since_leaving_existing_works_present() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_twenty_five() {
-    assert_eq!(SCHEMA_VERSION, 25);
+fn the_schema_version_is_twenty_six() {
+    assert_eq!(SCHEMA_VERSION, 26);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -3280,7 +3280,7 @@ fn migration_25_gives_a_note_a_run_of_text_and_a_book_its_pins() {
     )
     .expect("seeds a schema-24 note");
 
-    migrate(&conn).expect("migrates to 25");
+    migrate_with(&conn, &MIGRATIONS[..25]).expect("migrates to 25");
 
     assert_eq!(version(&conn).expect("reads the version"), 25);
     assert_eq!(
@@ -3304,6 +3304,30 @@ fn migration_25_gives_a_note_a_run_of_text_and_a_book_its_pins() {
         rows_of(&conn, "SELECT * FROM book_pin"),
         Vec::<Vec<String>>::new(),
         "its pins went with it"
+    );
+}
+
+/// No directory already in the store was paused by a cancel, and one the
+/// migration paused would never be scanned again until Scan was pressed.
+#[test]
+fn the_migration_gives_every_directory_a_paused_at_of_null() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..25]).expect("migrates to 25");
+    conn.execute_batch(
+        "INSERT INTO root (id, path, last_scan_at, last_scan_status)
+         VALUES (7, '/srv/manga', '2026-11-10 12:00:00', 'ok'), (8, '/srv/raw', NULL, NULL);",
+    )
+    .expect("seeds a scanned and a never-scanned schema-25 directory");
+
+    migrate(&conn).expect("migrates to 26");
+
+    assert_eq!(version(&conn).expect("reads the version"), 26);
+    assert_eq!(
+        rows_of(&conn, "SELECT id, paused_at FROM root ORDER BY id"),
+        [["Integer(7)", "Null"], ["Integer(8)", "Null"]],
+        "no directory is paused"
     );
 }
 

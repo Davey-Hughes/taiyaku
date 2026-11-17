@@ -25,11 +25,13 @@ import * as rulesApi from '../src/rules'
 import * as splitApi from '../src/splitEditions'
 import type { Rule } from '../src/rules'
 import { answerAbout } from './support/aboutPage'
+import { settleUntil } from './support/async'
 import { emptyDerive } from './support/derive'
 import { fields } from './support/fields'
 import { press } from './support/input'
 import { licenceTextsLanded } from './support/licence'
 import { mount } from './support/mount'
+import { feedJob, serveFeed } from './support/scanFeed'
 import * as usersApi from '../src/users'
 import { Users } from '../src/Users'
 
@@ -126,6 +128,7 @@ const root: librariesApi.LibraryDir = {
   last_scan_at: null,
   last_scan_status: null,
   next_scan_at: null,
+  paused_at: null,
   libraries: [{ id: 1, name: 'Manga' }],
   nested: [],
   inside: [],
@@ -859,24 +862,25 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
       },
       derive: emptyDerive,
     }
-    // Running when the directory's page is drawn, so it adopts the scan and
-    // polls; the poll then finds it finished, with its report.
-    vi.mocked(config.scanStatus)
-      .mockResolvedValueOnce({
-        root_id: 3,
-        running: true,
-        elapsed_secs: 1,
-        report: null,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
-      .mockResolvedValue({
-        root_id: 3,
-        running: false,
-        report: finishedScan,
-        last_scan_at: null,
-        last_scan_status: null,
-      })
+    // A scan of the directory is running when its page is drawn, as the
+    // feed says; a poll then finds it ended, and its report is read.
+    const feed = serveFeed({
+      ended: 0,
+      libraries: [{ id: MANGA.id, step: 'resolving' }],
+      jobs: [
+        feedJob({
+          dirs: [{ id: root.id, path: root.path }],
+          libraries: [{ id: MANGA.id, name: MANGA.name }],
+        }),
+      ],
+    })
+    vi.mocked(config.scanStatus).mockResolvedValue({
+      root_id: 3,
+      running: false,
+      report: finishedScan,
+      last_scan_at: null,
+      last_scan_status: null,
+    })
     vi.mocked(librariesApi.libraryScanStatus).mockResolvedValue({
       library_id: 1,
       held_removals: [],
@@ -890,12 +894,18 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
       libraries: [MANGA],
     })
-    await shown(librariesAt('/config/libraries/Manga/dirs/3'))
-    await act(async () => {
-      await new Promise((resolve) => {
-        setTimeout(resolve, config.SCAN_POLL_MS + 400)
-      })
-    })
+    const host = await shown(librariesAt('/config/libraries/Manga/dirs/3'))
+    await settleUntil(
+      'the scan’s step line',
+      () => host.querySelector('.dir-page .scanning') !== null,
+      config.SCAN_POLL_MS,
+    )
+    feed.answer({ ended: 1, libraries: [] })
+    await settleUntil(
+      'the directory’s report',
+      () => host.querySelector('.dir-page .scan-report') !== null,
+      3 * config.SCAN_POLL_MS,
+    )
     expect(await treeOf(['heading'])).toEqual([
       { role: 'heading', name: root.path, level: 2 },
       { role: 'heading', name: 'How it is scanned', level: 3 },

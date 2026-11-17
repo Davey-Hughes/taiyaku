@@ -34,6 +34,7 @@ const dir = (id: number, path: string): api.LibraryDir => ({
   last_scan_at: null,
   last_scan_status: null,
   next_scan_at: null,
+  paused_at: null,
   libraries: [{ id: 7, name: 'Manga' }],
   nested: [],
   inside: [],

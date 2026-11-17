@@ -17,9 +17,10 @@ import {
   tick,
 } from './support/libraries'
 import { libraryScan } from '../src/pageReads'
+import type { FeedJob, ScanFeed } from '../src/scanFeed'
 import { entryOf, readSet, subscribe } from '../src/reads'
 import { mount, rerender } from './support/mount'
-import { keptGrid } from './support/reads'
+import { feedJob, serveFeed } from './support/scanFeed'
 import { expectRowsWired, helpOf, row, section } from './support/settingsRows'
 import { pass, WAIT_DRAWN_AFTER_MS } from './support/wait'
 
@@ -78,6 +79,7 @@ async function shown({
     await Promise.resolve()
   })
   if (!host) throw new Error('nothing mounted')
+  await clock(0)
   return { host, onChanged, onRemoved, onUnlinked, onMoved }
 }
 
@@ -86,11 +88,22 @@ const control = (host: HTMLElement, text: string) =>
     (b) => b.textContent === text,
   ) as HTMLButtonElement
 
-/** Scan directory, Move… and Remove…, each held, disabled or free. */
-const actionsHeld = (host: HTMLElement) =>
-  ['Scan directory', 'Move…', 'Remove…'].map((text) =>
-    holdOf(control(host, text)),
-  )
+/**
+ * Scan directory, held, disabled or free, or `Cancel` where a job holding
+ * the directory has it read so.
+ */
+const scanHeld = (host: HTMLElement) => {
+  const scan = host.querySelector(
+    '.dir-page .page-actions button',
+  ) as HTMLButtonElement
+  return scan.textContent === 'Cancel' ? 'Cancel' : holdOf(scan)
+}
+
+/** Scan directory (`scanHeld`), Move… and Remove…, each held, disabled or free. */
+const actionsHeld = (host: HTMLElement) => [
+  scanHeld(host),
+  ...['Move…', 'Remove…'].map((text) => holdOf(control(host, text))),
+]
 
 const statusOf = (id: number, running: boolean): config.ScanStatus => ({
   root_id: id,
@@ -130,9 +143,62 @@ async function editBox(box: Element | null, value: string) {
   })
 }
 
+/** The scan feed every test's page polls, idle until a test answers otherwise. */
+let feed: ReturnType<typeof serveFeed>
+
+/** The feed while no job runs, with its marker at `ended`. */
+const idleFeed = (ended = 0): ScanFeed => ({ ended, libraries: [], jobs: [] })
+
+/** The feed while `jobs` run, each library they hold at its job's step. */
+const runningFeed = (...jobs: FeedJob[]): ScanFeed => ({
+  ended: 0,
+  libraries: jobs.flatMap((job) =>
+    job.libraries.map(({ id }) => ({ id, step: job.step })),
+  ),
+  jobs,
+})
+
+/** A job walking `library`'s directories named by id, Manga's alone. */
+const jobOf = (library: api.Library, ...ids: number[]) =>
+  feedJob({
+    dirs: library.dirs
+      .filter((one) => ids.includes(one.id))
+      .map(({ id, path }) => ({ id, path })),
+    dir: { at: 1, of: ids.length },
+  })
+
+/** A job walking `manga()`'s directories named by id. */
+const walking = (...ids: number[]) => jobOf(manga(), ...ids)
+
+/** Lets `ms` of the clock run, and the feed's polls sent meanwhile land. */
+const clock = (ms: number) =>
+  act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
+
+/**
+ * A scan of `library`'s directories named by id: the feed shows it from its
+ * next answer, and the library's status, which is handed back, names them.
+ */
+const scanOf = (library: api.Library, ...ids: number[]) => {
+  feed.answer(runningFeed(jobOf(library, ...ids)))
+  return scanningIn(library, ...ids)
+}
+
+/** The feed's job ends, and the feed's next answer lands. */
+const scanEnds = async () => {
+  feed.answer(idleFeed(1))
+  await clock(config.SCAN_POLL_MS)
+}
+
+/** The step line of a job walking one directory, or the first of two. */
+const STEP = 'Reading files · 120 of 2,097 · directory 1 of 1'
+const STEP_OF_TWO = 'Reading files · 120 of 2,097 · directory 1 of 2'
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.useFakeTimers({ shouldAdvanceTime: true })
+  feed = serveFeed(idleFeed())
   vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
   vi.mocked(config.scanStatus).mockImplementation((id) =>
     Promise.resolve(statusOf(id, false)),
@@ -468,10 +534,12 @@ describe('DirPage, a directory another library holds too', () => {
   const alsoIn = (host: HTMLElement) =>
     host.querySelector('.dir-page .page-header .page-description > .also-in')
   /** Scan directory, Move…, Remove from Manga… and Remove…. */
-  const fourHeld = (host: HTMLElement) =>
-    ['Scan directory', 'Move…', 'Remove from Manga…', 'Remove…'].map((text) =>
+  const fourHeld = (host: HTMLElement) => [
+    scanHeld(host),
+    ...['Move…', 'Remove from Manga…', 'Remove…'].map((text) =>
       holdOf(control(host, text)),
-    )
+    ),
+  ]
 
   beforeEach(() => {
     vi.mocked(api.unlinkCost).mockResolvedValue(unlinked(true))
@@ -554,10 +622,12 @@ describe('DirPage, a directory another library holds too', () => {
 
   it('holds Remove from Manga… exactly when Move… is, and Remove… on a held removal alone', async () => {
     const library = sharing(KIDS)
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(library, 1))
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanOf(library, 1))
     const sibling = await shown({ library })
     expect(fourHeld(sibling.host)).toEqual(['free', 'held', 'held', 'free'])
 
+    feed.answer(idleFeed(1))
+    await clock(config.SCAN_POLL_MS)
     vi.mocked(api.libraryScanStatus).mockResolvedValue({
       ...idle(7),
       held_removals: [2],
@@ -621,7 +691,7 @@ describe('DirPage, a directory another library holds too', () => {
     expect(host.querySelector('.callout')).toBeNull()
   })
 
-  it('takes up its own scan on a refusal for it, which its library’s status names beside no sibling: Scanning…, and all four held until it ends', async () => {
+  it('takes up its own scan on a refusal for it, which the feed shows: its step, Cancel, and the other three held until it ends', async () => {
     const library = sharing(KIDS)
     vi.mocked(api.unlinkCost).mockRejectedValue(
       new Error(
@@ -636,18 +706,16 @@ describe('DirPage, a directory another library holds too', () => {
     // library's status names it beside no sibling, which leaves it to the
     // directory's own status to hold Scan directory and Remove….
     vi.mocked(api.libraryScanStatus).mockResolvedValue({
-      ...scanningIn(library, 2),
+      ...scanOf(library, 2),
       moves_held: true,
     })
-    ownRunning(2)
     await press(control(host, 'Remove from Manga…'))
-    await flush()
-    expect(ownScanning(host)?.textContent).toBe('Scanning… 3s')
-    expect(fourHeld(host)).toEqual(['held', 'held', 'held', 'held'])
+    await clock(0)
+    expect(ownScanning(host)?.textContent).toBe(STEP)
+    expect(fourHeld(host)).toEqual(['Cancel', 'held', 'held', 'held'])
 
     vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
-    ownRunning()
-    await tick()
+    await scanEnds()
     expect(ownScanning(host)).toBeNull()
     expect(fourHeld(host)).toEqual(['free', 'free', 'free', 'free'])
   })
@@ -814,30 +882,28 @@ describe('DirPage, a directory another library holds too', () => {
       },
     },
   ])(
-    'keeps the refusal in $dialog dialog when a refusal for its own scan has it take that scan up, and holds all four once the dialog is closed',
+    'keeps the refusal in $dialog dialog when a refusal for its own scan has it take that scan up, and holds the other three once the dialog is closed',
     async ({ box, words, ask }) => {
       const library = sharing(KIDS)
       const { host } = await shown({ library })
       // A scan of this directory alone, begun after the page's reads.
       vi.mocked(api.libraryScanStatus).mockResolvedValue({
-        ...scanningIn(library, 2),
+        ...scanOf(library, 2),
         moves_held: true,
       })
-      ownRunning(2)
       await ask(host)
-      await flush()
-      expect(ownScanning(host)?.textContent).toBe('Scanning… 3s')
+      await clock(0)
+      expect(ownScanning(host)?.textContent).toBe(STEP)
       expect(host.querySelector(`${box} [role="alert"]`)?.textContent).toBe(
         words,
       )
 
       await press(cancelIn(host, box))
       expect(host.querySelector(box)).toBeNull()
-      expect(fourHeld(host)).toEqual(['held', 'held', 'held', 'held'])
+      expect(fourHeld(host)).toEqual(['Cancel', 'held', 'held', 'held'])
 
       vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
-      ownRunning()
-      await tick()
+      await scanEnds()
       expect(ownScanning(host)).toBeNull()
       expect(fourHeld(host)).toEqual(['free', 'free', 'free', 'free'])
     },
@@ -883,7 +949,7 @@ describe('DirPage, why a held button is held (O250)', () => {
     'A scan or another library job is running; move this directory once it has finished.'
 
   it('says under its header why Move… is held while a sibling’s scan or the job lock holds it, and nothing once a read finds it free', async () => {
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanOf(manga(), 1))
     const { host } = await shown()
     expect(holdOf(control(host, 'Move…'))).toBe('held')
     expect(lines(host)).toEqual([MOVE_WAITS])
@@ -892,7 +958,7 @@ describe('DirPage, why a held button is held (O250)', () => {
       ...idle(7),
       moves_held: true,
     })
-    await tick()
+    await scanEnds()
     expect(holdOf(control(host, 'Move…'))).toBe('held')
     expect(lines(host)).toEqual([MOVE_WAITS])
 
@@ -1001,18 +1067,17 @@ describe('DirPage, why a held button is held (O250)', () => {
   it('keeps each help’s words of today, and draws no line for Move…, while its own scan holds them beside a scan around it and the job lock, and says why once only those hold them', async () => {
     const library = sharing()
     vi.mocked(api.libraryScanStatus).mockResolvedValue({
-      ...scanningIn(library, 2),
+      ...scanOf(library, 2),
       held_removals: [2],
       moves_held: true,
     })
-    ownRunning(2)
     const { host } = await shown({ library })
     expect(
       ['Move…', 'Remove from Manga…', 'Remove…'].map((text) =>
         holdOf(control(host, text)),
       ),
     ).toEqual(['held', 'held', 'held'])
-    expect(lines(host)).toEqual(['Scanning… 3s'])
+    expect(lines(host)).toEqual([STEP])
     expect(helpIn(host, 'Remove from Manga')).toBe(
       'Kids keeps it; nothing is deleted.',
     )
@@ -1026,8 +1091,7 @@ describe('DirPage, why a held button is held (O250)', () => {
       held_removals: [2],
       moves_held: true,
     })
-    ownRunning()
-    await tick()
+    await scanEnds()
     expect(ownScanning(host)).toBeNull()
     // Beside the notice that its end came with no report, which the
     // fixture's status leaves out.
@@ -1037,20 +1101,6 @@ describe('DirPage, why a held button is held (O250)', () => {
     )
     expect(helpIn(host, 'Remove this directory')).toBe(
       'Waits for a scan of a directory around or inside this one.',
-    )
-  })
-
-  it('says why Move… and Remove from Manga… are held while its library’s scan names it beside a sibling, which its own status has not said: nothing says Scanning…', async () => {
-    const library = sharing()
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(
-      scanningIn(library, 1, 2),
-    )
-    const { host } = await shown({ library })
-    expect(ownScanning(host)).toBeNull()
-    expect(holdOf(control(host, 'Move…'))).toBe('held')
-    expect(lines(host)).toEqual([MOVE_WAITS])
-    expect(helpIn(host, 'Remove from Manga')).toBe(
-      'Waits for a scan or another library job to finish.',
     )
   })
 })
@@ -1112,10 +1162,9 @@ describe('DirPage, a derive holding the lease (O51)', () => {
 
   it('keeps Remove this directory’s words of today while its own scan holds it beside a derive', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValue({
-      ...scanningIn(manga(), 2),
+      ...scanOf(manga(), 2),
       derive_running: true,
     })
-    ownRunning(2)
     const { host } = await shown()
     expect(holdOf(control(host, 'Remove…'))).toBe('held')
     expect(removalHelp(host)).toBe('Asks first, with what it would take.')
@@ -1439,7 +1488,7 @@ describe('DirPage, the directories around and inside it', () => {
 
 describe('DirPage, scans and removals across its library exclude each other', () => {
   it('holds Move… alone while a sibling is scanning, and leaves Remove… and Scan directory to send theirs, which the server takes', async () => {
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanOf(manga(), 1))
     vi.mocked(config.removalCost).mockResolvedValue(counted(5))
     vi.mocked(config.startScan).mockResolvedValue({
       root_id: 2,
@@ -1539,55 +1588,42 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
   })
 
-  it('holds Scan directory, Move… and Remove… while its library is being scanned, and asks again until the scan ends', async () => {
-    // A scan of the library holds every directory's slot until the whole scan
-    // ends, so this directory's own status says running too.
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(
-      scanningIn(manga(), 1, 2),
-    )
-    ownRunning(1, 2)
+  it('holds Move… and Remove… and reads Cancel while its library is being scanned, reads its library’s status no more while the feed shows the job, and once as it ends', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...scanOf(manga(), 1, 2),
+      moves_held: true,
+    })
     const { host } = await shown()
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
     expect(api.libraryScanStatus).toHaveBeenCalledWith(7)
-    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
-    expect(ownScanning(host)).not.toBeNull()
-
-    await tick()
-    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
-    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
+    expect(actionsHeld(host)).toEqual(['Cancel', 'held', 'held'])
+    expect(ownScanning(host)?.textContent).toBe(STEP_OF_TWO)
+    for (let i = 0; i < 5; i++) await clock(config.SCAN_POLL_MS)
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
 
     vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
-    ownRunning()
-    await tick()
-    expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
+    await scanEnds()
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
     expect(ownScanning(host)).toBeNull()
     expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
-
-    // Nothing else is scanning, so nothing more is asked.
-    await tick()
-    await tick()
-    expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
+    for (let i = 0; i < 3; i++) await clock(config.SCAN_POLL_MS)
+    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
   })
 
-  it('leaves a scan of only this directory to the directory’s own status, and asks its library’s once', async () => {
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 2))
-    ownRunning(2)
+  it('draws a scan of only this directory from the feed, and asks its library’s status once', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanOf(manga(), 2))
     const { host } = await shown()
-    expect(ownScanning(host)).not.toBeNull()
-    await tick()
+    expect(ownScanning(host)?.textContent).toBe(STEP)
+    await clock(config.SCAN_POLL_MS)
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
 
-    // The directory's own poll sees its scan end, and that alone frees the
-    // buttons: the library's status is not asked again.
-    ownRunning()
-    await tick()
+    await scanEnds()
     expect(ownScanning(host)).toBeNull()
     expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
-    expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
   })
 
-  // §9's call 9: told, a library's page drawn beside this one would read the
-  // status, take the scan up and draw its report beside the row's own.
+  // §9's call 9: a library's page drawn beside this one draws the scan from
+  // the feed, which reads the status again as the scan ends.
   it('marks its library’s scan status in the store stale as its own scan starts, and tells no page drawing it', async () => {
     vi.mocked(api.libraryScanStatus).mockImplementation((id) =>
       Promise.resolve(idle(id)),
@@ -1602,9 +1638,10 @@ describe('DirPage, scans and removals across its library exclude each other', ()
         root_id: 2,
         status_url: '/api/library/roots/2/scan',
       })
+      feed.answer(runningFeed(walking(2)))
       await press(control(host, 'Scan directory'))
-      await flush()
-      expect(ownScanning(host)).not.toBeNull()
+      await clock(0)
+      expect(ownScanning(host)?.textContent).toBe(STEP)
       expect(entryOf(libraryScan(7))?.stale).toBe(true)
       expect(entryOf(libraryScan(8))?.stale).toBe(false)
       expect(heard).not.toHaveBeenCalled()
@@ -1614,26 +1651,20 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     }
   })
 
-  it('closes the directory’s open removal dialog when the page’s own first read finds a scan of the library under it, and asks its cost afresh once that ends', async () => {
-    // The library's status and the directory's own are separate requests, and
-    // the library's answers first here.
-    const late = deferred<api.LibraryScanStatus>()
-    vi.mocked(api.libraryScanStatus).mockReturnValueOnce(late.promise)
-    const own = deferred<config.ScanStatus>()
-    vi.mocked(config.scanStatus).mockReturnValueOnce(own.promise)
+  it('closes the directory’s open removal dialog when the feed shows a scan of the library under it, and asks its cost afresh once that ends', async () => {
     vi.mocked(config.removalCost).mockResolvedValue(counted(5))
     const { host } = await shown()
     await press(control(host, 'Remove…'))
     expect(host.querySelector('.remove-root .counts')).not.toBeNull()
 
-    await flush(() => late.resolve(scanningIn(manga(), 1, 2)))
+    feed.answer(runningFeed(walking(1, 2)))
+    await clock(5000)
     expect(host.querySelector('.remove-root')).toBeNull()
     expect(config.removeRoot).not.toHaveBeenCalled()
-    await flush(() => own.resolve(statusOf(2, true)))
-    expect(ownScanning(host)).not.toBeNull()
+    expect(ownScanning(host)?.textContent).toBe(STEP_OF_TWO)
 
     vi.mocked(config.removalCost).mockResolvedValue(counted(9))
-    await tick()
+    await scanEnds()
     await press(control(host, 'Remove…'))
     expect(config.removalCost).toHaveBeenCalledTimes(2)
     expect(host.querySelector('.remove-root .counts')?.textContent).toContain(
@@ -1718,22 +1749,16 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     )
   })
 
-  it('closes the directory’s open Move… dialog when its first read finds a scan of the library under it', async () => {
-    // As in the removal's case above: the library's status answers before
-    // the directory's own, which says running too.
-    const late = deferred<api.LibraryScanStatus>()
-    vi.mocked(api.libraryScanStatus).mockReturnValueOnce(late.promise)
-    const own = deferred<config.ScanStatus>()
-    vi.mocked(config.scanStatus).mockReturnValueOnce(own.promise)
+  it('closes the directory’s open Move… dialog when the feed shows a scan of the library under it', async () => {
     const { host } = await shown()
     await press(control(host, 'Move…'))
     expect(host.querySelector('.move-root')).not.toBeNull()
 
-    await flush(() => late.resolve(scanningIn(manga(), 1, 2)))
+    feed.answer(runningFeed(walking(1, 2)))
+    await clock(5000)
     expect(host.querySelector('.move-root')).toBeNull()
     expect(api.moveDir).not.toHaveBeenCalled()
-    await flush(() => own.resolve(statusOf(2, true)))
-    expect(ownScanning(host)).not.toBeNull()
+    expect(ownScanning(host)?.textContent).toBe(STEP_OF_TWO)
   })
 
   it('closes the directory’s open Move… dialog when its first read says the job lock is held', async () => {
@@ -1749,7 +1774,7 @@ describe('DirPage, scans and removals across its library exclude each other', ()
   })
 
   it('does not hold the directory’s settings for a sibling’s scan', async () => {
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
+    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanOf(manga(), 1))
     // Scanned every 15 minutes, so Every's count is drawn in minutes.
     const { host } = await shown({
       library: manga({
@@ -1818,7 +1843,10 @@ describe('DirPage, scans and removals across its library exclude each other', ()
   })
 
   it('keeps the hold through two failed polls, lets go on the third and says why, and asks no more', async () => {
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+    })
     const { host } = await shown()
     expect(actionsHeld(host)).toEqual(['free', 'held', 'free'])
 
@@ -1849,7 +1877,10 @@ describe('DirPage, scans and removals across its library exclude each other', ()
   })
 
   it('drops the sentence of a given-up hold when the directory’s own scan is pressed', async () => {
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+    })
     vi.mocked(config.startScan).mockResolvedValue({
       root_id: 2,
       status_url: '/api/library/roots/2/scan',
@@ -1863,13 +1894,17 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     await tick()
     expect(host.querySelector('.dir-page > [role="alert"]')).not.toBeNull()
 
+    feed.answer(runningFeed(walking(2)))
     await press(control(host, 'Scan directory'))
     expect(config.startScan).toHaveBeenCalledWith(2, 7)
     expect(host.querySelector('.dir-page > [role="alert"]')).toBeNull()
   })
 
   it('drops the sentence of a given-up hold when the page asks its library again, though that read fails', async () => {
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+    })
     const { host } = await shown()
     vi.mocked(api.libraryScanStatus).mockRejectedValue(
       new Error('/api/library/libraries/7/scan: 502 bad gateway'),
@@ -1908,15 +1943,19 @@ describe('DirPage, scans and removals across its library exclude each other', ()
   })
 
   it('counts only consecutive failed polls', async () => {
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      moves_held: true,
+    })
     const { host } = await shown()
     for (const answer of ['miss', 'miss', 'ok', 'miss', 'miss'] as const) {
       if (answer === 'miss')
         vi.mocked(api.libraryScanStatus).mockRejectedValueOnce(new Error('502'))
       else
-        vi.mocked(api.libraryScanStatus).mockResolvedValueOnce(
-          scanningIn(manga(), 1),
-        )
+        vi.mocked(api.libraryScanStatus).mockResolvedValueOnce({
+          ...idle(7),
+          moves_held: true,
+        })
     }
     for (let i = 0; i < 5; i++) await tick()
     // Four misses in five polls and never three together: still held.
@@ -1946,23 +1985,6 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     ).not.toBeUndefined()
   })
 
-  it('lets go of a hold for a scan of its library on the third failed poll', async () => {
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(
-      scanningIn(manga(), 1, 2),
-    )
-    const { host } = await shown()
-    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
-
-    vi.mocked(api.libraryScanStatus).mockRejectedValue(
-      new Error('/api/library/libraries/7/scan: 502 bad gateway'),
-    )
-    await tick()
-    await tick()
-    expect(actionsHeld(host)).toEqual(['held', 'held', 'held'])
-    await tick()
-    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
-  })
-
   it('holds nothing and asks no more when its first read fails', async () => {
     vi.mocked(api.libraryScanStatus).mockRejectedValue(
       new Error('/api/library/libraries/7/scan: 502 bad gateway'),
@@ -1977,62 +1999,51 @@ describe('DirPage, scans and removals across its library exclude each other', ()
   })
 })
 
-/**
- * What a scan found changes what the Library views draw. A scan of another
- * directory that this page saw running marks them stale once a poll finds
- * it over; a first read that finds none running saw no scan end, and marks
- * nothing.
- */
-describe('DirPage, another directory’s scan and the Library views', () => {
-  it('marks them stale when a sibling’s scan it saw running ends', async () => {
-    const grid = await keptGrid()
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
-    const { host } = await shown()
-    expect(actionsHeld(host)).toEqual(['free', 'held', 'free'])
-    await tick()
-    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
-    expect(grid.stale()).toBe(false)
-
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(idle(7))
-    await tick()
-    expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
-    expect(grid.stale()).toBe(true)
-    expect(grid.sent()).toBe(1)
-  })
-
-  it('marks them stale when a poll sent while its dry run is out finds the sibling’s scan over beside a derive, which may be that dry run', async () => {
-    const grid = await keptGrid()
-    vi.mocked(api.libraryScanStatus).mockResolvedValue(scanningIn(manga(), 1))
-    const { host } = await shown()
-    expect(actionsHeld(host)).toEqual(['free', 'held', 'free'])
-    const dryRun = deferred<config.RemovalAnswer>()
-    vi.mocked(config.removalCost).mockReturnValueOnce(dryRun.promise)
-    await press(control(host, 'Remove…'))
-    expect(config.removalCost).toHaveBeenCalledTimes(1)
-
+describe('DirPage, a scan the feed shows (O273)', () => {
+  it('a directory’s own scan named beside a sibling’s draws Scanning', async () => {
+    // The page polls its library's status for the job lock, as O257 found.
     vi.mocked(api.libraryScanStatus).mockResolvedValue({
       ...idle(7),
-      derive_running: true,
+      moves_held: true,
     })
-    await tick()
-    expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
-    expect(grid.stale()).toBe(true)
+    const { host } = await shown()
+    await clock(0)
+    expect(ownScanning(host)).toBeNull()
 
-    // Nothing else holds, and the derive is read again a poll later: sent
-    // once the dry run has answered, that read's derive is another's.
-    await flush(() => dryRun.resolve(counted(5)))
-    await tick()
-    expect(api.libraryScanStatus).toHaveBeenCalledTimes(3)
-    expect(host.querySelector('.remove-root')).toBeNull()
-    expect(holdOf(control(host, 'Remove…'))).toBe('held')
+    // A scan of the library starts, walking this directory and its sibling.
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...scanningIn(manga(), 1, 2),
+      moves_held: true,
+    })
+    ownRunning(1, 2)
+    feed.answer(runningFeed(walking(1, 2)))
+    await clock(5000)
+    expect(ownScanning(host)?.textContent).toBe(
+      'Reading files · 120 of 2,097 · directory 1 of 2',
+    )
   })
 
-  it('marks none of them stale when its first read finds no other directory scanning', async () => {
-    const grid = await keptGrid()
+  it('draws the holds its first read finds, though the feed shows a job before that read answers', async () => {
+    const first = deferred<api.LibraryScanStatus>()
+    vi.mocked(api.libraryScanStatus).mockReturnValueOnce(first.promise)
+    // A scan of a directory around this one, which another library asked for.
+    feed.answer(
+      runningFeed(
+        feedJob({
+          id: 12,
+          dirs: [{ id: 50, path: '/media' }],
+          libraries: [{ id: 8, name: 'Comics' }],
+        }),
+      ),
+    )
     const { host } = await shown()
-    await tick()
     expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
+    await flush(() =>
+      first.resolve({ ...idle(7), held_removals: [2], moves_held: true }),
+    )
+    expect(actionsHeld(host)).toEqual(['free', 'held', 'held'])
+    // Its holds are polled for only once the feed shows no job.
+    for (let i = 0; i < 3; i++) await clock(config.SCAN_POLL_MS)
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(1)
-    expect(grid.stale()).toBe(false)
   })
 })

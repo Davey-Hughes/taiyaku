@@ -1868,8 +1868,10 @@ pub fn held_in(conn: &Connection, library: i64) -> Result<HashSet<String>, Strin
 
 /// One library as the sidebar lists it.
 ///
-/// `scanned` is whether any of its directories has been walked, so a library page
-/// with nothing in it can say "not read yet" rather than "nothing here".
+/// `scanned` is whether any of its directories has been walked and holds a last
+/// scan, so a library page with nothing in it can say "not read yet" rather
+/// than "nothing here". A first scan cancelled after its walk committed leaves
+/// the walk's rows and no last scan.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LibraryEntry {
     pub id: i64,
@@ -1912,7 +1914,8 @@ pub fn status(conn: &Connection, access: &Access) -> Result<Status, String> {
         conn,
         "SELECT l.id, l.name,
                 EXISTS (SELECT 1 FROM dir_state d JOIN library_root dr ON dr.root_id = d.root_id
-                         WHERE dr.library_id = l.id)
+                                   JOIN root t ON t.id = d.root_id
+                         WHERE dr.library_id = l.id AND t.last_scan_at IS NOT NULL)
            FROM library l
           WHERE EXISTS (SELECT 1 FROM library_root r WHERE r.library_id = l.id)
           ORDER BY l.name COLLATE NOCASE, l.id",

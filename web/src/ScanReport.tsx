@@ -38,7 +38,8 @@ import type {
   Unreadable,
   Walk,
 } from './config'
-import { scanFailed } from './config'
+import { scanCancelled, scanFailed } from './config'
+import { stepWord } from './scanFeed'
 
 /** One count, with the key the test counts on. */
 function Count({
@@ -465,6 +466,14 @@ export function ScanReport({
     return (
       <div className="scan-report">
         <p role="alert">{outcome.error}</p>
+      </div>
+    )
+  }
+  // Not an alert: Cancel is the administrator's own act, not a fault.
+  if (scanCancelled(outcome)) {
+    return (
+      <div className="scan-report">
+        <p>{`Cancelled while ${stepWord(outcome.cancelled.step).toLowerCase()}`}</p>
       </div>
     )
   }

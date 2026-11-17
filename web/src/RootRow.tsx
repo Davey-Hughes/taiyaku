@@ -2,19 +2,16 @@
  * One root: what it is, what it defaults to, and what its last scan did —
  * spec C4 §2 and §3. It is the body of the directory's own page.
  *
- * **The row owns its own scan poll**, the way `ProposalRow` owns its own
- * evidence fetch: a scan belongs to the root being scanned rather than to the
- * page that draws it.
- *
- * **It asks the status route once on mount, and that is not optional.** The
- * server keeps `ServeState.scans` precisely so a client can poll a scan across
- * requests; a row that only ever polled after pressing its own button would
- * show nothing at all to an admin who navigated away during a scan and came
- * back — no progress, no eventual report, and an enabled "Scan directory"
- * whose only answer would be a 409 about the scan they had started themselves.
- * The cost is one request per root per mount, against an in-memory registry
- * lookup plus one indexed row — far below the dry-run counts, which stay lazy
- * because each of those is a real derivation.
+ * **A scan is drawn from the scan feed** (`scanFeed.ts`), whoever started
+ * it: while a job holds the directory, Scan directory reads Cancel, the line
+ * under the header is the job's step, and every other action is held. Its
+ * own press, or a 409, which is proof of a scan in flight, asks the feed at
+ * once, and Scan directory is held until that answer lands: the button goes
+ * from Scan directory to Cancel with no free press between. When the job
+ * leaves the feed, or the answer its press asked for holds none, since the
+ * scan ended before any poll saw it, the directory's status is read once for
+ * that scan's report. While no job holds it, a directory a cancel paused says
+ * so, and since when.
  *
  * **A field is patched on blur, and only the field the admin actually
  * edited** — an absent key means "leave this column alone" to
@@ -48,10 +45,10 @@
  * everything else, which is a guard against two typos rather than a
  * verification.
  *
- * **Live progress is elapsed seconds and nothing else.** `ScanProgress`
- * carries a start `Instant` and a done flag and no per-file counter; drawing a
- * bar over a number nobody computes would be an invented figure on the screen
- * whose own discipline is that a report names what it did not do.
+ * **Every figure on the step line is the server's** (`stepLine`): the job
+ * keeps each step's count, and nothing here works one out or times anything.
+ * A figure nobody computed would be invented on a screen whose own
+ * discipline is that a report names what it did not do.
  */
 import {
   type ChangeEvent,
@@ -68,13 +65,11 @@ import { Link } from 'react-router'
 import { Callout } from './Callout'
 import {
   patchRoot,
-  POLL_MISSES_ALLOWED,
   type Probe,
   regimeFacts,
   type Root,
   type RootPatch,
   type RemovalAnswer,
-  SCAN_POLL_MS,
   type ScanOutcome,
   scanStatus,
   startScan,
@@ -85,7 +80,6 @@ import { focusLeaves } from './focusLeaves'
 import { JOB_WAITS, type OwnRequests } from './deriveHold'
 import { HeldButton } from './HeldButton'
 import { useDrawn } from './hooks'
-import { JOINING_DOT } from './joiningDot'
 import {
   type MoveAnswer,
   namesOf,
@@ -100,8 +94,16 @@ import { UnlinkRoot } from './UnlinkRoot'
 import { ScanReport } from './ScanReport'
 import { messageOf, sentenceOf } from './message'
 import { useLineEnds } from './lineEnds'
-import { invalidateLibraryViews, ROOTS } from './pageReads'
+import { ROOTS } from './pageReads'
 import { PathWithBreaks } from './PathWithBreaks'
+import {
+  askScanFeed,
+  cancelScan,
+  coversToo,
+  jobHoldingDir,
+  stepLine,
+  useScanFeed,
+} from './scanFeed'
 import {
   type BackTo,
   PageHeader,
@@ -109,6 +111,7 @@ import {
   Row,
   Section,
 } from './settingsLayout'
+import { inUtc } from './utc'
 
 export interface RootRowProps {
   root: Root
@@ -140,14 +143,6 @@ export interface RootRowProps {
    * take it out of one alone.
    */
   libraries?: NamedLibrary[]
-  /**
-   * A scan of this directory is reserved, as its library's status says before
-   * the directory's own does: the server refuses every action here, so Scan
-   * directory, Move…, Remove from this library and Remove… do nothing then
-   * and are drawn held, and an open removal, unlink or move dialog is closed
-   * unless it draws a refusal, which the person reads and closes.
-   */
-  held?: boolean
   /**
    * Why the server refuses this one's removal: a scan of a directory around
    * or inside it is reserved, or a derive holds the lease (O51). Remove… is
@@ -193,10 +188,10 @@ export interface RootRowProps {
    */
   onMoved?: (answer: MoveAnswer) => void
   /**
-   * The list reloads on a save, a removal, or a finished scan. `quiet` is a
-   * scan that ended by itself: no press started that read.
+   * The list reloads on a save or a removal. A scan's end is the feed's to
+   * read again.
    */
-  onChanged: (quiet?: boolean) => void
+  onChanged: () => void
   /**
    * Move…, Remove from this library or Remove… was refused for a hold (a
    * 409) that nothing drawn here said: the page asks its library's status
@@ -209,8 +204,7 @@ export interface RootRowProps {
   /**
    * What the library's scan status said before now no longer holds: a scan
    * of this directory was asked for, and again as it started or was answered
-   * 409, or the mount read took one up, or the poll found it over, or the
-   * row went while it ran and so will not see its end.
+   * 409, or an action was refused for a hold.
    */
   onScanMoved?: () => void
   /**
@@ -498,7 +492,6 @@ export function RootRow({
   probe,
   library,
   libraries = [],
-  held = false,
   removalHeld,
   ownRequests,
   moveHeld = false,
@@ -521,7 +514,7 @@ export function RootRow({
    * message saying the library may be half-derived.
    */
   const [failure, setFailure] = useState<string | undefined>()
-  /** What the scan poll has to say. Cleared only by starting another scan. */
+  /** What the read at a scan's end has to say. Cleared only by starting another scan. */
   const [scanNotice, setScanNotice] = useState<string | undefined>()
   /** The sentence of a 409, true only until the scan it names ends. */
   const [conflict, setConflict] = useState<string | undefined>()
@@ -535,15 +528,45 @@ export function RootRow({
    */
   const [unlinkRefusal, setUnlinkRefusal] = useState<string | undefined>()
   const [moving, setMoving] = useState(false)
-  const [running, setRunning] = useState(false)
-  /** `running` as last drawn, for a refusal answered after that draw. */
-  const watchesScan = useRef(running)
-  watchesScan.current = running
+  const feed = useScanFeed()
+  /** The job holding the directory, whoever started it. */
+  const job = jobHoldingDir(feed, root.id)
+  const running = job !== undefined
+  /** The other libraries the job covers, whose scans Cancel stops too. */
+  const covers =
+    job === undefined || library === undefined
+      ? undefined
+      : coversToo(job, library.id)
+  /**
+   * Scan directory was pressed, and the start, or the feed's answer asked
+   * for after it, is still out.
+   */
   const [starting, setStarting] = useState(false)
-  const [elapsed, setElapsed] = useState<number | undefined>()
-  /** The scan watched waits for the job lock or another derive's lease (O51). */
-  const [waiting, setWaiting] = useState(false)
+  /** Cancel was pressed, and its send, or the feed's answer after it, is out. */
+  const [cancelSent, setCancelSent] = useState(false)
   const [report, setReport] = useState<ScanOutcome | null>(null)
+  /** The scans seen to end since the row was drawn, counted. */
+  const [ended, setEnded] = useState(0)
+  /**
+   * Ends a scan that held the directory: the 409's sentence was true while
+   * it ran, and its report is read.
+   */
+  const endScan = () => {
+    setConflict(undefined)
+    setEnded((n) => n + 1)
+  }
+  /**
+   * The feed's answer the row last compared with the one before it, and the
+   * directory it compared them for: a job holding the directory in that
+   * answer and not now has ended, in the render the answer lands.
+   */
+  const [compared, setCompared] = useState({ feed, rootId: root.id })
+  if (compared.feed !== feed || compared.rootId !== root.id) {
+    setCompared({ feed, rootId: root.id })
+    const was = jobHoldingDir(compared.feed, root.id)
+    if (compared.rootId === root.id && was !== undefined && was.id !== job?.id)
+      endScan()
+  }
   const heading = useRef<HTMLHeadingElement>(null)
   /** Which of the facts under the title end a line. */
   const factEnds = useLineEnds<HTMLDListElement>('.regime > div')
@@ -733,18 +756,12 @@ export function RootRow({
     edited.current.delete(EVERY_BOX)
   }, [root.scan_interval_secs, drawSchedule])
 
-  // `onChanged` is called from inside the poll's interval callback, so it is
-  // held in a ref rather than named as a dependency: a parent handing over a
-  // fresh closure each render would otherwise tear down and restart the
-  // interval on every one of its own renders, which is a poll that never
-  // fires at its own cadence.
+  // Read by the edits sent as the row goes, which answer after it has.
   const changed = useRef(onChanged)
   changed.current = onChanged
-  // Read by the edits sent as the row goes, which answer after it has.
   const late = useRef(onLateRefusal)
   late.current = onLateRefusal
-  // Held as `changed` is, for the mount read, the poll and its cleanup, and
-  // read by a start that answers once the row has gone.
+  // Read by a start that answers once the row has gone.
   const moved = useRef(onScanMoved)
   moved.current = onScanMoved
   const drawn = useDrawn()
@@ -760,21 +777,6 @@ export function RootRow({
    * is what enforces it.
    */
   const inFlight = useRef(false)
-
-  /**
-   * Consecutive failed polls. Reset by any answer.
-   *
-   * **A single failure must not abandon a live scan.** A `.catch` that ran
-   * `setRunning(false)` would tear the interval down for good — so one blip
-   * (a proxy 502, a `SQLITE_BUSY` while the scan's own writes hold the file)
-   * would produce no progress, no eventual report, and a re-enabled "Scan
-   * directory" whose only answer is a 409 about the scan still running:
-   * exactly the state the mount read above exists to prevent, reached by
-   * another door. Three is chosen, not measured — long enough to ride out a
-   * blip at one second apiece, short enough that a genuinely broken route says
-   * so rather than polling for ever.
-   */
-  const misses = useRef(0)
 
   /**
    * `label` names the setting in a refusal that comes once the row has gone,
@@ -806,60 +808,6 @@ export function RootRow({
           )
       })
   }
-
-  /**
-   * Fold one status answer into this row's state.
-   *
-   * Shared by the mount read and the poll so the two cannot disagree about
-   * what a given answer means.
-   */
-  const absorb = useCallback(
-    (status: {
-      running: boolean
-      elapsed_secs?: number
-      report: ScanOutcome | null
-      last_scan_status: string | null
-    }) => {
-      setElapsed(status.elapsed_secs)
-      // Only the server's own scan writes `waiting`, and a start rewrites one
-      // a stop left, so a running scan's status reads it while the scan waits,
-      // and past its wait only where the store refused the write that ended it.
-      setWaiting(status.running && status.last_scan_status === 'waiting')
-      if (status.running) {
-        setRunning(true)
-        return
-      }
-      setRunning(false)
-      setReport(status.report)
-    },
-    [],
-  )
-
-  // **The mount read.** See this file's own doc comment. It runs once per
-  // mount and seeds `running`, so a scan already in flight is drawn and then
-  // polled by the effect below exactly as one this row started would be.
-  useEffect(() => {
-    let cancelled = false
-    scanStatus(root.id)
-      .then((status) => {
-        if (cancelled) return
-        // Only a *running* scan is adopted on mount. A finished one belongs to
-        // whatever session started it, and drawing its report unasked would
-        // put a stale wall of counts on the page each time it is opened.
-        if (status.running) {
-          absorb(status)
-          moved.current?.()
-        }
-      })
-      .catch(() => {
-        // Deliberately silent. A status read this row did not ask for must
-        // not put a red alert over a screen the admin has only just opened;
-        // pressing "Scan directory" is what surfaces a real fault.
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [root.id, absorb])
 
   // A box still being typed in when the row goes holds an edit nothing has
   // sent, since the browser's Back, among other routes, leaves it no blur.
@@ -897,20 +845,20 @@ export function RootRow({
   }, [])
 
   /**
-   * What the watch of a scan starts from: no report or notice of an earlier
-   * one, and no failed polls counted against it, so that one blip does not
-   * end it. A press of Scan directory starts one, and so does a scan taken
-   * up after a refusal.
+   * Scan directory is held until the feed's answer asked for after the
+   * start, or after a 409, lands: the button goes from Scan directory to
+   * Cancel with no free press between. An answer that holds no job of the
+   * directory's means the scan has already ended, before any poll saw it.
    */
-  const watchAfresh = useCallback(() => {
-    setScanNotice(undefined)
-    setReport(null)
-    setElapsed(undefined)
-    setWaiting(false)
-    misses.current = 0
-  }, [])
+  const followScan = () =>
+    askScanFeed().then((answer) => {
+      inFlight.current = false
+      setStarting(false)
+      if (answer !== undefined && jobHoldingDir(answer, root.id) === undefined)
+        endScan()
+    })
 
-  const begin = useCallback(() => {
+  const begin = () => {
     // Guarded synchronously, not by the hold alone: that would let two rapid
     // presses both send, and the second's 409 — about the admin's own scan —
     // would land in the alert slot while that scan ran fine.
@@ -921,117 +869,95 @@ export function RootRow({
     setFailure(undefined)
     setUnlinkRefusal(undefined)
     setConflict(undefined)
-    watchAfresh()
+    setScanNotice(undefined)
+    setReport(null)
     // At the press, so a return while the start is out waits for a read sent
     // after it; and again at the answer, for a read out across the start,
     // which the server may have answered before it registered the scan.
     moved.current?.()
-    startScan(root.id, library?.id)
-      .then(() => {
-        inFlight.current = false
-        setStarting(false)
-        setRunning(true)
+    startScan(root.id, library?.id).then(
+      () => {
         moved.current?.()
-      })
-      .catch((err: unknown) => {
+        void followScan()
+      },
+      (err: unknown) => {
+        // A 409 is proof of a scan in flight, whether or not the row is
+        // still drawn to see it.
+        const conflict = statusOf(messageOf(err)) === 409
+        if (conflict) moved.current?.()
+        if (drawn.current && conflict) {
+          setConflict(sentenceOf(err))
+          void followScan()
+          return
+        }
         inFlight.current = false
         setStarting(false)
-        const why = messageOf(err)
-        // A 409 is proof of a scan in flight, whether or not the row is
-        // still drawn to watch it.
-        if (statusOf(why) === 409) moved.current?.()
-        if (!drawn.current) {
+        if (drawn.current) setFailure(sentenceOf(err))
+        else
           onLateRefusal?.(
             `A scan of ${root.path} did not start (${sentenceOf(err)}).`,
           )
-          return
-        }
-        if (statusOf(why) === 409) setConflict(sentenceOf(err))
-        else setFailure(sentenceOf(err))
-        // **A 409 is positive proof a scan is in flight**, so it starts the
-        // poll rather than only complaining. Without this the row would stay
-        // blind after any route back to a re-enabled button — three failed
-        // polls, say — showing no progress, no report and no reload when the
-        // scan finished, and answering every retry with the same 409: exactly
-        // the state `misses` above exists to prevent.
-        if (statusOf(why) === 409) {
-          misses.current = 0
-          setRunning(true)
-        }
-      })
-  }, [
-    root.id,
-    root.path,
-    library?.id,
-    onScan,
-    onLateRefusal,
-    drawn,
-    watchAfresh,
-  ])
+      },
+    )
+  }
 
+  /**
+   * Cancels the job holding the directory, with no dialog: a cancel costs at
+   * most one directory's unsaved walk, and Scan resumes the rest (spec §7).
+   * Held until the feed's answer after the send lands.
+   */
+  const cancel = (id: number) => {
+    setCancelSent(true)
+    setFailure(undefined)
+    cancelScan(id)
+      .then(
+        () => askScanFeed(),
+        (err: unknown) => {
+          if (drawn.current) setFailure(sentenceOf(err))
+        },
+      )
+      .then(() => setCancelSent(false))
+  }
+
+  // The report of the scan that ended is read once. A read that fails draws
+  // none: the facts, which the feed reads again as the scan ends, still say
+  // how it went. One that finds the directory reserved again is of the next
+  // scan, whose report starts empty and is read at its own end: drawn, it
+  // would say this one left no record.
   useEffect(() => {
-    if (!running) return
+    if (ended === 0) return
     let cancelled = false
-    /** Cleared once the poll stops: the scan has ended, or the polls failed. */
-    let watching = true
-    const timer = setInterval(() => {
-      scanStatus(root.id)
-        .then((status) => {
-          if (cancelled) return
-          misses.current = 0
-          absorb(status)
-          if (status.running) return
-          watching = false
-          moved.current?.()
-          setConflict(undefined)
-          // **A `null` report on a stopped scan is not a clean finish.** The
-          // registry is in memory, so a `serve` restarted mid-scan answers
-          // exactly this — and writing it through would silently clear
-          // "Scanning…" and draw nothing, which reads as success.
-          if (status.report === null) {
-            setScanNotice(
-              'This server has no record of that scan. It was most likely ' +
-                'interrupted by a restart; nothing here says whether it ' +
-                'finished. Scan again to be sure.',
-            )
-          }
-          changed.current(true)
-          // What the scan found changes what the Library views draw, and a
-          // scan the server has no record of may have written some of it
-          // before the restart.
-          invalidateLibraryViews()
-        })
-        .catch((err: unknown) => {
-          if (cancelled) return
-          misses.current += 1
-          if (misses.current < POLL_MISSES_ALLOWED) return
-          watching = false
-          setRunning(false)
-          // The 409's sentence is true while the scan it named is watched,
-          // and nothing watches it now.
-          setConflict(undefined)
-          setScanNotice(sentenceOf(err))
-        })
-    }, SCAN_POLL_MS)
+    scanStatus(root.id).then(
+      (status) => {
+        if (cancelled || status.running) return
+        setReport(status.report)
+        // **A `null` report on an ended scan is not a clean finish.** The
+        // registry is in memory, so a `serve` restarted mid-scan answers
+        // exactly this, and drawing nothing would read as success.
+        if (status.report === null) {
+          setScanNotice(
+            'This server has no record of that scan. It was most likely ' +
+              'interrupted by a restart; nothing here says whether it ' +
+              'finished. Scan again to be sure.',
+          )
+        }
+      },
+      () => undefined,
+    )
     return () => {
       cancelled = true
-      clearInterval(timer)
-      // The row goes, or turns to another directory, while the scan runs:
-      // nothing here will see it end.
-      if (watching) moved.current?.()
     }
-  }, [running, root.id, absorb])
+  }, [ended, root.id])
 
   /*
-   * Scan directory, Move…, Remove from this library and Remove… are held
-   * alike, for one set of reasons: by a scan of this directory, and by a
-   * press of their own, either of which can come while the button has focus,
-   * so it is held by `HeldButton` and keeps it. A press of one of the others
-   * holds it by `disabled`: focus is on the button pressed then, and a button
-   * that cannot take focus as its hold comes on stays out of the tab order.
-   * An open dialog is given the same hold, and cancels by its own rule.
+   * Move…, Remove from this library and Remove… are held alike: by a scan
+   * of this directory, which turns Scan directory to Cancel, and by a press
+   * of their own, either of which can come while the button has focus, so
+   * it is held by `HeldButton` and keeps it. A press of one of the others
+   * holds it by `disabled`: focus is on the button pressed then, and a
+   * button that cannot take focus as its hold comes on stays out of the tab
+   * order. An open dialog is given the same hold, and cancels by its own rule.
    */
-  const scanning = running || held
   /** The other libraries holding the directory, where this page's is known. */
   const alsoIn =
     library === undefined
@@ -1066,11 +992,11 @@ export function RootRow({
     if (at === null || at === document.body) removeButton.current?.focus()
   }, [unlinking, shared])
   /** What holds Remove from this library, as it holds Move…, but its own press. */
-  const unlinkHeld = scanning || moveHeld
+  const unlinkHeld = running || moveHeld
   /*
    * A hold from the page says why it holds, beside what it holds (O250):
    * Move…'s in a line under the header, the removals' in their rows' help.
-   * Not while this directory's own scan is drawn, whose "Scanning…" says it.
+   * Not while this directory's own scan is drawn, whose step line says it.
    */
   const moveWaits = moveHeld && !running
   const removalWaits = running ? undefined : removalHeld
@@ -1087,27 +1013,13 @@ export function RootRow({
   /**
    * A dialog was refused for a hold (a 409), proof of something holding, as
    * Scan directory's 409 is. The page reads its library's status so that
-   * the hold is drawn and its end seen. That status leaves a scan of this
-   * directory alone to this row (`DirPage`'s `useOtherScan`), so the row
-   * reads its own once and takes up a scan it finds running, as the mount
-   * read does: "Scanning…", and every action held. A refusal for any other
-   * hold finds none, and leaves the row as it is.
+   * the hold is drawn and its end seen, and the feed is asked now: a scan of
+   * this directory is drawn from its answer, and every action held.
    */
   const heldRefusal = () => {
     moved.current?.()
     onHeldRefusal?.()
-    // Not while the row watches its scan: the poll reads the same, and this
-    // read answered after the poll saw the scan end would take it up again.
-    if (watchesScan.current) return
-    scanStatus(root.id)
-      .then((status) => {
-        if (!status.running) return
-        watchAfresh()
-        absorb(status)
-      })
-      .catch(() => {
-        // Silent, as the mount read is: the refusal has said what failed.
-      })
+    void askScanFeed()
   }
   /** Each press of the page's actions clears the refusal of an earlier one. */
   const pressed = (then: () => void) => () => {
@@ -1289,21 +1201,21 @@ export function RootRow({
             */}
             <HeldButton
               type="button"
-              onClick={begin}
-              held={scanning || starting}
+              onClick={job === undefined ? begin : () => cancel(job.id)}
+              held={starting || cancelSent || job?.cancelling === true}
               // `unlinking` holds it as `moving` does: the server refuses an
               // unlink while a scan is reserved in this library, so a scan
               // started under its dialog would have that confirm refused.
               disabled={confirming || unlinking || moving}
             >
-              Scan directory
+              {running ? 'Cancel' : 'Scan directory'}
             </HeldButton>
             {moveTo !== undefined && library !== undefined && (
               <HeldButton
                 ref={moveButton}
                 type="button"
                 onClick={pressed(() => setMoving(true))}
-                held={scanning || moveHeld || moving}
+                held={running || moveHeld || moving}
                 disabled={starting || confirming || unlinking}
                 aria-describedby={moveWaits ? moveWaitsId : undefined}
               >
@@ -1313,10 +1225,15 @@ export function RootRow({
           </>
         }
       />
-      {running && (
+      {job !== undefined && (
         <p className="scanning">
-          Scanning…{elapsed === undefined ? '' : ` ${Math.round(elapsed)}s`}
-          {waiting && `${JOINING_DOT}waiting`}
+          {job.cancelling ? 'Cancelling…' : stepLine(job)}
+        </p>
+      )}
+      {covers !== undefined && <p className="scanning">{covers}</p>}
+      {!running && root.paused_at !== null && (
+        <p className="paused">
+          Paused until Scan is pressed, since {inUtc(root.paused_at)}
         </p>
       )}
       {moveWaits && moveTo !== undefined && library !== undefined && (
@@ -1341,7 +1258,7 @@ export function RootRow({
           root={root}
           from={library}
           targets={moveTo}
-          held={scanning || moveHeld}
+          held={running || moveHeld}
           onCancel={() => {
             backToMove.current = true
             setMoving(false)
@@ -1564,7 +1481,7 @@ export function RootRow({
                 ref={removeButton}
                 type="button"
                 onClick={pressed(() => setConfirming(true))}
-                held={scanning || removalHeld !== undefined || confirming}
+                held={running || removalHeld !== undefined || confirming}
                 disabled={starting || moving || unlinking}
                 aria-describedby={ids.help}
               >
@@ -1596,7 +1513,7 @@ export function RootRow({
             root={root}
             from={library}
             keptBy={alsoIn.map((one) => one.name)}
-            held={scanning || moveHeld}
+            held={running || moveHeld}
             onCancel={() => {
               backToUnlink.current = true
               setUnlinking(false)
@@ -1624,7 +1541,7 @@ export function RootRow({
             holders={
               alsoIn.length > 0 ? libraries.map((one) => one.name) : undefined
             }
-            held={scanning || removalHeld !== undefined}
+            held={running || removalHeld !== undefined}
             own={ownRequests}
             onCancel={() => {
               backToRemove.current = true

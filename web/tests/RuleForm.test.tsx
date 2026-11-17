@@ -35,6 +35,7 @@ const roots: Root[] = [
     last_scan_at: null,
     last_scan_status: null,
     next_scan_at: null,
+    paused_at: null,
   },
 ]
 

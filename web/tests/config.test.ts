@@ -10,6 +10,8 @@ import {
   removalCost,
   removeRoot,
   type Root,
+  type ScanOutcome,
+  scanCancelled,
   scanFailed,
   scanStatus,
   startScan,
@@ -28,6 +30,7 @@ const root = (over: Partial<Root> = {}): Root => ({
   last_scan_at: '2026-09-04T10:00:00Z',
   last_scan_status: 'ok',
   next_scan_at: null,
+  paused_at: null,
   ...over,
 })
 
@@ -194,6 +197,34 @@ describe('regimeFacts', () => {
     ])
   })
 
+  it('draws no next scan for a paused directory, scanned or not, whatever the server sends', () => {
+    // The server's `next_scan_at` keeps its meaning while paused: a scanned
+    // directory's is a time, and a never-scanned one's is null, read `due`.
+    const pausedEvery = root({
+      scan_interval_secs: 3600,
+      last_scan_at: '2026-11-10 12:00:00',
+      last_scan_status: 'cancelled',
+      next_scan_at: '2026-11-10 13:00:00',
+      paused_at: '2026-11-16 03:33:10',
+    })
+    const pausedNever = root({
+      scan_interval_secs: null,
+      last_scan_at: null,
+      last_scan_status: 'cancelled',
+      next_scan_at: null,
+      paused_at: '2026-11-16 03:33:10',
+    })
+    const labels = (one: Root) => regimeFacts(one).map(({ label }) => label)
+    expect([labels(pausedEvery), labels(pausedNever)]).toEqual([
+      ['watch', 'scan every', 'last scan'],
+      ['watch', 'scan every', 'last scan'],
+    ])
+    expect(regimeFacts({ ...pausedEvery, paused_at: null })[3]).toEqual({
+      label: 'next scan',
+      value: '2026-11-10 13:00:00 UTC',
+    })
+  })
+
   it('says a probe failed even when the server gave no reason', () => {
     // `watching: false` with a null reason is the arm no other case here
     // reaches, so a typo in this arm would ship unseen.
@@ -298,6 +329,23 @@ describe('keptSchedule', () => {
 describe('scanFailed', () => {
   it('tells a failure from a finished report', () => {
     expect(scanFailed({ error: 'the scan panicked' })).toBe(true)
+  })
+})
+
+describe('scanCancelled', () => {
+  // A cancel leaves a refused walk's sentence in place, so a job's reports
+  // hold both shapes side by side.
+  it('tells a cancelled directory from a refused one, and each guard only its own', () => {
+    const reports: ScanOutcome[] = [
+      { cancelled: { step: 'hashing' } },
+      { error: 'the directory is not readable' },
+    ]
+    expect(
+      reports.map((report) => [scanCancelled(report), scanFailed(report)]),
+    ).toEqual([
+      [true, false],
+      [false, true],
+    ])
   })
 })
 

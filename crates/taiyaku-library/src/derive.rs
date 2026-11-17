@@ -45,6 +45,7 @@ use std::path::PathBuf;
 use rusqlite::{Connection, OptionalExtension};
 use taiyaku_core::{Direction, Edition, Member, Sidecar, Work};
 
+use crate::progress::{Outcome, Step, Unwatched, Watch};
 use crate::proposals;
 use crate::rules::Engine;
 use crate::scan::Root;
@@ -604,6 +605,31 @@ pub fn derive(conn: &Connection) -> Result<DeriveReport, String> {
 /// pattern cannot leave a library underived. Neither is a file that has gone
 /// or a container that will not open; see [`DeriveReport`].
 pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveReport, String> {
+    match derive_watched(conn, documents, &Unwatched)? {
+        Outcome::Done(report) => Ok(report),
+        // `Unwatched` is never cancelled; an `Err` rather than a panic all
+        // the same, as `scan::scan_root` answers it.
+        Outcome::Cancelled(step) => Err(format!("the derive stopped while {}", step.as_str())),
+    }
+}
+
+/// [`derive_with`], reporting to `watch` the bytes hashed of the bytes to
+/// hash, then the works written of the works to write, then the tail.
+///
+/// **A cancel leaves what a stop at the same point would.** The flag is read
+/// before each folder is sized, each entry classified and each work written,
+/// and before the tail. Every digest and work written stays, none is
+/// half-written, and the tail waits for the next derive
+/// (spec 2026-11-15-first-scan-progress-and-cancel §5).
+///
+/// # Errors
+///
+/// As [`derive_with`].
+pub fn derive_watched(
+    conn: &Connection,
+    documents: Documents,
+    watch: &dyn Watch,
+) -> Result<Outcome<DeriveReport>, String> {
     // Once, for the whole library. `Engine::compile` is where every regex in
     // the rule set is compiled, and compiling per entry would recompile the
     // same handful of patterns for every file in a library of thousands.
@@ -621,6 +647,10 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     let mut chapter_dirs: BTreeSet<(i64, String)> = BTreeSet::new();
     let mut named_series: BTreeSet<String> = BTreeSet::new();
 
+    // Hashing is shown from here, with no total yet: sizing the folders below
+    // can take a while on a share, and the screen must not stay on the walk.
+    watch.at(Step::Hashing, 0, None);
+
     // **Two passes over each root's entries, and the second is what stops a
     // volume being counted twice.** The fact layer records the container
     // directory *and* everything beneath it, so "each entry is one member"
@@ -628,6 +658,7 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     // the volume and one per chapter. The first pass resolves every entry
     // once and notes which of them speak for their subtrees; the second drops
     // any whose ancestor does. See [`nested_in_claim`].
+    let mut to_classify = Vec::with_capacity(roots.len());
     for root in &roots {
         let mut seen = Vec::new();
         for entry in entries(conn, root.id)? {
@@ -637,6 +668,7 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
             seen.push(admitted);
         }
         let claims = claims_of(&seen);
+        let mut kept = Vec::new();
         for admitted in seen {
             // Counted, never merely skipped, and from both directions. See
             // `DeriveReport::suppressed`: a rule set that made a series
@@ -649,6 +681,40 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
                 report.suppressed += 1;
                 continue;
             }
+            let bytes = if hashes(&admitted) {
+                // Sizing a folder lists it and stats each page, so the flag is
+                // read before each one; nothing is written yet, so a cancel
+                // here is a stop.
+                if is_folder(&admitted.entry) && watch.cancelled() {
+                    return Ok(Outcome::Cancelled(Step::Hashing));
+                }
+                Some(bytes_to_hash(root, &admitted.entry))
+            } else {
+                None
+            };
+            kept.push((admitted, bytes));
+        }
+        to_classify.push((root, kept));
+    }
+
+    // Every root is admitted and claimed before the first digest, so the
+    // bytes to hash are known before the first is read. Nothing a root's classify
+    // writes is read by another root's admit or claim: a digest lands on its
+    // own root's `scan_entry` row, and claims are per root.
+    let to_hash: u64 = to_classify
+        .iter()
+        .flat_map(|(_, kept)| kept)
+        .filter_map(|(_, bytes)| *bytes)
+        .sum();
+    let mut hashed: u64 = 0;
+    for (root, kept) in to_classify {
+        for (admitted, bytes) in kept {
+            if bytes.is_some() {
+                watch.at(Step::Hashing, hashed, Some(to_hash));
+            }
+            if watch.cancelled() {
+                return Ok(Outcome::Cancelled(Step::Hashing));
+            }
             classify(
                 conn,
                 root,
@@ -660,8 +726,14 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
                     report: &mut report,
                 },
             )?;
+            // After the digest, and for a file found gone too, the figure the
+            // total holds, so the count ends at the total.
+            if let Some(bytes) = bytes {
+                hashed += bytes;
+            }
         }
     }
+    watch.at(Step::Hashing, hashed, Some(to_hash));
     report.unattached_chapter_dirs = chapter_dirs.len();
     let groups = place(conn, staged, &mut named_series, &mut report)?;
 
@@ -691,7 +763,15 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
     // Before any group is written, so every group's [`held_work`] reads the
     // one answer: which files this derive holds at all.
     let placed: HashSet<String> = groups.values().flat_map(Group::paths).cloned().collect();
+    let to_write = u64::try_from(groups.len()).unwrap_or(u64::MAX);
+    let mut works_written: u64 = 0;
     for group in groups.into_values() {
+        watch.at(Step::Writing, works_written, Some(to_write));
+        // Between works, each written in a transaction of its own, so a
+        // cancel leaves none half-written.
+        if watch.cancelled() {
+            return Ok(Outcome::Cancelled(Step::Writing));
+        }
         let series_id = *series_ids
             .get(&group.series)
             .ok_or_else(|| format!("no series row was reconciled for `{}`", group.series))?;
@@ -706,7 +786,15 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
         )?;
         written_editions.extend(group.editions.keys().cloned().map(|key| (work_id, key)));
         written.insert(work_id);
+        works_written += 1;
     }
+    watch.at(Step::Writing, works_written, Some(to_write));
+    // The tail reads and writes the whole store, so a cancelled derive leaves
+    // all of it to the next one, as a stop does.
+    if watch.cancelled() {
+        return Ok(Outcome::Cancelled(Step::Writing));
+    }
+    watch.at(Step::Finishing, 0, None);
 
     // **The only place `derive` itself reaches a `DELETE FROM work`** — the
     // other is `scan::apply_removal`'s, which deletes the works a removed
@@ -894,7 +982,7 @@ pub fn derive_with(conn: &Connection, documents: Documents) -> Result<DeriveRepo
         }
     }
 
-    Ok(report)
+    Ok(Outcome::Done(report))
 }
 
 /// A group's identity: the series title, the volume number as its bit
@@ -951,6 +1039,9 @@ struct Entry {
     sha256: Option<String>,
     /// The title the file declares, `scan_entry.title`.
     title: Option<String>,
+    /// `scan_entry.size`: an archive's bytes, and for a folder the
+    /// directory's own size, which [`bytes_to_hash`] does not count by.
+    size: u64,
 }
 
 /// A resolved entry that will become one member.
@@ -1046,7 +1137,7 @@ struct Sorting<'a> {
 fn entries(conn: &Connection, root_id: i64) -> Result<Vec<Entry>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT rel_path, format, pages, sha256, title FROM scan_entry \
+            "SELECT rel_path, format, pages, sha256, title, size FROM scan_entry \
              WHERE root_id = ?1 ORDER BY rel_path",
         )
         .map_err(|e| format!("reading the facts for root {root_id}: {e}"))?;
@@ -1058,6 +1149,7 @@ fn entries(conn: &Connection, root_id: i64) -> Result<Vec<Entry>, String> {
                 pages: r.get(2)?,
                 sha256: r.get(3)?,
                 title: r.get(4)?,
+                size: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
             })
         })
         .map_err(|e| format!("reading the facts for root {root_id}: {e}"))?;
@@ -1270,6 +1362,34 @@ fn nested_in_claim(claims: &BTreeSet<String>, rel_path: &str) -> bool {
     false
 }
 
+/// Whether [`classify`] reads this entry's bytes: it is not chapter-only, it
+/// holds pages, and no digest is held for it. A watched derive sums the bytes
+/// to hash over the same test, so its count and its total cannot disagree.
+fn hashes(seen: &Seen) -> bool {
+    !(seen.resolved.volume.is_none() && seen.resolved.chapter.is_some())
+        && seen.entry.pages.is_some_and(|pages| pages > 0)
+        && seen.entry.sha256.is_none()
+}
+
+/// Whether the walk recorded this entry as a folder, which its digest reads
+/// page file by page file.
+fn is_folder(entry: &Entry) -> bool {
+    entry.format.as_deref() == taiyaku_read::Format::Dir.token()
+}
+
+/// The bytes [`digest`] reads for an entry [`hashes`] admits. An archive is
+/// read whole, so its walked size counts. A folder is read page by page, so
+/// the sizes of the page files `taiyaku_read::member_page_sizes` lists count:
+/// it lists them as `member_digest` does, so the two cannot disagree. A folder
+/// that cannot be listed counts 0, since its digest cannot read it either.
+fn bytes_to_hash(root: &Root, entry: &Entry) -> u64 {
+    if !is_folder(entry) {
+        return entry.size;
+    }
+    taiyaku_read::member_page_sizes(&root.path.join(&entry.rel_path))
+        .map_or(0, |sizes| sizes.iter().sum())
+}
+
 /// Stage one admitted entry for [`place`], or count it as one more reason a
 /// directory is an unattached chapter directory, or as nothing at all.
 ///
@@ -1283,6 +1403,7 @@ fn classify(
     seen: Seen,
     into: &mut Sorting<'_>,
 ) -> Result<(), String> {
+    let hashing = hashes(&seen);
     let Seen {
         entry,
         series,
@@ -1327,7 +1448,14 @@ fn classify(
         into.report.unreadable.no_pages += 1;
         return Ok(());
     }
-    let Some(sha256) = digest(conn, root, &entry)? else {
+    // Hashed only where `hashes` says, so no bytes are read that the total
+    // left out. Past the tests above, an entry it passes over holds a digest.
+    let held = if hashing {
+        digest(conn, root, &entry)?
+    } else {
+        entry.sha256.clone()
+    };
+    let Some(sha256) = held else {
         into.report
             .unreadable
             .vanished
@@ -2967,7 +3095,7 @@ fn digest_held_members(
             .map_err(failed)?;
         let undigested: Vec<Entry> = conn
             .prepare(
-                "SELECT rel_path, format, pages, sha256, title FROM scan_entry
+                "SELECT rel_path, format, pages, sha256, title, size FROM scan_entry
                   WHERE root_id = ?1 AND sha256 IS NULL",
             )
             .and_then(|mut stmt| {
@@ -2978,6 +3106,7 @@ fn digest_held_members(
                         pages: r.get(2)?,
                         sha256: r.get(3)?,
                         title: r.get(4)?,
+                        size: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
                     })
                 })?
                 .collect()

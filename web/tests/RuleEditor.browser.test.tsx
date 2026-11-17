@@ -572,6 +572,7 @@ describe('the Rules screen’s width', () => {
           last_scan_at: null,
           last_scan_status: null,
           next_scan_at: null,
+          paused_at: null,
         },
       ],
     })

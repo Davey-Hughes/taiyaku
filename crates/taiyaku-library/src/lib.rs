@@ -34,6 +34,7 @@ pub mod migrate;
 /// See `docs/superpowers/specs/2026-09-02-library-configuration-build-design.md`,
 /// §2.
 pub mod preview;
+pub mod progress;
 pub mod progressdoc;
 pub mod project;
 pub mod proposals;

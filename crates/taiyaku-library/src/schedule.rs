@@ -62,6 +62,9 @@ pub struct Scheduled {
 /// sorts, so a directory is walked before one nested in it. One is due where
 /// [`next_scan_at`] is `None` or is at or before `now`.
 ///
+/// **A paused directory is left out** however due: a cancelled job paused
+/// it, and only a pressed scan resumes it ([`scan::pause`]).
+///
 /// **Compared as text**: `now` comes from [`now`] and `next_scan_at` is
 /// written in the same fixed-width `datetime()` shape, so text order is time
 /// order.
@@ -76,18 +79,19 @@ pub fn scheduled(conn: &Connection, now: &str) -> Result<Vec<Scheduled>, String>
         .map_err(|e| format!("starting a read of the scan schedule: {e}"))?;
     let roots = scan::roots(conn)?;
     let mut stmt = conn
-        .prepare("SELECT id, last_scan_at FROM root")
+        .prepare("SELECT id, last_scan_at, paused_at IS NOT NULL FROM root")
         .map_err(|e| format!("reading when each directory was last scanned: {e}"))?;
-    let last: HashMap<i64, Option<String>> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+    let last: HashMap<i64, (Option<String>, bool)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))
         .map_err(|e| format!("reading when each directory was last scanned: {e}"))?
         .collect::<Result<_, _>>()
         .map_err(|e| format!("reading when each directory was last scanned: {e}"))?;
+    let paused = |root: &scan::Root| last.get(&root.id).is_some_and(|(_, paused)| *paused);
     let mut listed: Vec<Scheduled> = roots
         .into_iter()
-        .filter(|root| every(root.scan_interval_secs).is_some())
+        .filter(|root| every(root.scan_interval_secs).is_some() && !paused(root))
         .map(|root| {
-            let last_scan_at = last.get(&root.id).and_then(Option::as_deref);
+            let last_scan_at = last.get(&root.id).and_then(|(at, _)| at.as_deref());
             let due = next_scan_at(last_scan_at, root.scan_interval_secs)
                 .is_none_or(|next| next.as_str() <= now);
             Scheduled { root, due }

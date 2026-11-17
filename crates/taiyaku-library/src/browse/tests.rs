@@ -2177,6 +2177,42 @@ fn scanned_is_true_only_for_a_library_one_of_whose_dirs_was_walked() {
     );
 }
 
+/// A first scan cancelled while hashing leaves the walk's rows and no last
+/// scan, and its library has no works yet: a reader is told "Not read yet",
+/// not "nothing here" (spec §7, "A paused, never-scanned library").
+#[test]
+fn a_library_whose_cancelled_first_scan_committed_its_walk_reads_not_scanned() {
+    let walked = crate::tests::tempdir("browse-cancelled-first-scan");
+    write_pages(&walked.path().join("Series").join("Series - v01"), 1);
+    let library = Library::open_in_memory().expect("in-memory");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, walked.path()).expect("adds");
+    let roots = std::slice::from_ref(&root);
+    let scanned = |conn: &Connection| -> Vec<bool> {
+        let listed = status(conn, &Access::Every).expect("reads").libraries;
+        listed.into_iter().map(|l| l.scanned).collect()
+    };
+
+    let held = scan::last_scans(&conn, roots).expect("reads the last scan");
+    scan::scan_root(&conn, &root).expect("walks");
+    let walked_reads = scanned(&conn);
+    scan::mark_cancelled(&conn, &held).expect("marks it cancelled");
+
+    let rows: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM dir_state WHERE root_id = ?1",
+            [root.id],
+            |r| r.get(0),
+        )
+        .expect("counts the walk's rows");
+    assert!(rows > 0, "sanity: the walk's rows stay");
+    assert_eq!(
+        (walked_reads, scanned(&conn)),
+        (vec![true], vec![false]),
+        "(walked, cancelled)"
+    );
+}
+
 /// A two-character Japanese query is a real word, and trigram answers it with
 /// silence — so `search` answers it with `LIKE`.
 ///

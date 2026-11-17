@@ -350,6 +350,7 @@ async fn the_import_route_reports_the_proposals_it_reopens() {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1328,6 +1329,7 @@ fn state_with_many_scan_entries(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -1415,6 +1417,7 @@ async fn the_preview_route_does_not_wait_on_the_shared_connections_mutex() {
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -2382,12 +2385,11 @@ async fn a_derive_failure_after_a_successful_scan_corrects_last_scan_status() {
     };
 
     let job = crate::LibraryJob::default();
-    let outcome = crate::scan_jobs::run(
+    let outcome = crate::test_support::run_unreserved(
         &library,
         std::slice::from_ref(&root),
         crate::scan_jobs::Reread::Dir,
         &job,
-        &|_, _| {},
     );
     let why = outcome.expect_err("the derive must actually fail, or this test proves nothing");
     assert!(
@@ -2486,6 +2488,7 @@ fn state_with_a_root_that_cannot_write_its_document(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -2572,6 +2575,7 @@ fn state_with_a_root_that_folds_a_hand_documented_work(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -2744,6 +2748,7 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
             done: false,
             report: None,
             library: None,
+            job: crate::test_support::a_planted_job(),
         },
     );
 
@@ -2790,6 +2795,7 @@ async fn a_second_scan_of_a_root_already_scanning_is_refused() {
             done: true,
             report: Some(serde_json::json!({})),
             library: None,
+            job: crate::test_support::a_planted_job(),
         },
     );
     let response = crate::config_api::start_scan(
@@ -2960,6 +2966,7 @@ fn state_with_a_root_scanned_once_then_given_real_exclusions(
         log: None,
         auth: crate::session::AuthConfig::default(),
         scans: Default::default(),
+        jobs_ended: Default::default(),
         library_job: Default::default(),
         dirs: Vec::new(),
     });
@@ -3187,12 +3194,11 @@ async fn a_scan_does_not_wait_on_the_shared_connections_mutex() {
 
     let started = std::time::Instant::now();
     let job = crate::LibraryJob::default();
-    let result = crate::scan_jobs::run(
+    let result = crate::test_support::run_unreserved(
         &library,
         std::slice::from_ref(&root),
         crate::scan_jobs::Reread::Dir,
         &job,
-        &|_, _| {},
     );
     let elapsed = started.elapsed();
 
@@ -3238,6 +3244,7 @@ async fn a_second_roots_scan_is_not_blocked_by_the_first_roots_own_scan() {
             done: false,
             report: None,
             library: None,
+            job: crate::test_support::a_planted_job(),
         },
     );
 
@@ -3337,6 +3344,7 @@ async fn deleting_a_root_clears_its_stale_scan_registry_entry() {
             done: true,
             report: Some(serde_json::json!({ "note": "the deleted root's own report" })),
             library: None,
+            job: crate::test_support::a_planted_job(),
         },
     );
 
@@ -3408,6 +3416,7 @@ async fn a_dry_run_delete_leaves_the_scan_registry_entry_alone() {
             done: true,
             report: Some(serde_json::json!({ "note": "a live, finished report" })),
             library: None,
+            job: crate::test_support::a_planted_job(),
         },
     );
 
@@ -3486,6 +3495,7 @@ async fn scan_status_carries_both_database_columns_even_with_a_registry_entry() 
             done: false,
             report: None,
             library: None,
+            job: crate::test_support::a_planted_job(),
         },
     );
 
@@ -4026,6 +4036,7 @@ async fn a_dir_is_not_removed_while_a_scan_of_it_is_reserved() {
             done: false,
             report: None,
             library: None,
+            job: crate::test_support::a_planted_job(),
         },
     );
 
@@ -4095,6 +4106,7 @@ async fn a_dirs_scan_walks_nothing_when_its_dir_changed_while_it_waited() {
             done: false,
             report: None,
             library: None,
+            job: crate::test_support::a_planted_job(),
         },
     );
     {
@@ -4164,6 +4176,7 @@ async fn a_dirs_scan_lands_only_on_its_own_reservation() {
             done: false,
             report: None,
             library: None,
+            job: crate::test_support::a_planted_job(),
         },
     );
 
@@ -4286,6 +4299,7 @@ async fn a_dir_is_not_removed_while_a_scan_around_or_inside_it_is_reserved() {
                 done: false,
                 report: None,
                 library: None,
+                job: crate::test_support::a_planted_job(),
             },
         );
 
@@ -4866,4 +4880,184 @@ async fn a_directory_removal_refuses_while_another_derive_holds_the_lease() {
     drop(held);
     let response = send_json(&router, Method::DELETE, &path, &serde_json::json!({})).await;
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// Spec §7, "Pause": a press refused because a scan already holds the
+/// directory clears nothing, so its pause stands.
+#[tokio::test]
+async fn a_refused_scan_directory_leaves_the_pause() {
+    const PAUSED: &str = "2026-11-01 00:00:00";
+    let (_router, state, _fixture) = test_support::router_over_a_single_scanned_work();
+    let root_id = only_root_id(&state);
+    state
+        .library
+        .conn()
+        .execute(
+            "UPDATE root SET paused_at = ?2 WHERE id = ?1",
+            rusqlite::params![root_id, PAUSED],
+        )
+        .expect("pauses it");
+    state.scans.lock().unwrap().insert(
+        root_id,
+        crate::ScanProgress {
+            waiting: false,
+            started: std::time::Instant::now(),
+            done: false,
+            report: None,
+            library: None,
+            job: crate::test_support::a_planted_job(),
+        },
+    );
+
+    let response = crate::config_api::start_scan(
+        axum::extract::State(std::sync::Arc::clone(&state)),
+        axum::extract::Extension(an_administrator()),
+        test_support::from_a_browser(),
+        axum::extract::Path(root_id),
+        Ok(axum::extract::Query(crate::config_api::ScanQuery::default())),
+    )
+    .await;
+
+    let paused: Option<String> = state
+        .library
+        .conn()
+        .query_row("SELECT paused_at FROM root WHERE id = ?1", [root_id], |r| {
+            r.get(0)
+        })
+        .expect("reads its pause");
+    assert_eq!(
+        (response.status(), paused.as_deref()),
+        (StatusCode::CONFLICT, Some(PAUSED))
+    );
+}
+
+/// Spec §7, "Pause": each directory says when it was paused, and a directory
+/// not paused sends `null`, not nothing.
+#[tokio::test]
+async fn a_paused_directory_lists_when_it_was_paused() {
+    const PAUSED: &str = "2026-11-16 03:33:10";
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let (first, second): (i64, i64) = state
+        .library
+        .conn()
+        .query_row("SELECT MIN(id), MAX(id) FROM root", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .expect("reads the two roots");
+    state
+        .library
+        .conn()
+        .execute(
+            "UPDATE root SET paused_at = ?2 WHERE id = ?1",
+            rusqlite::params![first, PAUSED],
+        )
+        .expect("pauses the first");
+
+    let json = get_json(&router, "/api/library/roots").await;
+
+    let paused_at = |id: i64| -> Option<serde_json::Value> {
+        json["roots"]
+            .as_array()
+            .expect("a roots array")
+            .iter()
+            .find(|root| root["id"] == id)
+            .expect("the root is listed")
+            .get("paused_at")
+            .cloned()
+    };
+    assert_eq!(
+        (paused_at(first), paused_at(second)),
+        (
+            Some(serde_json::json!(PAUSED)),
+            Some(serde_json::Value::Null)
+        ),
+        "{json}"
+    );
+}
+
+/// Asks its job to stop at the first count of hashing after one digest.
+struct CancelAtHashing<'a> {
+    inner: &'a dyn taiyaku_library::progress::Watch,
+    job: &'a crate::scan_jobs::Job,
+}
+
+impl taiyaku_library::progress::Watch for CancelAtHashing<'_> {
+    fn at(&self, step: taiyaku_library::progress::Step, done: u64, of: Option<u64>) {
+        self.inner.at(step, done, of);
+        if step == taiyaku_library::progress::Step::Hashing && done > 0 {
+            self.job.request_cancel();
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.inner.cancelled()
+    }
+}
+
+/// Spec §7, "Cancel checks", on the wire: a directory never scanned whose
+/// job was cancelled while it hashed answers that its scan was cancelled and
+/// in which step, and still reads Never.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_directorys_status_says_cancelled_and_at_which_step() {
+    let (router, state, fixture) = test_support::router_over_a_live_library();
+    let fresh = fixture.path().join("fresh");
+    // Two volumes, so a digest is still to come when the first is counted.
+    for volume in ["Fresh - v01", "Fresh - v02"] {
+        test_support::write_pages(&fresh.join("Fresh").join(volume), 2);
+    }
+    let root = taiyaku_library::scan::add_root(&state.library.conn(), &fresh)
+        .expect("adds a directory never scanned");
+    let started = std::time::Instant::now();
+    let job = crate::scan_jobs::reserve(&state, std::slice::from_ref(&root), started, None)
+        .expect("reserves");
+    let asked = std::sync::Arc::clone(&job);
+    crate::scan_jobs::spawn_job(
+        std::sync::Arc::clone(&state),
+        vec![root.clone()],
+        started,
+        move |state, roots, running| {
+            crate::scan_jobs::run_watched(
+                &state.library,
+                roots,
+                crate::scan_jobs::Reread::Dir,
+                &state.library_job,
+                running,
+                taiyaku_library::scan::scan_root_watched,
+                |conn, watch| {
+                    taiyaku_library::derive::derive_watched(
+                        conn,
+                        taiyaku_library::derive::Documents::Reconcile,
+                        &CancelAtHashing {
+                            inner: watch,
+                            job: &asked,
+                        },
+                    )
+                },
+            )
+        },
+    )
+    .await
+    .expect("the job ends");
+
+    let json = get_json(&router, &format!("/api/library/roots/{}/scan", root.id)).await;
+
+    assert_eq!(
+        json["report"],
+        serde_json::json!({ "cancelled": { "step": "hashing" } }),
+        "{json}"
+    );
+    assert_eq!(json["last_scan_status"], "cancelled", "{json}");
+    assert_eq!(
+        json.get("last_scan_at"),
+        Some(&serde_json::Value::Null),
+        "Never: {json}"
+    );
+    assert_eq!(json["running"], false, "{json}");
+    assert_eq!(
+        job.ended(),
+        Some(crate::scan_jobs::JobEnded::Cancelled(
+            taiyaku_library::progress::Step::Hashing
+        )),
+        "the fixture: cancelled while it hashed"
+    );
 }
