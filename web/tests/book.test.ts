@@ -4,6 +4,9 @@ import {
   columns,
   type Block,
   type Book,
+  excerpt,
+  excerptsIn,
+  type Mark,
   pinnedBlocks,
   pinRequest,
   contents,
@@ -17,6 +20,7 @@ import {
   sentenceAt,
   sentenceMap,
   sentenceSpan,
+  sentenceExcerpts,
   sentencesIn,
   sentenceTexts,
   span,
@@ -432,6 +436,73 @@ describe('sentences', () => {
       '이요.',
       '셋.',
     ])
+  })
+
+  it('are listed with their marks, the same text', () => {
+    expect(sentenceExcerpts(book.editions.ko).map((x) => x.text)).toEqual(
+      sentenceTexts(book.editions.ko),
+    )
+    expect(excerptsIn(book.editions.ko, [2, 4]).map((x) => x.text)).toEqual(
+      sentencesIn(book.editions.ko, [2, 4]),
+    )
+  })
+
+  it('excerpt clips and shifts marks', () => {
+    const block: Block = {
+      text: 'One two. Three',
+      heading: false,
+      sentences: [
+        [0, 8],
+        [9, 14],
+      ],
+      marks: [{ kind: 'italic', start: 4, end: 11 }],
+    }
+    expect(excerpt(block, [9, 14])).toEqual({
+      text: 'Three',
+      marks: [{ kind: 'italic', start: 0, end: 2 }],
+    })
+    expect(excerpt(block, [0, 8]).marks).toEqual([
+      { kind: 'italic', start: 4, end: 8 },
+    ])
+  })
+
+  it('excerpt keeps a zero-width mark from its start up to its end, and at the block’s end', () => {
+    const image: Mark = { kind: 'image', start: 5, end: 5, image: 0, alt: '' }
+    const block: Block = {
+      text: 'abcdefghij',
+      heading: false,
+      sentences: [],
+      marks: [image],
+    }
+    expect(excerpt(block, [5, 8]).marks).toEqual([
+      { ...image, start: 0, end: 0 },
+    ])
+    expect(excerpt(block, [2, 5]).marks).toEqual([])
+    expect(excerpt(block, [6, 8]).marks).toEqual([])
+    const last: Mark = { ...image, start: 10, end: 10 }
+    expect(excerpt({ ...block, marks: [last] }, [6, 10]).marks).toEqual([
+      { ...last, start: 4, end: 4 },
+    ])
+  })
+
+  it('sets an image on the boundary of abutting sentences once, on the second', () => {
+    const image: Mark = { kind: 'image', start: 5, end: 5, image: 0, alt: '' }
+    const block: Block = {
+      text: 'abcdefghij',
+      heading: false,
+      sentences: [
+        [0, 5],
+        [5, 10],
+      ],
+      marks: [image],
+    }
+    const [first, second] = sentenceExcerpts({
+      label: 'x',
+      language: null,
+      blocks: [block],
+    })
+    expect(first.marks).toEqual([])
+    expect(second.marks).toEqual([{ ...image, start: 0, end: 0 }])
   })
 
   it('read as their blocks hold them, across a block’s end', () => {

@@ -500,6 +500,30 @@ pub fn member_page(path: &Path, index: u32) -> Result<Page, String> {
         .get(i)
         .cloned()
         .ok_or_else(|| format!("{}: no page {index}", path.display()))?;
+    entry_page(&mut zip, path, name)
+}
+
+/// One page of the archive at `path`, by the name [`member_page_names`]
+/// listed it under, for a caller that keeps the listing: the entry is found
+/// by that name in the central directory, without listing and sorting the
+/// pages again, and reads as [`member_page`] reads it at the name's index.
+///
+/// # Errors
+///
+/// Returns an error if `path` cannot be opened as an archive — a directory
+/// among them, whose pages only a listing finds — including a
+/// recognised-but-unsupported container named as such, if the archive holds
+/// no entry of that name, or if its compressed data does not decode.
+pub fn archive_page(path: &Path, name: &str) -> Result<Page, String> {
+    entry_page(&mut open_archive(path)?, path, name.to_string())
+}
+
+/// The entry `name` of `zip`, opened from `path`, read whole.
+fn entry_page(
+    zip: &mut zip::ZipArchive<BufReader<File>>,
+    path: &Path,
+    name: String,
+) -> Result<Page, String> {
     let mut entry = zip
         .by_name(&name)
         .map_err(|e| format!("{}: {name}: {e}", path.display()))?;

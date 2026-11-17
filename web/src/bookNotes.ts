@@ -7,7 +7,7 @@
  * since a run of one edition's words has no counterpart in another's.
  */
 import type { DictionaryEntry } from './api'
-import { type Book, counterpart } from './book'
+import { type Book, counterpart, type Mark } from './book'
 import { wordNodes } from './bookPages'
 import type { Note, TextRange } from './notes'
 import { cryptoRandom, ulid } from './ulid'
@@ -36,17 +36,31 @@ export function notesOn(
   return on
 }
 
-/** A run of a block's text, and the highlight over it if any. */
+/**
+ * A run of a block's text as it is drawn: the highlight over it if any, and
+ * the marks over all of it.
+ */
 export interface Segment {
   text: string
   note?: Note
+  marks: Mark[]
+  /** The images set inside the paragraph just before the run's text, each zero-width. */
+  images?: Mark[]
+  /**
+   * Whether the run opens the base of one of its marks' rubies, so a base cut
+   * in two by a sentence or highlight has its reading drawn once.
+   */
+  rubyStart?: boolean
 }
+
+/** A run of a block's text, and the highlight over it if any. */
+export type Highlighted = Pick<Segment, 'text' | 'note'>
 
 /**
  * `text` cut where `highlights` begin and end, each run under the newest
  * highlight covering it, so a highlight drawn over another shows on top.
  */
-export function segments(text: string, highlights: Note[]): Segment[] {
+export function segments(text: string, highlights: Note[]): Highlighted[] {
   const marks = highlights
     .filter((note): note is Note & { text: TextRange } => !!note.text)
     .toSorted((a, b) => a.created.localeCompare(b.created))
@@ -58,7 +72,7 @@ export function segments(text: string, highlights: Note[]): Segment[] {
       ...marks.flatMap((m) => [within(m.text.start), within(m.text.end)]),
     ]),
   ].toSorted((a, b) => a - b)
-  const out: Segment[] = []
+  const out: Highlighted[] = []
   for (const [i, from] of cuts.entries()) {
     const to = cuts[i + 1]
     if (to === undefined || to <= from) continue
@@ -78,7 +92,9 @@ export function meaning(entry: DictionaryEntry): string {
 
 /** A field of a CSV row, quoted where it must be. */
 const field = (text: string) =>
-  /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
+  text.includes('"') || /[,\r\n]/.test(text)
+    ? `"${text.replaceAll('"', '""')}"`
+    : text
 
 /** `text` escaped as HTML text. */
 const html = (text: string) =>
@@ -125,36 +141,119 @@ export interface Piece {
 /**
  * `text` cut into its `sentences` and the space between them, each piece the
  * runs of `segments` that fall inside it, so a highlight crossing a
- * sentence's end carries on into the next.
+ * sentence's end carries on into the next, and those runs cut again where
+ * `marks` begin and end. An image, taking no text, rides on the run after it,
+ * or on an empty run closing the last piece where it ends the text.
  */
 export function pieces(
   text: string,
   sentences: [number, number][],
   highlights: Note[],
+  marks: Mark[] = [],
 ): Piece[] {
-  const runs = segments(text, highlights)
+  const within = (at: number) => Math.max(0, Math.min(text.length, at))
+  const spans = marks.filter((m) => m.kind !== 'image' && m.start < m.end)
+  const images = marks.filter((m) => m.kind === 'image')
+  const highlighted: { from: number; to: number; note?: Note }[] = []
+  let at = 0
+  for (const run of segments(text, highlights)) {
+    highlighted.push({ from: at, to: at + run.text.length, note: run.note })
+    at += run.text.length
+  }
+  const cuts = [
+    ...new Set([
+      0,
+      text.length,
+      ...highlighted.map((run) => run.to),
+      ...spans.flatMap((m) => [within(m.start), within(m.end)]),
+      ...images.map((m) => within(m.start)),
+      ...sentences.flat().map(within),
+    ]),
+  ].toSorted((a, b) => a - b)
+  // `runs[i]` is the text from `cuts[i]` to the next cut. Every span and
+  // highlighted run starts and ends on a cut, so each lies wholly over or off
+  // a run, and one walk along the cuts finds what is over every run.
+  const opening = groupBy([...spans.keys()], (k) => within(spans[k].start))
+  const imagesAt = groupBy(images, (m) => within(m.start))
+  const runs: Segment[] = []
+  // The spans over the run being built, by index, so they stay in `marks`'
+  // order, the order `same` compares by.
+  let open: number[] = []
+  let h = 0
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    const from = cuts[i]
+    const to = cuts[i + 1]
+    const begun = opening.get(from)
+    if (begun) open = [...open, ...begun].toSorted((a, b) => a - b)
+    open = open.filter((k) => spans[k].end >= to)
+    const over = open.map((k) => spans[k])
+    while (highlighted[h].to < to) h++
+    const here = imagesAt.get(from)
+    runs.push({
+      text: text.slice(from, to),
+      note: highlighted[h].note,
+      marks: over,
+      ...(here && { images: here }),
+      ...(over.some((m) => m.kind === 'ruby' && m.start === from) && {
+        rubyStart: true,
+      }),
+    })
+  }
+  /** The index of the first cut at or after `from`, searched for since sentences need not come in order. */
+  const firstCut = (from: number) => {
+    let lo = 0
+    let hi = cuts.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (cuts[mid] < from) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
+  const same = (a: Segment, b: Segment) =>
+    a.note === b.note &&
+    a.marks.length === b.marks.length &&
+    a.marks.every((m, i) => m === b.marks[i])
+  // A copy of each run is what is joined onto, since a run can fall in two
+  // pieces where sentences overlap.
   const cut = (from: number, to: number): Segment[] => {
     const out: Segment[] = []
-    let at = 0
-    for (const run of runs) {
-      const [start, end] = [at, at + run.text.length]
-      at = end
-      const [a, b] = [Math.max(start, from), Math.min(end, to)]
-      if (a < b) {
-        out.push({ ...run, text: run.text.slice(a - start, b - start) })
+    for (let i = firstCut(from); i < runs.length && cuts[i + 1] <= to; i++) {
+      const next = runs[i]
+      const last = out.at(-1)
+      if (last && !next.images && !next.rubyStart && same(last, next)) {
+        last.text += next.text
+      } else {
+        out.push({ ...next })
       }
     }
     return out
   }
   const out: Piece[] = []
-  let at = 0
+  at = 0
   for (const [sentence, [start, end]] of sentences.entries()) {
     if (at < start) out.push({ runs: cut(at, start) })
     out.push({ sentence, runs: cut(start, end) })
     at = end
   }
   if (at < text.length) out.push({ runs: cut(at, text.length) })
+  const closing = imagesAt.get(text.length)
+  if (closing) {
+    if (out.length === 0) out.push({ runs: [] })
+    out[out.length - 1].runs.push({ text: '', marks: [], images: closing })
+  }
   return out
+}
+
+/** `items` grouped by `key`, each group in the order of `items`. */
+function groupBy<T>(items: T[], key: (item: T) => number): Map<number, T[]> {
+  const groups = new Map<number, T[]>()
+  for (const item of items) {
+    const group = groups.get(key(item))
+    if (group) group.push(item)
+    else groups.set(key(item), [item])
+  }
+  return groups
 }
 
 /** A new note on `edition`'s block `block` in `colour`, a highlight where `text` is given. */

@@ -15,7 +15,9 @@ function paged(text: HTMLElement): boolean {
  * The first block not yet scrolled past: paged, the first whose right edge is
  * past the page's left, and otherwise the first whose bottom is below its top.
  * Found by halving, since the blocks run in order. Compared, the column's
- * children are rows, each naming the first of its left edition's blocks.
+ * children are rows, each naming the first of its left edition's blocks. A
+ * figure between blocks names none and is passed over: one at the top of the
+ * screen leaves the block after it the reader's.
  */
 export function topBlock(text: HTMLElement | null): number {
   if (!text) return 0
@@ -31,7 +33,21 @@ export function topBlock(text: HTMLElement | null): number {
     if (past(blocks[mid].getBoundingClientRect())) hi = mid
     else lo = mid + 1
   }
-  return Number((blocks[lo] as HTMLElement | undefined)?.dataset.block ?? 0)
+  // Stepped from the child found rather than searched among blocks alone,
+  // which would take gathering them all on every scroll. Back, where the
+  // figures that end the book are all that is left on screen.
+  const child = blocks[lo] as HTMLElement | undefined
+  const found = child && (nearBlock(child, 'next') ?? nearBlock(child, 'back'))
+  return Number(found?.dataset.block ?? 0)
+}
+
+/** `child` where it is a block, or the nearest block on from it, or back. */
+function nearBlock(child: HTMLElement, way: 'next' | 'back') {
+  let at: Element | null = child
+  while (at instanceof HTMLElement && at.dataset.block === undefined) {
+    at = way === 'next' ? at.nextElementSibling : at.previousElementSibling
+  }
+  return at instanceof HTMLElement ? at : undefined
 }
 
 /**
@@ -225,6 +241,27 @@ export function pageTurnedBy(text: HTMLElement | null, x: number): number {
   const box = text.getBoundingClientRect()
   const at = (x - box.left) / box.width
   return at < 1 / 3 ? -1 : at > 2 / 3 ? 1 : 0
+}
+
+/**
+ * Whether `image`, newly loaded, can have moved `anchor` off its page: paged
+ * only, since scrolled the browser's own scroll anchoring holds the line the
+ * reader is on (and placing them again would undo a scroll that kept the old
+ * anchor in sight), and only an image before the anchor's block or in it.
+ */
+export function movesAnchor(
+  text: HTMLElement | null,
+  anchor: Anchor,
+  image: Element,
+): boolean {
+  if (!text || !paged(text)) return false
+  const held = holding(text, anchor.block)
+  if (!held) return true
+  return (
+    held.contains(image) ||
+    (held.compareDocumentPosition(image) & Node.DOCUMENT_POSITION_PRECEDING) !==
+      0
+  )
 }
 
 /** The child of `text` that holds block `block`: the last that starts at or before it. */

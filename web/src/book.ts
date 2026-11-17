@@ -9,6 +9,67 @@
 import { getJson, sendJson } from './api'
 import type { ReaderBinding } from './keys'
 
+/** Where a link goes: a block of the edition it is drawn from, or a web page. */
+export interface LinkTo {
+  /** The block it goes to, in this edition. */
+  block?: number
+  url?: string
+  /** Whether it calls a footnote rather than sending the reader on. */
+  note: boolean
+}
+
+/**
+ * What a link holding only an image is called where the image has no alt
+ * text to name it: where it goes, or the link would be read out as nothing.
+ */
+export function imageLinkLabel(link: LinkTo, alt: string): string | undefined {
+  if (alt) return undefined
+  if (link.url !== undefined) return siteOf(link.url)
+  return link.note ? 'Note' : 'Linked passage'
+}
+
+/**
+ * The site a web address goes to, `x.org`, which is shorter to hear than the
+ * whole address. An address with no host (`mailto:`) or one that does not
+ * parse is given whole, as it still says where it goes.
+ */
+function siteOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '') || url
+  } catch {
+    return url
+  }
+}
+
+/**
+ * A run of a block's text set apart, `[start, end)` in UTF-16 units as its
+ * sentences are counted: a style, a reading over its base, a link, or an
+ * image set inside the paragraph, which takes no text (`start == end`). A
+ * mark never adds to `text`, so a note's offsets count the same with it. An
+ * image set in a link carries the link itself, since a link mark covers text
+ * and the image takes none.
+ */
+export type Mark =
+  | { kind: 'italic' | 'bold' | 'sup' | 'sub'; start: number; end: number }
+  | { kind: 'ruby'; start: number; end: number; reading: string }
+  | ({ kind: 'link'; start: number; end: number } & LinkTo)
+  | {
+      kind: 'image'
+      start: number
+      end: number
+      image: number
+      alt: string
+      link?: LinkTo
+    }
+
+/** An image the book sets between blocks, before block `before` (its block count where it ends the book), and the link it is set in, if any. */
+export interface Figure {
+  before: number
+  image: number
+  alt: string
+  link?: LinkTo
+}
+
 export interface Block {
   text: string
   heading: boolean
@@ -16,6 +77,8 @@ export interface Block {
   sentences: [number, number][]
   /** The verse line's number, where the book prints one. */
   line?: number | null
+  /** Where the book styles, glosses or links its text; none sent where it does nowhere. */
+  marks?: Mark[]
 }
 
 /**
@@ -30,6 +93,8 @@ export interface Edition {
   /** The EPUB's `dc:language`, or null where it declares none. */
   language: string | null
   blocks: Block[]
+  /** Its images between blocks, in order; none sent where it has none. */
+  figures?: Figure[]
 }
 
 export interface Book {
@@ -52,6 +117,19 @@ export interface Book {
 
 export function getBook(work: string): Promise<Book> {
   return getJson<Book>(`/api/works/${encodeURIComponent(work)}/book`)
+}
+
+/**
+ * Where `edition`'s image `image` is served: its place among the archive's
+ * images, as a mark or figure numbers it, since the book's own paths name
+ * files the server does not hand out by name.
+ */
+export function bookImageUrl(
+  work: string,
+  edition: string,
+  image: number,
+): string {
+  return `/api/works/${encodeURIComponent(work)}/${encodeURIComponent(edition)}/book/images/${image}`
 }
 
 /** The editions in the order a swap cycles through them, the hub first. */
@@ -137,6 +215,35 @@ export function lineAt(blocks: Block[], block: number): number | undefined {
   return undefined
 }
 
+/** A stretch of a block's text with the marks that fall in it, counted from its own start. */
+export interface Excerpt {
+  text: string
+  marks: Mark[]
+}
+
+/**
+ * `block`'s text from `from` to `to` with its marks clipped to that and
+ * shifted to start at 0, so it is drawn as the block is. A zero-width mark (an
+ * image) is kept where it sits from `from` up to `to`, and at `to` only where
+ * that is the block's end: abutting sentences drawn together would otherwise
+ * set an image on their boundary twice.
+ */
+export function excerpt(block: Block, [from, to]: [number, number]): Excerpt {
+  const marks: Mark[] = []
+  for (const m of block.marks ?? []) {
+    if (m.start === m.end) {
+      if (m.start < from || m.start > to) continue
+      if (m.start === to && to < block.text.length) continue
+    } else if (m.end <= from || m.start >= to) continue
+    marks.push({
+      ...m,
+      start: Math.max(m.start, from) - from,
+      end: Math.min(m.end, to) - from,
+    })
+  }
+  return { text: block.text.slice(from, to), marks }
+}
+
 /** Every sentence of `edition`, in order, numbered as `firstSentences` counts. */
 export function sentenceTexts(edition: Edition): string[] {
   return edition.blocks.flatMap((block) =>
@@ -189,6 +296,30 @@ export function sentenceMap(
       Math.max(...met.map(([, b]) => b)),
     ]
   })
+}
+
+/** `sentenceTexts`, each sentence with its marks. */
+export function sentenceExcerpts(edition: Edition): Excerpt[] {
+  return edition.blocks.flatMap((block) =>
+    block.sentences.map((range) => excerpt(block, range)),
+  )
+}
+
+/** `sentencesIn`, each sentence with its marks. */
+export function excerptsIn(
+  edition: Edition,
+  [start, end]: [number, number],
+): Excerpt[] {
+  const out: Excerpt[] = []
+  let at = 0
+  for (const block of edition.blocks) {
+    for (const range of block.sentences) {
+      if (at >= start && at < end) out.push(excerpt(block, range))
+      at++
+    }
+    if (at >= end) break
+  }
+  return out
 }
 
 /** The text of sentences `[start, end)` of `edition`, each as its block holds it. */

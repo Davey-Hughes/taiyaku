@@ -504,3 +504,928 @@ fn a_number_no_other_bears_out_is_the_text_s_own() {
     );
     assert_eq!(book.blocks[0].kind, BlockKind::Heading);
 }
+
+/// Each mark of `block`, as the text it covers.
+fn marked(block: &Block) -> Vec<(&MarkKind, &str)> {
+    block
+        .marks
+        .iter()
+        .map(|m| (&m.kind, &block.text[m.range.clone()]))
+        .collect()
+}
+
+#[test]
+fn inline_tags_mark_their_text() {
+    let dir = TempDir::new("book");
+    let book = one_document(
+        dir.path(),
+        "<p>A <i>big</i> <b>bold</b> x<sup>2</sup> H<sub>2</sub>O <em>e</em> \
+         <strong>s</strong> <cite>c</cite></p>",
+    );
+    let block = &book.blocks[0];
+    assert_eq!(block.text, "A big bold x2 H2O e s c");
+    assert_eq!(
+        marked(block),
+        [
+            (&MarkKind::Italic, "big"),
+            (&MarkKind::Bold, "bold"),
+            (&MarkKind::Sup, "2"),
+            (&MarkKind::Sub, "2"),
+            (&MarkKind::Italic, "e"),
+            (&MarkKind::Bold, "s"),
+            (&MarkKind::Italic, "c"),
+        ]
+    );
+    assert_eq!(block.marks[2].range, 12..13, "the first 2, in x2");
+    assert_eq!(block.marks[3].range, 15..16, "the second 2, in H2O");
+}
+
+#[test]
+fn marks_survive_collapsing_whitespace() {
+    let dir = TempDir::new("book");
+    let book = one_document(dir.path(), "<p>  one\n <i> two  three </i>  four</p>");
+    let block = &book.blocks[0];
+    assert_eq!(block.text, "one two three four");
+    assert_eq!(marked(block), [(&MarkKind::Italic, "two three")]);
+}
+
+#[test]
+fn marks_follow_the_verse_number_cut() {
+    let dir = TempDir::new("book");
+    let book = one_document(
+        dir.path(),
+        &format!(
+            "<p>5 Sing <i>goddess</i></p>{}<p>10 the wrath</p>",
+            verse(6, 9)
+        ),
+    );
+    let block = &book.blocks[0];
+    assert_eq!(block.text, "Sing goddess");
+    assert_eq!(block.line, Some(5));
+    assert_eq!(marked(block), [(&MarkKind::Italic, "goddess")]);
+}
+
+#[test]
+fn a_mark_over_a_cut_verse_number_is_clipped_or_dropped() {
+    let dir = TempDir::new("book");
+    let book = one_document(
+        dir.path(),
+        &format!(
+            "<p><b>5</b> Sing <i>goddess</i></p>{}<p>10 the wrath</p>",
+            verse(6, 9)
+        ),
+    );
+    let block = &book.blocks[0];
+    assert_eq!(block.text, "Sing goddess");
+    assert_eq!(block.line, Some(5));
+    assert_eq!(marked(block), [(&MarkKind::Italic, "goddess")]);
+
+    let book = one_document(
+        dir.path(),
+        &format!(
+            "<p><i>5 Sing</i> goddess</p>{}<p>10 the wrath</p>",
+            verse(6, 9)
+        ),
+    );
+    let block = &book.blocks[0];
+    assert_eq!(block.text, "Sing goddess");
+    assert_eq!(marked(block), [(&MarkKind::Italic, "Sing")]);
+}
+
+#[test]
+fn nested_marks_are_each_kept() {
+    let dir = TempDir::new("book");
+    let book = one_document(dir.path(), "<p><b>a <i>b</i></b></p>");
+    assert_eq!(
+        marked(&book.blocks[0]),
+        [(&MarkKind::Bold, "a b"), (&MarkKind::Italic, "b")]
+    );
+}
+
+#[test]
+fn a_mark_over_nothing_is_dropped() {
+    let dir = TempDir::new("book");
+    let book = one_document(dir.path(), "<p>x<i> </i>y</p>");
+    assert_eq!(book.blocks[0].text, "x y");
+    assert_eq!(book.blocks[0].marks, Vec::<Mark>::new());
+}
+
+#[test]
+fn a_mark_around_blocks_marks_each_block_it_holds() {
+    let dir = TempDir::new("book");
+    let book = one_document(dir.path(), "<div><i>a<p>b</p>c</i></div>");
+    let read: Vec<_> = book.blocks.iter().map(marked).collect();
+    assert_eq!(
+        read,
+        [
+            [(&MarkKind::Italic, "a")],
+            [(&MarkKind::Italic, "b")],
+            [(&MarkKind::Italic, "c")],
+        ]
+    );
+}
+
+#[test]
+fn ruby_marks_its_base_with_its_reading() {
+    let dir = TempDir::new("book");
+    let book = one_document(
+        dir.path(),
+        "<p><ruby>坊<rp>(</rp><rt>ぼっ</rt><rp>)</rp></ruby>ちゃん</p>",
+    );
+    let block = &book.blocks[0];
+    assert_eq!(block.text, "坊ちゃん");
+    assert_eq!(
+        marked(block),
+        [(
+            &MarkKind::Ruby {
+                reading: "ぼっ".into()
+            },
+            "坊"
+        )]
+    );
+}
+
+#[test]
+fn each_base_in_one_ruby_has_its_own_reading() {
+    let dir = TempDir::new("book");
+    let book = one_document(
+        dir.path(),
+        "<p><ruby>漢<rt>かん</rt>字<rt>じ</rt></ruby></p>",
+    );
+    assert_eq!(
+        marked(&book.blocks[0]),
+        [
+            (
+                &MarkKind::Ruby {
+                    reading: "かん".into()
+                },
+                "漢"
+            ),
+            (
+                &MarkKind::Ruby {
+                    reading: "じ".into()
+                },
+                "字"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn rb_elements_are_bases() {
+    let dir = TempDir::new("book");
+    let book = one_document(
+        dir.path(),
+        "<p><ruby><rb>東京</rb><rt>とうきょう</rt></ruby></p>",
+    );
+    assert_eq!(
+        marked(&book.blocks[0]),
+        [(
+            &MarkKind::Ruby {
+                reading: "とうきょう".into()
+            },
+            "東京"
+        )]
+    );
+}
+
+#[test]
+fn a_ruby_with_no_reading_is_no_mark() {
+    let dir = TempDir::new("book");
+    let book = one_document(dir.path(), "<p><ruby>字<rt></rt></ruby></p>");
+    assert_eq!(book.blocks[0].text, "字");
+    assert!(book.blocks[0].marks.is_empty());
+}
+
+#[test]
+fn marks_hold_over_multibyte_text_and_a_no_break_space() {
+    let dir = TempDir::new("book");
+    let book = one_document(dir.path(), "<p>日本&#160;<i>語</i></p>");
+    let block = &book.blocks[0];
+    assert_eq!(block.text, "日本 語");
+    assert_eq!(marked(block), [(&MarkKind::Italic, "語")]);
+}
+
+#[test]
+fn collapsing_maps_every_raw_offset() {
+    let raw = " a\u{ad}b  c ";
+    let (text, at) = collapse_mapped(raw);
+    assert_eq!(text, "ab c");
+    assert_eq!(at.len(), raw.len() + 1);
+    assert_eq!(at[raw.find('a').unwrap()], 0);
+    assert_eq!(at[raw.find('b').unwrap()], 1);
+    assert_eq!(at[raw.find('c').unwrap()], 3);
+    assert_eq!(at[raw.len()], text.len());
+}
+
+#[test]
+fn numbering_maps_each_block_to_where_it_went() {
+    let walked: Vec<Walked> = ["line 1", "2", "line 2", "line 3", "4", "line 4"]
+        .into_iter()
+        .map(|text| Walked {
+            kind: BlockKind::Paragraph,
+            text: text.to_string(),
+            marks: Vec::new(),
+        })
+        .collect();
+    let (out, at) = numbered(walked);
+    assert_eq!(out.len(), 4);
+    assert_eq!(at, [0, 1, 1, 2, 3, 3]);
+}
+
+/// One chapter at `text/ch.xhtml` whose `<head>` holds `head`, with `files`
+/// beside it, read as a book.
+fn styled(dir: &Path, head: &str, body: &str, files: &[(&str, &[u8])]) -> Book {
+    let doc = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>t</title>{head}</head><body>{body}</body></html>"#
+    );
+    let path = Epub {
+        package_path: "content.opf",
+        manifest: &[("d", "text/ch.xhtml", XHTML)],
+        spine: &["d"],
+        files: &[("text/ch.xhtml", &doc)],
+    }
+    .write(dir);
+    if files.is_empty() {
+        return read_book(&path).expect("reads");
+    }
+    let mut zip = zip::ZipWriter::new_append(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open"),
+    )
+    .expect("append");
+    for (name, bytes) in files {
+        zip.start_file(*name, zip::write::SimpleFileOptions::default())
+            .expect("start");
+        std::io::Write::write_all(&mut zip, bytes).expect("write");
+    }
+    zip.finish().expect("finish");
+    read_book(&path).expect("reads")
+}
+
+const STYLESHEET: &str = r#"<link rel="stylesheet" href="../css/style.css"/>"#;
+
+#[test]
+fn a_class_a_stylesheet_sets_italic_marks_italic() {
+    let dir = TempDir::new("book");
+    let book = styled(
+        dir.path(),
+        STYLESHEET,
+        r#"<p>a <span class="it">word</span> b</p>"#,
+        &[("css/style.css", b".it { font-style: italic }")],
+    );
+    assert_eq!(marked(&book.blocks[0]), [(&MarkKind::Italic, "word")]);
+}
+
+#[test]
+fn an_inline_style_element_counts() {
+    let dir = TempDir::new("book");
+    let book = styled(
+        dir.path(),
+        "<style>.it { font-style: italic }</style>",
+        r#"<p>a <span class="it">word</span> b</p>"#,
+        &[],
+    );
+    assert_eq!(marked(&book.blocks[0]), [(&MarkKind::Italic, "word")]);
+}
+
+#[test]
+fn normal_inside_italic_ends_it() {
+    let dir = TempDir::new("book");
+    let book = one_document(
+        dir.path(),
+        r#"<p><i>a <span style="font-style:normal">b</span> c</i></p>"#,
+    );
+    assert_eq!(
+        marked(&book.blocks[0]),
+        [(&MarkKind::Italic, "a"), (&MarkKind::Italic, "c")]
+    );
+}
+
+#[test]
+fn a_tag_inside_the_same_state_adds_no_second_mark() {
+    let dir = TempDir::new("book");
+    let book = styled(
+        dir.path(),
+        "<style>.it { font-style: italic }</style>",
+        r#"<p><span class="it">a <i>b</i> c</span></p>"#,
+        &[],
+    );
+    assert_eq!(marked(&book.blocks[0]), [(&MarkKind::Italic, "a b c")]);
+}
+
+#[test]
+fn a_class_on_a_block_marks_the_text_it_holds() {
+    let dir = TempDir::new("book");
+    let book = styled(
+        dir.path(),
+        "<style>p.q { font-weight: bold }</style>",
+        r#"<p class="q">one</p><p>two</p>"#,
+        &[],
+    );
+    assert_eq!(marked(&book.blocks[0]), [(&MarkKind::Bold, "one")]);
+    assert!(book.blocks[1].marks.is_empty());
+}
+
+#[test]
+fn a_missing_or_unreadable_stylesheet_leaves_the_book_readable() {
+    let dir = TempDir::new("book");
+    let head = r#"<link rel="stylesheet" href="../css/absent.css"/>
+        <link rel="stylesheet" href="../css/bad.css"/>"#;
+    let body = r#"<p>a <span class="it">word</span> b</p>"#;
+    let book = styled(
+        dir.path(),
+        head,
+        body,
+        &[("css/bad.css", &[0xff, 0xfe, 0x2e, 0x69, 0x74])],
+    );
+    assert_eq!(book.blocks[0].text, "a word b");
+    assert!(book.blocks[0].marks.is_empty());
+}
+
+/// A book of two spine documents, `text.xhtml` then `notes.xhtml`, with
+/// `outside.xhtml` in the manifest but not the spine; each body may use
+/// `epub:type`.
+fn linked(dir: &Path, text: &str, notes: &str) -> Book {
+    let page = |body: &str| {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>t</title></head><body>{body}</body></html>"#
+        )
+    };
+    let (text, notes, outside) = (page(text), page(notes), page("<p id=\"o\">Out.</p>"));
+    let path = Epub {
+        package_path: "content.opf",
+        manifest: &[
+            ("t", "text.xhtml", XHTML),
+            ("n", "notes.xhtml", XHTML),
+            ("o", "outside.xhtml", XHTML),
+        ],
+        spine: &["t", "n"],
+        files: &[
+            ("text.xhtml", &text),
+            ("notes.xhtml", &notes),
+            ("outside.xhtml", &outside),
+        ],
+    }
+    .write(dir);
+    read_book(&path).expect("reads")
+}
+
+/// Each link in `book`, as the text it covers, where it goes and whether it
+/// is a note.
+fn links(book: &Book) -> Vec<(&str, &LinkTarget, bool)> {
+    book.blocks
+        .iter()
+        .flat_map(|block| {
+            block.marks.iter().filter_map(|m| match &m.kind {
+                MarkKind::Link { to, note } => Some((&block.text[m.range.clone()], to, *note)),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+/// The index of the block whose text is `text`.
+fn block_of(book: &Book, text: &str) -> usize {
+    book.blocks
+        .iter()
+        .position(|b| b.text == text)
+        .expect("a block holds the text")
+}
+
+#[test]
+fn a_noteref_links_to_its_note_block_and_is_a_note() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p>Text<a epub:type="noteref" href="notes.xhtml#n1">1</a>.</p>"#,
+        r#"<aside id="n1" epub:type="footnote"><p>The note.</p></aside>"#,
+    );
+    let note = block_of(&book, "The note.");
+    assert_eq!(links(&book), [("1", &LinkTarget::Block(note), true)]);
+}
+
+#[test]
+fn a_sup_link_is_a_note() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r##"<p>A<sup><a href="notes.xhtml#n2">2</a></sup> b<a href="#n3"><sup>3</sup></a></p><p id="n3">Three.</p>"##,
+        r#"<p id="n2">Two.</p>"#,
+    );
+    assert_eq!(
+        links(&book),
+        [
+            ("2", &LinkTarget::Block(block_of(&book, "Two.")), true),
+            ("3", &LinkTarget::Block(block_of(&book, "Three.")), true),
+        ]
+    );
+}
+
+#[test]
+fn a_link_into_an_endnote_section_is_a_note() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p>See <a href="notes.xhtml#e1">this</a>.</p>"#,
+        r#"<section epub:type="endnotes"><ol><li id="e1"><p>An endnote.</p></li></ol></section>"#,
+    );
+    let note = block_of(&book, "An endnote.");
+    assert_eq!(links(&book), [("this", &LinkTarget::Block(note), true)]);
+}
+
+#[test]
+fn a_plain_in_book_link_is_not_a_note() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p>Go and <a href="text.xhtml#ch2">see chapter 2</a>.</p><h2 id="ch2">Chapter 2</h2>"#,
+        "<p>Notes.</p>",
+    );
+    let heading = block_of(&book, "Chapter 2");
+    assert_eq!(
+        links(&book),
+        [("see chapter 2", &LinkTarget::Block(heading), false)]
+    );
+}
+
+#[test]
+fn an_id_on_an_inline_element_targets_its_paragraph() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r##"<p><a href="notes.xhtml#x">go</a></p>"##,
+        r#"<p>Before.</p><p>Lead <span id="x">here</span></p>"#,
+    );
+    let paragraph = block_of(&book, "Lead here");
+    assert_eq!(links(&book), [("go", &LinkTarget::Block(paragraph), false)]);
+}
+
+#[test]
+fn a_link_to_a_document_alone_targets_its_first_block() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p><a href="notes.xhtml">the notes</a></p>"#,
+        "<h1>Notes</h1><p>One.</p>",
+    );
+    let first = block_of(&book, "Notes");
+    assert_eq!(
+        links(&book),
+        [("the notes", &LinkTarget::Block(first), false)]
+    );
+}
+
+#[test]
+fn a_web_link_is_a_url() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p><a href="https://example.org/a">web</a> <a href="mailto:a@example.org">mail</a> <a href="javascript:void(0)">script</a></p>"#,
+        "<p>Notes.</p>",
+    );
+    assert_eq!(
+        links(&book),
+        [
+            (
+                "web",
+                &LinkTarget::Url("https://example.org/a".into()),
+                false
+            ),
+            (
+                "mail",
+                &LinkTarget::Url("mailto:a@example.org".into()),
+                false
+            ),
+        ]
+    );
+}
+
+#[test]
+fn an_unresolvable_link_is_no_mark() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r##"<p><a href="notes.xhtml#absent">a</a> <a href="outside.xhtml#o">b</a> <a href="../../text.xhtml#t">c</a> <a href="#">d</a></p>"##,
+        "<p>Notes.</p>",
+    );
+    assert_eq!(book.blocks[0].text, "a b c d");
+    assert_eq!(links(&book), []);
+}
+
+#[test]
+fn a_link_to_a_dropped_verse_number_goes_to_the_next_block() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p><a href="notes.xhtml#l10">line ten</a></p>"#,
+        &format!(
+            "{}<p id=\"l10\">10</p>{}<p>15</p>{}",
+            verse(6, 9),
+            verse(10, 14),
+            verse(15, 16)
+        ),
+    );
+    assert!(
+        book.blocks.iter().all(|b| b.text != "10"),
+        "the number is cut"
+    );
+    let line = block_of(&book, "line 10");
+    assert_eq!(
+        links(&book),
+        [("line ten", &LinkTarget::Block(line), false)]
+    );
+}
+
+#[test]
+fn links_into_note_and_notes_and_footnotes_sections_are_notes() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p><a href="notes.xhtml#a">a</a> <a href="notes.xhtml#b">b</a> <a href="notes.xhtml#c">c</a></p>"#,
+        r#"<aside id="a" epub:type="note"><p>Note.</p></aside>
+           <section epub:type="notes"><p id="b">Notes.</p></section>
+           <section epub:type="footnotes"><p id="c">Footnotes.</p></section>"#,
+    );
+    assert_eq!(
+        links(&book),
+        [
+            ("a", &LinkTarget::Block(block_of(&book, "Note.")), true),
+            ("b", &LinkTarget::Block(block_of(&book, "Notes.")), true),
+            ("c", &LinkTarget::Block(block_of(&book, "Footnotes.")), true),
+        ]
+    );
+}
+
+#[test]
+fn a_link_to_a_notes_section_itself_is_no_note() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p><a href="notes.xhtml#notes">notes</a> <a href="notes.xhtml#one">one</a></p>"#,
+        r#"<section id="notes" epub:type="endnotes"><h2>Notes</h2>
+           <aside id="one" epub:type="endnote"><p>One.</p></aside></section>"#,
+    );
+    assert_eq!(
+        links(&book),
+        [
+            ("notes", &LinkTarget::Block(block_of(&book, "Notes")), false),
+            ("one", &LinkTarget::Block(block_of(&book, "One.")), true),
+        ]
+    );
+}
+
+#[test]
+fn a_notes_lists_headings_are_no_notes_though_the_notes_under_them_are() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p><a href="notes.xhtml#title">title</a> <a href="notes.xhtml#part">part</a> <a href="notes.xhtml#n1">one</a> <a href="notes.xhtml#n2">two</a></p>"#,
+        r#"<section epub:type="endnotes"><h2 id="title">Notes</h2><h3><span id="part">Part</span> 1</h3>
+           <aside id="n1" epub:type="endnote"><p>One.</p></aside>
+           <aside epub:type="endnote"><h4 id="n2">Two</h4><p>Said.</p></aside></section>"#,
+    );
+    assert_eq!(
+        links(&book),
+        [
+            ("title", &LinkTarget::Block(block_of(&book, "Notes")), false),
+            ("part", &LinkTarget::Block(block_of(&book, "Part 1")), false),
+            ("one", &LinkTarget::Block(block_of(&book, "One.")), true),
+            ("two", &LinkTarget::Block(block_of(&book, "Two")), true),
+        ]
+    );
+}
+
+#[test]
+fn a_heading_inside_a_note_of_a_notes_list_is_the_notes_typed_or_not() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p id="r1">See<a href="notes.xhtml#n1"><sup>1</sup></a> <a href="notes.xhtml#n2">two</a> <a href="notes.xhtml#n3">three</a> <a href="notes.xhtml#top">top</a>.</p>"#,
+        r#"<section epub:type="endnotes"><header><h2 id="top">Notes</h2></header><ol>
+           <li id="n1"><h4><a href="text.xhtml#r1"><sup>1</sup></a></h4><p>One.</p></li>
+           <li><h4 id="n2">Two</h4><p>Said.</p></li></ol>
+           <aside epub:type="endnote"><h4 id="n3"><a href="text.xhtml#r1"><sup>3</sup></a> Three</h4></aside></section>"#,
+    );
+    let text = LinkTarget::Block(block_of(&book, "See1 two three top."));
+    assert_eq!(
+        links(&book),
+        [
+            ("1", &LinkTarget::Block(block_of(&book, "1")), true),
+            ("two", &LinkTarget::Block(block_of(&book, "Two")), true),
+            (
+                "three",
+                &LinkTarget::Block(block_of(&book, "3 Three")),
+                true
+            ),
+            ("top", &LinkTarget::Block(block_of(&book, "Notes")), false),
+            ("1", &text, false),
+            ("3", &text, false),
+        ]
+    );
+}
+
+#[test]
+fn a_heading_of_a_group_of_notes_and_the_group_itself_are_no_notes() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p><a href="notes.xhtml#notes">notes</a> <a href="notes.xhtml#c1">c1</a> <a href="notes.xhtml#g2">g2</a> <a href="notes.xhtml#n1">one</a> <a href="notes.xhtml#n2">two</a></p>"#,
+        r#"<section epub:type="endnotes"><div class="title"><h1 id="notes">Notes</h1></div>
+           <section><h3 id="c1">Chapter 1</h3><ol><li id="n1"><p>One.</p></li></ol></section>
+           <section id="g2"><h3>Chapter 2</h3><div id="n2"><p>Two.</p></div></section></section>"#,
+    );
+    assert_eq!(
+        links(&book),
+        [
+            ("notes", &LinkTarget::Block(block_of(&book, "Notes")), false),
+            (
+                "c1",
+                &LinkTarget::Block(block_of(&book, "Chapter 1")),
+                false
+            ),
+            (
+                "g2",
+                &LinkTarget::Block(block_of(&book, "Chapter 2")),
+                false
+            ),
+            ("one", &LinkTarget::Block(block_of(&book, "One.")), true),
+            ("two", &LinkTarget::Block(block_of(&book, "Two.")), true),
+        ]
+    );
+}
+
+#[test]
+fn a_link_back_out_of_a_note_is_a_plain_jump_whatever_its_markup() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p id="ref1">Text<a epub:type="noteref" href="notes.xhtml#n1"><sup>1</sup></a>.</p>"#,
+        r##"<aside id="n1" epub:type="footnote"><p><a href="text.xhtml#ref1"><sup>1</sup></a> The note, <a epub:type="noteref" href="#n2">2</a>.</p></aside>
+           <aside id="n2" epub:type="footnote"><p>Two.</p></aside>"##,
+    );
+    assert_eq!(
+        links(&book),
+        [
+            (
+                "1",
+                &LinkTarget::Block(block_of(&book, "1 The note, 2.")),
+                true
+            ),
+            ("1", &LinkTarget::Block(block_of(&book, "Text1.")), false),
+            ("2", &LinkTarget::Block(block_of(&book, "Two.")), true),
+        ]
+    );
+}
+
+#[test]
+fn an_id_on_the_body_targets_its_documents_first_block() {
+    let dir = TempDir::new("book");
+    let text = xhtml(r#"<p><a href="b.xhtml#top">top</a></p>"#);
+    let other = xhtml("<p>First.</p><p>Second.</p>").replace("<body>", r#"<body id="top">"#);
+    let path = Epub {
+        package_path: "content.opf",
+        manifest: &[("a", "a.xhtml", XHTML), ("b", "b.xhtml", XHTML)],
+        spine: &["a", "b"],
+        files: &[("a.xhtml", &text), ("b.xhtml", &other)],
+    }
+    .write(dir.path());
+    let book = read_book(&path).expect("reads");
+    let first = block_of(&book, "First.");
+    assert_eq!(links(&book), [("top", &LinkTarget::Block(first), false)]);
+}
+
+#[test]
+fn a_links_href_resolves_against_its_own_documents_directory() {
+    let dir = TempDir::new("book");
+    let chapter =
+        xhtml(r#"<p><a href="../notes/n.xhtml#x">see</a> <a href="n.xhtml#x">not here</a></p>"#);
+    let notes = xhtml(r#"<p>Before.</p><p id="x">The target.</p>"#);
+    let path = Epub {
+        package_path: "OEBPS/content.opf",
+        manifest: &[
+            ("c", "text/ch1.xhtml", XHTML),
+            ("n", "notes/n.xhtml", XHTML),
+        ],
+        spine: &["c", "n"],
+        files: &[
+            ("OEBPS/text/ch1.xhtml", &chapter),
+            ("OEBPS/notes/n.xhtml", &notes),
+        ],
+    }
+    .write(dir.path());
+    let book = read_book(&path).expect("reads");
+    assert_eq!(book.blocks[2].id.document, "OEBPS/notes/n.xhtml");
+    let target = block_of(&book, "The target.");
+    assert_eq!(links(&book), [("see", &LinkTarget::Block(target), false)]);
+}
+
+/// One spine document, `text/doc.xhtml`, a directory below the package.
+fn in_text_directory(dir: &Path, body: &str) -> Book {
+    let doc = xhtml(body);
+    let path = Epub {
+        package_path: "content.opf",
+        manifest: &[("d", "text/doc.xhtml", XHTML)],
+        spine: &["d"],
+        files: &[("text/doc.xhtml", &doc)],
+    }
+    .write(dir);
+    read_book(&path).expect("reads")
+}
+
+/// Each inline image in `book`: its block's text, where it stands, its path
+/// and its alt text.
+fn images(book: &Book) -> Vec<(&str, std::ops::Range<usize>, &str, &str)> {
+    book.blocks
+        .iter()
+        .flat_map(|block| {
+            block.marks.iter().filter_map(|m| match &m.kind {
+                MarkKind::Image { src, alt, .. } => Some((
+                    block.text.as_str(),
+                    m.range.clone(),
+                    src.as_str(),
+                    alt.as_str(),
+                )),
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+fn figure(before: usize, src: &str, alt: &str) -> Figure {
+    Figure {
+        before,
+        src: src.to_string(),
+        alt: alt.to_string(),
+        link: None,
+    }
+}
+
+/// Each inline image in `book` by its path, and where its link goes and
+/// whether it calls a note.
+fn image_links(book: &Book) -> Vec<(&str, Option<(&LinkTarget, bool)>)> {
+    book.blocks
+        .iter()
+        .flat_map(|block| {
+            block.marks.iter().filter_map(|m| match &m.kind {
+                MarkKind::Image { src, link, .. } => {
+                    Some((src.as_str(), link.as_ref().map(|l| (&l.to, l.note))))
+                }
+                _ => None,
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn an_image_set_in_a_link_carries_it_though_the_link_covers_no_text() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        concat!(
+            r#"<p>Go <a href="notes.xhtml#x"><img src="next.png"/></a> on,"#,
+            r#"<a epub:type="noteref" href="notes.xhtml#n1"> <img src="star.png"/> </a><img src="plain.png"/>"#,
+            r#" <a href="https://example.com/"><img src="out.png"/></a><a href="nowhere.xhtml"><img src="broken.png"/></a>.</p>"#,
+        ),
+        r#"<p id="x">There.</p><aside id="n1" epub:type="footnote"><p>The note.</p></aside>"#,
+    );
+    assert_eq!(book.blocks[0].text, "Go on, .", "the text is as it was");
+    let there = LinkTarget::Block(block_of(&book, "There."));
+    let note = LinkTarget::Block(block_of(&book, "The note."));
+    let out = LinkTarget::Url("https://example.com/".to_string());
+    assert_eq!(
+        image_links(&book),
+        [
+            ("next.png", Some((&there, false))),
+            ("star.png", Some((&note, true))),
+            ("plain.png", None),
+            ("out.png", Some((&out, false))),
+            ("broken.png", None),
+        ]
+    );
+    assert_eq!(links(&book), [], "no link mark covers nothing");
+}
+
+#[test]
+fn a_figure_set_in_a_link_carries_it_joined_in_its_own_document() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        concat!(
+            r#"<p>Start.</p><div><a href="https://example.com/"><img src="ad.png"/></a></div>"#,
+            r#"<p><a href="notes.xhtml#x"><img src="next.png"/></a></p><p>Mid.</p>"#,
+            r#"<a href="nowhere.xhtml"><img src="broken.png"/></a>"#,
+        ),
+        r##"<p id="x">There.</p><p><a href="#y"><img src="back.png"/></a></p><p id="y">Why.</p>"##,
+    );
+    let read: Vec<&str> = book.blocks.iter().map(|b| b.text.as_str()).collect();
+    assert_eq!(read, ["Start.", "Mid.", "There.", "Why."]);
+    let linked = |before, src, to: LinkTarget| Figure {
+        link: Some(ImageLink { to, note: false }),
+        ..figure(before, src, "")
+    };
+    assert_eq!(
+        book.figures,
+        [
+            linked(1, "ad.png", LinkTarget::Url("https://example.com/".into())),
+            linked(1, "next.png", LinkTarget::Block(2)),
+            figure(2, "broken.png", ""),
+            linked(3, "back.png", LinkTarget::Block(3)),
+        ]
+    );
+}
+
+#[test]
+fn an_image_alone_between_paragraphs_is_a_figure() {
+    let dir = TempDir::new("book");
+    let book = in_text_directory(
+        dir.path(),
+        r#"<p>a</p><div><img src="../img/map.png" alt="Map"/></div><p>b</p>"#,
+    );
+    let read: Vec<&str> = book.blocks.iter().map(|b| b.text.as_str()).collect();
+    assert_eq!(read, ["a", "b"]);
+    assert_eq!(book.figures, [figure(1, "img/map.png", "Map")]);
+    assert_eq!(images(&book), []);
+}
+
+#[test]
+fn an_image_inside_a_paragraph_is_an_inline_mark() {
+    let dir = TempDir::new("book");
+    let book = in_text_directory(dir.path(), r#"<p>x <img src="g.png" alt="*"/> y</p>"#);
+    assert_eq!(book.blocks[0].text, "x y");
+    assert_eq!(images(&book), [("x y", 2..2, "text/g.png", "*")]);
+    assert_eq!(book.figures, []);
+}
+
+#[test]
+fn an_svg_image_is_read_by_its_xlink_href() {
+    let dir = TempDir::new("book");
+    let book = one_document(
+        dir.path(),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="cover.jpg"/></svg>"#,
+    );
+    assert!(book.blocks.is_empty());
+    assert_eq!(book.figures, [figure(0, "cover.jpg", "")]);
+}
+
+#[test]
+fn a_figure_after_the_last_block_has_before_equal_to_the_block_count() {
+    let dir = TempDir::new("book");
+    let book = one_document(
+        dir.path(),
+        r#"<p>a</p><p>b</p><img src="end.png" alt="The end"/>"#,
+    );
+    assert_eq!(book.blocks.len(), 2);
+    assert_eq!(book.figures, [figure(2, "end.png", "The end")]);
+}
+
+#[test]
+fn an_image_whose_src_climbs_out_is_left_out() {
+    let dir = TempDir::new("book");
+    let book = one_document(
+        dir.path(),
+        r#"<p>x <img src="../in.png"/> y</p><div><img src="../../out.png"/></div>"#,
+    );
+    assert_eq!(book.blocks[0].text, "x y");
+    assert_eq!(images(&book), []);
+    assert_eq!(book.figures, []);
+}
+
+#[test]
+fn figures_follow_the_blocks_numbering_kept_across_documents() {
+    let dir = TempDir::new("book");
+    let book = linked(
+        dir.path(),
+        r#"<p>Start.</p><img src="a.png"/>"#,
+        &format!(
+            "{}<p>10</p><img src=\"b.png\"/>{}<p>15</p>{}",
+            verse(6, 9),
+            verse(10, 14),
+            verse(15, 16)
+        ),
+    );
+    let line = block_of(&book, "line 10");
+    assert_eq!(
+        book.figures,
+        [figure(1, "a.png", ""), figure(line, "b.png", "")]
+    );
+}
+
+#[test]
+fn an_inline_image_follows_the_verse_number_cut() {
+    let dir = TempDir::new("book");
+    let book = in_text_directory(
+        dir.path(),
+        &format!(
+            r#"<p>5 Sing <img src="g.png"/>goddess</p>{}<p>10 the wrath</p>"#,
+            verse(6, 9)
+        ),
+    );
+    assert_eq!(book.blocks[0].line, Some(5));
+    assert_eq!(images(&book), [("Sing goddess", 5..5, "text/g.png", "")]);
+}

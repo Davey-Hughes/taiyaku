@@ -792,3 +792,421 @@ fn a_sentence_is_counted_in_utf16_units_as_the_browser_counts_it() {
         [[0, 4], [5, 7]]
     );
 }
+
+/// A one-pixel PNG of the gray `level`, so two images in one archive differ.
+fn png(level: u8) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    image::GrayImage::from_pixel(1, 1, image::Luma([level]))
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("a one-pixel image always encodes");
+    bytes
+}
+
+/// An EPUB at `dir/name` whose one spine document's body is `body`, beside
+/// `images`, each written at its archive path. `epub_with` writes no file
+/// but the document, so it can hold no image.
+fn illustrated_epub(
+    dir: &std::path::Path,
+    name: &str,
+    body: &str,
+    images: &[(&str, &[u8])],
+) -> std::path::PathBuf {
+    illustrated_epub_at(dir, name, ("", "text.xhtml"), body, images)
+}
+
+/// [`illustrated_epub`], its package at `{package}content.opf` and its
+/// document at `document`, a path from the package's directory, as published
+/// EPUBs file them in folders of their own.
+fn illustrated_epub_at(
+    dir: &std::path::Path,
+    name: &str,
+    (package, document): (&str, &str),
+    body: &str,
+    images: &[(&str, &[u8])],
+) -> std::path::PathBuf {
+    use std::io::Write;
+    let path = dir.join(name);
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).expect("create epub"));
+    let mut write = |entry: &str, bytes: &[u8]| {
+        zip.start_file(entry, zip::write::SimpleFileOptions::default())
+            .expect("start entry");
+        zip.write_all(bytes).expect("write entry");
+    };
+    write("mimetype", b"application/epub+zip");
+    write(
+        "META-INF/container.xml",
+        format!(r#"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="{package}content.opf"/></rootfiles></container>"#)
+            .as_bytes(),
+    );
+    write(
+        &format!("{package}content.opf"),
+        format!(r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"/><manifest><item id="t" href="{document}" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="t"/></spine></package>"#)
+            .as_bytes(),
+    );
+    write(
+        &format!("{package}{document}"),
+        format!(r#"<html xmlns="http://www.w3.org/1999/xhtml"><body>{body}</body></html>"#)
+            .as_bytes(),
+    );
+    for (entry, bytes) in images {
+        write(entry, bytes);
+    }
+    zip.finish().expect("finish epub");
+    path
+}
+
+/// The body of [`illustrated`]'s `en`: marks of every kind, a figure, and an
+/// image of each kind whose file the archive does not hold.
+const ILLUSTRATED: &str = concat!(
+    r#"<p id="top">😀 <i>é</i></p>"#,
+    r#"<img src="map.png" alt="Map"/>"#,
+    r#"<p>A<img src="g.png" alt="*"/>b<img src="gone.png" alt="x"/></p>"#,
+    r#"<img src="gone.png" alt="Gone"/>"#,
+    r##"<p><ruby>坊<rt>ぼっ</rt></ruby> <a href="https://example.com/">out</a> <a href="#top">up</a></p>"##,
+);
+
+/// A work, slug `t`, held as a scan holds it: `en`, its hub, an EPUB of
+/// [`ILLUSTRATED`] holding `g.png` and `map.png`, which the archive lists in
+/// that order; `ko`, a plain EPUB; and `raw`, a comic.
+fn illustrated(dir: &std::path::Path) -> Arc<crate::ServeState> {
+    let shelf = dir.to_string_lossy().into_owned();
+    illustrated_epub(
+        dir,
+        "en.epub",
+        ILLUSTRATED,
+        &[("map.png", &png(200)), ("g.png", &png(10))],
+    );
+    taiyaku_read::test_support::epub(dir, "ko.epub", &["하나.", "둘.", "셋."]);
+    taiyaku_read::test_support::cbz_pages(dir, "raw.cbz", 2, 0);
+    let digest = |file: &str| crate::test_support::sha256_of(&dir.join(file));
+    let json = format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "T", "reading": "ltr" }},
+          "editions": {{
+            "en": {{ "label": "English", "members": [
+              {{ "path": "{shelf}/en.epub", "sha256": "{en}", "pages": 3 }} ], "spreads": [] }},
+            "ko": {{ "label": "Korean", "members": [
+              {{ "path": "{shelf}/ko.epub", "sha256": "{ko}", "pages": 3 }} ], "spreads": [] }},
+            "raw": {{ "label": "Raw", "members": [
+              {{ "path": "{shelf}/raw.cbz", "sha256": "{raw}", "pages": 2 }} ], "spreads": [] }}
+          }},
+          "hub": "en",
+          "alignments": []
+        }}"#,
+        en = digest("en.epub"),
+        ko = digest("ko.epub"),
+        raw = digest("raw.cbz"),
+    );
+    let sidecar = Sidecar::from_json(&json).unwrap();
+    let mut state = crate::test_support::state(dir);
+    crate::test_support::held_as_scanned(
+        &state.library,
+        dir,
+        &sidecar,
+        &[
+            ("en.epub", "epub-reflow"),
+            ("ko.epub", "epub-reflow"),
+            ("raw.cbz", "zip"),
+        ],
+    );
+    state.works = crate::Works::fixed(vec![crate::Work::new(
+        "t".into(),
+        dir.join("taiyaku.json"),
+        sidecar,
+    )]);
+    Arc::new(state)
+}
+
+/// `GET /api/works/t/{edition}/book/images/{index}` as `principal`, sending
+/// `if_none_match` where given.
+async fn image(
+    state: &Arc<crate::ServeState>,
+    principal: crate::auth::Principal,
+    (edition, index): (&str, &str),
+    if_none_match: Option<&str>,
+) -> Response {
+    let mut extensions = axum::http::Extensions::new();
+    extensions.insert(principal);
+    let mut headers = axum::http::HeaderMap::new();
+    if let Some(tag) = if_none_match {
+        headers.insert(
+            axum::http::header::IF_NONE_MATCH,
+            axum::http::HeaderValue::from_str(tag).unwrap(),
+        );
+    }
+    get_book_image(
+        State(Arc::clone(state)),
+        AxPath(("t".to_string(), edition.to_string(), index.to_string())),
+        headers,
+        extensions,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_books_marks_and_figures_are_sent_in_utf16() {
+    let tmp = crate::test_support::Fixture::new("book-marks");
+    let book = json_of(get(&illustrated(&tmp), reader()).await).await;
+    let en = &book["editions"]["en"];
+
+    assert_eq!(en["blocks"][0]["text"], "😀 é");
+    assert_eq!(
+        en["blocks"][0]["marks"],
+        serde_json::json!([{"kind": "italic", "start": 3, "end": 4}]),
+        "the emoji is two units and the space one, where it is five bytes"
+    );
+    assert_eq!(
+        en["blocks"][1]["marks"],
+        serde_json::json!([{"kind": "image", "start": 1, "end": 1, "image": 0, "alt": "*"}]),
+        "g.png is the archive's first image; gone.png, which it does not hold, is left out"
+    );
+    assert_eq!(
+        en["blocks"][2]["marks"],
+        serde_json::json!([
+            {"kind": "ruby", "start": 0, "end": 1, "reading": "ぼっ"},
+            {"kind": "link", "start": 2, "end": 5, "url": "https://example.com/", "note": false},
+            {"kind": "link", "start": 6, "end": 8, "block": 0, "note": false},
+        ])
+    );
+    assert_eq!(
+        en["figures"],
+        serde_json::json!([{"before": 1, "image": 1, "alt": "Map"}]),
+        "the figure whose file is gone is left out"
+    );
+}
+
+#[tokio::test]
+async fn an_image_set_in_a_link_is_sent_with_the_link() {
+    let tmp = crate::test_support::Fixture::new("book-linked-images");
+    illustrated_epub(
+        &tmp,
+        "en.epub",
+        concat!(
+            r##"<p id="top">Go <a href="#top"><img src="a.png" alt="Up"/></a> on<sup><a href="#top"><img src="b.png" alt="*"/></a></sup>.</p>"##,
+            r#"<a href="https://example.com/"><img src="b.png" alt="Ad"/></a><img src="a.png" alt="Plain"/>"#,
+        ),
+        &[("a.png", &png(10)), ("b.png", &png(200))],
+    );
+    let book = json_of(get(&one_book(&tmp, "en.epub"), reader()).await).await;
+    let en = &book["editions"]["en"];
+    assert_eq!(en["blocks"][0]["text"], "Go on.");
+    assert_eq!(
+        en["blocks"][0]["marks"],
+        serde_json::json!([
+            {"kind": "image", "start": 3, "end": 3, "image": 0, "alt": "Up",
+             "link": {"block": 0, "note": false}},
+            {"kind": "image", "start": 5, "end": 5, "image": 1, "alt": "*",
+             "link": {"block": 0, "note": true}},
+        ])
+    );
+    assert_eq!(
+        en["figures"],
+        serde_json::json!([
+            {"before": 1, "image": 1, "alt": "Ad",
+             "link": {"url": "https://example.com/", "note": false}},
+            {"before": 1, "image": 0, "alt": "Plain"},
+        ])
+    );
+}
+
+#[tokio::test]
+async fn a_block_with_no_marks_sends_no_marks_field() {
+    let tmp = crate::test_support::Fixture::new("book-no-marks");
+    let book = json_of(book_of(&tmp, "en", reader()).await).await;
+    let block = book["editions"]["en"]["blocks"][0].as_object().unwrap();
+    assert_eq!(block["text"], "CHAPTER ONE");
+    assert!(!block.contains_key("marks"), "{block:?}");
+}
+
+#[tokio::test]
+async fn an_edition_with_no_figures_sends_no_figures_field() {
+    let tmp = crate::test_support::Fixture::new("book-no-figures");
+    let book = json_of(get(&illustrated(&tmp), reader()).await).await;
+    let ko = book["editions"]["ko"].as_object().unwrap();
+    assert!(!ko.contains_key("figures"), "{ko:?}");
+}
+
+#[tokio::test]
+async fn a_book_image_is_served_by_its_index() {
+    let tmp = crate::test_support::Fixture::new("book-image");
+    let state = illustrated(&tmp);
+    let response = image(&state, reader(), ("en", "1"), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers().clone();
+    assert_eq!(headers[axum::http::header::CONTENT_TYPE], "image/png");
+    assert_eq!(
+        headers[axum::http::header::CACHE_CONTROL],
+        crate::routes::PAGE_CACHE_CONTROL
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(bytes.as_ref(), png(200).as_slice(), "map.png, the second");
+
+    let tag = headers[axum::http::header::ETAG].to_str().unwrap();
+    let again = image(&state, reader(), ("en", "1"), Some(tag)).await;
+    assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        again.headers()[axum::http::header::CACHE_CONTROL],
+        crate::routes::PAGE_CACHE_CONTROL,
+        "a 304 without it leaves the client's entry as stale as it was"
+    );
+    let other = image(&state, reader(), ("en", "0"), None).await;
+    assert_ne!(
+        other.headers()[axum::http::header::ETAG],
+        headers[axum::http::header::ETAG],
+        "each image of a member has a tag of its own"
+    );
+}
+
+#[tokio::test]
+async fn a_book_image_past_the_list_is_404() {
+    let tmp = crate::test_support::Fixture::new("book-image-past");
+    let state = illustrated(&tmp);
+    assert_eq!(
+        image(&state, reader(), ("en", "2"), None).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        image(&state, reader(), ("en", "x"), None).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn a_book_image_of_an_edition_that_is_no_book_is_404() {
+    let tmp = crate::test_support::Fixture::new("book-image-comic");
+    let state = illustrated(&tmp);
+    assert_eq!(
+        image(&state, reader(), ("raw", "0"), None).await.status(),
+        StatusCode::NOT_FOUND,
+        "a comic's pages are the page route's"
+    );
+    assert_eq!(
+        image(&state, reader(), ("nope", "0"), None).await.status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn a_book_image_of_a_hidden_edition_is_404() {
+    let tmp = crate::test_support::Fixture::new("book-image-hidden");
+    let state = illustrated(&tmp);
+    // `ko` is filed under a directory of its own, the one the account is
+    // granted, so the work is seen and `en`, still a book, is not.
+    let shown = {
+        let conn = state.library.conn();
+        conn.execute("INSERT INTO root (path) VALUES ('/elsewhere')", [])
+            .unwrap();
+        let shown = conn.last_insert_rowid();
+        conn.execute(
+            "UPDATE member SET root_id = ?1 WHERE edition_id = \
+             (SELECT id FROM edition WHERE key = 'ko')",
+            [shown],
+        )
+        .unwrap();
+        shown
+    };
+    let principal = crate::auth::Principal {
+        role: crate::auth::Role::User,
+        access: taiyaku_library::account::Access::roots(vec![shown]),
+        ..reader()
+    };
+    assert_eq!(
+        image(&state, principal.clone(), ("en", "0"), None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        image(&state, reader(), ("en", "0"), None).await.status(),
+        StatusCode::OK,
+        "the 404 is the grant's"
+    );
+    assert_eq!(
+        get(&state, principal).await.status(),
+        StatusCode::OK,
+        "the work itself is seen, by `ko`"
+    );
+}
+
+#[tokio::test]
+async fn a_book_image_for_an_account_that_may_not_stream_is_refused() {
+    let tmp = crate::test_support::Fixture::new("book-image-no-stream");
+    let principal = crate::auth::Principal {
+        can_stream: false,
+        role: crate::auth::Role::User,
+        ..reader()
+    };
+    assert_eq!(
+        image(&illustrated(&tmp), principal, ("en", "0"), None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
+/// A work, slug `t`, of one book edition, `en`, the EPUB `dir/{file}`, held
+/// as a scan holds it.
+fn one_book(dir: &std::path::Path, file: &str) -> Arc<crate::ServeState> {
+    let shelf = dir.to_string_lossy().into_owned();
+    let sha256 = crate::test_support::sha256_of(&dir.join(file));
+    let sidecar = Sidecar::from_json(&format!(
+        r#"{{
+          "taiyaku": 1,
+          "work": {{ "title": "T", "reading": "ltr" }},
+          "editions": {{
+            "en": {{ "label": "English", "members": [
+              {{ "path": "{shelf}/{file}", "sha256": "{sha256}", "pages": 1 }} ], "spreads": [] }}
+          }},
+          "hub": "en",
+          "alignments": []
+        }}"#
+    ))
+    .unwrap();
+    let mut state = crate::test_support::state(dir);
+    crate::test_support::held_as_scanned(&state.library, dir, &sidecar, &[(file, "epub-reflow")]);
+    state.works = crate::Works::fixed(vec![crate::Work::new(
+        "t".into(),
+        dir.join("taiyaku.json"),
+        sidecar,
+    )]);
+    Arc::new(state)
+}
+
+#[tokio::test]
+async fn an_image_filed_in_a_folder_of_its_own_and_named_with_a_space_is_found_and_served() {
+    let tmp = crate::test_support::Fixture::new("book-image-folders");
+    illustrated_epub_at(
+        &tmp,
+        "en.epub",
+        ("OEBPS/", "Text/ch1.xhtml"),
+        r#"<p>Before.</p><img src="../Images/My%20Map.png" alt="Map"/><p>After.</p>"#,
+        &[
+            ("OEBPS/Images/0.png", &png(10)),
+            ("OEBPS/Images/My Map.png", &png(200)),
+        ],
+    );
+    let state = one_book(&tmp, "en.epub");
+    assert_eq!(
+        taiyaku_read::member_page_names(&tmp.join("en.epub")).unwrap(),
+        ["OEBPS/Images/0.png", "OEBPS/Images/My Map.png"],
+        "the fixture: the map is the archive's second image"
+    );
+    let book = json_of(get(&state, reader()).await).await;
+    assert_eq!(
+        book["editions"]["en"]["figures"],
+        serde_json::json!([{"before": 1, "image": 1, "alt": "Map"}]),
+        "the src, resolved against its document's folder and decoded, names the entry"
+    );
+    let response = image(&state, reader(), ("en", "1"), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(bytes.as_ref(), png(200).as_slice());
+}

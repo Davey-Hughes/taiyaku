@@ -74,7 +74,7 @@ pub trait PageSource: Send + Sync + std::fmt::Debug {
 /// the fallback is reached only by an entry taiyaku would not have counted as
 /// a page in the first place. It stays rather than becoming an error because
 /// serving bytes a client may still be able to sniff beats serving nothing.
-fn type_from_extension(name: &str) -> &'static str {
+pub(crate) fn type_from_extension(name: &str) -> &'static str {
     let extension = Path::new(name)
         .extension()
         .and_then(|e| e.to_str())

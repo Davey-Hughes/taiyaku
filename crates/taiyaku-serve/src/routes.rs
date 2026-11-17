@@ -2277,6 +2277,10 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             get(get_thumb),
         ),
         (
+            "/api/works/{work}/{edition}/book/images/{index}",
+            get(crate::book::get_book_image),
+        ),
+        (
             "/api/works/{work}/{edition}/download",
             get(crate::download::edition),
         ),
@@ -2621,6 +2625,9 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
         ("/api/works/{work}", Filters),
         ("/api/works/{work}/{edition}/pages/{index}", Refuses),
         ("/api/works/{work}/{edition}/pages/{index}/thumb", Refuses),
+        // `get_book_image` refuses a work the grant hides as `get_book` does,
+        // and, being one edition's file, an edition it hides too.
+        ("/api/works/{work}/{edition}/book/images/{index}", Refuses),
         ("/api/works/{work}/{edition}/download", Refuses),
         (
             "/api/works/{work}/{edition}/members/{ordinal}/download",
@@ -3131,6 +3138,13 @@ pub(crate) fn narrowing_postures() -> Vec<(&'static str, NarrowingPosture)> {
         (
             "/api/works/{work}/{edition}/pages/{index}/thumb",
             Translates,
+        ),
+        (
+            "/api/works/{work}/{edition}/book/images/{index}",
+            NoPages {
+                reason: "a book edition is one file, seen whole or not at all, \
+                         and its images are numbered in that file alone",
+            },
         ),
         ("/api/works/{work}/{edition}/download", Narrows),
         (

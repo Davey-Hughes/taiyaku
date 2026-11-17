@@ -4,7 +4,8 @@ import type { ReaderModule } from '../module'
  * How a book's text is set: its size in pixels, the space between its lines
  * as a multiple of that size, the column's width in ems, the typeface, whether
  * lines are justified and hyphenated, whether a paragraph opens indented
- * rather than spaced from the last, and the page's colours.
+ * rather than spaced from the last, whether a ruby's reading is drawn over
+ * its base, and the page's colours.
  */
 export interface BookTextPrefs {
   textSize: number
@@ -13,6 +14,7 @@ export interface BookTextPrefs {
   typeface: string
   justify: boolean
   indent: boolean
+  furigana: boolean
   page: string
 }
 
@@ -48,6 +50,7 @@ export const bookTextModule: ReaderModule<BookTextPrefs> = {
     typeface: 'serif',
     justify: true,
     indent: true,
+    furigana: true,
     page: 'dark',
   },
   options: {

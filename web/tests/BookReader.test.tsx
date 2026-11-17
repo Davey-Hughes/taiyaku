@@ -1,9 +1,12 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { bookImageUrl } from '../src/book'
+import { selectionIn } from '../src/bookNotes'
 import { BookReader } from '../src/BookReader'
 import { GateContext, type Gated } from '../src/gate'
 import type { Note } from '../src/notes'
 import { land } from './support/async'
+import './support/dialog'
 import { typeInto } from './support/input'
 import { mount, rerender } from './support/mount'
 import { fakeStorage } from './support/storage'
@@ -2614,5 +2617,893 @@ describe('BookReader', () => {
     const { onLeave } = await opened()
     press('L')
     expect(onLeave).toHaveBeenCalledOnce()
+  })
+})
+
+/** One edition, `en`, its one block `text` drawn with `marks`. */
+const marked = (text: string, marks: unknown[]) => ({
+  title: 'Marked',
+  hub: 'en',
+  editions: {
+    en: {
+      label: 'English',
+      language: 'en',
+      blocks: [
+        {
+          text,
+          heading: false,
+          sentences: [[0, text.length]],
+          ...(marks.length > 0 && { marks }),
+        },
+      ],
+    },
+  },
+  alignments: [],
+})
+
+/** Block 0's own words, where its marks are drawn. */
+const words = (host: HTMLElement) =>
+  host.querySelector('[data-block="0"] [data-text]') as HTMLElement
+
+describe('a block’s marks', () => {
+  it('draws italic and bold as <i> and <b>, and a ruby with its reading set aside', async () => {
+    const { host } = await opened(
+      undefined,
+      marked('坊ちゃん big bold', [
+        { kind: 'ruby', start: 0, end: 1, reading: 'ぼっ' },
+        { kind: 'italic', start: 5, end: 8 },
+        { kind: 'bold', start: 9, end: 13 },
+      ]),
+    )
+    const own = words(host)
+    expect(own.querySelector('i')?.textContent).toBe('big')
+    expect(own.querySelector('b')?.textContent).toBe('bold')
+    expect(own.querySelector('ruby')?.outerHTML).toBe(
+      '<ruby>坊<rt data-aside="true">ぼっ</rt></ruby>',
+    )
+  })
+
+  it('counts a selection in the base text alone, as in the block without marks', async () => {
+    const text = '坊ちゃんの話'
+    const plain = await opened(undefined, marked(text, []))
+    select(plain.host, 0, 1, 4)
+    const unmarked = selectionIn(plain.host.querySelector('.book-text'))
+    expect(unmarked?.range).toEqual({ start: 1, end: 4 })
+    const { host } = await opened(
+      undefined,
+      marked(text, [
+        { kind: 'ruby', start: 0, end: 1, reading: 'ぼっ' },
+        { kind: 'italic', start: 1, end: 3 },
+        { kind: 'link', start: 3, end: 5, block: 0, note: false },
+      ]),
+    )
+    // Selected on the drawn text nodes themselves, not through `select`,
+    // whose walker skips `[data-aside]` as `selectionIn`'s does: a reading
+    // counted by both would still agree.
+    const nodes: Text[] = []
+    const walker = document.createTreeWalker(words(host), NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      nodes.push(node as Text)
+    }
+    expect(nodes.map((node) => node.data)).toEqual([
+      '坊',
+      'ぼっ',
+      'ちゃ',
+      'んの',
+      '話',
+    ])
+    const range = document.createRange()
+    range.setStart(nodes[2], 0)
+    range.setEnd(nodes[3], 1)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    expect(window.getSelection()?.toString()).toBe('ちゃん')
+    expect(selectionIn(host.querySelector('.book-text'))?.range).toEqual(
+      unmarked?.range,
+    )
+  })
+
+  it('draws no reading with furigana off, the base text as it is', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-text',
+      JSON.stringify({ furigana: false }),
+    )
+    const { host } = await opened(
+      undefined,
+      marked('坊ちゃん', [{ kind: 'ruby', start: 0, end: 1, reading: 'ぼっ' }]),
+    )
+    expect(words(host).querySelector('rt')).toBeNull()
+    expect(words(host).textContent).toBe('坊ちゃん')
+  })
+
+  // The book's `<a><sup><i>` comes as three marks over one run, drawn in
+  // `Runs`' one order whatever the book's was.
+  it('nests a link, a superscript and an italic, the text whole', async () => {
+    const { host } = await opened(
+      undefined,
+      marked('see 12 here', [
+        { kind: 'italic', start: 4, end: 6 },
+        { kind: 'sup', start: 4, end: 6 },
+        { kind: 'link', start: 4, end: 6, block: 0, note: true },
+      ]),
+    )
+    const own = words(host)
+    const link = own.querySelector('a')
+    expect(link?.dataset).toMatchObject({ linkBlock: '0', linkNote: 'true' })
+    expect(link?.querySelector(':scope > i > sup')?.textContent).toBe('12')
+    expect(own.textContent).toBe('see 12 here')
+  })
+
+  it('opens a web link in a new tab, even one read as a note', async () => {
+    const { host } = await opened(
+      undefined,
+      marked('a site', [
+        { kind: 'link', start: 2, end: 6, url: 'https://x.org/', note: true },
+      ]),
+    )
+    const link = words(host).querySelector('a')
+    expect(link?.getAttribute('href')).toBe('https://x.org/')
+    expect(link?.target).toBe('_blank')
+    expect(link?.rel).toBe('noopener noreferrer')
+    expect(link?.dataset).toMatchObject({ linkUrl: 'https://x.org/' })
+    expect(link?.dataset.linkNote).toBeUndefined()
+  })
+
+  it('draws an inline image from the book’s images, with no text of its own', async () => {
+    const { host } = await opened(
+      undefined,
+      marked('ab', [
+        { kind: 'image', start: 1, end: 1, image: 3, alt: 'a map' },
+      ]),
+    )
+    const own = words(host)
+    const image = own.querySelector('img')
+    expect(image?.getAttribute('src')).toBe(bookImageUrl('w', 'en', 3))
+    expect(image?.getAttribute('src')).toBe('/api/works/w/en/book/images/3')
+    expect(image?.alt).toBe('a map')
+    expect(own.textContent).toBe('ab')
+  })
+
+  it('opens an inline image tapped full size, as a figure opens', async () => {
+    const { host } = await opened(
+      undefined,
+      marked('ab', [
+        { kind: 'image', start: 1, end: 1, image: 3, alt: 'a map' },
+      ]),
+    )
+    touch(host, { on: words(host).querySelector('.book-inline-image') })
+    const full = host.querySelector<HTMLDialogElement>(
+      'dialog.book-figure-full',
+    )
+    expect(full?.open).toBe(true)
+    expect(full?.querySelector('img')?.getAttribute('src')).toBe(
+      bookImageUrl('w', 'en', 3),
+    )
+    expect(full?.querySelector('img')?.alt).toBe('a map')
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
+  })
+})
+
+/** `en` read and `ja` the next edition, whose one block is drawn with `marks`. */
+const twoEditions = (marks: unknown[]) => ({
+  title: 'Two',
+  hub: 'en',
+  editions: {
+    en: {
+      label: 'English',
+      language: 'en',
+      blocks: [{ text: 'Hello.', heading: false, sentences: [[0, 6]] }],
+    },
+    ja: {
+      label: 'Japanese',
+      language: 'ja',
+      blocks: [
+        {
+          text: '坊ちゃん big',
+          heading: false,
+          sentences: [[0, 8]],
+          marks,
+        },
+      ],
+    },
+  },
+  alignments: [
+    {
+      to: 'ja',
+      links: [[0, 1, 0, 1]],
+      sentences: [[0, 1, 0, 1]],
+      pins: [],
+    },
+  ],
+})
+
+const japaneseMarks = [
+  { kind: 'ruby', start: 0, end: 1, reading: 'ぼっ' },
+  { kind: 'italic', start: 5, end: 8 },
+]
+
+describe('another edition’s marks beside the one read', () => {
+  it('draws the ruby in the interlinear line under a sentence', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'interlinear' }),
+    )
+    const { host } = await opened(undefined, twoEditions(japaneseMarks))
+    const line = host.querySelector('.book-interlinear') as HTMLElement
+    expect(line.querySelector('ruby')?.outerHTML).toBe(
+      '<ruby>坊<rt data-aside="true">ぼっ</rt></ruby>',
+    )
+    expect(line.querySelector('i')?.textContent).toBe('big')
+  })
+
+  it('draws the italic in the peek of a block', async () => {
+    const { host } = await opened(undefined, twoEditions(japaneseMarks))
+    scrolledPast(0)
+    press('p')
+    expect(host.querySelector('.book-peek i')?.textContent).toBe('big')
+  })
+
+  it('draws marks in a compare column', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'compare' }),
+    )
+    const { host } = await opened(undefined, twoEditions(japaneseMarks))
+    const cell = host.querySelectorAll('.book-row')[0].children[1]
+    expect(cell.querySelector('i')?.textContent).toBe('big')
+    expect(cell.querySelector('ruby')?.textContent).toContain('坊')
+  })
+})
+
+describe('a sentence peek of several sentences', () => {
+  it('is one span, the sentences joined by a space', async () => {
+    const sent = twoEditions([])
+    sent.editions.ja.blocks[0] = {
+      text: 'One.Two.',
+      heading: false,
+      sentences: [
+        [0, 4],
+        [4, 8],
+      ],
+      marks: [],
+    } as never
+    sent.alignments[0].sentences = [[0, 1, 0, 2]]
+    const { host } = await opened(undefined, sent)
+    const first = host.querySelector('[data-block="0"] [data-sentence="0"]')
+    touch(host, { on: first, at: 60_000 })
+    touch(host, { on: first, at: 60_150 })
+    const spans = host.querySelectorAll('.book-peek > span')
+    expect([...spans].map((x) => x.textContent)).toEqual(['One. Two.'])
+  })
+})
+
+/** `book`, with an image before its second block and one after its last in each edition. */
+const figured = {
+  ...book,
+  editions: {
+    en: {
+      ...book.editions.en,
+      figures: [
+        { before: 1, image: 7, alt: 'a map' },
+        { before: 6, image: 8, alt: 'the end' },
+      ],
+    },
+    ko: {
+      ...book.editions.ko,
+      figures: [{ before: 3, image: 2, alt: '지도' }],
+    },
+  },
+}
+
+/** The images of `within`, by their source. */
+const sources = (within: Element) =>
+  [...within.querySelectorAll('img')].map((img) => img.getAttribute('src'))
+
+describe('a book’s images between blocks', () => {
+  it('draws a figure before the block it names, and after the last block', async () => {
+    const { host } = await opened(undefined, figured)
+    const text = host.querySelector('.book-text') as HTMLElement
+    const drawn = [...text.children].map((child) =>
+      child.tagName === 'FIGURE'
+        ? child.querySelector('img')?.getAttribute('src')
+        : (child as HTMLElement).dataset.block,
+    )
+    expect(drawn).toEqual([
+      '0',
+      bookImageUrl('w', 'en', 7),
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      bookImageUrl('w', 'en', 8),
+    ])
+    const figure = text.querySelector('figure') as HTMLElement
+    expect(figure.className).toBe('book-figure')
+    expect(figure.dataset.block).toBeUndefined()
+    expect(figure.dataset.line).toBeUndefined()
+    expect(figure.querySelector('img')?.alt).toBe('a map')
+  })
+
+  it('takes the block after a figure at the top as the block at the top', async () => {
+    const { host } = await opened(undefined, figured)
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        const block = (this as HTMLElement).dataset?.block
+        return { top: 0, bottom: block === '0' ? -10 : 100 } as DOMRect
+      },
+    )
+    press('p')
+    expect(peeked(host)?.[0]).toBe('1')
+  })
+
+  it('takes the last block as the block at the top where only the figures after it are left', async () => {
+    const { host } = await opened(undefined, figured)
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        const block = (this as HTMLElement).dataset?.block
+        return { top: 0, bottom: block === undefined ? 100 : -10 } as DOMRect
+      },
+    )
+    press('p')
+    expect(peeked(host)?.[0]).toBe('5')
+  })
+
+  it('draws a figure, compared, only in its own edition’s column', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'compare' }),
+    )
+    const { host } = await opened(undefined, figured)
+    const column = (key: string) =>
+      [...host.querySelectorAll(`[data-column="${key}"]`)].flatMap(sources)
+    expect(column('en')).toEqual([
+      bookImageUrl('w', 'en', 7),
+      bookImageUrl('w', 'en', 8),
+    ])
+    expect(column('ko')).toEqual([bookImageUrl('w', 'ko', 2)])
+    const rows = [...host.querySelectorAll('.book-row')]
+    expect(rows.map((row) => sources(row).length)).toEqual([0, 1, 1, 1])
+    const enOfRow = (row: number) =>
+      rows[row].querySelector('[data-column="en"]')
+    expect(enOfRow(1)?.firstElementChild?.tagName).toBe('FIGURE')
+    expect(enOfRow(3)?.lastElementChild?.tagName).toBe('FIGURE')
+    expect(
+      rows[2].querySelector('[data-column="ko"]')?.firstElementChild?.tagName,
+    ).toBe('FIGURE')
+  })
+
+  it('opens a figure tapped full size, the bars left as they were, until Escape', async () => {
+    const { host } = await opened(undefined, figured)
+    touch(host, { on: host.querySelector('.book-figure img') })
+    const full = host.querySelector<HTMLDialogElement>(
+      'dialog.book-figure-full',
+    )
+    expect(full?.open).toBe(true)
+    expect(full?.querySelector('img')?.getAttribute('src')).toBe(
+      bookImageUrl('w', 'en', 7),
+    )
+    expect(full?.querySelector('img')?.alt).toBe('a map')
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
+    press('Escape')
+    expect(host.querySelector('dialog')).toBeNull()
+  })
+
+  it('leaves the bars as they were on a figure tapped just after a tap on the text', async () => {
+    const { host } = await opened(undefined, figured)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const at = later()
+    touch(host, { at }, false)
+    touch(host, { on: host.querySelector('.book-figure img'), at: at + 100 })
+    act(() => vi.advanceTimersByTime(1000))
+    vi.useRealTimers()
+    expect(host.querySelector('dialog.book-figure-full')).not.toBeNull()
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
+  })
+
+  it('closes the full-size figure on a tap beside it, not on the image', async () => {
+    const { host } = await opened(undefined, figured)
+    touch(host, { on: host.querySelector('.book-figure img') })
+    const full = () => host.querySelector('dialog.book-figure-full')
+    const image = full()?.querySelector('img') ?? null
+    touch(host, { on: image })
+    act(() => image?.click())
+    expect(full()).not.toBeNull()
+    touch(host, { on: full() })
+    act(() => (full() as HTMLElement).click())
+    expect(full()).toBeNull()
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
+  })
+
+  it('keeps the full-size figure open when the tap that opened it clicks on it, as a touch screen’s does', async () => {
+    const { host } = await opened(undefined, figured)
+    touch(host, { on: host.querySelector('.book-figure img') })
+    const full = () => host.querySelector('dialog.book-figure-full')
+    act(() => (full() as HTMLElement).click())
+    expect(full()).not.toBeNull()
+  })
+
+  it('goes back to the reader’s place, paged, when an image before it loads, and not for one after', async () => {
+    paged()
+    paging([0, 1, 2, 3, 4, 5])
+    const { host } = await opened({ edition: 'en', slot: 4 }, figured)
+    const scrolls = vi.mocked(Element.prototype.scrollTo)
+    scrolls.mockClear()
+    const [before, after] = host.querySelectorAll('.book-figure img')
+    act(() => {
+      after.dispatchEvent(new Event('load'))
+    })
+    expect(scrolls).not.toHaveBeenCalled()
+    act(() => {
+      before.dispatchEvent(new Event('load'))
+    })
+    expect(scrolls.mock.calls).toEqual([[{ left: 4 * 600 }]])
+  })
+
+  it('leaves a scrolled reader to the browser when an image loads', async () => {
+    const { host } = await opened({ edition: 'en', slot: 4 }, figured)
+    vi.mocked(Element.prototype.scrollIntoView).mockClear()
+    act(() => {
+      host.querySelector('.book-figure img')?.dispatchEvent(new Event('load'))
+    })
+    expect(scrolledTo()).toEqual([])
+  })
+})
+
+/**
+ * `book`, its blocks linked: block 0 to a web page, block 1 to a footnote in
+ * block 5, block 2 straight on to block 3, and the Korean block 1 to a
+ * footnote in its own block 3.
+ */
+const linked = {
+  ...book,
+  editions: {
+    en: {
+      ...book.editions.en,
+      blocks: book.editions.en.blocks.map((block, i) => {
+        const marks = [
+          [
+            {
+              kind: 'link',
+              start: 8,
+              end: 11,
+              url: 'https://x.org/',
+              note: false,
+            },
+          ],
+          [{ kind: 'link', start: 1, end: 4, block: 5, note: true }],
+          [{ kind: 'link', start: 0, end: 6, block: 3, note: false }],
+          [],
+          [],
+          [{ kind: 'italic', start: 0, end: 4 }],
+        ][i]
+        return marks.length > 0 ? { ...block, marks } : block
+      }),
+    },
+    ko: {
+      ...book.editions.ko,
+      blocks: book.editions.ko.blocks.map((block, i) =>
+        i === 1
+          ? {
+              ...block,
+              marks: [{ kind: 'link', start: 1, end: 3, block: 3, note: true }],
+            }
+          : block,
+      ),
+    },
+  },
+}
+
+/** The link drawn in block `block` of the text read. */
+const linkIn = (host: HTMLElement, block: number) =>
+  host.querySelector<HTMLElement>(`.book-text [data-block="${block}"] a`)
+
+const footnote = (host: HTMLElement) =>
+  host.querySelector<HTMLDialogElement>('dialog.book-footnote')
+
+const backButton = (host: HTMLElement) =>
+  [...host.querySelectorAll<HTMLElement>('.reader-bottom-bar button')].find(
+    (b) => b.textContent === 'Back',
+  )
+
+describe('a book’s links', () => {
+  it('opens a footnote reference’s note in a popup on a tap, its marks drawn, the bars left as they were', async () => {
+    const { host } = await opened(undefined, linked)
+    touch(host, { on: linkIn(host, 1) })
+    const popup = footnote(host)
+    expect(popup?.open).toBe(true)
+    expect(popup?.querySelector('.book-footnote-text')?.textContent).toBe(
+      'Done.',
+    )
+    expect(popup?.querySelector('i')?.textContent).toBe('Done')
+    expect(popup?.closest('.book-text')).toBeNull()
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
+  })
+
+  it('opens the note once on a double tap on its reference, and peeks nothing', async () => {
+    const { host } = await opened(undefined, linked)
+    const on = linkIn(host, 1)
+    const at = later()
+    touch(host, { on, at })
+    touch(host, { on, at: at + 150 })
+    expect(footnote(host)?.open).toBe(true)
+    expect(host.querySelectorAll('dialog.book-footnote')).toHaveLength(1)
+    expect(host.querySelector('.book-peek')).toBeNull()
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
+  })
+
+  it('closes the popup on Escape, and nothing else with it', async () => {
+    const { host } = await opened(undefined, linked)
+    tap(host)
+    expect(host.querySelector('.reader-top-bar')).not.toBeNull()
+    touch(host, { on: linkIn(host, 1) })
+    press('Escape')
+    expect(footnote(host)).toBeNull()
+    expect(host.querySelector('.reader-top-bar')).not.toBeNull()
+  })
+
+  it('closes the popup on a tap beside it', async () => {
+    const { host } = await opened(undefined, linked)
+    touch(host, { on: linkIn(host, 1) })
+    expect(footnote(host)?.open).toBe(true)
+    touch(host, { on: footnote(host) })
+    act(() => footnote(host)?.click())
+    expect(footnote(host)).toBeNull()
+  })
+
+  it('keeps the popup open when the tap that opened it clicks on it, as a touch screen’s does', async () => {
+    const { host } = await opened(undefined, linked)
+    touch(host, { on: linkIn(host, 1) })
+    act(() => footnote(host)?.click())
+    expect(footnote(host)?.open).toBe(true)
+  })
+
+  it('goes to the note from the popup, and Back returns to where the reader was, then goes', async () => {
+    const { host } = await opened(undefined, linked)
+    scrolledPast(1)
+    touch(host, { on: linkIn(host, 1) })
+    const go = [...(footnote(host)?.querySelectorAll('button') ?? [])].find(
+      (b) => b.textContent === 'Go to note',
+    )
+    act(() => go?.click())
+    expect(footnote(host)).toBeNull()
+    expect(scrolledTo().at(-1)).toBe('5')
+    expect(backButton(host)).toBeDefined()
+    act(() => backButton(host)?.click())
+    expect(scrolledTo().at(-1)).toBe('1')
+    expect(backButton(host)).toBeUndefined()
+  })
+
+  it('jumps straight on a tap on any other in-book link, with the same way back', async () => {
+    const { host } = await opened(undefined, linked)
+    scrolledPast(2)
+    touch(host, { on: linkIn(host, 2) })
+    expect(footnote(host)).toBeNull()
+    expect(scrolledTo().at(-1)).toBe('3')
+    act(() => backButton(host)?.click())
+    expect(scrolledTo().at(-1)).toBe('2')
+    expect(backButton(host)).toBeUndefined()
+  })
+
+  it('keeps the bars and Back up on a link tapped just after a tap on the text', async () => {
+    const { host } = await opened(undefined, linked)
+    scrolledPast(2)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const at = later()
+    touch(host, { at }, false)
+    touch(host, { on: linkIn(host, 2), at: at + 100 })
+    act(() => vi.advanceTimersByTime(1000))
+    vi.useRealTimers()
+    expect(scrolledTo().at(-1)).toBe('3')
+    expect(host.querySelector('.reader-top-bar')).not.toBeNull()
+    expect(backButton(host)).toBeDefined()
+  })
+
+  it('closes an open panel on a jump, so nothing covers Back', async () => {
+    const { host } = await opened(undefined, linked)
+    press('t')
+    expect(host.querySelector('[aria-label="Contents"]')).not.toBeNull()
+    touch(host, { on: linkIn(host, 2) })
+    expect(scrolledTo().at(-1)).toBe('3')
+    expect(host.querySelector('[aria-label="Contents"]')).toBeNull()
+    expect(backButton(host)).toBeDefined()
+  })
+
+  it('leaves a web link to the browser: no popup, no jump, the bars as they were', async () => {
+    const { host } = await opened(undefined, linked)
+    const link = host.querySelector<HTMLAnchorElement>(
+      '.book-text [data-block="0"] a',
+    )
+    expect(link?.getAttribute('href')).toBe('https://x.org/')
+    expect(link?.target).toBe('_blank')
+    expect(link?.rel).toBe('noopener noreferrer')
+    const before = scrolledTo().length
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true })
+    touch(host, { on: link })
+    act(() => {
+      link?.dispatchEvent(click)
+    })
+    expect(click.defaultPrevented).toBe(false)
+    expect(footnote(host)).toBeNull()
+    expect(scrolledTo()).toHaveLength(before)
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
+  })
+
+  it('selects a link’s words for a highlight on a press past the slop, or held', async () => {
+    const { host } = await opened(undefined, linked)
+    const bar = () =>
+      host.querySelector('[role="toolbar"][aria-label="Selection"]')
+    select(host, 1, 1, 4)
+    touch(host, { on: linkIn(host, 1), travel: 40 })
+    expect(bar()).not.toBeNull()
+    expect(footnote(host)).toBeNull()
+    select(host, 1, 1, 4)
+    touch(host, { on: linkIn(host, 1), held: 600 })
+    expect(bar()).not.toBeNull()
+    expect(footnote(host)).toBeNull()
+  })
+
+  it('opens a link’s note, compared, from its own column’s edition', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'compare' }),
+    )
+    const { host } = await opened(undefined, linked)
+    touch(host, { on: host.querySelector('[data-column="ko"] a') })
+    expect(
+      footnote(host)?.querySelector('.book-footnote-text')?.textContent,
+    ).toBe('아무도.')
+    expect(
+      footnote(host)
+        ?.querySelector('.book-footnote-card')
+        ?.getAttribute('lang'),
+    ).toBe('ko')
+  })
+
+  it('makes an in-book link one a keyboard reaches and follows on Enter, with no address of its own', async () => {
+    const { host } = await opened(undefined, linked)
+    const link = linkIn(host, 1) as HTMLElement
+    expect(link.getAttribute('href')).toBeNull()
+    expect(link.getAttribute('role')).toBe('link')
+    expect(link.tabIndex).toBe(0)
+    act(() => {
+      link.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      )
+    })
+    expect(footnote(host)?.open).toBe(true)
+  })
+
+  it('keeps a note’s card on the screen when the window turns from tall to short under it', async () => {
+    vi.stubGlobal('innerHeight', 800)
+    const { host } = await opened(undefined, linked)
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        return (
+          this.matches('a[data-link]')
+            ? { left: 40, right: 60, top: 600, bottom: 620 }
+            : { left: 0, right: 0, top: 0, bottom: 100 }
+        ) as DOMRect
+      },
+    )
+    touch(host, { on: linkIn(host, 1) })
+    const card = () =>
+      footnote(host)?.querySelector<HTMLElement>('.book-footnote-card')
+    expect(card()?.style.bottom).toBe('204px')
+    vi.stubGlobal('innerHeight', 400)
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+    const style = card()?.style as CSSStyleDeclaration
+    expect(style.maxHeight).toBe('180px')
+    const extent = style.top
+      ? [Number.parseFloat(style.top), Number.parseFloat(style.top) + 180]
+      : style.bottom
+        ? [
+            400 - Number.parseFloat(style.bottom) - 180,
+            400 - Number.parseFloat(style.bottom),
+          ]
+        : [110, 290]
+    expect(extent[0]).toBeGreaterThanOrEqual(0)
+    expect(extent[1]).toBeLessThanOrEqual(400)
+    vi.unstubAllGlobals()
+  })
+})
+
+/**
+ * `book`, its images set in links: block 0's to a web page, block 1's calling
+ * the footnote in block 5, block 2's straight on to block 3; a figure before
+ * block 4 going to block 3 too, and one after the last to a web page.
+ */
+const imagesLinked = {
+  ...book,
+  editions: {
+    ...book.editions,
+    en: {
+      ...book.editions.en,
+      blocks: book.editions.en.blocks.map((block, i) => {
+        const link = [
+          { url: 'https://x.org/', note: false },
+          { block: 5, note: true },
+          { block: 3, note: false },
+        ][i]
+        return link
+          ? {
+              ...block,
+              marks: [
+                { kind: 'image', start: 1, end: 1, image: 3, alt: 'go', link },
+              ],
+            }
+          : block
+      }),
+      figures: [
+        { before: 4, image: 7, alt: 'on', link: { block: 3, note: false } },
+        {
+          before: 6,
+          image: 8,
+          alt: 'out',
+          link: { url: 'https://y.org/', note: false },
+        },
+      ],
+    },
+  },
+}
+
+/** The image drawn in block `block` of the text read. */
+const imageIn = (host: HTMLElement, block: number) =>
+  host.querySelector<HTMLElement>(`.book-text [data-block="${block}"] img`)
+
+const fullFigure = (host: HTMLElement) =>
+  host.querySelector('dialog.book-figure-full')
+
+describe('a book’s images set in links', () => {
+  it('jumps on a tap on an inline image set in an in-book link, with Back, and opens no figure', async () => {
+    const { host } = await opened(undefined, imagesLinked)
+    scrolledPast(2)
+    touch(host, { on: imageIn(host, 2) })
+    expect(fullFigure(host)).toBeNull()
+    expect(scrolledTo().at(-1)).toBe('3')
+    act(() => backButton(host)?.click())
+    expect(scrolledTo().at(-1)).toBe('2')
+  })
+
+  it('opens the note an inline image calls as its reference', async () => {
+    const { host } = await opened(undefined, imagesLinked)
+    touch(host, { on: imageIn(host, 1) })
+    expect(fullFigure(host)).toBeNull()
+    expect(footnote(host)?.open).toBe(true)
+    expect(
+      footnote(host)?.querySelector('.book-footnote-text')?.textContent,
+    ).toBe('Done.')
+  })
+
+  it('leaves an inline image linked to the web to the browser, in a new tab', async () => {
+    const { host } = await opened(undefined, imagesLinked)
+    const link = imageIn(host, 0)?.closest('a')
+    expect(link?.getAttribute('href')).toBe('https://x.org/')
+    expect(link?.target).toBe('_blank')
+    const before = scrolledTo().length
+    touch(host, { on: imageIn(host, 0) })
+    expect(fullFigure(host)).toBeNull()
+    expect(footnote(host)).toBeNull()
+    expect(scrolledTo()).toHaveLength(before)
+  })
+
+  it('opens the note a figure calls as its reference mid-screen when the figure is taller than the screen', async () => {
+    const { host } = await opened(undefined, {
+      ...imagesLinked,
+      editions: {
+        ...imagesLinked.editions,
+        en: {
+          ...imagesLinked.editions.en,
+          figures: [
+            { before: 4, image: 7, alt: 'on', link: { block: 5, note: true } },
+          ],
+        },
+      },
+    })
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        return (
+          this.closest('figure')
+            ? { left: 0, right: 300, top: -100, bottom: innerHeight + 100 }
+            : { left: 0, right: 0, top: 0, bottom: 0 }
+        ) as DOMRect
+      },
+    )
+    touch(host, { on: host.querySelector('.book-figure img') })
+    expect(fullFigure(host)).toBeNull()
+    expect(footnote(host)?.open).toBe(true)
+    const card = footnote(host)?.querySelector<HTMLElement>(
+      '.book-footnote-card',
+    )
+    expect(card?.textContent).toContain('Done.')
+    expect(card?.dataset.placed).toBeUndefined()
+    expect([card?.style.top, card?.style.bottom]).toEqual(['', ''])
+  })
+
+  it('names a link holding only an image with no alt text for where it goes', async () => {
+    const sent = marked('abc', [
+      {
+        kind: 'image',
+        start: 0,
+        end: 0,
+        image: 1,
+        alt: '',
+        link: { block: 0, note: true },
+      },
+      {
+        kind: 'image',
+        start: 1,
+        end: 1,
+        image: 2,
+        alt: '',
+        link: { url: 'https://www.x.org/about/us', note: false },
+      },
+      {
+        kind: 'image',
+        start: 2,
+        end: 2,
+        image: 3,
+        alt: '',
+        link: { block: 0, note: false },
+      },
+      {
+        kind: 'image',
+        start: 3,
+        end: 3,
+        image: 4,
+        alt: 'a map',
+        link: { block: 0, note: false },
+      },
+      {
+        kind: 'image',
+        start: 3,
+        end: 3,
+        image: 6,
+        alt: '',
+        link: { url: 'mailto:a@x.org', note: false },
+      },
+    ])
+    const { host } = await opened(undefined, {
+      ...sent,
+      editions: {
+        en: {
+          ...sent.editions.en,
+          figures: [
+            { before: 1, image: 5, alt: '', link: { block: 0, note: false } },
+          ],
+        },
+      },
+    })
+    const names = [...host.querySelectorAll('.book-text a')].map((a) => [
+      a.querySelector('img')?.getAttribute('src'),
+      a.getAttribute('aria-label'),
+    ])
+    expect(names).toEqual([
+      [bookImageUrl('w', 'en', 1), 'Note'],
+      [bookImageUrl('w', 'en', 2), 'x.org'],
+      [bookImageUrl('w', 'en', 3), 'Linked passage'],
+      [bookImageUrl('w', 'en', 4), null],
+      [bookImageUrl('w', 'en', 6), 'mailto:a@x.org'],
+      [bookImageUrl('w', 'en', 5), 'Linked passage'],
+    ])
+  })
+
+  it('follows a figure set in a link, and leaves one linked to the web to the browser', async () => {
+    const { host } = await opened(undefined, imagesLinked)
+    scrolledPast(1)
+    const [onward, out] = host.querySelectorAll('.book-figure img')
+    expect(onward.getAttribute('alt')).toBe('on')
+    expect(out.closest('a')?.getAttribute('href')).toBe('https://y.org/')
+    expect(out.closest('a')?.target).toBe('_blank')
+    const before = scrolledTo().length
+    touch(host, { on: out })
+    expect(fullFigure(host)).toBeNull()
+    expect(scrolledTo()).toHaveLength(before)
+    touch(host, { on: onward })
+    expect(fullFigure(host)).toBeNull()
+    expect(scrolledTo().at(-1)).toBe('3')
+    expect(backButton(host)).toBeDefined()
   })
 })

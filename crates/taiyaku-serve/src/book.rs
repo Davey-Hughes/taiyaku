@@ -113,6 +113,103 @@ pub(crate) async fn get_book(
     }
 }
 
+/// `GET /api/works/{work}/{edition}/book/images/{index}`: image `index` of
+/// book edition `edition`, numbered as [`taiyaku_read::member_page_names`]
+/// lists the archive's images, which is how [`document`] numbers a mark's or a
+/// figure's `image`.
+///
+/// Refused as [`get_book`] refuses, and an edition the caller does not see,
+/// or one that is no book, answers 404: a comic's pages are the page route's,
+/// counted and translated as the book's images are not. Read from the file
+/// alone, never the page source: only a local file is ever read as a book.
+pub(crate) async fn get_book_image(
+    State(state): State<Arc<ServeState>>,
+    AxPath((id, key, raw)): AxPath<(String, String, String)>,
+    headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
+) -> Response {
+    let view = match crate::view::of_work(&state, &extensions, &id).await {
+        Ok(view) => view,
+        Err(refusal) => return refusal,
+    };
+    let Some(work) = state.works.get(&id) else {
+        return (StatusCode::NOT_FOUND, format!("no work `{id}`")).into_response();
+    };
+    if work.is_missing() {
+        return crate::routes::missing_work(&id);
+    }
+    if let Some(refusal) = crate::routes::refuse_if_cannot_stream(&extensions) {
+        return refusal;
+    }
+    let Ok(index) = raw.parse::<u32>() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("`{raw}` is not an image number; the images of `{key}` are numbered from 0"),
+        )
+            .into_response();
+    };
+    let books = match read_books(&state, &work).await {
+        Ok(books) => books,
+        Err(refusal) => return refusal,
+    };
+    let no_book = || crate::routes::not_found(format!("work `{id}` has no book edition `{key}`"));
+    // The edition as the view holds it, which a refresh of the work cannot
+    // have changed since the grant was checked against it.
+    let Some(edition) = view
+        .sidecar()
+        .editions
+        .get(&key)
+        .filter(|edition| is_book(&key, edition, &books))
+    else {
+        return no_book();
+    };
+    let Ok([path]) =
+        <[std::path::PathBuf; 1]>::try_from(crate::download::member_paths(&work, edition))
+    else {
+        return no_book();
+    };
+    let tag = crate::routes::page_etag(&edition.members[0].sha256, index, None);
+    let freshness = crate::routes::PAGE_CACHE_CONTROL;
+    if crate::routes::if_none_match_hits(&headers, &tag) {
+        return crate::routes::not_modified(&tag, Some(freshness));
+    }
+    let what = format!("image {index} of `{key}` of `{id}`");
+    let sha256 = edition.members[0].sha256.clone();
+    let served = tokio::task::spawn_blocking(move || {
+        // Named by the list `read` keeps for the file's hash, the one the
+        // book's `image` numbers were taken from, so an index past it is a
+        // plain 404 rather than a file that would not read, logged as one,
+        // and the archive's pages are not listed and sorted again to find it.
+        let read = read(&sha256, &path)?;
+        let Some(name) = read.images.get(index as usize) else {
+            return Ok(None);
+        };
+        taiyaku_read::archive_page(&path, name).map(Some)
+    })
+    .await;
+    match served {
+        Ok(Ok(Some(image))) => (
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    crate::source::type_from_extension(&image.name).to_string(),
+                ),
+                (axum::http::header::ETAG, tag),
+                (axum::http::header::CACHE_CONTROL, freshness.to_string()),
+            ],
+            image.bytes,
+        )
+            .into_response(),
+        Ok(Ok(None)) => crate::routes::not_found(format!("there is no {what}")),
+        Ok(Err(why)) => crate::routes::unreadable(&what, &why),
+        Err(why) => crate::routes::answered_and_logged(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("{what} could not be read"),
+            &why.to_string(),
+        ),
+    }
+}
+
 /// The document [`get_book`] sends: a book of none, `hub` null, for a work
 /// with no book edition, which a reader can then say rather than guess.
 ///
@@ -224,23 +321,47 @@ fn document(
                 .blocks
                 .iter()
                 .zip(&read.sentences)
-                .map(|(b, sentences)| {
-                    serde_json::json!({
+                .zip(&read.marks)
+                .map(|((b, sentences), units)| {
+                    let mut block = serde_json::json!({
                         "text": b.text,
                         "heading": b.kind == taiyaku_read::BlockKind::Heading,
                         "line": b.line,
                         "sentences": sentences,
-                    })
+                    });
+                    let marks = marks(b, units, &read.numbers);
+                    if !marks.is_empty() {
+                        block["marks"] = marks.into();
+                    }
+                    block
                 })
                 .collect();
-            (
-                (*key).clone(),
-                serde_json::json!({
-                    "label": edition.label,
-                    "language": read.book.language,
-                    "blocks": blocks,
-                }),
-            )
+            let mut sent = serde_json::json!({
+                "label": edition.label,
+                "language": read.book.language,
+                "blocks": blocks,
+            });
+            let figures: Vec<serde_json::Value> = read
+                .book
+                .figures
+                .iter()
+                .filter_map(|f| {
+                    let image = *read.numbers.get(&f.src)?;
+                    let mut sent = serde_json::json!({
+                        "before": f.before,
+                        "image": image,
+                        "alt": f.alt,
+                    });
+                    if let Some(link) = &f.link {
+                        sent["link"] = linked(serde_json::json!({}), &link.to, link.note);
+                    }
+                    Some(sent)
+                })
+                .collect();
+            if !figures.is_empty() {
+                sent["figures"] = figures.into();
+            }
+            ((*key).clone(), sent)
         })
         .collect();
     Ok(serde_json::json!({
@@ -251,6 +372,66 @@ fn document(
     }))
 }
 
+/// `block`'s marks as [`document`] sends them, at `units`, their ranges in
+/// UTF-16 units. An image is numbered by its place in the archive's images,
+/// `numbers` ([`ReadBook`]), and one the archive does not list is left out,
+/// as there is no image to serve for it. A link's fields sit on its mark, and
+/// an image's link in its `link` ([`linked`]).
+fn marks(
+    block: &taiyaku_read::Block,
+    units: &[[usize; 2]],
+    numbers: &HashMap<String, usize>,
+) -> Vec<serde_json::Value> {
+    use taiyaku_read::MarkKind;
+    block
+        .marks
+        .iter()
+        .zip(units)
+        .filter_map(|(mark, &[start, end])| {
+            let mut sent = serde_json::json!({ "start": start, "end": end });
+            let kind = match &mark.kind {
+                MarkKind::Italic => "italic",
+                MarkKind::Bold => "bold",
+                MarkKind::Sup => "sup",
+                MarkKind::Sub => "sub",
+                MarkKind::Ruby { reading } => {
+                    sent["reading"] = reading.as_str().into();
+                    "ruby"
+                }
+                MarkKind::Link { to, note } => {
+                    sent = linked(sent, to, *note);
+                    "link"
+                }
+                MarkKind::Image { src, alt, link } => {
+                    sent["image"] = (*numbers.get(src)?).into();
+                    sent["alt"] = alt.as_str().into();
+                    if let Some(link) = link {
+                        sent["link"] = linked(serde_json::json!({}), &link.to, link.note);
+                    }
+                    "image"
+                }
+            };
+            sent["kind"] = kind.into();
+            Some(sent)
+        })
+        .collect()
+}
+
+/// `sent` with where a link goes, as [`document`] sends it: `block`, a block
+/// index in the edition, or `url`, and `note`.
+fn linked(
+    mut sent: serde_json::Value,
+    to: &taiyaku_read::LinkTarget,
+    note: bool,
+) -> serde_json::Value {
+    sent["note"] = note.into();
+    match to {
+        taiyaku_read::LinkTarget::Block(block) => sent["block"] = (*block).into(),
+        taiyaku_read::LinkTarget::Url(url) => sent["url"] = url.as_str().into(),
+    }
+    sent
+}
+
 /// How many alignments, and how many books read, each cache keeps: past this
 /// it starts again rather than grow with every book ever opened. Chosen, not
 /// measured: room for every edition and pair of the few works being read at
@@ -258,11 +439,17 @@ fn document(
 const KEPT: usize = 32;
 
 /// An edition's book as [`taiyaku_read::read_book`] reads it, with each
-/// block's sentences in UTF-16 units ([`utf16_ranges`]), as [`document`]
-/// sends them.
+/// block's sentences and marks in UTF-16 units ([`utf16_ranges`]), as
+/// [`document`] sends them, and the names of its archive's images, whose
+/// places in that list number an image as [`get_book_image`] serves it.
 struct ReadBook {
     book: taiyaku_read::Book,
     sentences: Vec<Vec<[usize; 2]>>,
+    marks: Vec<Vec<[usize; 2]>>,
+    images: Vec<String>,
+    /// Each name in `images` by its place there, the first where an archive
+    /// lists a name twice.
+    numbers: HashMap<String, usize>,
 }
 
 /// The book at `path`, read and split into sentences once for the `sha256`
@@ -282,7 +469,29 @@ fn read(sha256: &str, path: &std::path::Path) -> Result<Arc<ReadBook>, String> {
         .iter()
         .map(|b| utf16_ranges(&b.text, &taiyaku_core::sentences(&b.text)))
         .collect();
-    let read = Arc::new(ReadBook { book, sentences });
+    let marks = book
+        .blocks
+        .iter()
+        .map(|b| {
+            let ranges: Vec<std::ops::Range<usize>> =
+                b.marks.iter().map(|m| m.range.clone()).collect();
+            utf16_ranges(&b.text, &ranges)
+        })
+        .collect();
+    // A listing that fails leaves the book without images rather than
+    // unread: its text is all it needs to be read.
+    let images = taiyaku_read::member_page_names(path).unwrap_or_default();
+    let mut numbers = HashMap::with_capacity(images.len());
+    for (number, name) in images.iter().enumerate() {
+        numbers.entry(name.clone()).or_insert(number);
+    }
+    let read = Arc::new(ReadBook {
+        book,
+        sentences,
+        marks,
+        images,
+        numbers,
+    });
     let mut held = cache.lock().unwrap_or_else(|e| e.into_inner());
     if held.len() >= KEPT && !kept_whole() {
         held.clear();
@@ -367,6 +576,10 @@ fn aligned(
 /// `ranges` of `text`'s bytes as the browser counts the same text: in UTF-16
 /// code units, which is how a note's run of text is counted too.
 fn utf16_ranges(text: &str, ranges: &[std::ops::Range<usize>]) -> Vec<[usize; 2]> {
+    // Most blocks have no marks, and the table below is a word per byte.
+    if ranges.is_empty() {
+        return Vec::new();
+    }
     let mut units = Vec::with_capacity(text.len() + 1);
     let mut n = 0;
     for (at, c) in text.char_indices() {

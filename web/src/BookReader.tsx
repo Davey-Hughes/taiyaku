@@ -27,16 +27,23 @@ import {
 } from 'react'
 import { Account } from './Account'
 import { getProgress, lookUpWord, putProgress } from './api'
+import { useBackdropClose } from './backdropClose'
 import { bottomBarStyle, readoutStyle, readoutTextStyle } from './bars'
 import {
   BOOK_KEYS,
   type Block,
   type Book,
   blockAt,
+  bookImageUrl,
   contents,
+  imageLinkLabel,
   counterpart,
   editionOrder,
   entryAt,
+  type Excerpt,
+  type Figure,
+  excerpt,
+  excerptsIn,
   firstSentences,
   getBook,
   lineAt,
@@ -47,8 +54,8 @@ import {
   columns,
   sentenceAt,
   sentenceMap,
+  sentenceExcerpts,
   sentenceSpan,
-  sentencesIn,
   sentenceTexts,
   span,
   starts,
@@ -57,6 +64,7 @@ import {
 import {
   type Anchor,
   kept,
+  movesAnchor,
   type Pages,
   pagesOf,
   pageTurnedBy,
@@ -76,11 +84,12 @@ import {
   newNote,
   notesOn,
   pieces,
-  type Segment,
   type Selected,
   selectionIn,
 } from './bookNotes'
+import { BookFootnote } from './BookFootnote'
 import { BookProgress } from './BookProgress'
+import { Linked, Runs } from './BookRuns'
 import { Contents } from './Contents'
 import { debounce } from './debounce'
 import { useGate } from './gate'
@@ -138,6 +147,7 @@ import {
 import { DEFAULT_COLOUR, noteColour } from './palette'
 import { loadPrefs, resetPrefs, savePrefs } from './prefs'
 import { Settings } from './Settings'
+import { takeTapClick } from './tapClick'
 import { useDocumentTitle } from './title'
 import { wheelNotches } from './viewport'
 import { TopBar } from './TopBar'
@@ -239,6 +249,14 @@ export function BookReader({ work, onLeave }: Props) {
   const [peek, setPeek] = useState<Peeked>()
   const [paired, setPaired] = useState<Paired>()
   const [lit, setLit] = useState<[number, number]>()
+  const [figure, setFigure] = useState<{ src: string; alt: string }>()
+  const [footnote, setFootnote] = useState<{
+    edition: string
+    block: number
+    near: { left: number; right: number; top: number; bottom: number }
+  }>()
+  // Where the reader was before an in-book link took them on, for Back.
+  const [back, setBack] = useState<Place>()
   const [prefs, setPrefs] = usePrefsMap(registry.all(), loadPrefs, savePrefs)
   const text = useRef<HTMLDivElement>(null)
   const anchor = useRef<Anchor>({ block: 0, at: 0 })
@@ -310,6 +328,8 @@ export function BookReader({ work, onLeave }: Props) {
   // Built once an edition, a light and a peek, since every scroll draws the
   // reader again and an edition runs to thousands of blocks.
   const edition = book && place ? book.editions[place.edition] : undefined
+  const editionKey = place?.edition ?? ''
+  const { furigana } = typeset
   const layout = useMemo(
     () =>
       edition && {
@@ -330,20 +350,23 @@ export function BookReader({ work, onLeave }: Props) {
       peek.sentence === undefined
         ? other.blocks
             .slice(...span(book, place.edition, to, peek.block))
-            .map((b) => b.text)
+            .map((b) => [excerpt(b, [0, b.text.length])])
         : [
-            sentencesIn(
+            excerptsIn(
               other,
               sentenceSpan(book, place.edition, to, peek.sentence),
-            ).join(' '),
-          ].filter((t) => t !== '')
+            ),
+          ].filter((group) => group.length > 0)
     return {
       block: peek.block,
+      work,
+      edition: to,
+      furigana,
       label: other.label,
       language: other.language,
       texts,
     }
-  }, [book, place, peek])
+  }, [book, place, peek, work, furigana])
   const other =
     book && place && editionOrder(book).length > 1
       ? nextEdition(book, place.edition)
@@ -389,7 +412,8 @@ export function BookReader({ work, onLeave }: Props) {
       interlinear && book && shownEdition && other
         ? {
             map: sentenceMap(book, shownEdition, other),
-            texts: sentenceTexts(book.editions[other]),
+            texts: sentenceExcerpts(book.editions[other]),
+            edition: other,
             language: book.editions[other].language,
           }
         : undefined,
@@ -437,60 +461,82 @@ export function BookReader({ work, onLeave }: Props) {
         : peek?.sentence !== undefined
           ? [peek.sentence, peek.sentence + 1]
           : undefined
-    return edition?.blocks.map((block, i) => {
+    if (!edition) return undefined
+    const figures = figuresBefore(edition.figures)
+    const drawn = edition.blocks.map((block, i) => {
       const Block = block.heading ? 'h2' : 'p'
       const here = shownNotes?.get(i) ?? []
       const highlights = here
         .filter(({ note, own }) => own && note.text)
         .map(({ note }) => note)
       return (
-        <Block
-          key={i}
-          data-block={i}
-          data-line={block.line ?? undefined}
-          data-lit={(lit && i >= lit[0] && i < lit[1]) || undefined}
-        >
-          {here
-            .filter(({ note, own }) => !own || !note.text)
-            .map(({ note }) => (
-              <span
-                key={note.id}
-                className="book-note-mark"
-                data-note={note.id}
-                title={note.body || 'a note'}
-                style={{ background: noteColour(note.color).edge }}
+        <Fragment key={i}>
+          <Figures figures={figures.get(i)} work={work} edition={editionKey} />
+          <Block
+            data-block={i}
+            data-line={block.line ?? undefined}
+            data-lit={(lit && i >= lit[0] && i < lit[1]) || undefined}
+          >
+            {here
+              .filter(({ note, own }) => !own || !note.text)
+              .map(({ note }) => (
+                <span
+                  key={note.id}
+                  className="book-note-mark"
+                  data-note={note.id}
+                  title={note.body || 'a note'}
+                  style={{ background: noteColour(note.color).edge }}
+                />
+              ))}
+            <span data-text>
+              <Sentences
+                block={block}
+                first={firsts?.[i] ?? 0}
+                highlights={highlights}
+                work={work}
+                edition={editionKey}
+                furigana={furigana}
+                lit={litSentence}
+                asideAfter={(n) => (
+                  <>
+                    {peeked?.block === i && peek?.sentence === n && (
+                      <Peek {...peeked} />
+                    )}
+                    {under && (
+                      <Interlinear
+                        n={n}
+                        under={under}
+                        work={work}
+                        furigana={furigana}
+                        hidden={hideTranslation && !revealed.has(n)}
+                      />
+                    )}
+                  </>
+                )}
               />
-            ))}
-          <span data-text>
-            <Sentences
-              block={block}
-              first={firsts?.[i] ?? 0}
-              highlights={highlights}
-              lit={litSentence}
-              asideAfter={(n) => (
-                <>
-                  {peeked?.block === i && peek?.sentence === n && (
-                    <Peek {...peeked} />
-                  )}
-                  {under && (
-                    <Interlinear
-                      n={n}
-                      under={under}
-                      hidden={hideTranslation && !revealed.has(n)}
-                    />
-                  )}
-                </>
-              )}
-            />
-          </span>
-          {peeked?.block === i && peek?.sentence === undefined && (
-            <Peek {...peeked} />
-          )}
-        </Block>
+            </span>
+            {peeked?.block === i && peek?.sentence === undefined && (
+              <Peek {...peeked} />
+            )}
+          </Block>
+        </Fragment>
       )
     })
+    return (
+      <>
+        {drawn}
+        <Figures
+          figures={figures.get(edition.blocks.length)}
+          work={work}
+          edition={editionKey}
+        />
+      </>
+    )
   }, [
     edition,
+    editionKey,
+    work,
+    furigana,
     firsts,
     lit,
     peek,
@@ -515,6 +561,9 @@ export function BookReader({ work, onLeave }: Props) {
         : paired.edition === key
           ? [paired.sentence, paired.sentence + 1]
           : sentenceSpan(book, paired.edition, key, paired.sentence)
+    const figuresOf = Object.fromEntries(
+      columnKeys.map((key) => [key, figuresBefore(book.editions[key].figures)]),
+    )
     const cell = (
       key: string,
       column: number,
@@ -522,6 +571,7 @@ export function BookReader({ work, onLeave }: Props) {
     ) => {
       const blocks = book.editions[key].blocks
       const first = firstSentences(blocks)
+      const figures = figuresOf[key]
       // The first two columns are the two a pin joins.
       const side = column === 0 ? 'left' : column === 1 ? 'right' : `c${column}`
       return (
@@ -534,20 +584,33 @@ export function BookReader({ work, onLeave }: Props) {
           {blocks.slice(from, to).map((block, i) => {
             const Block = block.heading ? 'h2' : 'p'
             return (
-              <Block
-                key={i}
-                data-pick={`${side}:${from + i}`}
-                data-line={block.line ?? undefined}
-              >
-                <Sentences
-                  block={block}
-                  first={first[from + i]}
-                  highlights={[]}
-                  lit={litIn(key)}
+              <Fragment key={i}>
+                <Figures
+                  figures={figures.get(from + i)}
+                  work={work}
+                  edition={key}
                 />
-              </Block>
+                <Block
+                  data-pick={`${side}:${from + i}`}
+                  data-line={block.line ?? undefined}
+                >
+                  <Sentences
+                    block={block}
+                    first={first[from + i]}
+                    highlights={[]}
+                    work={work}
+                    edition={key}
+                    furigana={furigana}
+                    lit={litIn(key)}
+                  />
+                </Block>
+              </Fragment>
             )
           })}
+          {/* Drawn by the row holding the last block, not an empty one after. */}
+          {to === blocks.length && from < to && (
+            <Figures figures={figures.get(to)} work={work} edition={key} />
+          )}
         </div>
       )
     }
@@ -563,7 +626,7 @@ export function BookReader({ work, onLeave }: Props) {
         {columnKeys.map((key, column) => cell(key, column, row[column]))}
       </div>
     ))
-  }, [book, place, comparing, columnKeys, paired])
+  }, [book, place, comparing, columnKeys, paired, work, furigana])
 
   useEffect(() => {
     let live = true
@@ -645,6 +708,24 @@ export function BookReader({ work, onLeave }: Props) {
     host.addEventListener('wheel', onWheel, { passive: false })
     return () => host.removeEventListener('wheel', onWheel)
   }, [pagedPref, loaded, setPrefs])
+
+  // An image drawn once the text is laid out pushes what follows it on, a
+  // page or more where the text is paged, so the reader goes back to the
+  // anchor taken before it loaded (`movesAnchor` says when). Not `kept`:
+  // measured now, the anchor may already be off the page the image moved it
+  // from. Caught on the way down, since an image's `load` does not bubble.
+  useEffect(() => {
+    const host = text.current
+    if (!host || !loaded) return
+    const keep = (event: Event) => {
+      const image = event.target
+      if (!(image instanceof HTMLImageElement)) return
+      if (!movesAnchor(host, anchor.current, image)) return
+      setPlace((p) => p && { edition: p.edition, ...anchor.current })
+    }
+    host.addEventListener('load', keep, true)
+    return () => host.removeEventListener('load', keep, true)
+  }, [loaded])
 
   // A resized window lays the text out again, so it goes back to the anchor
   // the last scroll left, which a paged layout would otherwise slide off. Not
@@ -735,6 +816,16 @@ export function BookReader({ work, onLeave }: Props) {
         return
       }
       if (event.key !== 'Escape' && inPanel(event.target)) return
+      // A figure open full size is over everything, the text's keys too.
+      if (figure) {
+        if (event.key === 'Escape') setFigure(undefined)
+        return
+      }
+      // So is a footnote, which one Escape closes and nothing else.
+      if (footnote) {
+        if (event.key === 'Escape') setFootnote(undefined)
+        return
+      }
       if (event.key === 'Escape') {
         if (stopReading.current) stopReading.current()
         else if (pinning) setPinning(undefined)
@@ -823,6 +914,8 @@ export function BookReader({ work, onLeave }: Props) {
     pinnable,
     comparing,
     columnKeys,
+    figure,
+    footnote,
   ])
 
   if (failed) {
@@ -934,6 +1027,29 @@ export function BookReader({ work, onLeave }: Props) {
     setPlace({ edition: place.edition, block })
     save({ edition: place.edition, block })
   }
+  // Block `block` of edition `to`, gone to by its counterpart in the edition
+  // read where the link was drawn in a peek or another column, and where the
+  // reader was kept for Back, the bars shown and any panel closed so Back is
+  // seen.
+  const jump = (to: string, block: number) => {
+    setBack({ edition: place.edition, ...topOf(text.current) })
+    setBars(true)
+    setPanel(undefined)
+    go(counterpart(book, to, place.edition, block))
+  }
+  // A footnote's reference opens the note beside it; any other in-book link
+  // goes to its block.
+  const follow = (link: HTMLElement) => {
+    const to = link.dataset.linkEdition
+    const block = Number(link.dataset.linkBlock)
+    if (!to || !book.editions[to]?.blocks[block]) return
+    if (link.dataset.linkNote === undefined) {
+      jump(to, block)
+      return
+    }
+    const { left, right, top, bottom } = link.getBoundingClientRect()
+    setFootnote({ edition: to, block, near: { left, right, top, bottom } })
+  }
   const textStyle = {
     '--book-text-size': `${typeset.textSize}px`,
     '--book-line-spacing': typeset.lineSpacing,
@@ -974,6 +1090,7 @@ export function BookReader({ work, onLeave }: Props) {
           onChange={(next) => setOthers(next.slice(1))}
         />
       )}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: the keys are its in-book links', each a focusable `role="link"`, caught here once rather than on every link drawn. */}
       <div
         className="book-text"
         ref={text}
@@ -1026,11 +1143,48 @@ export function BookReader({ work, onLeave }: Props) {
             return
           }
           const target = event.target as Element
+          // An image set in a link is the link's, below.
+          const tapped = target.closest('[data-link]')
+            ? undefined
+            : (target.closest<HTMLImageElement>('img.book-inline-image') ??
+              target
+                .closest('[data-figure]')
+                ?.querySelector<HTMLImageElement>('img'))
+          if (tapped) {
+            // Not the first of a double tap, which would peek on the next,
+            // and an earlier tap's wait stopped, which would hide the bars
+            // or turn the page under the image.
+            lastTap.current = undefined
+            window.clearTimeout(tapWait.current)
+            tapWait.current = undefined
+            setFigure({
+              src: tapped.getAttribute('src') ?? '',
+              alt: tapped.alt,
+            })
+            takeTapClick(event)
+            return
+          }
           const picked = target
             .closest<HTMLElement>('[data-pick]')
             ?.dataset.pick?.split(':')
           if (pinning && picked) {
             void pick(picked[0] as 'left' | 'right', Number(picked[1]))
+            takeTapClick(event)
+            return
+          }
+          const link = target.closest<HTMLElement>('[data-link]')
+          if (link) {
+            // At once, and not the first of a double tap, so a second tap on
+            // it neither peeks nor stops the first. A web link is the
+            // browser's, which opens it in a new tab. An earlier tap's wait
+            // is stopped, which would hide Back or turn the page after a jump.
+            lastTap.current = undefined
+            window.clearTimeout(tapWait.current)
+            tapWait.current = undefined
+            if (link.dataset.linkUrl === undefined) {
+              follow(link)
+              takeTapClick(event)
+            }
             return
           }
           const noted = target.closest<HTMLElement>('[data-note]')?.dataset.note
@@ -1044,6 +1198,7 @@ export function BookReader({ work, onLeave }: Props) {
           const last = lastTap.current
           if (last && event.timeStamp - last.at < DOUBLE_TAP_MS) {
             lastTap.current = undefined
+            takeTapClick(event)
             if (tapWait.current !== undefined) {
               window.clearTimeout(tapWait.current)
               tapWait.current = undefined
@@ -1096,6 +1251,15 @@ export function BookReader({ work, onLeave }: Props) {
             else setBars((b) => !b)
           }, TAP_MS)
         }}
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter') return
+          const link = (event.target as Element).closest<HTMLElement>(
+            '[data-link-block]',
+          )
+          if (!link) return
+          event.preventDefault()
+          follow(link)
+        }}
       >
         {compared ?? paragraphs}
       </div>
@@ -1119,6 +1283,19 @@ export function BookReader({ work, onLeave }: Props) {
             >
               Contents
             </button>
+            {back && (
+              <button
+                type="button"
+                className="reader-button"
+                onClick={() => {
+                  setPlace(back)
+                  save(back)
+                  setBack(undefined)
+                }}
+              >
+                Back
+              </button>
+            )}
             <span style={readoutTextStyle}>
               {readoutRow({ position, time, chapter })}
             </span>
@@ -1257,6 +1434,25 @@ export function BookReader({ work, onLeave }: Props) {
         onClose={() => setPanel(undefined)}
         onAccount={() => setPanel('account')}
       />
+      {figure && (
+        <FullFigure {...figure} onClose={() => setFigure(undefined)} />
+      )}
+      {footnote && (
+        <BookFootnote
+          block={book.editions[footnote.edition].blocks[footnote.block]}
+          work={work}
+          edition={footnote.edition}
+          furigana={furigana}
+          lang={book.editions[footnote.edition].language ?? undefined}
+          page={typeset.page}
+          near={footnote.near}
+          onGo={() => {
+            setFootnote(undefined)
+            jump(footnote.edition, footnote.block)
+          }}
+          onClose={() => setFootnote(undefined)}
+        />
+      )}
       <Account
         visible={panel === 'account'}
         onClose={() => setPanel(undefined)}
@@ -1385,57 +1581,139 @@ interface Paired {
   sentence: number
 }
 
+/** An edition's figures by the block each is set before, looked up once a block. */
+function figuresBefore(figures: Figure[] = []): Map<number, Figure[]> {
+  const by = new Map<number, Figure[]>()
+  for (const figure of figures) {
+    const at = by.get(figure.before)
+    if (at) at.push(figure)
+    else by.set(figure.before, [figure])
+  }
+  return by
+}
+
+/**
+ * The images a book sets between its blocks, from `edition` of `work`. A
+ * figure has no `data-block`, so the reader's place, a peek and a note pass
+ * over it to the blocks either side; tapped, it opens full size
+ * (`data-figure`, in the text's `onPointerUp`), or follows the link it is
+ * set in.
+ */
+function Figures({
+  figures,
+  work,
+  edition,
+}: {
+  figures: Figure[] | undefined
+  work: string
+  edition: string
+}) {
+  return figures?.map((figure, k) => {
+    const image = (
+      <img src={bookImageUrl(work, edition, figure.image)} alt={figure.alt} />
+    )
+    return (
+      <figure key={k} className="book-figure" data-figure>
+        {figure.link ? (
+          <Linked
+            link={figure.link}
+            edition={edition}
+            label={imageLinkLabel(figure.link, figure.alt)}
+          >
+            {image}
+          </Linked>
+        ) : (
+          image
+        )}
+      </figure>
+    )
+  })
+}
+
+/**
+ * A figure tapped open, as large as the screen lets it be drawn. A modal
+ * `<dialog>` outside the text, so no press on it reaches the text's taps;
+ * Escape (the reader's key handler, or the browser's close request) or a tap
+ * beside the image closes it.
+ */
+function FullFigure({
+  src,
+  alt,
+  onClose,
+}: {
+  src: string
+  alt: string
+  onClose: () => void
+}) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  useLayoutEffect(() => {
+    if (dialog.current?.open === false) dialog.current.showModal()
+  }, [])
+  const backdrop = useBackdropClose(onClose)
+  return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents: the click is a tap beside the image; a keyboard closes it with Escape, the dialog's own cancel
+    <dialog
+      ref={dialog}
+      className="book-figure-full"
+      aria-label={alt || 'An image from the book'}
+      onCancel={(e) => {
+        // Closed by its owner no longer drawing it, so the browser never
+        // closes a dialog React still holds open.
+        e.preventDefault()
+        onClose()
+      }}
+      onPointerDown={backdrop.onPointerDown}
+      onClick={backdrop.onClick}
+    >
+      <img src={src} alt={alt} />
+    </dialog>
+  )
+}
+
 /**
  * A block's words, each sentence its own span numbered through the edition
  * from `first`, so a tap can name it; those in `lit` are lit, and
- * `asideAfter` sets what follows one, a peek or its translation.
+ * `asideAfter` sets what follows one, a peek or its translation. Its marks
+ * are drawn as `Runs` draws them, its images from `edition` of `work`.
  */
 function Sentences({
   block,
   first,
   highlights,
+  work,
+  edition,
+  furigana,
   lit,
   asideAfter,
 }: {
   block: Block
   first: number
   highlights: Note[]
+  work: string
+  edition: string
+  furigana: boolean
   lit?: [number, number]
   asideAfter?: (n: number) => ReactNode
 }) {
-  return pieces(block.text, block.sentences, highlights).map((piece, j) => {
-    if (piece.sentence === undefined) {
-      return <Fragment key={j}>{runsOf(piece.runs)}</Fragment>
-    }
-    const n = first + piece.sentence
-    return (
-      <Fragment key={j}>
-        <span
-          data-sentence={n}
-          data-lit={(lit && n >= lit[0] && n < lit[1]) || undefined}
-        >
-          {runsOf(piece.runs)}
-        </span>
-        {asideAfter?.(n)}
-      </Fragment>
-    )
-  })
-}
-
-/** Runs of a block's words, each highlight a `<mark>` in its note's colour. */
-function runsOf(runs: Segment[]): ReactNode[] {
-  return runs.map((run, j) =>
-    run.note ? (
-      <mark
-        key={j}
-        data-note={run.note.id}
-        style={{ background: noteColour(run.note.color).tint }}
-      >
-        {run.text}
-      </mark>
-    ) : (
-      run.text
-    ),
+  const drawn = { work, edition, furigana }
+  return pieces(block.text, block.sentences, highlights, block.marks).map(
+    (piece, j) => {
+      if (piece.sentence === undefined) {
+        return <Runs key={j} runs={piece.runs} {...drawn} />
+      }
+      const n = first + piece.sentence
+      return (
+        <Fragment key={j}>
+          <span
+            data-sentence={n}
+            data-lit={(lit && n >= lit[0] && n < lit[1]) || undefined}
+          >
+            <Runs runs={piece.runs} {...drawn} />
+          </span>
+          {asideAfter?.(n)}
+        </Fragment>
+      )
+    },
   )
 }
 
@@ -1447,14 +1725,19 @@ function runsOf(runs: Segment[]): ReactNode[] {
 function Interlinear({
   n,
   under,
+  work,
+  furigana,
   hidden,
 }: {
   n: number
   under: {
     map: [number, number][]
-    texts: string[]
+    texts: Excerpt[]
+    edition: string
     language: string | null
   }
+  work: string
+  furigana: boolean
   hidden: boolean
 }) {
   const [start, end] = under.map[n] ?? [0, 0]
@@ -1470,9 +1753,39 @@ function Interlinear({
       data-hidden={hidden || undefined}
       lang={under.language ?? undefined}
     >
-      {under.texts.slice(start, end).join(' ')}
+      <Excerpts
+        texts={under.texts.slice(start, end)}
+        work={work}
+        edition={under.edition}
+        furigana={furigana}
+      />
     </span>
   )
+}
+
+/** Excerpts of another edition drawn with their marks, a space between each. */
+function Excerpts({
+  texts,
+  work,
+  edition,
+  furigana,
+}: {
+  texts: Excerpt[]
+  work: string
+  edition: string
+  furigana: boolean
+}) {
+  return texts.map((t, i) => (
+    <Fragment key={i}>
+      {i > 0 && ' '}
+      <Runs
+        runs={pieces(t.text, [], [], t.marks).flatMap((p) => p.runs)}
+        work={work}
+        edition={edition}
+        furigana={furigana}
+      />
+    </Fragment>
+  ))
 }
 
 /** What the next edition has for a block, set under it. */
@@ -1480,10 +1793,16 @@ function Peek({
   label,
   language,
   texts,
+  work,
+  edition,
+  furigana,
 }: {
   label: string
   language: string | null
-  texts: string[]
+  texts: Excerpt[][]
+  work: string
+  edition: string
+  furigana: boolean
 }) {
   return (
     <span
@@ -1495,7 +1814,16 @@ function Peek({
     >
       {texts.length === 0
         ? `${label} has nothing here.`
-        : texts.map((t, i) => <span key={i}>{t}</span>)}
+        : texts.map((t, i) => (
+            <span key={i}>
+              <Excerpts
+                texts={t}
+                work={work}
+                edition={edition}
+                furigana={furigana}
+              />
+            </span>
+          ))}
     </span>
   )
 }

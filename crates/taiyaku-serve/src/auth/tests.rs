@@ -56,6 +56,7 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/works/{work}",
         "/api/works/{work}/{edition}/pages/{index}",
         "/api/works/{work}/{edition}/pages/{index}/thumb",
+        "/api/works/{work}/{edition}/book/images/{index}",
         "/api/works/{work}/{edition}/download",
         "/api/works/{work}/{edition}/members/{ordinal}/download",
         "/api/works/{work}/progress",
@@ -1657,8 +1658,8 @@ async fn every_route_declares_its_grant_posture() {
         })
         .count();
     assert_eq!(
-        driven, 27,
-        "27 of the guarded routes must be classified Refuses, Filters or \
+        driven, 28,
+        "28 of the guarded routes must be classified Refuses, Filters or \
          RefusesAndFilters and driven by the proofs below — a route's \
          posture changed without this count moving to match, so a route \
          this suite believes it proves may no longer be one it does. It was \
@@ -1678,7 +1679,8 @@ async fn every_route_declares_its_grant_posture() {
          the alignments route is one fewer, `GrantIndependent` for O86's \
          reason: O58 makes it admin-only, so no caller of it holds a grant to \
          refuse against. The book route raised it to 26, `Filters` as the work \
-         document it mirrors is, and the scan feed to 27, `Filters` by library"
+         document it mirrors is, the scan feed to 27, `Filters` by library, and the \
+         book's images route to 28, `Refuses` as the page route it stands beside does"
     );
     assert_eq!(
         table.len() - driven,
@@ -2996,7 +2998,7 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
     );
     assert_eq!(
         counted(|p| matches!(p, NarrowingPosture::NoPages { .. })),
-        46,
+        47,
         "the NoPages routes, declared and not driven: a route moved here from a driven posture \
          moves this count and one above, and a new route that reads no pages moves this alone"
     );

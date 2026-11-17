@@ -14,13 +14,15 @@ mod format;
 mod naming;
 mod pages;
 
-pub use book::{Block, BlockId, BlockKind, Book, read_book};
+pub use book::{
+    Block, BlockId, BlockKind, Book, Figure, ImageLink, LinkTarget, Mark, MarkKind, read_book,
+};
 pub use format::{Format, sniff};
 pub use naming::{chapter_number, natural_cmp, volume_number, volume_number_marked};
 pub use pages::{
-    Page, PageEntry, for_each_member_page, is_page_name, member_digest, member_entry, member_page,
-    member_page_entries, member_page_names, member_page_sizes, member_pages, read_edition,
-    read_members_in_order,
+    Page, PageEntry, archive_page, for_each_member_page, is_page_name, member_digest, member_entry,
+    member_page, member_page_entries, member_page_names, member_page_sizes, member_pages,
+    read_edition, read_members_in_order,
 };
 
 /// How much a single image decode may allocate.

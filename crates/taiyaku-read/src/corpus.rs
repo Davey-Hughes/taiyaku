@@ -64,3 +64,109 @@ fn every_corpus_book_reads() {
         );
     }
 }
+
+/// Every `.epub` under `dir`, recursively, in sorted path order.
+fn epubs_under(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("directory reads") {
+        let path = entry.expect("entry").path();
+        if path.is_dir() {
+            epubs_under(&path, found);
+        } else if path.extension().is_some_and(|e| e == "epub") {
+            found.push(path);
+        }
+    }
+}
+
+/// A digest of everything a book's blocks carry that later work must not
+/// change: the count, then each block's kind, line and text. Every field is
+/// length-prefixed so two different block lists cannot hash alike by shifting
+/// bytes from one field to the next.
+fn book_digest(path: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+
+    let Ok(book) = read_book(path) else {
+        return "error".to_string();
+    };
+    let mut hash = Sha256::new();
+    let mut field = |bytes: &[u8]| {
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(bytes);
+    };
+    field(&(book.blocks.len() as u64).to_le_bytes());
+    for block in &book.blocks {
+        field(match block.kind {
+            BlockKind::Heading => b"heading",
+            BlockKind::Paragraph => b"paragraph",
+        });
+        field(format!("{:?}", block.line).as_bytes());
+        field(block.text.as_bytes());
+    }
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn json_string(text: &str) -> String {
+    format!("{text:?}")
+}
+
+/// Guards that formatting work beside a block's text never changes the text,
+/// kind, line or block count of any library book. The snapshot is written on
+/// the first run, from the reader as it stood, and compared on every run after.
+///
+/// `TAIYAKU_BOOKS="$PWD/taiyaku-library/Books" TAIYAKU_BOOKS_SNAPSHOT="$PWD/target/book-text-snapshot.json" cargo test --release -p taiyaku-read corpus::every_library_book_keeps_its_text -- --nocapture`
+#[test]
+fn every_library_book_keeps_its_text() {
+    let (Some(root), Some(snapshot)) = (
+        std::env::var_os("TAIYAKU_BOOKS"),
+        std::env::var_os("TAIYAKU_BOOKS_SNAPSHOT"),
+    ) else {
+        eprintln!("TAIYAKU_BOOKS or TAIYAKU_BOOKS_SNAPSHOT not set; skipping");
+        return;
+    };
+    let root = std::path::Path::new(&root);
+    let snapshot = std::path::Path::new(&snapshot);
+
+    let mut paths = Vec::new();
+    epubs_under(root, &mut paths);
+    paths.sort();
+    assert!(!paths.is_empty(), "{} holds no EPUB", root.display());
+
+    let digests: Vec<(String, String)> = paths
+        .iter()
+        .map(|path| {
+            let relative = path.strip_prefix(root).expect("under root");
+            (relative.display().to_string(), book_digest(path))
+        })
+        .collect();
+
+    // One entry per line so a difference can be reported by path without a
+    // JSON parser, which this crate does not depend on.
+    let lines: Vec<String> = digests
+        .iter()
+        .map(|(path, digest)| format!("  {}: {}", json_string(path), json_string(digest)))
+        .collect();
+    let current = format!("{{\n{}\n}}\n", lines.join(",\n"));
+
+    if !snapshot.exists() {
+        std::fs::write(snapshot, &current).expect("snapshot writes");
+        eprintln!("wrote {} entries to {}", digests.len(), snapshot.display());
+        return;
+    }
+
+    let saved = std::fs::read_to_string(snapshot).expect("snapshot reads");
+    let saved_lines: std::collections::BTreeSet<&str> =
+        saved.lines().map(|l| l.trim_end_matches(',')).collect();
+    let current_lines: std::collections::BTreeSet<&str> =
+        current.lines().map(|l| l.trim_end_matches(',')).collect();
+    let differing: Vec<&&str> = saved_lines.symmetric_difference(&current_lines).collect();
+    assert!(
+        differing.is_empty(),
+        "{} entries differ from {}:\n{}",
+        differing.len(),
+        snapshot.display(),
+        differing
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}

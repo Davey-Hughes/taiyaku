@@ -84,6 +84,7 @@
 }
 
 .book-text[data-indent] h2 + p,
+.book-text[data-indent] h2 + .book-figure + p,
 .book-text[data-indent] > p:first-child {
   text-indent: 0;
 }
@@ -97,6 +98,158 @@
 .book-text > [data-lit],
 .book-text [data-sentence][data-lit] {
   background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+/* A reading is not the book's text: a selection, and so a note, takes only
+   the base under it. */
+.book-text rt {
+  user-select: none;
+}
+
+.book-inline-image {
+  max-width: 100%;
+  vertical-align: middle;
+  cursor: zoom-in;
+}
+
+/* A link in the book's text, or in a note opened from it, marked as the book
+ * marks one but in the page's own ink. A note's reference not already set
+ * as a superscript is raised as one, so it reads as a reference. */
+.book-text a[data-link],
+.book-footnote a[data-link] {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 50%, transparent);
+  cursor: pointer;
+}
+
+.book-text a[data-link-note]:not(:has(sup)),
+.book-footnote a[data-link-note]:not(:has(sup)) {
+  vertical-align: super;
+  font-size: 0.75em;
+  line-height: 0;
+}
+
+/* An image the book sets between paragraphs, no wider than the column.
+ * Paged, no taller than a page either, and never split across two: the text
+ * is a size container so a figure can take the page's height (`cqh`). */
+.book-figure img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  cursor: zoom-in;
+}
+
+.book-text[data-paged] {
+  container-type: size;
+}
+
+.book-text[data-paged] .book-figure {
+  break-inside: avoid;
+}
+
+.book-text[data-paged] .book-figure img {
+  max-height: 100cqh;
+}
+
+/* A figure tapped open: the whole screen, the image as large as fits in it,
+ * and the space around it a tap that closes it. */
+.book-figure-full {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: var(--space-4);
+  border: 0;
+  background: transparent;
+}
+
+.book-figure-full[open] {
+  display: flex;
+}
+
+.book-figure-full::backdrop {
+  background: color-mix(in srgb, black 80%, transparent);
+}
+
+.book-figure-full img {
+  max-width: 100%;
+  max-height: 100%;
+  margin: auto;
+  object-fit: contain;
+}
+
+/* An image set in a link is the link's: a tap follows the link rather than
+ * opening the image full size, so it shows the link's pointer, not zoom. In a
+ * note's card an in-book link does nothing yet (O331), and the image there
+ * opens no full size either. */
+.book-text a[data-link] img,
+.book-footnote a[data-link] img {
+  cursor: pointer;
+}
+
+/* A footnote opened from its reference: the dialog the whole screen, so a tap
+ * anywhere off the note closes it, the note's card set by the reference
+ * (`top` or `bottom` inline) and kept on the screen across. */
+.book-footnote {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.book-footnote::backdrop {
+  background: color-mix(in srgb, black 30%, transparent);
+}
+
+.book-footnote-card {
+  --footnote-width: min(28em, calc(100vw - 2 * var(--space-3)));
+  position: fixed;
+  left: clamp(
+    var(--space-3),
+    var(--footnote-x, 50vw) -
+    var(--footnote-width) /
+    2,
+    100vw -
+    var(--footnote-width) -
+    var(--space-3)
+  );
+  box-sizing: border-box;
+  width: var(--footnote-width);
+  overflow-y: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--reader-hair);
+  border-radius: var(--radius-control, 6px);
+  /* Opaque, unlike the reader's panels: the note is read over the text. */
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-serif, Georgia, serif;
+  line-height: 1.5;
+}
+
+/* Outside `.book-text`, so it takes the paper page as the text does. */
+.book-footnote[data-page="paper"] .book-footnote-card {
+  background: var(--book-paper);
+  color: var(--book-paper-ink);
+}
+
+/* With no reference to set it by, one that leaves it room on neither side,
+ * or once the window is resized, it sits mid-screen. */
+.book-footnote-card:not([data-placed]) {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.book-footnote-text {
+  margin: 0 0 var(--space-2);
 }
 
 .book-peek {

@@ -639,6 +639,33 @@ fn a_page_reads_by_index_in_the_order_read_member_gives() {
     );
 }
 
+/// What the book-image route does with the listing it keeps: each listed
+/// name reads the page its index does, and a name the archive lacks is an
+/// error rather than another page.
+#[test]
+fn a_page_reads_by_its_listed_name_as_by_its_index() {
+    let dir = TempDir::new("byname");
+    let path = cbz(
+        &dir,
+        "byname.cbz",
+        &["p10.jpg", "ComicInfo.xml", "p2.jpg", "p1.jpg"],
+    );
+
+    let names = member_page_names(&path).unwrap();
+    for (index, name) in names.iter().enumerate() {
+        let by_name = archive_page(&path, name).unwrap();
+        let by_index = member_page(&path, u32::try_from(index).unwrap()).unwrap();
+        assert_eq!(
+            (&by_name.name, &by_name.bytes),
+            (&by_index.name, &by_index.bytes)
+        );
+    }
+    assert!(
+        archive_page(&path, "P1.jpg").is_err(),
+        "names match exactly"
+    );
+}
+
 /// `docs/sidecar.md` rule 1: a sidecar's `members` array *is* the page
 /// order and must not be re-sorted, because its paths are relative to the
 /// sidecar and may point into unrelated trees. `read_edition` sorts — it is

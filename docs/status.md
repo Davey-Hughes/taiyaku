@@ -180,8 +180,8 @@ and, for libraries whose directories overlap,
 
 ## What is built
 
-Six crates, 3660 tests, plus 5,138 in `web/`'s TypeScript — 1,835 in the `node`
-project and 3,303 in the `jsdom` one — and one thousand three hundred and forty-five
+Six crates, 3733 tests, plus 5,214 in `web/`'s TypeScript — 1,848 in the `node`
+project and 3,366 in the `jsdom` one — and one thousand three hundred and sixty-two
 more in a **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower`, `tower-http` (feature `fs`, for `--web`) and `ureq` in the server, `rusqlite` (features `["backup", "functions"]`, against
@@ -257,7 +257,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twenty-five of the 3660 are standing checks gated on
+`rayon` exactly as `align` already did. Twenty-five of the 3733 are standing checks gated on
 `TAIYAKU_CORPUS` — seventeen in `crates/taiyaku-cli/src/corpus.rs`, five in
 `crates/taiyaku-serve/src/corpus.rs`, two in
 `crates/taiyaku-library/src/corpus.rs`, one in
@@ -1461,7 +1461,7 @@ both are waiting on L2.
 
 ### Open items
 
-Three hundred and nineteen, each found by a whole-branch review, carried as a deferral,
+Three hundred and twenty-eight, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -1496,7 +1496,7 @@ faster than the router could commit it, asked for by the owner, or turned up
 by answering a question an earlier item's notes wrote down and left open, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Two hundred and nine are now closed — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20, O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43, O44, O47, O48, O53, O54, O55, O57, O58, O60, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96, O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O112, O113, O114, O115, O116, O117, O119, O120, O121, O133, O134, O135, O137, O138, O140, O141, O145, O146, O148, O149, O150, O151, O153, O154, O155, O156, O157, O158, O159, O160, O161, O163, O164, O165, O166, O171, O172, O173, O174, O175, O176, O177, O178, O179, O180, O182, O183, O184, O185, O186, O190, O191, O192, O193, O194, O195, O196, O197, O198, O199, O204, O205, O206, O207, O208, O210, O212, O213, O216, O218, O219, O220, O221, O223, O224, O228, O229, O231, O232, O233, O234, O235, O236, O237, O239, O240, O241, O244, O245, O247, O248, O250, O251, O252, O253, O254, O255, O256, O257, O262, O263, O264, O266, O267, O269, O273, O274, O275, O276, O277, O278, O279, O280, O281, O282, O283, O284, O285, O286, O288, O299, O301, O302, O310, O311, O312, O313 and O323 — leaving one hundred and ten.** *(This sentence carried **two** errors before ⑤c rebuilt it from the table on 2026-09-25: it omitted **O151**, closed on 2026-09-24, and "leaving fifty-seven" stood against sixty-two open rows. It is generated from the table now rather than edited, which is the only reason the list and the word cannot disagree again.* **A larger warning sits in how this note first read.** It claimed six errors — the word disagreeing with its own list, O34 and O39 listed twice each, and O31 named while its row read `[ ]`. None of those four existed. The check that found them anchored on the string `are now closed`, which first matches a sentence about mutation survivors a hundred and fifty lines earlier, and then read everything from there to the next `— leaving` — so it counted O-numbers out of hundreds of lines of unrelated prose and reported them as this list's. The rebuilt sentence was right and the story about why was invented, which is worse than the drift it was describing: a wrong count invites a recount, and a wrong history is believed. Caught by ⑤c's pre-merge claim check, which re-derived it from `git show` rather than from this paragraph.)* *(It read "leaving fifty" against
+visible act rather than a thing someone remembers. **Two hundred and nine are now closed — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20, O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43, O44, O47, O48, O53, O54, O55, O57, O58, O60, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96, O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O112, O113, O114, O115, O116, O117, O119, O120, O121, O133, O134, O135, O137, O138, O140, O141, O145, O146, O148, O149, O150, O151, O153, O154, O155, O156, O157, O158, O159, O160, O161, O163, O164, O165, O166, O171, O172, O173, O174, O175, O176, O177, O178, O179, O180, O182, O183, O184, O185, O186, O190, O191, O192, O193, O194, O195, O196, O197, O198, O199, O204, O205, O206, O207, O208, O210, O212, O213, O216, O218, O219, O220, O221, O223, O224, O228, O229, O231, O232, O233, O234, O235, O236, O237, O239, O240, O241, O244, O245, O247, O248, O250, O251, O252, O253, O254, O255, O256, O257, O262, O263, O264, O266, O267, O269, O273, O274, O275, O276, O277, O278, O279, O280, O281, O282, O283, O284, O285, O286, O288, O299, O301, O302, O310, O311, O312, O313 and O323 — leaving one hundred and nineteen.** *(This sentence carried **two** errors before ⑤c rebuilt it from the table on 2026-09-25: it omitted **O151**, closed on 2026-09-24, and "leaving fifty-seven" stood against sixty-two open rows. It is generated from the table now rather than edited, which is the only reason the list and the word cannot disagree again.* **A larger warning sits in how this note first read.** It claimed six errors — the word disagreeing with its own list, O34 and O39 listed twice each, and O31 named while its row read `[ ]`. None of those four existed. The check that found them anchored on the string `are now closed`, which first matches a sentence about mutation survivors a hundred and fifty lines earlier, and then read everything from there to the next `— leaving` — so it counted O-numbers out of hundreds of lines of unrelated prose and reported them as this list's. The rebuilt sentence was right and the story about why was invented, which is worse than the drift it was describing: a wrong count invites a recount, and a wrong history is believed. Caught by ⑤c's pre-merge claim check, which re-derived it from `git show` rather than from this paragraph.)* *(It read "leaving fifty" against
 forty-nine open rows from the moment O97 closed: the count of closed items
 moved and the count of open ones did not, which is the drift the sweep at the
 head of this section exists to catch and did not run. Corrected here. **It
@@ -1943,6 +1943,15 @@ each is in the detail below; the table is what a reader scans.
 | O324 | [ ] | **The book reader's `MOST_READ_AT_ONCE`, 3,000 characters, may be short of one page at small text on a tall screen, where a page turn would count as no reading.** The figure separates reading from a drag of the scrollbar past chapters, and is a guess at a page's worth; nobody has measured the most a page holds at the smallest text size and the widest column, nor what a fling of the scroll carries. | `BookReader.tsx`'s `MOST_READ_AT_ONCE` and its `onScroll` | O299's close, 2026-11-15 |
 | O325 | [ ] | **The book reader takes a press that moves up to 10 px on each axis as a tap, so a short mouse drag that selects text may not be offered for a note.** Since O299 the book reader tells a tap from a selection by `gestures.ts`' `TAP_SLOP`, 10 px on each axis, chosen for a thumb on a fixed page; before, it was 8 px as a straight line, so a diagonal drag of up to 14 px now counts as a tap where one over 8 px did not. Whether a drag that short selects anything worth a note, and whether the book reader wants a figure of its own, is undecided. | `BookReader.tsx`'s `onPointerUp`; `gestures.ts`' `TAP_SLOP` | the review of O299's PR (#252), 2026-11-17 |
 | O326 | [ ] | **A straight `"` that closes a quotation counts as one where a curly `”` would not.** `Anchors::of` pairs straight quotes within a block and takes an unpaired one as a quotation opened, so a block closing a quotation an earlier block opened, a block holding `…over." Then "hi"`, or an inch mark (`5' 10"`) counts more quotations than the same text set in curly quotes. Telling an opening `"` from a closing one by the character before it would match the curly count; it changes what the aligner scores, so it waits on a run of `book_experiment` against the books corpus. | `taiyaku_core::book_align`'s `Anchors::of` | the review of O299's PR (#252), 2026-11-17 |
+| O327 | [ ] | **A table, a list, a block quote or an indented poem is a plain paragraph.** The rich text read from a book is marks over a block's text, so a table's cells, a list's items, a quote's indent and a poem's line breaks and indentation are not drawn as such, and each is paragraphs as it was before the marks. The design left them out on purpose, and a reader of an annotated edition or a book of verse will see it. | `taiyaku_read::book`'s walker, `BookRuns.tsx` | the whole-branch check of the books rich text, 2026-11-15 |
+| O328 | [ ] | **An SVG image file is not shown.** An image is served by its index in the archive's image list, which holds the raster formats and not SVG, so a figure or an inline image whose `src` is an `.svg` is left out. | `taiyaku_read::pages`'s `page_names_from`, the book image route | the whole-branch check of the books rich text, 2026-11-15 |
+| O329 | [ ] | **57 images in two books are not shown because their `src` differs from the archive's entry only by letter case.** `Baccano!` v22 and `Sword Art Online Alternative - Gun Gale Online` v14 name an image in one case where the archive holds it in the other, and a `src` is matched to the archive's entries exactly. | `taiyaku_read::book`'s `resolve`, the book's image list | the whole-branch check of the books rich text, 2026-11-15 |
+| O330 | [ ] | **A scrolled book leaves the reader's place, as an image loads, to the browser's scroll anchoring, and no test or record shows it holding.** `bookPages.ts`'s `movesAnchor` re-places only a paged book; where a browser anchors less, the text can move under the reader as images arrive. | `BookReader.tsx`'s scrolled layout, `Figures` | the whole-branch check of the books rich text, 2026-11-15 |
+| O331 | [ ] | **An in-book link inside a footnote popup does nothing.** The popup draws its note's marks, so a link in the note is drawn as one, but a tap on one that leads into the book does not jump. | `BookFootnote.tsx` | the whole-branch check of the books rich text, 2026-11-15 |
+| O332 | [ ] | **Every image of a book is fetched as it is drawn, none lazily.** A book of many illustrations asks for them as its text is drawn, on a phone included. | `Figures`, `BookRuns.tsx`'s inline image | the whole-branch check of the books rich text, 2026-11-15 |
+| O333 | [ ] | **A figure not set in a link cannot be reached from the keyboard.** It opens full size on a tap or a click but takes no focus, so a reader with no pointer cannot open one. A figure set in a link is drawn inside that link, which takes focus and is followed on Enter. | `Figures`, `BookReader.tsx`'s `onPointerUp` | the whole-branch check of the books rich text, 2026-11-15 |
+| O334 | [ ] | **After a restart, or once the book cache has emptied, requests for one book that arrive together each read the whole book.** `read` looks a book up by its file's hash and, on a miss, lets go of the cache's lock while it reads the book, splits its blocks into sentences and lists its archive's images, storing the result only then, so book or image requests that miss at once each do all of that. The cache holds `KEPT`, 32, books, and empties itself whole to store one more. A first `get_book` of one book, the read included, took 18 to 182 ms over the test library's 36 EPUBs, called in-process rather than over HTTP on a release build at 7aebc134, with the machine under load (`serve-loadavg.txt` read 12 and 45); the record is `.superpowers/sdd/book-rich-text-evidence/speed/base-7aebc134/book-times.tsv` (not committed). A first image request was not timed. Two fixes were weighed and left: one read per file hash at a time, a slot per hash in `read`, which is small, though a read that fails must hand its error to the requests waiting on it rather than have each of them try it again in turn; or a cache of image names of the image route's own, which would split the numbering that route takes from `read`'s list on purpose. | `taiyaku_serve::book`'s `read` and `KEPT`, called by `get_book` (through `document`) and `get_book_image` | the review of PR #253, 2026-11-17 |
+| O335 | [ ] | **The notes rule misreads three shapes of notes list, so a link opens a note card where it should jump, or the other way about.** Under a list typed `footnotes`, `endnotes`, `rearnotes` or `notes`, `in_note` reads down from the list: a heading met among its groups (a `div`, `section`, `nav`, `header`, `hgroup`, `ol` or `ul`) is no note, the first element that is no group is one, and a group linked to itself is a note unless `opens_on_heading` finds that it opens on a heading. That misreads (i) a note set in a `div` or `section` that opens on a heading holding its way back: the note reads as a group and the heading as no note, so the back link counts as outside a note and, where it is set as a superscript or typed `noteref`, opens the text it points to in a note card; (ii) a linked group whose first child is no heading, an `ol` or a `ul`, or a group whose heading comes after a page-break `span`, an empty `<a id>` or an `img`: it reads as a note, so a link to it opens a card instead of jumping; and (iii) an `li` that groups notes in nested lists, which reads as a note, its heading with it. The rule was rewritten twice in this PR's review and each rewrite regressed a case the one before it read rightly, which is why these are recorded rather than fixed. The review's script re-implementing this rule and the one before its last rewrite, run over the NAS's EPUBs, found eight books with a notes list; the two rules read every link in them alike, and none of those links lands on a group (`.superpowers/sdd/book-rich-text-evidence/review/notes_scan.py` and `scan-nas.log`, not committed). | `taiyaku_read::book`'s `in_note` and `opens_on_heading`, read by `record_id` and for each link's `from_note`; `join_links` | the review of PR #253, 2026-11-17 |
 
 Sites are named by symbol rather than line, because a line number in a document
 is wrong the first time someone edits the file above it.
@@ -5397,6 +5406,58 @@ work next to decide.
   closing one by the character before it would match the curly count, and
   waits on a run of `book_experiment` against the books corpus.
 
+The whole-branch check of the books rich text opened O327 to O333.
+
+- **O327 — a table, a list, a block quote or a poem is drawn as plain
+  paragraphs. Open.** A book's rich text is marks over a block's text, so
+  a table's cells, a list's items, a quote's indent and a poem's line
+  breaks and indentation are not drawn as such. The design left them out
+  on purpose.
+- **O328 — an SVG image is not shown. Open.** An image is served by its
+  index in the archive's image list, which holds the raster formats and
+  not SVG, so a figure or an inline image whose `src` is an `.svg` is left
+  out.
+- **O329 — an image whose `src` differs from the archive's entry only by
+  letter case is not shown. Open.** A `src` is matched to the archive's
+  entries exactly, and `Baccano!` v22 and
+  `Sword Art Online Alternative - Gun Gale Online` v14 name images in one
+  case where the archive holds them in the other.
+- **O330 — a scrolled book leaves its place, as images load, to the
+  browser's scroll anchoring. Open.** Only a paged book is re-placed
+  (`movesAnchor`); nothing here tests or records a scrolled one holding
+  still as a figure above the reader gains its height.
+- **O331 — an in-book link inside a footnote popup does nothing. Open.**
+  The popup draws it as a link, but a tap on it does not jump.
+- **O332 — every image of a book is fetched as it is drawn. Open.** None
+  is fetched lazily, so a book of many illustrations asks for them as its
+  text is drawn, on a phone included.
+- **O333 — a figure not set in a link cannot be reached from the
+  keyboard. Open.** It opens full size on a tap or a click, but takes no
+  focus, so a reader with no pointer cannot open one. A figure set in a
+  link is drawn inside the link, which takes focus.
+
+The review of PR #253 opened O334 and O335, both recorded on the owner's
+ruling of 2026-11-17.
+
+- **O334 — requests for one book that miss the cache together each read
+  it. Open.** `read` lets go of its cache's lock while it reads, so book
+  or image requests for one book that arrive together after a restart, or
+  once the cache has emptied past `KEPT` books, each read the book, split it
+  into sentences and list its images. One read per file hash at a time
+  would end it, provided a read that fails hands its error to the requests
+  waiting on it; a cache of image names for the image route alone would
+  split the numbering that route takes from `read`'s list. Not built.
+- **O335 — the notes rule misreads three shapes of notes list. Open.**
+  `in_note` reads a note set in a `div` or `section` that opens on a
+  heading holding its back link as a group, so that link, where it is set
+  as a reference, opens the text in a note card; a linked group whose
+  first child is no heading (an `ol` or a `ul`, or one whose heading comes
+  after a page-break `span`, an empty `<a id>` or an `img`) as a note, so
+  a link to it opens a card instead of jumping; and an `li` grouping
+  notes in nested lists as a note, its heading with it. The rule was
+  rewritten twice in this PR's review and each rewrite regressed a case,
+  so these are recorded rather than fixed. Not built.
+
 ## What comes next
 
 Roughly in order. All four are now settled — one closed by a measurement that
@@ -5918,7 +5979,7 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the one hundred and ten open items tabled above — **a large minority
+What remains: the one hundred and nineteen open items tabled above — **a large minority
 of them opened by a review** rather than by building something, which is the
 fact worth carrying. **The count that used to stand here is deleted rather
 than corrected**, after three passes over one afternoon produced twenty-five,
@@ -7472,7 +7533,28 @@ mismatched pair said nothing at all.
   cent; scrolled, the same keys move a screen less a line. `=` and `-` set the
   text two pixels larger or smaller and `0` back to its usual size, as does
   the wheel over a paged book, a step a notch, and a paged book's page count
-  follows. **Notes come to books** (`bookNotes.ts`, `useBookNotes.ts`,
+  follows.
+  **Books show their rich text** (`taiyaku_read::Mark` and `Figure`): italic
+  and bold from the tags, from a stylesheet's classes where the selector is
+  one class or a tag with one, and from an element's `style`, and superscript
+  and subscript from the tags; furigana over its base, on by default and
+  turned off in the Text settings, so a lookup, a highlight and a place see
+  only the base text; images between blocks no wider than the column, and
+  inline where the book sets them, each opening full size on a tap unless it
+  is set in a link, which the tap then follows as it would on a linked word; a
+  footnote reference opening a popup with its note and a **Go to note**, an
+  in-book link jumping with a **Back** to where the reader was, and a web link
+  opening in a new tab. Marks are ranges beside a block's `text` and never
+  part of it, so a note's run, a sentence's range and a pin count as before,
+  which `taiyaku-read`'s `corpus::every_library_book_keeps_its_text` holds
+  against a snapshot. The peek, the interlinear line and every compare column
+  draw the marks too. Opened on 2026-11-15 over the test library: *Botchan*
+  with its glosses shown, hidden, and under its English edition in
+  interlinear; *A Clockwork Orange*, whose italics are a class alone; *The
+  Master of Ballantrae*, a note's popup, **Go to note** and **Back**; and
+  *Sword Art Online* 1, its illustrations. What it leaves undone is O327 to
+  O335.
+  **Notes come to books** (`bookNotes.ts`, `useBookNotes.ts`,
   `BookNotes.tsx`), in the page reader's notes document: a note's slot is its
   block, and a highlight is a note with a run of that block's text, `text:
   {start, end}` in UTF-16 code units (`taiyaku_library::TextRange`, `note.ts`

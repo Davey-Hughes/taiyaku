@@ -4562,6 +4562,12 @@ async fn an_account_granted_only_a_library_with_no_dir_sees_nothing() {
     let routes: Vec<(String, Shows)> = grant_postures()
         .into_iter()
         .filter(|(_, posture)| !matches!(posture, GrantPosture::GrantIndependent { .. }))
+        // The fixture holds no book, so a book's image answers 404 in both
+        // passes and the first could not show the work. It asks the grant as
+        // `/api/works/{work}/book` does, through `view::of_work`, which this
+        // test drives, and `book::tests::a_book_image_of_a_hidden_edition_is_404`
+        // drives it against an edition the grant hides.
+        .filter(|(pattern, _)| *pattern != "/api/works/{work}/{edition}/book/images/{index}")
         .map(|(pattern, _)| get_for(pattern, held_library))
         .collect();
 
@@ -6016,7 +6022,7 @@ async fn every_route_naming_a_work_answers_a_hidden_one_as_a_slug_no_work_holds(
         );
     }
     assert_eq!(
-        walked, 15,
+        walked, 16,
         "the guarded paths that carry `{{work}}`: a route that gains or loses one changes \
          this count"
     );

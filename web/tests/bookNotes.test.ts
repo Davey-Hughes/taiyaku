@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Book } from '../src/book'
+import type { Book, Mark } from '../src/book'
 import {
   ankiCsv,
   excerpt,
@@ -124,9 +124,9 @@ describe('a block cut into its sentences', () => {
 
   it('is each sentence, and the space between them on its own', () => {
     expect(pieces(text, sentences, [])).toEqual([
-      { sentence: 0, runs: [{ text: 'He came.' }] },
-      { runs: [{ text: ' ' }] },
-      { sentence: 1, runs: [{ text: 'He saw it.' }] },
+      { sentence: 0, runs: [{ text: 'He came.', marks: [] }] },
+      { runs: [{ text: ' ', marks: [] }] },
+      { sentence: 1, runs: [{ text: 'He saw it.', marks: [] }] },
     ])
   })
 
@@ -135,18 +135,175 @@ describe('a block cut into its sentences', () => {
     expect(pieces(text, sentences, [across])).toEqual([
       {
         sentence: 0,
-        runs: [{ text: 'He ' }, { text: 'came.', note: across }],
+        runs: [
+          { text: 'He ', marks: [] },
+          { text: 'came.', note: across, marks: [] },
+        ],
       },
-      { runs: [{ text: ' ', note: across }] },
+      { runs: [{ text: ' ', note: across, marks: [] }] },
       {
         sentence: 1,
-        runs: [{ text: 'He ', note: across }, { text: 'saw it.' }],
+        runs: [
+          { text: 'He ', note: across, marks: [] },
+          { text: 'saw it.', marks: [] },
+        ],
       },
     ])
   })
 
+  it('draws each of two overlapping sentences whole', () => {
+    expect(
+      pieces(
+        'abcd',
+        [
+          [0, 2],
+          [0, 4],
+        ],
+        [],
+      ),
+    ).toEqual([
+      { sentence: 0, runs: [{ text: 'ab', marks: [] }] },
+      { sentence: 1, runs: [{ text: 'abcd', marks: [] }] },
+    ])
+  })
+
   it('is the whole text, as one run, where the block holds no sentence', () => {
-    expect(pieces('  ', [], [])).toEqual([{ runs: [{ text: '  ' }] }])
+    expect(pieces('  ', [], [])).toEqual([
+      { runs: [{ text: '  ', marks: [] }] },
+    ])
+  })
+})
+
+describe('a block cut by its marks', () => {
+  const italic: Mark = { kind: 'italic', start: 2, end: 5 }
+
+  it('cuts at mark boundaries', () => {
+    expect(pieces('a big dog', [], [], [italic])).toEqual([
+      {
+        runs: [
+          { text: 'a ', marks: [] },
+          { text: 'big', marks: [italic] },
+          { text: ' dog', marks: [] },
+        ],
+      },
+    ])
+  })
+
+  it('lists the marks over a run in the order they are given', () => {
+    const bold: Mark = { kind: 'bold', start: 0, end: 5 }
+    expect(pieces('a big dog', [], [], [italic, bold])).toEqual([
+      {
+        runs: [
+          { text: 'a ', marks: [bold] },
+          { text: 'big', marks: [italic, bold] },
+          { text: ' dog', marks: [] },
+        ],
+      },
+    ])
+  })
+
+  it('keeps both a highlight and an italic word it covers half of', () => {
+    const over = note({ id: 'h', text: { start: 3, end: 9 } })
+    expect(pieces('a big dog', [], [over], [italic])).toEqual([
+      {
+        runs: [
+          { text: 'a ', marks: [] },
+          { text: 'b', marks: [italic] },
+          { text: 'ig', marks: [italic], note: over },
+          { text: ' dog', marks: [], note: over },
+        ],
+      },
+    ])
+  })
+
+  it('opens a ruby base cut by a sentence end only on its first run', () => {
+    const ruby: Mark = { kind: 'ruby', start: 1, end: 3, reading: 'あい' }
+    expect(
+      pieces(
+        'x愛情y',
+        [
+          [0, 2],
+          [2, 4],
+        ],
+        [],
+        [ruby],
+      ),
+    ).toEqual([
+      {
+        sentence: 0,
+        runs: [
+          { text: 'x', marks: [] },
+          { text: '愛', marks: [ruby], rubyStart: true },
+        ],
+      },
+      {
+        sentence: 1,
+        runs: [
+          { text: '情', marks: [ruby] },
+          { text: 'y', marks: [] },
+        ],
+      },
+    ])
+  })
+
+  it('opens a ruby base cut by a highlight only on its first run, losing none of the base', () => {
+    const ruby: Mark = { kind: 'ruby', start: 0, end: 3, reading: 'あいう' }
+    const runs = pieces(
+      '愛情心',
+      [],
+      [note({ text: { start: 1, end: 2 } })],
+      [ruby],
+    ).flatMap((p) => p.runs)
+    expect(runs.map((r) => [r.text, r.rubyStart])).toEqual([
+      ['愛', true],
+      ['情', undefined],
+      ['心', undefined],
+    ])
+    expect(runs.map((r) => r.text).join('')).toBe('愛情心')
+  })
+
+  it('sets a zero-width image on the run after it', () => {
+    const image: Mark = { kind: 'image', start: 1, end: 1, image: 4, alt: '' }
+    expect(pieces('ab', [], [], [image])).toEqual([
+      {
+        runs: [
+          { text: 'a', marks: [] },
+          { text: 'b', marks: [], images: [image] },
+        ],
+      },
+    ])
+  })
+
+  it('sets an image at the end of the text on an empty run of its own', () => {
+    const image: Mark = { kind: 'image', start: 2, end: 2, image: 4, alt: '' }
+    expect(pieces('ab', [[0, 2]], [], [image])).toEqual([
+      {
+        sentence: 0,
+        runs: [
+          { text: 'ab', marks: [] },
+          { text: '', marks: [], images: [image] },
+        ],
+      },
+    ])
+    expect(pieces('', [], [], [{ ...image, start: 0, end: 0 }])).toEqual([
+      {
+        runs: [
+          { text: '', marks: [], images: [{ ...image, start: 0, end: 0 }] },
+        ],
+      },
+    ])
+  })
+
+  it('gives what it gave before where there are no marks', () => {
+    const text = 'He came. He saw it.'
+    const sentences: [number, number][] = [
+      [0, 8],
+      [9, 19],
+    ]
+    const across = note({ id: 'a', text: { start: 3, end: 12 } })
+    expect(pieces(text, sentences, [across], [])).toEqual(
+      pieces(text, sentences, [across]),
+    )
   })
 })
 
