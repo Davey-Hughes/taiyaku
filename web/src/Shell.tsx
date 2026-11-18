@@ -19,7 +19,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Link, useLocation } from 'react-router'
+import { Link, useLocation, useNavigationType } from 'react-router'
 import { AccountMenu } from './AccountMenu'
 import {
   BrowseControlsContext,
@@ -35,6 +35,7 @@ import { usePrefsMap } from './hooks'
 import type { LibraryStatus } from './library'
 import { fieldChanged, sliceFor, sliceReset } from './module'
 import { LIBRARY_STATUS } from './pageReads'
+import { usePhoneBar } from './phoneBar'
 import { SIDEBAR_LAYOUT } from './phoneLayout'
 import { resetPrefs, savePrefs } from './prefs'
 import { InboxRefreshContext, STATUS_FAILED, StatusContext } from './shell'
@@ -177,11 +178,19 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const column = useRef<HTMLDivElement>(null)
   /** Where the skip link sends focus (O174). */
   const mainRef = useRef<HTMLElement>(null)
+  const barRef = useRef<HTMLElement>(null)
+  const trackRef = useRef<HTMLDivElement>(null)
   // One owner for every page drawn here: the scroller swaps at the phone
   // layout's edge whichever page is drawn, and `main` outlives them all.
   useScrollerSwap(mainRef)
-  const wasOpen = useRef(false)
   const location = useLocation()
+  const arrival = useNavigationType()
+  usePhoneBar(barRef, trackRef, menuOpen, {
+    path: location.pathname,
+    search: location.search,
+    replace: arrival === 'REPLACE',
+  })
+  const wasOpen = useRef(false)
 
   // Focus follows the drawer: to the navigation's first link on opening,
   // the Libraries heading's, with Close one Shift+Tab back and the wordmark,
@@ -280,55 +289,63 @@ export function Shell({ children }: { children: React.ReactNode }) {
               >
                 Skip to content
               </a>
-              <header className="phone-bar" inert={menuOpen}>
-                <button
-                  ref={menuButton}
-                  type="button"
-                  className="menu-button"
-                  aria-label="Menu"
-                  aria-expanded={menuOpen}
-                  aria-controls="library-menu"
-                  onClick={() => {
-                    setMenuOpen(true)
-                  }}
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M4 7h16M4 12h16M4 17h16" />
-                  </svg>
-                </button>
-                {/* Named for where it goes, and landing at its top, as the
-                    column's wordmark is. */}
-                <Link
-                  to="/"
-                  state={TO_TOP}
-                  className="home"
-                  aria-label="taiyaku, Libraries"
-                >
-                  <Wordmark />
-                </Link>
-                {/* Search is the Library view's bar: this goes there, keeping
-                    the library and the query when it is already on that
-                    view, and the view focuses the box. Already there, the
-                    box is focused here, inside the tap, so iOS raises its
-                    keyboard. */}
-                <Link
-                  to={{
-                    pathname: '/',
-                    search: location.pathname === '/' ? location.search : '',
-                  }}
-                  state={{ focusSearch: true }}
-                  className="search"
-                  aria-label="Search"
-                  onClick={() => {
-                    document.getElementById(SEARCH_BOX_ID)?.focus()
-                  }}
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <circle cx="11" cy="11" r="6" />
-                    <path d="M16 16l4 4" />
-                  </svg>
-                </Link>
-              </header>
+              {/* The bar is sticky inside its track, whose height
+                  `phoneBar.ts` sets, so it goes up with the page; the clip
+                  around the track keeps it from making the page taller. */}
+              <div className="phone-bar-clip">
+                <div ref={trackRef} className="phone-bar-track">
+                  <header ref={barRef} className="phone-bar" inert={menuOpen}>
+                    <button
+                      ref={menuButton}
+                      type="button"
+                      className="menu-button"
+                      aria-label="Menu"
+                      aria-expanded={menuOpen}
+                      aria-controls="library-menu"
+                      onClick={() => {
+                        setMenuOpen(true)
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4 7h16M4 12h16M4 17h16" />
+                      </svg>
+                    </button>
+                    {/* Named for where it goes, and landing at its top, as the
+                      column's wordmark is. */}
+                    <Link
+                      to="/"
+                      state={TO_TOP}
+                      className="home"
+                      aria-label="taiyaku, Libraries"
+                    >
+                      <Wordmark />
+                    </Link>
+                    {/* Search is the Library view's bar: this goes there, keeping
+                      the library and the query when it is already on that
+                      view, and the view focuses the box. Already there, the
+                      box is focused here, inside the tap, so iOS raises its
+                      keyboard. */}
+                    <Link
+                      to={{
+                        pathname: '/',
+                        search:
+                          location.pathname === '/' ? location.search : '',
+                      }}
+                      state={{ focusSearch: true }}
+                      className="search"
+                      aria-label="Search"
+                      onClick={() => {
+                        document.getElementById(SEARCH_BOX_ID)?.focus()
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <circle cx="11" cy="11" r="6" />
+                        <path d="M16 16l4 4" />
+                      </svg>
+                    </Link>
+                  </header>
+                </div>
+              </div>
               <div
                 id="library-menu"
                 ref={column}

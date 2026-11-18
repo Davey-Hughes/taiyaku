@@ -19,12 +19,15 @@ const SHEETS = import.meta.glob<string>(['./index.css', './styles/*.css'], {
   eager: true,
 })
 
-/** The two queries that turn at a size of their own, each for its reason. */
+/** The three queries that turn at a size of their own, each for its reason. */
 const EXCEPTIONS = [
   // A Configuration table's row as two lines, at a width its columns need.
   './styles/admin.css: @media (width < 36rem)',
   // A book's rows as one column, at a width its columns need.
   './styles/book.css: @media (max-width: 40rem)',
+  // The drawer's foot scrolls with the list on a short screen, and a height
+  // under 500 px is always the phone layout, so it is one of its parts.
+  `./styles/shell.css: @media ${PHONE_LAYOUT_PARTS[1]}`,
 ]
 
 /** Each `@media` that asks the viewport's width or height, by its file. */

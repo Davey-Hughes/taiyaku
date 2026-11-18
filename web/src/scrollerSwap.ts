@@ -9,6 +9,7 @@
  * phone layout the view starts under the bar.
  */
 import { type RefObject, useEffect } from 'react'
+import { barLine } from './phoneBar'
 import { frameTime, onRowLaid, scrollPutBack, uprightNow } from './reseatTiming'
 import { scroller } from './scrollKeeper'
 
@@ -132,12 +133,16 @@ export function useScrollerSwap(main: RefObject<HTMLElement | null>): void {
   useEffect(() => {
     const content = main.current
     if (content === null || typeof ResizeObserver === 'undefined') return
-    const bar = content.parentElement?.querySelector(':scope > .phone-bar')
-    /** Where the view starts in the window, for the element that scrolls. */
+    const bar = content.closest('.library')?.querySelector('.phone-bar')
+    /**
+     * Where the view starts in the window, for the element that scrolls. The
+     * bar's box can be stale at a turn, before its script re-places it, so
+     * the line is the one the script last showed (`barLine`).
+     */
     const lineOf = (at: Element) =>
       at === content
         ? content.getBoundingClientRect().top + content.clientTop
-        : (bar?.getBoundingClientRect().bottom ?? 0)
+        : (barLine() ?? bar?.getBoundingClientRect().bottom ?? 0)
     const offsetOf = (anchor: HTMLElement | null, at: Element) =>
       anchor === null ? 0 : laid(anchor).top - lineOf(at)
     const placeIn = (at: Element): Place => {
@@ -173,16 +178,27 @@ export function useScrollerSwap(main: RefObject<HTMLElement | null>): void {
       if (kept.atTop) at.scrollTop = 0
       else if (kept.anchor?.isConnected) {
         const { top, bottom } = laid(kept.anchor)
-        at.scrollTop +=
-          top - lineOf(at) - kept.below + kept.share * (bottom - top)
+        const line = lineOf(at)
+        at.scrollTop += top - line - kept.below + kept.share * (bottom - top)
+        // Near the page's top in a turn the line the bar's script gives moves
+        // with the scroll (`barLine`): the place goes under it where this
+        // scroll left it. Before the script starts the line is the bar's box,
+        // which this scroll carries off with the page: never followed.
+        if (barLine() !== null) {
+          const moved = line - lineOf(at)
+          if (moved !== 0) at.scrollTop += moved
+        }
       } else {
         place = placeIn(at)
         return
       }
       kept.scroller = at
-      kept.drawn = offsetOf(kept.anchor, at)
       putIn = frameTime()
       scrollPutBack()
+      // Read once the bar's script has heard the put-back: into the phone
+      // layout it starts there, and before it the line is the bar's box,
+      // which this scroll carried off with the page.
+      kept.drawn = offsetOf(kept.anchor, at)
     }
     // The Continue row lays a new column in its own observer, after this
     // one, and its new height moves what was put back below it: put back

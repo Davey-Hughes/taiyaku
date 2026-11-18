@@ -550,21 +550,27 @@ a.account-button {
 }
 
 /* The phone bar, the scrim and the drawer's Close button exist in the phone
- * layout only — the `@media` block below draws them. */
+ * layout only — the `@media` block below draws them. The bar's track and
+ * the clip around it lay out no box of their own beside the sidebar. */
 .phone-bar,
 .scrim,
 .menu-close {
   display: none;
 }
 
+.phone-bar-clip,
+.phone-bar-track {
+  display: contents;
+}
+
 /* The phone layout, narrow or short (`phoneLayout.ts`), spec 2026-09-17
  * §7.1. The sidebar column becomes a drawer that ☰ slides in, and the
  * *document* scrolls rather than `<main>`: iOS Safari shrinks its toolbar,
  * and scrolls to the top on a tap on the status bar, only for the document's
- * own scroll. So `.library` takes its content's height here and the bar
- * sticks. While the drawer is open — `menu-open`, set by `Shell.tsx` — the
- * bar and `<main>` are `inert` and the root stops scrolling.
- * `Shell.browser.test.tsx` measures all three. */
+ * own scroll. So `.library` takes its content's height here, and the bar
+ * rides a track that moves it with the page. While the drawer is open —
+ * `menu-open`, set by `Shell.tsx` — the bar and `<main>` are `inert` and the
+ * root stops scrolling. `Shell.browser.test.tsx` measures all three. */
 @media (width < 900px) or (height < 500px) {
   /* How much of the top of the window the phone bar covers. Anything that is
      scrolled to the top of the view clears it by this much. */
@@ -572,10 +578,47 @@ a.account-button {
     --sticky-top: calc(52px + env(safe-area-inset-top, 0px));
   }
 
+  /* The page starts below the bar, whose track is out of the flow.
+     Positioned, so the track's clip is as tall as the page. */
   .library {
+    position: relative;
     display: block;
     height: auto;
     min-height: 100%;
+    padding-top: var(--sticky-top);
+  }
+
+  /* The track's clip: an absolute box over the whole page, set in by the
+     side insets as `.library` sets the page in. The track and a resting bar
+     can run past the end of a page that shrinks in place, and the scroll
+     the shrink causes reaches `phoneBar.ts` only after a frame is drawn;
+     cut off here, they never hold the page up past its content. `clip`
+     makes no scroll container, as `hidden` would, so the bar inside still
+     sticks to the window. Only the bar takes a press. */
+  .phone-bar-clip {
+    display: block;
+    position: absolute;
+    inset: 0 env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+    z-index: 10;
+    overflow: clip;
+    pointer-events: none;
+    /* The browser holds the page by the first box in view, in document
+       order, and the clip comes before `main` and spans the page. Content
+       grown above the view, or a resize, moves neither the clip, the track
+       nor the bar, so the page, held by any of them, would not move with
+       its content. Out of the choosing, the clip takes the track and the
+       bar with it. */
+    overflow-anchor: none;
+  }
+
+  /* The bar's track: a box at the page's top, as tall as `phoneBar.ts`
+     sets it. A sticky box cannot leave its containing block, so the bar is
+     pinned until the track's end pushes it up with the page, and the
+     compositor moves it in step with the scroll, where a transform written
+     from script would trail iOS's. */
+  .phone-bar-track {
+    display: block;
+    height: var(--sticky-top);
   }
 
   .phone-bar {
@@ -590,6 +633,20 @@ a.account-button {
     padding: env(safe-area-inset-top, 0px) var(--space-2) 0;
     border-bottom: 1px solid var(--line);
     background: var(--bg);
+    pointer-events: auto;
+  }
+
+  /* At rest the bar is part of the page, at the same pixels: on iOS this bar
+     popped at a turn begun mid-page wherever it was pinned to the viewport,
+     though apple.com's and github.com's headers did not clearly pop, and
+     resting in the page all but stopped it (the drawer-polish spec).
+     `relative`, in the track's flow as the sticky bar is: a bar that left the
+     flow to rest, once in view, would have Chromium skip its next correction
+     of the page's place, so a resize would move the content in view. The
+     track's top is the page's, so the offset is the bar's page offset. */
+  .phone-bar[data-at-rest] {
+    position: relative;
+    top: var(--rest-top, 0px);
   }
 
   .phone-bar .menu-button,
@@ -654,7 +711,7 @@ a.account-button {
     position: fixed;
     inset: 0 auto 0 0;
     z-index: 30;
-    width: min(20rem, 85vw);
+    width: calc(14rem + env(safe-area-inset-left, 0px));
     box-sizing: border-box;
     padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px)
       env(safe-area-inset-left, 0px);
@@ -686,6 +743,16 @@ a.account-button {
 
   :root:has(.library.menu-open) {
     overflow: hidden;
+  }
+}
+
+/* On a short screen a sticky foot would take most of the drawer and leave
+ * the navigation little room, so here it follows the navigation and
+ * scrolls into view at the end of the list. A height under 500 px is
+ * always the phone layout. */
+@media (height < 500px) {
+  .sidebar-foot {
+    position: static;
   }
 }
 

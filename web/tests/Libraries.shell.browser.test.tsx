@@ -1151,9 +1151,11 @@ describe('the Libraries screen in the real Shell', () => {
 
     // Another rename, whose read is held until the sentence is wholly in
     // the window and under the bar, not in view; the same refusal then
-    // answers it.
+    // answers it. The page is scrolled up to that place, as a scroll down
+    // to it would carry the bar out of the window.
     const failReload = holdReload()
     await renameMangaQuietly(host)
+    await putAt(host, alert(), -80)
     await putAt(host, alert(), 20)
     expect(alert().getBoundingClientRect().top).toBeLessThan(barBottom())
     await failReload(STORE_LOCKED)

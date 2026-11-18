@@ -3502,16 +3502,24 @@ describe('a library page’s lines for a directory another library holds too', (
     const host = await opened(LIBRARY)
     const addRoot = () =>
       host.querySelector('.library-page .add-root') as HTMLElement
-    await pressOn(addRoot().querySelector('button[name="add-dir"]'))
+    // In the phone layout the page starts below the bar's room, which at
+    // 390 px tall puts the add form's buttons under the window's foot, out
+    // of a press's reach; each is scrolled into view first, as a reader
+    // scrolls to it.
+    const reached = (el: Element | null) => {
+      el?.scrollIntoView({ block: 'nearest' })
+      return el
+    }
+    await pressOn(reached(addRoot().querySelector('button[name="add-dir"]')))
     if (browse) {
-      await pressOn(addRoot().querySelector('button[name="browse"]'))
+      await pressOn(reached(addRoot().querySelector('button[name="browse"]')))
       expect(addRoot().querySelector('.dir-browser .dir-list')).not.toBeNull()
     }
     await typeInto(
       addRoot().querySelector('input[name="path"]') as HTMLInputElement,
       path,
     )
-    await pressOn(addRoot().querySelector('button[name="pick"]'))
+    await pressOn(reached(addRoot().querySelector('button[name="pick"]')))
     await document.fonts.ready
     const removal = () =>
       host.querySelector('.library-page .settings-removal') as HTMLElement

@@ -9,10 +9,11 @@ import {
   useLocation,
   useNavigate,
 } from 'react-router'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished } from 'vitest'
 import {
   forgetScroll,
   lastLibraryAddress,
+  onLanded,
   RESTORE_SCROLL,
   SCROLL_TO_TOP,
   useKeptScroll,
@@ -216,6 +217,42 @@ describe('the scroll keeper', () => {
     await navigate(-1)
     rerender(<Harness ready />)
     expect(main.scrollTop).toBe(800)
+  })
+
+  // Read as each landing is said: a call before the scroll is written would
+  // hear the scroll left, and a landing re-read later is said again. A
+  // replace that keeps its place writes no scroll, and is not said.
+  it('says each landing that writes the scroll once, after its scroll', async () => {
+    const heard: number[] = []
+    const off = onLanded(() => {
+      heard.push(document.getElementById('content')?.scrollTop ?? Number.NaN)
+    })
+    onTestFinished(off)
+    const host = mount(<Harness />)
+    const main = mainOf(host)
+    await scroll(main, 300)
+    await navigate('/series/1')
+    await scroll(main, 500)
+    await navigate(-1)
+    rerender(<Harness ready={false} />)
+    await navigate(1)
+    const waiting = heard.length
+    rerender(<Harness ready />)
+    rerender(<Harness ready={false} />)
+    rerender(<Harness ready />)
+    await navigate('/series/1?sort=added', { replace: true })
+    const kept = heard.length
+    await navigate('/series/1?sort=added', {
+      replace: true,
+      state: { [SCROLL_TO_TOP]: true },
+    })
+    off()
+    await navigate('/series/2')
+    expect({ waiting, kept, heard }).toEqual({
+      waiting: 3,
+      kept: 4,
+      heard: [0, 0, 300, 500, 0],
+    })
   })
 
   it('moves nothing on a replace, and saves on under the new entry', async () => {

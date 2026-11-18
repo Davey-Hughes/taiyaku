@@ -3,10 +3,10 @@
  * stands. A screen under 500 px tall is crowded by the sidebar's foot as a
  * narrow one is by its width, so either turns the layout. Every viewport
  * query in the stylesheets writes one of these letter for letter, but for
- * two named exceptions that turn at a width their own content needs
- * (`phoneLayout.css.test.ts`), and a script that must know the layout
- * before anything is drawn asks `matchMedia` with these rather than a
- * number of its own.
+ * three named exceptions (`phoneLayout.css.test.ts`): two that turn at a
+ * width their own content needs, and the drawer's foot, which turns at the
+ * height part alone. A script that must know the layout before anything
+ * is drawn asks `matchMedia` with these rather than a number of its own.
  */
 export const PHONE_LAYOUT_PARTS = [
   '(width < 900px)',

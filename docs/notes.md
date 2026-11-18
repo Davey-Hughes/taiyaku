@@ -29066,3 +29066,470 @@ puts iOS's order first.
   turn told by `(orientation: portrait)` alone.
 - The swap's case with a sliver of the Continue row at the top: red with
   the row's put-back removed, where the page does not anchor.
+
+## O307, O309 and O337: the drawer's width, its foot on a short screen, and the phone bar that moves with the scroll (2026-11-17)
+
+The spec is `docs/superpowers/specs/2026-11-17-drawer-polish-design.md`
+and the plan `docs/superpowers/plans/2026-11-17-drawer-polish.md`. The rig
+report, the owner's log and the task reports named below are in
+`.superpowers/sdd/2026-11-17-drawer-polish/`, which is not committed. The
+owner chose each part by trying a prototype on an iPhone 17 Pro Max over
+the tailnet, served from a scratch copy of the test library; the
+prototype was approved for feel, and what was kept of it was built again
+under tests.
+
+**What the owner chose, and why** (the spec, "Approaches").
+
+- The drawer's width (O307) had one candidate: the sidebar column's 14rem,
+  plus the left safe area the drawer pads inside itself.
+- The foot on a short screen (O309): three were served. A, the foot
+  scrolls with the list, was chosen: nothing moves or goes, and the list
+  gets the whole drawer. B put an icon-only Theme switch beside More in one
+  row and moved the build's label into More's menu, and did not fit at
+  14rem. C left only More in the foot and moved Theme and the label into
+  More's menu, a tap deeper; for a non-administrator More is a link, so on
+  a short desktop window it would take the bottom-left corner the owner's
+  ruling of 2026-10-27 gave to Theme, where a browser draws a hovered
+  link's address.
+- The bar (O337), in the order tried. Four positions, each loaded on the
+  phone (the log's `/proto-insets` lines name all four): `sticky`,
+  `sticky` with `will-change: transform`, `fixed` and `static`. Every
+  pinned one, the first three, popped on a turn begun mid-page, and none
+  at the very top; mid-page the `static` bar has scrolled out of view
+  with the top of the page (`rig-report.md`).
+  Snap, the bar sliding out after a scroll down and back after a scroll
+  up: the owner said it "feels ok" and asked for a bar that tracks the
+  scroll, "like iOS does with its menu elements". Track, chosen. Last, at
+  rest the bar pinned or part of the page: pinned keeps the bar pinned to
+  the viewport like the positions that popped; in the page, chosen, the
+  pop was "mostly" gone, "a very slight pop now but it's better".
+
+**The rig's figures** (`rig-report.md`; headless Chromium at 956×440 with
+a coarse pointer and no safe-area insets, raw numbers in
+`check-measurements.json`). Today's sticky foot was 220.5 px of the
+drawer's 440, leaving the wordmark and the list 219.5. In B, More with its
+word, the open-proposals count and its chevron was 119 px wide, and beside
+the Theme switch's three 44 px segments it got 47, so its word was cut;
+the prototype had to shrink the segments and drop the chevron.
+
+**The order of a turn on the phone** (the owner's log,
+`rig-requests.log`, each `/proto-log` event's user-agent an iPhone's
+Safari). Over the eight turns logged with Track and the bar at rest in
+the page, iOS's own scroll reached the page 53 to 126 ms after
+`orientationchange`, seven of the eight within 90 ms. The keeper's
+put-back landed within 1 ms after it, and the bar was re-placed after
+both, at the share in view it had held. The spec reads the slight pop as
+most likely falling in that gap,
+while the bar is still placed against the old layout. The build makes the
+one attempt the spec allows: it re-places the bar at each resize during a
+turn as well, so at the first one, in the resize event's own task.
+
+**The owner's check of the final build** (the server's request log,
+`rig-requests.log`). On 2026-11-18 the owner checked the final build on
+the iPhone against this list: scrolling, upright and sideways; a turn
+mid-page with the bar in view and the page still, where the pop had been;
+a turn with the bar out of view; a turn near the top with the bar
+part-shown; a turn at rest near the end of a page; held sideways, ☰ then
+More at the end of the drawer; from deep in the library, ☰, More and
+Account, in view and not blank, then Back to the place; a page shortened
+in place near its end; and, optional, a cover loading above the view and
+a hardware keyboard's Shift+Tab and PageUp. The owner said "ok it seems
+good across these", and did not mention a slight pop this time. The owner
+did not say which optional items they tried, so the check does not settle
+what only those would show, a cover loading above the view under WebKit's
+anchoring and the Tab put-back's order in Safari, both known limits
+below. The log shows the iPhone loading the final bundle at 12:37 UTC,
+its user-agent "iPhone OS 18_7 … Version/27.0.1"; Safari freezes the
+"iPhone OS" token, so the iOS is the `Version/` one, 27.0.1. A scroll or
+a turn makes no request, so the log confirms only the load.
+
+**The track and the page's scroll anchoring** (`task-6b-report.md`),
+measured in Chromium.
+
+- With any of the bar in view, on the track or at rest, the page kept no
+  place: content grown above the view moved the content in view down with
+  it, where with the bar hidden the page anchored. `overflow-anchor: none`
+  on `.phone-bar-track` alone put the anchoring back in every state, so the
+  page had been held by the track or by the bar inside it; the same rule
+  on the bar alone changed nothing. With the track's rule removed, 40 px
+  grown above the view moves the first tile in view 40 px
+  (`task-6b-fix2b-watch-track-rule-removed.log`).
+- The prototype rested the bar `position: absolute`. Once a wheel up had
+  brought the bar in to rest, a width-only resize from 440 to 400 wide held
+  the grid list and not the tile in view, which moved −60 px, even after
+  the bar had scrolled out again; main held the tile however the page got
+  there, its bar shown or set to `display: none` (the 6b fix round's main
+  probe and its up-and-down probe, run on the branch and on main). The
+  track's box set to `display: none`, or the track moved after `main`,
+  just before the resize brought the tile back. `contain` on the track,
+  its height frozen or zeroed, the track moved after `main` before the
+  drive, and `visibility` on the bar did not;
+  never resting matched main but gave up the rest. The resting bar
+  `relative` at the same `--rest-top`, in its track's flow as the sticky
+  bar is, held the tile as main does. The readings fit Chromium skipping
+  its next anchoring correction after a box in view leaves the flow; why
+  it does was not found. With the rest put back to `absolute`, both resize
+  cases read the tile moved −60 px
+  (`task-6b-fix2b-watch-rest-absolute.log`).
+- With the rest `relative`, Back to a kept place landed 78 px past it.
+  `Library.tsx` called `useKeptScroll` before `useContinueRow`, so in the
+  commit that draws the page on Back the keeper put the scroll back while
+  the Continue row's cards were not yet sized; the row's own layout effect
+  then grew them above the view, and anchoring carried the view down with
+  the content (`task-6b-fix2b-trace-1.log`). The `absolute` rest had been
+  suppressing that correction. The keeper's call now comes after the
+  row's hook; put back before it, Back lands 78 px off in each of three
+  rounds (`task-6b-fix2b-watch-keeper-before-row.log`). Main calls the two
+  hooks in the same order, and in the final re-review's probe main's Back
+  from Account or About to the Library landed 78 px off at 440×956 and
+  42 px off at 956×440 in every round, where the branch lands at the place
+  (`final-rereview-keeperprobe-main.log`,
+  `final-rereview-keeperprobe-branch.log`).
+
+**A scroll no input began** (`task-6-report.md`, fix round 1). Chromium
+fired no `scrollend` after the clamp of a page grown shorter, or after an
+anchoring correction: one `scroll`, then nothing (`task-6-fix1-probe.log`).
+Resting only at `scrollend` would have left the bar on the track until
+the next scroll ended, and on the phone it would have popped at the next
+turn. So a page scroll that no gesture began (no finger down, and no
+wheel, touchmove or key within 150 ms) rests the bar 150 ms later, and a
+gesture's scroll still waits for its `scrollend`.
+
+**The Tab put-back** (`task-5-report.md`, fix round 1). Chromium scrolls
+a focused element into view before `focusin`: with the put-back removed,
+Shift+Tab into the hidden bar moved the page up 504 px
+(`task-5-mut/FB-putback-removed-bar.log`). The hook records the scroll at
+a Tab keydown and, at a `focusin` into the bar that follows that keydown
+before the next frame, scrolls back there before it shows the bar.
+Nothing else is put back. Task 5's first put-back, made before its fix
+round and keyed to any keyboard `focusin`, put a new page back to the old
+page's scroll when a navigation left keyboard focus on ☰. A replace that
+keeps the path (a search keystroke, a chip, the sort or an edition)
+changes the page's state, not the page, so it does not show the bar,
+which could otherwise come down over the search box at every key.
+
+**Two writes at a turn's landing** (`task-7-report.md`). The keeper reads
+the line from `barLine()`, writes the scroll, reads the line again and
+moves the scroll by however far the line moved. Outside the band near the
+page's top the line does not move with the keeper's write, and nothing
+changes. The second write follows only the script's line: before the
+script has started, the line is the bar's box, which the keeper's own
+write carries off, and following it doubled the put-back (a jsdom case
+read 2990 for 1495, `task-7-watch-f1-follow-on-box.log`). Two writes are
+accepted: a kept place never lands under the bar, and inside the band it
+can land a few px below the bar's foot. Near the top during a turn the
+held line and the resting bar take the band's larger value, and a resting
+bar is never above the page's top.
+
+**Known limits.**
+
+- The Tab put-back assumes Chromium's order, a scroll before `focusin`;
+  whether Safari does the same needs a hardware keyboard on the phone, and
+  is unchecked.
+- A keyboard scroll from rest (PageUp, Space, an arrow) leaves rest at its
+  first scroll event, so the compositor may draw the resting bar moving
+  for a frame first, the threaded-scroll limit the wheel-up half of
+  "keeps the bar at the top in every frame of a wheel up from rest…" met
+  as well.
+- An anchoring correction moves the bar by the rule like any scroll:
+  content grown above the view moves a pinned bar up by as much.
+- WebKit's anchoring cannot be reached from the test harness; the owner's
+  phone is the check.
+- The track's clip ends where `.library` ends, not where the document's
+  scroll ends. Absolutely placed content that runs past the page's end,
+  as a volume's panel on the last row does (O283), makes the document
+  longer than the clip, and once that overhang is about a window tall, a
+  pinned bar scrolled to its foot and back up is past the clip's end and
+  cut off, neither drawn nor pressable. Measured in review: the one
+  overhang known, that panel, makes the document 176 px taller than the
+  page in `Series.scrollbars`' fixture at 956×440, well short of a window
+  (`task-9-review-probe-panel.log`). Only script could
+  size the clip to the document's own end, and that would bring back the
+  frame-late timing the clip removed.
+- A shrink in place made inside another `ResizeObserver`'s callback,
+  probed in review and not tested (`task-9-rereview-1.md`). The clip's
+  observer hears it in the same frame when the window's width changes
+  too, since a width change resizes the root in that frame;
+  `continueRow.ts`'s gap/column switch and `MetadataEditor.tsx`'s
+  `fitTitle` shrink the page only on a width change. With no window
+  resize alongside, the observer hears it a frame late: a resting bar is
+  drawn for one frame where the page moved from, and the browser fires
+  "ResizeObserver loop completed with undelivered notifications" at
+  `window`, which `Library.continue.browser.test.tsx` and
+  `MetadataEditor.browser.test.tsx` treat as a defect. No shipped code
+  makes such a shrink, by a reading of every `ResizeObserver` in
+  `web/src`.
+- Read, not tested: the shrink of an overhang past the page's end does
+  not resize the clip, so its observer does not hear it; there a resting
+  bar is drawn for one frame where the page moved from.
+- Read in review, not tested: a scrollbar thumb drag that pauses 150 ms
+  rests the bar mid-drag (a narrow desktop window only), and a clamp
+  within 150 ms of an input that scrolled nothing counts as that input's
+  scroll and waits for `scrollend`.
+- `scrollKeeper.browser.test.tsx` printed React's "not configured to
+  support act(...)" warning 45 times at the base of the turn's task, in
+  its cases that turn or resize the window (`task-7-base-sk.log`). The
+  file's own cases were not run on main; a probe added to main's copy of
+  the file, which turns the window, printed it there too
+  (`final-rereview-turnendprobe-main.log`).
+
+**The tests, and the defect each was watched failing against.** Each
+defect was applied to the code by hand, the test run red, and the code
+restored; the task reports (`task-1-report.md` to `task-7-report.md`,
+`task-6b-report.md`, `task-9-report.md` and `final-fix-report.md`) name
+each run's log. Tests that passed when written count only through these
+runs. The browser tests are in the browser project, which CI does not run
+and the local gate does.
+
+- O307 and O309, `node`:
+  - `styles/shell.css.test.ts`'s "draws the drawer 14rem wide plus the left
+    safe area it pads": red with the drawer `width: 14rem`. "sets the foot
+    static under (height < 500px) and nowhere else": red with a second
+    `position: static` rule for the foot in the phone layout's block.
+  - `phoneLayout.css.test.ts`'s "writes every viewport-size query as the
+    phone layout, its complement, or a named exception" and "finds each
+    named exception once": red with the foot's query written
+    `(max-height: 499px)`, which also turned the foot's `shell.css.test.ts`
+    case and `builtStylesheet.test.ts`'s "keeps the phone layout’s
+    condition and its complement, and no other viewport-size query" red;
+    the first two also with the exception retyped `(height < 499px)`.
+  - `prototypeGone.test.ts`'s three cases: red with `proto.js` put back in
+    `web/public`, with a `fetch('/proto-log')` in `phoneBar.ts`, and with
+    `/proto-apply.js` put back in `index.html`.
+- O307 and O309, browser, `Shell.browser.test.tsx`:
+  - "draws the open drawer at the sidebar column’s 14rem, at 956×440": red
+    with the drawer `min(20rem, 85vw)`.
+  - "sets the foot %s at %i×%i": the static rows red with the foot's rule
+    removed, the sticky row at 899×500 with its bound written
+    `(height <= 500px)`. "gives the navigation the whole drawer at
+    956×440": red with the rule removed.
+  - "opens More’s panel whole at the end of the drawer at 956×440, %s
+    pointer": red with `overflow: clip` on the foot.
+  - "keeps More and its panel within reach when a phone turns sideways
+    with them open", and the short-window panel case shrunk while it is
+    open: red with `hold`'s scroll removed. The panel cases "opened" and
+    "with the text made larger", and "draws each entry’s whole focus ring
+    as Tab and Shift+Tab scroll a short window’s panel to it…": red with
+    its `below > 0` guard removed.
+  - "brings More back into a shortened drawer without scrolling the page
+    under it": red with the document scrolled in place of the drawer's
+    column. `scrollIntoView` in the column's place does not move the root
+    in headless Chromium, so the reason not to use it rests on the phone
+    check.
+- O337, `node`, `phoneBar.test.ts`: red with `trackEnd`'s clamp of the
+  scroll removed ("counts a rubber band past either end as the end"), with
+  `max(H, …)` removed ("never puts the end above the bar's own height"),
+  with the clamp's bounds written `(y − H, y)` (the first three cases),
+  and with `shownShare`'s clamp removed.
+- O337, `jsdom`, `phoneBar.hook.test.tsx`:
+  - The band rule bypassed: "moves the track's end by the band rule on
+    each scroll" among 17 of the then 24. The drawer ignored: "holds the
+    bar shown while the drawer is open". `--rest-top` from the scroll
+    alone: "rests at scrollend with the bar in view, at its own pixels"
+    and four more. The idle wait doubled, and the wait not reset: "rests
+    150 ms after the last scroll where scrollend is missing". The `wheel`
+    or `touchmove` listener removed: "leaves rest at a wheel, and at a
+    touchmove, at the same pixels". The same-place check inverted:
+    "ignores a scroll at rest that leaves the page where it was".
+  - The hold removed from the scroll, or its timer not reset: "holds the
+    share in view through a turn and puts it back against each new
+    scroll". The put-back's or the observer's re-place removed:
+    "re-places the bar at the keeper's put-back and in the observer during
+    a turn". The `orientationchange` listener removed, the scroll's width
+    check removed, and a resize counted as a turn whatever its width: the
+    "counts %s as a turn" cases and "counts a resize that keeps the width
+    as no turn". The put-back's guard halves: "keeps the turn's share at
+    the keeper's put-back near the top" and "keeps a resting bar's share
+    at the keeper's put-back after a turn near the top".
+  - Outside the phone layout: the scroll's, the turn's and the rest's
+    layout checks removed, "does nothing outside the phone layout"; the
+    start's reset removed, "starts shown on coming back to the phone
+    layout"; the stop leaving the track's height, "keeps nothing a wheel or
+    the drawer wrote between a resize out of the layout and the list’s
+    change"; the observer's and the track's put-back's layout checks
+    removed, "re-places nothing in the observer between a resize out of
+    the layout and the list’s change" and "leaves a track the keeper’s
+    put-back stops outside the layout as stopped, after a return"; the
+    `wheel` or `touchmove` listener left on at the stop, "hears a %s only
+    from the track running, after a return"; the listeners left on beside
+    the sidebar, "a width change outside the phone layout does nothing";
+    the start reading the layout as matched, "starts nothing at a mount
+    outside the phone layout"; the cleanup's line left set, "lets go on
+    unmount"; each half of the API guard, "does nothing where matchMedia
+    is missing" and "… ResizeObserver is missing"; the refs guard
+    removed, "starts nothing where the refs hold no element".
+  - The clip's observer: its call removed, "takes a resting bar back to
+    the track at a clamp the clip’s observer sees before its scroll
+    event"; its check that the scroll moved removed, "leaves the wait for
+    rest alone when the clip resizes with the scroll where it was"; its
+    `disconnect` removed from the stop, "watches nothing once the track
+    stops".
+  - Each of the hook's other branches against its own removal: "leaves
+    rest at a scroll that moves the page", "leaves the track alone at a
+    wheel while the bar is not at rest", "shows a resting bar whole when
+    the drawer opens", "keeps a resting bar's share when the page shrinks
+    under it" and "leaves the track to the scroll when the page resizes
+    with the bar on it" (the observer re-placing always).
+  - The page's own end not read: "reads the page’s own end where the
+    track holds up a page grown shorter", removed with the code it held
+    once `.phone-bar-clip` kept the track out of the page's height (the
+    browser cases below hold that now). The max removed from a rest's
+    `--rest-top` (`-10px`) or from its line (32 for 42): "rests no higher
+    than the page’s top through a turn near the top, its foot the line,
+    and rejoins the track there".
+  - Keyboard focus: the `focusin` listener removed, the put-back removed,
+    the show removed from it, and a show or a hold for any focus in the
+    bar: "holds the bar and brings it in for keyboard focus in it, and for
+    no other".
+    The put-back keyed to any `focusin`, its record not cleared by the
+    frame, or kept for any key: "leaves a landing where it is when
+    keyboard focus comes back to the bar".
+  - Navigation: the page effect removed, or run at every render: "shows
+    the bar when the page changes and not when it stays". A replace on the
+    same path shown, or no replace shown: "shows the bar for a replace to a
+    new path, and not for one on the same path". The landing show removed,
+    or its listener left on: "shows the bar at the keeper's landing".
+  - Rest: the timer left running after a page scroll, "rests again 150 ms
+    after a touchmove that scrolls nothing, and not when a page scroll
+    follows"; the settle after a show removed, the track's start not
+    resting, and the rest not recording its scroll, "rests at mount, under
+    the drawer and once it closes, on a return to the phone layout, and at
+    a landing and after its scroll"; the wait not armed, armed for every
+    scroll, the gesture not held to `scrollend` or not cleared there, the
+    touch listeners removed, and no input time at a keydown, "rests 150 ms
+    after a scroll no input began, and not by the wait during a scroll a
+    touch or a key began".
+  - The turn: the resize's re-place removed, "re-places on the first
+    width-changing resize after an orientationchange"; the turn end's
+    settle removed, "rests at the turn's end"; the band's max removed from
+    the held line, "gives the line the band forces near the top during a
+    turn…"; the whole bar not taken at a show, "shows the bar whole when
+    the drawer opens during a turn, %s, and keeps it whole once the turn is
+    over".
+- O337, `jsdom`, the keeper: `scrollKeeper.test.tsx`'s "says each landing
+  that writes the scroll once, after its scroll": red with the landing's
+  call removed, made before the scroll or before the guard, its listener
+  never deleted, and a landing that writes nothing told.
+  `scrollerSwap.hook.test.tsx`'s "puts the place under the bar’s foot
+  where the put-back’s own scroll moves the foot": red with the follow-up
+  write removed; "puts the place back in one write where the line is a bar
+  the put-back’s scroll carries": red with the follow-up made on the bar's
+  box.
+- O337, browser, `phoneBar.browser.test.tsx`:
+  - "moves with the scroll from pinned mid-page", at both sizes: red with
+    the bar `relative` in place of `sticky`. "keeps the bar where the band
+    puts it in every frame of a wheel scroll": red with that, and with the
+    track's end written a frame late. "stays at 0 at the top over the
+    page’s first row…": red with `.library`'s top padding removed. "tracks
+    under reduced motion as without it": red with a reduced-motion rule
+    pinning the bar. "commits no React render while a wheel scrolls the
+    page": red with the end kept in React state. "starts shown on coming
+    back to the phone layout": red with the listeners left on beside the
+    sidebar. "brings the bar back when the page grows shorter than the
+    window under it", which empties the page once the wheel's window has
+    passed: red at both sizes with the band rule skipped for a scroll no
+    input began, and with every such scroll ignored; at 956×440 with the
+    page's own end not read at a scroll.
+  - "lands %s from deep in the Library with its content in view and the
+    document no taller than it", for Account and About at both sizes: red
+    with the show's re-place reading the scroll against the page the
+    track holds up. "leaves the page a turn makes shorter no taller than
+    its content in any frame": red with that, and with the resting bar's
+    offset left in place where the track is set back.
+  - "holds the page no taller than its content, and the bar whole at the
+    top, in every frame of a shrink in place, the bar %s, the page %s":
+    the page emptied with the bar hidden mid-page, at rest pinned near
+    the page's end, or on its track pinned near the page's end, and the
+    page 200 px shorter at its end with the bar at rest or on its track
+    pinned near the end, at both sizes. Each frame is read for the page's
+    height, the bar's top and a hit at the bar's middle. Red with the
+    clip's observer removed: the hidden and at-rest cases, the bar not
+    drawn in the shrink's first frame where the page was emptied and
+    drawn lower in the window where it was 200 px shorter; the on-track
+    cases pass there, a sticky bar being where the rule puts it. The
+    emptied cases, which then asserted the page's height alone, were red
+    at the code before `.phone-bar-clip`, each with a frame drawn with the
+    page held up past its content before the clamp's scroll event reached
+    `phoneBar.ts`, and red with the clip's `overflow: clip` removed. That
+    removal also turned red "brings the bar back when the page grows
+    shorter…" at 956×440, the "lands %s…" cases and "leaves the page a
+    turn makes shorter…", since the clip replaced the hook's setting the
+    track back. `overflow: hidden` in its place turned "moves with the
+    scroll from pinned mid-page" red at both sizes, and `.library` left
+    unpositioned turned red the cases that press the bar mid-page.
+  - "brings the bar fully in when the drawer opens mid-page": red with the
+    show at the drawer's opening removed. "brings the bar in on Shift+Tab
+    into it without scrolling the page…": red with the put-back removed,
+    with the show removed from `focusin`, with the `focusin` listener
+    removed, and with the hold removed, which also turned "holds the bar
+    while Escape leaves keyboard focus on ☰" red. "lets the bar go after
+    the drawer closes by a tap on a library": red with a hold for any
+    focus in the bar. "leaves the bar out when a press of the sort
+    reorders the page under it": red with a same-path replace shown, with
+    `Shell` passing no replace, and with a landing that writes nothing
+    told. "shows the bar on Back to a kept place, round after round": red
+    with the landing show removed, and, since the rest is `relative`, with
+    `useKeptScroll` called before `useContinueRow`.
+  - "rests in the page when the scroll ends, at the pixels it was pinned
+    at, %s": red with the rest at `scrollend` removed, and with a part
+    shown bar's `--rest-top` taken from the scroll. "keeps the bar at the
+    top in every frame of a wheel up from rest, and carries it out with the
+    content on a wheel down": its wheel down red with the rejoin's end a
+    bar short and with the rejoin pinned; its wheel up red with a wholly
+    shown rest kept through a scroll up. "has left rest by the first
+    scroll event of a wheel": red with the `wheel` listener removed.
+    "rests again within 150 ms of a sideways wheel on the Continue row":
+    red with the re-rest timer removed. "rests within 150 ms after the
+    clamp of a page grown shorter…": red with the wait not armed. "rests
+    while the drawer is open and after it closes" and "rests after Back
+    lands at a kept place": red with the settle after a show removed.
+    "rests at the top of the page": red with a guard against resting at 0.
+  - "keeps the content in place when content grows above the view, %s":
+    the three rows with the bar in view red with the track's
+    `overflow-anchor: none` removed; the hidden row red only with
+    anchoring turned off for the whole page. Moved to `.phone-bar-clip`,
+    which spans the page, its removal turned all four rows red, the hidden
+    one too, and "holds the content in view through a width-only resize
+    after the bar has come in and gone out again". "anchors a width-only
+    resize with the bar in view as with it out of view": red with the rest
+    `absolute`, and with the track's rule removed. "holds the content in
+    view through a width-only resize after the bar has come in and gone out
+    again": red with the rest `absolute`.
+- O337, browser, `Shell.browser.test.tsx`: "scrolls the document rather
+  than <main>, and brings the bar back pinned 2000 px down": red with the
+  track's end never written past the window's height. "lands a heading a
+  contents link jumps up to clear of the bar the jump brings in": red with
+  the licence headings' `scroll-margin-top` removed. "leaves the bar out
+  of view after a contents link jumps down": red with the page told by
+  its hash as well. "at %i px, Back two entries from one licence’s
+  fragment to the same fragment lands on that licence again", whose view
+  now starts no higher than the window's top since a scroll down carries
+  the bar off: red with the licence page's landing blind to how many
+  entries Back moved.
+- O337, browser, `scrollKeeper.browser.test.tsx`'s "the phone bar across a
+  turn", where the page anchors and where it does not:
+  - "keeps the share of the bar in view across a turn, %s, landing at %s":
+    every case red under one of a resting bar re-placed from the scroll
+    alone and the share inverted in the re-place. "keeps the share across
+    a turn begun while a wheel scrolls": red with the turn's start not
+    taking a tracking bar's share. "holds the share in view through a
+    wheel inside the turn’s hold": red with the hold removed from the
+    scroll.
+  - "places the bar against iOS’s scroll on the turn’s first resize, %s of
+    it in view": red with the resize's re-place removed. "places the bar in
+    the first frame laid at the new size, %s of it in view": red with the
+    put-back's re-place removed. "puts the reader’s place back under the
+    bar’s held line": red with the keeper reading the bar's box, as is
+    every case of "the place across a phone turn". "puts the reader’s place
+    back under the bar’s foot where iOS lands a turn at the top while the
+    bar tracks": red with the keeper's follow-up removed.
+  - "rests at the end of a turn begun while a wheel scrolls": red with the
+    turn end's settle removed. "shows the bar after a turn with the drawer
+    open, closed %s": red with the turn's re-place made only for a bar on
+    the track. "keeps tracking through a height-only resize": red with a
+    turn counted at any resize.
+- O337, browser, `scrollKeeper.browser.test.tsx`'s "the place across the
+  scroller swap": "keeps the cover at the top through one step to 880 px,
+  a still pause and one step back, %s of the way down": red with the
+  put-back's drawn offset read before it tells the bar's script, while the
+  line is still the bar's box that the put-back's scroll carried off.

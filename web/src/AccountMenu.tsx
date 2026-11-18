@@ -71,10 +71,24 @@ export function AccountMenu({ admin, openProposals }: AccountMenuProps) {
   // jsdom has no `ResizeObserver`, and lays nothing out to measure.
   useLayoutEffect(() => {
     const drawn = panel.current
-    if (!open || !drawn || typeof ResizeObserver === 'undefined') return
+    const more = button.current
+    if (!open || !drawn || !more || typeof ResizeObserver === 'undefined') {
+      return
+    }
     const { boxes, clip } = upToClip(drawn)
     let held = ''
     const hold = () => {
+      // On a short screen the foot scrolls with the list (`shell.css`), so a
+      // window turned short with the panel open can leave More below the
+      // drawer's view, and the panel with it. The clip alone is scrolled to
+      // bring More back: `scrollIntoView` may scroll any box above More,
+      // and a browser that took the document under the drawer would move
+      // the phone bar with it. Rounded up, as the offset lands on a whole
+      // pixel, so that none of More is left below.
+      if (clip !== undefined) {
+        const below = more.getBoundingClientRect().bottom - clipBottom(clip)
+        if (below > 0) clip.scrollTop += Math.ceil(below)
+      }
       const room = drawn.getBoundingClientRect().bottom - clipTop(clip)
       const next = `${Math.max(0, room)}px`
       if (next === held) return
@@ -87,7 +101,7 @@ export function AccountMenu({ admin, openProposals }: AccountMenuProps) {
     return () => {
       resized.disconnect()
     }
-  }, [open])
+  }, [open, button])
 
   if (!admin) {
     return (
@@ -189,4 +203,17 @@ function clipTop(clip: HTMLElement | undefined): number {
     clip.getBoundingClientRect().top +
     Number.parseFloat(getComputedStyle(clip).paddingTop)
   return Math.max(0, top)
+}
+
+/**
+ * Where what `clip` shows ends, short of its padding, which in the drawer
+ * is the safe area over the home indicator.
+ */
+function clipBottom(clip: HTMLElement): number {
+  return (
+    clip.getBoundingClientRect().top +
+    clip.clientTop +
+    clip.clientHeight -
+    Number.parseFloat(getComputedStyle(clip).paddingBottom)
+  )
 }

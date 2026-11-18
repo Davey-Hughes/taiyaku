@@ -498,6 +498,12 @@ naming the sidebar column. The search icon is a link to `/search` labelled
 "Search", and the wordmark is a link home. The icons are inline SVG in
 `currentColor`, so they add no colour literal.
 
+*Since 2026-11-17 (O337) the phone bar moves with the scroll inside a
+track rather than staying pinned: a scroll down carries it out of view, a
+scroll up brings it back and pins it once it is wholly in, and when the
+scroll stops with any of it in view it rests in the page at the same
+pixels; see O337's row in `docs/status.md`.*
+
 **The wordmark** — 対訳 set vertically in the accent like a seal, then
 *taiyaku* — becomes one `Wordmark` component. It was `Login.tsx`'s markup and
 inline style objects before ②; the sign-in screen keeps its `<h2>` around the
@@ -518,6 +524,12 @@ any navigation, and when the viewport widens to 900 px or more (a
 `matchMedia` change listener, guarded, because jsdom has none). Focus then
 returns to ☰ — except on widening, where ☰ is not drawn and focus stays in
 the sidebar, measured in Chromium by the pre-merge claim check.
+
+*Since 2026-11-17 (O307) the drawer is
+`calc(14rem + env(safe-area-inset-left, 0px))` wide, the sidebar column's
+14rem plus the left safe area it pads, and (O309) below 500 px tall its
+foot scrolls with the list; see O307's and O309's rows in
+`docs/status.md`.*
 
 **The Close button** — a ✕ at the drawer's top, beside the wordmark, drawn
 below 900 px only — was added on 2026-09-18 after the whole-branch review

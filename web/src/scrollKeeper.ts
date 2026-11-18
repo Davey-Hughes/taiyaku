@@ -41,6 +41,8 @@ export const TO_TOP = { [SCROLL_TO_TOP]: true }
 
 /** Each history entry's scroll, by `location.key`. */
 const kept = new Map<string, number>()
+/** Told of each landing: a set, so one leaving takes no other with it. */
+const landings = new Set<() => void>()
 /** The last Library view drawn: its address, and the entry it was drawn on. */
 let library: { address: string; key: string } | undefined
 
@@ -53,6 +55,18 @@ export function lastLibraryAddress(): string | undefined {
 export function forgetScroll(): void {
   kept.clear()
   library = undefined
+}
+
+/**
+ * Calls `listener` once for each arrival `useKeptScroll` lands at a scroll
+ * it writes, after the write, until the answer is called. A replace that
+ * leaves the scroll where it is refines the view drawn, and is not one.
+ */
+export function onLanded(listener: () => void): () => void {
+  landings.add(listener)
+  return () => {
+    landings.delete(listener)
+  }
 }
 
 /** The element that scrolls the shell's pages in the layout drawn. */
@@ -122,8 +136,11 @@ export function useKeptScroll(
     }
     if (!ready || entry.landed) return
     entry.landed = true
-    if (entry.to !== null) scrollTo(entry.to)
+    const { to } = entry
+    if (to !== null) scrollTo(to)
     kept.set(key, scroller().scrollTop)
+    if (to === null) return
+    for (const listener of [...landings]) listener()
   }, [key, ready])
 
   // Saved as the reader scrolls, which the browser reports once a frame at

@@ -25,7 +25,8 @@ import { deferred } from './support/async'
 import { licenceTextsLanded } from './support/licence'
 import { focused } from './support/focused'
 import { lengthOf } from './support/length'
-import { mount } from './support/mount'
+import { scrollNeverEnds, stillPage, wheeledTo } from './support/motion'
+import { beforeUnmount, mount } from './support/mount'
 import { mouse } from './support/mouse'
 import {
   areaOf,
@@ -326,15 +327,27 @@ describe('the shell at 390 px', () => {
     expect(getComputedStyle(root).overflowY).not.toBe('hidden')
   })
 
-  // Scrolled well past one window's height: a bar that sticks inside a
-  // `.library` only as tall as the window would have scrolled away by then.
-  it('scrolls the document rather than <main>, with the bar pinned all the way down', async () => {
+  // Scrolled well past one window's height: a bar held in a box only as
+  // tall as the window could not come back that far down.
+  it('scrolls the document rather than <main>, and brings the bar back pinned 2000 px down', async () => {
     const host = await at('/', 390)
     expect(getComputedStyle(need(host, 'main')).overflowY).toBe('visible')
     expect(document.documentElement.scrollHeight).toBeGreaterThan(2400)
+    scrollNeverEnds()
     window.scrollTo(0, 2000)
+    await aFrame()
+    await aFrame()
     expect(window.scrollY).toBeGreaterThan(1900)
-    expect(need(host, '.phone-bar').getBoundingClientRect().top).toBe(0)
+    const bar = need(host, '.phone-bar')
+    expect(bar.getBoundingClientRect().bottom).toBeLessThanOrEqual(0)
+    const y = scrollY
+    await mouse.moveTo(195, 600)
+    await mouse.wheel(-100)
+    await stillPage()
+    expect({
+      moved: scrollY - y,
+      top: bar.getBoundingClientRect().top,
+    }).toEqual({ moved: -100, top: 0 })
   })
 
   it('slides the open menu to the left edge above the scrim, and a tap beside it closes it', async () => {
@@ -687,8 +700,9 @@ async function shellAt(
   screen: React.ReactNode = (
     <p className="plain">Nothing here can be pressed.</p>
   ),
+  height = 844,
 ): Promise<HTMLElement> {
-  await page.viewport(width, 844)
+  await page.viewport(width, height)
   const who: Me = {
     user_id: 1,
     admin,
@@ -738,6 +752,41 @@ async function openDrawer(host: HTMLElement) {
   await act(async () => {
     await Promise.all(column.getAnimations().map((a) => a.finished))
   })
+}
+
+/**
+ * A real wheel over the open drawer until its column is at its end, where a
+ * reader must turn it to reach More once the foot scrolls with the list,
+ * read once the column is still (three frames with no change).
+ */
+async function wheelDrawerToEnd(host: HTMLElement) {
+  const column = need(host, '#library-menu')
+  const box = column.getBoundingClientRect()
+  await mouse.moveTo(box.left + box.width / 2, box.top + box.height / 2)
+  const end = () => column.scrollHeight - column.clientHeight
+  for (let turn = 0; column.scrollTop < end() - 1 && turn < 20; turn++) {
+    await mouse.wheel(Math.ceil(end() - column.scrollTop))
+    let still = 0
+    let was = column.scrollTop
+    while (still < 3) {
+      await aFrame()
+      still = column.scrollTop === was ? still + 1 : 0
+      was = column.scrollTop
+    }
+  }
+  // The fixture tells: the wheel took the column to its end.
+  expect(end() - column.scrollTop).toBeLessThanOrEqual(1)
+}
+
+/** Whether a press at the middle of `el`'s box lands on `el`. */
+function hitsItself(el: Element): boolean {
+  const box = el.getBoundingClientRect()
+  return el.contains(
+    document.elementFromPoint(
+      box.left + box.width / 2,
+      box.top + box.height / 2,
+    ),
+  )
 }
 
 /** A colour token as the browser resolves it, whichever scheme is in force. */
@@ -828,13 +877,14 @@ describe('the phone layout, narrow or short', () => {
   })
 })
 
-describe('More, with a real mouse and real keys — spec §1', () => {
-  const panelOf = (host: HTMLElement) =>
-    need(
-      host,
-      `[id="${need(host, 'button.account-button').getAttribute('aria-controls')}"]`,
-    )
+/** More's panel, by the id its button controls. */
+const panelOf = (host: HTMLElement) =>
+  need(
+    host,
+    `[id="${need(host, 'button.account-button').getAttribute('aria-controls')}"]`,
+  )
 
+describe('More, with a real mouse and real keys — spec §1', () => {
   it('opens on a click, and a second click on the button closes it', async () => {
     const host = await shellAt('/', 1440, true)
     const button = need<HTMLButtonElement>(host, 'button.account-button')
@@ -1041,27 +1091,37 @@ describe('More, with a real mouse and real keys — spec §1', () => {
 
   /**
    * A window too short for the panel above More, as a phone held on its
-   * side can be: the column clips the panel at its top, where no
-   * scroll reaches. So the panel is held to the room above More and scrolls
-   * inside it, using all of that room, and every entry can be brought into
-   * view and pressed, while More stays clear of it. The same where the room
-   * changes while it is open: a window that shrinks, as a phone turned on
-   * its side does; text made larger, which raises More; or a pointer that
-   * turns coarse, which raises More by growing the foot alone. A coarse
-   * pointer makes the rows, and so the panel, their tallest.
+   * side can be: the column clips the panel at its top. So the panel is held
+   * to the room above More and scrolls inside it, using all of that room,
+   * and every entry can be brought into view and pressed, while More stays
+   * clear of it and in view, also where the text is made larger while it is
+   * open. Where the window shrinks, as a phone turned on its side does, or the
+   * pointer turns coarse, which makes the rows their tallest, More stands
+   * lower and the panel opens whole above it, every entry still within reach.
    */
   it.each([
-    ['opened in it', 'opened'],
-    ['shrunk to while it is open', 'shrunk'],
-    ['with the text made larger while it is open', 'larger text'],
-    ['with the pointer turned coarse while it is open', 'coarse pointer'],
+    ['opened in it', 'opened', true],
+    // The foot scrolls with the list on a short screen, so after these two
+    // changes More stands lower in the drawer than the list's end puts it,
+    // and the panel has the room to open whole (`held` false).
+    ['shrunk to while it is open', 'shrunk', false],
+    ['with the text made larger while it is open', 'larger text', true],
+    // The one row red where only the column is observed: it guards the
+    // observation of the foot and of More's own `nav`.
+    [
+      'with the pointer turned coarse while it is open',
+      'coarse pointer',
+      false,
+    ],
   ] as const)(
     'holds its panel inside a short window %s, every entry within reach, in the drawer with a coarse pointer',
-    async (_, form) => {
+    async (_, form, held) => {
       if (form !== 'coarse pointer') onTestFinished(coarseRulesOn())
       const host = await shellAt('/', 390, true)
       if (form !== 'shrunk') await page.viewport(390, 280)
       await openDrawer(host)
+      // A short window's foot follows the list, so More is at its end.
+      if (form !== 'shrunk') await wheelDrawerToEnd(host)
       const button = need<HTMLButtonElement>(host, 'button.account-button')
       await clickWithMouse(button)
       if (form === 'shrunk') {
@@ -1079,14 +1139,22 @@ describe('More, with a real mouse and real keys — spec §1', () => {
       const drawn = panel.getBoundingClientRect()
       const more = button.getBoundingClientRect()
       // Held to the column's top, past its padding, and no lower: it uses
-      // the room it has, and what does not fit scrolls.
+      // the room it has, and what does not fit scrolls. Or whole below it.
       const column = need(host, '#library-menu')
-      expect(drawn.top).toBe(
+      const top =
         column.getBoundingClientRect().top +
-          Number.parseFloat(getComputedStyle(column).paddingTop),
-      )
-      expect(panel.scrollHeight).toBeGreaterThan(panel.clientHeight)
+        Number.parseFloat(getComputedStyle(column).paddingTop)
+      expect({
+        inside: drawn.top >= top,
+        held: drawn.top === top,
+        scrolls: panel.scrollHeight > panel.clientHeight,
+      }).toEqual({ inside: true, held, scrolls: held })
       expect(drawn.bottom).toBeLessThanOrEqual(more.top)
+      expect(more.bottom).toBeLessThanOrEqual(
+        column.getBoundingClientRect().top +
+          column.clientTop +
+          column.clientHeight,
+      )
       expect(
         button.contains(
           document.elementFromPoint(
@@ -1123,6 +1191,8 @@ describe('More, with a real mouse and real keys — spec §1', () => {
     const host = await shellAt('/', 390, true)
     await page.viewport(390, 280)
     await openDrawer(host)
+    // A short window's foot follows the list, so More is at its end.
+    await wheelDrawerToEnd(host)
     const button = need<HTMLButtonElement>(host, 'button.account-button')
     // Inside the frame first: a key pressed before anything here has focus
     // goes to the frame around the test.
@@ -1206,6 +1276,242 @@ describe('More, with a real mouse and real keys — spec §1', () => {
       expect(name.color === tokenIn(host, '--accent')).toBe(accent)
     },
   )
+})
+
+/**
+ * **The drawer on a short screen** (O307, O309): the open drawer is the
+ * sidebar column's 14rem, and under 500 px tall its foot follows the
+ * navigation, which then has the whole drawer, and comes into view at the
+ * end of the list. More stays within reach there: a reader wheels to it,
+ * and a window turned short with its panel open brings it into view. Eight
+ * libraries, which in a phone's rows make the navigation longer than a
+ * phone held sideways is tall.
+ */
+describe('the drawer on a short screen', () => {
+  beforeEach(() => {
+    vi.mocked(library.status).mockResolvedValue({
+      libraries: [
+        'Artbooks',
+        'Books',
+        'Comics',
+        'Light novels',
+        'Magazines',
+        'Raw',
+        'Volumes',
+        'Webtoons',
+      ].map((name, i) => ({ id: i + 1, name, scanned: true })),
+      restricted: false,
+    })
+  })
+
+  /** The part of the column it shows, inside its border. */
+  const viewOf = (column: HTMLElement) => {
+    const top = column.getBoundingClientRect().top + column.clientTop
+    return { top, bottom: top + column.clientHeight }
+  }
+
+  /** Where the column's content begins, past its padding (the notch's). */
+  const contentTop = (column: HTMLElement) =>
+    column.getBoundingClientRect().top +
+    Number.parseFloat(getComputedStyle(column).paddingTop)
+
+  /** Scrolls `panel`, and nothing around it, until `el` is in its view. */
+  const intoPanelView = (panel: HTMLElement, el: Element) => {
+    const top = panel.getBoundingClientRect().top + panel.clientTop
+    const bottom = top + panel.clientHeight
+    const box = el.getBoundingClientRect()
+    if (box.top < top) panel.scrollTop -= top - box.top
+    else if (box.bottom > bottom) panel.scrollTop += box.bottom - bottom
+  }
+
+  it('draws the open drawer at the sidebar column’s 14rem, at 956×440', async () => {
+    const host = await shellAt('/', 1280, true, undefined, 800)
+    const column = need(host, '#library-menu')
+    const content = () => {
+      const style = getComputedStyle(column)
+      return (
+        column.clientWidth -
+        Number.parseFloat(style.paddingLeft) -
+        Number.parseFloat(style.paddingRight)
+      )
+    }
+    // The fixture tells: the sidebar stands at 1280×800.
+    expect(matchMedia(SIDEBAR_LAYOUT).matches).toBe(true)
+    const beside = content()
+    await act(async () => {
+      await page.viewport(956, 440)
+    })
+    await aFrame()
+    await aFrame()
+    await openDrawer(host)
+    expect({
+      width: column.getBoundingClientRect().width,
+      content: content(),
+    }).toEqual({ width: 224, content: beside })
+  })
+
+  it.each([
+    ['static', 956, 440],
+    ['static', 899, 499],
+    ['sticky', 899, 500],
+    ['sticky', 440, 956],
+    ['sticky', 1280, 800],
+  ] as const)('sets the foot %s at %i×%i', async (position, width, height) => {
+    const host = await shellAt('/', width, true, undefined, height)
+    expect(getComputedStyle(need(host, '.sidebar-foot')).position).toBe(
+      position,
+    )
+  })
+
+  // A phone's coarse pointer, as a phone held sideways has: its rows, a
+  // finger's 44 px, make the list longer than the drawer is tall, where a
+  // fine pointer's leave More in view above the window's bottom.
+  it('gives the navigation the whole drawer at 956×440', async () => {
+    onTestFinished(coarseRulesOn())
+    const host = await shellAt('/', 956, true, undefined, 440)
+    await openDrawer(host)
+    const column = need(host, '#library-menu')
+    const foot = need(column, '.sidebar-foot')
+    const links = [...column.querySelectorAll('.sidebar-libraries a')]
+    // The fixture tells: every library listed, the drawer at its top, and
+    // more in it than it shows.
+    expect(links).toHaveLength(8)
+    expect(column.scrollTop).toBe(0)
+    expect(column.scrollHeight).toBeGreaterThan(column.clientHeight)
+    const view = viewOf(column)
+    /** The library links wholly inside the column's view, clear of the foot. */
+    const shown = () => {
+      const clear = Math.min(view.bottom, foot.getBoundingClientRect().top)
+      return links.filter((link) => {
+        const box = link.getBoundingClientRect()
+        return box.top >= view.top && box.bottom <= clear
+      }).length
+    }
+    expect(foot.getBoundingClientRect().top).toBeGreaterThanOrEqual(view.bottom)
+    const drawn = shown()
+    // The control: the foot as a taller screen's, sticky at the bottom.
+    foot.style.position = 'sticky'
+    expect(drawn).toBeGreaterThan(shown())
+  })
+
+  it.each(['fine', 'coarse'] as const)(
+    'opens More’s panel whole at the end of the drawer at 956×440, %s pointer',
+    async (pointer) => {
+      if (pointer === 'coarse') onTestFinished(coarseRulesOn())
+      const host = await shellAt('/', 956, true, undefined, 440)
+      await openDrawer(host)
+      await wheelDrawerToEnd(host)
+      const button = need(host, 'button.account-button')
+      await clickWithMouse(button)
+      expect(button.getAttribute('aria-expanded')).toBe('true')
+      const column = need(host, '#library-menu')
+      const panel = panelOf(host)
+      const drawn = panel.getBoundingClientRect()
+      const links = [...panel.querySelectorAll('a')]
+      expect(links).toHaveLength(3)
+      expect({
+        top: drawn.top >= contentTop(column),
+        bottom: drawn.bottom <= button.getBoundingClientRect().top,
+        whole: panel.scrollHeight <= panel.clientHeight,
+        links: links.map(hitsItself),
+      }).toEqual({
+        top: true,
+        bottom: true,
+        whole: true,
+        links: [true, true, true],
+      })
+    },
+  )
+
+  // A phone's coarse pointer, for the reason "gives the navigation the whole
+  // drawer" gives.
+  it('keeps More and its panel within reach when a phone turns sideways with them open', async () => {
+    onTestFinished(coarseRulesOn())
+    const host = await shellAt('/', 440, true, undefined, 956)
+    await openDrawer(host)
+    const button = need(host, 'button.account-button')
+    await clickWithMouse(button)
+    await act(async () => {
+      await page.viewport(956, 440)
+    })
+    // Two frames: a change of size is answered in the frame after it.
+    await aFrame()
+    await aFrame()
+    const column = need(host, '#library-menu')
+    const panel = panelOf(host)
+    // The fixture tells: the drawer and the panel are still open, and the
+    // foot now follows the navigation.
+    expect({
+      drawer: host.querySelector('.library.menu-open') !== null,
+      panel: button.getAttribute('aria-expanded'),
+      foot: getComputedStyle(need(column, '.sidebar-foot')).position,
+    }).toEqual({ drawer: true, panel: 'true', foot: 'static' })
+    const links = [...panel.querySelectorAll('a')]
+    expect(links).toHaveLength(3)
+    expect({
+      more: hitsItself(button),
+      top: panel.getBoundingClientRect().top >= contentTop(column),
+      links: links.map((link) => {
+        intoPanelView(panel, link)
+        return hitsItself(link)
+      }),
+    }).toEqual({ more: true, top: true, links: [true, true, true] })
+  })
+
+  // More is brought back by scrolling the drawer alone: the page under the
+  // drawer stays where the reader left it, mid-page, and the phone bar with
+  // it. A window shortened with the panel open leaves More below the
+  // drawer's view, which is what makes the hold scroll.
+  it('brings More back into a shortened drawer without scrolling the page under it', async () => {
+    onTestFinished(coarseRulesOn())
+    const host = await shellAt(
+      '/',
+      956,
+      true,
+      <div style={{ blockSize: '4000px' }} />,
+      440,
+    )
+    await wheeledTo(host, 1500)
+    // ☰ by key, focused without a scroll: the wheel may have carried the
+    // bar out of view, and the page must stay where the wheel left it.
+    const menu = need<HTMLButtonElement>(host, 'button.menu-button')
+    await act(async () => menu.focus({ preventScroll: true }))
+    await act(async () => {
+      await userEvent.keyboard('{Enter}')
+    })
+    const column = need(host, '#library-menu')
+    await act(async () => {
+      await Promise.all(column.getAnimations().map((a) => a.finished))
+    })
+    await wheelDrawerToEnd(host)
+    const button = need(host, 'button.account-button')
+    const y = window.scrollY
+    // The fixture tells: the page is mid-page, the drawer open, and a window
+    // 300 px tall leaves More below the drawer's view.
+    expect(y).toBeGreaterThan(1000)
+    expect(host.querySelector('.library.menu-open')).not.toBeNull()
+    expect(button.getBoundingClientRect().bottom).toBeGreaterThan(300)
+    await clickWithMouse(button)
+    const pressed = window.scrollY
+    await act(async () => {
+      await page.viewport(956, 300)
+    })
+    // Two frames: a change of size is answered in the frame after it.
+    await aFrame()
+    await aFrame()
+    // `closeTo(y, 0)`: within half a pixel of where the wheel left it.
+    expect({
+      panel: button.getAttribute('aria-expanded'),
+      pressed,
+      shortened: window.scrollY,
+      more: button.getBoundingClientRect().bottom <= viewOf(column).bottom,
+    }).toEqual({
+      panel: 'true',
+      pressed: expect.closeTo(y, 0),
+      shortened: expect.closeTo(y, 0),
+      more: true,
+    })
+  })
 })
 
 describe('View, with a real mouse and real keys — spec §2', () => {
@@ -1640,12 +1946,15 @@ async function back(entries = 1) {
 /**
  * The part of the window the page is seen through: `<main>`, which scrolls
  * at a desktop width, below the phone bar, which covers the window's top at
- * a phone's width, where the document scrolls instead.
+ * a phone's width, where the document scrolls instead. The bar goes up with
+ * the page, and its box can be wholly above the window, so the view's top
+ * is never above the window's.
  */
 function viewOf(host: HTMLElement) {
   const main = need(host, 'main').getBoundingClientRect()
   return {
     top: Math.max(
+      0,
       main.top,
       need(host, '.phone-bar').getBoundingClientRect().bottom,
     ),
@@ -1706,6 +2015,70 @@ describe('the licence page’s contents, under the phone bar', () => {
       ['Zen Kaku Gothic New', '#zen-kaku-gothic-new', true, true, true],
       ['taiyaku marks', '#taiyaku-marks', true, true, true],
     ])
+  })
+
+  // A jump down carries the bar out, and only a new page, not a fragment of
+  // the one shown, would bring it back in.
+  it('leaves the bar out of view after a contents link jumps down', async () => {
+    const host = await licenceInShell(390)
+    expect(scrollY).toBe(0)
+    const links = host.querySelectorAll('nav[aria-label="Contents"] a')
+    const last = links[links.length - 1]
+    await follow(host, last?.getAttribute('href') ?? '')
+    const bar = need(host, '.phone-bar').getBoundingClientRect()
+    expect({ down: scrollY > bar.height, out: bar.bottom <= 0 }).toEqual({
+      down: true,
+      out: true,
+    })
+  })
+
+  // Followed by Enter from the page's end, as a keyboard reader goes: Shift+Tab
+  // back to the first contents link, which stands above every heading, End,
+  // which leaves focus on it, and Enter, so the jump to its heading is up. A
+  // click would first scroll up to the link, and the jump from there is down.
+  // The click that `follow` makes first gives the frame focus, so the keys
+  // reach the page.
+  it('lands a heading a contents link jumps up to clear of the bar the jump brings in', async () => {
+    const host = await licenceInShell(390)
+    await follow(host, '#taiyaku-marks')
+    // The keys from here are outside `act`, as the app runs: the router
+    // hears the fragment Enter follows as a `popstate`, and commits it in a
+    // transition.
+    globalThis.IS_REACT_ACT_ENVIRONMENT = false
+    beforeUnmount(() => {
+      globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    })
+    const link = need(host, 'nav[aria-label="Contents"] a')
+    for (let turn = 0; document.activeElement !== link && turn < 20; turn++) {
+      await userEvent.tab({ shift: true })
+    }
+    expect(document.activeElement, 'on the first contents link').toBe(link)
+    await userEvent.keyboard('{End}')
+    await stillPage()
+    const from = scrollY
+    expect({
+      focus: document.activeElement === link,
+      end:
+        Math.abs(
+          from - (document.documentElement.scrollHeight - innerHeight),
+        ) <= 1,
+    }).toEqual({ focus: true, end: true })
+    await userEvent.keyboard('{Enter}')
+    const heading = need(host, link.getAttribute('href') ?? '')
+    await expect.poll(() => document.activeElement).toBe(heading)
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    const bar = need(host, '.phone-bar').getBoundingClientRect()
+    const middle = heading.getBoundingClientRect()
+    const hit = document.elementFromPoint(
+      middle.left + middle.width / 2,
+      middle.top + middle.height / 2,
+    )
+    expect({
+      up: scrollY < from - bar.height,
+      top: bar.top,
+      clear: middle.top >= bar.bottom,
+      hit: hit !== null && heading.contains(hit),
+    }).toEqual({ up: true, top: 0, clear: true, hit: true })
   })
 })
 

@@ -35,6 +35,7 @@ async function send(
   type: 'mouseMoved' | 'mousePressed' | 'mouseReleased' | 'mouseWheel',
   kind: Kind,
   deltaY = 0,
+  deltaX = 0,
 ) {
   const frame = window.frameElement
   if (!frame) throw new Error('this file is not running in a frame')
@@ -48,7 +49,7 @@ async function send(
     buttons: pointer.down ? 1 : 0,
     clickCount: pressing ? 1 : 0,
     pointerType: kind,
-    ...(type === 'mouseWheel' && { deltaX: 0, deltaY }),
+    ...(type === 'mouseWheel' && { deltaX, deltaY }),
     ...(clock && { timestamp: clock.since + clock.ms / 1000 }),
   })
 }
@@ -70,9 +71,12 @@ export const mouse = {
     pointer.down = false
     await send('mouseReleased', 'mouse')
   },
-  /** Turns the wheel `deltaY` px down, where the pointer is. */
-  async wheel(deltaY: number) {
-    await send('mouseWheel', 'mouse', deltaY)
+  /**
+   * Turns the wheel `deltaY` px down and `deltaX` px right, where the
+   * pointer is.
+   */
+  async wheel(deltaY: number, deltaX = 0) {
+    await send('mouseWheel', 'mouse', deltaY, deltaX)
   },
   /**
    * From `from` pixels past `x` to `to` pixels past it, level at `y`, in

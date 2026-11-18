@@ -11,6 +11,7 @@ import { GateContext } from '../src/gate'
 import * as librariesApi from '../src/libraries'
 import * as library from '../src/library'
 import { invalidateLibraryViews } from '../src/pageReads'
+import { TURN_HOLD_MS } from '../src/phoneBar'
 import { PHONE_LAYOUT, SIDEBAR_LAYOUT } from '../src/phoneLayout'
 import { AppRoutes } from '../src/Routes'
 import * as usersApi from '../src/users'
@@ -19,9 +20,17 @@ import { deferred } from './support/async'
 import { licenceTextsLanded } from './support/licence'
 import { inProgress } from './support/continueRow'
 import { BROWSE_KEY } from './support/homePage'
-import { dragged, frameBox, frames, ramp, screenTurns } from './support/motion'
+import {
+  dragged,
+  frameBox,
+  frames,
+  ramp,
+  screenTurns,
+  scrollNeverEnds,
+} from './support/motion'
 import { beforeUnmount, mount } from './support/mount'
 import { mouse } from './support/mouse'
+import { barRested, clickShown } from './support/phoneBar'
 
 /**
  * Back to the Library view or a series page, and the reader's way out,
@@ -476,8 +485,13 @@ describe.each([1280, 390])('the scroll keeper at %i px', (width) => {
   it('lands a library’s link at the top of that library, kept from before', async () => {
     const host = await app(width, '/?library=1')
     await open('/')
+    // From below, so the phone bar has come back whole and ☰ is in the
+    // window: a scroll down to 1500 carries the bar out of it, and a click
+    // would first scroll the page to ☰.
+    await scroll(host, 1600)
     await scroll(host, 1500)
     if (matchMedia(PHONE_LAYOUT).matches) {
+      expect(need(host, '.phone-bar').getBoundingClientRect().top).toBe(0)
       await act(async () => {
         await userEvent.click(
           need(host, 'button[aria-controls="library-menu"]'),
@@ -859,10 +873,13 @@ describe.each([1280, 390])('Back onto another page at %i px', (width) => {
   )
 })
 
-/** The view's top: `<main>`'s beside the sidebar, the phone bar's foot in the phone layout. */
+/**
+ * The view's top: `<main>`'s beside the sidebar; in the phone layout the
+ * phone bar's foot, or the window's top where the bar is out of view.
+ */
 function lineOf(host: HTMLElement): number {
   if (!matchMedia(SIDEBAR_LAYOUT).matches) {
-    return need(host, '.phone-bar').getBoundingClientRect().bottom
+    return Math.max(0, need(host, '.phone-bar').getBoundingClientRect().bottom)
   }
   const main = need(host, 'main')
   return main.getBoundingClientRect().top + main.clientTop
@@ -1104,7 +1121,21 @@ describe('the place across the scroller swap, from 1280 × 800', () => {
   it('holds a page scrolled to its end over ten crossings', async () => {
     const host = await drawnAt('/config/libraries')
     await dragged(ramp(1280, 880, 20).map((width) => ({ width })))
+    // At the end with the bar carried out, the view's top is the window's,
+    // which the sidebar's `<main>` can reach, so no crossing would meet its
+    // end. Keyboard focus on ☰, which Escape leaves there, holds the bar
+    // whole down to the end, and the view starts under it.
+    await userEvent.click(
+      page.getByRole('button', { name: 'Menu', exact: true }),
+    )
+    await idle()
+    await userEvent.keyboard('{Escape}')
+    await idle()
+    const focused = need(host, '.menu-button').matches(':focus-visible')
     await wheeled(host, 1)
+    const atEnd =
+      scrollY >= document.documentElement.scrollHeight - innerHeight - 1
+    const pinned = lineOf(host)
     const anchor = anchorOf(host)
     const share = shareOf(host, anchor)
     // How far short of its share the page's end held the anchor at the
@@ -1119,6 +1150,7 @@ describe('the place across the scroller swap, from 1280 × 800', () => {
     await frames(2)
     const views = entered(seen)
     expect({
+      fixture: { focused, atEnd, pinned },
       held: views.map((frame) => {
         if (frame.same && near(frame.off, short) === 0) return 'in place'
         return frame.atEnd && frame.off > short
@@ -1131,6 +1163,7 @@ describe('the place across the scroller swap, from 1280 × 800', () => {
           frame.view.map((y, side) => near(y, views[i].view[side])),
         ),
     }).toEqual({
+      fixture: { focused: true, atEnd: true, pinned: 52 },
       held: Array.from({ length: 10 }, (_, i) =>
         i % 2 === 0 ? 'at its end' : 'in place',
       ),
@@ -1175,6 +1208,58 @@ describe('the place across the scroller swap, from 1280 × 800', () => {
     })
   })
 
+  // A drag crosses back before the phone layout has a still frame. Held
+  // still there, the place is looked at again, and must read as drawn where
+  // it was put back, or it is read again in that layout: there the row's
+  // first cover is another, and the way back lands that one, a row off.
+  it.each([0.3, 0.7])(
+    'keeps the cover at the top through one step to 880 px, a still pause and one step back, %s of the way down',
+    async (share) => {
+      const host = await drawnAt('/')
+      await wheeled(host, share)
+      const away = scrolled(host)[0] > 200
+      const anchor = anchorOf(host)
+      const kept = shareOf(host, anchor)
+      const placed = () => {
+        const { top, height } = anchor.getBoundingClientRect()
+        return {
+          phone: matchMedia(PHONE_LAYOUT).matches,
+          same: picks(host, anchor),
+          off: near(top, lineOf(host) - kept * height),
+        }
+      }
+      const narrowed = await dragged([{ width: 880 }])
+      await frames(6)
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      await frames(2)
+      const narrow = placed()
+      // The fixture tells: at 880 a cover before it shares its row, so a
+      // place read again there would be another cover.
+      const before = anchor.previousElementSibling
+      const shared =
+        before !== null &&
+        Math.abs(
+          before.getBoundingClientRect().top -
+            anchor.getBoundingClientRect().top,
+        ) < 0.5
+      await dragged([{ width: 1280 }])
+      await frames(6)
+      expect({
+        away,
+        narrowest: Math.min(...narrowed.map(({ width }) => width)),
+        shared,
+        narrow,
+        wide: placed(),
+      }).toEqual({
+        away: true,
+        narrowest: 880,
+        shared: true,
+        narrow: { phone: true, same: true, off: 0 },
+        wide: { phone: false, same: true, off: 0 },
+      })
+    },
+  )
+
   // At 880 a cover fills its column and stands taller than at 1280, where
   // it is exact: kept as a distance in px, this one would be put back
   // wholly above the view.
@@ -1186,9 +1271,14 @@ describe('the place across the scroller swap, from 1280 × 800', () => {
     const covers = host.querySelectorAll('main .grid > li')
     const cover = covers[Math.floor(covers.length / 2)]
     const scroller = scrollerAt(host)
+    // Past it and back up, as a scroll down carries the bar out of the
+    // window and one up of more than its height brings it back whole.
     scroller.scrollTop +=
-      cover.getBoundingClientRect().bottom - 8 - lineOf(host)
+      cover.getBoundingClientRect().bottom - 8 - lineOf(host) + 100
     await frames(3)
+    scroller.scrollTop -= 100
+    await frames(3)
+    expect(need(host, '.phone-bar').getBoundingClientRect().top).toBe(0)
     const anchor = anchorOf(host)
     const into = Math.round(
       anchor.getBoundingClientRect().bottom - lineOf(host),
@@ -1277,19 +1367,27 @@ async function phoneAt(
   await idle()
   let held = upright
   /**
-   * Turns the phone: its screen, then the frame's box in one task, as iOS
-   * turns the screen ahead of the new size. iOS sets its own scroll with
-   * the new size (`lands`: at the page's top, at the same share of its
-   * height, or at the same offset as far as the page allows) and sends the
-   * resize event ahead of the frame's observers; Chromium sends its own
-   * after them, so the test sets that scroll and sends the event here.
-   * Gives the size laid, whether the scroll landed there, whether the
-   * page's end clamped it, and `kept`'s anchor in the first frame laid.
+   * Turns the phone: `orientationchange` `lead` ms ahead where given, as
+   * iOS sends it, then the screen and the frame's box in one task. iOS sets
+   * its own scroll with the new size (`lands`: the page's top, the same
+   * share of its height, or the same offset as far as the page allows) and
+   * sends the resize event ahead of the frame's observers, where Chromium
+   * sends its own after them: the test does both here, and `afterResize`
+   * runs right after. Gives the size laid, whether the scroll landed, if
+   * the page's end clamped it, and `kept`'s anchor in the first frame laid.
    */
-  const turned = async (lands: 'top' | 'share' | 'offset', kept: Kept) => {
+  const turned = async (
+    lands: 'top' | 'share' | 'offset',
+    kept: Kept,
+    { lead, afterResize }: { lead?: number; afterResize?: () => void } = {},
+  ) => {
     const root = document.documentElement
     const was = { y: scrollY, height: root.scrollHeight }
     held = !held
+    if (lead !== undefined) {
+      dispatchEvent(new Event('orientationchange'))
+      await new Promise((resolve) => setTimeout(resolve, lead))
+    }
     await turn(held ? 'portrait-primary' : 'landscape-primary')
     const first = firstFrame(host, kept)
     const box = frameBox()
@@ -1308,8 +1406,10 @@ async function phoneAt(
       clamped: target > end,
     }
     dispatchEvent(new Event('resize'))
+    afterResize?.()
     await idle()
-    return { ...landed, first: await first }
+    const { off, atEnd } = await first
+    return { ...landed, first: { off, atEnd } }
   }
   return { host, turned }
 }
@@ -1317,11 +1417,19 @@ async function phoneAt(
 /** The page's scroll, as the document's. */
 const scrollOf = () => Math.round(scrollY)
 
-/** Scrolls the page so that `el`'s top stands `above` px above the view's top. */
+/**
+ * Scrolls the page so that `el`'s top stands `above` px above the view's
+ * top. In the phone layout the scroll carries the bar, and the view's top
+ * with it, so it scrolls again from the top the last scroll left.
+ */
 async function topAt(host: HTMLElement, el: Element, above: number) {
   const scroller = scrollerAt(host)
-  scroller.scrollTop += el.getBoundingClientRect().top - lineOf(host) + above
-  await frames(2)
+  for (let pass = 0; pass < 3; pass++) {
+    const by = el.getBoundingClientRect().top - lineOf(host) + above
+    if (Math.abs(by) < 1) return
+    scroller.scrollTop += by
+    await frames(2)
+  }
 }
 
 /**
@@ -1364,24 +1472,28 @@ const placed = (host: HTMLElement, kept: Kept) => ({
 })
 
 /**
- * Where `kept`'s anchor stands in the next frame, the first laid at a new
- * size, by an observer made after the shell's and the Continue row's: after
- * every put-back, before the frame is painted. A put-back a frame late is
- * the one iOS paints over, as the frame the size is committed with.
+ * Where `kept`'s anchor and the phone bar's top stand in the next frame,
+ * the first laid at a new size, by an observer made after the shell's and
+ * the Continue row's: after every put-back, before the frame is painted. A
+ * put-back a frame late is the one iOS paints over, as the frame the size
+ * is committed with.
  */
 function firstFrame(host: HTMLElement, kept: Kept) {
-  return new Promise<{ off: number; atEnd: boolean }>((resolve) => {
-    const observer = new ResizeObserver(() => {
-      observer.disconnect()
-      const root = document.documentElement
-      resolve({
-        off: offOf(host, kept),
-        atEnd: root.scrollTop >= root.scrollHeight - innerHeight - 1,
+  return new Promise<{ off: number; atEnd: boolean; barTop: number }>(
+    (resolve) => {
+      const observer = new ResizeObserver(() => {
+        observer.disconnect()
+        const root = document.documentElement
+        resolve({
+          off: offOf(host, kept),
+          atEnd: root.scrollTop >= root.scrollHeight - innerHeight - 1,
+          barTop: need(host, '.phone-bar').getBoundingClientRect().top,
+        })
       })
-    })
-    observer.observe(need(host, 'main'))
-    beforeUnmount(() => observer.disconnect())
-  })
+      observer.observe(need(host, 'main'))
+      beforeUnmount(() => observer.disconnect())
+    },
+  )
 }
 
 /**
@@ -1694,6 +1806,390 @@ describe.each([
       moved: true,
       returned: { first: 0, same: true, off: 0, start: false },
       again: { first: [0, 0], same: true, off: 0, back: 0 },
+    })
+  })
+})
+
+/** The phone bar's height: a frame here has no safe-area inset. */
+const H = 52
+
+const barOf = (host: HTMLElement) => need(host, '.phone-bar')
+
+/** The share of the phone bar in the window, from 0 to 1. */
+const shownOf = (host: HTMLElement) =>
+  Math.min(Math.max(barOf(host).getBoundingClientRect().bottom, 0), H) / H
+
+/**
+ * How far the bar's `top` stands from where a share `f` of it in view puts
+ * it: 0 within half a px.
+ */
+const barOff = (top: number, f: number) => {
+  const off = top + (1 - f) * H
+  return Math.abs(off) <= 0.5 ? 0 : off
+}
+
+/**
+ * Turns the wheel `dy` px with the pointer over the view's middle and
+ * waits for the page to be still: gives whether it moved by `dy`.
+ */
+async function wheelBy(host: HTMLElement, dy: number): Promise<boolean> {
+  const from = scrollY
+  await mouse.moveTo(innerWidth / 2, innerHeight / 2)
+  await mouse.wheel(dy)
+  await rested(host)
+  return Math.abs(scrollY - from - dy) <= 0.5
+}
+
+/**
+ * From the page's top, wheels down 1500 px and up twice the bar's height,
+ * so the bar slides out and comes back whole, then down `hide` px, and
+ * waits for the bar to rest: gives whether each wheel moved by its delta,
+ * whether the page is four windows tall, and whether the bar rests.
+ */
+async function shownMidPage(host: HTMLElement, hide: number) {
+  const moved = [await wheelBy(host, 1500), await wheelBy(host, -2 * H)]
+  if (hide > 0) moved.push(await wheelBy(host, hide))
+  return {
+    moved: moved.every(Boolean),
+    tall: document.documentElement.scrollHeight >= 4 * innerHeight,
+    rests: await barRested(host),
+  }
+}
+
+const SHOWN_MID_PAGE = { moved: true, tall: true, rests: true }
+
+/** Until `ms` after `from` (a `performance.now()`), then the time `idle` gives. */
+async function until(from: number, ms: number) {
+  const left = from + ms - performance.now()
+  if (left > 0) await new Promise((resolve) => setTimeout(resolve, left))
+  await idle()
+}
+
+type Turned = Awaited<ReturnType<typeof phoneAt>>['turned']
+
+/**
+ * From the bar at rest mid-page, a wheel down half the bar's height, with
+ * the turn sent from its first `scroll` event, which the bar's own listener
+ * has seen: gives the share in view there, and the turn's landing, once
+ * the hold is over.
+ */
+async function turnedWhileWheeling(host: HTMLElement, turned: Turned) {
+  const kept = keptOf(host, anchorOf(host))
+  let at: { f: number; turning: ReturnType<Turned>; from: number } | undefined
+  addEventListener(
+    'scroll',
+    () => {
+      at = {
+        f: shownOf(host),
+        turning: turned('share', kept, { lead: 60 }),
+        from: performance.now(),
+      }
+    },
+    { once: true, passive: true },
+  )
+  await mouse.moveTo(innerWidth / 2, innerHeight / 2)
+  await mouse.wheel(H / 2)
+  for (let frame = 0; frame < 10 && at === undefined; frame++) await frames(1)
+  if (at === undefined) throw new Error('no scroll from the wheel')
+  const landed = await at.turning
+  await until(at.from, 60 + TURN_HOLD_MS)
+  return { f: at.f, landed }
+}
+
+/**
+ * **A turn neither shows nor hides the bar** (spec "A turn"): the share
+ * of the bar in view as the turn begins is in view after it, placed
+ * against each scroll the turn lands, the first resize's included, and
+ * the bar rests once the turn is over. `turned` sends `orientationchange`
+ * 60 ms ahead of the size, as iOS does; the bar rests before each turn
+ * unless a case says otherwise.
+ */
+describe.each([
+  { anchors: false, where: 'where the page does not anchor' },
+  { anchors: true, where: 'where the page anchors' },
+])('the phone bar across a turn, $where', ({ anchors }) => {
+  beforeEach(() => {
+    vi.mocked(library.home).mockResolvedValue(HOME)
+  })
+
+  const upright = () => phoneAt('/', { upright: true, coverSize: 121, anchors })
+
+  it.each(
+    [1, 0.5, 0].flatMap((f) =>
+      (['share', 'offset'] as const).map((lands) => [f, lands] as const),
+    ),
+  )(
+    'keeps the share of the bar in view across a turn, %s, landing at %s',
+    async (f, lands) => {
+      const { host, turned } = await upright()
+      const fixture = await shownMidPage(host, (1 - f) * H)
+      const before = shownOf(host)
+      const kept = keptOf(host, anchorOf(host))
+      const from = performance.now()
+      const landed = await turned(lands, kept, { lead: 60 })
+      await until(from, 60 + TURN_HOLD_MS)
+      expect({
+        fixture,
+        before,
+        size: landed.size,
+        ios: landed.ios,
+        off: barOff(barOf(host).getBoundingClientRect().top, f),
+      }).toEqual({
+        fixture: SHOWN_MID_PAGE,
+        before: f,
+        size: '956 × 440',
+        ios: true,
+        off: 0,
+      })
+    },
+  )
+
+  it('keeps the share across a turn begun while a wheel scrolls', async () => {
+    const { host, turned } = await upright()
+    const fixture = await shownMidPage(host, 0)
+    const { f, landed } = await turnedWhileWheeling(host, turned)
+    expect({
+      fixture,
+      f,
+      size: landed.size,
+      off: barOff(barOf(host).getBoundingClientRect().top, f),
+    }).toEqual({
+      fixture: SHOWN_MID_PAGE,
+      f: 0.5,
+      size: '956 × 440',
+      off: 0,
+    })
+  })
+
+  // The turn's own scrolls each come after a re-place at the same scroll,
+  // which the band rule leaves alone; the reader's do not.
+  it('holds the share in view through a wheel inside the turn’s hold', async () => {
+    const { host, turned } = await upright()
+    const fixture = await shownMidPage(host, 0)
+    let resizedAt = Number.NaN
+    let wheeled: Promise<boolean> | undefined
+    await turned('share', keptOf(host, anchorOf(host)), {
+      lead: 60,
+      afterResize: () => {
+        resizedAt = performance.now()
+        wheeled = new Promise((resolve) => setTimeout(resolve, 100)).then(() =>
+          wheelBy(host, 30),
+        )
+      },
+    })
+    const moved = await wheeled
+    const inHold = performance.now() - resizedAt < TURN_HOLD_MS
+    expect({
+      fixture,
+      moved,
+      inHold,
+      top: barOf(host).getBoundingClientRect().top,
+    }).toEqual({ fixture: SHOWN_MID_PAGE, moved: true, inHold: true, top: 0 })
+  })
+
+  it.each([1, 0.5])(
+    'places the bar against iOS’s scroll on the turn’s first resize, %s of it in view',
+    async (f) => {
+      const { host, turned } = await upright()
+      const fixture = await shownMidPage(host, (1 - f) * H)
+      const before = shownOf(host)
+      const y = scrollY
+      let at: { top: number; moved: boolean } | undefined
+      await turned('share', keptOf(host, anchorOf(host)), {
+        lead: 60,
+        afterResize: () => {
+          at = {
+            top: barOf(host).getBoundingClientRect().top,
+            moved: Math.abs(scrollY - y) > H,
+          }
+        },
+      })
+      if (at === undefined) throw new Error('no resize')
+      expect({
+        fixture,
+        before,
+        moved: at.moved,
+        off: barOff(at.top, f),
+      }).toEqual({ fixture: SHOWN_MID_PAGE, before: f, moved: true, off: 0 })
+    },
+  )
+
+  it.each([1, 0.5])(
+    'places the bar in the first frame laid at the new size, %s of it in view',
+    async (f) => {
+      const { host, turned } = await upright()
+      const fixture = await shownMidPage(host, (1 - f) * H)
+      const before = shownOf(host)
+      const kept = keptOf(host, anchorOf(host))
+      let first: ReturnType<typeof firstFrame> | undefined
+      const landed = await turned('share', kept, {
+        lead: 60,
+        afterResize: () => {
+          first = firstFrame(host, kept)
+        },
+      })
+      if (first === undefined) throw new Error('no resize')
+      const { barTop } = await first
+      expect({
+        fixture,
+        before,
+        ios: landed.ios,
+        off: barOff(barTop, f),
+      }).toEqual({ fixture: SHOWN_MID_PAGE, before: f, ios: true, off: 0 })
+    },
+  )
+
+  it('puts the reader’s place back under the bar’s held line', async () => {
+    const { host, turned } = await upright()
+    const fixture = await shownMidPage(host, 0)
+    const before = shownOf(host)
+    const kept = keptOf(host, anchorOf(host))
+    const landed = await turned('share', kept, { lead: 60 })
+    expect({
+      fixture,
+      before,
+      ios: landed.ios,
+      first: near(landed.first.off, 0),
+      ...placed(host, kept),
+    }).toEqual({
+      fixture: SHOWN_MID_PAGE,
+      before: 1,
+      ios: true,
+      first: 0,
+      same: true,
+      off: 0,
+    })
+  })
+
+  // Near the top the track holds the bar whole, so its foot moves with the
+  // scroll the keeper's put-back writes: the place lands under the foot
+  // where the put-back leaves the page, not where iOS did. With no Continue
+  // row, whose new column puts the place back a second time.
+  it('puts the reader’s place back under the bar’s foot where iOS lands a turn at the top while the bar tracks', async () => {
+    vi.mocked(library.home).mockResolvedValue({ ...HOME, continuing: [] })
+    const { host, turned } = await upright()
+    const fixture = await shownMidPage(host, 0)
+    scrollNeverEnds()
+    const moved = await wheelBy(host, H / 2)
+    const tracking = !barOf(host).hasAttribute('data-at-rest')
+    const f = shownOf(host)
+    const kept = keptOf(host, anchorOf(host))
+    const landed = await turned('top', kept, { lead: 60 })
+    expect({
+      fixture,
+      moved,
+      tracking,
+      f,
+      ios: landed.ios,
+      first: near(landed.first.off, 0),
+      ...placed(host, kept),
+    }).toEqual({
+      fixture: SHOWN_MID_PAGE,
+      moved: true,
+      tracking: true,
+      f: 0.5,
+      ios: true,
+      first: 0,
+      same: true,
+      off: 0,
+    })
+  })
+
+  it('rests at the end of a turn begun while a wheel scrolls', async () => {
+    const { host, turned } = await upright()
+    const fixture = await shownMidPage(host, 0)
+    const { f } = await turnedWhileWheeling(host, turned)
+    const bar = barOf(host)
+    expect({
+      fixture,
+      f,
+      rest: bar.hasAttribute('data-at-rest'),
+      position: getComputedStyle(bar).position,
+    }).toEqual({
+      fixture: SHOWN_MID_PAGE,
+      f: 0.5,
+      rest: true,
+      position: 'relative',
+    })
+  })
+
+  // Real keys: the click on ☰ has focused the page.
+  it.each(['in the hold', 'after it'] as const)(
+    'shows the bar after a turn with the drawer open, closed %s',
+    async (when) => {
+      const { host, turned } = await upright()
+      const fixture = await shownMidPage(host, H - 30)
+      const shown = Math.round(shownOf(host) * H)
+      const shell = need(host, '.library')
+      await clickShown(need(host, '.menu-button'))
+      await idle()
+      const open = shell.classList.contains('menu-open')
+      const under = await barRested(host)
+      let resizedAt = Number.NaN
+      let escaped: Promise<void> | undefined
+      await turned('share', keptOf(host, anchorOf(host)), {
+        lead: 60,
+        afterResize: () => {
+          resizedAt = performance.now()
+          if (when === 'in the hold') {
+            escaped = new Promise((resolve) => setTimeout(resolve, 300)).then(
+              () => userEvent.keyboard('{Escape}'),
+            )
+          }
+        },
+      })
+      if (when === 'after it') {
+        await until(resizedAt, TURN_HOLD_MS)
+      } else {
+        await escaped
+      }
+      const whole = barOf(host).getBoundingClientRect().top
+      if (when === 'after it') await userEvent.keyboard('{Escape}')
+      const closedAt = performance.now() - resizedAt
+      const closed = !shell.classList.contains('menu-open')
+      await until(resizedAt, TURN_HOLD_MS)
+      const bar = barOf(host)
+      expect({
+        fixture,
+        shown,
+        open,
+        under,
+        closed,
+        inHold: closedAt < TURN_HOLD_MS,
+        whole,
+        top: bar.getBoundingClientRect().top,
+        rest: bar.hasAttribute('data-at-rest'),
+      }).toEqual({
+        fixture: SHOWN_MID_PAGE,
+        shown: 30,
+        open: true,
+        under: true,
+        closed: true,
+        inHold: when === 'in the hold',
+        whole: 0,
+        top: 0,
+        rest: true,
+      })
+    },
+  )
+
+  it('keeps tracking through a height-only resize', async () => {
+    const { host } = await upright()
+    const fixture = await shownMidPage(host, 0)
+    frameBox().style.height = '900px'
+    await frames(2)
+    const size = `${innerWidth} × ${innerHeight}`
+    const moved = await wheelBy(host, 100)
+    expect({
+      fixture,
+      size,
+      moved,
+      out: barOf(host).getBoundingClientRect().bottom <= 0,
+    }).toEqual({
+      fixture: SHOWN_MID_PAGE,
+      size: '440 × 900',
+      moved: true,
+      out: true,
     })
   })
 })

@@ -336,9 +336,6 @@ export function Library() {
   const searchWait =
     (!offered && failure === undefined && !statusFailed) || searchWaiting
   const searchLoadingDrawn = useDrawnWait(searching && searchWait)
-  // The scroll is put back once the body this address draws is there: the
-  // hits where a query is, the grid where none is.
-  useKeptScroll(searching ? !searchWait : ready, { library: true })
   const placeholder =
     typeof library !== 'number'
       ? 'Search every library'
@@ -388,6 +385,12 @@ export function Library() {
     coverSizeOf(prefs),
     home?.continuing.length ?? 0,
   )
+  // The scroll is put back once the body this address draws is there: the
+  // hits where a query is, the grid where none is. After the Continue row's
+  // hook, whose layout effect sizes its cards in the same commit: put back
+  // before that, the place would be read in a page about to grow above the
+  // view, and a browser that anchors the page carries the view down with it.
+  useKeptScroll(searching ? !searchWait : ready, { library: true })
 
   const visible = gridData
     ? sorted(

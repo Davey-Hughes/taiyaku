@@ -11,6 +11,32 @@ export async function frames(count: number): Promise<void> {
   }
 }
 
+/** Frames until the document's scroll has held for three of them, as a wheel's scroll ends. */
+export async function stillPage(): Promise<void> {
+  let held = 0
+  let was = scrollY
+  while (held < 3) {
+    await new Promise(requestAnimationFrame)
+    held = scrollY === was ? held + 1 : 0
+    was = scrollY
+  }
+}
+
+/**
+ * Keeps the page's scroll from ending for the rest of the case, as a
+ * flick's glide keeps it going on a phone. Chromium ends a wheel's scroll
+ * in the frame it moved, and the phone bar rests in the page there at the
+ * same pixels (`phoneBar.ts`), so without this the bar's track itself would
+ * never be what a case reads.
+ */
+export function scrollNeverEnds(): void {
+  const held = (event: Event) => event.stopImmediatePropagation()
+  addEventListener('scrollend', held, { capture: true })
+  onTestFinished(() => {
+    removeEventListener('scrollend', held, { capture: true })
+  })
+}
+
 /**
  * Lets any motion `ms` long started by now end, a reseat unless told, and the
  * frames after its last one be drawn: a case about where a list comes to

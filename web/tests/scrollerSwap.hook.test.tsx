@@ -8,9 +8,14 @@ import {
   onTestFinished,
   vi,
 } from 'vitest'
+import { barLine } from '../src/phoneBar'
 import { rowLaid } from '../src/reseatTiming'
 import { useScrollerSwap } from '../src/scrollerSwap'
 import { mount, rerender } from './support/mount'
+
+// No bar's script runs here, so the line is the bar's box, unless a case
+// gives the line the script would.
+vi.mock('../src/phoneBar', () => ({ barLine: vi.fn(() => null) }))
 
 /**
  * `useScrollerSwap` reads the layout, which jsdom does not lay out, so
@@ -33,6 +38,11 @@ const LAID = {
 
 let layout: Layout
 let scroll: { main: number; doc: number }
+/**
+ * Whether the bar goes up with the document's scroll, as on a track the
+ * hook has not set.
+ */
+let barCarried: boolean
 let observers: Array<{ answer: () => void; observed: Element[] }>
 let frames: Map<number, FrameRequestCallback>
 
@@ -95,8 +105,9 @@ function rectOf(el: Element): DOMRect {
     } as DOMRect
   }
   if (el.classList.contains('phone-bar')) {
-    const bottom = layout === 'phone' ? BAR : 0
-    return { top: 0, bottom, height: bottom } as DOMRect
+    if (layout !== 'phone') return { top: 0, bottom: 0, height: 0 } as DOMRect
+    const top = barCarried ? -scroll.doc : 0
+    return { top, bottom: top + BAR, height: BAR } as DOMRect
   }
   // A visually hidden heading, placed outside `<main>`'s scroll.
   if (el.tagName === 'H1') return { top: 30, bottom: 31, height: 1 } as DOMRect
@@ -245,6 +256,7 @@ function drawn(props: Parameters<typeof Page>[0] = {}) {
 beforeEach(() => {
   layout = 'sidebar'
   scroll = { main: 0, doc: 0 }
+  barCarried = false
   observers = []
   frames = new Map()
   vi.stubGlobal('innerWidth', 1280)
@@ -295,6 +307,17 @@ describe('useScrollerSwap', () => {
         sidebar: { at: 1000, off: -20 },
       },
     )
+  })
+
+  // The list's `change` can come after the put-back, so the bar's script
+  // has not started and its track is the CSS's one bar tall: the line is
+  // the bar's box, which the put-back's own scroll carries off.
+  it('puts the place back in one write where the line is a bar the put-back’s scroll carries', () => {
+    barCarried = true
+    drawn()
+    scrolledTo(1000)
+    swapped('phone')
+    expect(scrolled()).toBe(1495)
   })
 
   it.each([
@@ -496,6 +519,22 @@ describe('useScrollerSwap', () => {
       scrolledTo(1000)
       turned()
       expect([scrolled(), offsetOf('9')]).toEqual([1000, -70])
+    })
+
+    // Half the bar held through the turn, and near the top the track holds
+    // the bar whole, so its foot moves with the scroll there.
+    it('puts the place under the bar’s foot where the put-back’s own scroll moves the foot', () => {
+      vi.mocked(barLine).mockImplementation(() =>
+        Math.max(26, BAR - scroll.doc),
+      )
+      onTestFinished(() => {
+        vi.mocked(barLine).mockImplementation(() => null)
+      })
+      drawn()
+      // The line at 26 crosses row 3, which cover 9 leads, 44 px down it.
+      scrolledTo(1000)
+      turned()
+      expect([scrolled(), barLine()]).toEqual([1000, 26])
     })
 
     it('puts a cover whose top stands below the top back as far below it', () => {

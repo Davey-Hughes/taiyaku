@@ -5,7 +5,7 @@
  * `base.css.test.ts`, `admin-rules.css.test.ts`, `admin-config.css.test.ts`,
  * `admin-proposals.css.test.ts`, `admin-account.css.test.ts`,
  * `library.css.test.ts`, `phoneLayout.css.test.ts`, `reader.css.test.ts`,
- * `settings.css.test.ts` and `tokens.css.test.ts`.
+ * `settings.css.test.ts`, `shell.css.test.ts` and `tokens.css.test.ts`.
  *
  * **Every one of them is a `.ts` in the `node` project, and that is a
  * constraint rather than a coincidence.** Vitest's default `css: false`
