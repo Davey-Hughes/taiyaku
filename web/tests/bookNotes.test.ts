@@ -419,4 +419,155 @@ describe('words for Anki', () => {
       '1 &lt; 2,x&lt;y &amp; z<br><i>Is 1 &lt; 2 &amp; 3 &gt; 2?</i>',
     )
   })
+
+  it('cuts a found range out as a run of its own', () => {
+    expect(pieces('a big dog', [[0, 9]], [], [], [2, 5])).toEqual([
+      {
+        sentence: 0,
+        runs: [
+          { text: 'a ', marks: [] },
+          { text: 'big', marks: [], found: true },
+          { text: ' dog', marks: [] },
+        ],
+      },
+    ])
+  })
+
+  it('keeps every base character of a ruby a found range and a highlight cross, the reading opened once', () => {
+    const ruby: Mark = { kind: 'ruby', start: 1, end: 4, reading: 'あいう' }
+    const runs = pieces(
+      'x愛情心y',
+      [],
+      [note({ text: { start: 2, end: 3 } })],
+      [ruby],
+      [0, 3],
+    ).flatMap((p) => p.runs)
+    expect(runs.map((r) => r.text).join('')).toBe('x愛情心y')
+    expect(runs.filter((r) => r.rubyStart).map((r) => r.text)).toEqual(['愛'])
+    expect(
+      runs
+        .filter((r) => r.found)
+        .map((r) => r.text)
+        .join(''),
+    ).toBe('x愛情')
+  })
+
+  it('leaves the runs as they were without a found range', () => {
+    expect(pieces('a big dog', [[0, 9]], [], [], undefined)).toEqual(
+      pieces('a big dog', [[0, 9]], []),
+    )
+    expect(
+      pieces('a big dog', [], []).some((p) => p.runs.some((r) => 'found' in r)),
+    ).toBe(false)
+  })
+})
+
+describe('a number in vertical text', () => {
+  const upright = (
+    text: string,
+    found?: [number, number],
+    notes: Note[] = [],
+    marks: Mark[] = [],
+  ) => pieces(text, [], notes, marks, found, true).flatMap((p) => p.runs)
+
+  it('of one or two digits is marked upright in its run, which it does not cut', () => {
+    expect(upright('第12話は7日と123日')).toEqual([
+      {
+        text: '第12話は7日と123日',
+        marks: [],
+        upright: [
+          [1, 3],
+          [5, 6],
+        ],
+      },
+    ])
+  })
+
+  it('is not marked where it touches another digit, full-width or not', () => {
+    for (const text of ['1234', '１２3', '3１', '12３']) {
+      expect(upright(text).some((r) => r.upright)).toBe(false)
+    }
+    expect(upright('a1b22c')).toEqual([
+      {
+        text: 'a1b22c',
+        marks: [],
+        upright: [
+          [1, 2],
+          [3, 5],
+        ],
+      },
+    ])
+  })
+
+  it('is found in the block’s text, so a run cut inside a number takes its part of it and never a number of its own', () => {
+    // 123 cut as 1 and 23 by a match: 23 is not a number of two digits.
+    expect(upright('第123話の5', [2, 4])).toEqual([
+      { text: '第1', marks: [] },
+      { text: '23', marks: [], found: true },
+      { text: '話の5', marks: [], upright: [[2, 3]] },
+    ])
+    // 12 cut as 1 and 2: each part is the number's, so each is still marked.
+    expect(upright('第12話', [2, 3])).toEqual([
+      { text: '第1', marks: [], upright: [[1, 2]] },
+      { text: '2', marks: [], found: true, upright: [[0, 1]] },
+      { text: '話', marks: [] },
+    ])
+  })
+
+  it('keeps the text, the found range and a highlight over it as they were', () => {
+    const text = '昭和12年に'
+    const runs = upright(text, [2, 4], [note({ text: { start: 2, end: 5 } })])
+    expect(runs.map((r) => r.text).join('')).toBe(text)
+    expect(runs.find((r) => r.upright)).toMatchObject({
+      text: '12',
+      found: true,
+      note: { text: { start: 2, end: 5 } },
+      upright: [[0, 2]],
+    })
+    expect(
+      runs
+        .filter((r) => r.note)
+        .map((r) => r.text)
+        .join(''),
+    ).toBe('12年')
+    expect(
+      runs
+        .filter((r) => r.found)
+        .map((r) => r.text)
+        .join(''),
+    ).toBe('12')
+  })
+
+  it('is marked inside a ruby’s base or a link holding more, which stays one run', () => {
+    const age: Mark = { kind: 'ruby', start: 2, end: 5, reading: 'はたち' }
+    expect(upright('彼は20歳になった', undefined, [], [age])).toEqual([
+      { text: '彼は', marks: [] },
+      { text: '20歳', marks: [age], rubyStart: true, upright: [[0, 2]] },
+      { text: 'になった', marks: [] },
+    ])
+    const link: Mark = { kind: 'link', start: 0, end: 3, block: 3, note: false }
+    expect(upright('問12を解く', undefined, [], [link])).toEqual([
+      { text: '問12', marks: [link], upright: [[1, 3]] },
+      { text: 'を解く', marks: [] },
+    ])
+  })
+
+  it('is marked whatever other marks are over it', () => {
+    for (const kind of ['bold', 'italic', 'sup', 'sub'] as const) {
+      const mark: Mark = { kind, start: 0, end: 4 }
+      expect(upright('第12話を', undefined, [], [mark]), kind).toEqual([
+        { text: '第12話', marks: [mark], upright: [[1, 3]] },
+        { text: 'を', marks: [] },
+      ])
+    }
+  })
+
+  it('is left unmarked in horizontal text', () => {
+    expect(pieces('第12話', [], [])).toEqual([
+      { runs: [{ text: '第12話', marks: [] }] },
+    ])
+    expect(pieces('第12話', [], [], [], undefined, false)).toEqual(
+      pieces('第12話', [], []),
+    )
+  })
 })

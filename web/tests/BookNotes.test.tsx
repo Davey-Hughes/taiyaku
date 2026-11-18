@@ -1,7 +1,7 @@
 import { act } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Book } from '../src/book'
-import { NoteEditor, NoteList } from '../src/BookNotes'
+import { NoteEditor, NoteList, SelectionBar } from '../src/BookNotes'
 import type { Note } from '../src/notes'
 import { mount } from './support/mount'
 
@@ -100,5 +100,56 @@ describe('NoteList', () => {
     ])
     act(() => (rows[4] as HTMLElement).click())
     expect(onOpen).toHaveBeenCalledWith(notes[0])
+  })
+})
+
+describe('SelectionBar', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  /** Where a 300 by 50 bar is set, in a 1024 by 768 window, for a selection `near`. */
+  function placed(
+    near: { left: number; top: number; right: number; bottom: number },
+    vertical: boolean,
+  ) {
+    expect([window.innerWidth, window.innerHeight]).toEqual([1024, 768])
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(
+      new DOMRect(0, 0, 300, 50),
+    )
+    const host = mount(
+      <SelectionBar
+        near={near}
+        vertical={vertical}
+        onHighlight={() => {}}
+        onNote={() => {}}
+        onLookUp={() => {}}
+      />,
+    )
+    const bar = host.querySelector<HTMLElement>('.book-selection-bar')
+    expect(bar?.style.visibility).toBe('')
+    return [bar?.style.left, bar?.style.top]
+  }
+
+  it('sits under a horizontal selection, or over it at the bottom', () => {
+    expect(
+      placed({ left: 100, top: 200, right: 160, bottom: 220 }, false),
+    ).toEqual(['100px', '228px'])
+    expect(
+      placed({ left: 100, top: 700, right: 160, bottom: 720 }, false),
+    ).toEqual(['100px', '642px'])
+  })
+
+  it('sits left of a vertical selection, or right of it at the left edge', () => {
+    expect(
+      placed({ left: 900, top: 80, right: 920, bottom: 700 }, true),
+    ).toEqual(['592px', '80px'])
+    expect(
+      placed({ left: 100, top: 80, right: 120, bottom: 700 }, true),
+    ).toEqual(['128px', '80px'])
+  })
+
+  it('is held inside the window', () => {
+    expect(
+      placed({ left: 1000, top: 760, right: 1020, bottom: 766 }, false),
+    ).toEqual(['716px', '702px'])
   })
 })

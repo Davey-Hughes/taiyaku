@@ -51,6 +51,13 @@ export interface Segment {
    * in two by a sentence or highlight has its reading drawn once.
    */
   rubyStart?: boolean
+  /** Whether the run is inside the search match being lit; never a note, never saved. */
+  found?: true
+  /**
+   * The numbers in the run's text set upright across a vertical line, as
+   * ranges of that text; drawn so, the text as it was.
+   */
+  upright?: [number, number][]
 }
 
 /** A run of a block's text, and the highlight over it if any. */
@@ -140,19 +147,35 @@ export interface Piece {
 
 /**
  * `text` cut into its `sentences` and the space between them, each piece the
- * runs of `segments` that fall inside it, so a highlight crossing a
- * sentence's end carries on into the next, and those runs cut again where
- * `marks` begin and end. An image, taking no text, rides on the run after it,
- * or on an empty run closing the last piece where it ends the text.
+ * runs of `segments` inside it, so a highlight crossing a sentence's end
+ * carries on into the next, and those runs cut again where `marks` begin and
+ * end. An image, taking no text, rides on the run after it, or on an empty
+ * run closing the last piece where it ends the text. `found`, a match's
+ * range, cuts the runs at its ends and marks those inside it. `upright`, in
+ * vertical text, marks on each run its part of each number of one or two
+ * digits and cuts none, so a ruby's base or a link holding one stays whole.
  */
 export function pieces(
   text: string,
   sentences: [number, number][],
   highlights: Note[],
   marks: Mark[] = [],
+  found?: [number, number],
+  upright = false,
 ): Piece[] {
   const within = (at: number) => Math.max(0, Math.min(text.length, at))
   const spans = marks.filter((m) => m.kind !== 'image' && m.start < m.end)
+  // Found in the whole text, not in a run's, so a run cut inside a number is
+  // never taken for a number of its own. Each run still draws its part in an
+  // upright span of its own, so a run edge inside a number, a highlight's, a
+  // match's, a mark's or a sentence's, stacks its digits (O356). Not one
+  // touching any other digit, a full-width one too: two digits of a longer
+  // number set across the line would read as a number of their own.
+  const numbers = upright
+    ? [...text.matchAll(/(?<!\p{Nd})[0-9]{1,2}(?!\p{Nd})/gu)].map(
+        (m) => [m.index, m.index + m[0].length] as const,
+      )
+    : []
   const images = marks.filter((m) => m.kind === 'image')
   const highlighted: { from: number; to: number; note?: Note }[] = []
   let at = 0
@@ -168,6 +191,7 @@ export function pieces(
       ...spans.flatMap((m) => [within(m.start), within(m.end)]),
       ...images.map((m) => within(m.start)),
       ...sentences.flat().map(within),
+      ...(found ? found.map(within) : []),
     ]),
   ].toSorted((a, b) => a - b)
   // `runs[i]` is the text from `cuts[i]` to the next cut. Every span and
@@ -193,6 +217,10 @@ export function pieces(
       text: text.slice(from, to),
       note: highlighted[h].note,
       marks: over,
+      ...(found &&
+        found[0] < found[1] &&
+        found[0] <= from &&
+        found[1] >= to && { found: true as const }),
       ...(here && { images: here }),
       ...(over.some((m) => m.kind === 'ruby' && m.start === from) && {
         rubyStart: true,
@@ -212,12 +240,14 @@ export function pieces(
   }
   const same = (a: Segment, b: Segment) =>
     a.note === b.note &&
+    a.found === b.found &&
     a.marks.length === b.marks.length &&
     a.marks.every((m, i) => m === b.marks[i])
   // A copy of each run is what is joined onto, since a run can fall in two
   // pieces where sentences overlap.
   const cut = (from: number, to: number): Segment[] => {
     const out: Segment[] = []
+    const starts: number[] = []
     for (let i = firstCut(from); i < runs.length && cuts[i + 1] <= to; i++) {
       const next = runs[i]
       const last = out.at(-1)
@@ -225,9 +255,23 @@ export function pieces(
         last.text += next.text
       } else {
         out.push({ ...next })
+        starts.push(cuts[i])
       }
     }
-    return out
+    return numbers.length === 0
+      ? out
+      : out.map((run, k) => numbered(run, starts[k]))
+  }
+  /** `run`, starting at `start` in the text, with the part of each number it holds. */
+  const numbered = (run: Segment, start: number): Segment => {
+    const end = start + run.text.length
+    const held = numbers
+      .filter(([from, to]) => from < end && to > start)
+      .map(([from, to]): [number, number] => [
+        Math.max(from, start) - start,
+        Math.min(to, end) - start,
+      ])
+    return held.length === 0 ? run : { ...run, upright: held }
   }
   const out: Piece[] = []
   at = 0
@@ -288,7 +332,8 @@ export function excerpt(book: Book, note: Note, length = 80): string {
 export interface Selected {
   block: number
   range: TextRange
-  at: { x: number; y: number }
+  /** The selection's box on the screen, which the bar is set beside. */
+  near: { left: number; top: number; right: number; bottom: number }
 }
 
 /**
@@ -333,6 +378,11 @@ export function selectionIn(text: HTMLElement | null): Selected | undefined {
   return {
     block: Number(block.dataset.block),
     range: { start, end },
-    at: { x: box?.left ?? 0, y: (box?.bottom ?? 0) + 8 },
+    near: {
+      left: box?.left ?? 0,
+      top: box?.top ?? 0,
+      right: box?.right ?? 0,
+      bottom: box?.bottom ?? 0,
+    },
   }
 }

@@ -10,10 +10,11 @@ import { noteColour } from './palette'
 
 /**
  * Runs of a block's words, each highlight a `<mark>` in its note's colour
- * around the run's marks, nested in one fixed order, outermost first: link,
- * bold, italic, sup, sub, then ruby, so a run cut out of the same marks nests
- * the same way wherever it is cut. A ruby's reading is drawn on the run that
- * opens its base, and only with `furigana`; it is `data-aside`, so a
+ * around the run's marks, nested outermost first: link, bold, italic, sup,
+ * sub, ruby, so a run cut out of the same marks nests the same way wherever
+ * it is cut. A number set upright sits inside every mark, so a ruby's base or
+ * a link holding one stays one element. A ruby's reading is drawn on the run
+ * that opens its base, only with `furigana`, and is `data-aside`, so a
  * selection and the page's word count pass over it as they do a peek.
  */
 export function Runs({
@@ -32,7 +33,9 @@ export function Runs({
     const ruby = run.rubyStart
       ? run.marks.find((m) => m.kind === 'ruby')
       : undefined
-    let drawn: ReactNode = run.text
+    let drawn: ReactNode = run.upright
+      ? uprightIn(run.text, run.upright)
+      : run.text
     if (furigana && ruby?.kind === 'ruby') {
       drawn = (
         <ruby>
@@ -53,6 +56,7 @@ export function Runs({
         </Linked>
       )
     }
+    if (run.found) drawn = <mark className="book-found">{drawn}</mark>
     if (run.note) {
       drawn = (
         <mark
@@ -94,6 +98,26 @@ export function Runs({
       </Fragment>
     )
   })
+}
+
+/**
+ * `text` with each of `numbers`, ranges of it, in a span of its own, since
+ * the property that sets a number upright combines all of an element's text.
+ */
+function uprightIn(text: string, numbers: [number, number][]): ReactNode[] {
+  const drawn: ReactNode[] = []
+  let at = 0
+  for (const [from, to] of numbers) {
+    if (at < from) drawn.push(text.slice(at, from))
+    drawn.push(
+      <span key={from} className="book-upright">
+        {text.slice(from, to)}
+      </span>,
+    )
+    at = to
+  }
+  if (at < text.length) drawn.push(text.slice(at))
+  return drawn
 }
 
 /**

@@ -2,7 +2,7 @@ import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { bookImageUrl } from '../src/book'
 import { selectionIn } from '../src/bookNotes'
-import { BookReader } from '../src/BookReader'
+import { BookReader, Sentences } from '../src/BookReader'
 import { GateContext, type Gated } from '../src/gate'
 import type { Note } from '../src/notes'
 import { land } from './support/async'
@@ -2855,6 +2855,126 @@ describe('another edition’s marks beside the one read', () => {
   })
 })
 
+describe('vertical Japanese', () => {
+  /** The reader opened on `edition` of `twoEditions`, with `vertical` and `layout` as the prefs. */
+  async function verticalOn(
+    edition: string,
+    vertical: boolean,
+    layout: object = {},
+  ) {
+    localStorage.setItem(
+      'taiyaku.prefs.book-text',
+      JSON.stringify({ vertical }),
+    )
+    localStorage.setItem('taiyaku.prefs.book-layout', JSON.stringify(layout))
+    // jsdom has no `scrollTo`, which placing a paged text calls.
+    Element.prototype.scrollTo = vi.fn()
+    const { host } = await opened(
+      { edition, slot: 0 },
+      twoEditions(japaneseMarks),
+    )
+    return host.querySelector<HTMLElement>('.book-text')?.dataset.vertical
+  }
+
+  it('sets a Japanese edition vertically with the setting on, scrolled or paged', async () => {
+    expect(await verticalOn('ja', true)).toBe('true')
+    expect(await verticalOn('ja', true, { paged: true })).toBe('true')
+  })
+
+  it('leaves the text horizontal for an edition not Japanese, or with the setting off', async () => {
+    expect(await verticalOn('en', true)).toBeUndefined()
+    expect(await verticalOn('ja', false)).toBeUndefined()
+  })
+
+  it('leaves the text horizontal compared or interlinear', async () => {
+    expect(await verticalOn('ja', true, { mode: 'compare' })).toBeUndefined()
+    expect(
+      await verticalOn('ja', true, { mode: 'interlinear' }),
+    ).toBeUndefined()
+  })
+
+  it('is off by default, and turned on in settings', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-text',
+      JSON.stringify({ justify: true }),
+    )
+    const { host } = await opened(
+      { edition: 'ja', slot: 0 },
+      twoEditions(japaneseMarks),
+    )
+    const text = () => host.querySelector<HTMLElement>('.book-text')
+    expect(text()?.dataset.vertical).toBeUndefined()
+    press('s')
+    const settings = host.querySelector('[aria-label="Settings"]')
+    const row = (name: string) =>
+      [...(settings?.querySelectorAll('label') ?? [])]
+        .find((label) => label.textContent === name)
+        ?.querySelector<HTMLInputElement>('input[type="checkbox"]')
+    expect(row('justify')?.checked).toBe(true)
+    const box = row('vertical')
+    expect(box?.checked).toBe(false)
+    act(() => box?.click())
+    expect(text()?.dataset.vertical).toBe('true')
+  })
+
+  /** The vertical reader, `layout` its layout, its text a screen 500 px wide that records `scrollBy`. */
+  async function verticalText(layout: object = {}) {
+    await verticalOn('ja', true, layout)
+    const text = document.querySelector('.book-text') as HTMLElement
+    vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(500)
+    text.scrollBy = vi.fn()
+    return text
+  }
+
+  it('reads ← as on and → as back, Page Down and Up as ever', async () => {
+    const text = await verticalText()
+    press('ArrowLeft')
+    press('ArrowRight')
+    press('PageDown')
+    press('PageUp')
+    expect(vi.mocked(text.scrollBy).mock.calls).toEqual([
+      [{ left: -450 }],
+      [{ left: 450 }],
+      [{ left: -450 }],
+      [{ left: 450 }],
+    ])
+  })
+
+  it('scrolls on along the text, leftward, on the wheel turned down, and back turned up', async () => {
+    const text = await verticalText()
+    const wheel = (init: WheelEventInit) => {
+      const event = new WheelEvent('wheel', { cancelable: true, ...init })
+      act(() => {
+        text.dispatchEvent(event)
+      })
+      return event
+    }
+    expect(wheel({ deltaY: 100 }).defaultPrevented).toBe(true)
+    wheel({ deltaY: -40 })
+    wheel({ deltaY: 1, deltaMode: WheelEvent.DOM_DELTA_PAGE })
+    expect(vi.mocked(text.scrollBy).mock.calls).toEqual([
+      [{ left: -100 }],
+      [{ left: 40 }],
+      [{ left: -500 }],
+    ])
+    // Sideways, and a pinch, are the browser's.
+    expect(wheel({ deltaX: 100 }).defaultPrevented).toBe(false)
+    expect(wheel({ deltaY: 100, ctrlKey: true }).defaultPrevented).toBe(false)
+    expect(text.scrollBy).toHaveBeenCalledTimes(3)
+  })
+
+  it('sizes a vertical paged book’s text on the wheel, as a horizontal one’s', async () => {
+    const text = await verticalText({ paged: true })
+    const event = new WheelEvent('wheel', { deltaY: -100, cancelable: true })
+    act(() => {
+      text.dispatchEvent(event)
+    })
+    expect(event.defaultPrevented).toBe(true)
+    expect(text.style.getPropertyValue('--book-text-size')).toBe('20px')
+    expect(text.scrollBy).not.toHaveBeenCalled()
+  })
+})
+
 describe('a sentence peek of several sentences', () => {
   it('is one span, the sentences joined by a space', async () => {
     const sent = twoEditions([])
@@ -3505,5 +3625,80 @@ describe('a book’s images set in links', () => {
     expect(fullFigure(host)).toBeNull()
     expect(scrolledTo().at(-1)).toBe('3')
     expect(backButton(host)).toBeDefined()
+  })
+})
+
+describe('a search match lit in a block', () => {
+  it('draws .book-found around exactly the match, leaving selection offsets alone', () => {
+    const block = {
+      text: '坊ちゃんの話',
+      sentences: [[0, 6]] as [number, number][],
+      marks: [{ kind: 'italic', start: 1, end: 3 }],
+    }
+    const draw = (found?: [number, number]) =>
+      mount(
+        <div data-block="0">
+          <span data-text>
+            <Sentences
+              block={block as never}
+              first={0}
+              highlights={[]}
+              work="w"
+              edition="en"
+              furigana
+              found={found}
+            />
+          </span>
+        </div>,
+      )
+    const host = draw([1, 4])
+    const lit = [...host.querySelectorAll('.book-found')]
+    expect(lit.map((el) => el.textContent).join('')).toBe('ちゃん')
+    expect(host.querySelector('[data-text]')?.textContent).toBe('坊ちゃんの話')
+    // Characters `from` to `to` selected on whichever text nodes the
+    // drawing split the words into, as `selectionIn` counts them.
+    const selected = (on: HTMLElement, from: number, to: number) => {
+      const nodes: Text[] = []
+      const walker = document.createTreeWalker(
+        on.querySelector('[data-text]') as Node,
+        NodeFilter.SHOW_TEXT,
+      )
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        nodes.push(node as Text)
+      }
+      const point = (at: number, end: boolean): [Text, number] => {
+        let left = at
+        for (const node of nodes) {
+          if (end ? left <= node.length : left < node.length)
+            return [node, left]
+          left -= node.length
+        }
+        throw new Error(`no character ${at}`)
+      }
+      const range = document.createRange()
+      range.setStart(...point(from, false))
+      range.setEnd(...point(to, true))
+      window.getSelection()?.removeAllRanges()
+      window.getSelection()?.addRange(range)
+      const got = selectionIn(on)?.range
+      window.getSelection()?.removeAllRanges()
+      return got
+    }
+    const plain = draw()
+    // Inside the match, the match whole, from inside it on past it, from
+    // before it into it, across it, after it, and before it.
+    for (const [from, to] of [
+      [2, 3],
+      [1, 4],
+      [2, 5],
+      [0, 2],
+      [0, 6],
+      [4, 6],
+      [0, 1],
+    ]) {
+      const want = { start: from, end: to }
+      expect(selected(host, from, to), `lit, ${from} to ${to}`).toEqual(want)
+      expect(selected(plain, from, to), `plain, ${from} to ${to}`).toEqual(want)
+    }
   })
 })

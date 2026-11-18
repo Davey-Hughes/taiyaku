@@ -2,7 +2,13 @@
  * The book reader's notes: the panel a note is written in, the list of every
  * note (`a`), and the bar a selection offers its highlights from.
  */
-import { type RefObject, useEffect, useRef, useState } from 'react'
+import {
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import { type Book, editionOrder } from './book'
 import { excerpt } from './bookNotes'
 import { usePanelFocus } from './focus'
@@ -152,24 +158,57 @@ export function NoteList({
   )
 }
 
-/** The highlights a selection can become, and a note on it, beside the selection. */
+/** How far the bar keeps from the selection and from the window's edges. */
+const BAR_GAP = 8
+
+/**
+ * The highlights a selection can become, and a note on it, beside the
+ * selection: under it, or vertical, left of it, a line there being the
+ * column's whole height. On the other side where it would leave the window,
+ * and held inside the window either way.
+ */
 export function SelectionBar({
-  at,
+  near,
+  vertical,
   onHighlight,
   onNote,
   onLookUp,
 }: {
-  at: { x: number; y: number }
+  near: { left: number; top: number; right: number; bottom: number }
+  vertical: boolean
   onHighlight: (colour: string) => void
   onNote: () => void
   onLookUp: () => void
 }) {
+  const bar = useRef<HTMLDivElement>(null)
+  const [at, setAt] = useState<{ left: number; top: number }>()
+  useLayoutEffect(() => {
+    const el = bar.current
+    if (!el) return
+    const { width, height } = el.getBoundingClientRect()
+    const wide = window.innerWidth
+    const high = window.innerHeight
+    let left = near.left
+    let top = near.bottom + BAR_GAP
+    if (vertical) {
+      left = near.left - BAR_GAP - width
+      top = near.top
+      if (left < BAR_GAP) left = near.right + BAR_GAP
+    } else if (top + height > high - BAR_GAP) {
+      top = near.top - BAR_GAP - height
+    }
+    const within = (v: number, room: number) =>
+      Math.max(BAR_GAP, Math.min(v, room - BAR_GAP))
+    setAt({ left: within(left, wide - width), top: within(top, high - height) })
+  }, [near, vertical])
   return (
     <div
+      ref={bar}
       className="book-selection-bar"
       role="toolbar"
       aria-label="Selection"
-      style={{ left: at.x, top: at.y }}
+      // Measured before it is shown, so it is never drawn where it would not fit.
+      style={at ?? { left: 0, top: 0, visibility: 'hidden' }}
     >
       <Swatches label="Colour to mark in" onPick={onHighlight} />
       <button type="button" className="reader-button" onClick={onNote}>

@@ -5,7 +5,8 @@ import type { ReaderModule } from '../module'
  * as a multiple of that size, the column's width in ems, the typeface, whether
  * lines are justified and hyphenated, whether a paragraph opens indented
  * rather than spaced from the last, whether a ruby's reading is drawn over
- * its base, and the page's colours.
+ * its base, the page's colours, and whether a Japanese edition is set
+ * vertically, top to bottom and right to left.
  */
 export interface BookTextPrefs {
   textSize: number
@@ -16,6 +17,7 @@ export interface BookTextPrefs {
   indent: boolean
   furigana: boolean
   page: string
+  vertical: boolean
 }
 
 export const LARGER_INTENT = 'book-text:larger'
@@ -52,6 +54,7 @@ export const bookTextModule: ReaderModule<BookTextPrefs> = {
     indent: true,
     furigana: true,
     page: 'dark',
+    vertical: false,
   },
   options: {
     typeface: ['serif', 'sans'],

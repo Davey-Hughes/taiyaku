@@ -5,8 +5,9 @@
  * Its chrome is the page reader's: `TopBar`, the bottom bar's progress line and
  * readout row (`bars.ts`), and the `Help`, `Settings` and `Account` panels, fed
  * from a registry of its own whose `book-text` module sets the text. Its own
- * panel is `Contents`. Its keys are `BOOK_KEYS` and its modules' own, which
- * `Help` lists.
+ * panels are `Contents`, `BookSearch`, `NoteEditor`, `NoteList` and
+ * `LookupPanel`. Its keys are `BOOK_KEYS` and its modules' own, which `Help`
+ * lists.
  *
  * Notes are the page reader's notes document, another edition's marked on the
  * paragraph a swap from them lands on.
@@ -19,6 +20,7 @@ import {
   type CSSProperties,
   Fragment,
   type ReactNode,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -63,6 +65,8 @@ import {
 } from './book'
 import {
   type Anchor,
+  addProgress,
+  anchorOf,
   kept,
   movesAnchor,
   type Pages,
@@ -73,9 +77,11 @@ import {
   topBlock,
   topOf,
   turn,
+  whole,
 } from './bookPages'
 import { LookupPanel, type Looked } from './BookLookup'
 import { saveFile } from './saveFile'
+import { SIDEBAR_LAYOUT } from './phoneLayout'
 import { NoteEditor, NoteList, SelectionBar } from './BookNotes'
 import type { Note, TextRange } from './notes'
 import {
@@ -90,6 +96,8 @@ import {
 import { BookFootnote } from './BookFootnote'
 import { BookProgress } from './BookProgress'
 import { Linked, Runs } from './BookRuns'
+import { BookSearch } from './BookSearch'
+import { type Here, isJapanese, type Match, stepFrom } from './bookSearch'
 import { Contents } from './Contents'
 import { debounce } from './debounce'
 import { useGate } from './gate'
@@ -115,6 +123,12 @@ import {
   REDO_INTENT,
   UNDO_INTENT,
 } from './modules/bookNotes'
+import {
+  bookSearchModule,
+  NEXT_INTENT as SEARCH_NEXT,
+  PREVIOUS_INTENT as SEARCH_PREVIOUS,
+  TOGGLE_INTENT as SEARCH_TOGGLE,
+} from './modules/bookSearch'
 import {
   bookTextModule,
   resized,
@@ -163,6 +177,10 @@ interface Place {
   block: number
   /** The character of the block's words to keep on screen: `Anchor.at`. */
   at?: number
+  /** The figure kept at the top instead: `Anchor.figure`. */
+  figure?: number
+  /** How far into what is kept the screen starts: `Anchor.into`. */
+  into?: number
 }
 
 type Panel =
@@ -170,15 +188,40 @@ type Panel =
   | 'settings'
   | 'account'
   | 'contents'
+  | 'search'
   | 'note'
   | 'notes'
   | 'lookup'
+
+/** The panels docked beside the text, rather than set over it as a dialog. */
+const DOCKED: ReadonlySet<Panel> = new Set<Panel>([
+  'help',
+  'contents',
+  'search',
+  'note',
+  'notes',
+  'lookup',
+])
+
+/**
+ * Whether the window is in the sidebar layout, where `book.css` sets the text
+ * in beside a docked panel. Asked as the reader draws, which a panel opened or
+ * closed and a resize both make it do. jsdom has no `matchMedia`, and is
+ * taken to be in it.
+ */
+function sidebarLayout(): boolean {
+  return (
+    typeof window.matchMedia !== 'function' ||
+    window.matchMedia(SIDEBAR_LAYOUT).matches
+  )
+}
 
 /** The panel each module's toggle key opens and closes. */
 const PANELS: Record<string, Panel> = {
   [SETTINGS_TOGGLE]: 'settings',
   [HELP_TOGGLE]: 'help',
   [CONTENTS_TOGGLE]: 'contents',
+  [SEARCH_TOGGLE]: 'search',
   [LIST_INTENT]: 'notes',
 }
 
@@ -218,6 +261,16 @@ const LIT_MS = 1500
 /** How long a swap's light takes to fade, with motion on. */
 const LIT_FADE_MS = 600
 
+/**
+ * What key `key`'s `intent` is in vertical text, which is read leftward: ←
+ * steps on and → back. Page Down and Up step as they do in any book.
+ */
+function readLeftward(key: string, intent: Intent): Intent {
+  if (intent.kind !== 'step') return intent
+  if (key !== 'ArrowLeft' && key !== 'ArrowRight') return intent
+  return { kind: 'step', by: intent.by === 1 ? -1 : 1 }
+}
+
 const registry = buildRegistry([
   motionModule,
   settingsModule,
@@ -225,11 +278,30 @@ const registry = buildRegistry([
   bookTextModule,
   bookLayoutModule,
   contentsModule,
+  bookSearchModule,
   peekModule,
   readAloudModule,
   bookNotesModule,
   bookPinsModule,
 ])
+
+/**
+ * Whether `to` lays the text out otherwise than `from` does: any setting of
+ * the Text or Layout sections but the page's colour. Any other change leaves
+ * every line where it is, so the reader's place is left alone with it.
+ */
+function laysOutAfresh(
+  from: Record<string, object>,
+  to: Record<string, object>,
+): boolean {
+  const fields = (map: Record<string, object>): Record<string, unknown> => ({
+    ...sliceFor(map, bookTextModule),
+    ...sliceFor(map, bookLayoutModule),
+    page: undefined,
+  })
+  const [before, after] = [fields(from), fields(to)]
+  return Object.keys(after).some((key) => before[key] !== after[key])
+}
 
 const rootStyle: CSSProperties = {
   display: 'flex',
@@ -246,9 +318,15 @@ export function BookReader({ work, onLeave }: Props) {
   const [top, setTop] = useState(0)
   const [bars, setBars] = useState(false)
   const [panel, setPanel] = useState<Panel>()
+  const docked = panel !== undefined && DOCKED.has(panel)
   const [peek, setPeek] = useState<Peeked>()
   const [paired, setPaired] = useState<Paired>()
   const [lit, setLit] = useState<[number, number]>()
+  // The search's matches, and the one last gone to, drawn until a tap and
+  // kept after it for `]` and `[` to step on from.
+  const [matches, setMatches] = useState<Match[]>([])
+  const [found, setFound] = useState<{ match: Match; drawn: boolean }>()
+  const foundDrawn = found?.drawn ? found.match : undefined
   const [figure, setFigure] = useState<{ src: string; alt: string }>()
   const [footnote, setFootnote] = useState<{
     edition: string
@@ -260,6 +338,11 @@ export function BookReader({ work, onLeave }: Props) {
   const [prefs, setPrefs] = usePrefsMap(registry.all(), loadPrefs, savePrefs)
   const text = useRef<HTMLDivElement>(null)
   const anchor = useRef<Anchor>({ block: 0, at: 0 })
+  // Where the last placing left the text scrolled. The scroll it sends is not
+  // the reader's: an anchor taken afresh there is the start of its line as
+  // the text is laid out now, so a panel opened and closed beside text it
+  // sets in would take the reader back a line each time.
+  const placedAt = useRef<{ left: number; top: number }>(undefined)
   const pressed = useRef<{ x: number; y: number; at: number }>(undefined)
   const lastTap = useRef<{ at: number; toggledBars: boolean }>(undefined)
   const tapWait = useRef<number>(undefined)
@@ -404,6 +487,11 @@ export function BookReader({ work, onLeave }: Props) {
   }, [shownEdition])
   const pinnable = comparing && columnKeys.length === 2
   const interlinear = mode === 'interlinear' && other !== undefined
+  const japanese = useMemo(() => edition && isJapanese(edition), [edition])
+  // Compared or interlinear, editions sit side by side or line by line, which
+  // a column of vertical text beside a horizontal one cannot.
+  const vertical =
+    typeset.vertical && japanese === true && !comparing && !interlinear
   const [revealed, setRevealed] = useState<ReadonlySet<number>>(new Set())
   // Each sentence's translation, worked out once an edition rather than a
   // sentence at a time, since an interlinear book sets one under every one.
@@ -497,6 +585,12 @@ export function BookReader({ work, onLeave }: Props) {
                 edition={editionKey}
                 furigana={furigana}
                 lit={litSentence}
+                found={
+                  foundDrawn?.edition === editionKey && foundDrawn.block === i
+                    ? [foundDrawn.start, foundDrawn.end]
+                    : undefined
+                }
+                upright={vertical}
                 asideAfter={(n) => (
                   <>
                     {peeked?.block === i && peek?.sentence === n && (
@@ -546,6 +640,8 @@ export function BookReader({ work, onLeave }: Props) {
     hideTranslation,
     revealed,
     speaking,
+    foundDrawn,
+    vertical,
   ])
   const compared = useMemo(() => {
     if (!book || !place || !comparing) return undefined
@@ -602,6 +698,12 @@ export function BookReader({ work, onLeave }: Props) {
                     edition={key}
                     furigana={furigana}
                     lit={litIn(key)}
+                    found={
+                      foundDrawn?.edition === key &&
+                      foundDrawn.block === from + i
+                        ? [foundDrawn.start, foundDrawn.end]
+                        : undefined
+                    }
                   />
                 </Block>
               </Fragment>
@@ -626,7 +728,7 @@ export function BookReader({ work, onLeave }: Props) {
         {columnKeys.map((key, column) => cell(key, column, row[column]))}
       </div>
     ))
-  }, [book, place, comparing, columnKeys, paired, work, furigana])
+  }, [book, place, comparing, columnKeys, paired, work, furigana, foundDrawn])
 
   useEffect(() => {
     let live = true
@@ -674,12 +776,22 @@ export function BookReader({ work, onLeave }: Props) {
   useEffect(() => () => save.flush(), [save])
 
   // A swap, the book's first draw, or the text laid out again scrolls to the
-  // place, and the place is the anchor until a scroll takes it off the page.
-  // Scrolling by hand sets no `place`, so it never fights the reader.
+  // place, and the place is the anchor until the reader scrolls: scrolled, by
+  // any amount; paged, off its page (`onScroll`, which tells the placing's own
+  // scroll by `placedAt`). Scrolling by hand sets no `place`, so it never
+  // fights the reader.
   useLayoutEffect(() => {
     if (!place) return
-    show(text.current, place.block, place.at)
-    anchor.current = { block: place.block, at: place.at ?? 0 }
+    show(text.current, place.block, place.at, place)
+    anchor.current = {
+      block: place.block,
+      at: place.at ?? 0,
+      figure: place.figure,
+      into: place.into,
+    }
+    placedAt.current = text.current
+      ? { left: text.current.scrollLeft, top: text.current.scrollTop }
+      : undefined
     setTop(place.block)
     setPages(pagesOf(text.current, layout?.entries ?? [], place.block))
   }, [place, layout])
@@ -709,6 +821,29 @@ export function BookReader({ work, onLeave }: Props) {
     return () => host.removeEventListener('wheel', onWheel)
   }, [pagedPref, loaded, setPrefs])
 
+  // Vertical and scrolled, the text runs on sideways, where a wheel turned
+  // down would not take it, so turned down it scrolls on, leftward. A
+  // sideways wheel or swipe already scrolls it, and a pinch is a zoom.
+  const linePx = typeset.textSize * typeset.lineSpacing
+  useEffect(() => {
+    const host = text.current
+    if (!host || !vertical || pagedPref || !loaded) return
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey) return
+      if (Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
+      event.preventDefault()
+      const unit =
+        event.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? linePx
+          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? host.clientWidth
+            : 1
+      addProgress(host, event.deltaY * unit)
+    }
+    host.addEventListener('wheel', onWheel, { passive: false })
+    return () => host.removeEventListener('wheel', onWheel)
+  }, [vertical, pagedPref, loaded, linePx])
+
   // An image drawn once the text is laid out pushes what follows it on, a
   // page or more where the text is paged, so the reader goes back to the
   // anchor taken before it loaded (`movesAnchor` says when). Not `kept`:
@@ -727,23 +862,47 @@ export function BookReader({ work, onLeave }: Props) {
     return () => host.removeEventListener('load', keep, true)
   }, [loaded])
 
+  // Vertical turned on or off, a layout or paging switched, or a docked panel
+  // opened or closed where `book.css` sets the text in beside one lays the
+  // text out afresh, so it goes back to the anchor taken before. Not where a
+  // new place came with it, as an edition swap's and a setting's kept anchor
+  // do: that is shown already. A panel's set-in redraws the same boxes at
+  // another width, so of these it alone keeps the anchor's `into`; the rest are
+  // placed `whole`. In the phone layout a panel goes over the text, which is
+  // not laid out again, so nothing is placed again either.
+  const setIn = docked && sidebarLayout()
+  const placedBefore = useRef<Place>(undefined)
+  const setInBefore = useRef(setIn)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the layout's own keys are triggers, not reads: the text they set out is what is laid out again.
+  useLayoutEffect(() => {
+    const placed = placedBefore.current !== place
+    const redrawn = setInBefore.current !== setIn
+    placedBefore.current = place
+    setInBefore.current = setIn
+    if (placed) return
+    const held = redrawn ? anchor.current : whole(anchor.current)
+    setPlace((p) => p && { edition: p.edition, ...held })
+  }, [place, vertical, mode, pagedPref, setIn])
+
   // A resized window lays the text out again, so it goes back to the anchor
   // the last scroll left, which a paged layout would otherwise slide off. Not
   // measured now: the text has already been laid out at the new width.
   useEffect(() => {
     const keep = () =>
-      setPlace((p) => p && { edition: p.edition, ...anchor.current })
+      setPlace((p) => p && { edition: p.edition, ...whole(anchor.current) })
     window.addEventListener('resize', keep)
     return () => window.removeEventListener('resize', keep)
   }, [])
 
-  useEffect(() => {
-    function swapTo(to: string) {
+  // To edition `to`, at the counterpart of the block at the top, lit, or at
+  // `landing`, a place already in `to`, which a search match is.
+  const swapTo = useCallback(
+    (to: string, landing?: { block: number; at: number }) => {
       if (!book || !place || to === place.edition) return
       const from = topBlock(text.current)
-      const block = counterpart(book, place.edition, to, from)
-      setPlace({ edition: to, block })
-      setLit(span(book, place.edition, to, from))
+      const block = landing?.block ?? counterpart(book, place.edition, to, from)
+      setPlace({ edition: to, block, at: landing?.at })
+      if (!landing) setLit(span(book, place.edition, to, from))
       setPeek(undefined)
       setPaired(undefined)
       stopReading.current?.()
@@ -751,7 +910,44 @@ export function BookReader({ work, onLeave }: Props) {
       // runs shorter or longer than its original.
       session.current.paced = { since: Date.now(), read: 0 }
       save({ edition: to, block })
-    }
+    },
+    [book, place, save],
+  )
+  // A match gone to, by the list, Enter, `]` or `[`: the text placed at its
+  // first character, in its own edition, and lit.
+  const goToMatch = useCallback(
+    (m: Match) => {
+      if (!place) return
+      setFound({ match: m, drawn: true })
+      if (m.edition !== place.edition) {
+        swapTo(m.edition, { block: m.block, at: m.start })
+        return
+      }
+      setPlace({ edition: m.edition, block: m.block, at: m.start })
+      save({ edition: m.edition, block: m.block })
+    },
+    [place, swapTo, save],
+  )
+  // Where the reader is, for a step once the match last gone to is no longer
+  // listed: the anchor, which the last scroll or placing left. A figure after
+  // its block, as one closing the book is, is past all of that block's words.
+  const here = useCallback(
+    (): Here | undefined =>
+      book && place
+        ? {
+            edition: place.edition,
+            block: anchor.current.block,
+            at:
+              (anchor.current.figure ?? 0) > 0
+                ? Number.POSITIVE_INFINITY
+                : anchor.current.at,
+            order: editionOrder(book),
+          }
+        : undefined,
+    [book, place],
+  )
+
+  useEffect(() => {
     // Aloud from the sentence the page or screen starts with, in the
     // edition's own language, which a device with no voice for it says
     // rather than reading in another's.
@@ -804,7 +1000,14 @@ export function BookReader({ work, onLeave }: Props) {
       else if (intent.kind === 'library') onLeave()
     }
     function onKey(event: KeyboardEvent) {
-      if (!book || event.metaKey || event.ctrlKey || event.altKey) return
+      if (!book || event.metaKey) return
+      // AltGr (Ctrl+Alt on Windows) is how some layouts type [ and ] at all.
+      if (
+        (event.ctrlKey || event.altKey) &&
+        !event.getModifierState('AltGraph')
+      ) {
+        return
+      }
       // A field takes every key, a button keeps the keys that press it, and
       // a panel keeps its own but Escape, which closes it.
       const control = controlKind(event.target)
@@ -847,7 +1050,7 @@ export function BookReader({ work, onLeave }: Props) {
       const intent = binding?.resolve(event.key, editionOrder(book))
       if (intent) {
         event.preventDefault()
-        act(intent)
+        act(vertical ? readLeftward(event.key, intent) : intent)
         return
       }
       const own = registry
@@ -864,6 +1067,17 @@ export function BookReader({ work, onLeave }: Props) {
       }
       const to = own && PANELS[own.intent]
       if (to) setPanel((p) => (p === to ? undefined : to))
+      // Not typed into the box it opens, nor taken by Firefox's own find.
+      if (own?.intent === SEARCH_TOGGLE) event.preventDefault()
+      if (own?.intent === SEARCH_NEXT || own?.intent === SEARCH_PREVIOUS) {
+        const next = stepFrom(
+          matches,
+          found?.match,
+          own.intent === SEARCH_NEXT ? 1 : -1,
+          here(),
+        )
+        if (next) goToMatch(next)
+      }
       if (place && notes.ready && own?.intent === NEW_INTENT) {
         const note = newNote(
           place.edition,
@@ -903,7 +1117,6 @@ export function BookReader({ work, onLeave }: Props) {
     peek,
     paired,
     bars,
-    save,
     onLeave,
     setPrefs,
     notes,
@@ -916,6 +1129,12 @@ export function BookReader({ work, onLeave }: Props) {
     columnKeys,
     figure,
     footnote,
+    matches,
+    found,
+    swapTo,
+    goToMatch,
+    here,
+    vertical,
   ])
 
   if (failed) {
@@ -1061,7 +1280,12 @@ export function BookReader({ work, onLeave }: Props) {
   } as CSSProperties
 
   return (
-    <main className="reader book-reader" style={rootStyle}>
+    <main
+      className="reader book-reader"
+      style={rootStyle}
+      data-vertical={vertical || undefined}
+      data-panel={docked ? panel : undefined}
+    >
       {bars && (
         <TopBar
           title={book.title}
@@ -1109,15 +1333,24 @@ export function BookReader({ work, onLeave }: Props) {
         data-indent={typeset.indent || undefined}
         data-paged={pagedPref || undefined}
         data-compared={comparing || undefined}
+        data-vertical={vertical || undefined}
         onScroll={() => {
+          const host = text.current
+          const placing =
+            placedAt.current?.left === host?.scrollLeft &&
+            placedAt.current?.top === host?.scrollTop
+          if (!placing) placedAt.current = undefined
           const now = topBlock(text.current)
           const read = at[now] - at[top]
           if (read > 0 && read <= MOST_READ_AT_ONCE) {
             session.current.paced.read += read
           }
           setSelected(undefined)
-          if (!shows(text.current, anchor.current)) {
-            anchor.current = topOf(text.current)
+          // Paged, the anchor is held while it is on the page, or sizing the
+          // text up and down creeps back a page at a time. Scrolled, a screen
+          // has no such edge: the line at the top is the reader's.
+          if (!placing && (!pagedPref || !shows(host, anchor.current))) {
+            anchor.current = anchorOf(host)
           }
           setTop(now)
           setPages(pagesOf(text.current, entries, now))
@@ -1142,6 +1375,7 @@ export function BookReader({ work, onLeave }: Props) {
             if (notes.ready) setSelected(selectionIn(text.current))
             return
           }
+          setFound((f) => (f?.drawn ? { match: f.match, drawn: false } : f))
           const target = event.target as Element
           // An image set in a link is the link's, below.
           const tapped = target.closest('[data-link]')
@@ -1283,6 +1517,14 @@ export function BookReader({ work, onLeave }: Props) {
             >
               Contents
             </button>
+            <button
+              type="button"
+              className="reader-button"
+              aria-expanded={panel === 'search'}
+              onClick={() => toggle('search')}
+            >
+              Search
+            </button>
             {back && (
               <button
                 type="button"
@@ -1338,7 +1580,8 @@ export function BookReader({ work, onLeave }: Props) {
       )}
       {selected && (
         <SelectionBar
-          at={selected.at}
+          near={selected.near}
+          vertical={vertical}
           onHighlight={(colour) => highlight(colour, false)}
           onNote={() => highlight(DEFAULT_COLOUR, true)}
           onLookUp={() => {
@@ -1415,6 +1658,17 @@ export function BookReader({ work, onLeave }: Props) {
         onGo={go}
         onClose={() => setPanel(undefined)}
       />
+      <BookSearch
+        visible={panel === 'search'}
+        book={book}
+        edition={place.edition}
+        entries={entries}
+        found={found?.match}
+        here={here}
+        onPick={goToMatch}
+        onResults={setMatches}
+        onClose={() => setPanel(undefined)}
+      />
       <Help
         visible={panel === 'help'}
         modules={enabledModules(registry.all(), prefs)}
@@ -1428,6 +1682,14 @@ export function BookReader({ work, onLeave }: Props) {
         onChange={change}
         onReset={(id) => {
           if (!registry.get(id)) return
+          // As `change` does, for every setting the reset puts back at once,
+          // where one of them lays the text out.
+          if (laysOutAfresh(prefs, sliceReset(prefs, registry, id))) {
+            setPlace({
+              edition: place.edition,
+              ...kept(text.current, anchor.current),
+            })
+          }
           resetPrefs(id)
           setPrefs((map) => sliceReset(map, registry, id))
         }}
@@ -1594,10 +1856,11 @@ function figuresBefore(figures: Figure[] = []): Map<number, Figure[]> {
 
 /**
  * The images a book sets between its blocks, from `edition` of `work`. A
- * figure has no `data-block`, so the reader's place, a peek and a note pass
- * over it to the blocks either side; tapped, it opens full size
- * (`data-figure`, in the text's `onPointerUp`), or follows the link it is
- * set in.
+ * figure has no `data-block`, so a peek, a note and the block at the top pass
+ * over it to the blocks either side, and the reader's place, where the screen
+ * starts in one, names it from the block after it (`Anchor.figure`). Tapped,
+ * it opens full size (`data-figure`, in the text's `onPointerUp`), or follows
+ * the link it is set in.
  */
 function Figures({
   figures,
@@ -1673,10 +1936,12 @@ function FullFigure({
 /**
  * A block's words, each sentence its own span numbered through the edition
  * from `first`, so a tap can name it; those in `lit` are lit, and
- * `asideAfter` sets what follows one, a peek or its translation. Its marks
- * are drawn as `Runs` draws them, its images from `edition` of `work`.
+ * `asideAfter` sets what follows one, a peek or its translation. `found`
+ * lights a search match as a run of its own. `upright`, for vertical text,
+ * sets each short number across its line. Its marks are drawn as `Runs`
+ * draws them, its images from `edition` of `work`.
  */
-function Sentences({
+export function Sentences({
   block,
   first,
   highlights,
@@ -1684,6 +1949,8 @@ function Sentences({
   edition,
   furigana,
   lit,
+  found,
+  upright,
   asideAfter,
 }: {
   block: Block
@@ -1693,28 +1960,35 @@ function Sentences({
   edition: string
   furigana: boolean
   lit?: [number, number]
+  found?: [number, number]
+  upright?: boolean
   asideAfter?: (n: number) => ReactNode
 }) {
   const drawn = { work, edition, furigana }
-  return pieces(block.text, block.sentences, highlights, block.marks).map(
-    (piece, j) => {
-      if (piece.sentence === undefined) {
-        return <Runs key={j} runs={piece.runs} {...drawn} />
-      }
-      const n = first + piece.sentence
-      return (
-        <Fragment key={j}>
-          <span
-            data-sentence={n}
-            data-lit={(lit && n >= lit[0] && n < lit[1]) || undefined}
-          >
-            <Runs runs={piece.runs} {...drawn} />
-          </span>
-          {asideAfter?.(n)}
-        </Fragment>
-      )
-    },
-  )
+  return pieces(
+    block.text,
+    block.sentences,
+    highlights,
+    block.marks,
+    found,
+    upright,
+  ).map((piece, j) => {
+    if (piece.sentence === undefined) {
+      return <Runs key={j} runs={piece.runs} {...drawn} />
+    }
+    const n = first + piece.sentence
+    return (
+      <Fragment key={j}>
+        <span
+          data-sentence={n}
+          data-lit={(lit && n >= lit[0] && n < lit[1]) || undefined}
+        >
+          <Runs runs={piece.runs} {...drawn} />
+        </span>
+        {asideAfter?.(n)}
+      </Fragment>
+    )
+  })
 }
 
 /**
