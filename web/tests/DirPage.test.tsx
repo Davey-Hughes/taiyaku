@@ -20,7 +20,7 @@ import { libraryScan } from '../src/pageReads'
 import type { FeedJob, ScanFeed } from '../src/scanFeed'
 import { entryOf, readSet, subscribe } from '../src/reads'
 import { mount, rerender } from './support/mount'
-import { feedJob, serveFeed } from './support/scanFeed'
+import { feedJob, fingerprintPass, serveFeed } from './support/scanFeed'
 import { expectRowsWired, helpOf, row, section } from './support/settingsRows'
 import { pass, WAIT_DRAWN_AFTER_MS } from './support/wait'
 
@@ -475,6 +475,7 @@ describe('DirPage, one directory in two libraries', () => {
       name: 'Kids',
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [dir(2, '/media/Shared', both)],
     }
     await act(async () => {
@@ -1608,6 +1609,26 @@ describe('DirPage, scans and removals across its library exclude each other', ()
     expect(actionsHeld(host)).toEqual(['free', 'free', 'free'])
     for (let i = 0; i < 3; i++) await clock(config.SCAN_POLL_MS)
     expect(api.libraryScanStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads its library’s status again each poll’s interval while its removal is held and only a fingerprint pass runs', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      held_removals: [2],
+    })
+    // A pass is never in the libraries the feed holds.
+    feed.answer({ ended: 0, libraries: [], jobs: [fingerprintPass()] })
+    const { host } = await shown()
+    await clock(0)
+    expect(actionsHeld(host)).toEqual(['free', 'free', 'held'])
+    const reads = () => vi.mocked(api.libraryScanStatus).mock.calls.length
+    const before = reads()
+    const added: number[] = []
+    for (let i = 0; i < 3; i++) {
+      await clock(config.SCAN_POLL_MS)
+      added.push(reads() - before)
+    }
+    expect(added).toEqual([1, 2, 3])
   })
 
   it('draws a scan of only this directory from the feed, and asks its library’s status once', async () => {

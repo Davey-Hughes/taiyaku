@@ -101,7 +101,7 @@ slow-timeout = { period = "60s" }
 # test's binary is invoked — including the coverage run `check-all.sh` and
 # `ci.yml` both use, neither of which passes it.
 #
-# **Every test that can skip itself belongs in this filter.** Three more do:
+# **Every test that can skip itself belongs in this filter.** Five more do:
 #   - `an_unreadable_directory_is_skipped_counted_and_named_rather_than_failing_the_root`
 #     (`taiyaku-library/src/scan/tests.rs`) — same root/`CAP_DAC_OVERRIDE`
 #     cause, a 0000 directory this process can still list.
@@ -112,8 +112,15 @@ slow-timeout = { period = "60s" }
 #     `PATH`, which is a different cause with the same consequence: the tar
 #     fixture would stop being checked against a real tar and nothing would
 #     say so.
+#   - `lower_renices_and_idles_this_thread_alone`
+#     (`taiyaku-serve/src/fingerprint_pass/priority/tests.rs`) — skips where
+#     `renice` or `ionice` is not on `PATH`, or where the thread running it
+#     is already at niceness 19 or in the idle I/O class, so lowering it could
+#     not be told from leaving it.
+#   - `a_worker_runs_niced_and_idle`
+#     (`taiyaku-serve/src/fingerprint_pass/tests.rs`) — the same causes.
 # `filter` names tests, not output, so a new self-skipping test has to be
 # added here by hand. There is no expression that catches them all.
 [[profile.default.overrides]]
-filter = "test(a_root_that_cannot_be_written) + test(an_unreadable_directory_is_skipped) + test(one_work_that_cannot_be_forgotten) + test(a_hand_written_tar_is_one_gnu_tar_can_list)"
+filter = "test(a_root_that_cannot_be_written) + test(an_unreadable_directory_is_skipped) + test(one_work_that_cannot_be_forgotten) + test(a_hand_written_tar_is_one_gnu_tar_can_list) + test(lower_renices_and_idles_this_thread_alone) + test(a_worker_runs_niced_and_idle)"
 success-output = "final"

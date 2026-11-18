@@ -275,6 +275,7 @@ fn a_resolved_root_keeps_covers_and_thumbs_as_siblings() {
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     };
     let covers = state.cache_dir.clone();
@@ -816,6 +817,13 @@ async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
 async fn serve_keeps_a_live_library_current_without_a_request_naming_the_work() {
     let fixture = crate::test_support::Fixture::new("serve-live");
     let library = crate::test_support::scanned_file_backed_library(&fixture);
+    // Off, so no startup scan ends and starts a pass after the one waited on
+    // below, which reads the store the fixture holds.
+    library
+        .conn()
+        .execute("UPDATE root SET scan_interval_secs = 0", [])
+        .expect("turns the directory Off");
+    let pass = std::sync::Arc::new(crate::fingerprint_pass::Pass::live());
     let works = crate::Works::library(&library).expect("projects the scanned works");
     let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
     let addr = probe.local_addr().unwrap().to_string();
@@ -824,6 +832,7 @@ async fn serve_keeps_a_live_library_current_without_a_request_naming_the_work() 
 
     let serving = tokio::spawn({
         let addr = addr.clone();
+        let pass = std::sync::Arc::clone(&pass);
         async move {
             crate::serve(
                 library,
@@ -831,6 +840,7 @@ async fn serve_keeps_a_live_library_current_without_a_request_naming_the_work() 
                 crate::ServeOptions {
                     addr,
                     cache: Some(cache),
+                    pass: Some(pass),
                     ..crate::ServeOptions::default()
                 },
             )
@@ -863,6 +873,10 @@ async fn serve_keeps_a_live_library_current_without_a_request_naming_the_work() 
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     serving.abort();
+    assert!(
+        pass.settle(crate::test_support::SETTLE),
+        "the server's pass ends"
+    );
     assert!(listed, "`/api/works` never listed {slug}");
 }
 
@@ -875,6 +889,13 @@ async fn serve_keeps_a_live_library_current_without_a_request_naming_the_work() 
 async fn serve_sweeps_a_live_library_s_cache_once_it_is_listening() {
     let fixture = crate::test_support::Fixture::new("serve-sweeps");
     let library = crate::test_support::scanned_file_backed_library(&fixture);
+    // Off, so no startup scan ends and starts a pass after the one waited on
+    // below, which reads the store the fixture holds.
+    library
+        .conn()
+        .execute("UPDATE root SET scan_interval_secs = 0", [])
+        .expect("turns the directory Off");
+    let pass = std::sync::Arc::new(crate::fingerprint_pass::Pass::live());
     let works = crate::Works::library(&library).expect("projects the scanned works");
     let digest: String = library
         .conn()
@@ -907,6 +928,7 @@ async fn serve_sweeps_a_live_library_s_cache_once_it_is_listening() {
             .expect("dates a staging file");
     }
 
+    let served = std::sync::Arc::clone(&pass);
     let serving = tokio::spawn(async move {
         crate::serve(
             library,
@@ -915,6 +937,7 @@ async fn serve_sweeps_a_live_library_s_cache_once_it_is_listening() {
                 addr,
                 cache: Some(cache),
                 cache_max: 99,
+                pass: Some(served),
                 ..crate::ServeOptions::default()
             },
         )
@@ -927,6 +950,10 @@ async fn serve_sweeps_a_live_library_s_cache_once_it_is_listening() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     serving.abort();
+    assert!(
+        pass.settle(crate::test_support::SETTLE),
+        "the server's pass ends"
+    );
     assert!(!unheld.exists(), "{} was never swept", unheld.display());
     assert!(!held.exists(), "{} was never evicted", held.display());
     assert!(!leftover.exists(), "{} was never swept", leftover.display());

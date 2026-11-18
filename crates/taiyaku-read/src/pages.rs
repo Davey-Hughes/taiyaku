@@ -1,6 +1,7 @@
 //! Assembling an edition's flat page sequence from its members.
 
 use std::{
+    collections::HashSet,
     fmt::Write as _,
     fs::File,
     io::{BufReader, Read, Seek},
@@ -200,6 +201,17 @@ fn skipped(path: &Path) -> String {
 
 /// The paths of a directory's pages, in reading order, without reading them.
 fn directory_page_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut found: Vec<PathBuf> = directory_files(root)?
+        .into_iter()
+        .filter(|path| is_page_name(&path.to_string_lossy()))
+        .collect();
+    found.sort_by(|a, b| natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
+    Ok(found)
+}
+
+/// Every file under a directory, in no order, less dotfiles and whatever sits
+/// in a dot-directory.
+fn directory_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut found: Vec<PathBuf> = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
@@ -216,12 +228,11 @@ fn directory_page_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
             }
             if path.is_dir() {
                 pending.push(path);
-            } else if is_page_name(&base) {
+            } else {
                 found.push(path);
             }
         }
     }
-    found.sort_by(|a, b| natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
     Ok(found)
 }
 
@@ -292,7 +303,7 @@ fn page_names_from<R: Read + Seek>(zip: &zip::ZipArchive<R>) -> Vec<String> {
             }
             let name = entry.name().ok()?.into_owned();
             // Resource forks and dotfiles are not pages.
-            if name.starts_with("__MACOSX") || name.rsplit('/').next()?.starts_with('.') {
+            if is_fork_or_dotfile(&name) {
                 return None;
             }
             is_page_name(&name).then_some(name)
@@ -301,6 +312,17 @@ fn page_names_from<R: Read + Seek>(zip: &zip::ZipArchive<R>) -> Vec<String> {
     // Central-directory order is not guaranteed to be page order.
     names.sort_by(|a, b| natural_cmp(a, b));
     names
+}
+
+/// Whether a name is a resource fork or a dotfile, which the archive listing
+/// never reads as a page whatever its extension. A folder's walk skips dotfiles
+/// itself and asks this only to tell a companion.
+fn is_fork_or_dotfile(name: &str) -> bool {
+    name.starts_with("__MACOSX")
+        || name
+            .rsplit('/')
+            .next()
+            .is_some_and(|base| base.starts_with('.'))
 }
 
 /// Whether `zip` will open an entry for reading with no password, judged
@@ -884,6 +906,68 @@ pub fn member_entry(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> 
         .read_to_end(&mut bytes)
         .map_err(|e| format!("{}: {matched}: {e}", path.display()))?;
     Ok(Some(bytes))
+}
+
+/// The file entries of a member that are neither a page nor a companion, in
+/// natural order: a page in a format this crate does not read, an entry `zip`
+/// will not open, a file of a type it does not know. Each is something a later
+/// reader may read, so a file holding one has not been read whole.
+///
+/// A companion is a resource fork or dotfile the listing skips, or a file of a
+/// type in [`COMPANION_EXTENSIONS`], at any depth. Each comes back named as
+/// [`member_page_names`] names a page: an archive entry's name, a directory
+/// file's path under the member.
+///
+/// # Errors
+///
+/// As [`member_page_names`]: a directory that cannot be listed, or an archive
+/// that cannot be opened, is a container this crate does not read, or does
+/// not parse as a zip.
+pub fn member_unread_entries(path: &Path) -> Result<Vec<String>, String> {
+    let mut unread: Vec<String> = if path.is_dir() {
+        directory_files(path)?
+            .iter()
+            .filter(|file| !is_page_name(&file.to_string_lossy()))
+            .map(|file| {
+                file.strip_prefix(path)
+                    .unwrap_or(file)
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .filter(|name| !is_companion(name))
+            .collect()
+    } else {
+        let zip = open_archive(path)?;
+        let pages: HashSet<String> = page_names_from(&zip).into_iter().collect();
+        (0..zip.len())
+            .filter_map(|i| {
+                let entry = zip.by_index_data(i).ok()?;
+                let name = entry.name().ok()?.into_owned();
+                (entry.is_file() && !pages.contains(&name) && !is_companion(&name)).then_some(name)
+            })
+            .collect()
+    };
+    unread.sort_by(|a, b| natural_cmp(a, b));
+    Ok(unread)
+}
+
+/// The types, in lower case, of the files a release carries beside its pages
+/// that are not images; `ComicInfo.xml`, `Thumbs.db` and `desktop.ini` are
+/// among them by type. An image type the reader cannot decode yet stays out,
+/// so a file holding one is partial and read again once the reader learns it.
+const COMPANION_EXTENSIONS: &[&str] = &[
+    "txt", "nfo", "url", "sfv", "md5", "sha1", "xml", "json", "htm", "html", "md", "rtf", "ini",
+    "db", "ds_store",
+];
+
+/// Whether an entry is one a member carries beside its pages that the reader
+/// knows is not a page.
+fn is_companion(name: &str) -> bool {
+    is_fork_or_dotfile(name)
+        || Path::new(name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| COMPANION_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 #[cfg(test)]

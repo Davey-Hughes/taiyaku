@@ -248,6 +248,58 @@ fn a_rename_is_refused_as_the_callers_mistake_or_as_no_such_library() {
     assert_eq!(rename(&conn, 999, "Other"), Err(RenameError::Missing(999)));
 }
 
+#[test]
+fn turning_matching_off_is_one_library_s_alone() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let a = create(&conn, "Manga").expect("creates");
+    let b = create(&conn, "Books").expect("creates");
+    let switch = |id: i64| {
+        list(&conn)
+            .expect("lists")
+            .into_iter()
+            .find(|l| l.id == id)
+            .expect("listed")
+            .match_by_content
+    };
+
+    set_match_by_content(&conn, a, false).expect("turns it off");
+    assert!(!switch(a), "Manga is off");
+    assert!(switch(b), "Books is still on");
+
+    set_match_by_content(&conn, a, true).expect("turns it back on");
+    assert!(switch(a), "Manga is on again");
+    assert!(switch(b), "Books is on");
+
+    assert_eq!(
+        set_match_by_content(&conn, 999, false),
+        Err(SwitchError::Missing(999))
+    );
+    assert!(switch(a), "an unknown id switched nothing");
+    assert!(switch(b), "an unknown id switched nothing");
+}
+
+#[test]
+fn a_library_answers_its_own_switch_and_no_library_answers_none() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let a = create(&conn, "Manga").expect("creates");
+    let b = create(&conn, "Books").expect("creates");
+    set_match_by_content(&conn, a, false).expect("turns it off");
+
+    assert_eq!(
+        match_by_content_of(&conn, a),
+        Ok(Some(false)),
+        "Manga is off"
+    );
+    assert_eq!(match_by_content_of(&conn, b), Ok(Some(true)), "Books is on");
+    assert_eq!(
+        match_by_content_of(&conn, 999),
+        Ok(None),
+        "there is no library 999"
+    );
+}
+
 /// Every library's name, by name.
 fn names(conn: &Connection) -> Vec<String> {
     list(conn)

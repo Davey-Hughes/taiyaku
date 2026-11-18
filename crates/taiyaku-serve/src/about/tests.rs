@@ -148,6 +148,39 @@ fn the_body_answers_a_clean_labels_commit_and_does_not_mark_it() {
     assert_eq!(body["dirty"], serde_json::json!(false));
 }
 
+/// The build a stored fingerprint names: a marked build of a commit is not
+/// that commit's clean build, so the mark is part of the name.
+#[test]
+fn build_stamp_names_the_commit_and_its_mark() {
+    let clean = BuildLabel {
+        commit: Some(FULL),
+        dirty: false,
+    };
+    let marked = BuildLabel {
+        commit: Some(HEAD),
+        dirty: true,
+    };
+    let none = BuildLabel {
+        commit: None,
+        dirty: false,
+    };
+    assert_eq!(build_stamp(&clean).as_deref(), Some(FULL));
+    assert_eq!(build_stamp(&marked), Some(format!("{HEAD}-dirty")));
+    assert_eq!(build_stamp(&none), None);
+}
+
+/// Read with the same [`build_label`] call `/api/about` makes, so this
+/// holds a value only when the build gives it a commit, as CI's does.
+#[test]
+fn this_build_is_the_stamp_of_the_label_about_answers() {
+    let label = build_label(
+        option_env!("TAIYAKU_COMMIT"),
+        option_env!("TAIYAKU_GIT_HEAD"),
+        option_env!("TAIYAKU_GIT_DIRTY"),
+    );
+    assert_eq!(this_build(), build_stamp(&label));
+}
+
 /// The whole body, compared exactly. A string literal and a `json!` key get
 /// no mutant, so only an exact comparison holds a name, a sentence, a key or
 /// the order of the rows in place.

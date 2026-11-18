@@ -359,7 +359,6 @@ pub fn epub(dir: &Path, name: &str, paragraphs: &[&str]) -> PathBuf {
 /// [`epub`], its package's metadata holding `dc`, Dublin Core elements written
 /// as `<dc:title>…</dc:title>`.
 pub fn epub_with(dir: &Path, name: &str, dc: &str, paragraphs: &[&str]) -> PathBuf {
-    use std::io::Write;
     let body: String = paragraphs.iter().map(|p| format!("<p>{p}</p>")).collect();
     let metadata =
         format!(r#"<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">{dc}</metadata>"#);
@@ -382,14 +381,37 @@ pub fn epub_with(dir: &Path, name: &str, dc: &str, paragraphs: &[&str]) -> PathB
         ),
     ];
     let path = dir.join(name);
-    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).expect("create epub"));
-    for (entry, text) in files {
-        zip.start_file(entry, zip::write::SimpleFileOptions::default())
-            .expect("start entry");
-        zip.write_all(text.as_bytes()).expect("write entry");
-    }
-    zip.finish().expect("finish epub");
+    write_zip(&path, files);
     path
+}
+
+/// A new zip at `path` holding `entries` in the order given, each with zip's
+/// default options.
+fn write_zip<B: AsRef<[u8]>>(
+    path: &Path,
+    entries: impl IntoIterator<Item = (impl Into<String>, B)>,
+) {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).expect("create zip"));
+    for (name, bytes) in entries {
+        zip.start_file(name.into(), zip::write::SimpleFileOptions::default())
+            .expect("start entry");
+        zip.write_all(bytes.as_ref()).expect("write entry");
+    }
+    zip.finish().expect("finish zip");
+}
+
+/// `image` encoded as PNG.
+#[cfg(feature = "test-support")]
+fn png(image: &image::GrayImage) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    image
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("a gray image always encodes");
+    bytes
 }
 
 /// A cbz of `count` decodable pages that fingerprint differently from each
@@ -402,31 +424,413 @@ pub fn epub_with(dir: &Path, name: &str, dc: &str, paragraphs: &[&str]) -> PathB
 // Gated on the feature because `image` exists only with it.
 #[cfg(feature = "test-support")]
 pub fn cbz_pages(dir: &Path, name: &str, count: u32, seed: u32) -> PathBuf {
-    use std::io::Write;
     let path = dir.join(name);
-    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).expect("create cbz"));
-    for i in 0..count {
-        let level = seed.wrapping_add(i).wrapping_mul(101);
-        let image = image::GrayImage::from_fn(8, 8, |x, y| {
-            let v = x.wrapping_mul(37).wrapping_add(y.wrapping_mul(59)) + level;
-            let byte = u8::try_from(v % 256)
-                .expect("v % 256 is in 0..256 by construction, which is exactly u8's range");
-            image::Luma([byte])
-        });
-        let mut bytes = Vec::new();
-        image
-            .write_to(
-                &mut std::io::Cursor::new(&mut bytes),
-                image::ImageFormat::Png,
-            )
-            .expect("an 8x8 gray image always encodes");
-        zip.start_file(
-            format!("{i:03}.png"),
-            zip::write::SimpleFileOptions::default(),
-        )
-        .expect("start entry");
-        zip.write_all(&bytes).expect("write page bytes");
-    }
-    zip.finish().expect("finish cbz");
+    write_zip(
+        &path,
+        (0..count).map(|i| {
+            let level = seed.wrapping_add(i).wrapping_mul(101);
+            let image = image::GrayImage::from_fn(8, 8, |x, y| {
+                let v = x.wrapping_mul(37).wrapping_add(y.wrapping_mul(59)) + level;
+                let byte = u8::try_from(v % 256)
+                    .expect("v % 256 is in 0..256 by construction, which is exactly u8's range");
+                image::Luma([byte])
+            });
+            (format!("{i:03}.png"), png(&image))
+        }),
+    );
     path
 }
+
+/// One page of [`PRINT_FIXTURE`] as taiyaku-cli's `describe_pages` records
+/// it, each hash as its four words: this crate cannot name `PageHash`.
+#[cfg(feature = "test-support")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PinnedPrint {
+    pub width: u32,
+    pub height: u32,
+    pub hash: [u64; 4],
+    pub halves: Option<([u64; 4], [u64; 4])>,
+}
+
+/// The print fixture's art. It varies along both axes, so no line of it is
+/// flat; it never reaches 255, so the bars are the only white; and it moves
+/// with `seed`, so no two pages hash alike.
+#[cfg(feature = "test-support")]
+fn print_ink(x: u32, y: u32, seed: u32) -> u8 {
+    let v = (x * 7 + y * 31 + seed * 53) % 180;
+    40 + u8::try_from(v).expect("v % 180 is under 180, which fits u8")
+}
+
+/// One print-fixture page as greyscale PNG: `width` by `height`, flat 255
+/// bars of `[left, right, top, bottom]` pixels, and [`print_ink`] art seeded
+/// by `seed` inside them.
+#[cfg(feature = "test-support")]
+#[must_use]
+pub fn print_page(width: u32, height: u32, bars: [u32; 4], seed: u32) -> Vec<u8> {
+    let [left, right, top, bottom] = bars;
+    png(&image::GrayImage::from_fn(width, height, |x, y| {
+        let art = (left..width - right).contains(&x) && (top..height - bottom).contains(&y);
+        image::Luma([if art { print_ink(x, y, seed) } else { 255 }])
+    }))
+}
+
+/// The pages [`PRINT_FIXTURE`] pins, as greyscale PNG named `p00.png` to
+/// `p25.png`, in reading order. Every page is 128 tall. Sampled at a step of
+/// two, the pages' bars give a common border of 6 a side and 5 above and
+/// below, and every page loses it.
+#[cfg(feature = "test-support")]
+#[must_use]
+pub fn print_fixture_pages() -> Vec<(String, Vec<u8>)> {
+    (0..26u32)
+        .map(|index| {
+            let (width, bars) = match index {
+                // A full-bleed cover: a minimum in place of the median reads
+                // its zero and cancels the crop for every page.
+                0 => (96, [0; 4]),
+                // Never sampled at a step of two; sampling every page moves
+                // the median to 12.
+                odd if odd % 2 == 1 => (96, [12; 4]),
+                // Wider than tall after the crop too, so it gets halves; odd
+                // after it, so a right half cut to the edge differs from one
+                // cut `mid` wide.
+                8 => (201, [6, 3, 2, 5]),
+                // Wider than tall only before the crop, so it gets none.
+                10 => (130, [6, 3, 2, 5]),
+                // Uneven bars: without evening up each pair, 3 and 2 come
+                // off where 6 and 5 should.
+                _ => (96, [6, 3, 2, 5]),
+            };
+            (
+                format!("p{index:02}.png"),
+                print_page(width, 128, bars, index),
+            )
+        })
+        .collect()
+}
+
+/// `dir/print-fixture.cbz`, holding [`print_fixture_pages`] in order.
+#[cfg(feature = "test-support")]
+pub fn print_fixture_cbz(dir: &Path) -> PathBuf {
+    let path = dir.join("print-fixture.cbz");
+    write_zip(&path, print_fixture_pages());
+    path
+}
+
+/// `dir/print-fixture/`, holding [`print_fixture_pages`] as files.
+#[cfg(feature = "test-support")]
+pub fn print_fixture_folder(dir: &Path) -> PathBuf {
+    let path = dir.join("print-fixture");
+    std::fs::create_dir(&path).expect("create the fixture folder");
+    for (name, bytes) in print_fixture_pages() {
+        std::fs::write(path.join(name), bytes).expect("write a page");
+    }
+    path
+}
+
+/// What taiyaku-cli's `describe_pages` gives for [`print_fixture_pages`],
+/// page by page. The thresholds that decide a content match were set on hashes
+/// made this way (`docs/notes.md`, "Edition matching by content"), so every
+/// copy of the fingerprint code must give these exactly: a value that changes
+/// here changes what those thresholds mean.
+#[cfg(feature = "test-support")]
+pub const PRINT_FIXTURE: [PinnedPrint; 26] = [
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x5543_C2AA_A835_731C,
+            0x5555_570A_AAA8_3855,
+            0x2155_5554_0AAA_AAA1,
+            0xC739_1554_542A_2AA1,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x2553_350B_2E63_1863,
+            0x2693_2553_24AB_2AAB,
+            0x2AAB_2553_355B_2AAB,
+            0x2319_231B_3543_22AB,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0xAA1C_1555_508A_8E7B,
+            0xAAA8_3855_5543_C2AA,
+            0x0AAA_AAA1_5555_570A,
+            0x18EF_22A8_2155_5555,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x2AAB_2833_314B_330F,
+            0x342B_2AAB_2153_352B,
+            0x2553_2AAB_2A83_2553,
+            0x0C63_3CE3_2A0B_2553,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x5542_AAAA_8615_31CE,
+            0x5555_C2AA_AAA8_1555,
+            0x5555_550A_AAAA_A855,
+            0xE31D_5555_4B2A_AAA9,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x255B_298B_2E2B_0C63,
+            0x2153_355B_2AAB_2AAB,
+            0x2A83_2553_342B_2AAB,
+            0x318F_339B_2553_22AB,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0xAE15_5550_58AA_A638,
+            0xAAAA_1555_5542_AAAA,
+            0xAAAA_A855_5555_42AA,
+            0x8C63_A3A8_5955_550A,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x2AAB_235B_3DC3_31C7,
+            0x2AAB_2AAB_2553_250B,
+            0x342B_2AAB_2153_355B,
+            0x4633_2E33_2A8B_2553,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 189,
+        height: 118,
+        hash: [
+            0x6666_3331_8DC8_4AB5,
+            0xCCCC_6666_1111_CCCC,
+            0x1111_CCCC_6666_1111,
+            0x54AB_2B10_CCCC_6666,
+        ],
+        halves: Some((
+            [
+                0x2854_050A_5188_CE73,
+                0x42D1_285A_850A_52A1,
+                0x0685_6050_AC2A_8685,
+                0x9CCE_4211_A150_9428,
+            ],
+            [
+                0x2A5A_050A_42B1_19CC,
+                0x6850_2C1A_8585_50D1,
+                0x4285_2852_9C2A_8285,
+                0x7399_4AC6_A150_142D,
+            ],
+        )),
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x355B_2AEB_229B_6619,
+            0x2553_250B_2AAB_2853,
+            0x2153_3553_2AAB_2AA3,
+            0x18C7_39C3_243B_2AAB,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 118,
+        height: 118,
+        hash: [
+            0x3860_860C_C983_3664,
+            0xE1C6_3871_061C_6186,
+            0x871C_61C7_3871_871C,
+            0x4CC8_1336_61C5_9870,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x2AAB_255B_1C63_18C3,
+            0x2AAB_285B_355B_22AB,
+            0x2C2B_2AAB_2153_350B,
+            0x2319_2F3B_28C3_2553,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x2AAA_AA85_7154_CC63,
+            0x54A8_AAAA_A554_5554,
+            0x5551_D2AA_AA96_9555,
+            0x1947_4718_AAAA_1A55,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x254B_2AAB_2B8B_631D,
+            0x355B_22AB_2AAB_2553,
+            0x2153_350B_2AAB_287B,
+            0x0C63_3C63_260B_2AAB,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x9555_552A_8AA3_39CC,
+            0x8595_5550_2CAA_AA85,
+            0xAA96_8555_54B0_AAAA,
+            0xE338_9857_5551_D2AA,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x2A1B_3553_2E7B_0C63,
+            0x2AAB_2853_254B_22AB,
+            0x2AAB_28AB_355B_270B,
+            0x338D_238B_2853_351B,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x2AAB_A955_5556_C739,
+            0x34AA_AAA5_A555_552A,
+            0x54D0_AAAA_8695_5554,
+            0x9C63_52AA_AAAA_8555,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x20CB_2A3B_39C3_318F,
+            0x254B_22AB_2A1B_2553,
+            0x3553_270B_2AAB_2853,
+            0x0633_1C73_238B_28EB,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x5555_0CAA_EAA9_18C7,
+            0xA155_552C_0AAA_A961,
+            0xAA94_D554_54AA_AAA5,
+            0x338C_8D55_5550_AAAA,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x2613_3543_263B_0639,
+            0x2A2B_2553_214B_2AAB,
+            0x2AAB_285B_2543_22AB,
+            0x38C7_31CB_2553_250B,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0xAAA9_7155_1D43_E398,
+            0x2AAA_29A5_5555_0D2A,
+            0x542A_AAAA_A155_5554,
+            0xC671_38AE_AA84_D554,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x20AB_2A8B_3CC3_18C7,
+            0x354B_2AAB_2E13_2553,
+            0x3553_22AB_2AAB_2553,
+            0x6719_273B_28AB_2A5B,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x554B_82AA_A31C_1C53,
+            0x5555_152A_AAA9_6855,
+            0xA155_5554_2AAA_2AA5,
+            0x38C6_C550_542A_2AAA,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x2553_3463_239B_6319,
+            0x2A13_2553_20AB_2A8B,
+            0x2AAB_2553_254B_2AAB,
+            0x0863_28C3_3553_22AB,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0xAA68_5555_5662_738E,
+            0xAAAA_2855_5555_42AA,
+            0x2AAA_2AA1_5555_550A,
+            0x6738_2AA2_A155_5554,
+        ],
+        halves: None,
+    },
+    PinnedPrint {
+        width: 84,
+        height: 118,
+        hash: [
+            0x2AAB_2183_2C73_0C63,
+            0x20AB_2AAB_2553_355B,
+            0x254B_2AAB_2A13_2553,
+            0x218D_231B_2AEB_2513,
+        ],
+        halves: None,
+    },
+];

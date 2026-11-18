@@ -1745,24 +1745,15 @@ fn place(
     Ok(groups)
 }
 
-/// Whether `taiyaku-read` can read what this `scan_entry.format` token names.
+/// Whether `taiyaku-read` can read what this `scan_entry.format` token names,
+/// as [`taiyaku_read::Format::is_readable`] answers for the token's format.
 ///
-/// Compared as tokens rather than by rebuilding the enum, because
-/// [`taiyaku_read::Format`] has no parse-back and `token` is explicitly the
-/// schema's vocabulary rather than free text — the same move `scan::pages_of`
-/// makes against `Format::Zip.token()`. The three named here are exactly
-/// [`taiyaku_read::Format::is_readable`]'s three, and that function stays the
-/// place the question is decided; another readable format is a change in both
-/// places, which is the cost of there being no token parser.
-///
-/// A NULL `format` — a file whose bytes matched no signature — needs no arm
-/// of its own: no token is `None`, so `None` matches none, which is the same
-/// answer `Format::Unknown` gives.
+/// A NULL `format`, a file whose bytes matched no signature, names no format,
+/// so it is not readable, the answer `Format::Unknown` gives.
 fn is_readable(format: Option<&str>) -> bool {
-    use taiyaku_read::Format;
-    [Format::Dir, Format::Zip, Format::EpubReflow]
-        .iter()
-        .any(|readable| format == readable.token())
+    format
+        .and_then(taiyaku_read::Format::from_token)
+        .is_some_and(taiyaku_read::Format::is_readable)
 }
 
 /// This member's digest, hashing it and writing the answer back onto
@@ -3573,6 +3564,67 @@ pub(crate) fn unattached_chapter_dirs(
         }
     }
     Ok(dirs)
+}
+
+/// One entry a derive claims: it speaks for everything beneath it, and
+/// nothing above it speaks for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Claimed {
+    pub root_id: i64,
+    pub rel_path: String,
+    pub format: Option<String>,
+    pub pages: Option<u32>,
+    pub sha256: Option<String>,
+}
+
+/// Every claimed entry across every root, by root and then path: the files and
+/// folders a fingerprint pass reads.
+///
+/// Asked with the helpers `unattached_chapter_dirs` shares with [`derive()`],
+/// so a pass reads exactly the entries the derive takes as members or as
+/// unattached chapters, and a rule edit that moves a claim moves what is read.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions [`derive()`] does: the rules or
+/// roots cannot be read, or a `scan_entry` row will not project.
+pub fn claimed_units(conn: &Connection) -> Result<Vec<Claimed>, String> {
+    let (engine, _complaints) = Engine::load(conn)?;
+    let roots = crate::scan::roots(conn)?;
+    let mut report = DeriveReport::default();
+    let mut units = Vec::new();
+
+    for root in &roots {
+        let mut seen = Vec::new();
+        for entry in entries(conn, root.id)? {
+            if let Some(admitted) = admit(&engine, root, entry, &mut report) {
+                seen.push(admitted);
+            }
+        }
+        let claims = claims_of(&seen);
+        for admitted in seen {
+            if !admitted.claims_subtree(&claims)
+                || nested_in_claim(&claims, &admitted.entry.rel_path)
+            {
+                continue;
+            }
+            let Entry {
+                rel_path,
+                format,
+                pages,
+                sha256,
+                ..
+            } = admitted.entry;
+            units.push(Claimed {
+                root_id: root.id,
+                rel_path,
+                format,
+                pages,
+                sha256,
+            });
+        }
+    }
+    Ok(units)
 }
 
 /// Every `(root id, rel_path)`, across every root, that the rules currently

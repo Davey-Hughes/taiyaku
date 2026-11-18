@@ -78,12 +78,36 @@ pub(crate) fn build_label(
 /// yet, the script watches none of git's state, so once git can answer, the
 /// label reads "unknown build" until one of those Rust files changes.
 pub(crate) async fn about() -> Response {
-    (axum::Json(about_body(&build_label(
+    (axum::Json(about_body(&this_label())),).into_response()
+}
+
+/// This binary's label, from the three values its build was given.
+fn this_label() -> BuildLabel {
+    build_label(
         option_env!("TAIYAKU_COMMIT"),
         option_env!("TAIYAKU_GIT_HEAD"),
         option_env!("TAIYAKU_GIT_DIRTY"),
-    ))),)
-        .into_response()
+    )
+}
+
+/// The build a stored fingerprint names: the label's commit, with `-dirty`
+/// when it is marked, or `None` for a build that names no commit.
+///
+/// The mark is part of it because a marked build of a commit need not read
+/// pages as that commit's clean build does.
+pub(crate) fn build_stamp(label: &BuildLabel) -> Option<String> {
+    label.commit.map(|commit| {
+        if label.dirty {
+            format!("{commit}-dirty")
+        } else {
+            commit.to_owned()
+        }
+    })
+}
+
+/// This binary's [`build_stamp`].
+pub(crate) fn this_build() -> Option<String> {
+    build_stamp(&this_label())
 }
 
 /// What `GET /api/about` answers for a build `label` describes.

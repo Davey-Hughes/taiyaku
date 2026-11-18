@@ -189,7 +189,33 @@ fn every_format_names_its_schema_token_and_says_whether_it_can_be_read() {
     ] {
         assert_eq!(format.token(), token, "{format:?}");
         assert_eq!(format.is_readable(), readable, "{format:?}");
+        if let Some(token) = token {
+            assert_eq!(
+                Format::from_token(token),
+                Some(format),
+                "{token} reads back"
+            );
+        }
     }
+    assert_eq!(Format::from_token("cbz"), None, "a token no format writes");
+}
+
+/// A fingerprint pass reads what the reader reads pages from: a reflowable
+/// EPUB is readable as text and has no page to read.
+#[test]
+fn paged_formats_are_the_readable_ones_less_reflowable_books() {
+    assert!(Format::PAGED.contains(&Format::Dir), "a folder of pages");
+    assert!(Format::PAGED.contains(&Format::Zip), "an archive of pages");
+    assert!(
+        Format::EpubReflow.is_readable(),
+        "a reflowable EPUB is read"
+    );
+    assert!(
+        !Format::PAGED.contains(&Format::EpubReflow),
+        "as text, not as pages"
+    );
+    assert!(!Format::Rar.is_readable(), "a RAR is not read");
+    assert!(!Format::PAGED.contains(&Format::Rar), "so it has no pages");
 }
 
 #[test]

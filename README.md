@@ -346,6 +346,27 @@ field (a walk's **Taken over** only when it is not zero), with what it
 rather than left out — so "nothing was unreadable this time" cannot be
 mistaken for "this version does not say".
 
+**Each library with matching on also fingerprints its pages**, for the
+matching of editions by what their pages show that a later version will do;
+this one matches nothing. A library's page has a **Match editions by page
+content** box, under Matching, ticked unless someone unticks it. When a scan
+the server runs ends without a Cancel, when the server starts, and when the
+box is ticked, a background pass reads the pages of each file in a directory
+a ticked library holds, unless the directory is paused, and stores a
+fingerprint of every page: newest files first, a file and its copies once,
+and a file stored whole not again unless a later version fingerprints pages
+another way. It runs at the lowest priority, `nice 19` and the idle I/O
+class, and before each file it waits while a scan or another library job (a
+rule save, a stamp, a move or a removal from a library) runs, or while a
+page, a book or a download has been sent to a reader in the last 30 seconds.
+While it runs, the Libraries table, and the page of each ticked library,
+show a line such as "Fingerprinting pages · 120 of 2,097 files" with a
+**Cancel**. Cancel stops this pass and keeps what it has stored, and the
+next scan that ends without a Cancel, scheduled or pressed, starts a pass
+that carries on from there. Unticking the box is the lasting stop: the pass
+starts no new file that only that library holds, and the fingerprints
+already stored are kept.
+
 **The rule editor is built too**, at `/config/rules` — the screen the whole
 preview mechanism exists for. An ordered
 list on the left and the rule being edited beside it, with the preview beneath

@@ -15,7 +15,7 @@ import { holdOf } from './support/held'
 import { changesIn } from './support/liveRegion'
 import { counted, dir, idle, manga, tick } from './support/libraries'
 import { mount, rerender } from './support/mount'
-import { feedJob, serveFeed } from './support/scanFeed'
+import { feedJob, fingerprintPass, serveFeed } from './support/scanFeed'
 import { expectRowsWired, helpOf, row, section } from './support/settingsRows'
 import { cellValue } from './support/table'
 import { watchDrawn } from './support/wait'
@@ -262,7 +262,7 @@ describe('LibraryPage', () => {
     expect(host.querySelector('.no-readable')).toBeNull()
   })
 
-  it('heads itself with ‹ Libraries, its name, what it holds, and Rename… and Scan library as its actions, over Directories and the removal box', async () => {
+  it('heads itself with ‹ Libraries, its name, what it holds, and Rename… and Scan library as its actions, over Directories, Matching and the removal box', async () => {
     const { host } = await shown()
     const header = host.querySelector(
       '.library-page > .page-header',
@@ -283,7 +283,7 @@ describe('LibraryPage', () => {
       ['save-rename', 'Save'],
       ['cancel-rename', 'Cancel'],
     ])
-    expect(sectionTitles(host)).toEqual(['Directories', 'Removal'])
+    expect(sectionTitles(host)).toEqual(['Directories', 'Matching', 'Removal'])
     expect(
       section(host, 'Directories').querySelector(
         ':scope > .settings-box > .add-root > button[name="add-dir"]',
@@ -323,7 +323,7 @@ describe('LibraryPage', () => {
       [...host.querySelectorAll('.settings-row-label')].map(
         (label) => label.textContent,
       ),
-    ).toEqual(['Remove this library'])
+    ).toEqual(['Match editions by page content', 'Remove this library'])
     expect(nameBox(host).getAttribute('aria-label')).toBe('Name')
     expectRowsWired(host)
   })
@@ -412,7 +412,11 @@ describe('LibraryPage', () => {
   })
 
   it('renames by id and reloads', async () => {
-    vi.mocked(api.renameLibrary).mockResolvedValue({ id: 7, name: 'Comics' })
+    vi.mocked(api.renameLibrary).mockResolvedValue({
+      id: 7,
+      name: 'Comics',
+      match_by_content: true,
+    })
     const { host, onChanged } = await shown()
     await press(button(host, 'rename-library'))
     const box = host.querySelector(
@@ -621,7 +625,7 @@ describe('LibraryPage', () => {
   })
 
   it('moves focus from Save to the name box once the save’s wait is drawn, and keeps it there through a refusal, so that Escape still closes the editor', async () => {
-    const sent = deferred<{ id: number; name: string }>()
+    const sent = deferred<api.Patched>()
     vi.mocked(api.renameLibrary).mockReturnValue(sent.promise)
     const { host } = await shown()
     await press(button(host, 'rename-library'))
@@ -650,7 +654,7 @@ describe('LibraryPage', () => {
   })
 
   it('moves focus from the editor’s Cancel to the name box once the save’s wait holds it', async () => {
-    const sent = deferred<{ id: number; name: string }>()
+    const sent = deferred<api.Patched>()
     vi.mocked(api.renameLibrary).mockReturnValue(sent.promise)
     const { host } = await shown()
     await press(button(host, 'rename-library'))
@@ -677,7 +681,7 @@ describe('LibraryPage', () => {
   })
 
   it('puts focus on the title after a save whose wait was drawn, as after one answered at once', async () => {
-    const sent = deferred<{ id: number; name: string }>()
+    const sent = deferred<api.Patched>()
     vi.mocked(api.renameLibrary).mockReturnValue(sent.promise)
     const { host } = await shown()
     await press(button(host, 'rename-library'))
@@ -688,14 +692,20 @@ describe('LibraryPage', () => {
     await waitDrawn()
     expect(document.activeElement).toBe(nameBox(host))
 
-    await flush(() => sent.resolve({ id: 7, name: 'Comics' }))
+    await flush(() =>
+      sent.resolve({ id: 7, name: 'Comics', match_by_content: true }),
+    )
     expect(host.querySelector('form.rename-library')).toBeNull()
     expect(title(host)?.textContent).toBe('Comics')
     expect(document.activeElement).toBe(title(host))
   })
 
   it('takes the library’s own name, in any case, as no clash', async () => {
-    vi.mocked(api.renameLibrary).mockResolvedValue({ id: 7, name: 'MANGA' })
+    vi.mocked(api.renameLibrary).mockResolvedValue({
+      id: 7,
+      name: 'MANGA',
+      match_by_content: true,
+    })
     const { host } = await shown(manga(), [comics()])
     await press(button(host, 'rename-library'))
     expect(nameBox(host).value).toBe('Manga')
@@ -894,7 +904,11 @@ describe('LibraryPage', () => {
   })
 
   it('never draws Save waiting, nor Save or Cancel held, for a save answered at once', async () => {
-    vi.mocked(api.renameLibrary).mockResolvedValue({ id: 7, name: 'Comics' })
+    vi.mocked(api.renameLibrary).mockResolvedValue({
+      id: 7,
+      name: 'Comics',
+      match_by_content: true,
+    })
     const { host } = await shown()
     await press(button(host, 'rename-library'))
     await typeInto(nameBox(host), 'Comics')
@@ -927,7 +941,11 @@ describe('LibraryPage', () => {
 
   it('lets a rename be saved while a scan is being started', async () => {
     vi.mocked(api.startLibraryScan).mockReturnValue(new Promise(() => {}))
-    vi.mocked(api.renameLibrary).mockResolvedValue({ id: 7, name: 'Comics' })
+    vi.mocked(api.renameLibrary).mockResolvedValue({
+      id: 7,
+      name: 'Comics',
+      match_by_content: true,
+    })
     const { host, onChanged } = await shown()
     await press(button(host, 'scan-library'))
     await press(button(host, 'rename-library'))
@@ -1340,20 +1358,21 @@ describe('LibraryPage, a library and its directories', () => {
     )
     const { host } = await shown()
     await clock(0)
-    expect(sectionTitles(host)).toEqual(['Directories', 'Removal'])
+    expect(sectionTitles(host)).toEqual(['Directories', 'Matching', 'Removal'])
     feed.answer(runningFeed(whole()))
     await press(button(host, 'scan-library'))
     await clock(config.SCAN_POLL_MS)
-    expect(sectionTitles(host)).toEqual(['Directories', 'Removal'])
+    expect(sectionTitles(host)).toEqual(['Directories', 'Matching', 'Removal'])
 
     feed.answer(idleFeed(1))
     await clock(config.SCAN_POLL_MS)
 
-    // Between the directories and the removal box, its heading an h3 and
-    // each directory's path an h4 beneath it.
+    // Under the directories, its heading an h3 and each directory's path an
+    // h4 beneath it.
     expect(sectionTitles(host)).toEqual([
       'Directories',
       'What the scan found',
+      'Matching',
       'Removal',
     ])
     const found = section(host, 'What the scan found')
@@ -2007,7 +2026,11 @@ describe('LibraryPage, scans and removals of a library and its directories exclu
         feedJob({ id: 9, dirs: [{ id: 1, path: '/media/Manga/Volumes' }] }),
       ),
     )
-    vi.mocked(api.renameLibrary).mockResolvedValue({ id: 7, name: 'Comics' })
+    vi.mocked(api.renameLibrary).mockResolvedValue({
+      id: 7,
+      name: 'Comics',
+      match_by_content: true,
+    })
     vi.mocked(api.addDir).mockResolvedValue({
       root: dir(3, '/media/Manga/Extras'),
       watching: true,
@@ -2057,7 +2080,11 @@ describe('LibraryPage, what a refusal outlasts', () => {
 
   it('keeps an add’s refusal through a scan of the library and a rename', async () => {
     vi.mocked(api.startLibraryScan).mockResolvedValue(started)
-    vi.mocked(api.renameLibrary).mockResolvedValue({ id: 7, name: 'Comics' })
+    vi.mocked(api.renameLibrary).mockResolvedValue({
+      id: 7,
+      name: 'Comics',
+      match_by_content: true,
+    })
     const { host } = await shown()
     const picker = await refusedAdd(host)
     expect(picker.querySelector('[role="alert"]')?.textContent).toBe('nope')
@@ -3123,6 +3150,28 @@ describe('LibraryPage, a scan the feed shows (O273)', () => {
     )
   })
 
+  it('offers Scan library, not Cancel, while only a fingerprint pass covers it, and reads a held removal’s status again each poll’s interval', async () => {
+    vi.mocked(api.libraryScanStatus).mockResolvedValue({
+      ...idle(7),
+      held_removals: [1],
+    })
+    // A pass is never in the libraries the feed holds.
+    feed.answer({ ended: 0, libraries: [], jobs: [fingerprintPass()] })
+    const { host } = await shown()
+    await clock(0)
+    expect(button(host, 'scan-library').textContent).toBe('Scan library')
+    expect(holdOf(button(host, 'remove-library'))).toBe('held')
+    const reads = () => vi.mocked(api.libraryScanStatus).mock.calls.length
+    const before = reads()
+    const added: number[] = []
+    for (let i = 0; i < 3; i++) {
+      await tick()
+      await flush()
+      added.push(reads() - before)
+    }
+    expect(added).toEqual([1, 2, 3])
+  })
+
   it('draws no paused line while a scan of its paused directory runs, though the list still says it is paused', async () => {
     vi.mocked(api.startLibraryScan).mockResolvedValue(started)
     const paused = manga({
@@ -3234,5 +3283,218 @@ describe('LibraryPage, a scan the feed shows (O273)', () => {
       button(host, 'scan-library').textContent,
       holdOf(button(host, 'scan-library')),
     ]).toEqual(['Cancel', 'free'])
+  })
+})
+
+/** The fingerprint pass's line under the header, if it is drawn. */
+const passLine = (host: HTMLElement) =>
+  host.querySelector('.library-page > .pass-line > .scanning')?.textContent
+
+/** The box that switches matching by content, in its row. */
+const matchBox = (host: HTMLElement) =>
+  row(
+    section(host, 'Matching'),
+    'Match editions by page content',
+  ).querySelector('input[type="checkbox"]') as HTMLInputElement
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  })
+
+/**
+ * Stubs `PATCH /api/library/libraries/7` over the feed's stub, each answered
+ * by `answer`, and hands back each one's method and body as sent.
+ */
+function servePatch(answer: () => Promise<Response>) {
+  const before = globalThis.fetch
+  const sent: { method: string | undefined; body: unknown }[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) !== '/api/library/libraries/7')
+        return before(input, init)
+      sent.push({
+        method: init?.method,
+        body: JSON.parse(String(init?.body)) as unknown,
+      })
+      return answer()
+    }),
+  )
+  return sent
+}
+
+describe('LibraryPage, the fingerprint pass', () => {
+  it('draws the pass’s line and Cancel on the page of a library it covers, and neither on another’s', async () => {
+    // Covers Manga, 7, and not Comics, 8.
+    feed.answer({ ended: 0, libraries: [], jobs: [fingerprintPass({ id: 9 })] })
+    const manga = await shown()
+    await clock(0)
+    expect(passLine(manga.host)).toBe(
+      'Fingerprinting pages · 120 of 2,097 files',
+    )
+    expect(button(manga.host, 'cancel-pass')?.textContent).toBe('Cancel')
+
+    act(() => rerender(<div />))
+    const other = await shown(comics())
+    await clock(0)
+    expect(passLine(other.host)).toBeUndefined()
+    expect(button(other.host, 'cancel-pass')).toBeNull()
+  })
+
+  it('draws the pass’s line after a scan’s, and its Cancel cancels the pass alone', async () => {
+    // A pass is never in the libraries the feed holds.
+    feed.answer({
+      ended: 0,
+      libraries: [{ id: 7, step: 'resolving' }],
+      jobs: [feedJob(), fingerprintPass({ id: 9 })],
+    })
+    const { host } = await shown()
+    await clock(0)
+    expect(
+      [
+        ...host.querySelectorAll(
+          '.library-page > .scanning, .library-page > .pass-line',
+        ),
+      ].map((line) => line.className),
+    ).toEqual(['scanning', 'pass-line'])
+    expect(holdOf(button(host, 'cancel-pass'))).toBe('free')
+
+    await press(button(host, 'cancel-pass'))
+    await clock(0)
+    expect(feed.cancels).toEqual([9])
+    expect(passLine(host)).toBe('Cancelling…')
+    expect(holdOf(button(host, 'cancel-pass'))).toBe('held')
+    expect(scanLines(host)).toEqual([
+      'Reading files · 120 of 2,097 · directory 1 of 1',
+    ])
+    expect([
+      button(host, 'scan-library').textContent,
+      holdOf(button(host, 'scan-library')),
+    ]).toEqual(['Cancel', 'free'])
+  })
+
+  it('draws a refused Cancel as the server’s sentence under the pass’s line, and frees the Cancel again', async () => {
+    feed.answer({ ended: 0, libraries: [], jobs: [fingerprintPass({ id: 9 })] })
+    const { host } = await shown()
+    await clock(0)
+    const answer = deferred<Response>()
+    const before = globalThis.fetch
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+        String(input) === '/api/library/scans/9/cancel'
+          ? answer.promise
+          : before(input, init),
+      ),
+    )
+
+    await press(button(host, 'cancel-pass'))
+    expect(holdOf(button(host, 'cancel-pass'))).toBe('held')
+    answer.resolve(json({ error: 'the store refused the cancel' }, 500))
+    await clock(0)
+    expect(
+      host.querySelector('.library-page > .pass-line + [role="alert"]')
+        ?.textContent,
+    ).toBe('the store refused the cancel')
+    expect(holdOf(button(host, 'cancel-pass'))).toBe('free')
+    expect(passLine(host)).toBe('Fingerprinting pages · 120 of 2,097 files')
+  })
+})
+
+describe('LibraryPage, Match editions by page content', () => {
+  it('ticks the box as the list says, under its own heading, with its line under it', async () => {
+    const on = await shown(manga({ match_by_content: true }))
+    expect(matchBox(on.host).checked).toBe(true)
+    expect(
+      helpOf(
+        row(section(on.host, 'Matching'), 'Match editions by page content'),
+      )?.textContent,
+    ).toBe(
+      "Fingerprints this library's pages in the background, so later versions can match editions by what their pages show.",
+    )
+
+    act(() => rerender(<div />))
+    const off = await shown(manga({ match_by_content: false }))
+    expect(matchBox(off.host).checked).toBe(false)
+  })
+
+  it('unticking sends the switch alone, holds the box as the server holds it until the answer, and then draws the answer', async () => {
+    const answer = deferred<Response>()
+    const sent = servePatch(() => answer.promise)
+    const { host, onChanged } = await shown()
+    await press(matchBox(host))
+    expect(sent).toEqual([
+      { method: 'PATCH', body: { match_by_content: false } },
+    ])
+    expect([matchBox(host).checked, holdOf(matchBox(host))]).toEqual([
+      true,
+      'held',
+    ])
+    // A second press while it is out sends nothing.
+    await press(matchBox(host))
+    expect(sent).toHaveLength(1)
+
+    await flush(() =>
+      answer.resolve(json({ id: 7, name: 'Manga', match_by_content: false })),
+    )
+    await land()
+    expect([matchBox(host).checked, holdOf(matchBox(host))]).toEqual([
+      false,
+      'free',
+    ])
+    expect(onChanged).toHaveBeenCalledTimes(1)
+  })
+
+  it('draws what the server answers it holds, not what was pressed', async () => {
+    // An answer that is not the press, which the server never sends: it
+    // tells a box drawn from the answer from one drawn from the press.
+    servePatch(() =>
+      Promise.resolve(json({ id: 7, name: 'Manga', match_by_content: true })),
+    )
+    const { host } = await shown()
+    await press(matchBox(host))
+    await land()
+    expect([matchBox(host).checked, holdOf(matchBox(host))]).toEqual([
+      true,
+      'free',
+    ])
+  })
+
+  it('holds the box by disabled while the library’s removal is open, and frees it once that is cancelled', async () => {
+    vi.mocked(api.libraryRemovalCost).mockResolvedValue(counted(12))
+    const sent = servePatch(() =>
+      Promise.resolve(json({ id: 7, name: 'Manga', match_by_content: false })),
+    )
+    const { host } = await shown()
+    await press(button(host, 'remove-library'))
+    expect(holdOf(matchBox(host))).toBe('disabled')
+    await press(matchBox(host))
+    expect(sent).toEqual([])
+
+    await press(
+      [...host.querySelectorAll('.remove-library button')].find(
+        (b) => b.textContent === 'Cancel',
+      ) as Element,
+    )
+    expect(holdOf(matchBox(host))).toBe('free')
+  })
+
+  it('a refusal leaves the box ticked and says why', async () => {
+    servePatch(() =>
+      Promise.resolve(json({ error: 'the store is locked' }, 500)),
+    )
+    const { host, onChanged } = await shown()
+    await press(matchBox(host))
+    await land()
+    expect([matchBox(host).checked, holdOf(matchBox(host))]).toEqual([
+      true,
+      'free',
+    ])
+    expect(
+      section(host, 'Matching').querySelector('[role="alert"]')?.textContent,
+    ).toBe('the store is locked')
+    expect(onChanged).not.toHaveBeenCalled()
   })
 })

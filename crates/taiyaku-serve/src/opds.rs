@@ -728,6 +728,7 @@ pub(crate) async fn stream_page(
     headers: HeaderMap,
     extensions: axum::http::Extensions,
 ) -> Response {
+    state.fingerprints.reader_seen();
     // Grant first (404, it does not exist for you), capability second (403,
     // you may see it and may not have it) — the order every other refusal
     // pair on this server follows. `view::of_edition` is the exact check
@@ -808,6 +809,7 @@ pub(crate) async fn cover(
     AxPath((id, edition)): AxPath<(String, String)>,
     extensions: axum::http::Extensions,
 ) -> Response {
+    state.fingerprints.reader_seen();
     // Same grant `stream_page` refuses on, and deliberately no capability
     // check beside it: `refuse_if_cannot_stream`'s own doc says covers and
     // thumbnails follow browse, not `can_stream` — an account that may not

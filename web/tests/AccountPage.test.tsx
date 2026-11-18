@@ -58,6 +58,7 @@ const lib = (id: number, name: string, paths: string[]): Library => ({
   name,
   works: 0,
   books: 0,
+  match_by_content: true,
   dirs: paths.map((path, i) => ({
     id: id * 10 + i,
     path,

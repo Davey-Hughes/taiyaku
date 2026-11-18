@@ -377,6 +377,7 @@ const SHELVES: librariesApi.Library[] = [
     name: 'Comics',
     works: 412,
     books: 0,
+    match_by_content: true,
     dirs: [{ ...dir(41), libraries: [{ id: 2, name: 'Comics' }] }],
   },
   {
@@ -384,6 +385,7 @@ const SHELVES: librariesApi.Library[] = [
     name: 'Light novels',
     works: 96,
     books: 0,
+    match_by_content: true,
     dirs: [{ ...dir(42), libraries: [{ id: 3, name: 'Light novels' }] }],
   },
 ]

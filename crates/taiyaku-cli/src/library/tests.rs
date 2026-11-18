@@ -2160,6 +2160,7 @@ fn the_library_line_names_the_library_and_counts_its_dirs_and_works() {
             PathBuf::from("/srv/chapters"),
         ],
         works: 5,
+        match_by_content: true,
     };
     assert_eq!(library_line(&listed), "Manga: 2 directories, 5 work(s)");
 }

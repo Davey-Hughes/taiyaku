@@ -20,6 +20,9 @@ pub enum Step {
     Writing,
     /// Folding works together and marking the missing; no count.
     Finishing,
+    /// The fingerprint pass's one step, which no scan reaches: reading each
+    /// file due; counts files.
+    Fingerprinting,
 }
 
 impl Step {
@@ -33,6 +36,7 @@ impl Step {
             Self::Hashing => "hashing",
             Self::Writing => "writing",
             Self::Finishing => "finishing",
+            Self::Fingerprinting => "fingerprinting",
         }
     }
 }
@@ -67,3 +71,6 @@ pub enum Outcome<T> {
     Done(T),
     Cancelled(Step),
 }
+
+#[cfg(test)]
+mod tests;

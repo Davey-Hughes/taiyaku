@@ -4405,6 +4405,7 @@ fn router_with_two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, A
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = build_router(state.clone());
@@ -5149,6 +5150,7 @@ fn router_over_a_scanned_work_under_a_withheld_root(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = build_router(state.clone());

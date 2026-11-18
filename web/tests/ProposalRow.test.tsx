@@ -626,12 +626,12 @@ describe('ProposalRow', () => {
     expect(compare?.textContent).toBe('Compare v01')
     expect(compare?.disabled).toBe(true)
 
-    // And the line under the control says what would have to change, in
-    // full: inverted to "Already available: the fingerprinting code lives in
-    // `taiyaku-cli`" it would contradict the disabled control beside it.
+    // And the line under the control says why it has not run, in full:
+    // inverted to "Already wired up" it would contradict the disabled
+    // control beside it.
     expect(measured?.querySelector('.not-yet')?.textContent).toBe(
-      'Not wired up yet: the fingerprinting code has to leave taiyaku-cli ' +
-        'first.',
+      'Not wired up yet: comparing pages comes with matching editions by ' +
+        'content, which is not built yet.',
     )
   })
 

@@ -225,6 +225,7 @@ beforeEach(() => {
       name: `Shelf ${i + 1}`,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [dir(10 + i, `/srv/shelf ${i + 1}`, `Shelf ${i + 1}`)],
     })),
   })

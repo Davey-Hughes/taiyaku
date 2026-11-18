@@ -15,6 +15,7 @@ afterEach(() => {
  */
 export const feedJob = (over: Partial<FeedJob> = {}): FeedJob => ({
   id: 7,
+  kind: 'scan',
   step: 'resolving',
   done: 120,
   of: 2097,
@@ -22,6 +23,26 @@ export const feedJob = (over: Partial<FeedJob> = {}): FeedJob => ({
   dirs: [{ id: 1, path: '/media/Manga/Volumes' }],
   libraries: [{ id: 7, name: 'Manga' }],
   elapsed_secs: 3.5,
+  cancelling: false,
+  ...over,
+})
+
+/**
+ * A fingerprint pass as an administrator is sent it: job 12, a count of files
+ * across the store, covering library 7, `libraries.ts`'s Manga, unless
+ * `over` names otherwise. It holds no directory, and a feed never holds its
+ * libraries.
+ */
+export const fingerprintPass = (over: Partial<FeedJob> = {}): FeedJob => ({
+  id: 12,
+  kind: 'fingerprint',
+  step: 'fingerprinting',
+  done: 120,
+  of: 2097,
+  dir: null,
+  dirs: [],
+  libraries: [{ id: 7, name: 'Manga' }],
+  elapsed_secs: 12.5,
   cancelling: false,
   ...over,
 })

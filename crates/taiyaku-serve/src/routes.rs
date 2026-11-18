@@ -755,6 +755,7 @@ async fn get_page(
     headers: HeaderMap,
     request_extensions: axum::http::Extensions,
 ) -> Response {
+    state.fingerprints.reader_seen();
     let view = match crate::view::of_edition(&state, &request_extensions, &id, &edition).await {
         Ok(view) => view,
         Err(refusal) => return refusal,
@@ -972,6 +973,7 @@ async fn get_thumb(
     headers: HeaderMap,
     request_extensions: axum::http::Extensions,
 ) -> Response {
+    state.fingerprints.reader_seen();
     let view = match crate::view::of_edition(&state, &request_extensions, &id, &edition).await {
         Ok(view) => view,
         Err(refusal) => return refusal,

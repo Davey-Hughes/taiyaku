@@ -32,6 +32,8 @@ mod curation;
 mod dictionary;
 mod dirs_api;
 pub(crate) mod download;
+pub mod fingerprint;
+mod fingerprint_pass;
 mod libraries_api;
 pub mod library_api;
 mod library_job;
@@ -187,6 +189,11 @@ pub struct ServeState {
     /// (`taiyaku_library::lease`) serialises whole-store derives: a scan waits
     /// for it and a save or a stamp tries it once, as each does this lock (O51).
     pub library_job: Arc<LibraryJob>,
+    /// The fingerprint pass ([`fingerprint_pass::Pass`]), one at a time across
+    /// the store, started when a scan job ends uncancelled and at startup.
+    /// Inert unless `serve` builds it live: every other state is a test's,
+    /// and a pass started by a scan a test runs would write rows beside it.
+    pub fingerprints: Arc<fingerprint_pass::Pass>,
     /// The directories `GET /api/library/dirs` may list beneath:
     /// `--dirs`, or `TAIYAKU_DIRS`. Empty lists nothing.
     pub dirs: Vec<std::path::PathBuf>,
@@ -408,6 +415,10 @@ pub struct ServeOptions {
     /// `--dictionaries`: where `taiyaku dictionary import` wrote each
     /// language's dictionary; none and no word is looked up.
     pub dictionaries: Option<std::path::PathBuf>,
+    /// The fingerprint pass to run, which a test hands in to wait on before
+    /// its store goes; `None` runs one of the server's own.
+    #[cfg(test)]
+    pub(crate) pass: Option<Arc<fingerprint_pass::Pass>>,
 }
 
 /// Says, line by line to `say`, why each directory the server was started with
@@ -462,7 +473,13 @@ pub async fn serve(
         dirs,
         cache_max,
         dictionaries,
+        #[cfg(test)]
+        pass,
     } = options;
+    #[cfg(test)]
+    let fingerprints = pass.unwrap_or_else(|| Arc::new(fingerprint_pass::Pass::live()));
+    #[cfg(not(test))]
+    let fingerprints = Arc::new(fingerprint_pass::Pass::live());
     let addr = addr.as_str();
     // Opened before anything else so a bad `--log-requests` path is a
     // startup failure that can be acted on, rather than an hour of reading
@@ -554,6 +571,7 @@ pub async fn serve(
         scans: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         jobs_ended: Arc::default(),
         library_job: Arc::default(),
+        fingerprints,
         dirs,
     });
 
@@ -659,6 +677,7 @@ pub async fn serve(
     if state.works.is_live() {
         registry::spawn_refresher(Arc::clone(&state), registry::REFRESH_EVERY);
         scheduler::spawn(Arc::clone(&state), scheduler::TICK);
+        fingerprint_pass::at_startup(&state);
     }
     cache_sweep::spawn(&state, cache_max);
     // Named the same way the bind failure is. Both are reported by a process

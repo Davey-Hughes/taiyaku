@@ -1268,6 +1268,7 @@ fn router_with_material_under_a_withheld_root(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     (build_router(state.clone()), state)
@@ -1369,6 +1370,7 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     (build_router(state.clone()), state)
@@ -1501,6 +1503,7 @@ fn one_work_two_editions_split_across_roots(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     (build_router(state.clone()), state)
@@ -1582,6 +1585,7 @@ fn one_book_two_editions_split_across_roots(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     (build_router(state.clone()), state)

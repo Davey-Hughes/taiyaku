@@ -46,14 +46,20 @@
  * removal waiting for a scan around or inside one of the library's
  * directories (`held_removals`), or a derive holding the lease
  * (`derive_running`, O51), which the server refuses the removal for. While
- * the feed shows no job, the status is read again each poll's interval until
- * it names none; a hold a job explains is read again as the feed marks the
- * status stale at the job's end. It is read once, too, at a refusal of the
- * removal for a hold, which the page may not be drawing. A scan holds
- * neither Rename… nor Add directory…; the removal holds both, and the
- * Directories table draws its paths without links while it is open: a
- * directory's page offers Scan directory, Move… and Remove… on a directory
- * the removal is taking.
+ * the feed shows no scan, the status is read again each poll's interval until
+ * it names none; a hold a scan explains is read again as the feed marks the
+ * status stale at the scan's end. It is read once, too, at a refusal of the
+ * removal for a hold, which the page may not be drawing. A scan holds none
+ * of Rename…, Add directory… and Match editions by page content; the
+ * removal holds all three, and the Directories table draws its paths without
+ * links while it is open: a directory's page offers Scan directory, Move…
+ * and Remove… on a directory the removal is taking.
+ *
+ * **The fingerprint pass is drawn apart from the scans**, a line and a
+ * Cancel of its own after theirs while it covers the library (`PassLine`):
+ * it holds nothing a scan or a removal waits on. Match editions by page
+ * content says whether it covers the library, and is drawn from the
+ * server's answer, never the press, so a refused switch leaves it as it was.
  */
 import {
   Fragment,
@@ -94,12 +100,14 @@ import {
   removalHold,
   renameLibrary,
   SCAN_OFF_WORDS,
+  setMatchByContent,
   startLibraryScan,
 } from './libraries'
 import { linkedPlace } from './linkedPlace'
 import { messageOf, sentenceOf } from './message'
 import { NameClash } from './NameClash'
 import { libraryScan, ROOTS } from './pageReads'
+import { PassLine } from './PassLine'
 import { PathWithBreaks } from './PathWithBreaks'
 import { Refusal } from './Refusal'
 import { entryOf, invalidate, readNow } from './reads'
@@ -109,7 +117,9 @@ import {
   askScanFeed,
   cancelScan,
   coversToo,
+  fingerprintJob,
   jobsHolding,
+  scanJobs,
   stepLine,
   useScanFeed,
 } from './scanFeed'
@@ -391,6 +401,9 @@ const heldWhileScanning = (dir: LibraryDir): string[] => [
 /** Save's words while a rename is out, and the width Save keeps for them. */
 const SAVING = 'Saving…'
 
+/** The switch's label, which names it too in a refusal said once its page has gone. */
+const MATCH_WORDS = 'Match editions by page content'
+
 export function LibraryPage({
   library,
   loadingDrawn = false,
@@ -446,6 +459,23 @@ export function LibraryPage({
   useEffect(() => {
     setRenamed(undefined)
   }, [library?.name])
+  /**
+   * The switch's send is out. A ref as well, as `writing` is: two presses
+   * before a render both read false.
+   */
+  const [switching, setSwitching] = useState(false)
+  const switchingRef = useRef(false)
+  /** Why the last switch was refused. Drawn under its box. */
+  const [switchFailure, setSwitchFailure] = useState<string | undefined>()
+  /**
+   * The switch an answer set, drawn until the list read after it says so, as
+   * `renamed` is: `from` is what the list said as it was sent.
+   */
+  const [switched, setSwitched] = useState<{ from: boolean; to: boolean }>()
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `library.match_by_content` is the trigger: the list has been read again, and its switch is the one to draw.
+  useEffect(() => {
+    setSwitched(undefined)
+  }, [library?.match_by_content])
   const [adding, setAdding] = useState(false)
   /**
    * Don’t scan yet (schedule Off), unticked as the picker opens so that no
@@ -631,11 +661,14 @@ export function LibraryPage({
     }
   }
 
-  /** The feed shows a job, which reads the status again as it ends. */
-  const feedShowsJob = (feed?.jobs ?? []).length > 0
+  /**
+   * The feed shows a scan, which reads the status again as it ends. A pass
+   * holds no removal and may run for hours, so it stops no poll.
+   */
+  const feedShowsJob = scanJobs(feed).length > 0
   // A scan around or inside one of the library's directories, or a derive,
   // holds its removal and is no scan of the library's, so while it holds and
-  // the feed shows no job to read the status again at its end, the status is
+  // the feed shows no scan to read the status again at its end, the status is
   // read again each poll's interval. The read lands in the store, which hands
   // it to `taken`; the count asks again whether or not that answer changed
   // anything. Failed reads give the hold up, and say so.
@@ -839,6 +872,11 @@ export function LibraryPage({
   }
 
   const title = renamed?.from === library.name ? renamed.to : library.name
+  const matchesByContent =
+    switched?.from === library.match_by_content
+      ? switched.to
+      : library.match_by_content
+  const pass = fingerprintJob(feed, library.id)
   /**
    * The room a link was said in, once it is known and while the picker is
    * shut: kept after a press takes the line away, so that its going moves
@@ -990,6 +1028,35 @@ export function LibraryPage({
         else
           onLateRefusal?.(
             `${library.name} was not renamed to ${name} (${sentence}).`,
+          )
+      })
+  }
+
+  /**
+   * Held while its send is out, the box keeps what the server holds until it
+   * answers, so a refusal has nothing to put back.
+   */
+  const switchMatching = (on: boolean) => {
+    if (switchingRef.current) return
+    switchingRef.current = true
+    setSwitching(true)
+    setSwitchFailure(undefined)
+    const from = library.match_by_content
+    setMatchByContent(library.id, on)
+      .then((answer) => {
+        switchingRef.current = false
+        setSwitching(false)
+        setSwitched({ from, to: answer.match_by_content })
+        onChanged()
+      })
+      .catch((err: unknown) => {
+        switchingRef.current = false
+        setSwitching(false)
+        const sentence = sentenceOf(err)
+        if (drawn.current) setSwitchFailure(sentence)
+        else
+          onLateRefusal?.(
+            `${MATCH_WORDS} for ${library.name} was not saved (${sentence}).`,
           )
       })
   }
@@ -1190,6 +1257,7 @@ export function LibraryPage({
           </Fragment>
         )
       })}
+      {pass !== undefined && <PassLine key={pass.id} job={pass} />}
       {!running && pausedSince !== undefined && (
         <p className="paused">
           Paused until Scan is pressed, since {inUtc(pausedSince)}
@@ -1386,6 +1454,32 @@ export function LibraryPage({
           ))}
         </Section>
       )}
+
+      <Section title="Matching">
+        <Row
+          check
+          label={MATCH_WORDS}
+          help="Fingerprints this library's pages in the background, so later versions can match editions by what their pages show."
+        >
+          {(ids) => (
+            // Its send holds it by `aria-disabled`, as an account's boxes
+            // are held (O159): `disabled` greys a ticked box and takes its
+            // focus. The removal holds it by `disabled`, as it holds
+            // Rename…: focus is on Remove… as that hold comes on.
+            <input
+              type="checkbox"
+              id={ids.control}
+              name="match-by-content"
+              aria-describedby={ids.help}
+              aria-disabled={switching}
+              disabled={removing}
+              checked={matchesByContent}
+              onChange={(e) => switchMatching(e.target.checked)}
+            />
+          )}
+        </Row>
+        {switchFailure !== undefined && <Refusal>{switchFailure}</Refusal>}
+      </Section>
 
       <RemovalSection title="Removal">
         <Row

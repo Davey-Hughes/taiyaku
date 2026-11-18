@@ -43,6 +43,9 @@ pub enum Format {
 // values for the same reason.
 
 impl Format {
+    /// What the reader reads pages from, and so what a fingerprint pass reads.
+    pub const PAGED: &'static [Self] = &[Self::Dir, Self::Zip];
+
     /// The `scan_entry.format` value, or `None` for a file nothing recognised.
     ///
     /// The strings are the schema's own vocabulary and are not free text; a
@@ -62,19 +65,30 @@ impl Format {
         }
     }
 
-    /// Whether `taiyaku-read` can read this, as pages or as an EPUB's text.
+    /// The format whose [`token`](Self::token) is `token`, or `None` for a
+    /// string no format writes: how a stored `scan_entry.format` is asked
+    /// [`is_readable`](Self::is_readable), or looked for in [`PAGED`](Self::PAGED).
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "dir" => Some(Self::Dir),
+            "zip" => Some(Self::Zip),
+            "epub-fixed" => Some(Self::EpubFixed),
+            "epub-reflow" => Some(Self::EpubReflow),
+            "pdf" => Some(Self::Pdf),
+            "rar" => Some(Self::Rar),
+            "7z" => Some(Self::SevenZip),
+            "tar" => Some(Self::Tar),
+            _ => None,
+        }
+    }
+
+    /// Whether `taiyaku-read` can read this: as pages ([`PAGED`](Self::PAGED)),
+    /// or as an EPUB's text.
     ///
-    /// **No production caller, deliberately, and it is not dead.** The one
-    /// place the question is asked of a stored value is
-    /// `taiyaku_library::derive::is_readable`, which has a
-    /// `scan_entry.format` *token* rather than a `Format` and cannot get back
-    /// here: there is no parse from token to variant, and adding one so a
-    /// two-arm question could be asked through it would be a wider surface
-    /// than the answer is worth. So that function spells the same answer in
-    /// tokens, and this stays the statement of what the answer is.
-    /// `derive/tests.rs::the_token_side_readability_test_agrees_with_the_enums_own`
-    /// is what stops the two drifting — it walks every variant and asserts
-    /// both sides agree.
+    /// `taiyaku_library::derive` asks it of each stored token through
+    /// [`from_token`](Self::from_token), so this is the one list of what a
+    /// derive admits.
     ///
     /// **The six `false`s are a decision, not a backlog — O90.** [`sniff`]
     /// names eight containers so a scan can say what it met, and this admits
@@ -93,7 +107,7 @@ impl Format {
     /// `by_format`, which counts each refused format under its token.
     #[must_use]
     pub fn is_readable(self) -> bool {
-        matches!(self, Self::Dir | Self::Zip | Self::EpubReflow)
+        Self::PAGED.contains(&self) || self == Self::EpubReflow
     }
 }
 

@@ -42,6 +42,7 @@ export const manga = (over: Partial<Library> = {}): Library => ({
   name: 'Manga',
   works: 12,
   books: 0,
+  match_by_content: true,
   dirs: [dir(1, '/media/Manga/Volumes'), dir(2, '/media/Manga/Chapters')],
   ...over,
 })

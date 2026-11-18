@@ -1,16 +1,21 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 use axum::extract::{Extension, Path as AxPath, State};
 use axum::http::StatusCode;
 use serde_json::json;
 use taiyaku_library::account::Access;
+use taiyaku_library::fingerprints::{self, Unit};
 use taiyaku_library::progress::{Step, Watch};
 use taiyaku_library::scan::{self, InLibrary, add_root_checked_in};
+use taiyaku_library::{derive, libraries};
+use taiyaku_read::test_support::cbz_pages;
 
-use crate::scan_jobs::{self, Job, Reread, Running};
-use crate::test_support;
+use crate::fingerprint;
+use crate::fingerprint_pass;
+use crate::scan_jobs::{self, Job, JobEnded, Reread, Running};
+use crate::test_support::{self, HeldPass, SETTLE, one_worker};
 
 fn principal(role: crate::auth::Role, access: Access) -> crate::auth::Principal {
     crate::auth::Principal {
@@ -194,6 +199,7 @@ async fn the_feed_answers_an_admin_each_running_job_with_its_step_counts_dirs_an
         sent,
         json!({
             "id": job.id,
+            "kind": "scan",
             "step": "resolving",
             "done": 120,
             "of": 2097,
@@ -598,4 +604,289 @@ async fn a_reader_cannot_cancel() {
 
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(!job.cancelling(), "the job was not asked to stop");
+}
+
+/// Libraries `Manga` and `Comics`, each with matching on and a directory of
+/// its own holding one volume, walked and derived. No pass has run.
+struct Matched {
+    /// The store, served with a pass that never starts.
+    store: crate::ServeState,
+    fixture: test_support::Fixture,
+    manga: i64,
+    comics: i64,
+    roots: Vec<scan::Root>,
+    /// Every unit due.
+    due: Vec<Unit>,
+}
+
+fn matched(tag: &str) -> Matched {
+    let fixture = test_support::Fixture::new(tag);
+    let library = test_support::library();
+    let (manga, comics, roots) = {
+        let conn = library.conn();
+        for (seed, name) in [(0, "Manga"), (10, "Comics")] {
+            let top = fixture.join(name.to_lowercase());
+            let series = top.join(name);
+            std::fs::create_dir_all(&series).expect("makes the series directory");
+            cbz_pages(&series, &format!("{name} v01.cbz"), 3, seed);
+            add_root_checked_in(&conn, &top, InLibrary::Named(name)).expect("adds the directory");
+        }
+        let roots = scan::roots(&conn).expect("the directories");
+        for root in &roots {
+            scan::scan_root(&conn, root).expect("walks it");
+        }
+        derive::derive(&conn).expect("derives");
+        let id = |name: &str| {
+            libraries::id_of(&conn, name)
+                .expect("reads")
+                .expect("the library")
+        };
+        (id("Manga"), id("Comics"), roots)
+    };
+    let due =
+        fingerprints::due(&library.conn(), fingerprint::VERSION, None).expect("lists what is due");
+    assert_eq!(due.len(), 2, "the fixture: each library's volume is due");
+    let store = crate::ServeState {
+        library,
+        ..test_support::state(fixture.path())
+    };
+    Matched {
+        store,
+        fixture,
+        manga,
+        comics,
+        roots,
+        due,
+    }
+}
+
+impl Matched {
+    /// The directory `library` holds.
+    fn root_of(&self, library: i64) -> scan::Root {
+        self.roots
+            .iter()
+            .find(|root| root.libraries.contains(&library))
+            .cloned()
+            .expect("the library's directory")
+    }
+
+    /// A state over the store whose pass reads on one worker, not yet kicked.
+    fn with_a_pass(&self) -> Arc<crate::ServeState> {
+        test_support::with_a_pass(&self.store, &self.fixture, one_worker()).1
+    }
+
+    /// A state over the store whose pass is held in its first file.
+    fn held(&self) -> HeldPass {
+        HeldPass::over(&self.store, &self.fixture)
+    }
+}
+
+/// `state`'s pass's job, which it must have.
+fn pass_of(state: &crate::ServeState) -> Arc<Job> {
+    state.fingerprints.job().expect("the pass showed a job")
+}
+
+fn settled(state: &crate::ServeState) {
+    assert!(state.fingerprints.settle(SETTLE), "the pass ends");
+}
+
+/// Plan, "Feed shape": the pass is a job of its own kind beside a scan job.
+/// Both libraries have matching on and the scan holds Comics alone, so a held
+/// list that took the pass would add Manga to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_admin_sees_the_pass_as_a_job_of_its_own_kind() {
+    let matched = matched("feed-pass-kind");
+    let held = matched.held();
+    let state = Arc::clone(&held.state);
+    let pass = pass_of(&state);
+    let comics = vec![matched.root_of(matched.comics)];
+    let started = Instant::now();
+    let scan = scan_jobs::reserve(&state, &comics, started, None).expect("reserves");
+    let (entered, entering) = mpsc::channel::<()>();
+    let (release_scan, released) = mpsc::channel::<()>();
+    let spawned = scan_jobs::spawn_job(Arc::clone(&state), comics, started, move |_, roots, _| {
+        entered.send(()).expect("the test waits");
+        let _ = released.recv();
+        Ok(vec![json!({}); roots.len()])
+    });
+    tokio::task::spawn_blocking(move || entering.recv())
+        .await
+        .expect("waits")
+        .expect("the scan started");
+
+    let body = fed(&state, as_admin()).await;
+    release_scan.send(()).expect("the scan waits");
+    spawned.await.expect("the scan ends");
+    held.let_go();
+
+    assert_eq!(
+        body["libraries"],
+        json!([{ "id": matched.comics, "step": "waiting" }]),
+        "{body}"
+    );
+    let jobs = body["jobs"].as_array().expect("a jobs array");
+    let sent = |id: u64| {
+        jobs.iter()
+            .find(|job| job["id"] == id)
+            .unwrap_or_else(|| panic!("job {id} is sent: {body}"))
+    };
+    assert_eq!(jobs.len(), 2, "{body}");
+    let sent_pass = sent(pass.id);
+    assert_eq!(
+        keys_of(sent_pass),
+        [
+            "cancelling",
+            "dir",
+            "dirs",
+            "done",
+            "elapsed_secs",
+            "id",
+            "kind",
+            "libraries",
+            "of",
+            "step"
+        ],
+        "{body}"
+    );
+    assert_eq!(sent_pass["kind"], "fingerprint", "{body}");
+    assert_eq!(sent_pass["step"], "fingerprinting", "{body}");
+    assert_eq!(sent_pass["done"], 0, "{body}");
+    assert_eq!(sent_pass["of"], matched.due.len(), "{body}");
+    assert_eq!(sent_pass["dir"], serde_json::Value::Null, "{body}");
+    assert_eq!(sent_pass["dirs"], json!([]), "{body}");
+    assert_eq!(
+        sent_pass["libraries"],
+        json!([
+            { "id": matched.comics, "name": "Comics" },
+            { "id": matched.manga, "name": "Manga" },
+        ]),
+        "{body}"
+    );
+    assert!(sent_pass["elapsed_secs"].is_f64(), "{body}");
+    assert_eq!(sent_pass["cancelling"], false, "{body}");
+    assert_eq!(sent(scan.id)["kind"], "scan", "{body}");
+}
+
+/// Global Constraints, "Nothing a reader sees changes": a reader granted both
+/// libraries the pass reads is sent neither while it reads.
+#[tokio::test]
+async fn a_reader_is_sent_nothing_of_the_pass() {
+    let matched = matched("feed-pass-reader");
+    let held = matched.held();
+    let admin = fed(&held.state, as_admin()).await;
+    let reader = fed(
+        &held.state,
+        signed_in(
+            a_reader_of(vec![matched.manga, matched.comics]),
+            crate::auth::By::Cookie,
+        ),
+    )
+    .await;
+    held.let_go();
+
+    assert_eq!(
+        admin["jobs"].as_array().map(Vec::len),
+        Some(1),
+        "the fixture: the pass is in the feed: {admin}"
+    );
+    assert_eq!(keys_of(&reader), ["ended", "libraries"], "{reader}");
+    assert_eq!(reader["libraries"], json!([]), "{reader}");
+}
+
+/// `ended` tells a library's page that a scan it showed has ended, and a pass
+/// is no scan, so its end leaves `ended` where it was.
+#[tokio::test]
+async fn ended_stays_put_when_a_pass_ends() {
+    let matched = matched("feed-pass-ended");
+    let state = matched.with_a_pass();
+    let before = ended(&fed(&state, as_admin()).await);
+
+    fingerprint_pass::kick(&state);
+    settled(&state);
+    let after = ended(&fed(&state, as_admin()).await);
+
+    assert_eq!(
+        pass_of(&state).ended(),
+        Some(JobEnded::Finished),
+        "the fixture: a pass ran to its end"
+    );
+    assert_eq!(after, before);
+}
+
+/// Spec §7, "Cancel endpoint", for the pass: asked while it reads, it stops
+/// with nothing stored, then answers how it ended; the next pass is its own
+/// and reads every unit.
+#[tokio::test]
+async fn cancel_stops_the_pass_and_then_says_how_it_ended() {
+    let matched = matched("cancel-pass");
+    let held = matched.held();
+    let state = Arc::clone(&held.state);
+    let pass = pass_of(&state);
+    let admin = || cancelled(&state, an_administrator(), crate::auth::By::Cookie, pass.id);
+
+    let asked = admin().await;
+    held.let_go();
+    let answered = admin().await;
+    let stored: Vec<bool> = matched
+        .due
+        .iter()
+        .map(|unit| test_support::fingerprinted(&state.library, unit))
+        .collect();
+    fingerprint_pass::kick(&state);
+    settled(&state);
+    let next = pass_of(&state);
+
+    assert_eq!(
+        asked,
+        (
+            StatusCode::ACCEPTED,
+            json!({ "job": pass.id, "cancelling": true })
+        )
+    );
+    assert_eq!(
+        answered,
+        (
+            StatusCode::OK,
+            json!({ "job": pass.id, "ended": "cancelled", "step": "fingerprinting" })
+        )
+    );
+    assert_eq!(stored, [false, false], "the cancelled pass stored nothing");
+    assert_ne!(next.id, pass.id, "a pass of its own");
+    assert_eq!(next.ended(), Some(JobEnded::Finished));
+    for unit in &matched.due {
+        assert!(
+            test_support::fingerprinted(&state.library, unit),
+            "{} is read",
+            unit.rel_path
+        );
+    }
+}
+
+/// A pass that has ended leaves the feed, or the web would show its line and
+/// Cancel for good; Cancel still answers how it ended.
+#[tokio::test]
+async fn an_ended_pass_leaves_the_feed() {
+    let matched = matched("feed-pass-leaves");
+    let state = matched.with_a_pass();
+    fingerprint_pass::kick(&state);
+    settled(&state);
+    let pass = pass_of(&state);
+
+    let body = fed(&state, as_admin()).await;
+    let answer = cancelled(&state, an_administrator(), crate::auth::By::Cookie, pass.id).await;
+
+    assert_eq!(
+        pass.ended(),
+        Some(JobEnded::Finished),
+        "the fixture: the pass has ended"
+    );
+    assert_eq!(body["jobs"], json!([]), "{body}");
+    assert_eq!(
+        answer,
+        (
+            StatusCode::OK,
+            json!({ "job": pass.id, "ended": "finished" })
+        )
+    );
+    assert!(!pass.cancelling(), "an ended pass is not asked to stop");
 }

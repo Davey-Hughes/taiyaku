@@ -34,12 +34,35 @@ const JOB_LOCK_POLL: Duration = Duration::from_millis(100);
 /// The next job's id. Ids start at 1 and are never reused in a process.
 static NEXT_JOB: AtomicU64 = AtomicU64::new(1);
 
-/// One scan job: what [`reserve`] reserved, and where it is as it runs. Every
-/// directory's slot in [`crate::ServeState::scans`] holds the same one.
+/// What a job does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JobKind {
+    /// Scans the directories [`reserve`] reserved.
+    Scan,
+    /// The fingerprint pass ([`crate::fingerprint_pass`]), which reserves no
+    /// directory.
+    Fingerprint,
+}
+
+impl JobKind {
+    /// The word the feed names the kind by.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Scan => "scan",
+            Self::Fingerprint => "fingerprint",
+        }
+    }
+}
+
+/// One job: a scan, what [`reserve`] reserved, or the fingerprint pass; and
+/// where it is as it runs. Every directory's slot in
+/// [`crate::ServeState::scans`] holds the same scan job.
 #[derive(Debug)]
 pub(crate) struct Job {
     /// Unique in this process, for a page to name the job it cancels.
     pub(crate) id: u64,
+    /// A scan or the fingerprint pass.
+    pub(crate) kind: JobKind,
     /// The instant that names the job's reservations ([`finish_reservation`]).
     pub(crate) started: Instant,
     /// Each directory reserved, id and path, in the order reserved.
@@ -87,6 +110,7 @@ impl Job {
     ) -> Self {
         Self {
             id: NEXT_JOB.fetch_add(1, Ordering::SeqCst),
+            kind: JobKind::Scan,
             started,
             dirs,
             libraries: Mutex::default(),
@@ -100,6 +124,33 @@ impl Job {
             ended: Mutex::new(None),
             jobs_ended,
         }
+    }
+
+    /// A fingerprint pass's job started at `started`, with the next id: no
+    /// directory, counting files from none. Its ended count is its own, so the
+    /// feed's `ended` counts scans alone.
+    pub(crate) fn fingerprint(started: Instant) -> Self {
+        Self {
+            kind: JobKind::Fingerprint,
+            snapshot: Mutex::new(Snapshot {
+                step: Step::Fingerprinting,
+                done: Some(0),
+                of: None,
+                dir: None,
+            }),
+            ..Self::new(started, Vec::new(), Arc::default())
+        }
+    }
+
+    /// A fingerprint pass's count: `done` units finished with, whatever came of
+    /// each, of the `of` queued so far.
+    pub(crate) fn set_count(&self, done: u64, of: u64) {
+        *locked(&self.snapshot) = Snapshot {
+            step: Step::Fingerprinting,
+            done: Some(done),
+            of: Some(of),
+            dir: None,
+        };
     }
 
     /// Ask the job to stop at its next check. Asking twice is asking once.
@@ -123,7 +174,7 @@ impl Job {
 
     /// Mark the job ended, then count it: whoever reads the count raised
     /// reads the job ended.
-    fn end(&self, ended: JobEnded) {
+    pub(crate) fn end(&self, ended: JobEnded) {
         *locked(&self.ended) = Some(ended);
         self.jobs_ended.fetch_add(1, Ordering::SeqCst);
     }
@@ -204,7 +255,11 @@ impl Watch for Running<'_> {
         let mut snapshot = locked(&self.job.snapshot);
         let dir = match step {
             Step::Listing | Step::Resolving => snapshot.dir,
-            Step::Waiting | Step::Hashing | Step::Writing | Step::Finishing => None,
+            Step::Waiting
+            | Step::Hashing
+            | Step::Writing
+            | Step::Finishing
+            | Step::Fingerprinting => None,
         };
         *snapshot = Snapshot {
             step,
@@ -1021,12 +1076,16 @@ where
                 finish_reservation(&mut scans, root.id, started, report);
             }
         }
-        reserved.end(
-            running
-                .stopped
-                .get()
-                .map_or(JobEnded::Finished, JobEnded::Cancelled),
-        );
+        let ended = running
+            .stopped
+            .get()
+            .map_or(JobEnded::Finished, JobEnded::Cancelled);
+        reserved.end(ended);
+        // A cancel is a choice to stop, so only a scan that ran to its end
+        // starts a pass over what it found.
+        if ended == JobEnded::Finished {
+            crate::fingerprint_pass::kick(&state);
+        }
     })
 }
 

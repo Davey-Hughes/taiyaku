@@ -63,7 +63,7 @@ import { libraryScan } from './pageReads'
 import { markStale } from './reads'
 import { PathWithBreaks } from './PathWithBreaks'
 import { RootRow } from './RootRow'
-import { useScanFeed } from './scanFeed'
+import { scanJobs, useScanFeed } from './scanFeed'
 
 export interface DirPageProps {
   library: Library
@@ -113,10 +113,12 @@ function useOtherScan(
   const own = new Set(library.dirs.map((one) => one.id))
   // A directory inside one of the library's that it shows holds this one
   // only through `held_removals`.
-  const sibling = (feed?.jobs ?? []).some((job) =>
+  const sibling = scanJobs(feed).some((job) =>
     job.dirs.some((one) => one.id !== rootId && own.has(one.id)),
   )
-  const feedShowsJob = (feed?.jobs ?? []).length > 0
+  // A pass holds no removal and may run for hours, so the poll below goes on
+  // beside it.
+  const feedShowsJob = scanJobs(feed).length > 0
   // A ref, so the read below sees the feed's latest answer without being
   // sent again, or dropped, as a job starts.
   const showsJob = useRef(feedShowsJob)
@@ -198,9 +200,9 @@ function useOtherScan(
       clearTimeout(timer)
     }
   }, [libraryId, rootId, asked, requests])
-  /** Whether the feed showed a job when the effect below last ran. */
+  /** Whether the feed showed a scan when the effect below last ran. */
   const sawJob = useRef(feedShowsJob)
-  // While the feed shows a job the status is not polled: the job holds the
+  // While the feed shows a scan the status is not polled: the scan holds the
   // job lock, and may hold the rest, until it ends, and its end is when the
   // status is read again.
   useEffect(() => {

@@ -1466,8 +1466,8 @@ fn migration_20_adds_missing_since_leaving_existing_works_present() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_twenty_seven() {
-    assert_eq!(SCHEMA_VERSION, 27);
+fn the_schema_version_is_twenty_eight() {
+    assert_eq!(SCHEMA_VERSION, 28);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -3349,7 +3349,7 @@ fn migration_27_holds_no_reading_for_an_entry_no_member_names() {
     ))
     .expect("seeds a hashed and an unhashed schema-26 entry");
 
-    migrate(&conn).expect("migrates to 27");
+    migrate_with(&conn, &MIGRATIONS[..27]).expect("migrates to 27");
 
     assert_eq!(version(&conn).expect("reads the version"), 27);
     let hashed = format!("Text({digest:?})");
@@ -3445,7 +3445,7 @@ fn held_after_27(conn: &Connection, rel_path: &str) -> Vec<Vec<String>> {
 fn migration_27_holds_the_members_reading_for_an_entry_a_walk_cleared() {
     let conn = store_at_26_beside_its_members();
 
-    migrate(&conn).expect("migrates to 27");
+    migrate_with(&conn, &MIGRATIONS[..27]).expect("migrates to 27");
 
     assert_eq!(
         held_after_27(&conn, "A/A - v01 - c001.cbz"),
@@ -3465,7 +3465,7 @@ fn migration_27_holds_the_members_reading_for_an_entry_a_walk_cleared() {
 fn migration_27_holds_the_members_digest_for_an_entry_on_the_one_a_stamp_replaced() {
     let conn = store_at_26_beside_its_members();
 
-    migrate(&conn).expect("migrates to 27");
+    migrate_with(&conn, &MIGRATIONS[..27]).expect("migrates to 27");
 
     assert_eq!(
         held_after_27(&conn, "A/A - v01 - c002.cbz"),
@@ -3485,7 +3485,7 @@ fn migration_27_holds_the_members_digest_for_an_entry_on_the_one_a_stamp_replace
 fn migration_27_holds_no_reading_for_an_entry_on_its_members_digest() {
     let conn = store_at_26_beside_its_members();
 
-    migrate(&conn).expect("migrates to 27");
+    migrate_with(&conn, &MIGRATIONS[..27]).expect("migrates to 27");
 
     assert_eq!(
         held_after_27(&conn, "A/A - v01 - c003.cbz"),
@@ -3522,13 +3522,68 @@ fn a_directory_paused_before_migration_27_keeps_its_members() {
     .expect("puts the store back to schema 26, c002 changed and walked");
     crate::scan::pause(&conn, std::slice::from_ref(&root)).expect("pauses it");
 
-    migrate(&conn).expect("migrates to 27");
+    migrate_with(&conn, &MIGRATIONS[..27]).expect("migrates to 27");
     crate::derive::derive(&conn).expect("derives with the directory frozen");
 
     assert_eq!(
         rows_of(&conn, members),
         before,
         "c002's member stands at its digest and pages"
+    );
+}
+
+/// Each library is matched by content unless an admin turns it off, so one
+/// the store already held starts on, as does one made after the migration.
+#[test]
+fn migration_28_turns_matching_on_for_every_library() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..27]).expect("migrates to 27");
+    conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'Shelf'), (80, 'Other');")
+        .expect("seeds two schema-27 libraries");
+
+    migrate(&conn).expect("migrates to 28");
+
+    assert_eq!(version(&conn).expect("reads the version"), 28);
+    let switch = |id: i64| -> i64 {
+        conn.query_row(
+            "SELECT match_by_content FROM library WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .expect("reads the switch")
+    };
+    assert_eq!(switch(70), 1, "Shelf is matched");
+    assert_eq!(switch(80), 1, "Other is matched");
+    conn.execute("INSERT INTO library (id, name) VALUES (90, 'Later')", [])
+        .expect("a library made after the migration");
+    assert_eq!(switch(90), 1, "a library made later is matched");
+
+    assert_eq!(
+        columns_of(&conn, "fingerprint"),
+        [
+            "sha256", "version", "outcome", "reason", "build", "pages", "prints", "read_at"
+        ]
+    );
+    let row = "INSERT INTO fingerprint (sha256, version, outcome, pages, prints)
+               VALUES (?1, 1, ?2, 0, x'')";
+    for outcome in ["whole", "partial", "unreadable"] {
+        assert_eq!(
+            conn.execute(row, rusqlite::params![format!("d-{outcome}"), outcome]),
+            Ok(1),
+            "{outcome} is an outcome"
+        );
+    }
+    assert!(
+        conn.execute(row, rusqlite::params!["d-other", "other"])
+            .is_err(),
+        "no other outcome is stored"
+    );
+    assert!(
+        conn.execute(row, rusqlite::params![None::<String>, "whole"])
+            .is_err(),
+        "no row is stored without a digest"
     );
 }
 

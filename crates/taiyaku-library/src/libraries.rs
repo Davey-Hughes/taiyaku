@@ -33,6 +33,9 @@ pub struct Listed {
     /// in both, and so is a work whose one member has a copy under each, or is
     /// under a directory nested in the other's.
     pub works: usize,
+    /// Whether the files it reaches are matched by content: on unless an
+    /// admin turned it off.
+    pub match_by_content: bool,
 }
 
 /// Every library, by name.
@@ -42,10 +45,16 @@ pub struct Listed {
 /// Returns an error if a read fails.
 pub fn list(conn: &Connection) -> Result<Vec<Listed>, String> {
     let mut libraries = conn
-        .prepare("SELECT id, name FROM library ORDER BY name, id")
+        .prepare("SELECT id, name, match_by_content FROM library ORDER BY name, id")
         .map_err(|e| format!("listing libraries: {e}"))?;
     let rows = libraries
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, bool>(2)?,
+            ))
+        })
         .map_err(|e| format!("listing libraries: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("listing libraries: {e}"))?;
@@ -57,7 +66,7 @@ pub fn list(conn: &Connection) -> Result<Vec<Listed>, String> {
         )
         .map_err(|e| format!("listing a library's directories: {e}"))?;
     let mut listed = Vec::with_capacity(rows.len());
-    for (id, name) in rows {
+    for (id, name, match_by_content) in rows {
         let works = works_under(conn, &crate::reach::of_libraries(&roots, &[id]))
             .map_err(|e| format!("counting the works of `{name}`: {e}"))?;
         let paths = dirs
@@ -71,6 +80,7 @@ pub fn list(conn: &Connection) -> Result<Vec<Listed>, String> {
             name,
             dirs: paths,
             works,
+            match_by_content,
         });
     }
     Ok(listed)
@@ -238,6 +248,49 @@ pub fn rename(conn: &Connection, id: i64, name: &str) -> Result<String, RenameEr
         }
         Err(e) => Err(RenameError::Failed(format!("renaming library {id}: {e}"))),
     }
+}
+
+/// Why [`set_match_by_content`] would not switch a library.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SwitchError {
+    /// No library has this id.
+    Missing(i64),
+    /// A store fault.
+    Failed(String),
+}
+
+/// Turn matching by content on or off for library `id` alone. A directory
+/// another library also reaches stays matched while that library has it on.
+///
+/// # Errors
+///
+/// See [`SwitchError`].
+pub fn set_match_by_content(conn: &Connection, id: i64, on: bool) -> Result<(), SwitchError> {
+    match conn.execute(
+        "UPDATE library SET match_by_content = ?2 WHERE id = ?1",
+        rusqlite::params![id, on],
+    ) {
+        Ok(0) => Err(SwitchError::Missing(id)),
+        Ok(_) => Ok(()),
+        Err(e) => Err(SwitchError::Failed(format!(
+            "switching matching by content for library {id}: {e}"
+        ))),
+    }
+}
+
+/// Whether library `id` is matched by content, if there is one.
+///
+/// # Errors
+///
+/// Returns an error if the read fails.
+pub fn match_by_content_of(conn: &Connection, id: i64) -> Result<Option<bool>, String> {
+    conn.query_row(
+        "SELECT match_by_content FROM library WHERE id = ?1",
+        [id],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("looking up library {id}: {e}"))
 }
 
 /// How many entries the scans of the directories library `id` reaches

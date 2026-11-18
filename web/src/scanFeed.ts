@@ -6,14 +6,16 @@
  * **One poll, whoever draws it.** The first `useScanFeed` starts the poll
  * and the last to go stops it, so the pages a tab draws from it at once, a
  * library's page and a directory's open beside it say, send one request,
- * not one each. It asks every `SCAN_POLL_MS` while any job holds a library,
- * every `FEED_IDLE_MS` while none does, and never while the tab is hidden;
- * shown again, it asks at once.
+ * not one each. It asks every `SCAN_POLL_MS` while any job holds a library
+ * or the fingerprint pass runs, which holds none but whose count moves as it
+ * reads; every `FEED_IDLE_MS` otherwise, as for a reader while only a pass
+ * runs, since a reader is sent no jobs; and never while the tab is hidden.
+ * Shown again, it asks at once.
  *
- * **The feed says when to read again.** When a job leaves it, or `ended`
+ * **The feed says when to read again.** When a scan leaves it, or `ended`
  * moves, the reads a scan changes are read again: the library status, the
  * libraries and directories, and the Library views. `ended` is what catches
- * a job that started and ended between two polls, or while the tab was
+ * a scan that started and ended between two polls, or while the tab was
  * hidden, which no poll ever listed. A first answer has nothing to compare,
  * so it reads again only where a poll was missed before it (`missed`).
  */
@@ -30,7 +32,10 @@ import {
 } from './pageReads'
 import { invalidatePrefix } from './reads'
 
-/** The step a job is in, in the order a job passes through them. */
+/**
+ * The step a job is in: a scan's, in the order a scan passes through them,
+ * then a fingerprint pass's one.
+ */
 export type ScanStep =
   | 'waiting'
   | 'listing'
@@ -38,16 +43,25 @@ export type ScanStep =
   | 'hashing'
   | 'writing'
   | 'finishing'
+  | 'fingerprinting'
 
 /** One running job, as an administrator is sent it. */
 export interface FeedJob {
   id: number
+  /**
+   * A scan, or the fingerprint pass, which holds no directory, is never in
+   * the feed's `libraries` and does not move `ended`: nothing a scan holds
+   * back waits on it.
+   */
+  kind: 'scan' | 'fingerprint'
   step: ScanStep
   /** The step's count so far: `null` while waiting and finishing. */
   done: number | null
   /**
    * What `done` counts towards, `null` while it is not known: listing never
-   * knows it, and hashing knows it once every folder is sized.
+   * knows it, and hashing knows it once every folder is sized. A pass's is
+   * the units queued so far, across every listing of the pass, and a unit
+   * queued twice counts twice; `null` until the first is queued.
    */
   of: number | null
   /** The directory being listed or read, of the job's; else `null`. */
@@ -61,7 +75,10 @@ export interface FeedJob {
 
 /** What the feed answers. */
 export interface ScanFeed {
-  /** Moves each time a job ends; its value means nothing else. */
+  /**
+   * Moves each time a scan job ends; its value means nothing else. A pass's
+   * end leaves it, since a pass changes nothing the pages read.
+   */
   ended: number
   /**
    * Each library a running job holds, with the step of the lowest job id
@@ -81,7 +98,10 @@ export interface CancelAnswer {
   step?: ScanStep
 }
 
-/** How often the feed is asked while no job runs. */
+/**
+ * How often the feed is asked while no job holds a library and no pass is
+ * listed, as for a reader while a pass runs, and after a failed read.
+ */
 export const FEED_IDLE_MS = 5000
 
 const FEED = '/api/library/scans'
@@ -137,7 +157,9 @@ function ask(): void {
       settle(answer)
       timer = setTimeout(
         ask,
-        answer.libraries.length > 0 ? SCAN_POLL_MS : FEED_IDLE_MS,
+        answer.libraries.length > 0 || fingerprintJob(answer) !== undefined
+          ? SCAN_POLL_MS
+          : FEED_IDLE_MS,
       )
     },
     () => {
@@ -151,16 +173,17 @@ function ask(): void {
 }
 
 /**
- * Whether a job ended between `before` and `now`. A library is compared as
+ * Whether a scan ended between `before` and `now`. A library is compared as
  * well as a job, since a reader is sent no jobs, and either can leave an
- * answer whose `ended` was read before the job ended.
+ * answer whose `ended` was read before the job ended. A pass's end is no
+ * scan's: it changes none of the reads `readScanAgain` sends.
  */
 function scanEnded(before: ScanFeed, now: ScanFeed): boolean {
   if (now.ended !== before.ended) return true
-  const jobs = new Set((now.jobs ?? []).map((job) => job.id))
+  const jobs = new Set(scanJobs(now).map((job) => job.id))
   const libraries = new Set(now.libraries.map((library) => library.id))
   return (
-    (before.jobs ?? []).some((job) => !jobs.has(job.id)) ||
+    scanJobs(before).some((job) => !jobs.has(job.id)) ||
     before.libraries.some((library) => !libraries.has(library.id))
   )
 }
@@ -242,22 +265,46 @@ export function onScanEnd(listener: () => void): () => void {
   }
 }
 
-/** Every job holding a directory of library `libraryId`. */
+/** Every running scan job: every job but the fingerprint pass. */
+export function scanJobs(feed: ScanFeed | undefined): FeedJob[] {
+  return (feed?.jobs ?? []).filter((job) => job.kind === 'scan')
+}
+
+/**
+ * The fingerprint pass, if one runs; given `libraryId`, only while the pass
+ * covers that library.
+ */
+export function fingerprintJob(
+  feed: ScanFeed | undefined,
+  libraryId?: number,
+): FeedJob | undefined {
+  return feed?.jobs?.find(
+    (job) =>
+      job.kind === 'fingerprint' &&
+      (libraryId === undefined ||
+        job.libraries.some((library) => library.id === libraryId)),
+  )
+}
+
+/**
+ * Every scan job holding a directory of library `libraryId`. A pass covering
+ * it holds none, so a page offers Scan library beside it.
+ */
 export function jobsHolding(
   feed: ScanFeed | undefined,
   libraryId: number,
 ): FeedJob[] {
-  return (feed?.jobs ?? []).filter((job) =>
+  return scanJobs(feed).filter((job) =>
     job.libraries.some((library) => library.id === libraryId),
   )
 }
 
-/** The job holding directory `rootId`, if one does. */
+/** The scan job holding directory `rootId`, if one does. */
 export function jobHoldingDir(
   feed: ScanFeed | undefined,
   rootId: number,
 ): FeedJob | undefined {
-  return feed?.jobs?.find((job) => job.dirs.some((dir) => dir.id === rootId))
+  return scanJobs(feed).find((job) => job.dirs.some((dir) => dir.id === rootId))
 }
 
 /**
@@ -292,6 +339,7 @@ const STEP_WORDS: Record<ScanStep, string> = {
   hashing: 'Hashing',
   writing: 'Writing works',
   finishing: 'Finishing',
+  fingerprinting: 'Fingerprinting pages',
 }
 
 /** A step by its word alone, as a reader is shown it and `stepLine` opens. */
@@ -331,6 +379,12 @@ export function stepLine(job: FeedJob): string {
         : `${word} · ${outOf(done, job.of, humanBytes)}`
     case 'writing':
       return `${word} · ${outOf(done, job.of, figure)}`
+    case 'fingerprinting': {
+      // The step's word names pages and its figures count files, so the noun
+      // says which, agreeing with the figure it follows.
+      const files = (job.of ?? done) === 1 ? 'file' : 'files'
+      return `${word} · ${outOf(done, job.of, figure)} ${files}`
+    }
     default:
       return word
   }

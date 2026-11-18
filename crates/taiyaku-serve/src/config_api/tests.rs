@@ -352,6 +352,7 @@ async fn the_import_route_reports_the_proposals_it_reopens() {
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
 
@@ -1331,6 +1332,7 @@ fn state_with_many_scan_entries(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     (state, fixture)
@@ -1419,6 +1421,7 @@ async fn the_preview_route_does_not_wait_on_the_shared_connections_mutex() {
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
 
@@ -2490,6 +2493,7 @@ fn state_with_a_root_that_cannot_write_its_document(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     (state, fixture)
@@ -2577,6 +2581,7 @@ fn state_with_a_root_that_folds_a_hand_documented_work(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     (state, fixture)
@@ -2968,6 +2973,7 @@ fn state_with_a_root_scanned_once_then_given_real_exclusions(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     (state, fixture)

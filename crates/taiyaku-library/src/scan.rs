@@ -4255,7 +4255,7 @@ fn join_rel(parent: &str, name: &str) -> String {
 /// A file's modification time as whole seconds since the epoch, or `0` for a
 /// filesystem that cannot report one — better than failing a whole scan over
 /// a `stat` field nothing here treats as more than a change signal.
-fn mtime_secs(meta: &std::fs::Metadata) -> i64 {
+pub(crate) fn mtime_secs(meta: &std::fs::Metadata) -> i64 {
     meta.modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())

@@ -180,6 +180,7 @@ fn router_over(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -486,6 +487,7 @@ pub(crate) fn state(root: &std::path::Path) -> ServeState {
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     }
 }
@@ -813,6 +815,7 @@ fn state_over(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     })
 }
@@ -1111,6 +1114,7 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -1198,6 +1202,7 @@ fn two_editions_in_a_library(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     (state, work_id)
@@ -1382,6 +1387,7 @@ pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<Serv
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     // `authenticating`, because `library()` seeds a claimed account and every
@@ -1570,6 +1576,7 @@ fn router_over_a_written_tree_with(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -1649,6 +1656,7 @@ pub(crate) fn router_over_a_scanned_cbz() -> (axum::Router, std::sync::Arc<Serve
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -1871,6 +1879,7 @@ fn two_scanned_roots_over(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -1994,6 +2003,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -2174,6 +2184,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -2280,6 +2291,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -2368,6 +2380,7 @@ pub(crate) fn router_over_a_series_in_two_libraries() -> (
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -2493,6 +2506,7 @@ fn nested_libraries(inner_first: bool) -> NestedLibraries {
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = crate::build_router(state.clone());
@@ -3097,6 +3111,7 @@ pub(crate) fn router_over_a_granted_two_dir_library(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -3228,6 +3243,7 @@ fn work_whose_editions_sit_in_two_libraries(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -3532,6 +3548,7 @@ fn an_edition_merged_from_two_libraries(
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = crate::build_router(state.clone());
@@ -3638,6 +3655,7 @@ pub(crate) fn router_over_a_copy_granted_through_its_second_directory()
         scans: Default::default(),
         jobs_ended: Default::default(),
         library_job: Default::default(),
+        fingerprints: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -3700,6 +3718,144 @@ pub(crate) fn holding_the_job(state: &std::sync::Arc<crate::ServeState>) -> Held
         release: Some(release),
         holder: Some(holder),
     }
+}
+
+/// A router over `over`'s store and works, signed in as the fixture account,
+/// whose fingerprint pass runs as `settings` say: the fixtures above serve an
+/// inert pass, which no kick starts.
+pub(crate) fn with_a_pass(
+    over: &ServeState,
+    fixture: &Fixture,
+    settings: crate::fingerprint_pass::PassSettings,
+) -> (axum::Router, std::sync::Arc<ServeState>) {
+    let library = std::sync::Arc::clone(&over.library);
+    let works = crate::works::from_library(&library).expect("projects the works");
+    let state = std::sync::Arc::new(ServeState {
+        library,
+        works: crate::Works::fixed(works),
+        fingerprints: std::sync::Arc::new(crate::fingerprint_pass::Pass::with(settings)),
+        ..state(fixture)
+    });
+    let router = authenticating(
+        crate::build_router(std::sync::Arc::clone(&state)),
+        &state.library,
+    );
+    (router, state)
+}
+
+/// Long enough for any fingerprint pass in a test to end on a loaded machine.
+pub(crate) const SETTLE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How often a waiting pass worker looks again in a test that watches it wait.
+pub(crate) const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The pass's default settings on one worker, polling every [`POLL`].
+pub(crate) fn one_worker() -> crate::fingerprint_pass::PassSettings {
+    crate::fingerprint_pass::PassSettings {
+        workers: 1,
+        poll: POLL,
+        ..crate::fingerprint_pass::PassSettings::default()
+    }
+}
+
+/// `settings` asking `hook` before each walked page.
+pub(crate) fn hooked(
+    settings: crate::fingerprint_pass::PassSettings,
+    hook: impl Fn(&std::path::Path, usize) + Send + Sync + 'static,
+) -> crate::fingerprint_pass::PassSettings {
+    crate::fingerprint_pass::PassSettings {
+        after_page: Some(std::sync::Arc::new(hook)),
+        ..settings
+    }
+}
+
+/// A worker held in a hook until the test lets it go: the hook calls the
+/// first, which says it has arrived on the second and waits for the third.
+pub(crate) fn gate() -> (
+    impl Fn() + Send + Sync + 'static,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (arrive, arrived) = std::sync::mpsc::channel::<()>();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let released = std::sync::Mutex::new(released);
+    let hold = move || {
+        arrive.send(()).expect("the test listens");
+        released
+            .lock()
+            .expect("one holder")
+            .recv()
+            .expect("the test lets the worker go");
+    };
+    (hold, arrived, release)
+}
+
+/// A router over a fixture's store whose pass reads on one worker, kicked and
+/// held at the first walked page of the first file it reads until
+/// [`HeldPass::let_go`].
+pub(crate) struct HeldPass {
+    pub(crate) router: axum::Router,
+    pub(crate) state: std::sync::Arc<ServeState>,
+    release: std::sync::mpsc::Sender<()>,
+}
+
+impl HeldPass {
+    /// Over `over`'s store and works, as [`with_a_pass`] serves them.
+    pub(crate) fn over(over: &ServeState, fixture: &Fixture) -> Self {
+        let (hold, arrived, release) = gate();
+        let armed = std::sync::atomic::AtomicBool::new(true);
+        let settings = hooked(one_worker(), move |_, index| {
+            if index == 0 && armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                hold();
+            }
+        });
+        let (router, state) = with_a_pass(over, fixture, settings);
+        crate::fingerprint_pass::kick(&state);
+        arrived
+            .recv_timeout(SETTLE)
+            .expect("the pass reaches its first file");
+        Self {
+            router,
+            state,
+            release,
+        }
+    }
+
+    /// Let the pass go and wait for it to end.
+    pub(crate) fn let_go(self) {
+        self.release
+            .send(())
+            .expect("the worker waits for the word");
+        assert!(self.state.fingerprints.settle(SETTLE), "the pass ends");
+    }
+}
+
+/// The digest the entry at `rel_path` in directory `root_id` holds.
+pub(crate) fn digest_at(
+    library: &taiyaku_library::Library,
+    root_id: i64,
+    rel_path: &str,
+) -> Option<String> {
+    library
+        .conn()
+        .query_row(
+            "SELECT sha256 FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+            rusqlite::params![root_id, rel_path],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|e| panic!("{rel_path} has an entry: {e}"))
+}
+
+/// Whether `unit`'s entry holds a digest that has a fingerprint row.
+pub(crate) fn fingerprinted(
+    library: &taiyaku_library::Library,
+    unit: &taiyaku_library::fingerprints::Unit,
+) -> bool {
+    digest_at(library, unit.root_id, &unit.rel_path).is_some_and(|digest| {
+        taiyaku_library::fingerprints::read(&library.conn(), &digest)
+            .expect("reads the store")
+            .is_some()
+    })
 }
 
 /// A job of no directories, for a slot a test plants in the registry itself.

@@ -68,6 +68,7 @@ export const manga = (count: number): librariesApi.Library => ({
   name: 'Manga',
   works: 1858,
   books: 0,
+  match_by_content: true,
   dirs: Array.from({ length: count }, (_, i) => dir(i + 1)),
 })
 

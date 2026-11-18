@@ -29533,3 +29533,165 @@ and the local gate does.
   a still pause and one step back, %s of the way down": red with the
   put-back's drawn offset read before it tells the bar's script, while the
   line is still the bar's box that the put-back's scroll carried off.
+
+## Content matching PR 2: fingerprints in the server (2026-11-17)
+
+The spec is
+`docs/superpowers/specs/2026-11-17-content-matching-fingerprints-design.md`
+and the plan
+`docs/superpowers/plans/2026-11-17-content-matching-fingerprints.md`.
+PR 2 stores a fingerprint of every page of each library with matching on,
+in a background pass in `taiyaku-serve`, and matches nothing, so O338
+stays open. This section holds what the plan settled that the design does
+not and why, and what the owner's hand-check found.
+
+**Where the moved code lives.** The design left the crate to the builder.
+It is `taiyaku-serve`, as `pub mod fingerprint`. `taiyaku-cli` already
+depended on `taiyaku-serve`, and `taiyaku-serve` already depended on
+`image` 0.25.9 with its default features, so the move added no dependency
+edge and no crate. A new crate would also have had to join the workspace's
+members, both crate lists in `.forgejo/workflows/mutants.yml` and
+`scripts/comment-budget.json`. The CLI keeps its `rayon` batch
+(`partition_by_size`, `decode_all`, `fingerprint_edition`,
+`describe_pages`) and calls the moved functions through
+`taiyaku_serve::fingerprint`, re-exporting the names its own modules used,
+so its call sites and tests compiled unchanged. A test in each crate's
+`fingerprint/tests.rs` pins the moved code's output to what
+`describe_pages` gave before the move, on one fixture.
+
+**The build a row names.** A file stored partial or unreadable is due
+again when the server's build changes (the design's §9). The build is
+`about::build_label`'s commit, with `-dirty` when the label is marked
+(`about::build_stamp`), since a marked build of a commit need not read
+pages as that commit's clean build does; a build that names no commit
+stamps none. The commit is the one per-build value the server has:
+`CARGO_PKG_VERSION` is `0.0.0` in every crate, the Dockerfile passes
+`TAIYAKU_COMMIT` to the build, and `taiyaku-serve`'s `build.rs` reads
+git's HEAD otherwise. The due test compares builds with `IS NOT`
+(`fingerprints`' due condition), so a row stamped with no build is
+settled for a build with none, rather than read again by each such build.
+
+**Priority, through two commands.** The coordinator and each worker lower
+their own thread: `renice --priority 19 -p <tid>` and
+`ionice -c 3 -p <tid>`, the thread id read from `/proc/thread-self`
+(`fingerprint_pass::priority::lower`). Linux keeps niceness and I/O
+priority per thread, so each thread sets its own, and the workers are
+threads of the pass's own, never tokio's blocking pool, whose threads go
+on to serve pages. The calls are subprocesses, as `taiyaku-cli`'s
+`user.rs` runs `stty`, because the system calls need `libc` and
+`unsafe`, which the workspace forbids (`unsafe_code = "forbid"` in the
+root `Cargo.toml`), and no crate in the shipped graph wraps `ioprio_set`:
+`rustix` is reached only through `tract-onnx`, a dev-dependency of
+`taiyaku-cli`, and `cargo tree --workspace -e normal,build -i rustix`
+prints nothing. `--priority` rather than `-n`, which util-linux reads as
+an increment under `POSIXLY_CORRECT`. Both commands are in
+`debian:bookworm-slim`, the base of the image's runtime stage
+(`docker run --rm debian:bookworm-slim sh -c 'command -v renice && command -v ionice'`).
+Where they are missing the pass runs at the server's own priority, and the
+coordinator says so on stderr.
+
+**Which rows a pass drops.** At the end of each pass the store drops every
+row whose digest no claimed unit holds, in any directory, covered or not,
+and no entry's held reading names (`fingerprints::drop_unclaimed`). The
+design's §3 was amended to say that rows no claimed unit holds are dropped,
+to match its §2; the held readings' exception is this section's own. Not "no
+due unit": a library switched off, or a directory paused by a Cancel, keeps
+the fingerprints it has, as the design's §8 has it for the switch. Not "no
+entry": a rules edit that moves a claim, so that a directory's chapters are
+claimed in place of the directory, say, leaves the directory's entry and its
+digest in `scan_entry`, and a row only that entry held would stay for good.
+The held readings are kept because a paused directory's frozen works are
+read by them (migration 27), while the claims name each file by the digest
+it has now. The claims, the held readings and the stored digests are read in
+a snapshot of their own, which takes no write lock, and the digests neither
+a claim nor a held reading names are worked out from it. Where there are
+none, the usual case once a library has been read, no write is asked for:
+the drop runs on the coordinator's lowered thread at the end of every pass,
+so after every scan that ends without a Cancel, and a write lock held there
+would hold every other writer behind it. Otherwise those rows are deleted by
+digest in one short write, which reads the held readings again, so a pause
+since the snapshot still keeps the row its works are read by. A claim made
+since the snapshot costs one file read again rather than a wrong row. The
+drop does not wait out a reader's quiet as each file does: its usual case
+writes nothing, and a wait would keep the pass's job showing for as long as
+a reader reads. A Cancel that lands while the pass waits for the job lock
+before dropping ends the wait with nothing dropped; the next pass drops what
+it left.
+
+**A folder whose pages do not hash to its digest.** A folder's own size and
+mtime do not move when a page in it is rewritten in place, so a scan keeps
+the digest it took, and the hash the walk takes of the pages it reads cannot
+match it: each pass reads such a folder whole, stores nothing, and does not
+try it again that pass (`fingerprint_pass::read`'s `Read::NotItsDigest`). A
+folder that cannot be listed, or whose walk ends on a read error, hashes
+short of its digest the same way, where a file in that state is stored
+unreadable or partial (O347). The pass says so on stderr each time, naming
+the folder, with the error where one ended the read, since nothing else
+shows the cost. A rewrite lasts until the folder's own mtime moves and a
+scan takes its digest again.
+
+**What makes a file partial.** A page that fails to decode keeps its place
+as a record that it was not decoded, the border sample passes over it as
+PR 1's `common_border` does, and the file is stored partial; a file with
+no page hashed is stored unreadable. An entry that is neither a page nor a
+companion makes the file partial too. A companion is a resource fork or a
+dotfile, or a file of a type in `taiyaku_read`'s `COMPANION_EXTENSIONS`,
+at any depth: `txt`, `nfo`, `url`, `sfv`, `md5`, `sha1`, `xml`,
+`json`, `htm`, `html`, `md`, `rtf`, `ini`, `db` and `ds_store`. So
+`ComicInfo.xml`, `Thumbs.db`, `desktop.ini`, a credits text or a
+checksum file beside the pages leaves a file whole, and an image of a type
+the reader cannot decode yet makes it partial, so that it is read again
+once a build reads that type.
+
+**Cancel and a kick.** A Cancel also forgets a kick the running pass has
+not yet read (`Pass::cancel`), so that it stops what was asked of the pass
+before it: files a scan found just before the Cancel wait for the next
+scan, as the owner's ruling has the rest wait.
+
+**The feed's count.** A pass's `of` is the number of units queued across
+its listings, and `done` the number workers have finished with, whatever
+came of each (`fingerprint_pass`'s `Counts`). A file a scan walks again
+mid-pass with a new size or modification time is queued again at the next
+listing, so it counts twice, and `of` can end above the number of files. A
+file passed over while its directory was not covered counts once more each
+time a later listing queues it again. A file whose library is
+switched off after it was queued is taken and counted too, though nothing
+is read: its own check finds it no longer due (`Reading::one`), and the
+worker counts it all the same (`Reading::work`). So once a library is
+switched off, its files still queued are counted off, and the pass's line
+can run to its total before it goes. A library's own page shows the pass
+only while it covers that library (`fingerprintJob` in `scanFeed.ts`), and
+each file's check reads again which libraries the pass covers, so there the
+line goes once the next file is checked.
+
+**The feed's cadence while a pass runs.** The plan had an administrator's
+tab ask the feed every `FEED_IDLE_MS`, five seconds, while only a pass
+runs, since the pass holds no library (its Task 10). At the owner's
+request during the hand-check, the feed is asked every `SCAN_POLL_MS`, a
+second, while it lists the pass, as while a job holds a library, so the
+count moves as files are read (`scanFeed.ts`'s `ask`). The request
+replaced the plan's cadence; the plan is left as it was written. A reader
+is sent no jobs, so a reader's tab still asks every `FEED_IDLE_MS` while
+only a pass runs.
+
+**The owner's hand-check.** The owner drove a server built from this
+branch over a scratch copy of three series, one of cbz volumes, one of
+folder volumes and one a directory of chapters alone, served from a fresh
+store. Once the first scan had ended, the pass's line showed on the
+Libraries list and on the library's page. Cancel took the line away, and
+Scan library then started a new pass with fewer files left to read.
+Unticking the library's box stopped the pass starting files, and ticking
+it again started a pass at once. A server restarted while a pass ran
+started a pass of its own with the rest. The owner found the step's words,
+"Fingerprinting pages", and the box's label, "Match editions by page
+content", fine, and the Matching section where it is.
+
+**A Cancel during a scan.** A Cancel of the pass while a scan runs can
+leave the line reading "Cancelling…" until the scan ends: a worker whose
+read has ended waits for the job lock before it stores what it read,
+cancel or not (`Reading::one`), and the scan holds the lock. The scan,
+ending without a Cancel of its own, then starts a pass, as the design has
+it: Cancel stops the current pass only, and the next scan to end without a
+Cancel starts a pass that carries on from there. Dropping a read that had
+ended would take the line away at once and leave that file to be read again;
+at the hand-check the owner kept the behaviour as built.

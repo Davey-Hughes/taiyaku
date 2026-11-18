@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use taiyaku_core::PageHash;
+use taiyaku_serve::fingerprint::PagePrint;
 
 use crate::fingerprint;
 
@@ -30,6 +31,17 @@ pub struct CachedPage {
     /// Left and right halves, present for any landscape page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub halves: Option<(PageHash, PageHash)>,
+}
+
+impl From<PagePrint> for CachedPage {
+    fn from(print: PagePrint) -> Self {
+        CachedPage {
+            width: print.width,
+            height: print.height,
+            hash: print.hash,
+            halves: print.halves,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

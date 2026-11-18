@@ -152,6 +152,7 @@ describe('names — §4.3 and §4.4', () => {
                 name: 'Manga',
                 works: 0,
                 books: 0,
+                match_by_content: true,
                 dirs: [root()],
               },
             ]}

@@ -153,6 +153,7 @@ const libraryOf = (dir: librariesApi.LibraryDir): librariesApi.Library => ({
   name: 'Manga',
   works: 0,
   books: 0,
+  match_by_content: true,
   dirs: [{ ...dir, libraries: [{ id: 70, name: 'Manga' }] }],
 })
 
@@ -161,7 +162,9 @@ const COMICS = [{ id: 2, name: 'Comics' }]
 
 /** One library holding `dirs`, as the list route sends it. */
 const holding = (...dirs: librariesApi.LibraryDir[]) => ({
-  libraries: [{ id: 1, name: 'Manga', works: 0, books: 0, dirs }],
+  libraries: [
+    { id: 1, name: 'Manga', works: 0, books: 0, match_by_content: true, dirs },
+  ],
 })
 
 /** A library name with sixty characters and nowhere to break. */
@@ -546,6 +549,7 @@ describe('the Libraries screen, with real keys and a real pointer', () => {
             name: 'Manga',
             works: 340,
             books: 0,
+            match_by_content: true,
             dirs: [root(), root({ id: 4, path: '/srv/chapters' })],
           },
           {
@@ -553,6 +557,7 @@ describe('the Libraries screen, with real keys and a real pointer', () => {
             name: 'Comics',
             works: 1,
             books: 0,
+            match_by_content: true,
             dirs: [root({ id: 5, path: '/srv/comics', libraries: COMICS })],
           },
         ],
@@ -1098,6 +1103,7 @@ describe('the Libraries pages at a phone’s width', () => {
         name: UNBROKEN_NAME,
         works: 12,
         books: 0,
+        match_by_content: true,
         dirs: [
           {
             ...UNBROKEN_ROOT,
@@ -1136,6 +1142,7 @@ describe('the Libraries pages at a phone’s width', () => {
         name: 'Manga',
         works: 340,
         books: 0,
+        match_by_content: true,
         dirs: [
           root(),
           root({
@@ -1152,6 +1159,7 @@ describe('the Libraries pages at a phone’s width', () => {
         name: 'Comics',
         works: 1,
         books: 0,
+        match_by_content: true,
         dirs: [root({ id: 5, path: '/srv/comics', libraries: COMICS })],
       },
     ],
@@ -1700,6 +1708,7 @@ describe('the Configuration screens at 390px', () => {
           name: 'Manga',
           works: 0,
           books: 0,
+          match_by_content: true,
           dirs: [UNBROKEN_ROOT],
         },
         {
@@ -1707,6 +1716,7 @@ describe('the Configuration screens at 390px', () => {
           name: UNBROKEN_NAME,
           works: 0,
           books: 0,
+          match_by_content: true,
           dirs: [
             root({
               id: 4,
@@ -2636,6 +2646,7 @@ describe('the Configuration screens at 390px', () => {
       name: 'Comics',
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [root({ id: 5, path: '/srv/comics', libraries: COMICS })],
     }
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
@@ -3521,11 +3532,12 @@ describe('a library page’s lines for a directory another library holds too', (
     )
     await pressOn(reached(addRoot().querySelector('button[name="pick"]')))
     await document.fonts.ready
-    const removal = () =>
-      host.querySelector('.library-page .settings-removal') as HTMLElement
+    /** The section under Directories. */
+    const below = () =>
+      addRoot().closest('.settings-section')?.nextElementSibling as HTMLElement
     /** From the top of the add form to the top of what is below it. */
     const reach = () =>
-      removal().getBoundingClientRect().top -
+      below().getBoundingClientRect().top -
       addRoot().getBoundingClientRect().top
     const open = reach()
     expect(addRoot().querySelector('.dir-picker')).not.toBeNull()
@@ -3571,7 +3583,8 @@ describe('a library page’s lines for a directory another library holds too', (
   /**
    * Where a link's line lies in its box: `foot`, how far its foot is above
    * the foot of the box's content, which is its last row's, inside that
-   * row's own padding; `clear`, how far above the Removal section's heading;
+   * row's own padding; `clear`, how far above the heading of the section
+   * under its box;
    * `covers`, the box's rows and Add directory… that it lies over, and
    * `halves`, those it covers only in part; and `onTop`, whether it is what
    * is drawn at its top and at its foot.
@@ -3583,7 +3596,7 @@ describe('a library page’s lines for a directory another library holds too', (
       last.getBoundingClientRect().bottom -
       Number.parseFloat(getComputedStyle(last).paddingBottom)
     const heading = host.querySelector(
-      '.library-page .settings-removal .settings-section-title',
+      '.library-page .settings-section:has(.add-root) + .settings-section .settings-section-title',
     ) as HTMLElement
     const at = line.getBoundingClientRect()
     const under = [
@@ -3787,10 +3800,10 @@ describe('a library page’s lines for a directory another library holds too', (
     await document.fonts.ready
     const reach = () => {
       const addRoot = host.querySelector('.library-page .add-root')
-      const removal = host.querySelector('.library-page .settings-removal')
-      return addRoot === null || removal === null
+      const below = addRoot?.closest('.settings-section')?.nextElementSibling
+      return addRoot === null || below == null
         ? undefined
-        : removal.getBoundingClientRect().top -
+        : below.getBoundingClientRect().top -
             addRoot.getBoundingClientRect().top
     }
     const seen: { reach: number; said: string }[] = []
@@ -3888,7 +3901,7 @@ describe('a library page’s lines for a directory another library holds too', (
     [390, 1280],
     [1280, 390],
   ])(
-    'keeps the made library’s page’s line inside its box, clear of the Removal heading, and the room it had, as the window goes from %ipx to %ipx and back',
+    'keeps the made library’s page’s line inside its box, clear of the heading under it, and the room it had, as the window goes from %ipx to %ipx and back',
     async (from, to) => {
       const sizes = { 390: [390, 844], 1280: [1280, 900] } as const
       const [width, height] = sizes[from as 390 | 1280]
@@ -4437,6 +4450,7 @@ describe('the libraries screen at desktop width', () => {
         name: 'Manga',
         works: 5,
         books: 0,
+        match_by_content: true,
         dirs: [longPathRoot],
       },
       {
@@ -4444,6 +4458,7 @@ describe('the libraries screen at desktop width', () => {
         name: 'Light novels',
         works: 0,
         books: 3,
+        match_by_content: true,
         dirs: [
           root({
             id: 4,
@@ -5080,6 +5095,7 @@ describe('a library’s grant', () => {
         name: 'Manga',
         works: 0,
         books: 0,
+        match_by_content: true,
         dirs: [1, 2, 3].map((id) =>
           root({ id, path: `/srv/media/manga/shelf-${id}/Volumes` }),
         ),
@@ -5089,6 +5105,7 @@ describe('a library’s grant', () => {
         name: LONG_NAME,
         works: 0,
         books: 0,
+        match_by_content: true,
         dirs: [
           root({
             id: 4,
@@ -5210,12 +5227,20 @@ describe('a checkbox and a radio', () => {
       await sized(1280, 900)
       vi.mocked(librariesApi.listLibraries).mockResolvedValue({
         libraries: [
-          { id: 1, name: 'Manga', works: 0, books: 0, dirs: [root()] },
+          {
+            id: 1,
+            name: 'Manga',
+            works: 0,
+            books: 0,
+            match_by_content: true,
+            dirs: [root()],
+          },
           {
             id: 2,
             name: 'Comics',
             works: 0,
             books: 0,
+            match_by_content: true,
             dirs: [root({ id: 4, path: '/srv/comics', libraries: COMICS })],
           },
         ],
@@ -5585,6 +5610,7 @@ describe('a removal’s confirm, its button and Cancel', () => {
           name: 'Volumes',
           works: 1896,
           books: 0,
+          match_by_content: true,
           dirs: [
             root({ libraries: [{ id: 1, name: 'Volumes' }] }),
             root({
@@ -5646,6 +5672,7 @@ describe('a removal’s confirm, its button and Cancel', () => {
             name: 'Manga',
             works: 0,
             books: 0,
+            match_by_content: true,
             dirs: [root({ libraries: both })],
           },
           {
@@ -5653,6 +5680,7 @@ describe('a removal’s confirm, its button and Cancel', () => {
             name: 'Kids',
             works: 0,
             books: 0,
+            match_by_content: true,
             dirs: [root({ libraries: both })],
           },
         ],

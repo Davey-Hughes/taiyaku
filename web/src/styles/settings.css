@@ -822,6 +822,22 @@ section:has(.callout[data-over-focus], .linked[data-over-focus])
   font-size: var(--text-ui);
 }
 
+/* The fingerprint pass's line with its Cancel at its end, on the Libraries
+   list and on a library's page, muted as the scan lines are. */
+.pass-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: var(--space-1) 0 0;
+}
+
+.pass-line .scanning {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
+}
+
 /* What holds the directory's actions for now, under its header: its own
    scan, and why Move… waits for a scan or another library job (O250), and
    the pause a cancel left. Muted as the library page's scan lines are: each

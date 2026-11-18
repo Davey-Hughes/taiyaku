@@ -25,6 +25,19 @@ export interface Library {
   books: number
   /** Its directories, oldest first. */
   dirs: LibraryDir[]
+  /**
+   * Whether the fingerprint pass reads its files, so that editions can be
+   * matched by their pages. A directory two libraries hold is read if either
+   * has it on.
+   */
+  match_by_content: boolean
+}
+
+/** `PATCH /api/library/libraries/{id}`'s answer: the library as stored. */
+export interface Patched {
+  id: number
+  name: string
+  match_by_content: boolean
 }
 
 /**
@@ -366,11 +379,15 @@ export const createLibrary = (
 /** Answers the name as stored, which is the name sent with its spaces stripped. */
 export const renameLibrary = (id: number, name: string) =>
   expectBody(
-    sendJson<{ id: number; name: string }>(
-      `/api/library/libraries/${id}`,
-      'PATCH',
-      { name },
-    ),
+    sendJson<Patched>(`/api/library/libraries/${id}`, 'PATCH', { name }),
+  )
+
+/** Turns matching by content on or off for library `id`, its name untouched. */
+export const setMatchByContent = (id: number, on: boolean) =>
+  expectBody(
+    sendJson<Patched>(`/api/library/libraries/${id}`, 'PATCH', {
+      match_by_content: on,
+    }),
   )
 
 export const addDir = (

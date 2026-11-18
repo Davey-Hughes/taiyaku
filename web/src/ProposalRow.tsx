@@ -26,11 +26,11 @@
  * **The panel states that nothing has compared the artwork.** C3 §2's second
  * decision. Every signal in the reason list is about names and counts, while
  * this project already owns `duplicates --against`, which answers the same
- * question from the pages themselves — and it is not wired in, because the
- * fingerprinting code sits in a crate that depends on the server. So the
- * `Compare v01` control ships present, disabled and honest: an absent number
- * that looked like a low score would be worse than a control admitting it
- * has not run.
+ * question from the pages themselves — and it is not wired in, because
+ * comparing pages comes with matching editions by content, which is not
+ * built yet. So the `Compare v01` control ships present, disabled and
+ * honest: an absent number that looked like a low score would be worse than
+ * a control admitting it has not run.
  *
  * **Three fields arrive as lists and are drawn as lists.** `directories`,
  * `formats` and `volumes` are lists in the store rather than rendered
@@ -268,8 +268,8 @@ function Evidence({
           Compare v01
         </button>
         <p className="not-yet">
-          Not wired up yet: the fingerprinting code has to leave{' '}
-          <code>taiyaku-cli</code> first.
+          Not wired up yet: comparing pages comes with matching editions by
+          content, which is not built yet.
         </p>
       </div>
       {detail.proposal.state === 'open' && detail.rule === null && (

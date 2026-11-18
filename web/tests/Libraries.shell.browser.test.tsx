@@ -150,6 +150,7 @@ const MANGA: librariesApi.Library = {
   name: 'Manga',
   works: 1858,
   books: 0,
+  match_by_content: true,
   dirs: [
     dir(1, '/mnt/user/media 1/Manga/Volumes'),
     dir(2, '/mnt/user/media 1/Manga/Chapters (weekly)', {
@@ -163,6 +164,7 @@ const NOVELS: librariesApi.Library = {
   name: 'Light novels',
   works: 0,
   books: 14,
+  match_by_content: true,
   dirs: [dir(3, '/mnt/user/media 1/Light Novels', IN_NOVELS)],
 }
 
@@ -179,6 +181,7 @@ const SHELVES = Array.from(
     name: `Shelf ${i + 1}`,
     works: 0,
     books: 0,
+    match_by_content: true,
     dirs: [
       dir(10 + i, `/srv/shelf ${i + 1}`, {
         libraries: [{ id: 10 + i, name: `Shelf ${i + 1}` }],
@@ -810,6 +813,7 @@ describe('the Libraries screen in the real Shell', () => {
           name: 'Comics',
           works: 0,
           books: 0,
+          match_by_content: true,
           dirs: [
             dir(9, '/srv/comics', {
               libraries: [{ id: 3, name: 'Comics' }],
@@ -857,6 +861,7 @@ describe('the Libraries screen in the real Shell', () => {
       name: 'Manga',
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [dir(9, '/srv/manga', { libraries: [{ id: 3, name: 'Manga' }] })],
     }
     let made = false
@@ -2394,7 +2399,7 @@ describe('Rename… over the title’s place, in the real Shell', () => {
 
   for (const [width, height] of SIZES) {
     it(`draws a save still out after a while as waiting, in the width Save had, so that neither it nor Cancel moves, at ${width}`, async () => {
-      const answer = deferred<{ id: number; name: string }>()
+      const answer = deferred<librariesApi.Patched>()
       vi.mocked(librariesApi.renameLibrary).mockReturnValue(
         answer.promise as never,
       )
@@ -2432,7 +2437,7 @@ describe('Rename… over the title’s place, in the real Shell', () => {
       expectKept('Save', before[0], boxOf(save))
       expectKept('Cancel', before[1], boxOf(cancel))
       await act(async () => {
-        answer.resolve({ id: 1, name: 'Manga 2' })
+        answer.resolve({ id: 1, name: 'Manga 2', match_by_content: true })
         await new Promise((r) => setTimeout(r, 20))
       })
       expect(nameBox(host)).toBeNull()
@@ -3549,7 +3554,7 @@ describe('a library’s page in a real browser, when a list read holds Save', ()
 describe('a library’s page in a real browser, when a slow save holds Save', () => {
   it('moves focus from Save to the name box as the wait is drawn, and keeps it there through a refusal, where Escape still closes the editor', async () => {
     await page.viewport(1280, 800)
-    const sent = deferred<{ id: number; name: string }>()
+    const sent = deferred<librariesApi.Patched>()
     vi.mocked(librariesApi.renameLibrary).mockReturnValue(sent.promise)
     let host: HTMLElement | undefined
     await act(async () => {
@@ -3601,7 +3606,7 @@ describe('a library’s page in a real browser, when a slow save holds Save', ()
 describe('a library’s page in a real browser, when a slow save holds Cancel', () => {
   it('moves focus from Cancel, tabbed to inside the wait’s delay, to the name box as the wait is drawn, where Escape still closes the editor once the save is refused', async () => {
     await page.viewport(1280, 800)
-    const sent = deferred<{ id: number; name: string }>()
+    const sent = deferred<librariesApi.Patched>()
     vi.mocked(librariesApi.renameLibrary).mockReturnValue(sent.promise)
     let host: HTMLElement | undefined
     await act(async () => {

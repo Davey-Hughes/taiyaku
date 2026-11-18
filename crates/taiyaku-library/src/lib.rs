@@ -17,6 +17,7 @@ pub mod credential;
 pub mod derive;
 pub mod dictionary;
 pub mod export;
+pub mod fingerprints;
 // **Private, and that is the point.** `fold::absorb` deletes a `work` row, and
 // `derive` is the only thing that has any business calling it —
 // `derive::superseded` is what decides the pair. Narrowing the door is a

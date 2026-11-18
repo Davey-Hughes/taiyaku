@@ -417,6 +417,7 @@ pub(crate) async fn edition(
     headers: HeaderMap,
     extensions: axum::http::Extensions,
 ) -> Response {
+    state.fingerprints.reader_seen();
     let view = match crate::view::of_edition(&state, &extensions, &slug, &edition_key).await {
         Ok(view) => view,
         Err(refusal) => return refusal,
@@ -1085,6 +1086,7 @@ pub(crate) async fn member(
     headers: HeaderMap,
     extensions: axum::http::Extensions,
 ) -> Response {
+    state.fingerprints.reader_seen();
     let view = match crate::view::of_edition(&state, &extensions, &slug, &edition_key).await {
         Ok(view) => view,
         Err(refusal) => return refusal,

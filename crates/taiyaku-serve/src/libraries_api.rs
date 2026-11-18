@@ -162,6 +162,7 @@ fn libraries_json(
             "works": listed.works,
             "books": libraries::books(conn, listed.id)?,
             "dirs": dirs,
+            "match_by_content": listed.match_by_content,
         }));
     }
     Ok(rendered)
@@ -400,7 +401,39 @@ fn created_json(
     }))
 }
 
-/// `PATCH /api/library/libraries/{id}`: rename. Answers the name as stored.
+/// What a `PATCH` of a library asks to change: its name, its switch for
+/// matching by content, or both, and never neither.
+fn library_change(body: &serde_json::Value) -> Result<(Option<String>, Option<bool>), AdminAnswer> {
+    let name = body
+        .get("name")
+        .map(|_| name_from_json(body, "renaming a library needs a `name`, a string"))
+        .transpose()?;
+    let on = body
+        .get("match_by_content")
+        .map(|on| {
+            on.as_bool().ok_or_else(|| {
+                AdminAnswer::Unusable(
+                    "switching a library's matching needs `match_by_content`, a boolean"
+                        .to_string(),
+                )
+            })
+        })
+        .transpose()?;
+    if name.is_none() && on.is_none() {
+        return Err(AdminAnswer::Unusable(
+            "changing a library needs a `name`, a string, or `match_by_content`, a boolean"
+                .to_string(),
+        ));
+    }
+    Ok((name, on))
+}
+
+/// `PATCH /api/library/libraries/{id}`: rename, switch matching by content,
+/// or both. Answers the library's id, name and switch as stored. A switch
+/// turned on kicks the fingerprint pass ([`crate::fingerprint_pass::kick`]).
+///
+/// **One transaction for both**, so a rename refused for a name another
+/// library holds takes the switch written beside it back.
 pub(crate) async fn patch_library(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -412,31 +445,64 @@ pub(crate) async fn patch_library(
         return refusal;
     }
     let read = library_id(&id).and_then(|id| {
-        let body = json_body(&body)?;
-        Ok((
-            id,
-            name_from_json(&body, "renaming a library needs a `name`, a string")?,
-        ))
+        let (name, on) = library_change(&json_body(&body)?)?;
+        Ok((id, name, on))
     });
-    let (id, name) = match read {
+    let (id, name, on) = match read {
         Ok(read) => read,
         Err(why) => return why.into_response(),
     };
+    let switched_on = on == Some(true);
 
-    let renamed = tokio::task::spawn_blocking(move || {
-        let conn = state.library.conn();
-        libraries::rename(&conn, id, &name).map_err(|error| match error {
-            libraries::RenameError::Missing(id) => AdminAnswer::MissingLibrary(id),
-            libraries::RenameError::Unusable(why) => AdminAnswer::Unusable(why),
-            libraries::RenameError::Failed(why) => AdminAnswer::Failed(why),
-        })
+    let changing = Arc::clone(&state);
+    let changed = tokio::task::spawn_blocking(move || {
+        let conn = changing.library.conn();
+        let held = conn
+            .unchecked_transaction()
+            .map_err(|e| AdminAnswer::Failed(format!("changing library {id}: {e}")))?;
+        let on = match on {
+            Some(on) => libraries::set_match_by_content(&held, id, on)
+                .map(|()| on)
+                .map_err(|error| match error {
+                    libraries::SwitchError::Missing(id) => AdminAnswer::MissingLibrary(id),
+                    libraries::SwitchError::Failed(why) => AdminAnswer::Failed(why),
+                })?,
+            None => libraries::match_by_content_of(&held, id)
+                .map_err(AdminAnswer::Failed)?
+                .ok_or(AdminAnswer::MissingLibrary(id))?,
+        };
+        let name = match name {
+            Some(name) => libraries::rename(&held, id, &name).map_err(|error| match error {
+                libraries::RenameError::Missing(id) => AdminAnswer::MissingLibrary(id),
+                libraries::RenameError::Unusable(why) => AdminAnswer::Unusable(why),
+                libraries::RenameError::Failed(why) => AdminAnswer::Failed(why),
+            })?,
+            None => libraries::name_of(&held, id)
+                .map_err(AdminAnswer::Failed)?
+                .ok_or(AdminAnswer::MissingLibrary(id))?,
+        };
+        held.commit()
+            .map_err(|e| AdminAnswer::Failed(format!("changing library {id}: {e}")))?;
+        Ok::<_, AdminAnswer>((name, on))
     })
     .await;
 
-    match renamed {
-        Ok(Ok(name)) => Json(serde_json::json!({ "id": id, "name": name })).into_response(),
+    match changed {
+        Ok(Ok((name, on))) => {
+            // The library's files are read now rather than at its next scan,
+            // and only once committed, or the pass would list them not due.
+            if switched_on {
+                crate::fingerprint_pass::kick(&state);
+            }
+            Json(serde_json::json!({
+                "id": id,
+                "name": name,
+                "match_by_content": on,
+            }))
+            .into_response()
+        }
         Ok(Err(no_answer)) => no_answer.into_response(),
-        Err(why) => admin_panicked("renaming a library", &why),
+        Err(why) => admin_panicked("changing a library", &why),
     }
 }
 

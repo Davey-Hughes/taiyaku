@@ -1,7 +1,12 @@
-//! `GET /api/library/scans`, what every running scan job is doing, and
+//! `GET /api/library/scans`, what every running job is doing, and
 //! `POST /api/library/scans/{job}/cancel`, which stops one (spec
 //! 2026-11-15-first-scan-progress-and-cancel §7, "The feed" and "Cancel
 //! endpoint").
+//!
+//! A job is a scan, or the fingerprint pass ([`crate::fingerprint_pass`]), a
+//! job of its own kind: it waits on every other job and on readers and holds
+//! no library, so it is in no answer's `libraries`. An administrator's pages
+//! draw it from `jobs`, and only an administrator is sent it or may cancel it.
 //!
 //! **The feed answers from memory alone.** Every page polls it while a job
 //! runs, and each poll already pays the session guard's read and slide write
@@ -19,14 +24,16 @@ use taiyaku_library::progress::Step;
 
 use crate::ServeState;
 use crate::auth::Principal;
-use crate::scan_jobs::{Job, JobEnded, Snapshot};
+use crate::scan_jobs::{Job, JobEnded, JobKind, Snapshot};
 
 /// `GET /api/library/scans`, for any signed-in account: `ended`, a marker
-/// that moves each time a job ends, and each library a running job holds with
-/// that job's step. An administrator in a browser
-/// ([`crate::session::administers`]) is also sent every running job; any other
-/// caller only the libraries it is granted, with no count and no directory
-/// path, since a job's counts and directories cover libraries it may not see.
+/// that moves each time a scan job ends, and each library a running scan job
+/// holds with that job's step. An administrator in a browser
+/// ([`crate::session::administers`]) is also sent every running job, the pass
+/// among them, each with its kind; any other caller only the libraries it is
+/// granted, with no count and no directory path, since a job's counts and
+/// directories cover libraries it may not see. The pass holds no library, so
+/// it is in no answer's libraries.
 pub(crate) async fn feed(
     State(state): State<Arc<ServeState>>,
     extensions: axum::http::Extensions,
@@ -44,6 +51,9 @@ pub(crate) async fn feed(
     // By job id ascending, so the first step kept is the lowest id's.
     let mut held: BTreeMap<i64, Step> = BTreeMap::new();
     for (job, snapshot) in &jobs {
+        if job.kind == JobKind::Fingerprint {
+            continue;
+        }
         for (library, _) in libraries_of(job) {
             held.entry(library).or_insert(snapshot.step);
         }
@@ -70,9 +80,9 @@ pub(crate) async fn feed(
 }
 
 /// `POST /api/library/scans/{job}/cancel`, an administrator's: asks running
-/// job `job` to stop at its next check, 202, however often it is pressed; a
-/// job that has ended answers how it ended, 200, and is not asked; a job no
-/// slot names is 404.
+/// job `job`, a scan or the pass, to stop at its next check, 202, however
+/// often it is pressed; a job that has ended answers how it ended, 200, and is
+/// not asked; a job that neither a slot nor the pass names is 404.
 pub(crate) async fn cancel(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
@@ -85,7 +95,7 @@ pub(crate) async fn cancel(
     let Some(job) = job_named(&state, id) else {
         return (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": format!("there is no scan job {id}") })),
+            Json(serde_json::json!({ "error": format!("there is no job {id}") })),
         )
             .into_response();
     };
@@ -93,7 +103,10 @@ pub(crate) async fn cancel(
         // A job that ends after this read is asked anyway, and no check of
         // it is left to read the flag: it ended as it would have.
         None => {
-            job.request_cancel();
+            match job.kind {
+                JobKind::Scan => job.request_cancel(),
+                JobKind::Fingerprint => state.fingerprints.cancel(&job),
+            }
             (
                 StatusCode::ACCEPTED,
                 Json(serde_json::json!({ "job": id, "cancelling": true })),
@@ -113,30 +126,41 @@ pub(crate) async fn cancel(
 }
 
 /// Each job a slot of `state`'s registry holds that has not ended, once each,
-/// by id ascending.
+/// and the pass's while it has not ended, by id ascending.
 ///
 /// **Not ended, rather than a slot not done**: a job's slots are all done
 /// before it is marked ended, so a page that sees a job leave the feed reads
-/// each directory's report.
+/// each directory's report. The pass keeps its last job once it ends, which a
+/// page would otherwise show running, with its Cancel, for good.
 fn running_jobs(state: &ServeState) -> Vec<Arc<Job>> {
-    let scans = state.scans.lock().unwrap_or_else(PoisonError::into_inner);
     let mut jobs: BTreeMap<u64, Arc<Job>> = BTreeMap::new();
-    for progress in scans.values() {
-        if progress.job.ended().is_none() {
-            jobs.entry(progress.job.id)
-                .or_insert_with(|| Arc::clone(&progress.job));
+    {
+        let scans = state.scans.lock().unwrap_or_else(PoisonError::into_inner);
+        for progress in scans.values() {
+            if progress.job.ended().is_none() {
+                jobs.entry(progress.job.id)
+                    .or_insert_with(|| Arc::clone(&progress.job));
+            }
         }
+    }
+    if let Some(pass) = state.fingerprints.job()
+        && pass.ended().is_none()
+    {
+        jobs.insert(pass.id, pass);
     }
     jobs.into_values().collect()
 }
 
-/// The job slot `id` names, running or ended.
+/// The job slot `id` names, or the pass's job `id` names, running or ended:
+/// an ended pass's Cancel answers how it ended.
 fn job_named(state: &ServeState, id: u64) -> Option<Arc<Job>> {
-    let scans = state.scans.lock().unwrap_or_else(PoisonError::into_inner);
-    scans
-        .values()
-        .find(|progress| progress.job.id == id)
-        .map(|progress| Arc::clone(&progress.job))
+    {
+        let scans = state.scans.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(progress) = scans.values().find(|progress| progress.job.id == id) {
+            return Some(Arc::clone(&progress.job));
+        }
+    }
+    state.fingerprints.job().filter(|pass| pass.id == id)
 }
 
 fn libraries_of(job: &Job) -> Vec<(i64, String)> {
@@ -158,6 +182,7 @@ fn job_json(job: &Job, snapshot: Snapshot) -> serde_json::Value {
     let counted = !matches!(snapshot.step, Step::Waiting | Step::Finishing);
     serde_json::json!({
         "id": job.id,
+        "kind": job.kind.as_str(),
         "step": snapshot.step.as_str(),
         "done": snapshot.done.filter(|_| counted),
         "of": snapshot.of.filter(|_| counted),

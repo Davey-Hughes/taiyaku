@@ -80,6 +80,7 @@ pub(crate) async fn get_book(
     AxPath(id): AxPath<String>,
     extensions: axum::http::Extensions,
 ) -> Response {
+    state.fingerprints.reader_seen();
     let view = match crate::view::of_work(&state, &extensions, &id).await {
         Ok(view) => view,
         Err(refusal) => return refusal,
@@ -128,6 +129,7 @@ pub(crate) async fn get_book_image(
     headers: axum::http::HeaderMap,
     extensions: axum::http::Extensions,
 ) -> Response {
+    state.fingerprints.reader_seen();
     let view = match crate::view::of_work(&state, &extensions, &id).await {
         Ok(view) => view,
         Err(refusal) => return refusal,

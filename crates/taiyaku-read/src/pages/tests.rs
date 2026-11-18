@@ -1141,6 +1141,93 @@ fn member_entry_does_not_descend_into_a_directorys_subdirectories() {
     );
 }
 
+/// What a member holds that the reader neither reads as a page nor knows as a
+/// companion: the entries that keep a file from being read whole. Each
+/// companion here is a case a rule must drop, most of them in upper case, one
+/// nested ComicInfo.xml; the image types the reader does not decode yet, and a
+/// type it does not know, stay unread. The encrypted page separates a listing
+/// that asks whether `zip` will open an entry from one that asks only its name.
+#[test]
+fn unread_entries_are_what_the_reader_neither_reads_nor_knows() {
+    const COMPANIONS: [&str; 21] = [
+        "ComicInfo.xml",
+        "Vol 01/ComicInfo.xml",
+        "__MACOSX/._001.png",
+        ".DS_Store",
+        "THUMBS.DB",
+        "Desktop.INI",
+        "Credits.TXT",
+        "release.NFO",
+        "site.URL",
+        "check.SFV",
+        "check.MD5",
+        "check.SHA1",
+        "meta.XML",
+        "meta.JSON",
+        "read.HTM",
+        "read.HTML",
+        "README.MD",
+        "notes.RTF",
+        "config.INI",
+        "cache.DB",
+        "odd.DS_STORE",
+    ];
+    const UNREAD: [&str; 5] = ["002.jxl", "003.heic", "004.heif", "005.jp2", "extra.xyz"];
+    let entries: Vec<&str> = ["001.png"]
+        .into_iter()
+        .chain(COMPANIONS)
+        .chain(UNREAD)
+        .collect();
+    let dir = TempDir::new("unread");
+    let archive = cbz(&dir, "unread.cbz", &entries);
+    let folder = loose_files(&dir, "unread", &entries);
+    let lower_archive = cbz(&dir, "lower.cbz", &["001.png", "comicinfo.XML"]);
+    let lower_folder = loose_files(&dir, "lower", &["001.png", "comicinfo.XML"]);
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let locked = middle_page_cbz(
+        &dir,
+        "locked.cbz",
+        stored.with_aes_encryption(zip::AesMode::Aes256, "password"),
+    );
+
+    for member in [&archive, &folder] {
+        let unread = member_unread_entries(member).unwrap();
+        for companion in COMPANIONS {
+            assert!(
+                !unread.iter().any(|name| name == companion),
+                "{}: {companion} is a companion: {unread:?}",
+                member.display()
+            );
+        }
+        for entry in UNREAD {
+            assert!(
+                unread.iter().any(|name| name == entry),
+                "{}: {entry} is unread: {unread:?}",
+                member.display()
+            );
+        }
+        assert_eq!(unread, UNREAD, "{}", member.display());
+    }
+    for member in [&lower_archive, &lower_folder] {
+        let unread = member_unread_entries(member).unwrap();
+        assert!(unread.is_empty(), "{}: {unread:?}", member.display());
+    }
+    assert_eq!(member_unread_entries(&locked).unwrap(), ["p2.jpg"]);
+}
+
+/// Write a folder `name` holding `entries` as files, each its own name as
+/// its bytes, as [`cbz`] writes an archive's.
+fn loose_files(dir: &Path, name: &str, entries: &[&str]) -> PathBuf {
+    let folder = dir.join(name);
+    for entry in entries {
+        let file = folder.join(entry);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, entry.as_bytes()).unwrap();
+    }
+    folder
+}
+
 /// A source that returns its bytes a few at a time must still be recognised: the
 /// tar magic sits at offset 257, so a header assembled from one `read` that
 /// stops short would call a tar an unreadable zip.

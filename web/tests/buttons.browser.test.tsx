@@ -265,7 +265,14 @@ describe('a control held by aria-disabled', () => {
               user={sam}
               users={[davey, sam]}
               libraries={[
-                { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] },
+                {
+                  id: 70,
+                  name: 'Manga',
+                  works: 0,
+                  books: 0,
+                  match_by_content: true,
+                  dirs: [],
+                },
               ]}
               actingAs={1}
               onChanged={() => undefined}

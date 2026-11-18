@@ -15,12 +15,14 @@ import {
   cancelScan,
   FEED_IDLE_MS,
   type FeedJob,
+  fingerprintJob,
   jobHoldingDir,
   jobsHolding,
   libraryStep,
   onScanEnd,
   type ScanFeed,
   type ScanStep,
+  scanJobs,
   stepLine,
   stepWord,
   useScanFeed,
@@ -28,7 +30,7 @@ import {
 import { usePage } from '../src/usePage'
 import { mount, rerender } from './support/mount'
 import { address } from './support/reads'
-import { feedJob, serveFeed } from './support/scanFeed'
+import { feedJob, fingerprintPass, serveFeed } from './support/scanFeed'
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -137,6 +139,29 @@ describe('the scan feed', () => {
     polls.push(feed.polls())
     feed.answer(idle(2))
     // The idle answer lands at this poll, and the next waits five seconds.
+    await wait(SCAN_POLL_MS)
+    polls.push(feed.polls())
+    await wait(FEED_IDLE_MS - SCAN_POLL_MS)
+    polls.push(feed.polls())
+    await wait(SCAN_POLL_MS)
+    polls.push(feed.polls())
+    expect(polls).toEqual([1, 2, 3, 3, 4])
+  })
+
+  it('asks every second while only a fingerprint pass runs, though it holds no library, so its count moves as it reads', async () => {
+    const feed = serveFeed({
+      ended: 1,
+      libraries: [],
+      jobs: [fingerprintPass()],
+    })
+    mount(<Ended />)
+    const polls: number[] = []
+    await wait(0)
+    polls.push(feed.polls())
+    await wait(SCAN_POLL_MS)
+    polls.push(feed.polls())
+    feed.answer(idle(1))
+    // The idle answer lands at this poll, and the next waits `FEED_IDLE_MS`.
     await wait(SCAN_POLL_MS)
     polls.push(feed.polls())
     await wait(FEED_IDLE_MS - SCAN_POLL_MS)
@@ -303,6 +328,39 @@ describe('the scan feed', () => {
     feed.answer(idle(5))
     await wait(FEED_IDLE_MS)
     expect(stale).toEqual([false])
+  })
+
+  it('reads nothing again and tells no scan-end listener when a fingerprint pass leaves the feed, and does both when a scan leaves', async () => {
+    const kept = address<object>(LIBRARIES.address)
+    const reading = readSet([kept.read])
+    kept.requests[0].resolve({})
+    await reading
+    // A pass is never in the libraries the feed holds, and its end leaves
+    // `ended` where it was.
+    const feed = serveFeed({
+      ended: 3,
+      libraries: [],
+      jobs: [fingerprintPass()],
+    })
+    const told: (boolean | undefined)[] = []
+    const stop = onScanEnd(() => told.push(entryOf(kept.read)?.stale))
+    mount(<Ended />)
+    await wait(0)
+    feed.answer(idle(3))
+    await wait(FEED_IDLE_MS)
+    const passEnded = { told: [...told], stale: entryOf(kept.read)?.stale }
+    // Scan 7 ends while scan 8 holds the same library, `ended` not yet
+    // moved: only the scan's id tells.
+    feed.answer(running(3, feedJob({ id: 7 })))
+    await wait(FEED_IDLE_MS)
+    feed.answer(running(3, feedJob({ id: 8 })))
+    await wait(SCAN_POLL_MS)
+    const scanEnded = { told: [...told], stale: entryOf(kept.read)?.stale }
+    stop()
+    expect({ passEnded, scanEnded }).toEqual({
+      passEnded: { told: [], stale: false },
+      scanEnded: { told: [false], stale: true },
+    })
   })
 
   it('stops asking once the last consumer unmounts', async () => {
@@ -502,12 +560,43 @@ describe('the jobs a page shows', () => {
     expect(jobsHolding(reader, 9)).toEqual([])
   })
 
+  it('finds no job holding a library that only a fingerprint pass covers', () => {
+    const passing: ScanFeed = {
+      ended: 0,
+      libraries: [],
+      jobs: [fingerprintPass({ libraries: [{ id: 1, name: 'Manga' }] })],
+    }
+    expect(jobsHolding(passing, 1)).toEqual([])
+  })
+
+  it('tells the scans from the fingerprint pass, which it finds for a library only while the pass covers it', () => {
+    // The scan comes first and covers library 1 too, so neither the order
+    // nor the library alone finds the pass.
+    const scan = feedJob({ id: 7, libraries: [{ id: 1, name: 'Manga' }] })
+    const pass = fingerprintPass({ libraries: [{ id: 1, name: 'Manga' }] })
+    const both: ScanFeed = {
+      ended: 0,
+      libraries: [{ id: 1, step: 'resolving' }],
+      jobs: [scan, pass],
+    }
+    expect([
+      scanJobs(both).map((job) => job.id),
+      jobsHolding(both, 1).map((job) => job.id),
+      fingerprintJob(both)?.id,
+      fingerprintJob(both, 1)?.id,
+      fingerprintJob(both, 2),
+      fingerprintJob({ ...both, jobs: [scan] }),
+    ]).toEqual([[7], [7], 12, 12, undefined, undefined])
+  })
+
   it('finds nothing before the first answer', () => {
     expect([
       jobsHolding(undefined, 7),
       jobHoldingDir(undefined, 1),
       libraryStep(undefined, 7),
-    ]).toEqual([[], undefined, undefined])
+      scanJobs(undefined),
+      fingerprintJob(undefined),
+    ]).toEqual([[], undefined, undefined, [], undefined])
   })
 })
 
@@ -555,6 +644,24 @@ describe('stepLine', () => {
     ])
   })
 
+  it('words a fingerprint pass’s count in files, the noun agreeing with the figure before it', () => {
+    expect(
+      [
+        fingerprintPass({ done: 120, of: 2097 }),
+        fingerprintPass({ done: 1, of: 1 }),
+        fingerprintPass({ done: 0, of: 1 }),
+        fingerprintPass({ done: 120, of: null }),
+        fingerprintPass({ done: 1, of: null }),
+      ].map(stepLine),
+    ).toEqual([
+      'Fingerprinting pages · 120 of 2,097 files',
+      'Fingerprinting pages · 1 of 1 file',
+      'Fingerprinting pages · 0 of 1 file',
+      'Fingerprinting pages · 120 files',
+      'Fingerprinting pages · 1 file',
+    ])
+  })
+
   it('names each step by its word alone', () => {
     const steps: ScanStep[] = [
       'waiting',
@@ -563,6 +670,7 @@ describe('stepLine', () => {
       'hashing',
       'writing',
       'finishing',
+      'fingerprinting',
     ]
     expect(steps.map(stepWord)).toEqual([
       'Waiting for another job',
@@ -571,6 +679,7 @@ describe('stepLine', () => {
       'Hashing',
       'Writing works',
       'Finishing',
+      'Fingerprinting pages',
     ])
   })
 })

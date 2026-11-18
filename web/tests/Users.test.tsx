@@ -552,7 +552,14 @@ describe('Users, the pages', () => {
 
 describe('Users, a first visit and a return', () => {
   const sam = user({ id: 2, name: 'sam', role: 'user', every_library: false })
-  const manga = { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }
+  const manga = {
+    id: 70,
+    name: 'Manga',
+    works: 0,
+    books: 0,
+    match_by_content: true,
+    dirs: [],
+  }
 
   /** The "Loading…" line drawn in the body's place of the page `page`. */
   const waitLine = (host: HTMLElement, page: string) =>
@@ -1454,8 +1461,22 @@ describe('Users, making one', () => {
   // the read left out is a later page's: sam's, overtaken by the table's and
   // then sam's again.
   it('keeps the newer libraries list when an older read answers after it', async () => {
-    const manga = { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }
-    const comics = { id: 80, name: 'Comics', works: 0, books: 0, dirs: [] }
+    const manga = {
+      id: 70,
+      name: 'Manga',
+      works: 0,
+      books: 0,
+      match_by_content: true,
+      dirs: [],
+    }
+    const comics = {
+      id: 80,
+      name: 'Comics',
+      works: 0,
+      books: 0,
+      match_by_content: true,
+      dirs: [],
+    }
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [
         user(),
@@ -1484,7 +1505,14 @@ describe('Users, making one', () => {
   })
 
   it('keeps the newer libraries list when an older read *fails* after it', async () => {
-    const manga = { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }
+    const manga = {
+      id: 70,
+      name: 'Manga',
+      works: 0,
+      books: 0,
+      match_by_content: true,
+      dirs: [],
+    }
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [
         user(),
@@ -1698,7 +1726,16 @@ describe('Users, making one: Confirm password', () => {
 describe('Users, an account’s page', () => {
   it('offers the page the libraries, and names its radios for its own account', async () => {
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
-      libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }],
+      libraries: [
+        {
+          id: 70,
+          name: 'Manga',
+          works: 0,
+          books: 0,
+          match_by_content: true,
+          dirs: [],
+        },
+      ],
     })
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [
@@ -1745,8 +1782,22 @@ describe('Users, an account’s page', () => {
       // kim is limited to no library, and lifting that is asked as well.
       vi.mocked(librariesApi.listLibraries).mockResolvedValue({
         libraries: [
-          { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] },
-          { id: 80, name: 'Comics', works: 0, books: 0, dirs: [] },
+          {
+            id: 70,
+            name: 'Manga',
+            works: 0,
+            books: 0,
+            match_by_content: true,
+            dirs: [],
+          },
+          {
+            id: 80,
+            name: 'Comics',
+            works: 0,
+            books: 0,
+            match_by_content: true,
+            dirs: [],
+          },
         ],
       })
       vi.mocked(usersApi.listUsers).mockResolvedValue({
@@ -1804,7 +1855,16 @@ describe('Users, an account’s page', () => {
     vi.mocked(librariesApi.listLibraries)
       .mockRejectedValueOnce(unreadLibraries())
       .mockResolvedValue({
-        libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }],
+        libraries: [
+          {
+            id: 70,
+            name: 'Manga',
+            works: 0,
+            books: 0,
+            match_by_content: true,
+            dirs: [],
+          },
+        ],
       })
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [
@@ -1831,10 +1891,28 @@ describe('Users, an account’s page', () => {
     vi.mocked(librariesApi.listLibraries)
       .mockRejectedValueOnce(unreadLibraries())
       .mockResolvedValueOnce({
-        libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }],
+        libraries: [
+          {
+            id: 70,
+            name: 'Manga',
+            works: 0,
+            books: 0,
+            match_by_content: true,
+            dirs: [],
+          },
+        ],
       })
       .mockResolvedValueOnce({
-        libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }],
+        libraries: [
+          {
+            id: 70,
+            name: 'Manga',
+            works: 0,
+            books: 0,
+            match_by_content: true,
+            dirs: [],
+          },
+        ],
       })
       .mockRejectedValue(unreadLibraries())
     vi.mocked(usersApi.listUsers).mockResolvedValue({
@@ -1869,8 +1947,22 @@ describe('Users, an account’s page', () => {
   })
 
   it('offers a library made since the screen mounted, once the page changes', async () => {
-    const manga = { id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }
-    const comics = { id: 80, name: 'Comics', works: 0, books: 0, dirs: [] }
+    const manga = {
+      id: 70,
+      name: 'Manga',
+      works: 0,
+      books: 0,
+      match_by_content: true,
+      dirs: [],
+    }
+    const comics = {
+      id: 80,
+      name: 'Comics',
+      works: 0,
+      books: 0,
+      match_by_content: true,
+      dirs: [],
+    }
     vi.mocked(librariesApi.listLibraries)
       .mockResolvedValueOnce({ libraries: [manga] })
       .mockResolvedValue({ libraries: [manga, comics] })
@@ -2261,7 +2353,16 @@ describe('Users, a write refused once its page has gone', () => {
   /** Draws `entry`, sends the write, and holds its answer. */
   async function sent({ entry, over, held, start }: (typeof writes)[number]) {
     vi.mocked(librariesApi.listLibraries).mockResolvedValue({
-      libraries: [{ id: 70, name: 'Manga', works: 0, books: 0, dirs: [] }],
+      libraries: [
+        {
+          id: 70,
+          name: 'Manga',
+          works: 0,
+          books: 0,
+          match_by_content: true,
+          dirs: [],
+        },
+      ],
     })
     vi.mocked(usersApi.listUsers).mockResolvedValue({
       users: [

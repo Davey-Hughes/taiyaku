@@ -36,7 +36,7 @@ import { changesIn } from './support/liveRegion'
 import { dir, idle, scanningIn } from './support/libraries'
 import { mount, rerender } from './support/mount'
 import { keptGrid } from './support/reads'
-import { feedJob, serveFeed } from './support/scanFeed'
+import { feedJob, fingerprintPass, serveFeed } from './support/scanFeed'
 import { expectRowsWired, helpOf, row, section } from './support/settingsRows'
 import { cellValue } from './support/table'
 import {
@@ -96,6 +96,7 @@ vi.mock('../src/libraries', async (importOriginal) => ({
   moveDir: vi.fn(),
   removeLibrary: vi.fn(),
   renameLibrary: vi.fn(),
+  setMatchByContent: vi.fn(),
   startLibraryScan: vi.fn(),
   unlinkCost: vi.fn(),
   unlinkDir: vi.fn(),
@@ -111,6 +112,7 @@ const library = (id: number, name: string, paths: string[]): api.Library => ({
   name,
   works: 0,
   books: 0,
+  match_by_content: true,
   dirs: paths.map((p, i) => dir(id * 10 + i, p, [{ id, name }])),
 })
 
@@ -701,6 +703,65 @@ describe('Libraries, the table', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('draws a fingerprint pass over the table with a Cancel that cancels it once, and leaves each row’s Last scan its last scan', async () => {
+    const scannedAt = (one: api.Library, at: string): api.Library => ({
+      ...one,
+      dirs: one.dirs.map((d) => ({
+        ...d,
+        last_scan_at: at,
+        last_scan_status: 'ok',
+      })),
+    })
+    const [manga, comics] = twoAndOne()
+    vi.mocked(api.listLibraries).mockResolvedValue({
+      libraries: [
+        scannedAt(manga, '2026-10-03 09:00:00'),
+        scannedAt(comics, '2026-10-04 08:00:00'),
+      ],
+    })
+    // A pass covering both, which holds neither: a scan would make each row
+    // say Scanning.
+    const feed = serveFeed({
+      ended: 0,
+      libraries: [],
+      jobs: [
+        fingerprintPass({
+          id: 9,
+          libraries: [
+            { id: 1, name: 'Manga' },
+            { id: 2, name: 'Comics' },
+          ],
+        }),
+      ],
+    })
+    const host = await at()
+    await feedLanded()
+    const screen = host.querySelector('.library-table') as HTMLElement
+    const line = () =>
+      screen.querySelector(':scope > .pass-line > .scanning')?.textContent
+    expect(line()).toBe('Fingerprinting pages · 120 of 2,097 files')
+    // Above the table.
+    expect(
+      screen.querySelector(':scope > .pass-line')?.nextElementSibling
+        ?.className,
+    ).toBe('settings-section settings-untitled')
+    expect(
+      [...host.querySelectorAll('.library-table tbody tr td:last-child')].map(
+        cellValue,
+      ),
+    ).toEqual(['2026-10-03 09:00:00 UTC', '2026-10-04 08:00:00 UTC'])
+
+    const cancel = screen.querySelector(
+      ':scope > .pass-line > button[name="cancel-pass"]',
+    ) as HTMLButtonElement
+    expect([cancel.textContent, holdOf(cancel)]).toEqual(['Cancel', 'free'])
+    await press(cancel)
+    await feedLanded()
+    expect(feed.cancels).toEqual([9])
+    expect(line()).toBe('Cancelling…')
+    expect(holdOf(cancel)).toBe('held')
   })
 
   it('draws the alert, and neither a table nor the no-library line, when the list cannot be read', async () => {
@@ -1641,6 +1702,13 @@ describe('Libraries, a write refused once its page has gone', () => {
         await press(host.querySelector('.remove-library .confirm') as Element)
       },
       said: 'Manga was not removed (the store is locked).',
+    },
+    {
+      what: 'the library’s matching switch',
+      entry: MANGA,
+      held: () => vi.mocked(api.setMatchByContent),
+      start: (host: HTMLElement) => press(box(host, 'match-by-content')),
+      said: 'Match editions by page content for Manga was not saved (the store is locked).',
     },
     {
       what: 'a directory setting left by its box',
@@ -2892,6 +2960,7 @@ describe('Libraries, a library made over a directory another library holds', () 
       name: 'Extras',
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [shared],
     }
     vi.mocked(api.createLibrary).mockResolvedValue({
@@ -2943,6 +3012,7 @@ describe('Libraries, a library made over a directory another library holds', () 
       name: 'Extras',
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [shared],
     }
     vi.mocked(api.createLibrary).mockResolvedValue({
@@ -3615,19 +3685,22 @@ describe('Libraries, one directory in several libraries', () => {
       ...MANGA,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [shared(), dir(10, '/media/Manga', [MANGA])],
     },
-    { ...KIDS, works: 0, books: 0, dirs: [shared()] },
+    { ...KIDS, works: 0, books: 0, match_by_content: true, dirs: [shared()] },
     {
       ...TEENS,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [dir(40, '/media/Teens', [TEENS]), shared()],
     },
     {
       ...COMICS,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [dir(50, '/media/Comics', [COMICS])],
     },
   ]
@@ -3813,7 +3886,11 @@ describe('Libraries, one directory in several libraries', () => {
 
   it('names a renamed library by its new name on every other library’s copy of a directory it holds, and on the folders inside a directory, at once while the list cannot be read', async () => {
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: around() })
-    vi.mocked(api.renameLibrary).mockResolvedValue({ id: 2, name: 'Children' })
+    vi.mocked(api.renameLibrary).mockResolvedValue({
+      id: 2,
+      name: 'Children',
+      match_by_content: true,
+    })
     const host = await at('/config/libraries/Kids')
     vi.mocked(api.listLibraries).mockRejectedValue(locked())
     await press(button(host, 'Rename…'))
@@ -3846,7 +3923,13 @@ describe('Libraries, one directory in several libraries', () => {
     const linked = dir(30, '/media/Shared', [MANGA, KIDS, TEENS, EXTRAS])
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: four() })
     vi.mocked(api.createLibrary).mockResolvedValue({
-      library: { ...EXTRAS, works: 0, books: 0, dirs: [linked] },
+      library: {
+        ...EXTRAS,
+        works: 0,
+        books: 0,
+        match_by_content: true,
+        dirs: [linked],
+      },
       added: [
         {
           root: linked,
@@ -3929,12 +4012,14 @@ describe('Libraries, a report and the next write on its library’s page', () =>
       ...MANGA,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [dir(10, '/media/Manga', [MANGA]), shared()],
     },
     {
       ...KIDS,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [dir(20, '/media/Kids', [KIDS]), shared()],
     },
   ]
@@ -4116,7 +4201,11 @@ describe('Libraries, a report and the next write on its library’s page', () =>
 
   it('takes a report drawn on a directory’s page away at a rename of its library beside it, and does not carry it to the new address', async () => {
     const host = await lateOnDirPage()
-    vi.mocked(api.renameLibrary).mockResolvedValue({ id: 2, name: 'Children' })
+    vi.mocked(api.renameLibrary).mockResolvedValue({
+      id: 2,
+      name: 'Children',
+      match_by_content: true,
+    })
     await press(
       button(host.querySelector('.library-page') as HTMLElement, 'Rename…'),
     )
@@ -4517,7 +4606,7 @@ describe('Libraries, addressed by name', () => {
     }))
     vi.mocked(api.renameLibrary).mockImplementation(async () => {
       renamed = true
-      return { id: 1, name: to }
+      return { id: 1, name: to, match_by_content: true }
     })
   }
 
@@ -4677,7 +4766,11 @@ describe('Libraries, addressed by name', () => {
       libraries: [library(1, 'Manga', ['/media/Manga'])],
     })
     vi.mocked(api.listLibraries).mockReturnValue(reading.promise)
-    vi.mocked(api.renameLibrary).mockResolvedValue({ id: 1, name: 'Manga 2' })
+    vi.mocked(api.renameLibrary).mockResolvedValue({
+      id: 1,
+      name: 'Manga 2',
+      match_by_content: true,
+    })
     const host = await at(`${TABLE}/Manga`)
     await renameTo(host, 'Manga 2')
     expect(here()).toBe(`${TABLE}/Manga%202`)
@@ -4690,7 +4783,7 @@ describe('Libraries, addressed by name', () => {
     vi.mocked(useFitsPair).mockReturnValue(true)
     const before = deferred<{ libraries: api.Library[] }>()
     const after = deferred<{ libraries: api.Library[] }>()
-    const answer = deferred<{ id: number; name: string }>()
+    const answer = deferred<api.Patched>()
     vi.mocked(api.listLibraries)
       .mockResolvedValueOnce({
         libraries: [library(1, 'Manga', ['/media/Manga'])],
@@ -4704,7 +4797,7 @@ describe('Libraries, addressed by name', () => {
     await renameTo(host, 'Manga 2')
     // The old read lands just after the rename, before the page moves.
     await flush(() => {
-      answer.resolve({ id: 1, name: 'Manga 2' })
+      answer.resolve({ id: 1, name: 'Manga 2', match_by_content: true })
       before.resolve({ libraries: [library(1, 'Manga', ['/media/Manga'])] })
     })
     expect(here()).toBe(`${TABLE}/Manga%202/dirs/10`)
@@ -4724,12 +4817,14 @@ describe('Libraries, addressed by name', () => {
 
   it('does not move a person who went to another library’s page before the rename landed', async () => {
     vi.mocked(api.listLibraries).mockResolvedValue({ libraries: twoAndOne() })
-    const answer = deferred<{ id: number; name: string }>()
+    const answer = deferred<api.Patched>()
     vi.mocked(api.renameLibrary).mockReturnValue(answer.promise)
     const host = await at(`${TABLE}/Manga`)
     await renameTo(host, 'Manga 2')
     await go(`${TABLE}/Comics`)
-    await flush(() => answer.resolve({ id: 1, name: 'Manga 2' }))
+    await flush(() =>
+      answer.resolve({ id: 1, name: 'Manga 2', match_by_content: true }),
+    )
     await flush()
     expect(here()).toBe(`${TABLE}/Comics`)
     expect(libraryTitle(host)).toBe('Comics')
@@ -4751,7 +4846,7 @@ describe('Libraries, addressed by name', () => {
     }))
     vi.mocked(api.renameLibrary).mockImplementation(async () => {
       name = to
-      return { id: 1, name: to }
+      return { id: 1, name: to, match_by_content: true }
     })
     const removed = deferred<config.RemovalAnswer>()
     vi.mocked(config.removeRoot).mockImplementation(async () => {
@@ -4819,7 +4914,7 @@ describe('Libraries, addressed by name', () => {
         library(2, 'Comics', ['/media/Comics']),
       ],
     }))
-    const renamed = deferred<{ id: number; name: string }>()
+    const renamed = deferred<api.Patched>()
     vi.mocked(api.renameLibrary).mockReturnValue(renamed.promise)
     const removed = deferred<config.RemovalAnswer>()
     vi.mocked(config.removeRoot).mockReturnValue(removed.promise)
@@ -4844,7 +4939,7 @@ describe('Libraries, addressed by name', () => {
     await act(async () => {
       name = 'Shelves'
       paths = ['/media/Manga/Volumes']
-      renamed.resolve({ id: 1, name: 'Shelves' })
+      renamed.resolve({ id: 1, name: 'Shelves', match_by_content: true })
       removed.resolve(removal(4))
       for (let i = 0; i < 20; i++) await Promise.resolve()
     })
@@ -5435,7 +5530,7 @@ describe('Libraries, a rename and the users list Users draws', () => {
     }))
     vi.mocked(api.renameLibrary).mockImplementation(async () => {
       renamed = true
-      return { id: 1, name: 'Manga 2' }
+      return { id: 1, name: 'Manga 2', match_by_content: true }
     })
     vi.mocked(usersApi.listUsers).mockImplementation(async () => ({
       users: [grantedTo(renamed ? 'Manga 2' : 'Manga')],

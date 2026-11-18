@@ -3655,21 +3655,11 @@ fn a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive() {
     assert_eq!(works, 2, "still two, not one more per derive");
 }
 
-/// The two `is_readable`s agree, for every format there is.
-///
-/// `taiyaku_read::Format::is_readable` is where the question is decided and
-/// **has no caller in this workspace** — `derive.rs` cannot call it, because
-/// `Format` has no parse-back from the `scan_entry.format` token and adding
-/// one to answer a two-arm question would be the wrong trade. So the answer
-/// is spelled a second time here, in tokens, and the doc on each side says
-/// the other exists. This test checks that they still say the same thing: a
-/// third readable format, or a fourth, is a change in two places, and the
-/// second one being missed is silent — a member the derive believes
-/// unreadable, counted as a fault, and never offered to a reader that could
-/// have opened it.
-///
-/// Enumerated rather than sampled, so a variant added to `Format` and not to
-/// this list fails to compile rather than going unchecked.
+/// The derive's `is_readable` gives `taiyaku_read::Format::is_readable`'s
+/// answer for every format's token. It reads the token back through
+/// `Format::from_token`, and a token read back as no format would be silent:
+/// a member the derive believes unreadable, counted as a fault, and never
+/// offered to a reader that could have opened it.
 #[test]
 fn the_token_side_readability_test_agrees_with_the_enums_own() {
     use taiyaku_read::Format;
@@ -11018,7 +11008,9 @@ fn a_reading_migration_27_held_is_dropped_by_the_derive_that_writes_its_work() {
     let a2 = digest_at(&conn, r.id, C002);
     write_archive(&tree.path().join(C002), 4);
     conn.execute_batch(&format!(
-        "ALTER TABLE scan_entry DROP COLUMN held_sha256;
+        "DROP TABLE fingerprint;
+         ALTER TABLE library DROP COLUMN match_by_content;
+         ALTER TABLE scan_entry DROP COLUMN held_sha256;
          ALTER TABLE scan_entry DROP COLUMN held_format;
          ALTER TABLE scan_entry DROP COLUMN held_pages;
          ALTER TABLE scan_entry DROP COLUMN held_title;
@@ -11026,7 +11018,7 @@ fn a_reading_migration_27_held_is_dropped_by_the_derive_that_writes_its_work() {
          UPDATE scan_entry SET sha256 = NULL, pages = 4 WHERE rel_path = '{C002}';"
     ))
     .expect("puts the store back to schema 26, c002 changed and walked");
-    crate::schema::migrate(&conn).expect("migrates to 27");
+    crate::schema::migrate(&conn).expect("migrates from 26");
     assert_eq!(
         (
             held_of(&conn, r.id, C002),
@@ -11285,4 +11277,90 @@ fn a_nested_directorys_cancelled_first_scan_keeps_the_primary_it_took_over() {
             "paused: {paused}"
         );
     }
+}
+
+/// The units a fingerprint pass reads are the entries the derive claims: a
+/// volume folder speaks for its chapter folders, each chapter file with no
+/// volume speaks for itself, and a series folder or the root for nothing.
+/// `Alpha/Extras` has a series and pages but defers to the volume inside it,
+/// and `Beta/Beta v01` holds an archive and no page of its own: neither claims.
+#[test]
+fn claimed_units_are_the_entries_the_derive_claims() {
+    let tree = crate::tests::tempdir("claimed-units");
+    let volume = tree.path().join("Alpha").join("Alpha - v01");
+    write_pages(&volume.join("c001"), 2);
+    write_pages(&volume.join("c002"), 2);
+    write_pages(
+        &tree.path().join("Alpha").join("Extras").join("Alpha v02"),
+        2,
+    );
+    write_archive(
+        &tree
+            .path()
+            .join("Beta")
+            .join("Beta v01")
+            .join("Beta v01.cbz"),
+        3,
+    );
+    write_archive(&tree.path().join("Kaguya").join("Kaguya - c001.cbz"), 2);
+    write_archive(&tree.path().join("Kaguya").join("Kaguya - c002.cbz"), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+
+    let claimed: BTreeMap<String, derive::Claimed> = derive::claimed_units(&conn)
+        .expect("lists the claims")
+        .into_iter()
+        .map(|unit| (unit.rel_path.clone(), unit))
+        .collect();
+
+    let folder = claimed.get("Alpha/Alpha - v01").expect("the volume folder");
+    assert_eq!(
+        folder,
+        &derive::Claimed {
+            root_id: root.id,
+            rel_path: "Alpha/Alpha - v01".to_string(),
+            format: Some("dir".to_string()),
+            pages: Some(4),
+            sha256: digest_at(&conn, root.id, "Alpha/Alpha - v01"),
+        },
+        "as its row records it"
+    );
+    assert!(folder.sha256.is_some(), "with the digest the derive took");
+    for chapter in ["Alpha/Alpha - v01/c001", "Alpha/Alpha - v01/c002"] {
+        assert!(
+            !claimed.contains_key(chapter),
+            "{chapter}: its volume speaks for it"
+        );
+    }
+    for chapter in ["Kaguya/Kaguya - c001.cbz", "Kaguya/Kaguya - c002.cbz"] {
+        assert!(
+            claimed.contains_key(chapter),
+            "{chapter}: a chapter with no volume speaks for itself"
+        );
+    }
+    for container in ["Alpha", "Beta", "Kaguya", ""] {
+        assert!(
+            !claimed.contains_key(container),
+            "{container:?} speaks for nothing"
+        );
+    }
+    assert!(
+        !claimed.contains_key("Alpha/Extras"),
+        "a container with a series defers to the volume inside it"
+    );
+    assert!(
+        claimed.contains_key("Alpha/Extras/Alpha v02"),
+        "which speaks for itself"
+    );
+    assert!(
+        !claimed.contains_key("Beta/Beta v01"),
+        "a volume folder with no page of its own claims nothing"
+    );
+    assert!(
+        claimed.contains_key("Beta/Beta v01/Beta v01.cbz"),
+        "the archive inside it speaks for itself"
+    );
+    assert_eq!(claimed.len(), 5, "and nothing else is claimed");
 }

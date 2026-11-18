@@ -50,6 +50,7 @@ const MANGA: Library = {
   name: 'Manga',
   works: 0,
   books: 0,
+  match_by_content: true,
   dirs: [dir(700, '/media/Manga', { id: 70, name: 'Manga' })],
 }
 const COMICS: Library = {
@@ -57,6 +58,7 @@ const COMICS: Library = {
   name: 'Comics',
   works: 0,
   books: 0,
+  match_by_content: true,
   dirs: [dir(800, '/media/Comics', { id: 80, name: 'Comics' })],
 }
 

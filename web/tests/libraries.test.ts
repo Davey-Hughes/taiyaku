@@ -13,6 +13,7 @@ import {
   pagesGoneSentence,
   removeLibrary,
   renameLibrary,
+  setMatchByContent,
   startLibraryScan,
   unlinkCost,
   unlinkDir,
@@ -81,6 +82,20 @@ describe('the libraries client', () => {
       'PATCH',
       '/api/library/libraries/7',
       { name: 'Comics' },
+    ],
+    [
+      'setMatchByContent, on',
+      () => setMatchByContent(3, true),
+      'PATCH',
+      '/api/library/libraries/3',
+      { match_by_content: true },
+    ],
+    [
+      'setMatchByContent, off',
+      () => setMatchByContent(3, false),
+      'PATCH',
+      '/api/library/libraries/3',
+      { match_by_content: false },
     ],
     [
       'addDir',
@@ -290,6 +305,7 @@ const NESTING = (() => {
       ...COMICS,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [
         {
           ...dir(4, '/m/k/s', [COMICS]),
@@ -304,6 +320,7 @@ const NESTING = (() => {
       ...MANGA,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [
         {
           ...dir(1, '/m', [MANGA]),
@@ -314,8 +331,14 @@ const NESTING = (() => {
         },
       ],
     },
-    { ...KIDS, works: 0, books: 0, dirs: [k()] },
-    { ...TEENS, works: 0, books: 0, dirs: [dir(3, '/t', [TEENS]), k()] },
+    { ...KIDS, works: 0, books: 0, match_by_content: true, dirs: [k()] },
+    {
+      ...TEENS,
+      works: 0,
+      books: 0,
+      match_by_content: true,
+      dirs: [dir(3, '/t', [TEENS]), k()],
+    },
   ]
   /**
    * Each library's directories, each with its holders and its nested and
@@ -348,13 +371,21 @@ describe('withoutDir', () => {
       ...MANGA,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [dir(1, '/m', [MANGA, KIDS, TEENS]), dir(2, '/a', [MANGA])],
     },
-    { ...KIDS, works: 0, books: 0, dirs: [dir(1, '/m', [MANGA, KIDS, TEENS])] },
+    {
+      ...KIDS,
+      works: 0,
+      books: 0,
+      match_by_content: true,
+      dirs: [dir(1, '/m', [MANGA, KIDS, TEENS])],
+    },
     {
       ...TEENS,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [dir(3, '/t', [TEENS]), dir(1, '/m', [MANGA, KIDS, TEENS])],
     },
   ]
@@ -522,14 +553,27 @@ describe('withMovedDir', () => {
   const COMICS = { id: 3, name: 'Comics' }
   /** `/m` held by Manga and Kids, Manga holding `/a` too; Comics holding `/c`. */
   const held = () => [
-    { ...COMICS, works: 0, books: 0, dirs: [dir(4, '/c', [COMICS])] },
+    {
+      ...COMICS,
+      works: 0,
+      books: 0,
+      match_by_content: true,
+      dirs: [dir(4, '/c', [COMICS])],
+    },
     {
       ...MANGA,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [dir(1, '/m', [MANGA, KIDS]), dir(2, '/a', [MANGA])],
     },
-    { ...KIDS, works: 0, books: 0, dirs: [dir(1, '/m', [MANGA, KIDS])] },
+    {
+      ...KIDS,
+      works: 0,
+      books: 0,
+      match_by_content: true,
+      dirs: [dir(1, '/m', [MANGA, KIDS])],
+    },
   ]
   const moved = (over: Partial<Moved> = {}): Moved => ({
     library_id: 3,
@@ -749,6 +793,7 @@ describe('withLibraryMade', () => {
       ...extras,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [
         dir(2, '/m/k', [
           { id: 8, name: 'Kids' },

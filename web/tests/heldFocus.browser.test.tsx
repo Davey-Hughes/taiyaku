@@ -67,6 +67,7 @@ const MANGA = {
   name: 'Manga',
   works: 12,
   books: 0,
+  match_by_content: true,
   dirs: [
     dir(1, '/srv/manga/volumes', [{ id: 1, name: 'Manga' }]),
     dir(2, '/srv/manga/chapters', [{ id: 1, name: 'Manga' }]),

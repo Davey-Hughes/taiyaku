@@ -55,6 +55,7 @@ const LIBRARIES: librariesApi.Library[] = NAMES.map(([name], i) => ({
   name,
   works: 0,
   books: 0,
+  match_by_content: true,
   dirs: [
     {
       id: 100 + i,
@@ -222,9 +223,10 @@ describe('one directory in two libraries, through the app’s own router', () =>
       ...MANGA,
       works: 0,
       books: 0,
+      match_by_content: true,
       dirs: [shared(), dir(301, '/srv/manga', [MANGA])],
     },
-    { ...KIDS, works: 0, books: 0, dirs: [shared()] },
+    { ...KIDS, works: 0, books: 0, match_by_content: true, dirs: [shared()] },
   ]
 
   it('draws Kids’ page of a directory afresh after Manga’s: the removal opened on Manga’s is gone, and Manga’s scan holds nothing there', async () => {

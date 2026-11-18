@@ -160,6 +160,7 @@ it mutates only changed code and takes minutes.
 | 2026-10-21 | dir-rename: `serve_options`, which holds the `TAIYAKU_FOLDERS` refusal; `library_line`, the one function the branch gave a new mutant; `visible_editions`; and `read_line` as a control, function-scoped (16 mutants, 5 m; 3 of them field deletions, which `--re` does not filter, all caught) | **14 caught, 2 missed, and the 2 are the control: the `read_line` entries below.** cargo-mutants makes no mutant of the refusal's `if`, so it was put wrong by hand five ways: removed, inverted, excused when empty, excused by `TAIYAKU_DIRS` beside it and excused by `--dirs`. Each failed `serve_options_refuses_the_old_dirs_variable_naming_both`, and the removal, the inversion and the `--dirs` excuse also failed `tests/cli.rs`'s `serve_refuses_the_old_dirs_variable_before_it_listens`. **`visible_editions`' seven entries are dropped**: O220's `browse::tests::only_with_no_dir_sees_nothing` kills all seven inside `taiyaku-library`. All but one of the other entries in the files this branch edits were keyed to lines that had moved before it; each is re-keyed by its description and by the source line at the commit that wrote the key, and its reason re-read |
 | 2026-10-23 | config-grouping (PR 2), `--since main`, twice (48 mutants, 9 m each) | **The first run: 39 caught, 3 unviable, 6 missed; the second: 45 caught, 3 unviable, 0 missed.** All six were in `account.rs`. Five of them, `check_name` as `Ok(())`, its guard as `false` and as `true`, its `!=` as `==`, and `is_unique_violation` as `true`, were killed only by `taiyaku-cli` and `taiyaku-serve` tests, which cargo-mutants does not run for a `taiyaku-library` mutant (O87). `account/tests.rs` now kills each of them, `is_unique_violation` with a planted trigger fault. The sixth, `unclaimed` as `Ok(1)`, was real: under it, `user promote` on a claimed library asked for a password before refusing, and its CLI test accepted any error naming "password". It is now killed by a library test and by that CLI test, which runs with a password source that panics if asked. None is baselined. The three unviable each replace a function's whole body with `Ok(Default::default())` for a type with no `Default`: `account::update`, `scan::add_root_checked_in` and `scan::create_library` |
 | 2026-11-17 | the paused-directory freeze (O320, O270), `--since main` at `3af6a1d4` (56 mutants, 23 m) | **48 caught, 8 unviable, 0 missed, 0 timeouts.** The eight unviable each replace a function's whole body with a value that does not compile there: `derive_watched`'s four (`Outcome` has no `new`, `from` or `from_iter` to build one), `entry_of`, `entries` and `frozen_entries` with a `Default` entry (`Entry` derives no `Default`), and `place` with a one-entry map (`GroupKey` and `Group` derive none). `entries` and `frozen_entries` as `Ok(vec![])` are viable and caught; `derive_watched`'s only viable mutant is the `!` before `fresh.contains`, caught. cargo-mutants makes no mutant of the SQL text or field initialisers the branch changed, so thirteen were put wrong by hand. Nine failed a named test: the walk's four `held_*` assignments removed, `copy_entry` without the held columns, the stamp finding its row by digest, `frozen_entries` without the held-reading arm or without the containment step, `reads_as_one_volume` without `e.held_sha256`, `CopyAt::frozen` as `false` (killed by `a_copy_at_another_path_has_its_own_rows_held_reading_dropped_or_kept` alone), and the server's and the CLI's fresh ids emptied. Three passed every test in the three crates: `drop_held`'s and `digest`'s held-reading clauses with `root_id = ?1` made vacuous, and the stamp's held clause testing the row's `sha256 IS NULL` in place of the member's digest. `0ef8a329` kills all three: `a_paused_copy_at_the_same_path_keeps_its_held_reading_when_the_others_goes` fails one case under each `root_id` mutant, and `a_stamp_moves_a_held_reading_only_where_it_is_the_digest_replaced` swaps its two rows' digests so the row's own decides nothing. The thirteenth, migration 27's `coalesce(m.format, …)` as the entry's format alone, is equivalent: nothing writes `member.format` (`stamp::plan`'s and `proposals::edition_formats`' notes), so no test is written for it. None is baselined |
+| 2026-11-17 | content matching PR 2, fingerprints in the server, `--since main` (405 mutants, 3 h) | **317 caught, 37 unviable, 47 missed, 4 timeouts.** Thirty-four of the unviable replace a function's whole body with a value that does not compile there (no `Default` for `Unit`, `Job`, `PagePrint`, `BuildLabel` and the rest; no `MutexGuard::new` or `JoinHandle::new`), and three put an or in a `let` chain. The four timeouts are `flat_border`'s scan counters made to stand still (`+=` as `*=` from zero, `-=` as `/=`), which never end. Of the 47 missed, 28 lay in `taiyaku-serve`'s `fingerprint`, the code moved from `taiyaku-cli`, whose tests stayed in the CLI and are not run for a `taiyaku-serve` mutant (O87): the CLI's small-page test, now in the server too, kills 21 of them, and new tests kill the large-page bound's four and `crop`'s two. New tests kill 12 more, in the pass, its job, the store and the progress words. Three are equivalent and recorded below: `flat_border`'s guard against an empty crop, the entry the first workspace-wide sweep left UNTRIAGED at `taiyaku-cli`'s `fingerprint.rs:167:22`, and two in `walk`. Five are killed outside a sweep and survive in one by its setup, and are not recorded below: `about::this_build` as `None`, since the sweep builds a copy with no `.git` and so names no commit; and four in `fingerprint_pass::priority`, since `mutants.sh` runs at niceness 19 in the idle I/O class, where the priority tests print NOT MEASURED |
 
 <!-- entries -->
 
@@ -175,18 +176,6 @@ it mutates only changed code and takes minutes.
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
 - `crates/taiyaku-cli/src/duplicates.rs:443:33: replace + with * in contradictions`
-  UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
-  examined. Nothing is known about this mutant beyond the fact that it survived.
-
-  It is here so a dispatched run's diff stays readable, **not** because anybody has
-  judged it acceptable — `scripts/mutants-baseline.mjs` counts these separately
-  and prints the total on every run for exactly that reason. Triaging one means
-  deciding which of three it is: an equivalent mutant, a decision inside output
-  nobody asserts on, or a missing assertion. Only the third is work on the tests.
-
-### `crates/taiyaku-cli/src/fingerprint.rs`
-
-- `crates/taiyaku-cli/src/fingerprint.rs:167:22: replace || with && in flat_border`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
 
@@ -1217,6 +1206,32 @@ it mutates only changed code and takes minutes.
   It stops being equivalent if the two counters ever move to different tables or
   different connections. `session::tests::a_failure_the_limiter_cannot_record_is_answered_as_a_lockout`
   and its `Basic` twin cover the case where both fail.
+
+### `crates/taiyaku-serve/src/fingerprint.rs`
+
+- `crates/taiyaku-serve/src/fingerprint.rs:200:22: replace || with && in flat_border`
+  Equivalent. Neither half of `right <= left || bottom <= top` can hold: the
+  guard above it returns for a page under 8 on either axis, and each side's
+  scan stops a quarter of the way in, so `left` ends at most at `w / 4` and
+  `right` at least at `w - 1 - w / 4`, which is greater for every `w` of 8 or
+  more, and `top` and `bottom` likewise. No page tells `||` from `&&`; only
+  deleting the guard would kill it. The first workspace-wide sweep,
+  2026-08-19, recorded it as UNTRIAGED at
+  `crates/taiyaku-cli/src/fingerprint.rs:167:22`; it was triaged when content
+  matching's PR 2 moved the code here.
+
+### `crates/taiyaku-serve/src/fingerprint_pass/read.rs`
+
+- `crates/taiyaku-serve/src/fingerprint_pass/read.rs:229:25: replace && with || in walk`
+  Equivalent for every read the stamp check keeps. The `||` adds the case of
+  a walk that ended with no read error short of the listed count, which needs
+  the walk and the listing before it to disagree about a member whose size
+  and mtime did not move: a rewrite in place that the stamp cannot see, after
+  which the row is wrong either way.
+- `crates/taiyaku-serve/src/fingerprint_pass/read.rs:229:41: replace < with <= in walk`
+  Equivalent. The walk stops at the listed count, so `prints.len()` never
+  passes it, and `<=` adds only the case where the two are equal, where
+  `resize(count, None)` changes nothing.
 
 ### `crates/taiyaku-serve/src/lib.rs`
 

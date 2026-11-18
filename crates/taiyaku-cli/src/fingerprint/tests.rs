@@ -485,3 +485,164 @@ fn hamming_counts_the_bits_that_differ_and_nothing_else() {
         "distance does not depend on which page is named first"
     );
 }
+
+/// What `describe_pages` gives for the print fixture, page by page, so a
+/// second copy of this code can be held to it bit for bit. The fixture
+/// separates the median from a minimum, a step of two from every page, the
+/// evened-up border from the measured one, halves cut after the crop from
+/// before it, a right half cut `mid` wide from one cut to the edge, and wider
+/// from wider-or-equal; its hashes are pairwise distinct, so two pages swapped
+/// cannot pass.
+#[test]
+fn pr1_describes_the_print_fixture_as_pinned() {
+    use taiyaku_read::test_support::{PRINT_FIXTURE, PinnedPrint, TempDir, print_fixture_cbz};
+
+    fn words(hash: [u64; 4]) -> String {
+        let hex: Vec<String> = hash
+            .iter()
+            .map(|word| {
+                let digits = format!("{word:016X}");
+                let groups: Vec<&str> = (0..4).map(|k| &digits[k * 4..k * 4 + 4]).collect();
+                format!("0x{}", groups.join("_"))
+            })
+            .collect();
+        format!("[{}]", hex.join(", "))
+    }
+
+    let dir = TempDir::new("print-fixture");
+    let pages = taiyaku_read::read_edition(&[print_fixture_cbz(&dir)]).expect("the fixture reads");
+    assert_eq!(pages.len(), PRINT_FIXTURE.len(), "one record per page");
+    assert_eq!(
+        common_border(&pages),
+        Border {
+            left: 6,
+            right: 6,
+            top: 5,
+            bottom: 5,
+        },
+        "the median of pages 0, 2, …, 24, each pair evened up to its larger side"
+    );
+
+    let actual: Vec<PinnedPrint> = describe_pages(&pages)
+        .expect("every page decodes")
+        .iter()
+        .map(|page| PinnedPrint {
+            width: page.width,
+            height: page.height,
+            hash: page.hash.0,
+            halves: page.halves.map(|(left, right)| (left.0, right.0)),
+        })
+        .collect();
+    assert_eq!(actual.len(), PRINT_FIXTURE.len(), "one record per page");
+    for (i, a) in actual.iter().enumerate() {
+        for (j, b) in actual.iter().enumerate().skip(i + 1) {
+            assert_ne!(
+                a.hash, b.hash,
+                "pages {i} and {j} hash alike, so swapping them could not fail"
+            );
+        }
+    }
+
+    let records: Vec<String> = actual
+        .iter()
+        .map(|page| {
+            let halves = page.halves.map_or_else(
+                || "None".to_string(),
+                |(left, right)| format!("Some(({}, {}))", words(left), words(right)),
+            );
+            format!(
+                "    PinnedPrint {{ width: {}, height: {}, hash: {}, halves: {halves} }},",
+                page.width,
+                page.height,
+                words(page.hash)
+            )
+        })
+        .collect();
+    let literal = format!("[\n{}\n]", records.join("\n"));
+    for (i, (got, pinned)) in actual.iter().zip(&PRINT_FIXTURE).enumerate() {
+        assert_eq!(
+            got.hash, pinned.hash,
+            "page {i}'s hash; describe_pages gives:\n{literal}"
+        );
+        assert_eq!(
+            got.width, pinned.width,
+            "page {i}'s width; describe_pages gives:\n{literal}"
+        );
+        assert_eq!(
+            got.height, pinned.height,
+            "page {i}'s height; describe_pages gives:\n{literal}"
+        );
+        assert_eq!(
+            got.halves, pinned.halves,
+            "page {i}'s halves; describe_pages gives:\n{literal}"
+        );
+    }
+}
+
+/// The border of each side as `common_border` gives it, one assertion a side.
+fn assert_border(pages: &[Page], expected: Border) {
+    let got = common_border(pages);
+    assert_eq!(got.left, expected.left, "left of {got:?}");
+    assert_eq!(got.right, expected.right, "right of {got:?}");
+    assert_eq!(got.top, expected.top, "top of {got:?}");
+    assert_eq!(got.bottom, expected.bottom, "bottom of {got:?}");
+}
+
+/// Print-fixture pages, 96 by 128, page `i` carrying `bars(i)`.
+fn print_pages(count: u32, bars: impl Fn(u32) -> [u32; 4]) -> Vec<Page> {
+    (0..count)
+        .map(|i| Page {
+            name: format!("p{i:02}.png"),
+            bytes: taiyaku_read::test_support::print_page(96, 128, bars(i), i),
+        })
+        .collect()
+}
+
+/// Twelve pages are sampled whole, and twelve is even, so the median has two
+/// middle values to choose from. Half the pages carry bars of 4 a side and 10
+/// above and below, half 8 and 14, so the upper middle, the lower middle and
+/// their average give three different borders. Pinned as `common_border`
+/// gives it, so a second copy of the code must choose the same middle.
+#[test]
+fn pr1_takes_the_upper_middle_of_an_even_sample() {
+    let pages = print_pages(12, |i| {
+        if i % 2 == 0 {
+            [4, 4, 10, 10]
+        } else {
+            [8, 8, 14, 14]
+        }
+    });
+    assert_border(
+        &pages,
+        Border {
+            left: 8,
+            right: 8,
+            top: 14,
+            bottom: 14,
+        },
+    );
+}
+
+/// Twenty-five pages, where a step of the page count over twelve rounded
+/// down (2), over thirteen (1) and over twelve rounded up (3) sample three
+/// different sets. Pages `6k` have no bars, the other even pages 6, pages
+/// `6k + 3` 10 and the rest 2, so the three steps give medians of 6, 2 and
+/// 0. Pinned as `common_border` gives it.
+#[test]
+fn pr1_samples_at_a_step_of_the_page_count_over_twelve_rounded_down() {
+    let pages = print_pages(25, |i| match i % 6 {
+        0 => [0; 4],
+        2 | 4 => [6; 4],
+        3 => [10; 4],
+        _ => [2; 4],
+    });
+    assert_border(
+        &pages,
+        Border {
+            left: 6,
+            right: 6,
+            top: 6,
+            bottom: 6,
+        },
+    );
+}

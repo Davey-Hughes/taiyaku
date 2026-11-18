@@ -146,9 +146,13 @@ fn unsigned(state: &std::sync::Arc<crate::ServeState>) -> axum::Router {
 }
 
 async fn a_reader_is_refused(method: Method, path: &str) {
+    a_reader_is_refused_sending(method, path, &serde_json::json!({})).await;
+}
+
+async fn a_reader_is_refused_sending(method: Method, path: &str, body: &serde_json::Value) {
     let (router, state, _fixture) = test_support::router_over_a_single_scanned_work_as_a_reader();
     let before = the_store(&state);
-    let response = send_json(&router, method.clone(), path, &serde_json::json!({})).await;
+    let response = send_json(&router, method.clone(), path, body).await;
     assert_eq!(
         response.status(),
         StatusCode::FORBIDDEN,
@@ -200,6 +204,16 @@ async fn creating_a_library_refuses_a_reader() {
 #[tokio::test]
 async fn renaming_a_library_refuses_a_reader() {
     a_reader_is_refused(Method::PATCH, "/api/library/libraries/1").await;
+}
+
+#[tokio::test]
+async fn switching_a_librarys_matching_refuses_a_reader() {
+    a_reader_is_refused_sending(
+        Method::PATCH,
+        "/api/library/libraries/1",
+        &serde_json::json!({ "match_by_content": false }),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -337,7 +351,7 @@ async fn the_list_gives_each_library_its_own_dirs_works_and_books() {
     let b = the_library(&listed, "root-b");
     assert_eq!(
         keys_of(b),
-        vec!["books", "dirs", "id", "name", "works"],
+        vec!["books", "dirs", "id", "match_by_content", "name", "works"],
         "{b}"
     );
     assert_eq!(b["id"], b_id);
@@ -697,6 +711,11 @@ async fn an_id_that_is_not_a_number_is_a_400_and_one_that_names_nothing_is_a_404
 
     for (method, suffix, body) in [
         (Method::PATCH, "", serde_json::json!({ "name": "Other" })),
+        (
+            Method::PATCH,
+            "",
+            serde_json::json!({ "match_by_content": false }),
+        ),
         (Method::DELETE, "", serde_json::json!({})),
         (Method::DELETE, "?dry_run=true", serde_json::json!({})),
         (Method::POST, "/dirs", serde_json::json!({ "path": extra })),
@@ -745,7 +764,10 @@ async fn a_library_is_renamed_by_its_id() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{renamed}");
-    assert_eq!(renamed, serde_json::json!({ "id": id, "name": "Manga" }));
+    assert_eq!(
+        renamed,
+        serde_json::json!({ "id": id, "name": "Manga", "match_by_content": true })
+    );
     let after = get_json(&router, "/api/library/libraries").await;
     assert_eq!(the_library(&after, "Manga")["id"], id, "{after}");
     assert_eq!(
@@ -778,6 +800,196 @@ async fn a_library_is_renamed_by_its_id() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
     assert!(the_sentence(&refused).contains("needs a name"), "{refused}");
     assert_eq!(the_store(&state), stored);
+}
+
+/// Switched on, a library's files are read now rather than at its next scan.
+/// root-b keeps matching on and its volume due throughout, so a PATCH that
+/// kicked when it should not would start a pass and show its job.
+#[tokio::test]
+async fn switching_a_library_on_starts_a_pass() {
+    let (_, scanned, fixture) = test_support::state_with_two_scanned_roots();
+    let (router, state) = test_support::with_a_pass(
+        &scanned,
+        &fixture,
+        crate::fingerprint_pass::PassSettings {
+            poll: test_support::POLL,
+            ..crate::fingerprint_pass::PassSettings::default()
+        },
+    );
+    let pass = &state.fingerprints;
+    let listed = get_json(&router, "/api/library/libraries").await;
+    let a = the_library(&listed, "root-a")["id"]
+        .as_i64()
+        .expect("an id");
+    let a_dir = the_library(&listed, "root-a")["dirs"][0]["id"]
+        .as_i64()
+        .expect("a directory id");
+    let (a_units, b_units): (Vec<_>, Vec<_>) = taiyaku_library::fingerprints::due(
+        &state.library.conn(),
+        crate::fingerprint::VERSION,
+        None,
+    )
+    .expect("lists what is due")
+    .into_iter()
+    .partition(|unit| unit.root_id == a_dir);
+    assert!(!a_units.is_empty(), "the fixture: root-a has a volume due");
+    assert!(!b_units.is_empty(), "the fixture: root-b has a volume due");
+    let path = format!("/api/library/libraries/{a}");
+
+    let (status, off) = answered(
+        &router,
+        Method::PATCH,
+        &path,
+        &serde_json::json!({ "match_by_content": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{off}");
+    assert!(pass.settle(test_support::SETTLE), "no pass runs on");
+    assert!(pass.job().is_none(), "switching off starts no pass");
+    let (status, renamed) = answered(
+        &router,
+        Method::PATCH,
+        &path,
+        &serde_json::json!({ "name": "Manga" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert!(pass.settle(test_support::SETTLE), "no pass runs on");
+    assert!(pass.job().is_none(), "a rename starts no pass");
+    for unit in &a_units {
+        assert!(
+            !test_support::fingerprinted(&state.library, unit),
+            "the fixture: {} is not stored",
+            unit.rel_path
+        );
+    }
+
+    let (status, on) = answered(
+        &router,
+        Method::PATCH,
+        &path,
+        &serde_json::json!({ "match_by_content": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{on}");
+    assert!(pass.settle(test_support::SETTLE), "the pass ends");
+    assert!(pass.job().is_some(), "switching on starts a pass");
+    for unit in &a_units {
+        assert!(
+            test_support::fingerprinted(&state.library, unit),
+            "{} is stored",
+            unit.rel_path
+        );
+    }
+}
+
+/// The switch is one library's own, and a rename answers it as stored: each
+/// library's answer is read, so Manga's off is not answered as the default.
+#[tokio::test]
+async fn a_librarys_matching_is_switched_by_its_id() {
+    let (router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let listed = get_json(&router, "/api/library/libraries").await;
+    assert_eq!(the_library(&listed, "root-a")["match_by_content"], true);
+    assert_eq!(the_library(&listed, "root-b")["match_by_content"], true);
+    let id = the_library(&listed, "root-a")["id"]
+        .as_i64()
+        .expect("an id");
+    let other = the_library(&listed, "root-b")["id"]
+        .as_i64()
+        .expect("an id");
+    let path = format!("/api/library/libraries/{id}");
+
+    let (status, switched) = answered(
+        &router,
+        Method::PATCH,
+        &path,
+        &serde_json::json!({ "match_by_content": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{switched}");
+    assert_eq!(keys_of(&switched), ["id", "match_by_content", "name"]);
+    assert_eq!(switched["id"], id, "{switched}");
+    assert_eq!(switched["name"], "root-a", "{switched}");
+    assert_eq!(switched["match_by_content"], false, "{switched}");
+    let after = get_json(&router, "/api/library/libraries").await;
+    assert_eq!(the_library(&after, "root-a")["match_by_content"], false);
+    assert_eq!(the_library(&after, "root-b")["match_by_content"], true);
+
+    let stored = the_store(&state);
+    for body in [
+        "{}",
+        "{\"match_by_content\": \"no\"}",
+        "{\"match_by_content\": null}",
+    ] {
+        let (status, refused) = answered_raw(&router, Method::PATCH, &path, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {refused}");
+        assert!(
+            the_sentence(&refused).contains("`match_by_content`, a boolean"),
+            "{body}: {refused}"
+        );
+    }
+    assert_eq!(the_store(&state), stored, "a refused switch wrote nothing");
+
+    let (status, renamed) = answered(
+        &router,
+        Method::PATCH,
+        &format!("/api/library/libraries/{other}"),
+        &serde_json::json!({ "name": "X" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(
+        renamed,
+        serde_json::json!({ "id": other, "name": "X", "match_by_content": true })
+    );
+    let (status, renamed) = answered(
+        &router,
+        Method::PATCH,
+        &path,
+        &serde_json::json!({ "name": "Manga" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(
+        renamed,
+        serde_json::json!({ "id": id, "name": "Manga", "match_by_content": false })
+    );
+
+    let (status, both) = answered(
+        &router,
+        Method::PATCH,
+        &path,
+        &serde_json::json!({ "name": "Comics", "match_by_content": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{both}");
+    assert_eq!(
+        both,
+        serde_json::json!({ "id": id, "name": "Comics", "match_by_content": true })
+    );
+    let after = get_json(&router, "/api/library/libraries").await;
+    assert_eq!(the_library(&after, "Comics")["id"], id, "{after}");
+    assert_eq!(the_library(&after, "Comics")["match_by_content"], true);
+    assert_eq!(the_library(&after, "X")["match_by_content"], true);
+
+    let stored = the_store(&state);
+    let (status, refused) = answered(
+        &router,
+        Method::PATCH,
+        &path,
+        &serde_json::json!({ "name": "X", "match_by_content": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        the_sentence(&refused).contains("already called `X`"),
+        "{refused}"
+    );
+    assert_eq!(
+        the_store(&state),
+        stored,
+        "a refused rename takes the switch beside it back"
+    );
 }
 
 #[tokio::test]
@@ -2270,7 +2482,7 @@ async fn a_missing_name_is_answered_in_the_sentence_of_the_route_asked() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
     assert_eq!(
         the_sentence(&refused),
-        "renaming a library needs a `name`, a string"
+        "changing a library needs a `name`, a string, or `match_by_content`, a boolean"
     );
     assert_eq!(the_store(&state), stored);
 }
@@ -3114,7 +3326,7 @@ async fn the_whole_flow_over_a_file_backed_store() {
     assert_eq!(status, StatusCode::OK, "{renamed}");
     assert_eq!(
         renamed,
-        serde_json::json!({ "id": id, "name": "Two Renamed" })
+        serde_json::json!({ "id": id, "name": "Two Renamed", "match_by_content": true })
     );
     let (status, added) = answered(
         &router,

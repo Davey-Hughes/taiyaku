@@ -140,6 +140,7 @@ const MANGA: librariesApi.Library = {
   name: 'Manga',
   works: 0,
   books: 0,
+  match_by_content: true,
   dirs: [root],
 }
 
@@ -720,6 +721,7 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
       [
         ['Manga', 2],
         ['Directories', 3],
+        ['Matching', 3],
         ['Removal', 3],
       ],
     ],
@@ -792,6 +794,7 @@ describe('the headings of the Configuration pages, in Chromium’s own tree', ()
       [
         ['Manga', 2],
         ['Directories', 3],
+        ['Matching', 3],
         ['Removal', 3],
         [root.path, 2],
         ['How it is scanned', 3],

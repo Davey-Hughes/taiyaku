@@ -1780,3 +1780,98 @@ async fn a_pressed_scan_clears_its_pause_again_once_it_holds_the_job_lock() {
         "(cleared before the lock, paused once it ended, its word)"
     );
 }
+
+/// A job that ran to its end starts a pass over what it found, and one a
+/// cancel stopped does not. The cancelled job sets its own stop rather than
+/// going through `cancel`, which pauses its directory: a paused directory has
+/// nothing due, so its unit would be left unread whether or not a pass started.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_finished_scan_starts_a_pass_and_a_cancelled_one_does_not() {
+    for cancelled in [false, true] {
+        let fixture = test_support::Fixture::new("scan-kicks-a-pass");
+        let top = fixture.join("lib").join("Alpha");
+        std::fs::create_dir_all(&top).expect("makes the series");
+        taiyaku_read::test_support::cbz_pages(&top, "Alpha v01.cbz", 3, 0);
+        let library = test_support::library();
+        let root = {
+            let conn = library.conn();
+            let root = scan::add_root(&conn, &fixture.join("lib")).expect("adds the directory");
+            scan::scan_root(&conn, &root).expect("walks it");
+            derive::derive(&conn).expect("derives");
+            root
+        };
+        let digest: String = library
+            .conn()
+            .query_row(
+                "SELECT sha256 FROM scan_entry WHERE rel_path = 'Alpha/Alpha v01.cbz'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the derive took the volume's digest");
+        let state = std::sync::Arc::new(crate::ServeState {
+            library: std::sync::Arc::clone(&library),
+            fingerprints: std::sync::Arc::new(crate::fingerprint_pass::Pass::with(
+                crate::fingerprint_pass::PassSettings::default(),
+            )),
+            ..test_support::state(fixture.path())
+        });
+        let started = std::time::Instant::now();
+        let job =
+            super::reserve(&state, std::slice::from_ref(&root), started, None).expect("reserves");
+        assert_eq!(
+            (job.kind, job.kind.as_str()),
+            (super::JobKind::Scan, "scan")
+        );
+
+        super::spawn_job(
+            std::sync::Arc::clone(&state),
+            vec![root],
+            started,
+            move |_, roots, running| {
+                if cancelled {
+                    running.stopped.set(Some(Step::Resolving));
+                }
+                Ok(roots.iter().map(|_| json!({})).collect())
+            },
+        )
+        .await
+        .expect("the job ends");
+        assert!(
+            state
+                .fingerprints
+                .settle(std::time::Duration::from_secs(60)),
+            "the pass ends"
+        );
+
+        let stored = taiyaku_library::fingerprints::read(&library.conn(), &digest)
+            .expect("reads the store")
+            .is_some();
+        assert_eq!(
+            (job.ended(), stored),
+            if cancelled {
+                (Some(super::JobEnded::Cancelled(Step::Resolving)), false)
+            } else {
+                (Some(super::JobEnded::Finished), true)
+            },
+            "(how the scan ended, whether the volume was fingerprinted)"
+        );
+    }
+}
+
+/// A pass's job reads fingerprinting from its start, no file done and none yet
+/// counted due, until its first listing sets its count: the feed never shows
+/// it waiting, as a scan opens.
+#[test]
+fn a_pass_job_starts_fingerprinting_with_no_file_done() {
+    let job = super::Job::fingerprint(std::time::Instant::now());
+    assert_eq!(job.kind, super::JobKind::Fingerprint);
+    assert_eq!(
+        job.snapshot(),
+        super::Snapshot {
+            step: Step::Fingerprinting,
+            done: Some(0),
+            of: None,
+            dir: None,
+        }
+    );
+}
