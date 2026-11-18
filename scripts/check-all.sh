@@ -143,6 +143,44 @@ run cargo clippy --workspace --all-targets --all-features -- -D warnings
 run env RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
   cargo doc --workspace --no-deps
 
+# --- the check at the declared Rust version ---
+# Every other command here compiles with rust-toolchain.toml's pin, and clippy's `incompatible_msrv`
+# skips dependencies and `#[test]` or `#[cfg(test)]` code, so either could need more than
+# `rust-version` promises unseen.
+# The lines that read the value are the ones in ci.yml's step of the same name; docs/ci.md,
+# "Toolchain note", says what the check proves and what it does not.
+declared=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^rust-version *= *"\([^"]*\)".*/\1/p' Cargo.toml)
+case "$declared" in
+  "" | *[!0-9.]* | .* | *. | *..* | *.*.*.*) msrv= ;;
+  *.*.*) msrv=$declared ;;
+  *.*) msrv=$declared.0 ;;
+  *) msrv= ;;
+esac
+if [ -z "$msrv" ]; then
+  echo "error: no usable rust-version under [workspace.package] in Cargo.toml (read: '$declared')" >&2
+  exit 1
+fi
+
+# **A toolchain this machine lacks is named, never fetched**, since CI installs it. Presence is asked
+# of `rustup toolchain list` because `cargo +<version>` can install the toolchain it is told to run,
+# and the match names this host's triple because a toolchain for another host would not stop that.
+# The list is matched in a variable because `grep -q` closing a pipe early reads as a failure under
+# `pipefail`, which would report an installed toolchain as absent.
+if ! command -v rustup >/dev/null 2>&1; then
+  note_skip "the check at the declared Rust version, ${msrv} (rustup not on PATH)"
+else
+  toolchains="$(rustup toolchain list)"
+  host="$(rustup show | sed -n 's/^Default host: //p')"
+  case $'\n'"${toolchains}"$'\n' in
+    *$'\n'"${msrv}-${host}"$'\n'* | *$'\n'"${msrv}-${host} "*)
+      run cargo "+${msrv}" check --workspace --all-targets --all-features --locked
+      ;;
+    *)
+      note_skip "the check at the declared Rust version, ${msrv} (toolchain not installed — \`rustup toolchain install ${msrv} --profile minimal\` measures it)"
+      ;;
+  esac
+fi
+
 # Advisory and non-blocking — the `|| true` is the point, not an oversight, and
 # it mirrors `continue-on-error: true` on the same step in ci.yml. See
 # docs/ci.md, "The pedantic lints, and why they are advisory": pedantic stays

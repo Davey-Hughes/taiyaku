@@ -7,7 +7,7 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 
 | Job | Runs |
 | --- | ---- |
-| `lint` | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D rustdoc::broken_intra_doc_links` |
+| `lint` | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D rustdoc::broken_intra_doc_links`, then `cargo check --workspace --all-targets --all-features --locked` at the `rust-version` the root `Cargo.toml` declares — see "Toolchain note" |
 | `test` | `cargo llvm-cov nextest --workspace` — runs the tests under nextest's per-test timeout *and* gates their aggregate coverage — then installs node and runs `scripts/coverage-floor.mjs` over a re-rendered JSON report for the per-file half, `scripts/status-test-count.mjs`, and last the comment guard, `scripts/check-comments.mjs` |
 | `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown`, builds the browser package with `wasm-pack`, and runs `scripts/smoke-wasm.mjs` against the compiled module |
 | `web` | `pnpm install --frozen-lockfile`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run --coverage` in `web/`, then `scripts/coverage-floor.mjs` for the per-file half |
@@ -91,6 +91,10 @@ all green, except NOT MEASURED:
   - the wasm job (--no-wasm)
   - the web job (web/node_modules absent — run `pnpm -C web install`)
 ```
+
+The check at the declared Rust version runs locally only where its toolchain is
+already installed. CI installs that toolchain; the script never downloads one,
+and names the check under `NOT MEASURED` instead.
 
 The corpus checks are the one thing the script measures that the forge cannot,
 since CI has no corpus. Everything else runs in both places — with one
@@ -2083,6 +2087,22 @@ costs a download per job; when it is the pin, rustup adds whichever of
 jobs compile with the pinned rustc: the floating tag moves the image's system
 packages, not the compiler. Pinning the image to the same version would remove
 the download, at the cost of bumping both together.
+
+**The `lint` job also checks the workspace at the version it declares.** The step
+"Check at the declared Rust version" reads `rust-version` from the root
+`Cargo.toml`, installs that release and runs `cargo check --workspace
+--all-targets --all-features --locked` with it. A two-part value gets `.0`
+appended: cargo reads `1.91` as 1.91.0, while rustup resolves the channel `1.91`
+to the newest 1.91.x, a newer compiler than the one declared.
+
+It proves that the locked dependency tree accepts that compiler and that every
+target of every workspace crate type-checks with it, dev-dependencies included.
+It does not prove more than that:
+
+- **The host target only.** The `wasm32` build is not checked at this version.
+- **No test runs at this version**, and `cargo check` links no library, binary
+  or test of the workspace, so nothing here shows the workspace links or behaves
+  correctly on that compiler.
 
 ## Mutation testing
 

@@ -87,6 +87,28 @@ jobs:
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links
+      # Every other step compiles with rust-toolchain.toml's pin, and clippy's
+      # `incompatible_msrv` skips dependencies and `#[test]` or `#[cfg(test)]` code,
+      # so either could need more than `rust-version` promises and stay green
+      # without this. `.0` because cargo reads "1.91" as 1.91.0, while rustup
+      # resolves the channel `1.91` to that series' newest patch release. Host
+      # target only, and no test runs at this version: see docs/ci.md, "Toolchain
+      # note". scripts/check-all.sh repeats the lines that read the value.
+      - name: Check at the declared Rust version
+        run: |
+          declared=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^rust-version *= *"\([^"]*\)".*/\1/p' Cargo.toml)
+          case "$declared" in
+            "" | *[!0-9.]* | .* | *. | *..* | *.*.*.*) msrv= ;;
+            *.*.*) msrv=$declared ;;
+            *.*) msrv=$declared.0 ;;
+            *) msrv= ;;
+          esac
+          if [ -z "$msrv" ]; then
+            echo "error: no usable rust-version under [workspace.package] in Cargo.toml (read: '$declared')" >&2
+            exit 1
+          fi
+          rustup toolchain install "$msrv" --profile minimal
+          cargo "+$msrv" check --workspace --all-targets --all-features --locked
       # Advisory and non-blocking, deliberately. `clippy::pedantic` is not in
       # [workspace.lints] and must not be. rust-toolchain.toml pins the
       # toolchain whatever this floating `rust:1-bookworm` image ships, so a
