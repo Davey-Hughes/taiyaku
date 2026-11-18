@@ -45,6 +45,6 @@ ignore = [
     newest name of that migration's backup in the `backups` directory \
     beside that store, normally the copy taiyaku wrote there, to read its \
     version. The crate's fix is behind \
-    rusqlite 0.41, which declares Rust 1.89 against the workspace's 1.88. \
+    rusqlite 0.41, the image's behind a SQLite of 3.54 or later. \
     Revisit with O265 in docs/status.md.""" },
 ]
