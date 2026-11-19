@@ -161,6 +161,10 @@ it mutates only changed code and takes minutes.
 | 2026-10-23 | config-grouping (PR 2), `--since main`, twice (48 mutants, 9 m each) | **The first run: 39 caught, 3 unviable, 6 missed; the second: 45 caught, 3 unviable, 0 missed.** All six were in `account.rs`. Five of them, `check_name` as `Ok(())`, its guard as `false` and as `true`, its `!=` as `==`, and `is_unique_violation` as `true`, were killed only by `taiyaku-cli` and `taiyaku-serve` tests, which cargo-mutants does not run for a `taiyaku-library` mutant (O87). `account/tests.rs` now kills each of them, `is_unique_violation` with a planted trigger fault. The sixth, `unclaimed` as `Ok(1)`, was real: under it, `user promote` on a claimed library asked for a password before refusing, and its CLI test accepted any error naming "password". It is now killed by a library test and by that CLI test, which runs with a password source that panics if asked. None is baselined. The three unviable each replace a function's whole body with `Ok(Default::default())` for a type with no `Default`: `account::update`, `scan::add_root_checked_in` and `scan::create_library` |
 | 2026-11-17 | the paused-directory freeze (O320, O270), `--since main` at `3af6a1d4` (56 mutants, 23 m) | **48 caught, 8 unviable, 0 missed, 0 timeouts.** The eight unviable each replace a function's whole body with a value that does not compile there: `derive_watched`'s four (`Outcome` has no `new`, `from` or `from_iter` to build one), `entry_of`, `entries` and `frozen_entries` with a `Default` entry (`Entry` derives no `Default`), and `place` with a one-entry map (`GroupKey` and `Group` derive none). `entries` and `frozen_entries` as `Ok(vec![])` are viable and caught; `derive_watched`'s only viable mutant is the `!` before `fresh.contains`, caught. cargo-mutants makes no mutant of the SQL text or field initialisers the branch changed, so thirteen were put wrong by hand. Nine failed a named test: the walk's four `held_*` assignments removed, `copy_entry` without the held columns, the stamp finding its row by digest, `frozen_entries` without the held-reading arm or without the containment step, `reads_as_one_volume` without `e.held_sha256`, `CopyAt::frozen` as `false` (killed by `a_copy_at_another_path_has_its_own_rows_held_reading_dropped_or_kept` alone), and the server's and the CLI's fresh ids emptied. Three passed every test in the three crates: `drop_held`'s and `digest`'s held-reading clauses with `root_id = ?1` made vacuous, and the stamp's held clause testing the row's `sha256 IS NULL` in place of the member's digest. `0ef8a329` kills all three: `a_paused_copy_at_the_same_path_keeps_its_held_reading_when_the_others_goes` fails one case under each `root_id` mutant, and `a_stamp_moves_a_held_reading_only_where_it_is_the_digest_replaced` swaps its two rows' digests so the row's own decides nothing. The thirteenth, migration 27's `coalesce(m.format, …)` as the entry's format alone, is equivalent: nothing writes `member.format` (`stamp::plan`'s and `proposals::edition_formats`' notes), so no test is written for it. None is baselined |
 | 2026-11-17 | content matching PR 2, fingerprints in the server, `--since main` (405 mutants, 3 h) | **317 caught, 37 unviable, 47 missed, 4 timeouts.** Thirty-four of the unviable replace a function's whole body with a value that does not compile there (no `Default` for `Unit`, `Job`, `PagePrint`, `BuildLabel` and the rest; no `MutexGuard::new` or `JoinHandle::new`), and three put an or in a `let` chain. The four timeouts are `flat_border`'s scan counters made to stand still (`+=` as `*=` from zero, `-=` as `/=`), which never end. Of the 47 missed, 28 lay in `taiyaku-serve`'s `fingerprint`, the code moved from `taiyaku-cli`, whose tests stayed in the CLI and are not run for a `taiyaku-serve` mutant (O87): the CLI's small-page test, now in the server too, kills 21 of them, and new tests kill the large-page bound's four and `crop`'s two. New tests kill 12 more, in the pass, its job, the store and the progress words. Three are equivalent and recorded below: `flat_border`'s guard against an empty crop, the entry the first workspace-wide sweep left UNTRIAGED at `taiyaku-cli`'s `fingerprint.rs:167:22`, and two in `walk`. Five are killed outside a sweep and survive in one by its setup, and are not recorded below: `about::this_build` as `None`, since the sweep builds a copy with no `.git` and so names no commit; and four in `fingerprint_pass::priority`, since `mutants.sh` runs at niceness 19 in the idle I/O class, where the priority tests print NOT MEASURED |
+| 2026-11-17 | RAR PR 1 (`rar-libarchive`), `--since main`, twice (185 then 123 mutants) | **The first run: 18 missed; the second: 6, each accepted below.** Eleven of the first run's, and both its timeouts, were in `pages/rar_tests.rs`: test code, mutated because its module is declared under `all(test, rar)`, which cargo-mutants does not read as `#[cfg(test)]`; `.cargo/mutants.toml` now excludes it beside `test_support.rs`. One was real: `vint`'s `<<` as `>>`, which only an end block whose size or type takes two bytes shows, and no fixture's does; `a_rar5_end_block_is_known_by_its_type_and_crc` now kills it. The four in `pages.rs` sit under `#[cfg(not(rar))]`, which the sweep's every-feature build does not compile, so each entry names the test that fails against it in the default build; one of the four, the guard made `true`, needed a new test. `Libarchive::name` is a label only tests read |
+| 2026-11-18 | RAR PR 1 after its rebase onto main, `--since main` (135 mutants) | **111 caught, 18 unviable, 6 missed, 0 timeouts.** The six are the entries accepted on 2026-11-17, four of them under keys the rebase moved. `rar_unread_entries` and `member_unread_entries`, which the rebase reached, have 14 mutants and all are caught |
+| 2026-11-18 | RAR PR 1's checksum check, `--since main` (315 mutants) | **263 caught, 26 unviable, 26 missed, 0 timeouts.** Six of the missed are the accepted entries under moved keys. The other twenty are in the new `rar/libarchive/headers.rs`: fifteen real, each then killed by a test, and five equivalent, one of which went with the constant it mutated |
+| 2026-11-18 | RAR PR 1 after the fixes to its header walk, `--since main` (316 mutants) | **280 caught, 26 unviable, 10 missed, 0 timeouts.** Six of the ten are the accepted entries, re-keyed below. The other four are the equivalents recorded under `rar/libarchive/headers.rs`, `\|` as `^` on values that share no bit; each was also applied by hand and every `taiyaku-read` test passed |
 
 <!-- entries -->
 
@@ -1097,6 +1101,25 @@ it mutates only changed code and takes minutes.
 
 ### `crates/taiyaku-read/src/pages.rs`
 
+- `crates/taiyaku-read/src/pages.rs:283:9: delete match arm crate::Format::Rar in unsupported_container`
+  **Equivalent in the build the sweep makes.** The arm is `#[cfg(not(rar))]`
+  and `.cargo/mutants.toml` sweeps with every feature, so the mutated line is
+  not compiled. In the build without RAR, which the `default-features` CI job
+  tests, `a_rar_header_is_refused_without_a_rar_backend` fails against it:
+  `unsupported_container` gives `None` for a RAR header.
+- `crates/taiyaku-read/src/pages.rs:372:23: replace match guard format == crate::Format::Rar with false in refuse_unsupported_container`
+  **Equivalent in the build the sweep makes**, as `:283:9` is: the guard is
+  `#[cfg(not(rar))]` too. Without RAR, `a_rar_header_is_refused_without_a_rar_backend`
+  fails against it: a RAR gets the generic refusal, which does not say the
+  build reads no RAR.
+- `crates/taiyaku-read/src/pages.rs:372:23: replace match guard format == crate::Format::Rar with true in refuse_unsupported_container`
+  **Equivalent in the build the sweep makes**, as `:283:9` is. Without RAR,
+  `a_container_no_build_reads_is_not_refused_for_want_of_a_rar_backend` fails
+  against it: a 7-Zip archive is told the build reads no RAR.
+- `crates/taiyaku-read/src/pages.rs:372:30: replace == with != in refuse_unsupported_container`
+  **Equivalent in the build the sweep makes**, as `:283:9` is. Without RAR,
+  both tests above fail against it: the RAR refusal and the 7-Zip one swap
+  sentences.
 - `crates/taiyaku-read/src/pages.rs:389:5: replace page_count -> u32 with 0`
   UNTRIAGED: recorded by the first workspace-wide sweep, 2026-08-19, and not
   examined. Nothing is known about this mutant beyond the fact that it survived.
@@ -1151,6 +1174,35 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
+
+### `crates/taiyaku-read/src/rar/libarchive.rs`
+
+- `crates/taiyaku-read/src/rar/libarchive.rs:20:9: replace <impl Backend for Libarchive>::name -> &'static str with ""`
+  **A decision inside output nobody asserts on.** Only tests call
+  `Backend::name` (outside them it is `expect(dead_code)`): to say in a
+  failure which backend ran, to name each backend's copies in the strace test,
+  and to tell the chosen backend from the first compiled one, against what the
+  same function returns elsewhere. Neither name the sweep tries matters to
+  them, since neither is a test backend's (`"absent"`, `"hands-nothing"`).
+  There is no decision to extract; a test of the string would pin a label's
+  spelling.
+- `crates/taiyaku-read/src/rar/libarchive.rs:20:9: replace <impl Backend for Libarchive>::name -> &'static str with "xyzzy"`
+  **A decision inside output nobody asserts on**, as the empty name above is.
+
+### `crates/taiyaku-read/src/rar/libarchive/headers.rs`
+
+- `crates/taiyaku-read/src/rar/libarchive/headers.rs:348:55: replace | with ^ in rar4_fields`
+  **Equivalent mutant.** The low half of the packed size is a `u32` widened to
+  `u64`, so it is below 2^32, and the high half is shifted left past it. No bit
+  is set in both, so `|` and `^` give the same value.
+- `crates/taiyaku-read/src/rar/libarchive/headers.rs:350:62: replace | with ^ in rar4_fields`
+  **Equivalent mutant**, as `:348:55` is, for the unpacked size.
+- `crates/taiyaku-read/src/rar/libarchive/headers.rs:365:29: replace | with ^ in rar4_file`
+  **Equivalent mutant.** `0x01` and `0x02`, the two flags `SPLIT` joins, share
+  no bit.
+- `crates/taiyaku-read/src/rar/libarchive/headers.rs:375:45: replace | with ^ in rar4_file`
+  **Equivalent mutant.** `SPLIT` is `0x03` and `ENCRYPTED` is `0x04`, which share
+  no bit.
 
 ### `crates/taiyaku-serve/src/auth.rs`
 

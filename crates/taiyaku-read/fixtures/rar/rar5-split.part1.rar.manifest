@@ -1,0 +1,4 @@
+format	rar5
+entry	p01.png	file	12651
+entry	p02.png	split	12651
+refused	not a readable RAR archive

@@ -52,20 +52,96 @@ fn reading_a_pdf_says_so() {
 #[test]
 fn an_unreadable_container_is_named_by_its_leading_bytes() {
     let seven_zip = [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04];
-    let rar5 = b"Rar!\x1a\x07\x01\x00";
-    let rar4 = b"Rar!\x1a\x07\x00";
     let mut tar = vec![0u8; 512];
     tar[257..262].copy_from_slice(b"ustar");
     let pdf = b"%PDF-1.7\n";
     let zip = [0x50, 0x4B, 0x03, 0x04, 0x14, 0x00];
 
     assert_eq!(unsupported_container(&seven_zip), Some("a 7-Zip archive"));
-    assert_eq!(unsupported_container(rar5), Some("a RAR archive"));
-    assert_eq!(unsupported_container(rar4), Some("a RAR archive"));
     assert_eq!(unsupported_container(&tar), Some("a tar archive"));
     assert_eq!(unsupported_container(pdf), Some("a PDF"));
     // Zip is supported, so it is not something to complain about.
     assert_eq!(unsupported_container(&zip), None);
+}
+
+const RAR5_HEADER: &[u8] = b"Rar!\x1a\x07\x01\x00";
+const RAR4_HEADER: &[u8] = b"Rar!\x1a\x07\x00";
+
+/// The owner's ruling: a build that reads no RAR refuses one by name and says
+/// the build is why, through every function that opens a member, and never as
+/// a corrupt cbz.
+#[cfg(not(rar))]
+#[test]
+fn a_rar_header_is_refused_without_a_rar_backend() {
+    assert_eq!(unsupported_container(RAR5_HEADER), Some("a RAR archive"));
+    assert_eq!(unsupported_container(RAR4_HEADER), Some("a RAR archive"));
+
+    let dir = TempDir::new("no-rar-backend");
+    for (name, header) in [("rar5.cbz", RAR5_HEADER), ("rar4.cbz", RAR4_HEADER)] {
+        let path = dir.join(name);
+        std::fs::write(&path, header).unwrap();
+        let refusals = [
+            ("member_pages", member_pages(&path).map(|_| ())),
+            ("member_page_names", member_page_names(&path).map(|_| ())),
+            ("member_page", member_page(&path, 0).map(|_| ())),
+            (
+                "member_unread_entries",
+                member_unread_entries(&path).map(|_| ()),
+            ),
+            (
+                "member_entry",
+                member_entry(&path, "ComicInfo.xml").map(|_| ()),
+            ),
+            (
+                "read_edition",
+                read_edition(std::slice::from_ref(&path)).map(|_| ()),
+            ),
+        ];
+        for (call, got) in refusals {
+            let Err(error) = got else {
+                panic!("{name}: {call}: not refused");
+            };
+            assert!(error.contains("a RAR archive"), "{name}: {call}: {error}");
+            assert!(
+                error.contains("this build of taiyaku reads no RAR"),
+                "{name}: {call}: {error}"
+            );
+            assert!(
+                !error.contains("not a readable cbz"),
+                "{name}: {call}: {error}"
+            );
+        }
+    }
+}
+
+/// With a RAR backend, a RAR is no unsupported container: the backend answers.
+#[cfg(rar)]
+#[test]
+fn a_rar_header_is_left_to_the_rar_backend() {
+    assert_eq!(unsupported_container(RAR5_HEADER), None);
+    assert_eq!(unsupported_container(RAR4_HEADER), None);
+}
+
+/// Only a RAR is refused for the build's sake: no build reads a 7-Zip, a tar
+/// or a PDF, so their refusal says what taiyaku reads instead.
+#[test]
+fn a_container_no_build_reads_is_not_refused_for_want_of_a_rar_backend() {
+    let mut tar = vec![0u8; 512];
+    tar[257..262].copy_from_slice(b"ustar");
+    let seven_zip = [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04];
+    for (kind, header) in [
+        ("a 7-Zip archive", &seven_zip[..]),
+        ("a tar archive", &tar[..]),
+        ("a PDF", &b"%PDF-1.7\n"[..]),
+    ] {
+        let mut source = header;
+        let error =
+            refuse_unsupported_container(&mut source, Path::new("volume.cbz")).expect_err(kind);
+        assert!(
+            error.contains(&format!("this is {kind}. taiyaku reads zip-based archives")),
+            "{error}"
+        );
+    }
 }
 
 /// The signature sits at bytes 257..262, so 262 bytes is exactly enough to

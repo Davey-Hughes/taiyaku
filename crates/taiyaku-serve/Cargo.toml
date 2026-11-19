@@ -63,5 +63,9 @@ rusqlite = { version = "0.43", features = ["hooks", "trace"] }
 # a day's wait without taking it.
 tokio = { version = "1", features = ["test-util"] }
 
+[features]
+# Passes `taiyaku-read`'s RAR backend through, so the binary turns it on by one name; off by default, so a plain build needs no libarchive.
+rar-libarchive = ["taiyaku-library/rar-libarchive"]
+
 [lints]
 workspace = true

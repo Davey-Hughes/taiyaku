@@ -26,6 +26,13 @@ missing_debug_implementations = "warn"
 todo = "warn"
 dbg_macro = "warn"
 
+# compress-tools from the owner's fork: the release reads entry names in the
+# environment's locale and crashes on a RAR4 name under C, gives libarchive no
+# skip callback, and can leave a thread on a freed locale. Remove this when a
+# release carries the fixes (O382).
+[patch.crates-io]
+compress-tools = { git = "https://github.com/Davey-Hughes/compress-tools-rs", rev = "d823828a49015f9d9b2541f89b07a56421d4b09c" }
+
 # Release profile favours the aligner's hot loops: hashing every page of a volume
 # and the dynamic-programming pass over the similarity matrix.
 [profile.release]

@@ -62,5 +62,9 @@ zip = "9.1.3"
 # `withBorrow` are ported by hand, and the design's §5 says so.
 taiyaku-wasm = { path = "../taiyaku-wasm" }
 
+[features]
+# RAR reading in the `taiyaku` binary, through `taiyaku-read`'s libarchive backend; off by default, so a plain `cargo build` needs no libarchive.
+rar-libarchive = ["taiyaku-serve/rar-libarchive"]
+
 [lints]
 workspace = true

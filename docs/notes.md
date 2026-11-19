@@ -29773,3 +29773,291 @@ the same key.
 The first group is a fact about the dictionary and the second a gap in the
 code; they are O377 and O376 in `docs/status.md`, with the numerals O378.
 The measuring program was a scratch test and is not in the tree.
+
+## RAR through libarchive: the compress-tools spike (2026-11-17)
+
+**The versions.** compress-tools 0.16.1, the newest 0.16.x. libarchive
+3.8.11 on the dev machine, and 3.6.2 (Debian bookworm's `libarchive13`
+3.6.2-1+deb12u5) in `rust:1-bookworm` and in `debian:bookworm-slim`, the
+runtime image's base. RARLAB's rar and unrar 7.23 made and checked the RAR5
+fixtures. rar 7.23 has no `-ma` switch and cannot write RAR4, so the two
+RAR4 fixtures come from RARLAB's rar 6.24, whose `-ma4` can, fetched into a
+scratch directory and never installed.
+
+**How it was measured.** A throwaway crate read each archive through a
+`Read + Seek` wrapper that counts the bytes `read` returns and the calls to
+`seek`. It listed through `ArchiveIterator` with a filter that records each
+entry and refuses it, and again through `list_archive_entries`; it read one
+entry through `uncompress_archive_file`; and it walked a whole archive with
+`ArchiveIterator`. It ran in three places: the dev machine, under its own
+UTF-8 locale and under `LC_ALL=C`; `rust:1-bookworm`, under `LC_ALL=C` and
+`LC_ALL=C.UTF-8`; and `debian:bookworm-slim` with `libarchive13`, under the
+image's own environment, which sets no locale, and under `LC_ALL=C`. Besides
+the fixtures it read copies of three kinds of real material: Zelda v01 (RAR5,
+not solid, 381 entries), the library's ten RAR4 comics, and RuriDragon v02
+(RAR5, 203 entries, every name holding non-ASCII bytes).
+
+**1. Skip: fails, on the fixture's entry size.** Reading Zelda v01's last
+entry read 6,160,384 bytes more than reading its first, in all six runs,
+against a bound of 26,969,306.8: a tenth of the 269,693,068 packed bytes
+before the last. On `rar5-stored.rar` the difference is 81,759 against
+195,495.5, half of the 390,991 packed bytes between the first page and the
+last. On `rar4.rar` it is 249,488 against 99,341.5, half of 198,683, where it
+could be measured (the dev machine's locale and `LC_ALL=C.UTF-8`): the read
+of the last page returned 396,948 bytes from a 331,408-byte file, and the
+read of the first, a 66,228-byte page, 147,460. Under the C locale the last
+page does not read at all (criterion 3).
+
+The cause is the size of `rar4.rar`'s entries, not RAR4. compress-tools
+registers a seek callback and no skip callback, and hands libarchive at most
+16 KiB per read. Without a skip callback libarchive, 3.6.2 and 3.8.11 alike,
+seeks past the rest of an entry only when more than 64 KiB of it remain
+after the bytes it already holds, and otherwise reads them; both RAR readers
+skip an entry through that one path. `rar4.rar`'s entries are 66,227 and
+66,228 bytes, so they are read through, and `rar5-stored.rar`'s, 97,747 and
+97,748 bytes, are sought over. Two control archives of stored noise pages show it:
+RAR5 with five pages of 66,227–66,228 bytes fails the same way, 249,760
+against 99,341 with no extra seek, and RAR4 with six of 97,746–97,748 bytes
+passes, 81,413 against 195,495.5 with five extra seeks. Real RAR4 material passes: on
+Fantastic Four v1 247, one of the library's RAR4 comics (not solid, 24
+entries, pages packed to 266,271–607,725 bytes), reading the last page read
+324,019 bytes more than reading the first page, and 618,931 more than
+reading the first entry, a directory, against a bound of 749,679.3, a tenth
+of the 7,496,793 packed bytes before the last, with one more seek for each
+page skipped, on 3.6.2 and 3.8.11. A binding that registers a skip callback
+would have libarchive skip an entry of any size.
+
+**2. Encryption: fails.** Both listings show `p02.png` exactly as their
+neighbours in both encrypted-entry fixtures, in all six runs: a file, with
+its size, and no error. `p03.png` is listed. Reading `p02.png` fails
+everywhere, but the error names encryption only on 3.8.11 for RAR5 ("Reading
+encrypted data is not currently supported"); 3.6.2 gives "Unsupported block
+header size (was 3, max is 2)" for RAR5, and both versions give "Invalid
+location to Huffman tree specified" for RAR4. A whole `ArchiveIterator` pass
+stops at `p02.png`'s error and never reaches `p03.png`. `p03.png` reads to
+its sha256 everywhere. A probe outside the criteria stored the encrypted
+entry instead of compressing it (`-m0`): on 3.6.2, for RAR5 and RAR4, and on
+3.8.11 for RAR4, the read succeeds with no error and returns 12,656 bytes of
+ciphertext for a 12,651-byte page.
+
+libarchive itself marks an encrypted entry while listing
+(`archive_entry_is_data_encrypted`), and compress-tools binds neither that
+call nor `archive_read_has_encrypted_entries`. The flag is set on `p02.png`
+for RAR4 on 3.6.2 and on 3.8.11, and for RAR5 only on 3.8.11: 3.6.2's RAR5
+reader skips the encryption record without marking the entry, and reports
+`archive_read_has_encrypted_entries` as -2, unsupported. So on bookworm's
+3.6.2 no binding of libarchive learns from it that a RAR5 entry is
+encrypted, and a stored one is handed over as ciphertext; an encrypted RAR4
+entry can be refused before it is read.
+
+**3. Names under C: fails, on RAR4, through compress-tools.** Under the C
+locale, RAR5 names are byte-equal to the expected names in every run: 4 of 4
+in `rar5-japanese.rar`, 203 of 203 in RuriDragon v02. `rar4.rar`'s
+`ページ05.png` is not: `list_archive_entries` fails with "archive entry has
+unreadable filename.", its message for a pathname libarchive did not give,
+and the iterator dies with SIGSEGV after the fourth entry, because in
+compress-tools 0.16.1's source it hands the same pointer to `CStr::from_ptr`
+without that check. libarchive's RAR4 reader converts a name to the current
+locale as it reads the header. Under C that fails, with the warning
+"Pathname cannot be converted from UTF-16BE to current locale", and every
+form of the name is lost: `archive_entry_pathname`,
+`archive_entry_pathname_utf8` and `archive_entry_pathname_w` all return NULL,
+on 3.6.2 and on 3.8.11. Switching the reading thread to C.UTF-8 first
+(`uselocale` with `newlocale(LC_CTYPE_MASK, "C.UTF-8", 0)`) gives all five
+names under `LC_ALL=C` on both versions, and `debian:bookworm-slim` has that
+locale. compress-tools' locale guard asks `newlocale` for "" instead, the
+environment's own locale, which under `LC_ALL=C` is C. Under
+`LC_ALL=C.UTF-8` all five names list correctly through compress-tools too.
+
+**4. libarchive 3.6.2: fails, through criterion 3.** Under `LC_ALL=C.UTF-8`
+all 30 reads of a page or a `ComicInfo.xml` match their manifests; under
+`LC_ALL=C`, and in the slim image's own environment, 29 of 30 do, with
+`ページ05.png` failing on its name. The headers-encrypted fixture fails every
+call with "Encryption is not supported", and `rar5-compressed.rar` cut to 590
+of its 1,181 bytes fails the listing, the iterator and a read of `p1.png`, an
+entry past the cut, with "Truncated input file", in all six runs: no panic
+and no timeout. On the truncated copy the iterator reports the end of
+`p2.png`, the entry the cut falls in, with no data, before the error, and on
+3.8.11 a read of `p2.png` succeeds with no bytes, as it does with the
+patched crate below.
+
+**The RAR4 comics (Review Focus 5): pass.** In the slim image under
+`LC_ALL=C`, all 258 names of the ten RAR4 comics equal `unrar lb`'s byte for
+byte, in both listings, and so they do in every other run. Eight of the ten
+were made on Windows and two on Unix; 123 names carry a `/` separator and
+none a backslash. Every name is ASCII, so no legacy code page was tested.
+
+**Also.** `rust:1-bookworm` ships `pkg-config` 1.8.1-1 but not
+`libarchive-dev`. compress-tools 0.16.1 exposes no libarchive version.
+
+**The fixtures.** Ten archives in `crates/taiyaku-read/fixtures/rar/`, each
+with a manifest: its entries in archive order, with kind and size; its pages
+in reading order and the other entries read by name, with sha256; or the
+line saying it is refused. Sizes and sha256 come from the source files, not
+from a RAR tool. Every page is generated by ImageMagick in `make.sh`, noise
+or an 8×8 gradient, never a published page. RAR5: stored; compressed, with
+a `ComicInfo.xml`; solid; one encrypted entry; encrypted headers; a layout of
+directories, `__MACOSX` and dotfiles; Japanese names; no pages. RAR4: stored,
+with one Japanese name; one encrypted entry. rar writes directory records
+after the files in whatever order they are added, so `rar5-layout.rar` lists
+`vol/cover.png` and `vol` last; and rar recurses a named directory in the
+file system's own order, so `make.sh` names each member rather than using
+`-r`. The headers-encrypted fixture's manifest holds only its format and the
+refusal: unrar cannot list it without the password, and lists `p01.png` with
+it. Eleven more were added on the branch, so the directory holds twenty-one:
+a RAR5 file reference (`rar -oi`); a solid RAR4, whose manifest holds its
+entries and the refusal, since libarchive refuses a solid RAR4 at its second
+entry ("RAR solid archive support unavailable"); and, for the checksum check
+below, a RAR5 that declares BLAKE2, an empty entry in each format, four
+volumes of split sets, a RAR4 with a comment and a RAR4 with a recovery
+record.
+
+Four criteria fail, so the plan's hard stop applies: the owner chooses
+before Task 2 is dispatched.
+
+### The patched compress-tools (owner's fork, 2026-11-17)
+
+The owner patched compress-tools in a fork: four commits on upstream's
+master, whose source differs from 0.16.1 only in reflowed comments and a
+Windows link flag. The four:
+
+- entry names are read under a UTF-8 locale (`C.UTF-8`, else `C.utf8`),
+  whatever locale the environment sets;
+- the iterator returns an error for an entry libarchive gives no pathname,
+  instead of passing NULL to `CStr::from_ptr`;
+- a skip callback is registered, so libarchive seeks over a skipped entry of
+  any size;
+- the locale guard no longer leaves a thread using a freed locale when two
+  iterators on it are dropped in creation order.
+
+The same spike, with its dependency changed and the stored-encrypted probes
+added to every run, ran in the same six runs over the same fixtures and
+fresh copies of the same material. All 462 of its commands exited cleanly:
+no crash, no panic, no timeout.
+
+**1. Skip: passes.** On `rar4.rar`, reading the last page read 49,917 bytes
+more than reading the first (197,377 against 147,460), in all six runs,
+against the bound of 99,341.5; on 0.16.1 the difference was 249,488. Zelda
+v01's difference, 6,160,384 against 26,969,306.8, and `rar5-stored.rar`'s,
+81,759 against 195,495.5, are 0.16.1's to the byte: their entries were
+already sought over. The skip callback seeks three times for each entry it
+skips (the position, the end, the target), so reading Zelda's last entry
+made 1,134 more seeks than reading its first, where 0.16.1 made 378 on 3.6.2
+and 379 on 3.8.11, and `rar4.rar`'s last page 12 more, where 0.16.1 made
+none. Listing `rar4.rar` reads 147,467 bytes, where 0.16.1 read 396,948
+under a UTF-8 locale.
+
+**2. Encryption: passes, as restated.** The owner ruled that encrypted
+archives are not a concern and that no encrypted flag is added, so the
+criterion asks only that a listing goes on past an encrypted entry, that
+reading it is an error, and that the page after it reads. In both
+encrypted-entry fixtures, in all six runs, both listings go on past
+`p02.png` to `p03.png` with no error; `p02.png` lists as a 321-byte file,
+like its neighbours. Reading `p02.png` fails with 0.16.1's texts: for RAR5,
+"Reading encrypted data is not currently supported" on 3.8.11 and
+"Unsupported block header size (was 3, max is 2)" on 3.6.2; for RAR4,
+"Invalid location to Huffman tree specified" on both. `p03.png` reads to its
+sha256. A whole `ArchiveIterator` pass stops at `p02.png` with the read's
+error and never reaches `p03.png`. The stored-encrypted probes give what
+they gave on 0.16.1, now in all six runs: on 3.6.2, reading the encrypted
+page succeeds for RAR5 and RAR4 and returns 12,656 bytes of ciphertext for a
+12,651-byte page, and the iterator goes on to `p03.png`; on 3.8.11 RAR4 does
+the same, and RAR5 fails with "Reading encrypted data is not currently
+supported".
+
+**3. Names under C: passes.** Under `LC_ALL=C` on the dev machine and in
+`rust:1-bookworm`, and in `debian:bookworm-slim` under its own environment
+and under `LC_ALL=C`, every name is byte-equal to the expected one in both
+listings: 4 of 4 in `rar5-japanese.rar`, 5 of 5 in `rar4.rar`, `ページ05.png`
+included, and 203 of 203 in RuriDragon v02. A whole iterator pass over
+`rar4.rar` reads all five pages to their sha256 in every run, where 0.16.1
+died with SIGSEGV after four under C.
+
+**4. libarchive 3.6.2: passes.** All 30 reads of a page or a `ComicInfo.xml`
+match their manifests in every run, under every locale; 0.16.1 managed 29
+under C. The headers-encrypted fixture fails every call with "Encryption is
+not supported", and the truncated copy fails the listing, the iterator and a
+read of `p1.png` with "Truncated input file", as on 0.16.1, with no panic and
+no timeout.
+
+**A truncated entry reads as empty.** The entry a cut falls in comes back as
+a success with no bytes. Reading `p2.png` from the 590-byte copy returns 0
+bytes and no error, and so does reading `p1.png`, the last entry, from
+copies cut at 1,000 and 1,170 of the 1,181 bytes, on 3.6.2 and on 3.8.11;
+0.16.1 does the same on 3.8.11. `uncompress_archive_file` takes libarchive's
+end of data as the end of the entry. A whole iterator pass reports the end
+of that entry with no data, then the truncation error. So a backend must
+compare the bytes it receives for an entry with the entry's declared size,
+on both paths, and refuse the page unless they are equal; more bytes than
+declared is wrong too, as a stored encrypted page comes out at 12,656 bytes
+for 12,651.
+
+**The RAR4 comics (Review Focus 5): pass.** All 258 names equal `unrar lb`'s
+byte for byte, in both listings, in the slim image under `LC_ALL=C` and in
+every other run.
+
+**The pin.** taiyaku's dependency is pinned to d823828, the code the spike
+ran, tidied for upstream, until upstream compress-tools takes the fixes. The
+fork still exposes no libarchive version.
+
+## RAR through libarchive: the checksum check (2026-11-18)
+
+The second whole-branch review of RAR PR 1 found that libarchive does not
+compare a stored entry's data with the checksum in its header. A RAR made
+with `-m0` whose page bytes had changed read back as good on 3.8.11 and on
+3.6.2, in RAR4 and in RAR5, where a stored zip with the same damage is refused.
+The owner ruled that PR 1 checks it. Every read now walks the archive's block
+headers on the file it hands to libarchive and holds each entry's data to the
+CRC32 its header declares.
+
+**What the owner's 21 RARs hold.** `unrar lt` on each archive, read-only from
+the NAS: 3,063 files, every one with a CRC32 and none with a BLAKE2 hash. 291
+of them are stored, in seven archives, two of which are stored whole:
+
+| Archive | Format | Files | Stored |
+| --- | --- | --- | --- |
+| Donald Duck 029 | RAR4 | 36 | 36 |
+| Fantastic Four v1 378 | RAR4 | 23 | 17 |
+| Fantastic Four v1 413 | RAR4 | 23 | 21 |
+| Gekijouban Soushuuhen Jujutsu Kaisen | RAR5 | 56 | 48 |
+| My Dressup Darling, Marin cosplays | RAR5 | 9 | 2 |
+| Ruri Dragon v01 | RAR5 | 166 | 166 |
+| The Legend of Zelda (Legendary Edition) v02 | RAR5 | 407 | 1 |
+
+**What the check leaves out.** An encrypted entry, an entry split across
+volumes, a file reference, link or directory, an empty file, and a RAR5 entry
+that declares only a BLAKE2 hash (O383).
+
+**The 21 through the check.** Each archive's pages were read one by one and
+as a whole book, read-only from the NAS, on libarchive 3.8.11 and on
+bookworm's 3.6.2, the image's version. The check refused no page on either.
+3,037 pages read on 3.8.11 and 3,035 on 3.6.2. Three archives hold pages that
+libarchive itself cannot decode (O386), though `unrar t` passes all three:
+
+| Archive | Fails on | Where | libarchive's error |
+| --- | --- | --- | --- |
+| Fantastic Four v1 360 (RAR4) | 3.8.11 and 3.6.2 | all 24 pages | `Prefix found` |
+| Zelda v01 (RAR5) | 3.6.2 | `index-080_1.jpg` | `Block checksum error` |
+| Zelda v03 (RAR5) | 3.6.2 | `index-210_1.jpg` | `Unsupported block header size` |
+
+The entries of Fantastic Four v1 360 declare unpack version 20, which
+`unrar lt` prints as `RAR 1.5(v20)`. A failed page also fails its archive's
+whole-book reads.
+
+**Archives the walk reads differently from libarchive.**
+
+- Volumes joined with `cat` list their pages, and every read of them is
+  refused: the walk ends at the first end block, where libarchive reads on.
+  `unrar t` fails such a file too.
+- A RAR5 block continued from the previous volume takes no position in the
+  walk, since libarchive does not list one, so a set's last volume reads as it
+  did before the check. libarchive does list a continued RAR4 entry, so the
+  walk counts it.
+- A RAR4 cut less than seven bytes into a block's header lists and counts as a
+  shorter archive, and every read of it is refused (O351).
+
+A crafted archive of tiny blocks can cost a read about 2 s on this workstation,
+bounded by `MAX_BLOCKS` (2^20 blocks), where the walk stops and the file is
+refused: page 0 of a 7.3 MB RAR4 of 1,040,000 comment blocks took a median of
+1,916 ms over five rounds at a load of 15 to 17, against 11.5 ms before the
+check, and a file over the cap was refused after 2,027 ms.

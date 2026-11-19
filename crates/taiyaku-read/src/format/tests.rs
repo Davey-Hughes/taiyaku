@@ -200,8 +200,8 @@ fn every_format_names_its_schema_token_and_says_whether_it_can_be_read() {
     assert_eq!(Format::from_token("cbz"), None, "a token no format writes");
 }
 
-/// A fingerprint pass reads what the reader reads pages from: a reflowable
-/// EPUB is readable as text and has no page to read.
+/// A fingerprint pass reads what a library admits as pages: a reflowable EPUB
+/// is readable as text and has no page to read.
 #[test]
 fn paged_formats_are_the_readable_ones_less_reflowable_books() {
     assert!(Format::PAGED.contains(&Format::Dir), "a folder of pages");
@@ -214,8 +214,11 @@ fn paged_formats_are_the_readable_ones_less_reflowable_books() {
         !Format::PAGED.contains(&Format::EpubReflow),
         "as text, not as pages"
     );
-    assert!(!Format::Rar.is_readable(), "a RAR is not read");
-    assert!(!Format::PAGED.contains(&Format::Rar), "so it has no pages");
+    assert!(!Format::Rar.is_readable(), "the derive admits no RAR");
+    assert!(
+        !Format::PAGED.contains(&Format::Rar),
+        "so no pass reads one"
+    );
 }
 
 #[test]

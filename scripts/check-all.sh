@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The local mirror of CI (.forgejo/workflows/ci.yml). Run it yourself before pushing a branch —
-# nothing runs it for you, and the forge runs the same four jobs after the push rather than before.
+# nothing runs it for you, and the forge runs the same five jobs after the push rather than before.
 #
 #   scripts/check-all.sh                 # everything CI runs, plus the corpus checks
 #   scripts/check-all.sh --no-wasm       # skip the whole `wasm` job
@@ -12,7 +12,7 @@
 # run. It covers what no Node environment can — real layout and a real image
 # decode — and is named as unmeasured when the browser is absent.
 #
-# The point of this file is that the local gate and the CI gate cannot drift: CI's four jobs are
+# The point of this file is that the local gate and the CI gate cannot drift: CI's five jobs are
 # reproduced here in the same order with the same flags. When a job changes there, change it here.
 #
 # --- Two profiles, and which one measures what -------------------------------
@@ -54,7 +54,7 @@
 #
 # This is the one place the "local gate and CI gate cannot drift" claim above has an exception,
 # and it is stated here so that the exception is a decision rather than a gap: `mutants.yml` is
-# not one of the four jobs, and nothing waits on it.
+# not one of the five jobs, and nothing waits on it.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -122,6 +122,20 @@ if [ -n "${hidden_rust}" ]; then
   exit 1
 fi
 
+# --- libarchive's development files, which are not a CI job ---
+# The lint and test jobs below build with --all-features, which links libarchive through
+# compress-tools' build script, and that script finds it by pkg-config. Without it the gate would
+# stop inside clippy with a panic in a crate this repository does not own. CI's jobs install it.
+if ! pkg-config --exists libarchive 2>/dev/null; then
+  cat >&2 <<'EOF'
+error: libarchive's development files were not found (pkg-config libarchive).
+The gate builds with --all-features, which turns on taiyaku-read's rar-libarchive
+feature and links libarchive. Install libarchive-dev and pkg-config (Debian, Ubuntu)
+or libarchive and pkgconf (Arch), then run this again. A plain cargo build does not need them.
+EOF
+  exit 1
+fi
+
 # --- a coverage build another rustc made, which is not a CI job ---
 # Checked before the lint job, so a stale build is refused in seconds rather
 # than after it and a full instrumented build. Local only: CI starts from an empty
@@ -141,7 +155,7 @@ run cargo clippy --workspace --all-targets --all-features -- -D warnings
 # helper it delegates to is this workspace's own convention, so `-D warnings`
 # here would fail on day one and be deleted by the end of the week.
 run env RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
-  cargo doc --workspace --no-deps
+  cargo doc --workspace --no-deps --all-features
 
 # --- the check at the declared Rust version ---
 # Every other command here compiles with rust-toolchain.toml's pin, and clippy's `incompatible_msrv`
@@ -336,6 +350,30 @@ if ! command -v node >/dev/null 2>&1; then
 else
   run node scripts/check-comments.mjs --self-test
   run node scripts/check-comments.mjs
+fi
+
+# --- the `default-features` job ---
+# Every build above turns every feature on, so this is the only one of what a plain `cargo build`
+# makes: no RAR backend, where taiyaku-read refuses a RAR by name. CI runs it with no libarchive
+# installed; here libarchive is installed, so the guard is what proves the default graph does without it.
+# After the status.md test-count check, because `nextest run` rewrites the JUnit report it reads.
+echo; echo "==> no libarchive in the default build"
+tree=$(cargo tree --workspace -e normal,build,dev --prefix none)
+case "$tree" in
+  *"compress-tools v"*)
+    echo "error: the default build depends on compress-tools, which links libarchive; only a RAR feature may bring it in:" >&2
+    cargo tree --workspace -e normal,build,dev -i compress-tools >&2
+    exit 1
+    ;;
+esac
+run cargo clippy --workspace --all-targets -- -D warnings
+run env RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" \
+  cargo doc --workspace --no-deps
+if ! command -v cargo-nextest >/dev/null 2>&1; then
+  note_skip "the per-test timeout bound on the default-features job (cargo-nextest not on PATH — the fallback is a plain cargo test)"
+  run env -u TAIYAKU_CORPUS cargo test --workspace
+else
+  run env -u TAIYAKU_CORPUS cargo nextest run --workspace
 fi
 
 # --- the standing corpus checks ---

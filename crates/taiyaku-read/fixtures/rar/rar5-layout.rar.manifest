@@ -1,0 +1,10 @@
+format	rar5
+entry	vol/p01.png	file	326
+entry	vol/p02.png	file	321
+entry	vol/.hidden.png	file	324
+entry	__MACOSX/vol/._p01.png	file	8
+entry	.DS_Store	file	8
+entry	vol/cover.png	dir	0
+entry	vol	dir	0
+page	vol/p01.png	129ff8da50f07d025867603d48e80abd21750b66c65f5e7725d2fcb5a86eea86
+page	vol/p02.png	907bbdfc4d64d89be4295a57ca74de7b41984df56cfb97a66225e4cc83eeb7e5

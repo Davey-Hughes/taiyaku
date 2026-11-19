@@ -95,3 +95,5 @@ taiyaku-read = { path = "../taiyaku-read", features = ["test-support"] }
 # builds and no binary this workspace ships.
 [features]
 test-support = []
+# Passes `taiyaku-read`'s RAR backend through, so the binary turns it on by one name; off by default, so a plain build needs no libarchive.
+rar-libarchive = ["taiyaku-read/rar-libarchive"]

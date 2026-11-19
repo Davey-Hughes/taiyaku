@@ -13,6 +13,8 @@ mod book;
 mod format;
 mod naming;
 mod pages;
+#[cfg(rar)]
+mod rar;
 
 pub use book::{
     Block, BlockId, BlockKind, Book, Figure, ImageLink, LinkTarget, Mark, MarkKind, read_book,

@@ -25,6 +25,9 @@ roxmltree = "0.21.2"
 # workspace ships should carry an image codec for it. PNG alone is what it
 # writes; the other crates that enable `image` bring their own codecs.
 image = { version = "0.25.9", default-features = false, features = ["png"], optional = true }
+# Optional and off by default: the RAR backend over the system's libarchive. A
+# build without it links no libarchive and refuses RAR.
+compress-tools = { version = "0.16", optional = true }
 
 # Exposes `test_support` to other crates' tests. Enabled only from a
 # `[dev-dependencies]` entry, so it reaches test builds and `--all-features`
@@ -32,6 +35,8 @@ image = { version = "0.25.9", default-features = false, features = ["png"], opti
 # why it is shared rather than copied.
 [features]
 test-support = ["dep:image"]
+# `build.rs` sets the `rar` cfg when any RAR backend's feature is on.
+rar-libarchive = ["dep:compress-tools"]
 
 [lints]
 workspace = true

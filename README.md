@@ -466,13 +466,19 @@ convenience. The proxy target defaults to `http://127.0.0.1:8080`, which is why 
 `TAIYAKU_SERVE` to point it somewhere else.
 
 Members may be `.cbz`, `.zip`, any other zip-based archive whatever it is named,
-or a plain directory of page images. The container is identified by content
-rather than by extension, because extensions lie in both directions — a zip is
-often named `.cbr`, and a real RAR or 7-Zip archive is often named `.cbz`. Only
-zip is read: the others are recognised so the error can name the format and say
-to convert it, rather than reporting a corrupt zip. Several members on either
-side of the `--` are concatenated before solving, which is how chapters map onto
-a volume and how two tankōbon map onto one deluxe edition.
+or a plain directory of page images, and, in a build with the `rar-libarchive`
+feature (the container image is one), a RAR archive. The container is identified
+by content rather than by extension, because extensions lie in both directions —
+a zip is often named `.cbr`, and a real RAR or 7-Zip archive is often named
+`.cbz`. The other formats are recognised so the error can name the format and
+say to convert it, rather than reporting a corrupt zip, and a build without the
+feature names a RAR and says it reads none. A RAR5 archive whose end-of-archive
+block is missing, or followed by anything but zero bytes, is refused. `align`,
+`duplicates`, `credits` and the other commands given member paths read a RAR in
+such a build, but a library scan still counts a RAR as unreadable and makes no
+member of it. Several members on either side of the `--` are concatenated before
+solving, which is how chapters map onto a volume and how two tankōbon map onto
+one deluxe edition.
 
 Before any alignment there is often a prior question — you have three copies of
 volume 1 and want to know which one to keep. Two commands answer it, and neither
@@ -845,18 +851,21 @@ commit**, through a **pull request**. `main` is protected: it does not accept a 
 PR is the only way in.
 
     git switch -c my-change
-    scripts/check-all.sh                # the local mirror of CI — all four jobs
+    scripts/check-all.sh                # the local mirror of CI — all five jobs
     scripts/check-all.sh --no-wasm      # same, skipping the wasm job
     scripts/check-all.sh --no-web       # same, skipping the web job
     scripts/check-all.sh --corpus-debug # corpus checks in debug, for overflow checks
     git push -u origin my-change
     tea pr create                   # or open it in the web UI
 
-Run `scripts/check-all.sh` before pushing anyway, even though CI runs the same four jobs on the PR.
+Run `scripts/check-all.sh` before pushing anyway, even though CI runs the same five jobs on the PR.
 It is the same gate several minutes earlier, and it is the reason a red PR is unusual rather than
 routine. It prints what it did **not** measure as its last line rather than a bare `all green`, so a
 skipped corpus, a missing `wasm-pack` or an absent `web/node_modules` is stated rather than assumed
-away.
+away. The gate needs libarchive's development files (`libarchive-dev` and `pkg-config` on Debian and
+Ubuntu, `libarchive` and `pkgconf` on Arch), because it builds with every feature on, RAR support
+among them, and it stops first, saying so, when they are missing; a plain `cargo build` does not
+need them.
 
 The lockfile check is mirrored too: `pnpm -C web install --frozen-lockfile --lockfile-only`
 verifies `package.json` and the lockfile agree without touching `node_modules` — measured at

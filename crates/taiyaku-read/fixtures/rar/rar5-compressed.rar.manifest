@@ -1,0 +1,9 @@
+format	rar5
+entry	p10.png	file	325
+entry	ComicInfo.xml	file	103
+entry	p2.png	file	321
+entry	p1.png	file	327
+page	p1.png	4e5ac7f8a955d73dcb18247fd42c6b9d1721259df1032d104da069d407c2ec65
+page	p2.png	d2f2b561e9fd3cf508065d1ded4dc56b49f3520c0da0d20a820af112e7fae35e
+page	p10.png	c8da1f43e363d244ce0a55de3e5dc013edb4aed3601b462346c0f231a9281fd8
+other	ComicInfo.xml	ded5002f7bae07c97fe1ec1b6d19e592c1f047c80fe20a48fd221f2a9f75e5ac

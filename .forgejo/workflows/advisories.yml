@@ -6,12 +6,12 @@ name: advisories
 # against, the RustSec advisory database, is cloned fresh each run and moves on
 # its own. Advisories only — not licenses, bans or sources.
 #
-# **Its own workflow rather than a fifth job in `ci.yml`, and that is the
-# point of it.** `docker` there runs only once the four gate jobs pass, so a
+# **Its own workflow rather than another job in `ci.yml`, and that is the
+# point of it.** `docker` there runs only once the five gate jobs pass, so a
 # job that fails whenever an advisory is published would hold up the image
 # build, the Sunday rebuild included, whose purpose is to ship fixes. Nothing in
 # `ci.yml` needs this workflow and nothing here needs `ci.yml`. Nor is it a
-# required status: branch protection names `ci.yml`'s four contexts.
+# required status: branch protection names only `ci.yml`'s contexts.
 #
 # Accepting a finding has two routes, and they are not alternatives. **This is
 # the one place both are described**; `deny.toml` and docs/ci.md point here.

@@ -125,7 +125,7 @@ pub fn strace(test: &str, child: (&str, &std::ffi::OsStr), trace: &str, log: &Pa
 /// starts is printed as `1234 write(3</a>, "x", 1 <unfinished ...>` and later
 /// finished as `1234 <... write resumed>) = 1`. Either half on its own parses
 /// as nothing — a write that silently vanished from the order.
-fn rejoined(recorded: &str) -> Vec<String> {
+pub(crate) fn rejoined(recorded: &str) -> Vec<String> {
     let mut pending: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     let mut lines = Vec::new();
     for line in recorded.lines() {
@@ -834,3 +834,147 @@ pub const PRINT_FIXTURE: [PinnedPrint; 26] = [
         halves: None,
     },
 ];
+
+/// How a RAR fixture's manifest describes one entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RarEntryKind {
+    File,
+    Dir,
+    /// A file whose data is encrypted: listed as a file, and its read fails.
+    Encrypted,
+    /// A file stored as a reference to an identical one (rar's `-oi`): listed
+    /// as a file, and its read fails.
+    Reference,
+    /// A file of no bytes: listed as a file, and its read fails.
+    Empty,
+    /// A file continued from or into another volume of a set: listed as a
+    /// file, and its read fails, since one volume does not hold it whole.
+    Split,
+}
+
+/// One `entry` line of a RAR fixture's manifest.
+#[derive(Debug, Clone)]
+pub struct RarFixtureEntry {
+    pub name: String,
+    pub kind: RarEntryKind,
+    pub size: u64,
+}
+
+/// A RAR archive in `fixtures/rar/` and what its manifest says it holds.
+#[derive(Debug, Clone)]
+pub struct RarFixture {
+    /// The archive's file name.
+    pub file: String,
+    pub path: PathBuf,
+    pub format: String,
+    /// In archive order.
+    pub entries: Vec<RarFixtureEntry>,
+    /// In reading order, with each page's sha256, or `None` where its read
+    /// fails (`encrypted`, `reference`, `empty` or `split` in the manifest).
+    pub pages: Vec<(String, Option<String>)>,
+    /// Entries read by name that are not pages, with their sha256.
+    pub others: Vec<(String, String)>,
+    /// What an archive that cannot be listed is refused with.
+    pub refused: Option<String>,
+}
+
+/// Every fixture in `fixtures/rar/`, by file name, from its `<file>.manifest`.
+///
+/// `make.sh` writes the manifests: tab-separated, one fact a line, each
+/// `format <rar4|rar5>`, `entry <name> <file|dir|encrypted|reference|empty|split>
+/// <size>`, `page <name> <sha256|encrypted|reference|empty|split>`, `other <name>
+/// <sha256>` or `refused <text>`.
+///
+/// # Panics
+///
+/// Naming the manifest and the line, on a line it cannot read.
+#[must_use]
+pub fn rar_fixtures() -> Vec<RarFixture> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/rar");
+    let mut manifests: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()))
+        .map(|entry| entry.expect("a directory entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "manifest"))
+        .collect();
+    manifests.sort();
+    manifests
+        .iter()
+        .map(|manifest| rar_fixture(manifest))
+        .collect()
+}
+
+fn rar_fixture(manifest: &Path) -> RarFixture {
+    let text = std::fs::read_to_string(manifest)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", manifest.display()));
+    let path = manifest.with_extension("");
+    let mut fixture = RarFixture {
+        file: path
+            .file_name()
+            .expect("a manifest names its archive")
+            .to_string_lossy()
+            .into_owned(),
+        path,
+        format: String::new(),
+        entries: Vec::new(),
+        pages: Vec::new(),
+        others: Vec::new(),
+        refused: None,
+    };
+    for (index, line) in text.lines().enumerate() {
+        let malformed = || -> String { format!("{}:{}: {line:?}", manifest.display(), index + 1) };
+        match line.split('\t').collect::<Vec<_>>()[..] {
+            ["format", format @ ("rar4" | "rar5")] => format.clone_into(&mut fixture.format),
+            ["entry", name, kind, size] => fixture.entries.push(RarFixtureEntry {
+                name: name.to_owned(),
+                kind: match kind {
+                    "file" => RarEntryKind::File,
+                    "dir" => RarEntryKind::Dir,
+                    "encrypted" => RarEntryKind::Encrypted,
+                    "reference" => RarEntryKind::Reference,
+                    "empty" => RarEntryKind::Empty,
+                    "split" => RarEntryKind::Split,
+                    _ => panic!("{}: no such kind", malformed()),
+                },
+                size: size
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{}: not a size", malformed())),
+            }),
+            ["page", name, "encrypted" | "reference" | "empty" | "split"] => {
+                fixture.pages.push((name.to_owned(), None));
+            }
+            ["page", name, sha] if is_sha256(sha) => {
+                fixture.pages.push((name.to_owned(), Some(sha.to_owned())));
+            }
+            ["other", name, sha] if is_sha256(sha) => {
+                fixture.others.push((name.to_owned(), sha.to_owned()));
+            }
+            ["refused", text] => fixture.refused = Some(text.to_owned()),
+            _ => panic!("{}: not a manifest line", malformed()),
+        }
+    }
+    assert!(
+        !fixture.format.is_empty(),
+        "{}: no format line",
+        manifest.display()
+    );
+    fixture
+}
+
+fn is_sha256(text: &str) -> bool {
+    text.len() == 64
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// `bytes`' sha256 in lower-case hex, as the RAR fixtures' manifests give it.
+#[must_use]
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(64);
+    for b in &sha2::Sha256::digest(bytes) {
+        let _ = write!(hex, "{b:02x}");
+    }
+    hex
+}

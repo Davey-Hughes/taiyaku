@@ -6,7 +6,7 @@ on:
   pull_request:
   # **Weekly, Sundays 10:45 UTC (03:45 PDT / 02:45 PST), so the image picks
   # up patched Debian packages in a week when nothing merges.** A dispatch on
-  # `main` refreshes the same way; one on another branch runs the four
+  # `main` refreshes the same way; one on another branch runs the five
   # checks and skips `docker`. A push that lands during a refresh does not
   # cancel it, since this workflow has no `concurrency:` block; see "Build,
   # and load it" for what a refresh changes and what an overlap risks.
@@ -45,11 +45,11 @@ env:
 # image, takes 60, and says why where it sets it), and it is the outer half of a bound
 # that has two halves. `.config/nextest.toml` bounds a *test* — precisely, by
 # name, at 60 s. This bounds a *job*, which is the only thing that can catch a
-# hang outside a test: a stalled `curl` in one of the five tool-install steps
+# hang outside a test: a stalled `curl` in one of the six tool-install steps
 # below, or a `cargo build` that never finishes. Neither subsumes the other.
 #
 # 10 minutes is 4.5x the worst honest job observed (134 s). Uniform across the
-# four jobs rather than tuned per job, because a per-job number has to be
+# five jobs rather than tuned per job, because a per-job number has to be
 # re-tuned as jobs shift and the only property this number needs is to sit
 # between "any honest run" and "hours".
 #
@@ -77,6 +77,20 @@ jobs:
           git checkout -q FETCH_HEAD
       - name: Formatting
         run: cargo fmt --all -- --check
+      - name: Install libarchive's headers
+        # Both clippy steps, the doc links and the check at the declared Rust
+        # version below build with `--all-features`, which turns on
+        # `taiyaku-read`'s `rar-libarchive` and links the system libarchive,
+        # found through the image's own pkg-config. Here rather than first, so a
+        # formatting failure costs no download.
+        #
+        # From Debian's archive rather than a pinned tarball, for the reason
+        # the `test` job's strace step gives: apt checks every package against
+        # the archive's signed Release file.
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends libarchive-dev
+          pkg-config --modversion libarchive
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       # `broken_intra_doc_links` only. An unresolved `[`name`]` is always a
@@ -84,7 +98,7 @@ jobs:
       # this workspace's own convention and must stay a warning. See the same
       # note in `scripts/check-all.sh`, which mirrors this job.
       - name: Doc links
-        run: cargo doc --workspace --no-deps
+        run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links
       # Every other step compiles with rust-toolchain.toml's pin, and clippy's
@@ -203,7 +217,9 @@ jobs:
           echo "bc2a998567816eef7b087b920036f49fb89aa2a8a603f6a3d84098be160b62c5  /tmp/nextest.tar.gz" | sha256sum -c -
           tar -xzf /tmp/nextest.tar.gz -C /usr/local/bin
           cargo nextest --version
-      - name: Install strace
+      # `libarchive-dev` for the `--all-features` run below, whose RAR tests
+      # read through the system libarchive; the `lint` job's install says why apt.
+      - name: Install strace and libarchive's headers
         # O104's three tests assert the syscalls `atomic::write` and
         # `stamp::rewrite_one` make — the staged file synced before the
         # rename, its directory after — by re-running themselves under strace,
@@ -218,8 +234,9 @@ jobs:
         # `-y` and `-o`, all far older than bookworm's strace 6.1.
         run: |
           apt-get update -qq
-          apt-get install -y -qq --no-install-recommends strace
+          apt-get install -y -qq --no-install-recommends strace libarchive-dev
           strace -V
+          pkg-config --modversion libarchive
       - name: Tests, with coverage
         id: rust_coverage
         # `cargo llvm-cov nextest` runs the tests — this is the test step, not
@@ -372,6 +389,65 @@ jobs:
           node scripts/check-comments.mjs --self-test
           node scripts/check-comments.mjs --base "$base"
 
+  # The jobs above turn every feature on, so this is the one that builds and
+  # tests what a plain `cargo build` makes: no RAR backend, where
+  # `taiyaku-read` refuses a RAR by name. It installs no libarchive, and that
+  # is the point: the guard step fails if the default graph reaches
+  # `compress-tools`, and the build after it would fail if the guard missed.
+  # `scripts/check-all.sh` mirrors it. See docs/ci.md, "The default-features
+  # job, and why RAR is a feature".
+  default-features:
+    runs-on: docker
+    timeout-minutes: 10
+    container:
+      image: rust:1-bookworm
+    steps:
+      - name: Checkout
+        env:
+          TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          host="${FORGEJO_SERVER_URL#http://}"; host="${host#https://}"
+          scheme="${FORGEJO_SERVER_URL%%://*}"
+          git init -q .
+          git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
+          git fetch -q --depth 1 origin "$FORGEJO_REF"
+          git checkout -q FETCH_HEAD
+      - name: Install cargo-nextest
+        # The same version, URL and digest as the `test` job's; bump them together.
+        run: |
+          curl -fsSL -o /tmp/nextest.tar.gz \
+            https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.140/cargo-nextest-0.9.140-x86_64-unknown-linux-musl.tar.gz
+          echo "bc2a998567816eef7b087b920036f49fb89aa2a8a603f6a3d84098be160b62c5  /tmp/nextest.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/nextest.tar.gz -C /usr/local/bin
+          cargo nextest --version
+      - name: Install strace
+        # O104's tests run here too, and fail rather than skip without it; see
+        # the `test` job's step. Unlike that step, no libarchive.
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends strace
+          strace -V
+      - name: No libarchive in the default build
+        # Every edge a default build or its tests compile, with no feature on.
+        # `scripts/check-all.sh` holds the same lines.
+        run: |
+          tree=$(cargo tree --workspace -e normal,build,dev --prefix none)
+          case "$tree" in
+            *"compress-tools v"*)
+              echo "error: the default build depends on compress-tools, which links libarchive; only a RAR feature may bring it in:" >&2
+              cargo tree --workspace -e normal,build,dev -i compress-tools >&2
+              exit 1
+              ;;
+          esac
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Doc links
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links
+      - name: Tests
+        run: cargo nextest run --workspace
+
   # The core is required to stay WebAssembly-compatible so the browser reader
   # and a future native shell can share it. This is easy to break by accident —
   # one dependency pulling in threads or a native library does it — and the
@@ -515,12 +591,12 @@ jobs:
         run: node scripts/coverage-floor.mjs
 
   # Builds the image, runs it until its health check passes, and pushes it —
-  # on `main` only, after the four jobs above pass, for a push, the weekly
+  # on `main` only, after the five jobs above pass, for a push, the weekly
   # schedule or a dispatch. Never a required status: branch protection names
-  # the four `(pull_request)` contexts, and this job does not run on a pull
+  # only `(pull_request)` contexts, and this job does not run on a pull
   # request. See docs/ci.md, "The image job".
   docker:
-    needs: [lint, test, wasm, web]
+    needs: [lint, test, default-features, wasm, web]
     if: >-
       (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
       && github.ref == 'refs/heads/main'
@@ -587,8 +663,8 @@ jobs:
       # runtime`, here and to the push.** The isolated builder set up above
       # resolves the base images against the registry on every build, but
       # with the base digest and the commit unchanged its cache would replay
-      # the old `apt-get upgrade` layer, which is the one thing a refresh
-      # exists to update. Only the `runtime` stage is
+      # the old `apt-get upgrade` and `apt-get install` layer, which is the
+      # one thing a refresh exists to update. Only the `runtime` stage is
       # rebuilt on purpose: the wasm, web and server stages stay cached only
       # while their bases are unchanged, and rebuild cold when one moved.
       # Both builds, so the probe runs an image built the way the pushed one

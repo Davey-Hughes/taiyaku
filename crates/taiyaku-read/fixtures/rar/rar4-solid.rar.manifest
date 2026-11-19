@@ -1,0 +1,5 @@
+format	rar4
+entry	p01.png	file	321
+entry	p02.png	file	327
+entry	p03.png	file	322
+refused	not a readable RAR archive

@@ -2,7 +2,7 @@ name: mutants
 
 # Mutation testing, **one crate at a time, run by hand**, gating nothing.
 #
-# `ci.yml` is the gate: four jobs, ten-minute bounds, run on every push to
+# `ci.yml` is the gate: five jobs, ten-minute bounds, run on every push to
 # `main` and every pull request. This is not one of them and must never become
 # one. The sweep is far past what a gate can cost, and a job that is slow enough
 # to be skipped, or red often enough to be ignored, is worse than no job at all,
@@ -232,15 +232,18 @@ jobs:
           tar -xJf /tmp/node.tar.xz -C /opt
           ln -s /opt/node-v26.7.0-linux-x64/bin/node /usr/local/bin/node
           node --version
-      - name: Install strace
-        # For the same three O104 tests `ci.yml`'s test job installs it for, and
-        # for a sharper reason here: they fail without it, so a sweep of
+      - name: Install strace and libarchive's headers
+        # strace for the same three O104 tests `ci.yml`'s test job installs it
+        # for, and for a sharper reason here: they fail without it, so a sweep of
         # `taiyaku-read` or `taiyaku-library` would fail its baseline run and
         # report no verdict at all. See that step's comment for why apt.
+        # libarchive because `.cargo/mutants.toml` turns every feature on and
+        # `rar-libarchive` links it: without it no crate's baseline builds.
         run: |
           apt-get update -qq
-          apt-get install -y -qq --no-install-recommends strace
+          apt-get install -y -qq --no-install-recommends strace libarchive-dev
           strace -V
+          pkg-config --modversion libarchive
       # One crate. `--gitignore=true` is inside the script and is not optional:
       # without it every mutant build copies the gitignored corpus. There is no
       # corpus on the runner, but the flag also decides whether `target/` is

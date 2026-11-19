@@ -27,6 +27,14 @@ testdata/
 !crates/taiyaku-cli/fixtures/
 !crates/taiyaku-cli/fixtures/**/*.json
 
+# RAR fixtures for taiyaku-read are the other exception: archives of generated
+# noise and gradient images, made by their make.sh, never a published page.
+!crates/taiyaku-read/fixtures/
+!crates/taiyaku-read/fixtures/rar/
+!crates/taiyaku-read/fixtures/rar/*.rar
+!crates/taiyaku-read/fixtures/rar/*.manifest
+!crates/taiyaku-read/fixtures/rar/make.sh
+
 # Generated alignment output and derived caches. Reproducible from the corpus.
 taiyaku.json
 *.taiyaku.json

@@ -1,4 +1,11 @@
 //! Assembling an edition's flat page sequence from its members.
+#![cfg_attr(
+    not(rar),
+    expect(
+        clippy::infallible_destructuring_match,
+        reason = "a build without RAR opens only zips, so a match on an archive has one arm"
+    )
+)]
 
 use std::{
     collections::HashSet,
@@ -9,6 +16,8 @@ use std::{
 };
 
 use crate::naming::natural_cmp;
+#[cfg(rar)]
+use crate::rar::backend;
 
 const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "tif", "tiff",
@@ -91,7 +100,7 @@ pub fn is_page_name(name: &str) -> bool {
 /// a special case. Members are ordered naturally rather than as given, because a
 /// shell glob sorts `c005.5` ahead of `c005`.
 ///
-/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode
+/// A zip entry name that is not valid UTF-8 does not fail this: `zip`'s decode
 /// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
 /// flag says, and any other bytes are mapped through codepage 437 — so a
 /// mis-encoded entry is garbled, never refused, and still takes its place in
@@ -100,15 +109,15 @@ pub fn is_page_name(name: &str) -> bool {
 /// # Errors
 ///
 /// Returns an error on the first member, in natural order, that fails: its
-/// path is neither a readable directory nor an openable zip-based archive, it
-/// names a recognised-but-unsupported container — 7-Zip, RAR, or tar, named
-/// as such rather than reported as a corrupt cbz — it holds no entry this
-/// crate reads as a page, or one of its pages' bytes cannot be read back: a
-/// directory entry removed or made unreadable since listing, or an archive
-/// entry whose compressed data does not decode. In the no-pages case, for a
-/// directory member, the message also lists the extensions it did hold, so a
-/// `.webp`-only release is distinguishable from an empty one; an archive with
-/// no page entries just says so.
+/// path is neither a readable directory nor an openable archive, it names a
+/// recognised-but-unsupported container — 7-Zip, tar, or RAR in a build
+/// without a RAR backend, named as such rather than reported as a corrupt
+/// cbz — it holds no entry this crate reads as a page, or one of its pages'
+/// bytes cannot be read back: a directory entry removed or made unreadable
+/// since listing, or an archive entry whose compressed data does not decode.
+/// In the no-pages case, for a directory member, the message also lists the
+/// extensions it did hold, so a `.webp`-only release is distinguishable from
+/// an empty one; an archive with no page entries just says so.
 pub fn read_edition(members: &[PathBuf]) -> Result<Vec<Page>, String> {
     let mut ordered = members.to_vec();
     ordered.sort_by(|a, b| natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
@@ -122,7 +131,7 @@ pub fn read_edition(members: &[PathBuf]) -> Result<Vec<Page>, String> {
 /// name can reorder the volume. `read_edition` sorts because its caller hands
 /// it shell globs; a caller holding a sidecar must not.
 ///
-/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode
+/// A zip entry name that is not valid UTF-8 does not fail this: `zip`'s decode
 /// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
 /// flag says, and any other bytes are mapped through codepage 437 — so a
 /// mis-encoded entry is garbled, never refused, and still takes its place in
@@ -131,15 +140,15 @@ pub fn read_edition(members: &[PathBuf]) -> Result<Vec<Page>, String> {
 /// # Errors
 ///
 /// Returns an error on the first member, in the given order, that fails: its
-/// path is neither a readable directory nor an openable zip-based archive, it
-/// names a recognised-but-unsupported container — 7-Zip, RAR, or tar, named
-/// as such rather than reported as a corrupt cbz — it holds no entry this
-/// crate reads as a page, or one of its pages' bytes cannot be read back: a
-/// directory entry removed or made unreadable since listing, or an archive
-/// entry whose compressed data does not decode. In the no-pages case, for a
-/// directory member, the message also lists the extensions it did hold, so a
-/// `.webp`-only release is distinguishable from an empty one; an archive with
-/// no page entries just says so.
+/// path is neither a readable directory nor an openable archive, it names a
+/// recognised-but-unsupported container — 7-Zip, tar, or RAR in a build
+/// without a RAR backend, named as such rather than reported as a corrupt
+/// cbz — it holds no entry this crate reads as a page, or one of its pages'
+/// bytes cannot be read back: a directory entry removed or made unreadable
+/// since listing, or an archive entry whose compressed data does not decode.
+/// In the no-pages case, for a directory member, the message also lists the
+/// extensions it did hold, so a `.webp`-only release is distinguishable from
+/// an empty one; an archive with no page entries just says so.
 pub fn read_members_in_order(members: &[PathBuf]) -> Result<Vec<Page>, String> {
     let mut pages = Vec::new();
     for member in members {
@@ -255,10 +264,10 @@ fn read_directory(root: &Path) -> Result<Vec<Page>, String> {
 
 /// Name a container taiyaku cannot read, from its leading bytes.
 ///
-/// Only zip-based archives and directories are supported. Recognising the
-/// others is not a step towards reading them — it is so the error can say
-/// which format it found rather than reporting a corrupt zip, since the
-/// extension is frequently wrong about what is actually inside.
+/// Zip-based archives and directories are read, and RAR with a RAR backend.
+/// Recognising the others is not a step towards reading them — it is so the
+/// error can say which format it found rather than reporting a corrupt zip,
+/// since the extension is frequently wrong about what is actually inside.
 ///
 /// **The recognition itself lives in `format.rs`**, because the scanner needs
 /// the same answer as a token rather than as prose and two tables of magic
@@ -271,6 +280,7 @@ fn read_directory(root: &Path) -> Result<Vec<Page>, String> {
 fn unsupported_container(bytes: &[u8]) -> Option<&'static str> {
     match crate::format::from_header(bytes) {
         crate::Format::SevenZip => Some("a 7-Zip archive"),
+        #[cfg(not(rar))]
         crate::Format::Rar => Some("a RAR archive"),
         crate::Format::Tar => Some("a tar archive"),
         crate::Format::Pdf => Some("a PDF"),
@@ -302,11 +312,7 @@ fn page_names_from<R: Read + Seek>(zip: &zip::ZipArchive<R>) -> Vec<String> {
                 return None;
             }
             let name = entry.name().ok()?.into_owned();
-            // Resource forks and dotfiles are not pages.
-            if is_fork_or_dotfile(&name) {
-                return None;
-            }
-            is_page_name(&name).then_some(name)
+            is_listed_page(&name).then_some(name)
         })
         .collect();
     // Central-directory order is not guaranteed to be page order.
@@ -325,6 +331,12 @@ fn is_fork_or_dotfile(name: &str) -> bool {
             .is_some_and(|base| base.starts_with('.'))
 }
 
+/// Whether an archive entry of this name is listed as a page, in every
+/// container. Resource forks and dotfiles are not pages.
+fn is_listed_page(name: &str) -> bool {
+    !is_fork_or_dotfile(name) && is_page_name(name)
+}
+
 /// Whether `zip` will open an entry for reading with no password, judged
 /// from the central directory alone: the refusals `by_index` makes before it
 /// reads a byte of the entry's data. An encrypted entry, one carrying AES
@@ -341,21 +353,40 @@ fn zip_can_read(entry: &zip::read::ZipFileEntry<'_>) -> bool {
     !entry.encrypted() && entry.get_metadata().aes_settings().is_none() && !undecodable
 }
 
-/// Refuse a file whose leading bytes name a container taiyaku cannot read.
+/// Refuse a file whose leading bytes name a container taiyaku cannot read, or
+/// give the format they name.
 ///
 /// Takes a `Read` so a short read is reachable from a test; a local file never
 /// comes back short. The header is filled by `format::read_header`, because the
 /// tar magic sits at offset 257 and one `read` may stop before it. A read error
 /// assumes no header, and the zip reader then gives the answer.
-fn refuse_unsupported_container(source: &mut impl Read, path: &Path) -> Result<(), String> {
+fn refuse_unsupported_container(
+    source: &mut impl Read,
+    path: &Path,
+) -> Result<crate::Format, String> {
     let (header, read) = crate::format::read_header(source).unwrap_or(([0u8; 512], 0));
+    let format = crate::format::from_header(&header[..read]);
     match unsupported_container(&header[..read]) {
+        // A build with a RAR backend reads this file, so the build is the cause.
+        #[cfg(not(rar))]
+        Some(kind) if format == crate::Format::Rar => Err(format!(
+            "{}: this is {kind}, and this build of taiyaku reads no RAR (it was built without the rar-libarchive feature); convert it to zip or unpack it first",
+            path.display()
+        )),
         Some(kind) => Err(format!(
             "{}: this is {kind}. taiyaku reads zip-based archives and directories of page images; convert it or unpack it first",
             path.display()
         )),
-        None => Ok(()),
+        None => Ok(format),
     }
+}
+
+/// An archive `open_archive` let in: a zip, open, or a RAR, which the backend
+/// opens again on each call.
+enum Archive {
+    Zip(zip::ZipArchive<BufReader<File>>),
+    #[cfg(rar)]
+    Rar,
 }
 
 /// Open an archive, naming its format first if taiyaku cannot read it.
@@ -365,17 +396,22 @@ fn refuse_unsupported_container(source: &mut impl Read, path: &Path) -> Result<(
 /// does not support. Going straight to `ZipArchive::new` would report a
 /// perfectly good RAR file as an unreadable cbz — and `member_pages`, which
 /// lists rather than reads, is the path `align` takes when it records a member.
-fn open_archive(path: &Path) -> Result<zip::ZipArchive<BufReader<File>>, String> {
+fn open_archive(path: &Path) -> Result<Archive, String> {
     let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
 
     // Look at the bytes before handing them to the zip reader, so an archive in
     // another format is named rather than reported as a corrupt zip.
-    refuse_unsupported_container(&mut file, path)?;
-    file.rewind()
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-
-    zip::ZipArchive::new(BufReader::with_capacity(ARCHIVE_BUFFER, file))
-        .map_err(|e| format!("{}: not a readable cbz: {e}", path.display()))
+    match refuse_unsupported_container(&mut file, path)? {
+        #[cfg(rar)]
+        crate::Format::Rar => Ok(Archive::Rar),
+        _ => {
+            file.rewind()
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            zip::ZipArchive::new(BufReader::with_capacity(ARCHIVE_BUFFER, file))
+                .map(Archive::Zip)
+                .map_err(|e| format!("{}: not a readable cbz: {e}", path.display()))
+        }
+    }
 }
 
 /// The buffer every archive is opened through.
@@ -389,11 +425,25 @@ pub(crate) const ARCHIVE_BUFFER: usize = 64 * 1024;
 
 /// The names of an archive's page entries, in reading order.
 fn archive_page_names(path: &Path) -> Result<Vec<String>, String> {
-    Ok(page_names_from(&open_archive(path)?))
+    match open_archive(path)? {
+        Archive::Zip(zip) => Ok(page_names_from(&zip)),
+        #[cfg(rar)]
+        Archive::Rar => rar_page_names(path),
+    }
 }
 
 fn read_archive(path: &Path) -> Result<Vec<Page>, String> {
-    let mut zip = open_archive(path)?;
+    let mut zip = match open_archive(path)? {
+        Archive::Zip(zip) => zip,
+        #[cfg(rar)]
+        Archive::Rar => {
+            let names = rar_page_names(path)?;
+            return rar_visit_keeping(path, &names, |name, bytes| Page {
+                name: name.to_owned(),
+                bytes: bytes.to_vec(),
+            });
+        }
+    };
     let names = page_names_from(&zip);
 
     names
@@ -445,11 +495,11 @@ fn page_count(n: usize) -> u32 {
 
 /// The names of a member's pages, in reading order, without reading any bytes.
 ///
-/// For an archive this reads only the central directory; for a directory only
-/// the listing. That is what makes serving one page of a 195-page volume cost
-/// one page rather than the volume.
+/// For a zip this reads only the central directory, for a RAR its entry
+/// headers, and for a directory the listing. That is what makes serving one
+/// page of a 195-page volume cost one page rather than the volume.
 ///
-/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode
+/// A zip entry name that is not valid UTF-8 does not fail this: `zip`'s decode
 /// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
 /// flag says, and any other bytes are mapped through codepage 437 — so a
 /// mis-encoded entry is garbled, never refused, and the garbled name is what
@@ -460,8 +510,9 @@ fn page_count(n: usize) -> u32 {
 /// For a directory, returns an error if `path`, or a directory nested under
 /// it, cannot be listed. For an archive, returns an error if the file cannot
 /// be opened, if its leading bytes identify a recognised-but-unsupported
-/// container — 7-Zip, RAR, or tar, named as such rather than reported as a
-/// corrupt cbz — or if it does not parse as a zip archive.
+/// container — 7-Zip, tar, or RAR in a build without a RAR backend, named as
+/// such rather than reported as a corrupt cbz — or if it parses as neither a
+/// zip archive nor a RAR archive the backend can list.
 pub fn member_page_names(path: &Path) -> Result<Vec<String>, String> {
     if path.is_dir() {
         Ok(directory_page_paths(path)?
@@ -484,7 +535,7 @@ pub fn member_page_names(path: &Path) -> Result<Vec<String>, String> {
 /// `taiyaku-serve` needs the extension to say what it is serving, and asking
 /// for the listing again to find out would read the archive twice.
 ///
-/// An entry name that is not valid UTF-8 does not fail this either: `zip`'s
+/// A zip entry name that is not valid UTF-8 does not fail this either: `zip`'s
 /// decode cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever
 /// the UTF-8 flag says, and any other bytes are mapped through codepage 437 —
 /// so it comes back garbled rather than refused, at whatever `index` its
@@ -494,11 +545,11 @@ pub fn member_page_names(path: &Path) -> Result<Vec<String>, String> {
 ///
 /// Returns an error if `path` cannot be opened as a directory or an
 /// archive — including a recognised-but-unsupported container such as
-/// 7-Zip, RAR, or tar, named as such — if `index` is at or past the
-/// member's page count (`"no page {index}"`), or if the located page's
-/// bytes cannot be read back: a directory entry removed or made unreadable
-/// since listing, or an archive entry whose compressed data does not
-/// decode.
+/// 7-Zip, tar, or RAR in a build without a RAR backend, named as such — if
+/// `index` is at or past the member's page count (`"no page {index}"`), or
+/// if the located page's bytes cannot be read back: a directory entry
+/// removed or made unreadable since listing, or an archive entry whose
+/// compressed data does not decode.
 pub fn member_page(path: &Path, index: u32) -> Result<Page, String> {
     let i = index as usize;
     if path.is_dir() {
@@ -516,28 +567,48 @@ pub fn member_page(path: &Path, index: u32) -> Result<Page, String> {
             bytes,
         });
     }
-    let mut zip = open_archive(path)?;
-    let names = page_names_from(&zip);
+    let archive = open_archive(path)?;
+    let names = match &archive {
+        Archive::Zip(zip) => page_names_from(zip),
+        #[cfg(rar)]
+        Archive::Rar => rar_page_names(path)?,
+    };
     let name = names
         .get(i)
         .cloned()
         .ok_or_else(|| format!("{}: no page {index}", path.display()))?;
-    entry_page(&mut zip, path, name)
+    match archive {
+        Archive::Zip(mut zip) => entry_page(&mut zip, path, name),
+        #[cfg(rar)]
+        Archive::Rar => rar_page(path, name),
+    }
 }
 
 /// One page of the archive at `path`, by the name [`member_page_names`]
 /// listed it under, for a caller that keeps the listing: the entry is found
-/// by that name in the central directory, without listing and sorting the
-/// pages again, and reads as [`member_page`] reads it at the name's index.
+/// by that name, in a zip's central directory or a RAR's entry headers,
+/// without sorting the pages again, and reads as [`member_page`] reads it at
+/// the name's index.
 ///
 /// # Errors
 ///
 /// Returns an error if `path` cannot be opened as an archive — a directory
 /// among them, whose pages only a listing finds — including a
-/// recognised-but-unsupported container named as such, if the archive holds
-/// no entry of that name, or if its compressed data does not decode.
+/// recognised-but-unsupported container named as such, if it parses as
+/// neither a zip archive nor a RAR archive the backend can list, if the
+/// archive holds no entry of that name, or if its compressed data does not
+/// decode.
 pub fn archive_page(path: &Path, name: &str) -> Result<Page, String> {
-    entry_page(&mut open_archive(path)?, path, name.to_string())
+    match open_archive(path)? {
+        Archive::Zip(mut zip) => entry_page(&mut zip, path, name.to_string()),
+        // Listed first, so it is refused as the listings refuse it: a read by
+        // name stops at its entry, before a cut or a refused entry after it.
+        #[cfg(rar)]
+        Archive::Rar => {
+            rar_entries(path)?;
+            rar_page(path, name.to_string())
+        }
+    }
 }
 
 /// The entry `name` of `zip`, opened from `path`, read whole.
@@ -596,7 +667,7 @@ pub fn member_digest(path: &Path) -> Result<String, String> {
 
 /// How many pages a member holds, without reading any of them.
 ///
-/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode
+/// A zip entry name that is not valid UTF-8 does not fail this: `zip`'s decode
 /// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
 /// flag says, and any other bytes are mapped through codepage 437 — so a
 /// mis-encoded entry is garbled, never refused, and if its extension still
@@ -628,15 +699,15 @@ pub fn member_pages(path: &Path) -> Result<u32, String> {
 /// without reading any of them.
 ///
 /// Directory pages are sized from their metadata and archive entries from the
-/// zip central directory, which records the uncompressed size. Uncompressed on
-/// both sides deliberately: a directory of loose images and a `.cbz` of the
-/// same scan then produce the same list, and seeing through packaging is the
-/// whole job of the signature this feeds.
+/// zip central directory or the RAR entry headers, which record the
+/// uncompressed size. Uncompressed on both sides deliberately: a directory of
+/// loose images and a `.cbz` of the same scan then produce the same list, and
+/// seeing through packaging is the whole job of the signature this feeds.
 ///
 /// A listing, not a read — the property that lets an inventory run over a NAS
 /// and decide what is worth copying.
 ///
-/// An entry name that is not valid UTF-8 does not fail this: `zip`'s decode
+/// A zip entry name that is not valid UTF-8 does not fail this: `zip`'s decode
 /// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
 /// flag says, and any other bytes are mapped through codepage 437 — so a
 /// mis-encoded entry is garbled, never refused, and its size is still listed at
@@ -648,8 +719,9 @@ pub fn member_pages(path: &Path) -> Result<u32, String> {
 /// cannot be listed, or if a page file's metadata cannot be read — removed
 /// or made unreadable since listing. For an archive, returns an error if it
 /// cannot be opened, if its leading bytes identify a recognised-but-
-/// unsupported container — 7-Zip, RAR, or tar, named as such — if it does
-/// not parse as a zip archive, or if a listed entry cannot be looked up
+/// unsupported container — 7-Zip, tar, or RAR in a build without a RAR
+/// backend, named as such — if it parses as neither a zip archive nor a RAR
+/// archive the backend can list, or if a listed entry cannot be looked up
 /// again by name.
 pub fn member_page_sizes(path: &Path) -> Result<Vec<u64>, String> {
     if path.is_dir() {
@@ -662,7 +734,14 @@ pub fn member_page_sizes(path: &Path) -> Result<Vec<u64>, String> {
             })
             .collect();
     }
-    let mut zip = open_archive(path)?;
+    let mut zip = match open_archive(path)? {
+        Archive::Zip(zip) => zip,
+        #[cfg(rar)]
+        Archive::Rar => {
+            let (pages, _) = rar_pages(path)?;
+            return Ok(pages.iter().map(|page| page.size).collect());
+        }
+    };
     let names = page_names_from(&zip);
     names
         .iter()
@@ -678,9 +757,9 @@ pub fn member_page_sizes(path: &Path) -> Result<Vec<u64>, String> {
 ///
 /// The triple a `STORE` zip's local header needs, and the reason this exists
 /// beside `member_page_names` and `member_page_sizes` rather than replacing
-/// them: those two are listings, and this one hashes. For an **archive** all
-/// three fields come out of the central directory, so the archive's page data
-/// is never touched; for a **directory** the crc does not exist anywhere and
+/// them: those two are listings, and this one hashes. For a **zip** all three
+/// come out of the central directory, so its page data is never touched; a
+/// **directory** has no crc anywhere and a **RAR**'s backend gives none, so
 /// each page is read once to compute it. Spec C2 §4 records why paying that on
 /// directory members beat the alternative (data descriptors) and why folding
 /// the listings onto this would have been a regression, not a de-duplication.
@@ -726,8 +805,8 @@ fn directory_page_entry(member: &Path, page: &Path) -> Result<(PageEntry, Vec<u8
 /// Every page of a member, described in reading order.
 ///
 /// The name is the same one `member_page_names` reports — whole path relative
-/// to the member for a directory, the bare entry name for an archive — and an
-/// entry name that is not valid UTF-8 arrives garbled rather than refused, for
+/// to the member for a directory, the bare entry name for an archive — and a
+/// zip entry name not valid UTF-8 arrives garbled rather than refused, for
 /// the reason that function's doc comment gives.
 ///
 /// # Errors
@@ -736,8 +815,10 @@ fn directory_page_entry(member: &Path, page: &Path) -> Result<(PageEntry, Vec<u8
 /// cannot be listed, or if a page cannot be read back — removed or made
 /// unreadable since listing. For an archive, returns an error if it cannot be
 /// opened, if its leading bytes identify a recognised-but-unsupported
-/// container — 7-Zip, RAR, or tar, named as such — if it does not parse as a
-/// zip archive, or if a listed entry cannot be looked up again by name.
+/// container — 7-Zip, tar, or RAR in a build without a RAR backend, named as
+/// such — if it parses as neither a zip archive nor a RAR archive the backend
+/// can list, or if a listed entry cannot be looked up again by name or, in a
+/// RAR, read.
 pub fn member_page_entries(path: &Path) -> Result<Vec<PageEntry>, String> {
     if path.is_dir() {
         return directory_page_paths(path)?
@@ -745,7 +826,11 @@ pub fn member_page_entries(path: &Path) -> Result<Vec<PageEntry>, String> {
             .map(|page| directory_page_entry(path, page).map(|(entry, _bytes)| entry))
             .collect();
     }
-    let mut zip = open_archive(path)?;
+    let mut zip = match open_archive(path)? {
+        Archive::Zip(zip) => zip,
+        #[cfg(rar)]
+        Archive::Rar => return rar_visit_keeping(path, &rar_page_names(path)?, rar_page_entry),
+    };
     let names = page_names_from(&zip);
     names
         .iter()
@@ -771,11 +856,11 @@ type PageVisitor<'a> = dyn FnMut(&PageEntry, &[u8]) -> Result<(), String> + 'a;
 
 /// Every page of a member, handed to `f` one at a time, in reading order.
 ///
-/// **One archive open for the whole member, one page in memory at a time.**
-/// `member_page` opens the archive per index, which is right for a route
+/// **One page in memory at a time, and one archive open for a zip.** A RAR is
+/// opened twice, or once more per page where it does not store its pages in
+/// reading order. `member_page` opens per index, right for a route
 /// serving one page and wrong for a download reading two hundred of them: this
-/// is that loop with the open hoisted out. `read_edition` is the other
-/// neighbour and holds *every* page at once.
+/// is that loop with the open hoisted out. `read_edition` holds *every* page.
 ///
 /// The `PageEntry` travels with the bytes so a caller that planned an output
 /// from `member_page_entries` can check the member still matches as it
@@ -811,7 +896,11 @@ pub fn for_each_member_page(path: &Path, f: &mut PageVisitor<'_>) -> Result<(), 
         return Ok(());
     }
 
-    let mut zip = open_archive(path)?;
+    let mut zip = match open_archive(path)? {
+        Archive::Zip(zip) => zip,
+        #[cfg(rar)]
+        Archive::Rar => return rar_for_each_page(path, f),
+    };
     let names = page_names_from(&zip);
     for name in names {
         let mut handle = zip
@@ -864,9 +953,10 @@ pub fn for_each_member_page(path: &Path, f: &mut PageVisitor<'_>) -> Result<(), 
 /// For a directory, returns an error if it cannot be listed, or if the
 /// matched entry cannot be read back. For an archive, returns an error if it
 /// cannot be opened, if its leading bytes identify a recognised-but-
-/// unsupported container — 7-Zip, RAR, or tar, named as such rather than
-/// reported as a corrupt cbz — if it does not parse as a zip archive, or if
-/// the matched entry cannot be read back.
+/// unsupported container — 7-Zip, tar, or RAR in a build without a RAR
+/// backend, named as such rather than reported as a corrupt cbz — if it parses
+/// as neither a zip archive nor a RAR archive the backend can list, or if the
+/// matched entry cannot be read back.
 pub fn member_entry(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> {
     if path.is_dir() {
         let dir = std::fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -885,7 +975,18 @@ pub fn member_entry(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> 
         return Ok(None);
     }
 
-    let mut zip = open_archive(path)?;
+    let mut zip = match open_archive(path)? {
+        Archive::Zip(zip) => zip,
+        #[cfg(rar)]
+        Archive::Rar => {
+            let matched = rar_entries(path)?
+                .into_iter()
+                .find(|entry| entry.readable && entry.name.eq_ignore_ascii_case(name));
+            return matched
+                .map(|entry| backend().read(path, &entry.name))
+                .transpose();
+        }
+    };
     let matched = (0..zip.len()).find_map(|i| {
         let entry = zip.by_index(i).ok()?;
         let entry_name = entry.name().ok()?;
@@ -921,8 +1022,8 @@ pub fn member_entry(path: &Path, name: &str) -> Result<Option<Vec<u8>>, String> 
 /// # Errors
 ///
 /// As [`member_page_names`]: a directory that cannot be listed, or an archive
-/// that cannot be opened, is a container this crate does not read, or does
-/// not parse as a zip.
+/// that cannot be opened, is a container this crate does not read, or parses
+/// as neither a zip archive nor a RAR archive the backend can list.
 pub fn member_unread_entries(path: &Path) -> Result<Vec<String>, String> {
     let mut unread: Vec<String> = if path.is_dir() {
         directory_files(path)?
@@ -937,15 +1038,21 @@ pub fn member_unread_entries(path: &Path) -> Result<Vec<String>, String> {
             .filter(|name| !is_companion(name))
             .collect()
     } else {
-        let zip = open_archive(path)?;
-        let pages: HashSet<String> = page_names_from(&zip).into_iter().collect();
-        (0..zip.len())
-            .filter_map(|i| {
-                let entry = zip.by_index_data(i).ok()?;
-                let name = entry.name().ok()?.into_owned();
-                (entry.is_file() && !pages.contains(&name) && !is_companion(&name)).then_some(name)
-            })
-            .collect()
+        match open_archive(path)? {
+            Archive::Zip(zip) => {
+                let pages: HashSet<String> = page_names_from(&zip).into_iter().collect();
+                (0..zip.len())
+                    .filter_map(|i| {
+                        let entry = zip.by_index_data(i).ok()?;
+                        let name = entry.name().ok()?.into_owned();
+                        (entry.is_file() && !pages.contains(&name) && !is_companion(&name))
+                            .then_some(name)
+                    })
+                    .collect()
+            }
+            #[cfg(rar)]
+            Archive::Rar => rar_unread_entries(path)?,
+        }
     };
     unread.sort_by(|a, b| natural_cmp(a, b));
     Ok(unread)
@@ -970,5 +1077,121 @@ fn is_companion(name: &str) -> bool {
             .is_some_and(|e| COMPANION_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
+/// Every entry of a RAR, refusing one that holds none: libarchive lists a
+/// file cut short after its signature as an empty archive.
+#[cfg(rar)]
+fn rar_entries(path: &Path) -> Result<Vec<crate::rar::Entry>, String> {
+    let entries = backend().entries(path)?;
+    if entries.is_empty() {
+        return Err(format!(
+            "{}: not a readable RAR archive: no entries",
+            path.display()
+        ));
+    }
+    Ok(entries)
+}
+
+/// A RAR's page entries in reading order, by the rules a zip's follow, and
+/// whether the archive already stores them in that order.
+#[cfg(rar)]
+fn rar_pages(path: &Path) -> Result<(Vec<crate::rar::Entry>, bool), String> {
+    let mut pages: Vec<_> = rar_entries(path)?
+        .into_iter()
+        .filter(|entry| entry.readable && is_listed_page(&entry.name))
+        .collect();
+    let stored_in_order = pages.is_sorted_by(|a, b| natural_cmp(&a.name, &b.name).is_le());
+    pages.sort_by(|a, b| natural_cmp(&a.name, &b.name));
+    Ok((pages, stored_in_order))
+}
+
+/// A RAR's regular files that are neither a page nor a companion.
+#[cfg(rar)]
+fn rar_unread_entries(path: &Path) -> Result<Vec<String>, String> {
+    Ok(rar_entries(path)?
+        .into_iter()
+        .filter(|entry| {
+            entry.readable && !is_listed_page(&entry.name) && !is_companion(&entry.name)
+        })
+        .map(|entry| entry.name)
+        .collect())
+}
+
+/// The names of a RAR's pages, in reading order.
+#[cfg(rar)]
+fn rar_page_names(path: &Path) -> Result<Vec<String>, String> {
+    let (pages, _) = rar_pages(path)?;
+    Ok(pages.into_iter().map(|page| page.name).collect())
+}
+
+#[cfg(rar)]
+fn rar_page(path: &Path, name: String) -> Result<Page, String> {
+    let bytes = backend().read(path, &name)?;
+    Ok(Page { name, bytes })
+}
+
+/// Described from the bytes the backend handed over, since its listing gives
+/// no crc32.
+#[cfg(rar)]
+fn rar_page_entry(name: &str, bytes: &[u8]) -> PageEntry {
+    PageEntry {
+        name: name.to_owned(),
+        size: bytes.len() as u64,
+        crc32: crc32fast::hash(bytes),
+    }
+}
+
+/// What `keep` makes of each page in `names`, from one visit, in the order of
+/// `names`. A page the visit never handed over is an error.
+#[cfg(rar)]
+fn rar_visit_keeping<T>(
+    path: &Path,
+    names: &[String],
+    keep: impl Fn(&str, &[u8]) -> T,
+) -> Result<Vec<T>, String> {
+    let wanted: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
+    let mut kept = std::collections::HashMap::new();
+    backend().visit(path, &|name| wanted.contains(name), &mut |name, bytes| {
+        kept.entry(name.to_owned())
+            .or_insert_with(|| keep(name, bytes));
+        Ok(())
+    })?;
+    names
+        .iter()
+        .map(|name| {
+            kept.remove(name)
+                .ok_or_else(|| format!("{}: {name}: not read", path.display()))
+        })
+        .collect()
+}
+
+#[cfg(rar)]
+fn rar_for_each_page(path: &Path, f: &mut PageVisitor<'_>) -> Result<(), String> {
+    let (pages, stored_in_order) = rar_pages(path)?;
+    // Either way one page is in memory at a time. A visit decodes each page
+    // once, but hands them over in archive order; a read per name keeps the
+    // reading order, and in a solid archive decodes every entry before it.
+    if stored_in_order {
+        let wanted: std::collections::HashSet<&str> =
+            pages.iter().map(|page| page.name.as_str()).collect();
+        let mut handed = 0;
+        backend().visit(path, &|name| wanted.contains(name), &mut |name, bytes| {
+            handed += 1;
+            f(&rar_page_entry(name, bytes), bytes)
+        })?;
+        return match pages.get(handed) {
+            Some(page) => Err(format!("{}: {}: not read", path.display(), page.name)),
+            None => Ok(()),
+        };
+    }
+    for page in pages {
+        let bytes = backend().read(path, &page.name)?;
+        f(&rar_page_entry(&page.name, &bytes), &bytes)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, rar))]
+mod rar_tests;

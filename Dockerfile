@@ -55,6 +55,12 @@ FROM rust:1-bookworm AS server
 WORKDIR /src
 COPY rust-toolchain.toml ./
 RUN rustup toolchain install
+# The `rar-libarchive` build below compiles `compress-tools`, which finds
+# libarchive's headers through `pkg-config`: this image has `pkg-config` but
+# not the headers. A layer of its own above the sources, so a source change
+# does not reinstall it.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libarchive-dev
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 # The commit `/api/about` reports, which `taiyaku-serve` reads at compile time
@@ -66,7 +72,8 @@ COPY crates/ crates/
 # commit.
 ARG TAIYAKU_COMMIT
 # `rusqlite` compiles SQLite into the binary (its `bundled` feature). The
-# binary still links this image's glibc, so this stage and the runtime one below
+# binary still links this image's glibc and, through `rar-libarchive`, the
+# system libarchive (installed above), so this stage and the runtime one below
 # must be the same distribution.
 #
 # SQLite's default allows 32766 bound parameters and this image allows 250000:
@@ -76,18 +83,20 @@ ARG TAIYAKU_COMMIT
 ENV LIBSQLITE3_FLAGS=-DSQLITE_MAX_VARIABLE_NUMBER=250000
 RUN --mount=type=cache,id=taiyaku-cargo-registry,sharing=locked,target=/usr/local/cargo/registry \
     --mount=type=cache,id=taiyaku-server-target,target=/src/target \
-    cargo build --release --locked -p taiyaku-cli \
+    cargo build --release --locked -p taiyaku-cli --features rar-libarchive \
  && install -m 0755 target/release/taiyaku /usr/local/bin/taiyaku
 
 ########################  4. Runtime  ###########################################
 FROM debian:bookworm-slim AS runtime
-# Nothing is installed here. SQLite is compiled into the binary, so its security
-# fixes arrive through `libsqlite3-sys` in `Cargo.lock` and never through `apt`,
-# and `ureq`'s TLS roots are compiled in, so no `ca-certificates`.
-# `apt-get upgrade` runs so that a rebuild ships Debian's security fixes before
-# `debian:bookworm-slim` is republished with them.
+# `libarchive13` is the one library the binary links that this image lacks.
+# SQLite is compiled into the binary, so its security fixes arrive through
+# `libsqlite3-sys` in `Cargo.lock` and never through `apt`, and `ureq`'s TLS
+# roots are compiled in, so no `ca-certificates`. `apt-get upgrade` runs so that
+# a rebuild ships Debian's security fixes before `debian:bookworm-slim` is
+# republished with them.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
+ && apt-get install -y --no-install-recommends libarchive13 \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /config /cache \
  && chown 99:100 /config /cache

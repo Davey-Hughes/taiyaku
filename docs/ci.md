@@ -7,11 +7,12 @@ to `.github/workflows/`; using the Forgejo path keeps the intent unambiguous.
 
 | Job | Runs |
 | --- | ---- |
-| `lint` | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo doc -D rustdoc::broken_intra_doc_links`, then `cargo check --workspace --all-targets --all-features --locked` at the `rust-version` the root `Cargo.toml` declares — see "Toolchain note" |
-| `test` | `cargo llvm-cov nextest --workspace` — runs the tests under nextest's per-test timeout *and* gates their aggregate coverage — then installs node and runs `scripts/coverage-floor.mjs` over a re-rendered JSON report for the per-file half, `scripts/status-test-count.mjs`, and last the comment guard, `scripts/check-comments.mjs` |
+| `lint` | `cargo fmt --check`, then installs `libarchive-dev` by apt for `cargo clippy -D warnings` and `cargo doc -D rustdoc::broken_intra_doc_links`, both `--all-features`, then `cargo check --workspace --all-targets --all-features --locked` at the `rust-version` the root `Cargo.toml` declares — see "Toolchain note" |
+| `test` | installs `strace` and `libarchive-dev` by apt, then `cargo llvm-cov nextest --workspace --all-features` — runs the tests under nextest's per-test timeout *and* gates their aggregate coverage — then installs node and runs `scripts/coverage-floor.mjs` over a re-rendered JSON report for the per-file half, `scripts/status-test-count.mjs`, and last the comment guard, `scripts/check-comments.mjs` |
+| `default-features` | the build a plain `cargo build` makes, with no libarchive installed: fails if the default dependency graph reaches `compress-tools`, then `cargo clippy -D warnings`, the doc-link check and `cargo nextest run --workspace`, all without features — see "The default-features job, and why RAR is a feature" |
 | `wasm` | builds `taiyaku-core` and `taiyaku-wasm` for `wasm32-unknown-unknown`, builds the browser package with `wasm-pack`, and runs `scripts/smoke-wasm.mjs` against the compiled module |
 | `web` | `pnpm install --frozen-lockfile`, `biome check` (formatting **and** lint), `tsc -b` typecheck, `vitest run --coverage` in `web/`, then `scripts/coverage-floor.mjs` for the per-file half |
-| `docker` | **on `main` only (a push, the weekly schedule or a dispatch), after the four above pass**: builds the image in an isolated buildx builder, runs it until its health check passes, probes three paths and checks its binary holds the commit, then pushes `forge.daveynet.xyz/davey/taiyaku:sha-<7>`, and `:latest` when its commit is main's tip (a refresh re-pushes, with patched packages, the `sha-<7>` of the commit it built and, at the tip, `:latest`) — see "The image job" |
+| `docker` | **on `main` only (a push, the weekly schedule or a dispatch), after the five above pass**: builds the image in an isolated buildx builder, runs it until its health check passes, probes three paths and checks its binary holds the commit, then pushes `forge.daveynet.xyz/davey/taiyaku:sha-<7>`, and `:latest` when its commit is main's tip (a refresh re-pushes, with patched packages, the `sha-<7>` of the commit it built and, at the tip, `:latest`) — see "The image job" |
 
 The `test` job's tests run with `TAIYAKU_COMMIT` set to the commit under test,
 so `about`'s route test compares the commit `/api/about` reports with a real
@@ -37,7 +38,9 @@ point the offending dependency is load-bearing.
 ### The doc-link check, and why it denies one lint rather than warnings
 
 **`RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc --workspace
---no-deps`**, in the `lint` job and in `check-all.sh` beside it.
+--no-deps --all-features`**, in the `lint` job and in `check-all.sh` beside it.
+The `default-features` job runs it again without `--all-features`, for a link
+that resolves only when a feature is on.
 
 An unresolved `[`name`]` sends the reader to a symbol that does not exist, and
 **a rename is how it happens**. One shipped: #92 renamed `missing_members` to
@@ -60,6 +63,39 @@ week. One rule, denied precisely.
 **It is cheap because `--no-deps` is doing the work**: documenting the
 workspace's own crates and nothing they depend on.
 
+### The default-features job, and why RAR is a feature
+
+`taiyaku-read` reads RAR through libarchive, a C library, behind its
+`rar-libarchive` feature. `taiyaku-library`, `taiyaku-serve` and
+`taiyaku-cli` each pass the feature down, and it is off by default, so a
+plain `cargo build` needs neither libarchive nor its headers. `lint` and
+`test` build with `--all-features`, installing `libarchive-dev` from Debian's
+archive for it, and `wasm` builds two crates that never reach `taiyaku-read`,
+so without this job nothing would compile the default build, or run the tests
+that pin how it refuses a RAR: by name, saying this build of taiyaku reads no
+RAR.
+
+`default-features` installs no libarchive, and that is the point. Its first
+step after the tools fails when `cargo tree --workspace -e normal,build,dev`,
+with no features, lists `compress-tools`, and prints the crates that pulled
+it in. The `dev` edges are there because a dev-dependency that turned the
+feature on would link libarchive into every default test build. Then clippy,
+the doc-link check and `cargo nextest run --workspace`, all without
+features. `check-all.sh` runs the same steps after the test job's, on a
+machine that has libarchive, so there the guard is what shows the default
+graph does without it; and it refuses to start at all without libarchive's
+development files (`pkg-config libarchive`), naming the packages to install,
+because the lint and test jobs need them.
+
+`compress-tools` comes from the owner's fork on GitHub, pinned by commit in
+the workspace's `[patch.crates-io]` until a release carries its fixes (O382).
+The fork's `taiyaku-rar` branch is the only ref that holds that commit, so it
+is kept, and not moved, until the patch goes.
+Cargo loads a patch's source whenever it resolves the workspace, with the
+feature or without it, so every job in `ci.yml` that runs cargo fetches it
+from there, as do the image build's two Rust stages whenever they rebuild,
+and `advisories.yml`'s fetch step.
+
 ### The workflows that are not jobs
 
 `mutants.yml` is dispatched by hand and **gates nothing**. It is not in the table above,
@@ -73,7 +109,7 @@ published advisory cannot hold up the image. See "The advisory check" below.
 
 ## The local mirror, and the one thing it cannot mirror
 
-`scripts/check-all.sh` reproduces all four jobs above, in the same order with
+`scripts/check-all.sh` reproduces all five jobs above, in the same order with
 the same flags, so the local gate and the CI gate cannot drift. That claim was
 false between M5a and 2026-08-07: the script said "three jobs" and reproduced
 three while CI had grown a fourth, so **a TypeScript change could take the local
@@ -220,8 +256,8 @@ which is what makes a `slow-timeout` advisory rather than a kill:
 minutes, and a global 60 s kill would destroy that measurement every time
 someone ran one.
 
-`timeout-minutes: 10` on all four jobs bounds a **job** — the only thing that
-can catch a hang outside a test, such as a stalled `curl` in one of the five
+`timeout-minutes: 10` on all five jobs bounds a **job** — the only thing that
+can catch a hang outside a test, such as a stalled `curl` in one of the six
 tool-install steps across this file or a `cargo build` that never finishes.
 It is sized at 4.5x the worst honest job observed over the ten runs before
 this branch (134 s), applied uniformly rather than tuned per job. Neither
@@ -251,7 +287,9 @@ after `cargo-llvm-cov`, `node` and `wasm-pack`, a fourth install sized and
 checksummed the same way as those three.
 
 `strace` is the one tool this workflow takes from Debian's archive rather than
-a pinned tarball, installed in the `test` job and in `mutants.yml`'s sweep.
+a pinned tarball (`libarchive-dev`, a library's headers, is the other package
+it takes from there), installed in the `test` and `default-features` jobs and
+in `mutants.yml`'s sweep.
 O104's three tests — two of `atomic`'s and one of `stamp`'s — prove that a
 staged file is synced after its last write and before it is renamed into
 place, and its directory after, and nothing a
@@ -1962,17 +2000,17 @@ clone URL from the variable instead of hard-coding either name.
 
 ## The image job
 
-`docker` runs on `main` only, and only once `lint`, `test`, `wasm` and `web`
-have passed: on a push, on a dispatch, and every Sunday at 10:45 UTC
-(03:45 PDT / 02:45 PST). The weekly run and a dispatch on `main` are
-refreshes, there so a week with no merge still ships patched Debian packages;
-a dispatch on another branch runs the four checks and skips this job. A
-refresh builds with `--no-cache-filter runtime`, which reruns the `runtime`
-stage's `apt-get upgrade`; the job's isolated builder
-resolves the base images on every build, so the compiled stages stay cached
-only while those are unchanged. It is never a required status: branch
-protection on `main` names the four `(pull_request)` contexts, and this job
-never runs on a pull request.
+`docker` runs on `main` only, and only once `lint`, `test`, `default-features`,
+`wasm` and `web` have passed: on a push, on a dispatch, and every Sunday at
+10:45 UTC (03:45 PDT / 02:45 PST). The weekly run and a dispatch on `main` are
+refreshes, there so a week with no merge still ships patched Debian packages; a
+dispatch on another branch runs the five checks and skips this job. A refresh
+builds with `--no-cache-filter runtime`, which reruns the `runtime` stage's
+`apt-get upgrade` and `apt-get install`; the job's isolated builder resolves
+the base images on every build, so the compiled stages stay cached only while
+those are unchanged. It is never a required status: branch protection on `main`
+names only `(pull_request)` contexts, and this job never runs on a pull
+request.
 
 **It sets no `container:`.** It needs a Docker CLI and the host's daemon, not
 a toolchain. The runner's default image has git and curl, and the runner
@@ -2037,19 +2075,20 @@ and installs the toolchain twice. Re-size the figure from the first real runs.
 
 ## The advisory check
 
-`.forgejo/workflows/advisories.yml` checks the workspace's `Cargo.lock`
-against the RustSec database with cargo-deny 0.20.2, a pinned and checksummed
-release binary, in the same `rust:1-bookworm` container as the Rust gate jobs
-(lint, test, wasm), on the image's own toolchain. The database is cloned fresh
-each run, so this is the one check that can go red with nothing merged, and
-that is why it is a workflow of its own: an advisory published on a Saturday
-must not stop Sunday's rebuild, which exists to ship fixes. For the same reason
-it runs weekly, Mondays 15:00 UTC, and on every push to `main`. Pull requests
-run it only when they touch `Cargo.lock`, a manifest, `deny.toml`, the cargo
-config or the workflow, so a new advisory does not turn every open pull
-request red at once — which is also why it is not a required status: a pull
-request that touches none of those never reports it. `check-all.sh` does not
-run it: it is not one of the four `ci.yml` jobs the script mirrors.
+`.forgejo/workflows/advisories.yml` checks the workspace's `Cargo.lock` against
+the RustSec database with cargo-deny 0.20.2, a pinned and checksummed release
+binary, in the same `rust:1-bookworm` container as the Rust gate jobs (lint,
+test, default-features, wasm), on the image's own toolchain. The database is
+cloned fresh each run, so this is the one check that can go red with nothing
+merged, and that is why it is a workflow of its own: an advisory published on a
+Saturday must not stop Sunday's rebuild, which exists to ship fixes. For the
+same reason it runs weekly, Mondays 15:00 UTC, and on every push to `main`.
+Pull requests run it only when they touch `Cargo.lock`, a manifest,
+`deny.toml`, the cargo config or the workflow, so a new advisory does not turn
+every open pull request red at once — which is also why it is not a required
+status: a pull request that touches none of those never reports it.
+`check-all.sh` does not run it: it is not one of the five `ci.yml` jobs the
+script mirrors.
 
 `deny.toml` gives the command that checks the same graph locally. How to
 accept a finding — an `ignore` entry for one advisory, or the `ADVISORIES_MODE`
@@ -2131,6 +2170,12 @@ Nothing in that message names the corpus or the ignore file, and the natural
 misreading is that the machine itself is short of disk — it is not; the copy
 filled a 31 GB `/tmp` before a single mutant was tested. `--gitignore=true`
 fixes it by making the scratch copy honour the same file `git` already does.
+
+**Every feature is on.** `.cargo/mutants.toml` sets `all_features = true`:
+`taiyaku-read`'s RAR backend compiles only with `rar-libarchive`, so a sweep
+without it would build none of that file, and every mutant there would be
+missed. So the sweep's container installs `libarchive-dev` beside `strace`,
+and a local sweep needs libarchive's development files, as the gate does.
 
 **`env -u TAIYAKU_CORPUS`, for the reason "Two profiles, and the gate that
 took an hour" above already gives `cargo test`.** `cargo-mutants` rebuilds and

@@ -26,6 +26,12 @@
 # is what makes it the measured configuration rather than the guess.
 test_tool = "cargo"
 
+# **Every feature, so the RAR backend is swept.** `taiyaku-read`'s
+# `rar/libarchive.rs` compiles only with `rar-libarchive`, so without this a
+# mutant there changes nothing that is built and every one would be missed.
+# The sweep's container installs libarchive for it (`mutants.yml`).
+all_features = true
+
 # **The build directory is a copy of this tree, and this tree has a large
 # gitignored corpus in it.** Without this, cargo-mutants copies `corpus/` into
 # /tmp for every build directory and dies with `No space left on device` — an
@@ -64,5 +70,11 @@ exclude_globs = [
     "**/region_experiment.rs",
     "**/truth_population.rs",
     "**/score_corpus.rs",
+    # Test code cargo-mutants would otherwise mutate: it skips a module declared
+    # `#[cfg(test)]`, but not `rar_tests.rs` under `all(test, rar)`, nor a
+    # `test_support.rs` that the `test-support` feature builds for other crates'
+    # tests. A mutant there changes a test, not taiyaku, and one that empties an
+    # assertion helper survives by construction.
     "**/test_support.rs",
+    "**/rar_tests.rs",
 ]

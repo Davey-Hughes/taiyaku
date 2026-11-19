@@ -12,7 +12,10 @@
 //! [`Format::is_readable`] is the statement of that, and `pages.rs` is what
 //! enforces it for pages — `unsupported_container` and `read_member` are where
 //! a caller actually meets the refusal, and they answer from the bytes in
-//! front of them rather than by asking this enum.
+//! front of them rather than by asking this enum. In a build with a RAR
+//! backend `pages.rs` opens RAR too, while [`Format::is_readable`] still
+//! answers `false` for it: what the library admits is decided here, not by
+//! what `pages.rs` can open.
 
 use std::io::Read;
 use std::path::Path;
@@ -43,7 +46,9 @@ pub enum Format {
 // values for the same reason.
 
 impl Format {
-    /// What the reader reads pages from, and so what a fingerprint pass reads.
+    /// The containers a library's derive admits as pages, and so what a fingerprint
+    /// pass reads. A build with a RAR backend reads a RAR's pages too, but the derive
+    /// admits none ([`is_readable`](Self::is_readable)).
     pub const PAGED: &'static [Self] = &[Self::Dir, Self::Zip];
 
     /// The `scan_entry.format` value, or `None` for a file nothing recognised.
@@ -83,8 +88,8 @@ impl Format {
         }
     }
 
-    /// Whether `taiyaku-read` can read this: as pages ([`PAGED`](Self::PAGED)),
-    /// or as an EPUB's text.
+    /// Whether the library admits this: as pages ([`PAGED`](Self::PAGED)), or as
+    /// an EPUB's text. `pages.rs` opening it does not decide.
     ///
     /// `taiyaku_library::derive` asks it of each stored token through
     /// [`from_token`](Self::from_token), so this is the one list of what a
