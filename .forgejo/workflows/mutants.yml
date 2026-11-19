@@ -83,7 +83,7 @@ jobs:
     runs-on: docker
     timeout-minutes: 5
     container:
-      image: rust:1-bookworm
+      image: rust:1-trixie
     outputs:
       matrix: ${{ steps.pick.outputs.matrix }}
       crate: ${{ steps.pick.outputs.crate }}
@@ -159,7 +159,7 @@ jobs:
     # test's memory. Three runaways, three bounds, and none subsumes another.
     timeout-minutes: 150
     container:
-      image: rust:1-bookworm
+      image: rust:1-trixie
     env:
       # Sized for the forge's 8 cores rather than the 32-core workstation the
       # default of 4 was measured on. With `max-parallel: 2` above this is four
@@ -168,7 +168,7 @@ jobs:
     steps:
       # Cloned with git rather than actions/checkout for the reason ci.yml
       # states at length: a JS action needs a node inside the job's container,
-      # and rust:1-bookworm carries none.
+      # and rust:1-trixie carries none.
       - name: Checkout
         env:
           TOKEN: ${{ secrets.FORGEJO_TOKEN }}
@@ -191,16 +191,16 @@ jobs:
       # not do: they fetch and execute whatever the URL serves on the day the
       # job runs.
       #
-      # **Built from source rather than fetched as a release binary, and that is
-      # forced.** cargo-mutants publishes three assets for v27.1.0 — gnu,
-      # darwin, windows — and no musl one. The gnu build is linked against glibc
-      # 2.39; `rust:1-bookworm` is 2.36, so it would fail with
-      # `version 'GLIBC_2.39' not found`.
+      # **Built from source rather than fetched as a release binary.**
+      # cargo-mutants publishes three assets for v27.1.0 — gnu, darwin,
+      # windows — and no musl one, and the gnu build needs glibc 2.39, which
+      # ties it to a base that new. Built here, it runs on whatever base the
+      # gate uses.
       #
-      # **Staying on `rust:1-bookworm` rather than moving to a newer base is
-      # the point.** This job measures the same test suite `ci.yml` gates, and
-      # a survivor that differs because the toolchain or libc differs is a
-      # survivor nobody can act on. The container matches the gate's.
+      # **The container is the gate's, and that is the point.** This job
+      # measures the same test suite `ci.yml` gates, and a survivor that
+      # differs because the toolchain or libc differs is a survivor nobody can
+      # act on. When `ci.yml`'s image moves, this one moves with it.
       #
       # `--locked` uses the crate's own `Cargo.lock`, and cargo verifies every
       # crates.io download against the registry's checksums — which is a
@@ -222,7 +222,7 @@ jobs:
           cargo nextest --version
       - name: Install node
         # For `scripts/mutants-baseline.mjs`, which turns a raw survivor list
-        # into the line worth reading. rust:1-bookworm carries no node at all.
+        # into the line worth reading. rust:1-trixie carries no node at all.
         # Same version, same digest, same symlink as ci.yml's two jobs that
         # need it.
         run: |

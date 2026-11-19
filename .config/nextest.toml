@@ -92,7 +92,7 @@ slow-timeout = { period = "60s" }
 # (`taiyaku-library/src/watch/tests.rs`) skips itself with a `NOT MEASURED:`
 # line on stderr when the process it is running in can still write to a 0555
 # directory — which is exactly what happens under `CAP_DAC_OVERRIDE`, and
-# CI's `test` job runs `rust:1-bookworm` with no `user:`, so it runs as root
+# CI's `test` job runs `rust:1-trixie` with no `user:`, so it runs as root
 # on every push. Default `success-output` prints nothing for a passing test,
 # so without this override the skip is real but silent: the run shows
 # `... ok` and the property this test exists to check goes unmeasured with

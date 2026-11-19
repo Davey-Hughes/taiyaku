@@ -81,7 +81,7 @@ jobs:
     # is cached.
     timeout-minutes: 20
     container:
-      image: rust:1-bookworm
+      image: rust:1-trixie
     steps:
       - name: Checkout
         env:
@@ -114,7 +114,7 @@ jobs:
         # A prebuilt release binary, the precedent `ci.yml` sets for
         # cargo-llvm-cov, nextest and wasm-pack: this job only runs the tool,
         # never links against it. The musl build is static, so it runs on the
-        # glibc bookworm container.
+        # glibc trixie container.
         #
         # **The checksum is upstream's this time**, unlike those three. The
         # release publishes `cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz.sha256`

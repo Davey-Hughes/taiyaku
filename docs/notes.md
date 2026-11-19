@@ -30286,6 +30286,10 @@ The entries of Fantastic Four v1 360 declare unpack version 20, which
 `unrar lt` prints as `RAR 1.5(v20)`. A failed page also fails its archive's
 whole-book reads.
 
+*On the owner's ruling of 2026-11-19 the image and CI moved to Debian
+trixie's libarchive 3.7.4, which reads both Zelda pages; see "libarchive
+3.7.4: the image and CI move to Debian trixie (2026-11-19)" below.*
+
 **Archives the walk reads differently from libarchive.**
 
 - Volumes joined with `cat` list their pages, and every read of them is
@@ -30521,3 +30525,80 @@ on this branch except O388, which stays open. The logs named are under
   been: a client that names `image/jxl` and asks for the page at full size
   is sent the stored bytes with nothing decoded, so the cap holds where the
   server has to decode the page.
+
+## libarchive 3.7.4: the image and CI move to Debian trixie (2026-11-19)
+
+On the owner's ruling of 2026-11-19, every stage of the image and every
+`container:` image in the workflows move from Debian bookworm to trixie, so
+the image links trixie's libarchive, `libarchive13t64` 3.7.4-4+deb13u1,
+where it linked bookworm's `libarchive13` 3.6.2. 3.7.4 was measured first, in
+`rust:1-trixie` with `libarchive-dev` 3.7.4-4+deb13u1, against main at
+3c85ee95 (#264).
+
+**The owner's 21 RARs.** The probe of "RAR through libarchive: the checksum
+check (2026-11-18)" read every page of each, one by one and as whole books,
+read-only from the NAS. 3.7.4 read 3,037 pages with 26 refusals, as 3.8.11
+did; 3.6.2 read 3,035 with 32. Its output equals 3.8.11's line for line,
+once the path prefix and the error text before `Prefix found` are set
+aside. Against 3.6.2 it differs only on the two Zelda volumes and in the
+totals:
+
+| Archive | 3.6.2 | 3.7.4 | 3.8.11 |
+| --- | --- | --- | --- |
+| Zelda v01 (RAR5) | `index-080_1.jpg` refused, `Block checksum error` | all 381 pages read | all 381 pages read |
+| Zelda v03 (RAR5) | `index-210_1.jpg` refused, `Unsupported block header size` | all 405 pages read | all 405 pages read |
+| Fantastic Four v1 360 (RAR4) | all 24 pages refused, `Prefix found` | the same | the same |
+
+So no libarchive tried reads Fantastic Four v1 360 (O386).
+
+**Why Fantastic Four v1 360 is refused.** `unrar lt` (UNRAR 7.23, read-only
+on the NAS) lists all 24 of its files as `RAR 1.5(v20) -m3`: compressed with
+the RAR 2.0 algorithm, unpack version 20. Fantastic Four v1 247, which
+reads, lists its 23 files as `RAR 1.5(v29) -m3`. libarchive's RAR reader
+(`archive_read_support_format_rar.c` at v3.8.11) declares an entry's unpack
+version, `unp_ver`, at line 187 and reads it nowhere, so every compressed
+RAR4 entry goes to its one decoder, the RAR 2.9 one; `Prefix found` is
+raised at lines 2752 and 2811, in `add_value`, as that decoder builds a
+Huffman code. The refusal is a decoder libarchive lacks, not damage.
+Upstream libarchive's PR #3823, "RAR 2.0 decompressor", adds one; on
+2026-11-19 it was open, and no maintainer had reviewed it.
+
+**The owner's ruling, 2026-11-19:** Fantastic Four v1 360 stays refused
+for now. *Superseded the same day: on the owner's word it was converted to
+a stored zip of its 24 pages, and the original RAR is kept on the NAS under
+`needs_processing/taiyaku-originals/`. O386 stays open for a user's RAR 2.0
+archive.*
+
+**taiyaku-read's suite on 3.7.4**, with strace installed so that its strace
+tests ran: every feature, 235 passed and 0 failed; the default features,
+171 passed and 0 failed.
+
+**Encrypted, empty and reference entries.** A C program read archives
+through libarchive directly, printing each entry's
+`archive_entry_is_data_encrypted` and what reading its data gave, and
+`archive_read_has_encrypted_entries` at the end: the fixtures' two
+encrypted-entry archives, their two empty-entry archives and their RAR5 file
+reference, and the spike's two archives with a stored encrypted entry. Run
+on 3.6.2 and 3.8.11 as controls, it gave what the spike recorded on each. On
+3.7.4 every entry's line is 3.6.2's:
+
+- no RAR5 entry is marked encrypted, and every RAR5 archive answers -2,
+  unsupported, to `archive_read_has_encrypted_entries`; the encrypted RAR4
+  entries are marked;
+- a stored encrypted page reads with no error as 12,656 bytes for its
+  12,651, in RAR5 and in RAR4, where 3.8.11 refuses the RAR5 one with
+  "Reading encrypted data is not currently supported";
+- a compressed encrypted page fails, with "Unsupported block header size
+  (was 3, max is 2)" in RAR5 and "Invalid location to Huffman tree
+  specified." in RAR4;
+- an empty entry in either format, and the RAR5 file reference, list as
+  regular files of size 0 and read as no bytes with no error.
+
+So O381 holds on 3.7.4 as written for 3.6.2.
+
+**The other packages.** Under the t64 transition trixie's libarchive
+runtime package is `libarchive13t64`, and the Dockerfile names it.
+`libarchive-dev` and `strace` keep their names; trixie's strace is
+6.13+ds-1, its `nodejs` 20.19.2+dfsg-1+deb13u3, and its glibc 2.41.
+`rust:1-trixie` carries no node, sets `RUST_VERSION`, and ships `pkgconf`
+1.8.1-4, so `pkg-config` is there.

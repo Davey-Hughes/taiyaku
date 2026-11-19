@@ -5,19 +5,23 @@
 # slim runtime holding the last two. See
 # docs/superpowers/specs/2026-10-04-day-to-day-deployment-design.md §3.2.
 #
-# Versions follow what CI already pins: `rust:1-bookworm` and
-# `node:26-bookworm` as its jobs' images, wasm-pack 0.15.0 by checksum as its
-# `wasm` job, pnpm 11.3.0 as its `web` job. The `rust:1-bookworm` tag floats,
+# Versions follow what CI already pins: `rust:1-trixie` and
+# `node:26-trixie` as its jobs' images, wasm-pack 0.15.0 by checksum as its
+# `wasm` job, pnpm 11.3.0 as its `web` job. The `rust:1-trixie` tag floats,
 # but `rust-toolchain.toml` pins the toolchain the build uses; its install is a
 # layer of its own, so a build reuses the toolchain it last installed until
 # that file changes.
+#
+# Debian trixie rather than bookworm for its libarchive: bookworm's 3.6.2
+# refuses a page each of two good RAR5 volumes that trixie's 3.7.4 reads
+# (O386).
 #
 # The two Rust stages build in parallel and share one cargo registry cache, so
 # that mount is `sharing=locked`: with the default, both unpack the same crate
 # at once and one fails with "File exists" on `.cargo-ok`.
 
 ########################  1. The WebAssembly package  ###########################
-FROM rust:1-bookworm AS wasm
+FROM rust:1-trixie AS wasm
 WORKDIR /src
 RUN curl -fsSL -o /tmp/wasm-pack.tar.gz \
       https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz \
@@ -34,7 +38,7 @@ RUN --mount=type=cache,id=taiyaku-cargo-registry,sharing=locked,target=/usr/loca
     ./scripts/build-wasm.sh
 
 ########################  2. The web app  #######################################
-FROM node:26-bookworm AS web
+FROM node:26-trixie AS web
 RUN npm i -g pnpm@11.3.0
 WORKDIR /src/web
 # Installed before the package exists, as CI's `web` job does: the
@@ -51,7 +55,7 @@ COPY --from=wasm /src/crates/taiyaku-wasm/pkg /src/crates/taiyaku-wasm/pkg
 RUN pnpm run build
 
 ########################  3. The server  ########################################
-FROM rust:1-bookworm AS server
+FROM rust:1-trixie AS server
 WORKDIR /src
 COPY rust-toolchain.toml ./
 RUN rustup toolchain install
@@ -87,16 +91,16 @@ RUN --mount=type=cache,id=taiyaku-cargo-registry,sharing=locked,target=/usr/loca
  && install -m 0755 target/release/taiyaku /usr/local/bin/taiyaku
 
 ########################  4. Runtime  ###########################################
-FROM debian:bookworm-slim AS runtime
-# `libarchive13` is the one library the binary links that this image lacks.
+FROM debian:trixie-slim AS runtime
+# `libarchive13t64` is the one library the binary links that this image lacks.
 # SQLite is compiled into the binary, so its security fixes arrive through
 # `libsqlite3-sys` in `Cargo.lock` and never through `apt`, and `ureq`'s TLS
 # roots are compiled in, so no `ca-certificates`. `apt-get upgrade` runs so that
-# a rebuild ships Debian's security fixes before `debian:bookworm-slim` is
+# a rebuild ships Debian's security fixes before `debian:trixie-slim` is
 # republished with them.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
- && apt-get install -y --no-install-recommends libarchive13 \
+ && apt-get install -y --no-install-recommends libarchive13t64 \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /config /cache \
  && chown 99:100 /config /cache

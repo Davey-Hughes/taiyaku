@@ -58,7 +58,7 @@ fn the_probe_file_is_removed_even_on_an_immediate_timeout() {
 #[test]
 fn a_root_that_cannot_be_written_falls_back_to_the_short_interval() {
     // **`chmod 0555` does not stop root**, which holds `CAP_DAC_OVERRIDE` —
-    // and CI's `test` job runs `rust:1-bookworm` with no `user:`, doing
+    // and CI's `test` job runs `rust:1-trixie` with no `user:`, doing
     // root-only work in its own steps. Run as root without the check below,
     // this test would fail on a property the code gets right.
     //

@@ -23,7 +23,7 @@ script read from git: HEAD, with `dirty` true when tracked files differed from
 it, or `null` and `false` where it read no commit.
 
 The `test` job installs node for its three node steps: the per-file floor, the
-test count and the comment guard. `rust:1-bookworm` carries none, and the
+test count and the comment guard. `rust:1-trixie` carries none, and the
 per-file floor is a node script because it is the *same*
 script the `web` job runs — see "The other half" below for why one file rather
 than two.
@@ -303,7 +303,7 @@ the install is not optional either: without it the baseline run of
 The checksum reasoning above does not carry over — it exists because a GitHub
 release asset can be replaced in place, while apt checks every package against
 the archive's signed Release file — and neither does the version reasoning,
-since the four flags the tests use all predate bookworm's strace 6.1 by a
+since the four flags the tests use all predate trixie's strace 6.13 by a
 decade.
 
 **Not measured:** no timing comparison against `cargo install cargo-nextest`
@@ -334,7 +334,7 @@ itself and skips — `taiyaku-serve/src/tests.rs`'s
 first, and `taiyaku-library/src/watch/tests.rs`'s
 `a_root_that_cannot_be_written_falls_back_to_the_short_interval` repeats it: a
 test that cannot force the condition it exists to pin — root ignores `chmod
-0555`, here, because **CI's** `test` job runs inside `rust:1-bookworm` with
+0555`, here, because **CI's** `test` job runs inside `rust:1-trixie` with
 no `user:` directive, so every step in it executes as root ("Jobs", above,
 and the comment on "executing as root in the test container" in the `test`
 job's own steps). `check-all.sh` has no container of its own — it is a shell
@@ -1134,7 +1134,7 @@ is counted, not testing lost.
 margin 93 had under 1.99.1. `rust-toolchain.toml` pins `channel = "1.100.0"`,
 so a rustc release no longer reaches the gate on its own, and CI's
 cargo-llvm-cov moves from 0.8.7 to 0.9.1, the version the local gate runs. The
-`rust:1-bookworm` image tag still floats; the pin decides the compiler whatever
+`rust:1-trixie` image tag still floats; the pin decides the compiler whatever
 the image ships (see "Toolchain note").
 
 **Bumping the toolchain is a pull request of its own.** Measure the same commit
@@ -1660,7 +1660,7 @@ left it alone.
 
 ## The `web` job
 
-`web` runs on `node:26-bookworm`, not one of the dual-toolchain images below,
+`web` runs on `node:26-trixie`, not one of the dual-toolchain images below,
 and that is the point. Everything the job tests is pure TypeScript: the
 reading model sits behind a `Resolver` interface, and only `resolver.ts`
 imports `taiyaku-wasm` **as a value**. The one test that loads `resolver.ts`,
@@ -1688,7 +1688,7 @@ on 2029-04-30; 24 has been Active LTS since 2025-10-28. Taking 26 means some
 weeks on a Current release, bought against local and CI staying close — this
 development machine runs 26.7.0, and skew between a developer's node and the
 gate's is the kind of gap that hides a defect until the forge finds it. That
-agreement is not exact for this job, though: `node:26-bookworm` (above) is a
+agreement is not exact for this job, though: `node:26-trixie` (above) is a
 floating tag, so the image can pick up 26.8.0 or later without this document
 or `ci.yml` changing, and nothing pins the `web` job to 26.7.0 the way the
 `wasm` job's own node install does. Exact agreement holds only there — see
@@ -1704,7 +1704,7 @@ tree rather than from memory:
 | ----- | ------------ | ---------------- |
 | `.node-version`, repository root | `26` | read by nothing here; drifts unnoticed |
 | `web/package.json` | `@types/node` at `^26.2.0` | a types package tracking the runtime major, by convention only |
-| `ci.yml`, `web` job | image tag `node:26-bookworm` | a floating tag: picks up 26.8.0 without any file changing |
+| `ci.yml`, `web` job | image tag `node:26-trixie` | a floating tag: picks up 26.8.0 without any file changing |
 | `ci.yml`, `test` job | `26.7.0` **twice** — download URL and symlink target | the two halves can disagree with each other |
 | `ci.yml`, `wasm` job | `26.7.0` **twice** — download URL and symlink target | the same |
 
@@ -1785,17 +1785,17 @@ and run `node scripts/smoke-wasm.mjs` against it — the same two commands a
 developer runs locally, unmodified for CI.
 
 **Why a tarball fetch, not a dual-toolchain image.** Reusing the `wasm` job's
-existing `rust:1-bookworm` container and dropping a `node` binary into it is
-cheaper than switching to `cimg/rust:1.97-node` or `catthehacker/ubuntu:rust-latest`
-(see the image table below): those cost 200 MB–500 MB more and, per that
-table's own probe, five minutes of cold image pull. Measured directly on this
-development machine, not the runner (whose network this task could not
-reach): fetching `node-v26.7.0-linux-x64.tar.xz` (33.5 MB), verifying its
-checksum against the value pinned in `ci.yml`, and extracting it took
-**1.4–1.6 seconds** across three runs. That is not a runner figure, but it is
-well under the 200 MB–500 MB / five-minute cost of the alternative, so the
-conclusion — stay in this container — does not turn on closing that gap
-precisely.
+existing container (`rust:1-bookworm` when this was measured) and dropping a
+`node` binary into it is cheaper than switching to `cimg/rust:1.97-node` or
+`catthehacker/ubuntu:rust-latest` (see the image table below): those cost
+200 MB–500 MB more and, per that table's own probe, five minutes of cold image
+pull. Measured directly on this development machine, not the runner (whose
+network this task could not reach): fetching `node-v26.7.0-linux-x64.tar.xz`
+(33.5 MB), verifying its checksum against the value pinned in `ci.yml`, and
+extracting it took **1.4–1.6 seconds** across three runs. That is not a runner
+figure, but it is well under the 200 MB–500 MB / five-minute cost of the
+alternative, so the conclusion — stay in this container — does not turn on
+closing that gap precisely.
 
 **Why a curl'd binary, not `cargo install wasm-pack`.** Measured directly:
 `cargo install wasm-pack --locked` is a multi-minute compile of a tool this
@@ -1804,7 +1804,7 @@ fit — `wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz` from the project's
 GitHub releases is 2.9 MB and was confirmed to resolve and extract to a
 working `wasm-pack --version` before being wired into the workflow, rather
 than guessed at. It is a static-PIE `musl` binary, so it runs on the
-`bookworm` (glibc) container without needing a matching libc. `wasm-pack
+`trixie` (glibc) container without needing a matching libc. `wasm-pack
 build`'s default mode also downloads `wasm-bindgen-cli` (pinned to the
 version `Cargo.lock` names, `0.2.126`) and `wasm-opt` on first use if neither
 is already on `PATH`. The `wasm-bindgen-cli` fetch was tested locally with its
@@ -1910,7 +1910,7 @@ Every job clones with `git` in a `run:` step. No `uses:` anywhere, which is
 unusual enough to explain.
 
 `actions/checkout` is a JavaScript action, and a JS action needs a node inside
-the job's container to execute it. `rust:1-bookworm` carries no node —
+the job's container to execute it. `rust:1-trixie` carries no node —
 `command -v node` exits non-zero — and this runner does not inject one. A job
 combining `container:` with any JS action therefore dies before its first step.
 
@@ -1920,7 +1920,7 @@ Probe jobs settled it — a container with no action passes, an action with no
 container passes, and both together is the only failing combination.
 
 The consequence to keep in mind: **no action can be added to these workflows
-while the image is `rust:1-bookworm`**. Caching, artifact upload and the rest
+while the image is `rust:1-trixie`**. Caching, artifact upload and the rest
 are all JavaScript actions. The escape hatch, when one is wanted, is an image
 carrying both toolchains; two are measured working below.
 
@@ -2083,7 +2083,7 @@ and installs the toolchain twice. Re-size the figure from the first real runs.
 
 `.forgejo/workflows/advisories.yml` checks the workspace's `Cargo.lock` against
 the RustSec database with cargo-deny 0.20.2, a pinned and checksummed release
-binary, in the same `rust:1-bookworm` container as the Rust gate jobs (lint,
+binary, in the same `rust:1-trixie` container as the Rust gate jobs (lint,
 test, default-features, wasm), on the image's own toolchain. The database is
 cloned fresh each run, so this is the one check that can go red with nothing
 merged, and that is why it is a workflow of its own: an advisory published on a
@@ -2132,7 +2132,7 @@ no setup. It names a version rather than `stable` because a rustc release can
 change what the coverage gate counts; "Why the Rust floor is 91, and the
 toolchain is pinned" has the measurement and how a bump is done.
 
-The tradeoff is in CI. The `rust:1-bookworm` tag still floats, and the image
+The tradeoff is in CI. The `rust:1-trixie` tag still floats, and the image
 installs its toolchain under its own version number. Whenever that version is
 not the pin, rustup fetches the pinned toolchain separately on each job, which
 costs a download per job; when it is the pin, rustup adds whichever of

@@ -20,7 +20,7 @@ env:
 # Every job clones with git rather than with actions/checkout, and the reason is
 # worth stating because the failure it avoids is silent. checkout is a
 # JavaScript action, and a JS action needs a node inside the job's container to
-# execute. rust:1-bookworm carries none — `command -v node` exits non-zero — and
+# execute. rust:1-trixie carries none — `command -v node` exits non-zero — and
 # this runner does not inject one, so a job combining `container:` with any JS
 # action dies before its first step. On this instance a container with no action
 # passes, an action with no container passes, and both together is the only
@@ -63,7 +63,7 @@ jobs:
     runs-on: docker
     timeout-minutes: 10
     container:
-      image: rust:1-bookworm
+      image: rust:1-trixie
     steps:
       - name: Checkout
         env:
@@ -125,7 +125,7 @@ jobs:
           cargo "+$msrv" check --workspace --all-targets --all-features --locked
       # Advisory and non-blocking, deliberately. `clippy::pedantic` is not in
       # [workspace.lints] and must not be. rust-toolchain.toml pins the
-      # toolchain whatever this floating `rust:1-bookworm` image ships, so a
+      # toolchain whatever this floating `rust:1-trixie` image ships, so a
       # clippy that adds lints to `pedantic` arrives only with the pull request
       # that moves the pin; in the blocking gate above, those lints would hold
       # that bump red in files its author never touched.
@@ -164,7 +164,7 @@ jobs:
     runs-on: docker
     timeout-minutes: 10
     container:
-      image: rust:1-bookworm
+      image: rust:1-trixie
     steps:
       - name: Checkout
         env:
@@ -182,7 +182,7 @@ jobs:
         # A prebuilt release binary rather than `cargo install`, the precedent
         # the `wasm` job already sets for `wasm-pack`: this job only runs the
         # tool, never links against it. The musl build is static, so it runs on
-        # the glibc bookworm container without a matching libc.
+        # the glibc trixie container without a matching libc.
         #
         # **The checksum is not optional and it is not upstream's.** This
         # project publishes no checksum file for its release assets, and a
@@ -202,7 +202,7 @@ jobs:
         # A prebuilt release binary, the pattern this file already uses three
         # times over — for cargo-llvm-cov above, node below in this same job,
         # and wasm-pack in the `wasm` job below. The musl build is static, so
-        # it runs on the glibc bookworm container without a matching libc.
+        # it runs on the glibc trixie container without a matching libc.
         #
         # **The checksum is not optional and it is not upstream's.** nextest
         # publishes no checksum file for its release assets, and a GitHub
@@ -231,7 +231,7 @@ jobs:
         # release asset its owner can replace in place, while apt verifies every
         # package against the archive's signed Release file. Nor does the
         # version matter the way it does for node — the tests use `-f`, `-qq`,
-        # `-y` and `-o`, all far older than bookworm's strace 6.1.
+        # `-y` and `-o`, all far older than trixie's strace 6.13.
         run: |
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends strace libarchive-dev
@@ -290,7 +290,7 @@ jobs:
         if: success() || steps.rust_coverage.outcome == 'failure'
         # This job needs node only for the scripts after this step, which is
         # why the step sits here rather than with the tool installs above.
-        # rust:1-bookworm carries no node at all (the comment at
+        # rust:1-trixie carries no node at all (the comment at
         # the top of this file records `command -v node` exiting non-zero), so
         # it is fetched the same way the `wasm` job fetches it: a checksummed
         # tarball from nodejs.org rather than a dual-toolchain image. Same
@@ -400,7 +400,7 @@ jobs:
     runs-on: docker
     timeout-minutes: 10
     container:
-      image: rust:1-bookworm
+      image: rust:1-trixie
     steps:
       - name: Checkout
         env:
@@ -465,7 +465,7 @@ jobs:
     runs-on: docker
     timeout-minutes: 10
     container:
-      image: rust:1-bookworm
+      image: rust:1-trixie
     steps:
       - name: Checkout
         env:
@@ -484,16 +484,16 @@ jobs:
       - name: Build the binding for wasm
         run: cargo build -p taiyaku-wasm --target wasm32-unknown-unknown --all-features
       - name: Install node
-        # Debian bookworm's `nodejs` package is 18.20.4, an older Node than the
-        # one the `web` job runs. A prebuilt tarball pins this job to the same
-        # 26.7.0 everything else uses, following the precedent this job already
-        # sets for `wasm-pack`. The checksum is from nodejs.org's own
+        # Debian trixie's `nodejs` package is an older Node than the one the
+        # `web` job runs. A prebuilt tarball pins this job to the same 26.7.0
+        # everything else uses, following the precedent this job already sets
+        # for `wasm-pack`. The checksum is from nodejs.org's own
         # SHASUMS256.txt for this file.
         #
         # Five places name a Node version and nothing keeps them in step:
         # this pin (below, twice — the download URL and the symlink target),
         # the identical pin in the `test` job above, which fetches node for
-        # the per-file coverage floor, the `web` job's `node:26-bookworm`
+        # the per-file coverage floor, the `web` job's `node:26-trixie`
         # image tag below, `.node-version` at the repository root, which
         # nothing reads, and `web/package.json`'s `@types/node`, which tracks
         # the runtime major by convention rather than by any check.
@@ -539,7 +539,7 @@ jobs:
     runs-on: docker
     timeout-minutes: 10
     container:
-      image: node:26-bookworm
+      image: node:26-trixie
     steps:
       - name: Checkout
         env:

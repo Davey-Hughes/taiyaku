@@ -149,7 +149,7 @@ UnRAR stays ruled out, for the reason O90 §1 gives.
   fixed order picks the one the library uses, and the shared suite below
   runs over every compiled backend.
 - The Dockerfile builds the server with `--features rar-libarchive` and
-  installs `libarchive13` in the runtime stage, and `libarchive-dev` in the
+  installs `libarchive13t64` in the runtime stage, and `libarchive-dev` in the
   build stage if the image lacks it.
 
 ### The interface
@@ -304,6 +304,13 @@ Fantastic Four v1 360 on either version, nor one page each of Zelda v01 and
 v03 on bookworm's 3.6.2, the image's version, though `unrar t` passes all
 three. These checks cannot pass for all 21 until PR 2 settles those three
 (O386).*
+
+*On the owner's ruling of 2026-11-19 the image and CI moved to Debian
+trixie's libarchive 3.7.4, which reads every page of both Zelda volumes;
+Fantastic Four v1 360 is refused on 3.6.2, 3.7.4 and 3.8.11 alike, since
+no libarchive release decodes RAR 2.0. On the owner's word it was converted
+to a stored zip on 2026-11-19, so the checks above run over the other 20 of
+the 21; O386 stays open for a user's RAR 2.0 archive.*
 
 ## Left to the builder
 
