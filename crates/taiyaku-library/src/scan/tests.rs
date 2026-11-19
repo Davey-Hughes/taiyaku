@@ -3606,21 +3606,12 @@ fn removing_another_directory_hashes_none_of_a_paused_one() {
 }
 
 /// `remove_root` must send `DELETE FROM root` *inside* an already-open
-/// transaction, not as a bare, individually auto-committed statement — the
-/// property that makes `take_root`'s three deletes and the `derive_with`
-/// pass beneath them one atomic unit rather than three separate facts a
-/// crash between them could tear apart. No functional test on the happy
-/// path this suite otherwise exercises can tell the two implementations
-/// apart: a version reduced to a bare sequence of statements against `conn`
-/// directly still reaches the identical *committed* end state whenever
-/// nothing fails partway, because `derive_with`'s own `import_with` call
-/// still opens **a** real transaction of its own the moment nothing wraps it
-/// — so counting *whether* a `BEGIN` was sent anywhere is not enough; what
-/// distinguishes the two implementations is *when* it was sent relative to
-/// `DELETE FROM root`. Traced the same way
-/// `committing_the_real_transaction_branch_sends_no_savepoint_statement`
-/// (`crate::tests`) pins `Nested`'s own two branches, extended to record
-/// order rather than just a count.
+/// transaction, one opened before the delete and still open when it is sent,
+/// not as a bare, auto-committed statement. A removal split across two
+/// transactions passes this test and fails
+/// `a_root_removal_that_fails_in_its_derive_removes_nothing`. A `BEGIN` earlier
+/// in the trace proves nothing: the removal first calls `roots`, which opens
+/// and rolls back a `BEGIN DEFERRED` wherever no transaction is open.
 #[test]
 fn remove_root_sends_delete_from_root_inside_an_already_open_transaction() {
     use std::sync::Mutex;
@@ -3653,15 +3644,102 @@ fn remove_root_sends_delete_from_root_inside_an_already_open_transaction() {
         .iter()
         .position(|sql| sql.contains("DELETE FROM root"))
         .expect("apply_removal must have sent DELETE FROM root");
-    let real_begin_before = statements[..delete_root_index]
-        .iter()
-        .any(|sql| sql.trim_start().to_ascii_uppercase().starts_with("BEGIN"));
+    // The transaction state the statements before the delete leave, replayed:
+    // `BEGIN` opens a transaction, `SAVEPOINT` opens or nests one, `RELEASE`
+    // ends the innermost savepoint and any transaction it opened, `ROLLBACK TO`
+    // leaves the transaction open, and `COMMIT`, `END` or a plain `ROLLBACK`
+    // end it. SQLite's `RELEASE` also ends the savepoints inside the one it
+    // names, and `ROLLBACK TO` cancels them; a depth is enough here because
+    // only `Nested` sends them, each naming its own scope, the innermost when
+    // it closes.
+    let mut depth = 0_usize;
+    for sql in &statements[..delete_root_index] {
+        let head = sql.trim_start().to_ascii_uppercase();
+        if head.starts_with("BEGIN") {
+            depth = depth.max(1);
+        } else if head.starts_with("SAVEPOINT") {
+            depth += 1;
+        } else if head.starts_with("RELEASE") {
+            depth = depth.saturating_sub(1);
+        } else if head.starts_with("COMMIT")
+            || head.starts_with("END")
+            || (head.starts_with("ROLLBACK") && !head.split_whitespace().any(|word| word == "TO"))
+        {
+            depth = 0;
+        }
+    }
 
     assert!(
-        real_begin_before,
-        "DELETE FROM root must be sent after a real BEGIN already opened by remove_root \
-         itself — a bare sequence of statements sends it with nothing open yet, and the only \
-         BEGIN in the trace would come later, from derive_with's own internal work: {statements:?}"
+        depth > 0,
+        "DELETE FROM root must be sent while a transaction opened before it is still open, \
+         and replaying the statements sent before it leaves none open: {statements:?}"
+    );
+}
+
+/// A removal's writes and its derive commit as one, so a removal that fails in
+/// the derive leaves every row as it found it. Removing Manga hands Kids, nested
+/// in it, Manga's entry for `kids/extras`, which Kids' pattern, narrowed with no
+/// scan since, now reaches, and Bonus's member (`hand_back`); then it deletes
+/// Alpha's work, Manga's rows and its library with Pat's grant (`take_root`); the
+/// derive then fails marking Bonus's work missing, at a trigger that fires only
+/// once Manga's row is gone. A commit anywhere among those writes leaves part of
+/// the removal standing.
+#[test]
+fn a_root_removal_that_fails_in_its_derive_removes_nothing() {
+    let (_top, library, manga) = manga_holding(
+        "remove-root-fails-in-derive",
+        &[
+            ("Alpha/Alpha v01.cbz", 3),
+            ("kids/Bleach/v01.cbz", 3),
+            ("kids/extras/Bonus/Bonus v01.cbz", 2),
+        ],
+    );
+    let conn = library.conn();
+    let mut kids = add_root_checked_in(&conn, &manga.path.join("kids"), InLibrary::Named("Kids"))
+        .expect("adds Kids")
+        .root;
+    set_patterns(&conn, &mut kids, Some("extras/"));
+    scan_root(&conn, &kids).expect("scans Kids");
+    crate::derive::derive(&conn).expect("derives");
+    an_account_granted(&conn, "pat", "user", &["Manga"]);
+    set_patterns(&conn, &mut kids, Some("extras/Bonus/"));
+    conn.execute_batch(&format!(
+        "CREATE TEMP TRIGGER planted BEFORE UPDATE OF missing_since ON main.work
+           WHEN NOT EXISTS (SELECT 1 FROM main.root WHERE id = {})
+           BEGIN SELECT RAISE(ABORT, 'planted'); END",
+        manga.id
+    ))
+    .expect("plants the fault");
+    let before = what_a_removal_touches(&conn);
+
+    let why = remove_root(&conn, manga.id).expect_err("the derive fails");
+
+    assert!(why.contains("planted"), "{why}");
+    let after = what_a_removal_touches(&conn);
+    let of = |rows: &[String], kind: &str| -> Vec<String> {
+        let kind = format!("{kind} ");
+        rows.iter()
+            .filter(|row| row.starts_with(&kind))
+            .cloned()
+            .collect()
+    };
+    let row_kinds = [
+        "root",
+        "link",
+        "library",
+        "grant",
+        "scan_entry",
+        "member",
+        "work",
+    ];
+    let changed: Vec<&str> = row_kinds
+        .into_iter()
+        .filter(|kind| of(&before, kind) != of(&after, kind))
+        .collect();
+    assert_eq!(
+        changed,
+        Vec::<&str>::new(),
+        "the kinds of row the failed removal changed; before: {before:#?}, after: {after:#?}"
     );
 }
 
