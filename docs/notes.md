@@ -28546,6 +28546,236 @@ the first held-out score at 15:23:17 UTC ("Held out" above). Nothing in
 the test library changed after the comics were copied in, and its
 `library.db` is unchanged.
 
+## Edition matching by content: the volume-against-volume test (2026-11-18)
+
+The design is
+`docs/superpowers/specs/2026-11-18-content-matching-volume-test-design.md`
+and the plan
+`docs/superpowers/plans/2026-11-18-content-matching-volume-test.md`. The
+harness is `taiyaku-cli`'s `#[cfg(test)]` module
+`match_experiment::volume_test`, and O340 holds the measurement.
+
+### Pre-registered before this measurement fingerprinted any page of the test series
+
+This subsection was committed with the frozen bar, before this
+measurement fingerprinted any page of a test series. Its wording was
+corrected in docs-only commits before the run read any test page, and
+nothing in it changes once the run begins. The run's fingerprint cache
+did not exist when the bar was frozen.
+
+**What is measured, and why.** The owner wants raw and fan editions to
+join their English volumes by page content, with confident matches
+applied automatically. PR 1's volume rule failed on held-out on two
+pairs of Bisque Doll fan extras the owner judged different. The owner
+ruled on 2026-11-17 that a short new measurement comes before PR 3: a
+rule limited to volume-against-volume pairs, which is all PR 3 compares,
+its bar frozen on the series already scored and tested on series never
+scored by this measurement. The score is V as PR 1 defined it, long-run
+pages over the longer side's pages. The test scores all 12,246 pairs of
+157 volumes. The run also reports how many true pairs clear the bar, by
+kind of edition.
+
+**The RuriDragon repack, disclosed.** Before the design was written,
+RuriDragon's four raw archives were unpacked and repacked as zip,
+because they are RAR5 and taiyaku refuses RAR5. Each page file's bytes
+were hashed to prove the repack identical (`ruri-1-sha256.txt` to
+`ruri-4-sha256.txt` in
+`.superpowers/sdd/content-matching-o340-evidence/`). No page was
+decoded, fingerprinted or scored. The result states this too.
+
+**A related book PR 1 did score.**
+`Hunter × Hunter - Kurapika's Memories`, a separate one-volume book PR 1
+scored, is not one of the test series.
+
+**The earlier Tongari work, disclosed.** Tongari stays in the test with
+its earlier work disclosed (owner's ruling, 2026-11-18). Its raw and
+English v01 and v09 went through the aligner in early project work
+("Tongari confirms the pattern on a fifth series", "A letterbox has to
+come off both sides equally", and the rows `tongari-v01` and
+`tongari-v09-letterbox`, all in this file), and the rule that trims page
+borders was designed on v09. An early survey also measured volume 13 for
+gatefolds ("No gatefolds exist in anything measured", in this file). V
+was never computed on these volumes, and the bar comes only from PR 1's
+scores. The result states this too, and the report shows Tongari's true
+pairs on their own line.
+
+**The members.** `volume_test/members.json` lists the 157 volumes,
+drafted from directory names without opening an archive.
+
+| Series | Editions | Same volume in two editions |
+| --- | --- | --- |
+| Tongari Boushi no Atelier | raw 14, English 14 | v01 to v13 |
+| RuriDragon | raw 4, English 3 | v01 to v03 |
+| Hunter × Hunter | black and white 36, colour 37 | v01 to v36 |
+| Parasyte | black and white 8, Full Color Collection 8, Colored Council 10 | black and white against the Collection, v01 to v08 |
+| Yu Yu Hakusho | black and white 19, Colored Council 4 | none |
+
+**How a pair is classed.** `pair_class` writes out the owner's rulings,
+and the frozen bar holds a digest of every pair's class.
+
+- **True: 59 pairs count.** Sixty pairs are the same volume in the
+  editions the table names, and one of them is damaged, which leaves
+  Tongari 13, RuriDragon 3, Hunter × Hunter 35 and Parasyte 8. Tongari
+  raw v09 against English v09 is a true pair (owner's ruling,
+  2026-11-18): a complete volume of joined two-page spreads.
+- **Damaged: one pair.** Hunter × Hunter colour v35 against black and
+  white v35 is outside pass and fail and is reported separately. The
+  damaged volume's pairs with every other volume stay ordinary wrong
+  pairs.
+- **Different split: 236 pairs (owner's ruling, 2026-11-18).** Every
+  Parasyte Colored Council volume against either 8-volume Parasyte
+  edition (160 pairs) and every Yu Yu Hakusho Colored Council volume
+  against the black and white edition (76 pairs). These are wrong pairs
+  even where the volume numbers agree.
+- **Wrong: the other 11,950 pairs.** Tongari raw v16, Tongari English
+  v14, RuriDragon raw v05 and Hunter × Hunter colour v37 have no
+  partner, so every pair of theirs is here.
+
+**The bar.** The bar is the highest V of any volume-rule negative among
+pairs whose two members are both `Kind::Volume` in PR 1's dev and
+held-out scores, plus `rule.rs`'s `GAP`. The harness computes it, and no
+code or test holds its value. `freeze_volume_bar` writes it to
+`crates/taiyaku-cli/src/match_experiment/volume_test/bar.json` with the
+pair that set it, the integers behind that pair's V, and SHA-256 digests
+of PR 1's two score tables, the members and the pairs' classes. It
+refuses to write over a bar already there. One commit freezes the file,
+and no later commit touches it.
+
+**The control.** Before the first test page is read, the run
+fingerprints the ten pairs of `volume_test/control_pairs.json` again
+from nothing, in a new cache, and compares each with its row in PR 1's
+scores: V, both slot counts, paired pages, long-paired pages, runs and
+the solver's verdict. The ten include the pair that set the bar. An
+answer from a cache, or any difference, stops the run.
+
+**Pass or fail.** The rule passes if no wrong pair, different-split
+pairs included, scores at or above the frozen bar, and at least one
+wrong pair exists. A wrong pair exactly at the bar fails. Any wrong pair
+at or above the bar goes to the owner one pair at a time, with its pages
+beside it on a sheet from `volume_test_sheets`. Each ruling is committed
+to `volume_test/verdicts.json` and the saved scores are judged again,
+while `report-first.txt` keeps what the run said before anyone ruled. A
+pair the owner calls the same volume is relabelled, counted and
+reported. A different-split pair cannot be relabelled, because the owner
+has already ruled on it. "Can't tell" and an unanswered pair stay wrong.
+The bar never moves.
+
+**What each result decides for PR 3.** In the design's words: "If the
+rule passes, PR 3 may apply volume matches at or above the bar
+automatically. If it fails, every PR 3 match is a suggestion." O340
+stays open either way, because the owner has still to rule on pack cuts.
+
+**What will not be adjusted once the run begins.** The bar, the gap, the
+score, the members, the pairs' classes and the code. A low score is
+reported, never adjusted, and that includes a true pair below the bar.
+No name or solver verdict rescues a pair. PR 1's `bars.json` and
+`manifest.json` do not change. The run scores once: it refuses an
+uncommitted change, a commit since the freeze that touches `crates/`,
+`Cargo.toml` or `Cargo.lock`, a `bar.json` PR 1's scores do not derive,
+a used fingerprint cache, and a scoring already saved. A member that
+cannot be read whole stops the run with no report. After the first
+scoring, the owner's verdicts are the only commit the harness accepts
+under `crates/`.
+
+### The result
+
+**The rule passes.** No wrong pair scored at or above the frozen bar of
+0.87: 0 of 12,186, the 236 different-split pairs among them. The
+report's last line reads `verdict: passes`. No wrong pair reached the
+bar, so the owner had none to rule on: the report counts 0 verdicts and
+0 relabels, and `report-first.txt` is byte for byte `report.txt`.
+
+**The control.** Before any test page was read, the run fingerprinted
+the ten control pairs again in a new cache and compared each with its
+row in PR 1's scores. Its log reads `control: 10 of 10 pairs reproduced`.
+
+**The proof of order.** `bar.json` was committed at 2026-11-19 01:16:25
+UTC, and no other commit touches it. Only documents changed between that
+commit and the one the run used. The run's log opens at 01:45:55 UTC.
+The scoring's stamp, taken after the control and before the first test
+page is fingerprinted, reads 01:46:15 UTC. The log's members line reads
+`members: 157, fingerprinted: 157, unreadable: 0, cache hits: 0`.
+These times are recorded in the evidence directory,
+`.superpowers/sdd/content-matching-o340-evidence/`, which git ignores:
+the commit's time in `report.txt`'s `bar.json: committed` line, the
+log's opening in the stamp on the first line of `logs/volume-test.log`,
+and the scoring's stamp on the first line of `report.txt`.
+`logs/freeze-commit.txt`, written at the freeze, holds the commit's time
+as a Unix time. Rebasing the branch onto main rewrote its committer
+times, so the freeze commit's committer time in the branch's history is
+the rebase's, not the freeze's.
+
+The pre-registration says its wording was corrected in docs-only
+commits before the run read any test page. Two commits after the freeze
+made those changes, and they did more than correct wording: they added
+that the run also reports how many true pairs clear the bar by kind of
+edition, and that an early survey measured Tongari's volume 13 for
+gatefolds. Neither addition touches the bar, the members, the pairs'
+classes or the code.
+
+The first launch of the run, about a minute earlier, used a mistyped
+test filter that matched no test, so it read nothing and scored nothing,
+and the run was launched again with the exact name. Its log was
+overwritten.
+
+Two pieces of earlier work are disclosed, as the pre-registration sets
+out. RuriDragon's four raw archives were unpacked and repacked as zip
+before the design was written, and each page file's bytes were hashed to
+prove the repack identical, with no page decoded, fingerprinted or
+scored. Tongari's raw and English v01 and v09 went through the aligner
+in early project work, the rule that trims page borders was designed on
+v09, and an early survey measured volume 13 for gatefolds. V was never
+computed on these volumes before this run, and the bar comes only from
+PR 1's scores.
+
+**The library was not written to.** `library.db`'s SHA-256 was the value
+the plan gives, before the run and after it. `find -newer` and
+`find -cnewer` against a stamp file touched at the launch list no path
+(`isolation-newer.txt`, `isolation-cnewer.txt`). That stamp is the second
+launch's, so a further `find -newermt` with a cut-off earlier than the
+first launch was run too, and it lists no path either
+(`isolation-since-first-launch.txt`). All three are in
+`.superpowers/sdd/content-matching-o340-evidence/logs/`.
+
+**Against the bar.** The bar is the 0.72 of `[Oshi no Ko]` fan v10
+against v12, the highest volume-rule negative among the pairs of two
+volumes in PR 1's dev and held-out scores, plus the gap of 0.15. The run scored 59 true pairs, 1 damaged pair, 236
+different-split pairs and 11,950 other wrong pairs. The highest wrong
+pair is a different-split pair, Parasyte Colored Council v10 against
+Full Color Collection v08, at V 0.810909 (223 long-paired pages, slots
+229 and 275, verdict Sound).
+
+**True pairs clearing the bar: 52 of 59.**
+
+| Editions | At or above the bar | True pairs |
+| --- | --- | --- |
+| Tongari raw against English | 11 | 13 |
+| RuriDragon raw against English | 3 | 3 |
+| Hunter × Hunter black and white against colour | 31 | 35 |
+| Parasyte black and white against Full Color Collection | 7 | 8 |
+
+**True pairs below the bar: 7, as they scored.** None was adjusted.
+
+| Pair | V | Long-paired | Slots | Verdict | Separation |
+| --- | --- | --- | --- | --- | --- |
+| Tongari v02, raw against English | 0.798283 | 186 | 233 and 193 | Sound | 0.1094 |
+| Tongari v12, raw against English | 0.866667 | 169 | 195 and 193 | Fragmented | 0.3672 |
+| Hunter × Hunter v14, black and white against colour | 0.000000 | 0 | 202 and 211 | Refused | 0.0977 |
+| Hunter × Hunter v22, black and white against colour | 0.000000 | 0 | 198 and 208 | Refused | 0.0898 |
+| Hunter × Hunter v23, black and white against colour | 0.867580 | 190 | 198 and 219 | Fragmented | 0.2500 |
+| Hunter × Hunter v25, black and white against colour | 0.866071 | 194 | 207 and 224 | Fragmented | 0.2461 |
+| Parasyte v07, black and white against Full Color Collection | 0.868966 | 252 | 290 and 278 | Fragmented | 0.2773 |
+
+**The damaged pair, outside pass and fail.** Hunter × Hunter colour v35
+against black and white v35 scored V 0.201923 (42 long-paired pages,
+slots 48 and 208, verdict Fragmented, separation 0.2148).
+
+**What the result decides for PR 3.** The rule passed, so PR 3 may apply
+volume matches at or above the bar automatically. The seven true pairs
+below the bar would not be among those matches. What PR 3 does with such
+a pair is not decided here, because PR 3's matching is designed after
+this result. O340 stays open: the owner has still to rule on pack cuts.
+
 ## O303 to O308: the fade, the glide, the phone layout by height and the place across the swap (2026-11-16)
 
 The spec is `docs/superpowers/specs/2026-11-16-resize-polish-design.md`

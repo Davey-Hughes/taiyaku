@@ -1,0 +1,944 @@
+[
+  {
+    "path": "Raw/RuriDragon/DLRAW.NET-Ruri Dragon v01s.cbz",
+    "series": "ruridragon",
+    "edition": "raw",
+    "number": 1
+  },
+  {
+    "path": "Raw/RuriDragon/[眞藤雅興] ルリドラゴン 第05巻.cbz",
+    "series": "ruridragon",
+    "edition": "raw",
+    "number": 5
+  },
+  {
+    "path": "Raw/RuriDragon/ルリドラゴン v02 DL-Raw.Se.cbz",
+    "series": "ruridragon",
+    "edition": "raw",
+    "number": 2
+  },
+  {
+    "path": "Raw/RuriDragon/ルリドラゴン v03 DL-Raw.Se.cbz",
+    "series": "ruridragon",
+    "edition": "raw",
+    "number": 3
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v01",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 1
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v02",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 2
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v03",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 3
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v04",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 4
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v05",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 5
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v06",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 6
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v07",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 7
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v08",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 8
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v09",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 9
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v10",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 10
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v11",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 11
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v12",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 12
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v13",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 13
+  },
+  {
+    "path": "Raw/Tongari Boushi no Atelier/Tongari Boushi no Atelier v16",
+    "series": "tongari",
+    "edition": "raw",
+    "number": 16
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v01.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 1
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v02.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 2
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v03.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 3
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v04.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 4
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v05.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 5
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v06.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 6
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v07.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 7
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v08.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 8
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v09.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 9
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v10.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 10
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v11.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 11
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v12.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 12
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v13.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 13
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v14.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 14
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v15.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 15
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v16.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 16
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v17.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 17
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v18.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 18
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v19.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 19
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v20.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 20
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v21.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 21
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v22.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 22
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v23.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 23
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v24.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 24
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v25.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 25
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v26.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 26
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v27.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 27
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v28.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 28
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v29.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 29
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v30.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 30
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v31.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 31
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v32.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 32
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v33.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 33
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v34.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 34
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v35.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 35
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v36.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 36
+  },
+  {
+    "path": "Volumes/Hunter × Hunter (Official Colored) /Hunter × Hunter (Official Colored) - v37.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "colour",
+    "number": 37
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v01.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 1
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v02.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 2
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v03.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 3
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v04.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 4
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v05.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 5
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v06.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 6
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v07.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 7
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v08.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 8
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v09.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 9
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v10.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 10
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v11.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 11
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v12.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 12
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v13.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 13
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v14.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 14
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v15.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 15
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v16.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 16
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v17.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 17
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v18.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 18
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v19.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 19
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v20.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 20
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v21.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 21
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v22.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 22
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v23.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 23
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v24.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 24
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v25.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 25
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v26.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 26
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v27.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 27
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v28.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 28
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v29.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 29
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v30.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 30
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v31.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 31
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v32.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 32
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v33.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 33
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v34.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 34
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v35.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 35
+  },
+  {
+    "path": "Volumes/Hunter × Hunter/Hunter × Hunter - v36.cbz",
+    "series": "hunter-x-hunter",
+    "edition": "bw",
+    "number": 36
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color (Colored Council)/Parasyte - Full Color v01 (2021) (Colored Council).cbz",
+    "series": "parasyte",
+    "edition": "colored-council",
+    "number": 1
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color (Colored Council)/Parasyte - Full Color v02 (2021) (Colored Council).cbz",
+    "series": "parasyte",
+    "edition": "colored-council",
+    "number": 2
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color (Colored Council)/Parasyte - Full Color v03 (2021) (Colored Council).cbz",
+    "series": "parasyte",
+    "edition": "colored-council",
+    "number": 3
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color (Colored Council)/Parasyte - Full Color v04 (2021) (Colored Council).cbz",
+    "series": "parasyte",
+    "edition": "colored-council",
+    "number": 4
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color (Colored Council)/Parasyte - Full Color v05 (2021) (Colored Council).cbz",
+    "series": "parasyte",
+    "edition": "colored-council",
+    "number": 5
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color (Colored Council)/Parasyte - Full Color v06 (2021) (Colored Council).cbz",
+    "series": "parasyte",
+    "edition": "colored-council",
+    "number": 6
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color (Colored Council)/Parasyte - Full Color v07 (2021) (Colored Council).cbz",
+    "series": "parasyte",
+    "edition": "colored-council",
+    "number": 7
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color (Colored Council)/Parasyte - Full Color v08 (2021) (Colored Council).cbz",
+    "series": "parasyte",
+    "edition": "colored-council",
+    "number": 8
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color (Colored Council)/Parasyte - Full Color v09 (2021) (Colored Council).cbz",
+    "series": "parasyte",
+    "edition": "colored-council",
+    "number": 9
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color (Colored Council)/Parasyte - Full Color v10 (2021) (Colored Council).cbz",
+    "series": "parasyte",
+    "edition": "colored-council",
+    "number": 10
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color Collection/Parasyte - Full Color Collection - v01 (2022).cbz",
+    "series": "parasyte",
+    "edition": "collection",
+    "number": 1
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color Collection/Parasyte - Full Color Collection - v02 (2023).cbz",
+    "series": "parasyte",
+    "edition": "collection",
+    "number": 2
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color Collection/Parasyte - Full Color Collection - v03 (2023).cbz",
+    "series": "parasyte",
+    "edition": "collection",
+    "number": 3
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color Collection/Parasyte - Full Color Collection - v04 (2023).cbz",
+    "series": "parasyte",
+    "edition": "collection",
+    "number": 4
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color Collection/Parasyte - Full Color Collection - v05 (2024).cbz",
+    "series": "parasyte",
+    "edition": "collection",
+    "number": 5
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color Collection/Parasyte - Full Color Collection - v06 (2024).cbz",
+    "series": "parasyte",
+    "edition": "collection",
+    "number": 6
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color Collection/Parasyte - Full Color Collection - v07 (2024).cbz",
+    "series": "parasyte",
+    "edition": "collection",
+    "number": 7
+  },
+  {
+    "path": "Volumes/Parasyte - Full Color Collection/Parasyte - Full Color Collection - v08 (2024).cbz",
+    "series": "parasyte",
+    "edition": "collection",
+    "number": 8
+  },
+  {
+    "path": "Volumes/Parasyte/Parasyte - v01 (2015).cbz",
+    "series": "parasyte",
+    "edition": "bw",
+    "number": 1
+  },
+  {
+    "path": "Volumes/Parasyte/Parasyte - v02 (2015).cbz",
+    "series": "parasyte",
+    "edition": "bw",
+    "number": 2
+  },
+  {
+    "path": "Volumes/Parasyte/Parasyte - v03 (2015).cbz",
+    "series": "parasyte",
+    "edition": "bw",
+    "number": 3
+  },
+  {
+    "path": "Volumes/Parasyte/Parasyte - v04 (2015).cbz",
+    "series": "parasyte",
+    "edition": "bw",
+    "number": 4
+  },
+  {
+    "path": "Volumes/Parasyte/Parasyte - v05 (2015).cbz",
+    "series": "parasyte",
+    "edition": "bw",
+    "number": 5
+  },
+  {
+    "path": "Volumes/Parasyte/Parasyte - v06 (2016).cbz",
+    "series": "parasyte",
+    "edition": "bw",
+    "number": 6
+  },
+  {
+    "path": "Volumes/Parasyte/Parasyte - v07 (2016).cbz",
+    "series": "parasyte",
+    "edition": "bw",
+    "number": 7
+  },
+  {
+    "path": "Volumes/Parasyte/Parasyte - v08 (2016).cbz",
+    "series": "parasyte",
+    "edition": "bw",
+    "number": 8
+  },
+  {
+    "path": "Volumes/RuriDragon/RuriDragon - v01 (2025).cbz",
+    "series": "ruridragon",
+    "edition": "en",
+    "number": 1
+  },
+  {
+    "path": "Volumes/RuriDragon/RuriDragon - v02 (2025).cbz",
+    "series": "ruridragon",
+    "edition": "en",
+    "number": 2
+  },
+  {
+    "path": "Volumes/RuriDragon/RuriDragon - v03 (2026).cbz",
+    "series": "ruridragon",
+    "edition": "en",
+    "number": 3
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v01 (2019).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 1
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v02 (2019).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 2
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v03 (2019).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 3
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v04 (2019).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 4
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v05 (2020).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 5
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v06 (2020).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 6
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v07 (2020).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 7
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v08 (2021).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 8
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v09 (2022).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 9
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v10 (2022).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 10
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v11 (2023).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 11
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v12 (2024).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 12
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v13 (2025).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 13
+  },
+  {
+    "path": "Volumes/Tongari Boushi no Atelier/Tongari Boushi no Atelier - v14 (2026).cbz",
+    "series": "tongari",
+    "edition": "en",
+    "number": 14
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho - Colored (Colored Council)/Yu Yu Hakusho - v01 - Colored (Colored Council).cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "colored-council",
+    "number": 1
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho - Colored (Colored Council)/Yu Yu Hakusho - v02 - Colored (Colored Council).cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "colored-council",
+    "number": 2
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho - Colored (Colored Council)/Yu Yu Hakusho - v03 - Colored (Colored Council).cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "colored-council",
+    "number": 3
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho - Colored (Colored Council)/Yu Yu Hakusho - v04 - Colored (Colored Council).cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "colored-council",
+    "number": 4
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v01.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 1
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v02.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 2
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v03.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 3
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v04.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 4
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v05.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 5
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v06.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 6
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v07.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 7
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v08.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 8
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v09.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 9
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v10.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 10
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v11.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 11
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v12.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 12
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v13.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 13
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v14.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 14
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v15.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 15
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v16.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 16
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v17.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 17
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v18.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 18
+  },
+  {
+    "path": "Volumes/Yu Yu Hakusho/Yu Yu Hakusho - v19.cbz",
+    "series": "yu-yu-hakusho",
+    "edition": "bw",
+    "number": 19
+  }
+]

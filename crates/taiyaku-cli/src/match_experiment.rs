@@ -63,6 +63,7 @@ mod rule;
 mod score;
 mod sheet;
 mod tests;
+mod volume_test;
 
 /// Where a run reads its members from and writes its evidence to.
 #[derive(Debug)]

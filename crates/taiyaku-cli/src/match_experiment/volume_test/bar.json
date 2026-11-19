@@ -1,0 +1,14 @@
+{
+  "max_negative": 0.72,
+  "gap": 0.15,
+  "bar": 0.87,
+  "pair_a": "Volumes/[Oshi no Ko] - Fan Translated/[Oshi no Ko] - v10.cbz",
+  "pair_b": "Volumes/[Oshi no Ko] - Fan Translated/[Oshi no Ko] - v12.cbz",
+  "long_paired": 144,
+  "a_slots": 198,
+  "b_slots": 200,
+  "pr1_dev_sha256": "b74aca559d08ca853e1a9d30bae82d00cf0e9706005ebd6c4ab1d827d0206751",
+  "pr1_held_out_sha256": "82b7a4101257318f43a1a6460e10dd344add0e0381e8bc825c178ad10761c235",
+  "members_sha256": "35ea41d660e012d78f8cdc6c064175668514ef84373964f4299674723525425f",
+  "pairs_sha256": "6a18ac30352fa97f459c1b65ce8d3d26c13d6aaceb58178b8913120ad5f812da"
+}

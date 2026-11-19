@@ -55,27 +55,40 @@ pub(super) fn read_bars(text: &str) -> Result<Bars, String> {
     serde_json::from_value(raw).map_err(|e| format!("bars.json: {e}"))
 }
 
+/// [`frozen_file`] for `bars.json`.
+pub(super) fn frozen(compiled: &str, committed: Option<&str>) -> Result<(), String> {
+    frozen_file("bars.json", compiled, committed)
+}
+
 /// Whether the bars compiled in are the ones HEAD commits. A bar edited
 /// since the freeze, or never committed, is not frozen, and judging against
-/// it would let the held-out scores set it.
-pub(super) fn frozen(compiled: &str, committed: Option<&str>) -> Result<(), String> {
+/// it would let the scores it judges set it.
+pub(super) fn frozen_file(
+    name: &str,
+    compiled: &str,
+    committed: Option<&str>,
+) -> Result<(), String> {
     match committed {
         Some(text) if text == compiled => Ok(()),
-        Some(_) => Err(
-            "bars.json differs from the one HEAD commits, so these bars are not the frozen ones"
-                .to_owned(),
-        ),
-        None => Err("HEAD commits no bars.json, so no bar is frozen".to_owned()),
+        Some(_) => Err(format!(
+            "{name} differs from the one HEAD commits, so these bars are not the frozen ones"
+        )),
+        None => Err(format!("HEAD commits no {name}, so no bar is frozen")),
     }
 }
 
-/// The log's line saying exactly one commit touches `bars.json`, from `git
-/// log --format=%H`. The bars are used as frozen, and a second commit touching
-/// them means they changed; HEAD would then commit the edited text, which
-/// [`frozen`] cannot tell from the frozen one.
+/// [`one_commit`] for `bars.json`.
 pub(super) fn one_freeze(git_log: Option<&str>) -> Result<String, String> {
+    one_commit("bars.json", git_log)
+}
+
+/// The log's line saying exactly one commit touches `name`, from `git log
+/// --format=%H`. The bars are used as frozen, and a second commit touching
+/// them means they changed; HEAD would then commit the edited text, which
+/// [`frozen_file`] cannot tell from the frozen one.
+pub(super) fn one_commit(name: &str, git_log: Option<&str>) -> Result<String, String> {
     let Some(text) = git_log else {
-        return Err("git could not list the commits touching bars.json".to_owned());
+        return Err(format!("git could not list the commits touching {name}"));
     };
     let commits: Vec<&str> = text
         .lines()
@@ -83,25 +96,30 @@ pub(super) fn one_freeze(git_log: Option<&str>) -> Result<String, String> {
         .filter(|l| !l.is_empty())
         .collect();
     match commits.as_slice() {
-        [] => Err("no commit touches bars.json, so no bar is frozen".to_owned()),
-        [one] => Ok(format!("bars.json: 1 commit touches it, {one}")),
+        [] => Err(format!("no commit touches {name}, so no bar is frozen")),
+        [one] => Ok(format!("{name}: 1 commit touches it, {one}")),
         many => Err(format!(
-            "{} commits touch bars.json ({}), so its bars changed after the first froze them",
+            "{} commits touch {name} ({}), so its bars changed after the first froze them",
             many.len(),
             many.join(", ")
         )),
     }
 }
 
-/// The log's line naming the commit that froze the bars, from `git log -1
-/// --format='%h %ct'`, so the log shows the freeze came before its stamp.
+/// [`provenance_of`] for `bars.json`.
 pub(super) fn provenance(git_log: Option<&str>) -> String {
+    provenance_of("bars.json", git_log)
+}
+
+/// The log's line naming the commit that froze `name`, from `git log -1
+/// --format='%h %ct'`, so the log shows the freeze came before its stamp.
+pub(super) fn provenance_of(name: &str, git_log: Option<&str>) -> String {
     let parsed = (git_log.map(str::trim))
         .and_then(|line| line.split_once(' '))
         .and_then(|(hash, secs)| secs.parse::<u64>().ok().map(|secs| (hash, secs)));
     match parsed {
-        Some((hash, secs)) => format!("bars.json: committed {} in {hash}", utc(secs)),
-        None => "bars.json: its commit could not be read".to_owned(),
+        Some((hash, secs)) => format!("{name}: committed {} in {hash}", utc(secs)),
+        None => format!("{name}: its commit could not be read"),
     }
 }
 
