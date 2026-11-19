@@ -182,6 +182,93 @@ pub fn lookup(conn: &Connection, word: &str) -> Result<Vec<Found>, String> {
     Ok(found)
 }
 
+/// The most chars of a text `longest_at` tries as one word. A tap looks up
+/// the word it lands on, and 16 chars covers a word with its inflection; a
+/// longer set phrase is left to a drag-select and the existing look-up. It
+/// also bounds the lookups a tap costs.
+pub const LONGEST_PREFIX: usize = 16;
+
+/// Whether a char ends a word. A word goes on through an alphanumeric char
+/// (a mark with the Alphabetic property among them), a combining mark
+/// `is_combining_mark` names, and a variation selector; every other char
+/// ends it. Without a Unicode-category crate that is how whitespace,
+/// punctuation and symbols are told, so a non-alphabetic mark outside those
+/// ranges and a format char, a zero-width space or joiner among them, end a
+/// word too.
+fn ends_word(c: char) -> bool {
+    c.is_whitespace()
+        || (!c.is_alphanumeric() && !is_combining_mark(c) && !is_variation_selector(c))
+}
+
+/// A combining mark known without a Unicode-category crate: the diacritics
+/// U+0300 to U+036F, Russian's stress marks among them, and the kana voicing
+/// marks U+3099 and U+309A. It belongs to the char before it, so a word goes
+/// on through one and a tap's match never ends before one: まと and a
+/// decomposed まど differ only in the mark.
+fn is_combining_mark(c: char) -> bool {
+    matches!(c, '\u{300}'..='\u{36F}' | '\u{3099}' | '\u{309A}')
+}
+
+/// Whether a char after a word is read as part of it: a variation selector,
+/// or a stress mark `key` strips, which a learner's book prints on a word its
+/// dictionary lists without one.
+fn is_taken_into_match(c: char) -> bool {
+    is_variation_selector(c) || matches!(c, '\u{300}' | '\u{301}')
+}
+
+/// A variation selector: U+FE00 to U+FE0F pick a standardized variant of the
+/// char before them, U+FE0E and U+FE0F its text or emoji form for any char,
+/// and U+E0100 to U+E01EF an ideograph's variant. One changes the glyph, not
+/// the word, so `key` trims it at a word's end with the rest of what is not
+/// alphanumeric, and a tap's match takes in those after it.
+fn is_variation_selector(c: char) -> bool {
+    matches!(c, '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}')
+}
+
+/// The longest word `text` begins with, its length in chars and what
+/// `lookup` finds for it, found by trying each prefix from the longest down.
+/// The length takes in the variation selectors and stress marks after the
+/// word, and a prefix any other combining mark then follows is not tried.
+/// Nothing matching gives `(0, [])`.
+///
+/// # Errors
+///
+/// If SQLite refuses a read, the dictionary having no tables among the causes.
+pub fn longest_at(conn: &Connection, text: &str) -> Result<(usize, Vec<Found>), String> {
+    let chars: Vec<char> = text
+        .chars()
+        .take(LONGEST_PREFIX)
+        .take_while(|&c| !ends_word(c))
+        .collect();
+    for length in (1..=chars.len()).rev() {
+        // Read from `text`, not `chars`: what follows the sixteenth char
+        // still belongs to it.
+        let taken_in = text
+            .chars()
+            .skip(length)
+            .take_while(|&c| is_taken_into_match(c))
+            .count();
+        if text
+            .chars()
+            .nth(length + taken_in)
+            .is_some_and(is_combining_mark)
+        {
+            continue;
+        }
+        let prefix: String = chars[..length].iter().collect();
+        // `lookup` trims and strips stress marks, so a prefix it would answer
+        // under another spelling is not this text's word.
+        if key(&prefix) != prefix.to_lowercase() {
+            continue;
+        }
+        let found = lookup(conn, &prefix)?;
+        if !found.is_empty() {
+            return Ok((length + taken_in, found));
+        }
+    }
+    Ok((0, Vec::new()))
+}
+
 /// The entries listed under `key`, found by `via` where it is a form of them.
 fn entries(conn: &Connection, key: &str, via: Option<&str>) -> Result<Vec<Found>, String> {
     let mut stmt = conn

@@ -36,7 +36,52 @@ const press = () => {
   button.dispatchEvent(new Event('pointerdown', { bubbles: true }))
 }
 
+/** A `mousedown` on the button, as a tap's follows its `pointerup`; whether it went unprevented. */
+const mouseDown = () =>
+  button.dispatchEvent(
+    new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
+  )
+
 describe('takeTapClick', () => {
+  it('leaves the tap’s mousedown to the browser unless asked to keep the focus', () => {
+    takeTapClick({ pointerType: 'touch' })
+    expect(mouseDown()).toBe(true)
+  })
+
+  it('prevents the tap’s mousedown when asked to keep the focus, and still takes its click', () => {
+    takeTapClick({ pointerType: 'touch' }, { keepFocus: true })
+    expect(mouseDown()).toBe(false)
+    expect(click()).toBe(false)
+    expect(heard).toBe(0)
+  })
+
+  it('takes a mouse’s click only when asked to', () => {
+    takeTapClick({ pointerType: 'mouse' })
+    expect(click()).toBe(true)
+    expect(heard).toBe(1)
+    takeTapClick({ pointerType: 'mouse' }, { mouseToo: true })
+    expect(click()).toBe(false)
+    expect(heard).toBe(1)
+  })
+
+  it('leaves a mouse’s mousedown alone though asked to keep the focus', () => {
+    takeTapClick({ pointerType: 'mouse' }, { keepFocus: true })
+    expect(mouseDown()).toBe(true)
+  })
+
+  it.each([
+    ['its click taken', () => click()],
+    ['the next press', press],
+    ['its time out', () => vi.advanceTimersByTime(CLICK_WAIT_MS)],
+  ])(
+    'lets a mousedown through once the wait to keep the focus ends by %s',
+    (_, end) => {
+      takeTapClick({ pointerType: 'touch' }, { keepFocus: true })
+      end()
+      expect(mouseDown()).toBe(true)
+    },
+  )
+
   it('takes the next click after a touch tap: stopped before the page and its default prevented', () => {
     takeTapClick({ pointerType: 'touch' })
     expect(click()).toBe(false)

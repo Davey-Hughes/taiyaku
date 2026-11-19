@@ -28,7 +28,7 @@ import {
   useState,
 } from 'react'
 import { Account } from './Account'
-import { getProgress, lookUpWord, putProgress } from './api'
+import { getProgress, lookUpAt, lookUpWord, putProgress } from './api'
 import { useBackdropClose } from './backdropClose'
 import { bottomBarStyle, readoutStyle, readoutTextStyle } from './bars'
 import {
@@ -67,8 +67,10 @@ import {
   type Anchor,
   addProgress,
   anchorOf,
+  bringIntoSight,
   kept,
   movesAnchor,
+  offScreen,
   type Pages,
   pagesOf,
   pageTurnedBy,
@@ -80,6 +82,7 @@ import {
   whole,
 } from './bookPages'
 import { LookupPanel, type Looked } from './BookLookup'
+import { type LookupSide, seatLookup, unseatLookup } from './bookLookupSeat'
 import { saveFile } from './saveFile'
 import { SIDEBAR_LAYOUT } from './phoneLayout'
 import { NoteEditor, NoteList, SelectionBar } from './BookNotes'
@@ -89,7 +92,9 @@ import {
   meaning,
   newNote,
   notesOn,
+  offsetAtPoint,
   pieces,
+  rangeIn,
   type Selected,
   selectionIn,
 } from './bookNotes'
@@ -150,6 +155,7 @@ import {
   motionModule,
   scheduleFade,
 } from './modules/motion'
+import { TOGGLE_INTENT as LOOKUP_TOGGLE, lookupModule } from './modules/lookup'
 import { TOGGLE_INTENT as PEEK_TOGGLE, peekModule } from './modules/peek'
 import { RATES, READ_INTENT, readAloudModule } from './modules/readAloud'
 import { hasVoice, type Stop, speak } from './speech'
@@ -166,6 +172,7 @@ import { useDocumentTitle } from './title'
 import { wheelNotches } from './viewport'
 import { TopBar } from './TopBar'
 import { useBookNotes } from './useBookNotes'
+import { beginsWord, headAt, wordAt } from './wordAt'
 
 interface Props {
   work: string
@@ -250,6 +257,13 @@ const SAVE_AFTER_MS = 1000
 const DOUBLE_TAP_MS = 300
 
 /**
+ * How far from a look-up's tap, along either axis, a tap off the text can land
+ * and still be its second: about half a fingertip. Further off it is a press
+ * of whatever it landed on, which may be a control the reader went straight to.
+ */
+const DOUBLE_TAP_REACH = 24
+
+/**
  * How long a tap waits before acting, so the second tap of a quick double tap
  * stops it before the bars move.
  */
@@ -283,6 +297,7 @@ const registry = buildRegistry([
   readAloudModule,
   bookNotesModule,
   bookPinsModule,
+  lookupModule,
 ])
 
 /**
@@ -303,12 +318,79 @@ function laysOutAfresh(
   return Object.keys(after).some((key) => before[key] !== after[key])
 }
 
+/**
+ * The prefs with the look-up mode turned on or off. Anything stored but
+ * `true` reads as off, so a press turns it on.
+ */
+const lookupToggled = (map: Record<string, object>) =>
+  changeSlice(map, lookupModule, (p) => ({ ...p, on: p.on !== true }))
+
 const rootStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   height: '100%',
   position: 'relative',
 }
+
+/**
+ * The code the server files its Japanese dictionary under. An edition's own
+ * tag may be `jpn` or `und`, or be missing, and the server would look for a
+ * dictionary of that name.
+ */
+const JAPANESE_DICTIONARY = 'ja'
+
+const LOOK_UP_PANEL = '[role="dialog"][aria-label="Look up"]'
+
+/** The look-up's panel in the reader `text` is drawn in, if it is open. */
+const lookUpPanelOf = (text: HTMLElement | null) =>
+  text?.closest('.book-reader')?.querySelector<HTMLElement>(LOOK_UP_PANEL)
+
+/** How far a text is scrolled. */
+type ScrollSpot = { left: number; top: number }
+
+/** A word being looked up. */
+type LookingUp = {
+  /** The edition the block is of, which a swap may since have left. */
+  edition: string
+  block: number
+  range: TextRange
+  word: string
+  lang: string | null
+  /**
+   * How a tap looked it up, its range selected once known: by the run of
+   * letters tapped, or as the longest word from the character tapped,
+   * whose answer is `looked`.
+   */
+  tap?: 'word' | 'longest'
+  /**
+   * Whether a selection looked up had already left the screen, both of its
+   * ends, which the reader scrolled on from: the look-up then leaves the
+   * place alone.
+   */
+  offScreen?: boolean
+}
+
+/**
+ * Whether `now` is the answer to the tap `was` asked with: the character
+ * tapped, run on to the longest word found from it. Still the same word.
+ */
+const answers = (was: LookingUp, now: LookingUp) =>
+  was.tap === 'longest' &&
+  now.tap === 'longest' &&
+  was.range.start === was.range.end &&
+  was.edition === now.edition &&
+  was.block === now.block &&
+  was.range.start === now.range.start
+
+/** Whether `text` is scrolled to exactly `spot`. */
+const scrolledTo = (text: HTMLElement | null, spot?: ScrollSpot) =>
+  spot?.left === text?.scrollLeft && spot?.top === text?.scrollTop
+
+/** What a look-up is on: until its answer, the character tapped. */
+const litRange = ({ range, word }: LookingUp): TextRange =>
+  range.start < range.end
+    ? range
+    : { start: range.start, end: range.start + word.length }
 
 export function BookReader({ work, onLeave }: Props) {
   const gate = useGate()
@@ -342,25 +424,66 @@ export function BookReader({ work, onLeave }: Props) {
   // the reader's: an anchor taken afresh there is the start of its line as
   // the text is laid out now, so a panel opened and closed beside text it
   // sets in would take the reader back a line each time.
-  const placedAt = useRef<{ left: number; top: number }>(undefined)
+  const placedAt = useRef<ScrollSpot>(undefined)
+  // Where the sight check last left the text, whose scroll is not the reader's
+  // either, and whether the reader has gone on since the look-up was asked: an
+  // answer landing after that must not take them back to the word.
+  const sightLeft = useRef<ScrollSpot>(undefined)
+  const movedOn = useRef(false)
   const pressed = useRef<{ x: number; y: number; at: number }>(undefined)
-  const lastTap = useRef<{ at: number; toggledBars: boolean }>(undefined)
+  // Where the last press anywhere on the reader was, which `pressed` is only
+  // for the text: the second tap of a double tap may land on anything.
+  const pressedOnReader = useRef<{ x: number; y: number }>(undefined)
+  const lastTap = useRef<{
+    at: number
+    toggledBars: boolean
+    /**
+     * What a tap that looked up was on, for the second of a double tap, and
+     * where it landed, which that second must be near if it is off the text.
+     */
+    lookedUp?: Tapped & { x: number; y: number }
+  }>(undefined)
   const tapWait = useRef<number>(undefined)
   useEffect(() => () => window.clearTimeout(tapWait.current), [])
+  // A panel a tap opened can open under the finger. For as long as the next
+  // tap could be that tap's second it lets taps through to the text, or the
+  // second would press whatever the panel drew there, Save word among them.
+  const [tapsPass, setTapsPass] = useState(false)
+  const tapsPassWait = useRef<number>(undefined)
+  useEffect(() => () => window.clearTimeout(tapsPassWait.current), [])
   const notes = useBookNotes(work)
   const [openNote, setOpenNote] = useState<string>()
   const [selected, setSelected] = useState<Selected>()
   const [pinning, setPinning] = useState<{ left?: number }>()
   const [notice, setNotice] = useState<string>()
-  const [lookingUp, setLookingUp] = useState<{
-    block: number
-    range: TextRange
-    word: string
-    lang: string | null
-  }>()
+  const [lookingUp, setLookingUp] = useState<LookingUp>()
   const [looked, setLooked] = useState<Looked>({ kind: 'looking' })
+  // Each look-up a tap or a selection starts is numbered, so a longest word
+  // answered after a later look-up, or after the panel closed, is dropped.
+  const asking = useRef(0)
+  // The selection a tap set over the word it looked up, let go of when the
+  // look-up closes only if the reader has not selected something else since.
+  const light = useRef<Range>(undefined)
   useEffect(() => {
-    if (!lookingUp) return
+    if (panel === 'lookup') return
+    asking.current += 1
+    letGo(light.current)
+    light.current = undefined
+  }, [panel])
+  // After the panel has taken focus, which may let go of a selection. Only
+  // while the edition asked in is drawn: its offsets mean other words in another.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a look-up lights its word as it starts or is answered; a swap alone must not light again the word of one since closed.
+  useEffect(() => {
+    if (!lookingUp?.tap) return
+    const { block, range } = lookingUp
+    letGo(light.current)
+    light.current =
+      range.start < range.end && lookingUp.edition === place?.edition
+        ? selectRange(text.current, block, range)
+        : undefined
+  }, [lookingUp])
+  useEffect(() => {
+    if (!lookingUp || lookingUp.tap === 'longest') return
     if (!lookingUp.lang) {
       setLooked({ kind: 'none', lang: 'a book that names no language' })
       return
@@ -390,6 +513,9 @@ export function BookReader({ work, onLeave }: Props) {
   const admin = gate?.who.admin === true
 
   const motion = sliceFor(prefs, motionModule)
+  // Stored values are not checked on reading, and the button is drawn pressed
+  // only for `true`: any other value would look up with the button off.
+  const lookupOn = sliceFor(prefs, lookupModule).on === true
   const typeset = sliceFor(prefs, bookTextModule)
   const {
     mode,
@@ -782,6 +908,13 @@ export function BookReader({ work, onLeave }: Props) {
   // fights the reader.
   useLayoutEffect(() => {
     if (!place) return
+    // The anchor put back is the reader staying; any other place is a move.
+    if (
+      place.block !== anchor.current.block ||
+      (place.at ?? 0) !== anchor.current.at
+    ) {
+      movedOn.current = true
+    }
     show(text.current, place.block, place.at, place)
     anchor.current = {
       block: place.block,
@@ -884,12 +1017,134 @@ export function BookReader({ work, onLeave }: Props) {
     setPlace((p) => p && { edition: p.edition, ...held })
   }, [place, vertical, mode, pagedPref, setIn])
 
+  // At phone size the look-up's panel goes over the text, on the side of the
+  // screen away from its word. Before the sight check below, which measures
+  // the panel, and after the place is shown, which moves the word. The side
+  // comes from the word and never from the answer, so a panel does not jump
+  // as its answer arrives; only a new word or a new window size chooses again.
+  // Bars shown or hidden move the edge it sits against, and leave its side.
+  const [resizes, setResizes] = useState(0)
+  const seated = useRef<{
+    asked: LookingUp
+    resizes: number
+    side?: LookupSide
+  }>(undefined)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the bars and the pinning bar are triggers, what the panel must stay clear of; a new place is not, as a reader scrolling on from the word does not move its panel.
+  useLayoutEffect(() => {
+    const seat = lookUpPanelOf(text.current)
+    if (panel !== 'lookup' || !lookingUp || !seat) {
+      seated.current = undefined
+      return
+    }
+    const was = seated.current
+    const same =
+      was && (was.asked === lookingUp || answers(was.asked, lookingUp))
+    let side: LookupSide | undefined
+    if (sidebarLayout()) {
+      unseatLookup(seat)
+    } else {
+      const word =
+        lookingUp.offScreen || lookingUp.edition !== place?.edition
+          ? undefined
+          : rangeIn(text.current, lookingUp.block, litRange(lookingUp))
+      side = seatLookup(
+        seat,
+        word,
+        same && was.resizes === resizes ? was.side : undefined,
+        was?.asked !== lookingUp,
+      )
+      // A window turned with the word scrolled away has no word to choose by.
+      if (!side && same && was.side) {
+        side = seatLookup(seat, undefined, was.side)
+      }
+    }
+    seated.current = { asked: lookingUp, resizes, side }
+  }, [panel, lookingUp, resizes, bars, pinning])
+
+  // The word a look-up is on stays in sight, the one thing that may move the
+  // place when a docked panel opens: the text set in beside the panel can
+  // reflow it off the screen. Measured for each new word and each new answer,
+  // which can lengthen the word or the panel and which comes after the place
+  // is back. Only while the reader is where they asked it: a Japanese answer
+  // replaces `lookingUp` and not the number in `asking`, so it is the same
+  // look-up, and the position catches a move whose scroll is yet to be sent.
+  const sightChecked = useRef<{
+    asking: number
+    word: LookingUp
+    answer: Looked
+  }>(undefined)
+  useLayoutEffect(() => {
+    const host = text.current
+    if (panel !== 'lookup' || !lookingUp || !host) return
+    const seen = sightChecked.current
+    if (seen?.word === lookingUp && seen.answer === looked) return
+    sightChecked.current = {
+      asking: asking.current,
+      word: lookingUp,
+      answer: looked,
+    }
+    if (seen?.asking !== asking.current) movedOn.current = false
+    else if (
+      !scrolledTo(host, placedAt.current) &&
+      !scrolledTo(host, sightLeft.current)
+    ) {
+      movedOn.current = true
+    }
+    if (movedOn.current) return
+    const { block, range } = lookingUp
+    const word =
+      !lookingUp.offScreen &&
+      lookingUp.edition === place?.edition &&
+      range.start < range.end
+        ? rangeIn(host, block, range)
+        : undefined
+    if (word) {
+      const over = host
+        .closest('.book-reader')
+        ?.querySelectorAll(
+          `${LOOK_UP_PANEL}, .reader-top-bar, .reader-bottom-bar`,
+        )
+      const [left, top] = [host.scrollLeft, host.scrollTop]
+      bringIntoSight(
+        host,
+        word,
+        [...(over ?? [])].map((cover) => cover.getBoundingClientRect()),
+      )
+      // Brought in, the word is nearer the panel than the panel was sized for.
+      const side = seated.current?.side
+      const seat = lookUpPanelOf(host)
+      if (
+        side &&
+        seat &&
+        (host.scrollLeft !== left || host.scrollTop !== top)
+      ) {
+        seatLookup(seat, word, side)
+      }
+    }
+    sightLeft.current = { left: host.scrollLeft, top: host.scrollTop }
+  }, [panel, lookingUp, looked, place])
+
+  // A hold that closes the look-up lets the text out again, and putting the
+  // place back moves the words under the selection it made, so the bar goes
+  // with them, unless the new place has left the selection behind. Only with
+  // the mode on: with it off, a selection is treated as it always was.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new place is the trigger, not a read: it is what has just moved the words.
+  useLayoutEffect(() => {
+    if (!lookupOn) return
+    setSelected((s) => {
+      const now = s && selectionIn(text.current)
+      return now && !leftScreen(text.current, now) ? now : undefined
+    })
+  }, [place])
+
   // A resized window lays the text out again, so it goes back to the anchor
   // the last scroll left, which a paged layout would otherwise slide off. Not
   // measured now: the text has already been laid out at the new width.
   useEffect(() => {
-    const keep = () =>
+    const keep = () => {
       setPlace((p) => p && { edition: p.edition, ...whole(anchor.current) })
+      setResizes((n) => n + 1)
+    }
     window.addEventListener('resize', keep)
     return () => window.removeEventListener('resize', keep)
   }, [])
@@ -1093,6 +1348,7 @@ export function BookReader({ work, onLeave }: Props) {
         if (stopReading.current) stopReading.current()
         else readFromTop()
       }
+      if (own?.intent === LOOKUP_TOGGLE) setPrefs(lookupToggled)
       if (own?.intent === UNDO_INTENT) notes.undo()
       if (own?.intent === REDO_INTENT) notes.redo()
       if (own?.intent === PIN_INTENT && admin && pinnable) {
@@ -1269,6 +1525,95 @@ export function BookReader({ work, onLeave }: Props) {
     const { left, right, top, bottom } = link.getBoundingClientRect()
     setFootnote({ edition: to, block, near: { left, right, top, bottom } })
   }
+  // A tap on a word, with the look-up mode on, looks it up there and then:
+  // Japanese by the longest dictionary word from the character tapped, which
+  // only the server's answer can select, and any other language by the run of
+  // letters tapped. Whether it looked anything up, so a tap off a word, on a
+  // note's mark or on an aside keeps its usual meaning.
+  const lookUpTapped = (target: Element, x: number, y: number): boolean => {
+    if (target.closest('.book-note-mark')) return false
+    if (target.closest('[data-aside]:not(rt)')) return false
+    const point = text.current && offsetAtPoint(text.current, x, y)
+    const block = point && edition.blocks[point.block]
+    if (!point || !block) return false
+    if (japanese) {
+      if (!beginsWord(block.text, point.at)) return false
+      const lang = JAPANESE_DICTIONARY
+      const seq = ++asking.current
+      setLookingUp({
+        edition: place.edition,
+        block: point.block,
+        range: { start: point.at, end: point.at },
+        word: headAt(block.text, point.at, 1),
+        lang,
+        tap: 'longest',
+      })
+      setLooked({ kind: 'looking' })
+      setPanel('lookup')
+      lookUpAt(lang, headAt(block.text, point.at))
+        .then((answer) => {
+          if (seq !== asking.current) return
+          if (!answer) {
+            setLooked({ kind: 'none', lang })
+            return
+          }
+          if (answer.length > 0) {
+            const range = { start: point.at, end: point.at + answer.length }
+            setLookingUp({
+              edition: place.edition,
+              block: point.block,
+              range,
+              word: block.text.slice(range.start, range.end),
+              lang,
+              tap: 'longest',
+            })
+          }
+          setLooked({ kind: 'found', entries: answer.entries })
+        })
+        .catch((why: unknown) => {
+          if (seq === asking.current) {
+            setLooked({ kind: 'failed', why: String(why) })
+          }
+        })
+      return true
+    }
+    const word = wordAt(block.text, point.at)
+    if (!word) return false
+    asking.current += 1
+    const range = { start: word[0], end: word[1] }
+    setLookingUp({
+      edition: place.edition,
+      block: point.block,
+      range,
+      word: block.text.slice(range.start, range.end),
+      lang: edition.language,
+      tap: 'word',
+    })
+    setLooked({ kind: 'looking' })
+    setPanel('lookup')
+    return true
+  }
+  // A double tap's peek at what it was on: compared, the sentence set beside
+  // it in its column, and otherwise the next edition's under its block.
+  const peekAt = ({ block, sentence, column }: Tapped) => {
+    if (comparing) {
+      if (column && sentence !== undefined) {
+        setPaired((p) =>
+          p?.edition === column && p.sentence === sentence
+            ? undefined
+            : { edition: column, sentence },
+        )
+      }
+      return
+    }
+    if (block !== undefined) {
+      setPeek((p) =>
+        p?.block === block && p.sentence === sentence
+          ? undefined
+          : { block, sentence },
+      )
+    }
+  }
   const textStyle = {
     '--book-text-size': `${typeset.textSize}px`,
     '--book-line-spacing': typeset.lineSpacing,
@@ -1285,6 +1630,55 @@ export function BookReader({ work, onLeave }: Props) {
       style={rootStyle}
       data-vertical={vertical || undefined}
       data-panel={docked ? panel : undefined}
+      onPointerDownCapture={(event) => {
+        pressedOnReader.current = { x: event.clientX, y: event.clientY }
+      }}
+      onPointerUpCapture={(event) => {
+        const last = lastTap.current
+        const down = pressedOnReader.current
+        if (
+          !last?.lookedUp ||
+          !down ||
+          Math.abs(event.clientX - down.x) > TAP_SLOP ||
+          Math.abs(event.clientY - down.y) > TAP_SLOP
+        ) {
+          return
+        }
+        const onText = text.current?.contains(event.target as Node)
+        // The first tap's panel may have moved the text from under the finger
+        // or opened there, so on the text, or anything near the first, this
+        // tap undoes the look-up and peeks at what the first was on. A control
+        // away from the first is the reader's next move, and left to act.
+        const second =
+          onText ||
+          (Math.abs(event.clientX - last.lookedUp.x) <= DOUBLE_TAP_REACH &&
+            Math.abs(event.clientY - last.lookedUp.y) <= DOUBLE_TAP_REACH)
+        if (second && event.timeStamp - last.at < DOUBLE_TAP_MS) {
+          event.stopPropagation()
+          lastTap.current = undefined
+          takeTapClick(event, { mouseToo: true })
+          setPanel(undefined)
+          window.getSelection()?.removeAllRanges()
+          peekAt(last.lookedUp)
+          return
+        }
+        // Too slow for that, yet let through the panel while it might have
+        // been: the words under the panel are not what the reader can see.
+        // Only words: a bar drawn over the panel still takes its own press.
+        const over = event.currentTarget.querySelector(LOOK_UP_PANEL)
+        const box = over?.getBoundingClientRect()
+        if (
+          box &&
+          onText &&
+          event.clientX >= box.left &&
+          event.clientX <= box.right &&
+          event.clientY >= box.top &&
+          event.clientY <= box.bottom
+        ) {
+          event.stopPropagation()
+          takeTapClick(event, { mouseToo: true })
+        }
+      }}
     >
       {bars && (
         <TopBar
@@ -1336,16 +1730,19 @@ export function BookReader({ work, onLeave }: Props) {
         data-vertical={vertical || undefined}
         onScroll={() => {
           const host = text.current
-          const placing =
-            placedAt.current?.left === host?.scrollLeft &&
-            placedAt.current?.top === host?.scrollTop
+          const placing = scrolledTo(host, placedAt.current)
           if (!placing) placedAt.current = undefined
+          if (!placing && !scrolledTo(host, sightLeft.current)) {
+            movedOn.current = true
+          }
           const now = topBlock(text.current)
           const read = at[now] - at[top]
           if (read > 0 && read <= MOST_READ_AT_ONCE) {
             session.current.paced.read += read
           }
-          setSelected(undefined)
+          // With the mode on the placing's own scroll leaves the selection
+          // on the page, and the bar is set again beside it above.
+          if (!lookupOn || !placing) setSelected(undefined)
           // Paged, the anchor is held while it is on the page, or sizing the
           // text up and down creeps back a page at a time. Scrolled, a screen
           // has no such edge: the line at the top is the reader's.
@@ -1373,6 +1770,11 @@ export function BookReader({ work, onLeave }: Props) {
             event.timeStamp - down.at > TAP_HOLD
           ) {
             if (notes.ready) setSelected(selectionIn(text.current))
+            if (lookupOn && panel === 'lookup') {
+              // The selection may be the light still, now the bar's to keep.
+              light.current = undefined
+              setPanel(undefined)
+            }
             return
           }
           setFound((f) => (f?.drawn ? { match: f.match, drawn: false } : f))
@@ -1430,7 +1832,43 @@ export function BookReader({ work, onLeave }: Props) {
           // and one later in `DOUBLE_TAP_MS` undoes it. Either peeks, taking
           // back what the browser selected for a double or triple click.
           const last = lastTap.current
-          if (last && event.timeStamp - last.at < DOUBLE_TAP_MS) {
+          const double = last && event.timeStamp - last.at < DOUBLE_TAP_MS
+          // A look-up acts at once, so it is the first of a double tap as a
+          // link is not: the reader takes the second before it comes here.
+          // In pages the outer thirds turn them, so only the middle looks up.
+          if (
+            !double &&
+            lookupOn &&
+            pageTurnedBy(text.current, event.clientX) === 0 &&
+            lookUpTapped(target, event.clientX, event.clientY)
+          ) {
+            lastTap.current = {
+              at: event.timeStamp,
+              toggledBars: false,
+              lookedUp: {
+                ...tappedOn(target),
+                x: event.clientX,
+                y: event.clientY,
+              },
+            }
+            window.clearTimeout(tapWait.current)
+            tapWait.current = undefined
+            setTapsPass(true)
+            window.clearTimeout(tapsPassWait.current)
+            tapsPassWait.current = window.setTimeout(
+              () => setTapsPass(false),
+              DOUBLE_TAP_MS,
+            )
+            // The tap's mousedown, held back below, is what would clear the
+            // reader's selection, and an answer naming no word lights nothing
+            // to replace it.
+            window.getSelection()?.removeAllRanges()
+            // The panel has just taken the focus, which the tap's mousedown
+            // would otherwise hand to the text under the finger.
+            takeTapClick(event, { keepFocus: true })
+            return
+          }
+          if (last && double) {
             lastTap.current = undefined
             takeTapClick(event)
             if (tapWait.current !== undefined) {
@@ -1440,29 +1878,7 @@ export function BookReader({ work, onLeave }: Props) {
               setBars((b) => !b)
             }
             window.getSelection()?.removeAllRanges()
-            const said = target.closest<HTMLElement>('[data-sentence]')
-            const sentence = said ? Number(said.dataset.sentence) : undefined
-            if (comparing) {
-              const column =
-                target.closest<HTMLElement>('[data-column]')?.dataset.column
-              if (column && sentence !== undefined) {
-                setPaired((p) =>
-                  p?.edition === column && p.sentence === sentence
-                    ? undefined
-                    : { edition: column, sentence },
-                )
-              }
-              return
-            }
-            const block = target.closest<HTMLElement>('[data-block]')
-            const peeking = Number(block?.dataset.block)
-            if (block) {
-              setPeek((p) =>
-                p?.block === peeking && p.sentence === sentence
-                  ? undefined
-                  : { block: peeking, sentence },
-              )
-            }
+            peekAt(tappedOn(target))
             return
           }
           const page = pageTurnedBy(text.current, event.clientX)
@@ -1525,6 +1941,14 @@ export function BookReader({ work, onLeave }: Props) {
             >
               Search
             </button>
+            <button
+              type="button"
+              className="reader-button"
+              aria-pressed={lookupOn}
+              onClick={() => setPrefs(lookupToggled)}
+            >
+              Look up words
+            </button>
             {back && (
               <button
                 type="button"
@@ -1585,13 +2009,18 @@ export function BookReader({ work, onLeave }: Props) {
           onHighlight={(colour) => highlight(colour, false)}
           onNote={() => highlight(DEFAULT_COLOUR, true)}
           onLookUp={() => {
+            asking.current += 1
+            light.current = undefined
             const block = edition.blocks[selected.block]
             setLookingUp({
+              edition: place.edition,
               block: selected.block,
               range: selected.range,
               word: block.text.slice(selected.range.start, selected.range.end),
               lang: edition.language,
+              offScreen: leftScreen(text.current, selected),
             })
+            setLooked({ kind: 'looking' })
             window.getSelection()?.removeAllRanges()
             setSelected(undefined)
             setPanel('lookup')
@@ -1619,10 +2048,11 @@ export function BookReader({ work, onLeave }: Props) {
         <LookupPanel
           word={lookingUp.word}
           looked={looked}
+          tapsPass={tapsPass}
           onSave={(entry) => {
             const note = {
               ...newNote(
-                place.edition,
+                lookingUp.edition,
                 lookingUp.block,
                 DEFAULT_COLOUR,
                 new Date(),
@@ -1722,6 +2152,64 @@ export function BookReader({ work, onLeave }: Props) {
       />
     </main>
   )
+}
+
+/** Whether the first and the last character of `selected` are both off the screen. */
+function leftScreen(
+  text: HTMLElement | null,
+  { block, range }: Pick<Selected, 'block' | 'range'>,
+): boolean {
+  return (
+    offScreen(text, { block, at: range.start }) &&
+    offScreen(text, { block, at: range.end - 1 })
+  )
+}
+
+/** What a tap landed on, as a double tap's peek reads it. */
+interface Tapped {
+  block?: number
+  sentence?: number
+  column?: string
+}
+
+function tappedOn(target: Element): Tapped {
+  const block = target.closest<HTMLElement>('[data-block]')
+  const said = target.closest<HTMLElement>('[data-sentence]')
+  return {
+    block: block ? Number(block.dataset.block) : undefined,
+    sentence: said ? Number(said.dataset.sentence) : undefined,
+    column: target.closest<HTMLElement>('[data-column]')?.dataset.column,
+  }
+}
+
+/**
+ * Selects `range` of block `block`'s own words in `text`, as the light on a
+ * word a tap looked up, and answers the range selected.
+ */
+function selectRange(
+  text: HTMLElement | null,
+  block: number,
+  range: TextRange,
+): Range | undefined {
+  const dom = rangeIn(text, block, range)
+  const selection = window.getSelection()
+  if (!dom || !selection) return undefined
+  selection.removeAllRanges()
+  selection.addRange(dom)
+  return dom
+}
+
+/** Lets go of the selection `mine` set, unless the reader has selected something else since. */
+function letGo(mine: Range | undefined) {
+  const selection = window.getSelection()
+  if (!mine || !selection?.rangeCount) return
+  const now = selection.getRangeAt(0)
+  if (
+    now.compareBoundaryPoints(Range.START_TO_START, mine) === 0 &&
+    now.compareBoundaryPoints(Range.END_TO_END, mine) === 0
+  ) {
+    selection.removeAllRanges()
+  }
 }
 
 /** A book that will not open, or a work with no book: why, and the way back. */

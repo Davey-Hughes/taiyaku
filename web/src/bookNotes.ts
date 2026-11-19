@@ -349,29 +349,14 @@ export function selectionIn(text: HTMLElement | null): Selected | undefined {
     return undefined
   }
   const picked = selection.getRangeAt(0)
-  const words = (node: Node) =>
-    (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>(
-      '[data-text]',
-    )
-  const own = words(picked.startContainer)
+  const own = wordsHolding(picked.startContainer)
   const block = own?.closest<HTMLElement>('[data-block]')
   if (!own || !block || !text.contains(own)) return undefined
   const nodes = wordNodes(own)
-  const offset = (node: Node, at: number) => {
-    const point = document.createRange()
-    point.setStart(node, at)
-    let n = 0
-    for (const word of nodes) {
-      if (word === node) return n + at
-      if (point.comparePoint(word, word.length) > 0) break
-      n += word.length
-    }
-    return n
-  }
-  const start = offset(picked.startContainer, picked.startOffset)
+  const start = offsetOf(nodes, picked.startContainer, picked.startOffset)
   const end =
-    words(picked.endContainer) === own
-      ? offset(picked.endContainer, picked.endOffset)
+    wordsHolding(picked.endContainer) === own
+      ? offsetOf(nodes, picked.endContainer, picked.endOffset)
       : nodes.reduce((n, word) => n + word.length, 0)
   if (end <= start) return undefined
   const box = picked.getBoundingClientRect?.()
@@ -385,4 +370,270 @@ export function selectionIn(text: HTMLElement | null): Selected | undefined {
       bottom: box?.bottom ?? 0,
     },
   }
+}
+
+/** The block's own words a DOM point's node is in, its `[data-text]`. */
+const wordsHolding = (node: Node) =>
+  (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>(
+    '[data-text]',
+  )
+
+/**
+ * How many characters of `nodes`, a block's `wordNodes`, come before the DOM
+ * point `at` in `node`, which need not be one of them: an element, or an
+ * aside's text, counts the words before it.
+ */
+function offsetOf(nodes: Text[], node: Node, at: number): number {
+  const point = document.createRange()
+  point.setStart(node, at)
+  let n = 0
+  for (const word of nodes) {
+    if (word === node) return n + at
+    if (point.comparePoint(word, word.length) > 0) break
+    n += word.length
+  }
+  return n
+}
+
+/**
+ * The block, and the character of its own words, at the point `x`, `y` of
+ * the viewport: the character either side of the browser's caret there that
+ * the point is on. None off a block's words, on no character, on an aside set
+ * among them, or where the browser has no caret from a point. A ruby's reading
+ * counts as the start of its base, a number set upright as its first digit,
+ * and a reading in an aside as the aside's place among the words. Where a range
+ * cannot be measured, the caret's own offset is taken as it is.
+ */
+export function offsetAtPoint(
+  text: HTMLElement,
+  x: number,
+  y: number,
+): { block: number; at: number } | undefined {
+  const caret = caretAt(x, y)
+  if (!caret) return undefined
+  const pressed = characterByCaret(text, caret, x, y)
+  if (pressed) return pressed
+  // Beside a reading the browser's caret can land on another line's reading,
+  // or on the base next to the character pressed. Half a line's height either
+  // way it lands among a line's glyphs, and the point must still be on what it
+  // finds there.
+  const block = (
+    caret.node instanceof Element ? caret.node : caret.node.parentElement
+  )?.closest('[data-block]')
+  const style = block ? getComputedStyle(block) : undefined
+  const half = Number.parseFloat(style?.lineHeight ?? '') / 2
+  if (!style || !half) return undefined
+  for (const side of [half, -half]) {
+    const again = isVertical(style)
+      ? caretAt(x + side, y)
+      : caretAt(x, y + side)
+    const found = again && characterByCaret(text, again, x, y)
+    if (found) return found
+  }
+  return undefined
+}
+
+/** The character of `text`'s words that `caret`, the browser's for or near the point `x`, `y`, shows the point to be on. */
+function characterByCaret(
+  text: HTMLElement,
+  caret: { node: Node; offset: number },
+  x: number,
+  y: number,
+): { block: number; at: number } | undefined {
+  let { node, offset } = caret
+  const aside = (node instanceof Element ? node : node.parentElement)?.closest(
+    '[data-aside]',
+  )
+  if (aside) {
+    const ruby = aside.tagName === 'RT' ? aside.closest('ruby') : null
+    if (!ruby) return undefined
+    node = ruby
+    offset = 0
+  }
+  const own = wordsHolding(node)
+  const block = own?.closest<HTMLElement>('[data-block]')
+  if (!own || !block || !text.contains(own)) return undefined
+  const nodes = wordNodes(own)
+  const at = offsetOf(nodes, node, offset)
+  const found = (at: number) => ({ block: Number(block.dataset.block), at })
+  if (typeof Range.prototype.getClientRects !== 'function') return found(at)
+  // A reading can stand outside its base's line, so its own box decides.
+  if (aside && [...aside.getClientRects()].some((box) => inside(box, x, y))) {
+    return found(at)
+  }
+  // The caret is the boundary nearest the point: after a character whose far
+  // half is pressed, at the end of that character's own text node where it
+  // ends one, as a ruby's base or a highlight does; before one whose near half
+  // is. A point beside a line or between two still has a nearest boundary, at
+  // a Japanese line's end the start of the next line, so the point must be on
+  // one of the two characters there.
+  for (const side of ['before', 'after'] as const) {
+    const character = characterIn(nodes, at, side)
+    const drawn = character && drawnWhole(character)
+    if (drawn && onCharacter(drawn, block, x, y)) {
+      return found(offsetOf(nodes, drawn.startContainer, drawn.startOffset))
+    }
+  }
+  return undefined
+}
+
+/**
+ * What the line draws `character` as: a digit of a number set upright is the
+ * whole number, one character across the line, so neither digit can be told
+ * from the other by where a finger lands on it.
+ */
+function drawnWhole(character: Range): Range {
+  const upright =
+    character.startContainer.parentElement?.closest('.book-upright')
+  if (!upright) return character
+  const number = document.createRange()
+  number.selectNodeContents(upright)
+  return number
+}
+
+/**
+ * A range over the character just `before` or `after` block offset `at` of
+ * `nodes`, a block's `wordNodes`, taken whole (`characterStart`,
+ * `characterEnd`); none at the block's start or end.
+ */
+function characterIn(
+  nodes: Text[],
+  at: number,
+  side: 'before' | 'after',
+): Range | undefined {
+  let left = at
+  for (const node of nodes) {
+    if (side === 'before' ? left <= node.length : left < node.length) {
+      if (side === 'before' && left === 0) return undefined
+      const [from, to] =
+        side === 'before'
+          ? [characterStart(node.data, left), left]
+          : [left, characterEnd(node.data, left)]
+      const range = document.createRange()
+      range.setStart(node, from)
+      range.setEnd(node, to)
+      return range
+    }
+    left -= node.length
+  }
+  return undefined
+}
+
+/** Whether a combining mark starts at `at` of `text`: variation selectors are marks too, and a font draws each as part of the character before it. */
+const markAt = (text: string, at: number) =>
+  /\p{M}/u.test(String.fromCodePoint(text.codePointAt(at) ?? 0))
+
+/**
+ * Where the character that ends at UTF-16 offset `at` of `text` starts: a
+ * surrogate pair taken whole, and the base under any marks after it, so a
+ * kanji's variation selector is never taken for a character of its own.
+ */
+export function characterStart(text: string, at: number): number {
+  let from = at
+  while (from > 0) {
+    const low = text.charCodeAt(from - 1)
+    const high = text.charCodeAt(from - 2)
+    from -=
+      low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff ? 2 : 1
+    if (!markAt(text, from)) break
+  }
+  return from
+}
+
+/** Where the character that starts at UTF-16 offset `at` of `text` ends, its pair and marks taken with it (`characterStart`). */
+export function characterEnd(text: string, at: number): number {
+  let to = at
+  do {
+    to += (text.codePointAt(to) ?? 0) > 0xffff ? 2 : 1
+  } while (to < text.length && markAt(text, to))
+  return to
+}
+
+const isVertical = (style: CSSStyleDeclaration) =>
+  /^(vertical|sideways)/.test(style.writingMode)
+
+const inside = (box: DOMRect, x: number, y: number) =>
+  x >= box.left && x <= box.right && y >= box.top && y <= box.bottom
+
+/**
+ * Whether the point `x`, `y` is on the character `range` holds, in `block`:
+ * within its box along the line, and across the line in its glyph or in the
+ * leading beside it. The browser does not share a line's leading out evenly
+ * round the glyph, so the whole of it counts on either side: two lines'
+ * leading then meet, and no point between them is off both. A margin is not
+ * leading, so the block's own box ends a line that no other follows. Vertical
+ * text runs its lines down, so there the line runs along y.
+ */
+function onCharacter(
+  range: Range,
+  block: Element,
+  x: number,
+  y: number,
+): boolean {
+  const style = getComputedStyle(range.startContainer.parentElement as Element)
+  const vertical = isVertical(style)
+  const line = Number.parseFloat(style.lineHeight) || 0
+  const inBlock = [...block.getClientRects()].some((box) => inside(box, x, y))
+  const [along, across] = vertical ? [y, x] : [x, y]
+  return [...range.getClientRects()].some((box) => {
+    const [start, end, top, bottom] = vertical
+      ? [box.top, box.bottom, box.left, box.right]
+      : [box.left, box.right, box.top, box.bottom]
+    const leading = line - (bottom - top)
+    const inGlyph = across >= top && across <= bottom
+    const inLeading =
+      inBlock && across >= top - leading && across <= bottom + leading
+    return along >= start && along <= end && (inGlyph || inLeading)
+  })
+}
+
+/** The DOM node and offset of the caret at a point, by whichever API the browser has. */
+function caretAt(
+  x: number,
+  y: number,
+): { node: Node; offset: number } | undefined {
+  if (typeof document.caretPositionFromPoint === 'function') {
+    const caret = document.caretPositionFromPoint(x, y)
+    return caret ? { node: caret.offsetNode, offset: caret.offset } : undefined
+  }
+  if (typeof document.caretRangeFromPoint === 'function') {
+    const caret = document.caretRangeFromPoint(x, y)
+    return caret
+      ? { node: caret.startContainer, offset: caret.startOffset }
+      : undefined
+  }
+  return undefined
+}
+
+/**
+ * A DOM range over `range` of block `block`'s own words in `text`, past the
+ * asides set among them, as `selectionIn` would read it back; none where the
+ * block is not drawn on its own.
+ */
+export function rangeIn(
+  text: HTMLElement | null,
+  block: number,
+  range: TextRange,
+): Range | undefined {
+  const own = text?.querySelector(`[data-block="${block}"] > [data-text]`)
+  if (!own) return undefined
+  const nodes = wordNodes(own)
+  // A start on a boundary between two nodes goes in the later, an end in the
+  // earlier, so neither takes in a node it covers none of.
+  const point = (at: number, end: boolean): [Node, number] | undefined => {
+    let left = at
+    for (const node of nodes) {
+      if (end ? left <= node.length : left < node.length) return [node, left]
+      left -= node.length
+    }
+    const last = nodes.at(-1)
+    return last && left === 0 ? [last, last.length] : undefined
+  }
+  const from = point(range.start, false)
+  const to = point(range.end, true)
+  if (!from || !to) return undefined
+  const out = document.createRange()
+  out.setStart(...from)
+  out.setEnd(...to)
+  return out
 }

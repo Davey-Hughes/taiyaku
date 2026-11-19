@@ -247,13 +247,28 @@ function boxOf(text: HTMLElement, anchor: Anchor): DOMRect | undefined {
 
 /** Whether `anchor`'s character or figure is on the page, or the screen, now showing. */
 export function shows(text: HTMLElement | null, anchor: Anchor): boolean {
-  if (!text) return false
+  return onScreen(text, anchor) === true
+}
+
+/**
+ * Whether `anchor`'s character or figure is measured to be off the page or the
+ * screen: not where it cannot be measured, as in a compared row.
+ */
+export function offScreen(text: HTMLElement | null, anchor: Anchor): boolean {
+  return onScreen(text, anchor) === false
+}
+
+function onScreen(
+  text: HTMLElement | null,
+  anchor: Anchor,
+): boolean | undefined {
+  if (!text) return undefined
   const words = wordsOf(text, anchor.block)
   const rect =
     anchor.figure !== undefined
       ? figureOf(text, anchor)?.getBoundingClientRect()
       : words && charRect(words, anchor.at)
-  if (!rect) return false
+  if (!rect) return undefined
   const flow = flowOf(text)
   const box = text.getBoundingClientRect()
   // Reaching in by more than a pixel, as `topBlock` counts, since a scroll
@@ -311,6 +326,102 @@ export function show(
   } else {
     holding(text, block)?.scrollIntoView({ block: 'start' })
   }
+}
+
+/**
+ * How far a box may lie over an edge and still count as inside it: a scroll
+ * lands on a whole pixel, and a line can sit a fraction past one.
+ */
+const HAIR = 0.5
+
+/** A stretch of the reading axis, as `blockStart` and `blockEnd` measure it. */
+type Span = [start: number, end: number]
+
+/** `spans` less the stretch from `from` to `to`. */
+const without = (spans: Span[], [from, to]: Span): Span[] =>
+  spans
+    .flatMap(([start, end]): Span[] => [
+      [start, Math.min(end, from)],
+      [Math.max(start, to), end],
+    ])
+    .filter(([start, end]) => end > start)
+
+/**
+ * Move `text` by the least that shows `word`. Scrolled, that is the shortest
+ * scroll along the reading axis that leaves all of it in the text's box and
+ * clear of `covers`, the boxes drawn over the text. Nothing moves where it is
+ * in sight already, where it is all on the screen with no cover over any of
+ * its boxes, or where no such scroll exists, since one that cannot clear it
+ * would lose the reader's place for nothing: a cover as wide as vertical text
+ * lies over the same lines however far the text is scrolled. Paged, it is the
+ * page `word` starts on, whatever is drawn over that page.
+ */
+export function bringIntoSight(
+  text: HTMLElement | null,
+  word: Range,
+  covers: DOMRect[],
+) {
+  // jsdom measures no range.
+  if (!text || typeof word.getClientRects !== 'function') return
+  const rects = [...word.getClientRects()]
+  if (rects.length === 0) return
+  const flow = flowOf(text)
+  if (flow.paged) {
+    // Its own page, where it is on already, is no move at all.
+    const size = pageSize(text, flow)
+    const page = Math.floor(
+      along(text, flow, blockStart(flow, rects[0])) / size,
+    )
+    setProgress(text, page * size, flow)
+    return
+  }
+  const box = text.getBoundingClientRect()
+  const screen: Span = [blockStart(flow, box), blockEnd(flow, box)]
+  const from = Math.min(...rects.map((rect) => blockStart(flow, rect)))
+  const to = Math.max(...rects.map((rect) => blockEnd(flow, rect)))
+  // Only what lies over `word` across the reading axis can hide it there.
+  const over = covers.filter((cover) =>
+    rects.some((rect) =>
+      sideways(flow)
+        ? cover.top < rect.bottom && rect.top < cover.bottom
+        : cover.left < rect.right && rect.left < cover.right,
+    ),
+  )
+  const free = over.reduce<Span[]>(
+    (spans, cover) =>
+      without(spans, [blockStart(flow, cover), blockEnd(flow, cover)]),
+    [screen],
+  )
+  const inSight = free.some(
+    ([start, end]) => from >= start - HAIR && to <= end + HAIR,
+  )
+  // A word broken over two lines can have a cover level with one piece and
+  // across from the other while lying over neither.
+  const uncovered = !rects.some((rect) =>
+    covers.some(
+      (cover) =>
+        cover.left < rect.right &&
+        rect.left < cover.right &&
+        cover.top < rect.bottom &&
+        rect.top < cover.bottom,
+    ),
+  )
+  const onScreen = from >= screen[0] - HAIR && to <= screen[1] + HAIR
+  if (inSight || (uncovered && onScreen)) return
+  const back = progress(text, flow)
+  const on = extent(text, flow) - pageSize(text, flow) - back
+  const moves = free
+    .filter(([start, end]) => end - start >= to - from)
+    .map(([start, end]) =>
+      from < start ? Math.floor(from - start) : Math.ceil(to - end),
+    )
+    .filter((move) => move >= -back - 1 && move <= on + 1)
+  if (moves.length === 0) return
+  addProgress(
+    text,
+    moves.reduce((a, b) => (Math.abs(b) < Math.abs(a) ? b : a)),
+    flow,
+  )
 }
 
 /** How far into all of `text` the screen position `edge` is, along its reading axis. */

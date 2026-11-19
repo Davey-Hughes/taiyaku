@@ -755,3 +755,24 @@ export async function lookUpWord(
   }
   return (await res.json()) as DictionaryEntry[]
 }
+
+/**
+ * The longest word `text` begins with in this server's dictionary for `lang`,
+ * for a language written without spaces: its `length` in UTF-16 units, none
+ * matched where it is 0, and its entries; `undefined` where the server has no
+ * dictionary for the language. `text` is at most 16 code points, the most the
+ * server takes.
+ */
+export async function lookUpAt(
+  lang: string,
+  text: string,
+): Promise<{ length: number; entries: DictionaryEntry[] } | undefined> {
+  const res = await request(
+    `/api/dictionary/${encodeURIComponent(lang)}/at/${encodeURIComponent(text)}`,
+  )
+  if (res.status === 404) return undefined
+  if (!res.ok) {
+    throw new Error(`looking up ${text}: ${res.status} ${await res.text()}`)
+  }
+  return (await res.json()) as { length: number; entries: DictionaryEntry[] }
+}

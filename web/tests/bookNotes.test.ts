@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { Book, Mark } from '../src/book'
 import {
   ankiCsv,
+  characterEnd,
+  characterStart,
   excerpt,
   newNote,
   notesOn,
@@ -569,5 +571,28 @@ describe('a number in vertical text', () => {
     expect(pieces('第12話', [], [], [], undefined, false)).toEqual(
       pieces('第12話', [], []),
     )
+  })
+})
+
+describe('a whole character of a text', () => {
+  it('starts at its base, past a surrogate pair, a variation selector or a combining mark', () => {
+    expect(characterStart('猫で', 1)).toBe(0)
+    expect(characterStart('\u{20BB7}野', 2)).toBe(0)
+    expect(characterStart('葛\u{E0100}飾', 3)).toBe(0)
+    expect(characterStart('葛\u{FE00}飾', 2)).toBe(0)
+    expect(characterStart('cafe\u{301} noir', 5)).toBe(3)
+    expect(characterStart('か\u{3099}き', 2)).toBe(0)
+  })
+
+  it('starts no further back than the text does', () => {
+    expect(characterStart('猫', 0)).toBe(0)
+    expect(characterStart('\u{301}a', 1)).toBe(0)
+  })
+
+  it('ends after its pair and its marks', () => {
+    expect(characterEnd('猫で', 0)).toBe(1)
+    expect(characterEnd('\u{20BB7}野', 0)).toBe(2)
+    expect(characterEnd('葛\u{E0100}飾', 0)).toBe(3)
+    expect(characterEnd('cafe\u{301} noir', 3)).toBe(5)
   })
 })

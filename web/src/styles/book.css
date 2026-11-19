@@ -342,6 +342,13 @@
   cursor: pointer;
 }
 
+/* The look-up mode's button, drawn pressed while a tap looks a word up, as
+ * the top bar's layout buttons are. */
+.book-reader .reader-button[aria-pressed="true"] {
+  background: var(--text);
+  color: var(--bg);
+}
+
 /* One dictionary entry in the look-up panel: its senses close under its
  * headword, a rule between it and the next. */
 .book-lookup-entry {
@@ -351,6 +358,42 @@
 
 .book-lookup-entry > * {
   margin: 0 0 var(--space-2);
+}
+
+/* At phone size the look-up's panel goes over the text, so it sits against
+ * the edge of the screen across from its word (`seatLookup`), clear of the
+ * bars showing and of the safe area. The word and Close stay in view as the
+ * answer scrolls under them: the head is pulled out over the panel's padding
+ * so that nothing shows above it, with its margins giving back what its
+ * padding adds. */
+@media (width < 900px) or (height < 500px) {
+  .book-reader .book-lookup-panel[data-side] {
+    max-height: min(45dvh, var(--lookup-room, 45dvh));
+    overscroll-behavior: contain;
+  }
+
+  .book-reader .book-lookup-panel[data-side="top"] {
+    top: calc(max(var(--safe-top), var(--lookup-above, 0px)) + var(--space-2));
+    bottom: auto;
+  }
+
+  .book-reader .book-lookup-panel[data-side="bottom"] {
+    top: auto;
+    bottom: calc(
+      max(var(--safe-bottom), var(--lookup-below, 0px)) +
+      var(--space-2)
+    );
+  }
+
+  .book-lookup-panel[data-side] > .reader-panel-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    flex: none;
+    margin-block: calc(-1 * var(--space-3)) calc(-1 * var(--space-2));
+    padding-block: var(--space-3) var(--space-2);
+    background: var(--reader-panel);
+  }
 }
 
 .book-peek > span {

@@ -1,11 +1,20 @@
 import { act } from 'react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from 'vitest'
+import { lookUpAt } from '../src/api'
 import { bookImageUrl } from '../src/book'
 import { selectionIn } from '../src/bookNotes'
 import { BookReader, Sentences } from '../src/BookReader'
 import { GateContext, type Gated } from '../src/gate'
 import type { Note } from '../src/notes'
-import { land } from './support/async'
+import { deferred, flush, land } from './support/async'
 import './support/dialog'
 import { typeInto } from './support/input'
 import { mount, rerender } from './support/mount'
@@ -189,11 +198,13 @@ function touch(
     held = 0,
     at = later(),
     x = 100,
+    y = 100,
   }: {
     on?: Element | null
     travel?: number
     sideways?: number
     x?: number
+    y?: number
     held?: number
     at?: number
   } = {},
@@ -213,9 +224,9 @@ function touch(
   const faked = vi.isFakeTimers()
   if (!faked) vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   act(() => {
-    target?.dispatchEvent(pointer('pointerdown', x, 100, at))
+    target?.dispatchEvent(pointer('pointerdown', x, y, at))
     target?.dispatchEvent(
-      pointer('pointerup', x + sideways, 100 + travel, at + held),
+      pointer('pointerup', x + sideways, y + travel, at + held),
     )
   })
   if (waited) act(() => vi.advanceTimersByTime(200))
@@ -326,29 +337,35 @@ const highlightOn = (
   end: number,
 ) => note({ id: 'h', edition, slot, text: { start, end } })
 
-/** Select block `block`'s own words from `start` up to `end`, across the spans its sentences are drawn in. */
-function select(host: HTMLElement, block: number, start: number, end: number) {
+/** Where character `offset` of block `block`'s own words is, past the asides set among them. */
+function pointIn(
+  host: HTMLElement,
+  block: number,
+  offset: number,
+): [Node, number] {
   const words = host.querySelector(
     `[data-block="${block}"] [data-text]`,
   ) as Node
-  const at = (offset: number): [Node, number] => {
-    const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) =>
-        node.parentElement?.closest('[data-aside]')
-          ? NodeFilter.FILTER_REJECT
-          : NodeFilter.FILTER_ACCEPT,
-    })
-    let left = offset
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const length = node.textContent?.length ?? 0
-      if (left <= length) return [node, left]
-      left -= length
-    }
-    throw new Error(`block ${block} has no character ${offset}`)
+  const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) =>
+      node.parentElement?.closest('[data-aside]')
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT,
+  })
+  let left = offset
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const length = node.textContent?.length ?? 0
+    if (left <= length) return [node, left]
+    left -= length
   }
+  throw new Error(`block ${block} has no character ${offset}`)
+}
+
+/** Select block `block`'s own words from `start` up to `end`, across the spans its sentences are drawn in. */
+function select(host: HTMLElement, block: number, start: number, end: number) {
   const range = document.createRange()
-  range.setStart(...at(start))
-  range.setEnd(...at(end))
+  range.setStart(...pointIn(host, block, start))
+  range.setEnd(...pointIn(host, block, end))
   window.getSelection()?.removeAllRanges()
   window.getSelection()?.addRange(range)
 }
@@ -1812,6 +1829,1037 @@ describe('BookReader', () => {
     )
   })
 
+  describe('the look-up mode', () => {
+    /** One Japanese edition, its second block two sentences. */
+    const japanese = {
+      title: '猫',
+      hub: 'ja',
+      editions: {
+        ja: {
+          label: '日本語',
+          language: 'ja',
+          blocks: [
+            { text: '一', heading: true, sentences: [[0, 1]] },
+            {
+              text: '吾輩は猫である。名前はまだ無い。',
+              heading: false,
+              sentences: [
+                [0, 8],
+                [8, 16],
+              ],
+            },
+          ],
+        },
+      },
+      alignments: [],
+    }
+
+    /** `japanese` with `text` as its second block, its edition tagged `language`. */
+    const japaneseOf = (text: string, language: string | null = 'ja') => ({
+      ...japanese,
+      editions: {
+        ja: {
+          ...japanese.editions.ja,
+          language,
+          blocks: [
+            japanese.editions.ja.blocks[0],
+            { text, heading: false, sentences: [[0, text.length]] },
+          ],
+        },
+      },
+    })
+
+    /** `japanese` with an English edition to swap to, block for block. */
+    const bilingual = {
+      ...japanese,
+      editions: {
+        ...japanese.editions,
+        en: {
+          label: 'English',
+          language: 'en',
+          blocks: [
+            { text: 'One', heading: true, sentences: [[0, 3]] },
+            {
+              text: 'I am a cat. No name yet.',
+              heading: false,
+              sentences: [
+                [0, 11],
+                [12, 24],
+              ],
+            },
+          ],
+        },
+      },
+      alignments: [
+        {
+          to: 'en',
+          pins: [],
+          links: [
+            [0, 1, 0, 1],
+            [1, 2, 1, 2],
+          ],
+          sentences: [
+            [0, 1, 0, 1],
+            [1, 2, 1, 2],
+            [2, 3, 2, 3],
+          ],
+        },
+      ],
+    }
+
+    const on = () =>
+      localStorage.setItem('taiyaku.prefs.lookup', JSON.stringify({ on: true }))
+
+    afterEach(() => {
+      Reflect.deleteProperty(document, 'caretPositionFromPoint')
+    })
+
+    /**
+     * Has the browser's caret-from-point answer character `at` of block
+     * `block`'s own words, wherever the press is.
+     */
+    function caretOn(host: HTMLElement, block: number, at: number) {
+      const [offsetNode, offset] = pointIn(host, block, at)
+      Object.defineProperty(document, 'caretPositionFromPoint', {
+        configurable: true,
+        value: () => ({ offsetNode, offset }),
+      })
+    }
+
+    /**
+     * Lays block `block`'s own words out on one line as Chromium answers for
+     * them: each code point 20 px wide from x = 0, the line from y = 90 to 110.
+     * The caret at a point is at the nearer edge of the character under it, in
+     * that character's own text node, so the far half of a node's last
+     * character puts it at the end of that node. Answered by `api`, the call
+     * a browser has.
+     */
+    function layOutLine(
+      host: HTMLElement,
+      block: number,
+      api:
+        | 'caretPositionFromPoint'
+        | 'caretRangeFromPoint' = 'caretPositionFromPoint',
+    ) {
+      const words = host.querySelector(
+        `[data-block="${block}"] [data-text]`,
+      ) as Node
+      const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT, {
+        acceptNode: (node) =>
+          node.parentElement?.closest('[data-aside]')
+            ? NodeFilter.FILTER_REJECT
+            : NodeFilter.FILTER_ACCEPT,
+      })
+      const nodes: Text[] = []
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        nodes.push(node as Text)
+      }
+      const whole = nodes.map((node) => node.data).join('')
+      const points = [...whole]
+      const startOf = (node: Text) =>
+        nodes
+          .slice(0, nodes.indexOf(node))
+          .reduce((n, word) => n + word.length, 0)
+      const drawnAt = (at: number) => [...whole.slice(0, at)].length * 20
+      const caret = (x: number) => {
+        const index = Math.max(
+          0,
+          Math.min(points.length - 1, Math.floor(x / 20)),
+        )
+        const from = points.slice(0, index).join('').length
+        const at = x - index * 20 < 10 ? from : from + points[index].length
+        const node = nodes.find(
+          (word) => from < startOf(word) + word.length,
+        ) as Text
+        return { node, offset: at - startOf(node) }
+      }
+      Object.defineProperty(document, api, {
+        configurable: true,
+        value: (x: number) => {
+          const { node, offset } = caret(x)
+          return api === 'caretPositionFromPoint'
+            ? { offsetNode: node, offset }
+            : { startContainer: node, startOffset: offset }
+        },
+      })
+      Object.defineProperty(Range.prototype, 'getClientRects', {
+        configurable: true,
+        value(this: Range) {
+          if (!nodes.includes(this.startContainer as Text)) return []
+          const from = startOf(this.startContainer as Text) + this.startOffset
+          const to = startOf(this.endContainer as Text) + this.endOffset
+          return [
+            { left: drawnAt(from), right: drawnAt(to), top: 90, bottom: 110 },
+          ]
+        },
+      })
+      onTestFinished(() => {
+        Reflect.deleteProperty(document, api)
+        Reflect.deleteProperty(Range.prototype, 'getClientRects')
+      })
+    }
+
+    /**
+     * The reader on `sent`, its server answering a word's look-up and a
+     * text's longest word with `dictionary`, and `asked` each, as
+     * `lang:word` or `lang:at:text`.
+     */
+    async function reader(
+      sent: unknown,
+      dictionary: (asked: string) => Response | Promise<Response> = () =>
+        Response.json([]),
+      notes: Note[] = [],
+    ) {
+      const { fetch, written } = server(undefined, sent, notes)
+      const answer = fetch.getMockImplementation()
+      const asked: string[] = []
+      fetch.mockImplementation((url: string, init?: RequestInit) => {
+        const found = url.match(/^\/api\/dictionary\/([^/]+)\/(at\/)?(.+)$/)
+        if (!found) return answer?.(url, init) as Promise<Response>
+        const what = `${found[1]}:${found[2] ? 'at:' : ''}${decodeURIComponent(found[3])}`
+        asked.push(what)
+        return Promise.resolve(dictionary(what))
+      })
+      vi.stubGlobal('fetch', fetch)
+      Element.prototype.scrollIntoView = vi.fn()
+      const host = mount(<BookReader work="w" onLeave={vi.fn()} />)
+      await land()
+      return { host, written, asked, fetch }
+    }
+
+    /** A tap on block `block`'s own words at character `at`, and its answer let land. */
+    async function tapOn(
+      host: HTMLElement,
+      block: number,
+      at: number,
+      x = 100,
+    ) {
+      caretOn(host, block, at)
+      touch(host, {
+        on: host.querySelector(`[data-block="${block}"] [data-sentence]`),
+        x,
+      })
+      await land()
+    }
+
+    const panel = () =>
+      document.querySelector('[role="dialog"][aria-label="Look up"]')
+    const bars = (host: HTMLElement) =>
+      host.querySelector('.reader-top-bar') !== null
+    const selectedText = () => window.getSelection()?.toString()
+    const who = { word: 'who', pos: 'pron', glosses: ['a person'], via: null }
+    const lookUpTitle = () =>
+      panel()?.querySelector('.reader-panel-title')?.textContent
+    const saveWord = () =>
+      [...(panel()?.querySelectorAll('button') ?? [])].find(
+        (b) => b.textContent === 'Save word',
+      )
+
+    /** Block `block`'s characters `start` up to `end` selected by a drag, and looked up from the bar. */
+    async function lookUpFromBar(
+      host: HTMLElement,
+      block: number,
+      start: number,
+      end: number,
+    ) {
+      select(host, block, start, end)
+      touch(host, { travel: 40 })
+      const button = [
+        ...host.querySelectorAll(
+          '[role="toolbar"][aria-label="Selection"] button',
+        ),
+      ].find((b) => b.textContent === 'Look up') as HTMLElement
+      act(() => button.click())
+      await land()
+    }
+
+    it('leaves a tap to show the bars when the mode is off, looking nothing up', async () => {
+      const { host, asked } = await reader(sentenced)
+      await tapOn(host, 1, 13)
+      expect(bars(host)).toBe(true)
+      expect(asked).toEqual([])
+      expect(panel()).toBeNull()
+    })
+
+    it('turns on and off on l and from its button in the bars, remembered', async () => {
+      const { host } = await reader(sentenced)
+      press('l')
+      press('Tab')
+      const button = () =>
+        [...host.querySelectorAll('button')].find(
+          (b) => b.textContent === 'Look up words',
+        )
+      expect(button()?.getAttribute('aria-pressed')).toBe('true')
+      expect(
+        JSON.parse(localStorage.getItem('taiyaku.prefs.lookup') ?? '{}'),
+      ).toEqual({ on: true })
+      act(() => button()?.click())
+      expect(button()?.getAttribute('aria-pressed')).toBe('false')
+      act(() => button()?.click())
+      const again = mount(<BookReader work="w" onLeave={vi.fn()} />)
+      await land()
+      press('Tab')
+      const kept = [...again.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Look up words',
+      )
+      expect(kept?.getAttribute('aria-pressed')).toBe('true')
+    })
+
+    it('looks up the word tapped, selected, the bars left as they were', async () => {
+      on()
+      const { host, asked } = await reader(sentenced, () =>
+        Response.json([who]),
+      )
+      await tapOn(host, 1, 13)
+      expect(asked).toEqual(['en:Nobody'])
+      expect(panel()?.querySelector('.reader-panel-title')?.textContent).toBe(
+        'Nobody',
+      )
+      expect(selectedText()).toBe('Nobody')
+      expect(bars(host)).toBe(false)
+    })
+
+    it('looks up a Japanese text’s longest word from the character tapped, and saves that word', async () => {
+      on()
+      const { host, asked, written } = await reader(japanese, () =>
+        Response.json({ length: 5, entries: [who] }),
+      )
+      await tapOn(host, 1, 3)
+      expect(asked).toEqual(['ja:at:猫である。名前はまだ無い。'])
+      expect(selectedText()).toBe('猫である。')
+      expect(panel()?.querySelector('.reader-panel-title')?.textContent).toBe(
+        '猫である。',
+      )
+      const save = [...(panel()?.querySelectorAll('button') ?? [])].find(
+        (b) => b.textContent === 'Save word',
+      )
+      act(() => save?.click())
+      await saved()
+      expect(written.at(-1)?.notes).toMatchObject([
+        { edition: 'ja', slot: 1, text: { start: 3, end: 8 } },
+      ])
+    })
+
+    it('says so when the server has no Japanese dictionary', async () => {
+      on()
+      const { host } = await reader(
+        japanese,
+        () => new Response('none', { status: 404 }),
+      )
+      await tapOn(host, 1, 3)
+      expect(panel()?.querySelector('p')?.textContent).toBe(
+        'This server has no dictionary for ja.',
+      )
+      expect(window.getSelection()?.isCollapsed).toBe(true)
+    })
+
+    it('turns the page on a tap in a paged text’s outer thirds, looking up only from the middle', async () => {
+      on()
+      paged()
+      const page = paging([0, 0, 1])
+      const { host, asked } = await reader(sentenced, () =>
+        Response.json([who]),
+      )
+      await tapOn(host, 1, 13, 500)
+      expect(page()).toBe(1)
+      await tapOn(host, 1, 13, 100)
+      expect(page()).toBe(0)
+      expect(asked).toEqual([])
+      expect(panel()).toBeNull()
+      await tapOn(host, 1, 13, 300)
+      expect(page()).toBe(0)
+      expect(asked).toEqual(['en:Nobody'])
+      expect(panel()).not.toBeNull()
+    })
+
+    it('looks a word up from any third of a scrolled text', async () => {
+      on()
+      const { host, asked } = await reader(sentenced, () =>
+        Response.json([who]),
+      )
+      await tapOn(host, 1, 13, 500)
+      expect(asked).toEqual(['en:Nobody'])
+    })
+
+    it('saves a word on the edition it was looked up in, after a swap to another', async () => {
+      on()
+      const { host, written } = await reader(sentenced, () =>
+        Response.json([who]),
+      )
+      await tapOn(host, 1, 13)
+      press(' ')
+      await land()
+      const save = [...(panel()?.querySelectorAll('button') ?? [])].find(
+        (b) => b.textContent === 'Save word',
+      )
+      act(() => save?.click())
+      await saved()
+      expect(written.at(-1)?.notes).toMatchObject([
+        { edition: 'en', slot: 1, text: { start: 11, end: 17 } },
+      ])
+    })
+
+    it('takes a tap on a space as a tap, looking nothing up', async () => {
+      on()
+      const { host, asked } = await reader(sentenced)
+      await tapOn(host, 1, 10)
+      expect(bars(host)).toBe(true)
+      expect(asked).toEqual([])
+    })
+
+    it('takes a tap on Japanese punctuation as a tap, looking nothing up', async () => {
+      on()
+      const { host, asked } = await reader(japanese)
+      await tapOn(host, 1, 7)
+      expect(bars(host)).toBe(true)
+      expect(asked).toEqual([])
+    })
+
+    it('shows the last word tapped, though the first one’s answer comes last', async () => {
+      on()
+      const first = deferred<Response>()
+      const { host } = await reader(japanese, (asked) =>
+        asked.startsWith('ja:at:猫')
+          ? first.promise
+          : Response.json({ length: 2, entries: [who] }),
+      )
+      await tapOn(host, 1, 3)
+      await tapOn(host, 1, 8)
+      await flush(() =>
+        first.resolve(Response.json({ length: 5, entries: [] })),
+      )
+      await land()
+      expect(panel()?.querySelector('.reader-panel-title')?.textContent).toBe(
+        '名前',
+      )
+      expect(selectedText()).toBe('名前')
+    })
+
+    it('shows the last English word tapped, though the first one’s answer comes last', async () => {
+      on()
+      const first = deferred<Response>()
+      const { host } = await reader(sentenced, (asked) =>
+        asked === 'en:Who' ? first.promise : Response.json([who]),
+      )
+      await tapOn(host, 1, 1)
+      await tapOn(host, 1, 13)
+      await flush(() => first.resolve(Response.json([])))
+      await land()
+      expect(panel()?.querySelector('.reader-panel-title')?.textContent).toBe(
+        'Nobody',
+      )
+      expect(panel()?.querySelector('ol')?.textContent).toBe('a person')
+      expect(selectedText()).toBe('Nobody')
+    })
+
+    it('looks up a highlighted word, and opens a note from its mark', async () => {
+      on()
+      const { host, asked } = await reader(sentenced, () => Response.json([]), [
+        highlightOn('en', 1, 0, 3),
+        note({ id: 'p', edition: 'en', slot: 1, body: 'a mark' }),
+      ])
+      caretOn(host, 1, 1)
+      touch(host, { on: host.querySelector('[data-block="1"] mark') })
+      await land()
+      expect(asked).toEqual(['en:Who'])
+      expect(panel()).not.toBeNull()
+      touch(host, { on: host.querySelector('.book-note-mark') })
+      expect(
+        host.querySelector('[role="dialog"][aria-label="Note"]'),
+      ).not.toBeNull()
+      expect(asked).toEqual(['en:Who'])
+    })
+
+    it('leaves a selection made since alone when the look-up closes', async () => {
+      on()
+      const { host } = await reader(sentenced, () => Response.json([who]))
+      await tapOn(host, 1, 13)
+      expect(selectedText()).toBe('Nobody')
+      select(host, 1, 0, 3)
+      const close = [...(panel()?.querySelectorAll('button') ?? [])].find(
+        (b) => b.textContent === 'Close',
+      )
+      act(() => close?.click())
+      expect(panel()).toBeNull()
+      expect(selectedText()).toBe('Who')
+    })
+
+    it('lets go of its own selection when the look-up closes', async () => {
+      on()
+      const { host } = await reader(sentenced, () => Response.json([who]))
+      await tapOn(host, 1, 13)
+      expect(selectedText()).toBe('Nobody')
+      press('Escape')
+      expect(panel()).toBeNull()
+      expect(window.getSelection()?.isCollapsed).toBe(true)
+    })
+
+    it('closes the look-up and its selection on a double tap, and peeks', async () => {
+      on()
+      const { host } = await reader(sentenced, () => Response.json([who]))
+      caretOn(host, 1, 13)
+      const at = later()
+      const sentence = host.querySelector('[data-block="1"] [data-sentence]')
+      touch(host, { on: sentence, at })
+      await land()
+      expect(panel()).not.toBeNull()
+      touch(host, { on: sentence, at: at + 150 })
+      await land()
+      expect(panel()).toBeNull()
+      expect(window.getSelection()?.isCollapsed).toBe(true)
+      expect(peeked(host)?.[0]).toBe('1')
+      expect(bars(host)).toBe(false)
+    })
+
+    it('still selects on a drag or a long press, closing an open look-up', async () => {
+      on()
+      const { host, asked } = await reader(sentenced, () =>
+        Response.json([who]),
+      )
+      await tapOn(host, 1, 13)
+      expect(asked).toEqual(['en:Nobody'])
+      select(host, 1, 0, 3)
+      touch(host, { travel: 40 })
+      expect(
+        host.querySelector('[role="toolbar"][aria-label="Selection"]'),
+      ).not.toBeNull()
+      expect(panel()).toBeNull()
+      expect(selectedText()).toBe('Who')
+      select(host, 1, 11, 17)
+      touch(host, { held: 600 })
+      expect(
+        host.querySelector('[role="toolbar"][aria-label="Selection"]'),
+      ).not.toBeNull()
+      expect(asked).toEqual(['en:Nobody'])
+    })
+
+    it('reveals a hidden interlinear line on a tap, and takes one on a peek as a tap', async () => {
+      on()
+      localStorage.setItem(
+        'taiyaku.prefs.book-layout',
+        JSON.stringify({ mode: 'interlinear', hideTranslation: true }),
+      )
+      const { host, asked } = await reader(sentenced)
+      const line = () =>
+        host.querySelector<HTMLElement>('[data-interlinear="2"]') as HTMLElement
+      const caret = line().firstChild as Node
+      Object.defineProperty(document, 'caretPositionFromPoint', {
+        configurable: true,
+        value: () => ({ offsetNode: caret, offset: 1 }),
+      })
+      touch(host, { on: line() })
+      await land()
+      expect(line().hasAttribute('data-hidden')).toBe(false)
+      expect(bars(host)).toBe(false)
+      expect(asked).toEqual([])
+    })
+
+    it('takes a tap on a peek as a tap, looking nothing up', async () => {
+      on()
+      const { host, asked } = await reader(sentenced)
+      press('p')
+      const peek = host.querySelector('.book-peek') as HTMLElement
+      const caret = peek.querySelector('span')?.firstChild ?? peek
+      Object.defineProperty(document, 'caretPositionFromPoint', {
+        configurable: true,
+        value: () => ({ offsetNode: caret, offset: 1 }),
+      })
+      touch(host, { on: peek })
+      await land()
+      expect(bars(host)).toBe(true)
+      expect(asked).toEqual([])
+    })
+
+    it('takes a tap on a character’s far half as one on that character, and one on the next character’s near half as one on that', async () => {
+      on()
+      const { host, asked } = await reader(japanese, () =>
+        Response.json({ length: 1, entries: [who] }),
+      )
+      layOutLine(host, 1)
+      const sentence = host.querySelector('[data-block="1"] [data-sentence]')
+      // 猫 is drawn from 60 to 80, で from 80 to 100.
+      touch(host, { on: sentence, x: 75 })
+      await land()
+      touch(host, { on: sentence, x: 85 })
+      await land()
+      expect(asked).toEqual([
+        'ja:at:猫である。名前はまだ無い。',
+        'ja:at:である。名前はまだ無い。',
+      ])
+    })
+
+    it('takes a tap on a glossed kanji’s far half, which puts the caret at the end of its own node, as one on the kanji, and one on the next character’s near half as one on that', async () => {
+      on()
+      const glossed = {
+        ...japanese,
+        editions: {
+          ja: {
+            ...japanese.editions.ja,
+            blocks: [
+              japanese.editions.ja.blocks[0],
+              {
+                ...japanese.editions.ja.blocks[1],
+                marks: [{ kind: 'ruby', start: 3, end: 4, reading: 'ねこ' }],
+              },
+            ],
+          },
+        },
+      }
+      const { host, asked } = await reader(glossed, () =>
+        Response.json({ length: 1, entries: [who] }),
+      )
+      layOutLine(host, 1)
+      const ruby = host.querySelector('[data-block="1"] ruby')
+      touch(host, { on: ruby, x: 75 })
+      await land()
+      touch(host, { on: ruby, x: 85 })
+      await land()
+      expect(asked).toEqual([
+        'ja:at:猫である。名前はまだ無い。',
+        'ja:at:である。名前はまだ無い。',
+      ])
+    })
+
+    it('takes a tap on the far half of a kanji outside the BMP as one on the whole kanji', async () => {
+      on()
+      const paired = {
+        ...japanese,
+        editions: {
+          ja: {
+            ...japanese.editions.ja,
+            blocks: [
+              japanese.editions.ja.blocks[0],
+              {
+                text: '\u{20BB7}野家の牛丼。',
+                heading: false,
+                sentences: [[0, 8]],
+              },
+            ],
+          },
+        },
+      }
+      const { host, asked } = await reader(paired, () =>
+        Response.json({ length: 1, entries: [who] }),
+      )
+      layOutLine(host, 1)
+      const sentence = host.querySelector('[data-block="1"] [data-sentence]')
+      touch(host, { on: sentence, x: 15 })
+      await land()
+      touch(host, { on: sentence, x: 25 })
+      await land()
+      expect(asked).toEqual([
+        'ja:at:\u{20BB7}野家の牛丼。',
+        'ja:at:野家の牛丼。',
+      ])
+    })
+
+    it('finds the character by the older caret call where a browser has only that', async () => {
+      on()
+      const { host, asked } = await reader(japanese, () =>
+        Response.json({ length: 1, entries: [who] }),
+      )
+      layOutLine(host, 1, 'caretRangeFromPoint')
+      touch(host, {
+        on: host.querySelector('[data-block="1"] [data-sentence]'),
+        x: 85,
+      })
+      await land()
+      expect(asked).toEqual(['ja:at:である。名前はまだ無い。'])
+    })
+
+    it.each([
+      ['off the line, across it', { x: 75, y: 130 }],
+      ['past the end of the line', { x: 200, y: 100 }],
+    ])(
+      'leaves a tap on no character, %s, to show the bars, looking nothing up',
+      async (_where, point) => {
+        on()
+        // Ending on a kanji, which a tap taken for the last character would ask for.
+        const ending = {
+          ...japanese,
+          editions: {
+            ja: {
+              ...japanese.editions.ja,
+              blocks: [
+                japanese.editions.ja.blocks[0],
+                { text: '吾輩は猫', heading: false, sentences: [[0, 4]] },
+              ],
+            },
+          },
+        }
+        const { host, asked } = await reader(ending)
+        layOutLine(host, 1)
+        touch(host, {
+          on: host.querySelector('[data-block="1"] [data-sentence]'),
+          ...point,
+        })
+        await land()
+        expect(asked).toEqual([])
+        expect(panel()).toBeNull()
+        expect(bars(host)).toBe(true)
+      },
+    )
+
+    it('keeps the light on the word a hold after a tap selects again, for the selection bar', async () => {
+      on()
+      const { host } = await reader(sentenced, () => Response.json([who]))
+      await tapOn(host, 1, 13)
+      expect(selectedText()).toBe('Nobody')
+      touch(host, { held: 600 })
+      expect(
+        host.querySelector('[role="toolbar"][aria-label="Selection"]'),
+      ).not.toBeNull()
+      expect(panel()).toBeNull()
+      expect(selectedText()).toBe('Nobody')
+    })
+
+    it('counts a tap on a ruby’s reading as one on the start of its base', async () => {
+      on()
+      const ruby = {
+        ...japanese,
+        editions: {
+          ja: {
+            ...japanese.editions.ja,
+            blocks: [
+              japanese.editions.ja.blocks[0],
+              {
+                ...japanese.editions.ja.blocks[1],
+                marks: [{ kind: 'ruby', start: 3, end: 4, reading: 'ねこ' }],
+              },
+            ],
+          },
+        },
+      }
+      const { host, asked } = await reader(ruby, () =>
+        Response.json({ length: 1, entries: [who] }),
+      )
+      const rt = host.querySelector('[data-block="1"] rt') as HTMLElement
+      Object.defineProperty(document, 'caretPositionFromPoint', {
+        configurable: true,
+        value: () => ({ offsetNode: rt.firstChild, offset: 1 }),
+      })
+      touch(host, { on: rt })
+      await land()
+      expect(asked).toEqual(['ja:at:猫である。名前はまだ無い。'])
+      expect(selectedText()).toBe('猫')
+    })
+
+    it('lights nothing in the edition swapped to when the answer lands there, and saves on the edition asked in', async () => {
+      on()
+      const answer = deferred<Response>()
+      const { host, written } = await reader(bilingual, () => answer.promise)
+      await tapOn(host, 1, 3)
+      press(' ')
+      await land()
+      expect(
+        host.querySelector('[data-block="1"] [data-text]')?.textContent,
+      ).toBe('I am a cat. No name yet.')
+      await flush(() =>
+        answer.resolve(Response.json({ length: 3, entries: [who] })),
+      )
+      await land()
+      expect(lookUpTitle()).toBe('猫であ')
+      expect(selectedText()).toBe('')
+      act(() => saveWord()?.click())
+      await saved()
+      expect(written.at(-1)?.notes).toMatchObject([
+        { edition: 'ja', slot: 1, text: { start: 3, end: 6 } },
+      ])
+    })
+
+    it('reads a stored mode that is not true as off, and turns it on at the first press', async () => {
+      localStorage.setItem(
+        'taiyaku.prefs.lookup',
+        JSON.stringify({ on: 'yes' }),
+      )
+      const { host, asked } = await reader(sentenced, () =>
+        Response.json([who]),
+      )
+      await tapOn(host, 1, 13)
+      expect(asked).toEqual([])
+      expect(panel()).toBeNull()
+      const button = [...host.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Look up words',
+      ) as HTMLElement
+      expect(button.getAttribute('aria-pressed')).toBe('false')
+      act(() => button.click())
+      expect(button.getAttribute('aria-pressed')).toBe('true')
+    })
+
+    it('asks only the sixteen code points from the character tapped of a block that runs on past them', async () => {
+      on()
+      const { host, asked } = await reader(
+        japaneseOf(
+          '吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。',
+        ),
+        () => Response.json({ length: 1, entries: [who] }),
+      )
+      await tapOn(host, 1, 3)
+      expect(asked).toEqual(['ja:at:猫である。名前はまだ無い。どこで'])
+    })
+
+    it('selects nothing when the answer lands after the look-up closed', async () => {
+      on()
+      const answer = deferred<Response>()
+      const { host } = await reader(japanese, () => answer.promise)
+      await tapOn(host, 1, 3)
+      press('Escape')
+      expect(panel()).toBeNull()
+      await flush(() =>
+        answer.resolve(Response.json({ length: 5, entries: [who] })),
+      )
+      await land()
+      expect(panel()).toBeNull()
+      expect(selectedText()).toBe('')
+    })
+
+    it('keeps a later tap’s entries when an earlier tap’s look-up fails last', async () => {
+      on()
+      const first = deferred<Response>()
+      const { host } = await reader(japanese, (asked) =>
+        asked.startsWith('ja:at:猫')
+          ? first.promise
+          : Response.json({ length: 2, entries: [who] }),
+      )
+      await tapOn(host, 1, 3)
+      await tapOn(host, 1, 8)
+      await flush(() => first.resolve(new Response('gone', { status: 500 })))
+      await land()
+      expect(lookUpTitle()).toBe('名前')
+      expect(panel()?.querySelector('ol')?.textContent).toBe('a person')
+    })
+
+    it('says the look-up failed when the server refuses it, whatever the refusal holds', async () => {
+      on()
+      const { host } = await reader(japanese, () =>
+        Response.json({ length: 1, entries: [who] }, { status: 500 }),
+      )
+      await tapOn(host, 1, 3)
+      expect(panel()?.querySelector('p')?.textContent).toContain(': 500 ')
+      expect(panel()?.querySelector('ol')).toBeNull()
+    })
+
+    it('escapes the text in the address it asks', async () => {
+      on()
+      const { host, fetch } = await reader(japaneseOf('何だ?本当か'), () =>
+        Response.json({ length: 1, entries: [who] }),
+      )
+      await tapOn(host, 1, 0)
+      expect(
+        fetch.mock.calls
+          .map(([url]) => url)
+          .filter((url) => url.startsWith('/api/dictionary/')),
+      ).toEqual([
+        '/api/dictionary/ja/at/%E4%BD%95%E3%81%A0%3F%E6%9C%AC%E5%BD%93%E3%81%8B',
+      ])
+    })
+
+    it('escapes the language in the address of a longest-word search', async () => {
+      const { fetch } = await reader(japanese, () =>
+        Response.json({ length: 1, entries: [who] }),
+      )
+      await lookUpAt('ja/JP', '何')
+      expect(fetch.mock.calls.at(-1)?.[0]).toBe(
+        '/api/dictionary/ja%2FJP/at/%E4%BD%95',
+      )
+    })
+
+    it('escapes an edition’s language in the address of a word it asks', async () => {
+      on()
+      const { host, fetch } = await reader(japaneseOf('cat', 'ja/JP'))
+      await tapOn(host, 1, 0)
+      expect(fetch.mock.calls.at(-1)?.[0]).toBe('/api/dictionary/ja%2FJP/cat')
+    })
+
+    it('titles the look-up with the character tapped until an answer names a word, and after one that names none', async () => {
+      on()
+      const answer = deferred<Response>()
+      const { host } = await reader(japanese, () => answer.promise)
+      await tapOn(host, 1, 3)
+      expect(lookUpTitle()).toBe('猫')
+      expect(panel()?.querySelector('p')?.textContent).toBe('Looking it up…')
+      await flush(() =>
+        answer.resolve(Response.json({ length: 0, entries: [] })),
+      )
+      await land()
+      expect(lookUpTitle()).toBe('猫')
+      expect(selectedText()).toBe('')
+      expect(panel()?.querySelector('p')?.textContent).toBe(
+        'Not in the dictionary.',
+      )
+    })
+
+    it('drops a tap’s answer once the look-up has moved to a selection from the bar', async () => {
+      on()
+      const answer = deferred<Response>()
+      const { host } = await reader(japanese, (asked) =>
+        asked.startsWith('ja:at:') ? answer.promise : Response.json([who]),
+      )
+      await tapOn(host, 1, 3)
+      // With the mode off, the drag below leaves the look-up open.
+      press('l')
+      await lookUpFromBar(host, 1, 8, 10)
+      expect(lookUpTitle()).toBe('名前')
+      await flush(() =>
+        answer.resolve(Response.json({ length: 5, entries: [] })),
+      )
+      await land()
+      expect(lookUpTitle()).toBe('名前')
+      expect(panel()?.querySelector('ol')?.textContent).toBe('a person')
+    })
+
+    it('drops a Japanese tap’s answer once a word is tapped in the edition swapped to', async () => {
+      on()
+      const answer = deferred<Response>()
+      const { host } = await reader(bilingual, (asked) =>
+        asked.startsWith('ja:at:') ? answer.promise : Response.json([who]),
+      )
+      await tapOn(host, 1, 3)
+      press(' ')
+      await land()
+      await tapOn(host, 1, 7)
+      expect(lookUpTitle()).toBe('cat')
+      await flush(() =>
+        answer.resolve(Response.json({ length: 5, entries: [] })),
+      )
+      await land()
+      expect(lookUpTitle()).toBe('cat')
+      expect(selectedText()).toBe('cat')
+    })
+
+    it('leaves a look-up opened from the selection bar open through a new hold, with the mode off', async () => {
+      const { host } = await reader(sentenced, () => Response.json([who]))
+      await lookUpFromBar(host, 1, 0, 3)
+      expect(panel()).not.toBeNull()
+      select(host, 1, 11, 17)
+      touch(host, { held: 600 })
+      expect(panel()).not.toBeNull()
+    })
+
+    describe('the route a tap takes', () => {
+      const KANA = '吾輩は猫である。名前はまだ無い。'
+      const HANZI = '我是一只猫。名字还没有。'
+      const JAPANESE: [string, string | null][] = [
+        ['ja', 'ja'],
+        ['ja-JP', 'ja-JP'],
+        ['jpn', 'jpn'],
+        ['no tag, its text with kana', null],
+      ]
+
+      it.each(JAPANESE)(
+        'asks the Japanese dictionary for the longest word from the character tapped: %s',
+        async (_, language) => {
+          on()
+          const { host, asked } = await reader(japaneseOf(KANA, language), () =>
+            Response.json({ length: 2, entries: [who] }),
+          )
+          await tapOn(host, 1, 3)
+          expect(asked).toEqual(['ja:at:猫である。名前はまだ無い。'])
+          expect(lookUpTitle()).toBe('猫で')
+        },
+      )
+
+      it.each(JAPANESE)(
+        'names the Japanese dictionary when the server has none: %s',
+        async (_, language) => {
+          on()
+          const { host } = await reader(
+            japaneseOf(KANA, language),
+            () => new Response('none', { status: 404 }),
+          )
+          await tapOn(host, 1, 3)
+          expect(panel()?.querySelector('p')?.textContent).toBe(
+            'This server has no dictionary for ja.',
+          )
+        },
+      )
+
+      it('saves the longest word of an edition tagged jpn on that edition', async () => {
+        on()
+        const { host, written } = await reader(japaneseOf(KANA, 'jpn'), () =>
+          Response.json({ length: 2, entries: [who] }),
+        )
+        await tapOn(host, 1, 3)
+        act(() => saveWord()?.click())
+        await saved()
+        expect(written.at(-1)?.notes).toMatchObject([
+          { edition: 'ja', slot: 1, text: { start: 3, end: 5 } },
+        ])
+      })
+
+      it.each([
+        ['jav', KANA, '吾輩は猫である'],
+        ['zh', HANZI, '我是一只猫'],
+      ])(
+        'looks up the run of letters tapped in its own language: %s',
+        async (language, text, run) => {
+          on()
+          const { host, asked } = await reader(japaneseOf(text, language), () =>
+            Response.json([who]),
+          )
+          await tapOn(host, 1, 3)
+          expect(asked).toEqual([`${language}:${run}`])
+          expect(lookUpTitle()).toBe(run)
+        },
+      )
+
+      it('asks nothing for an untagged edition all in kanji, which names no language', async () => {
+        on()
+        const { host, asked } = await reader(japaneseOf(HANZI, null))
+        await tapOn(host, 1, 3)
+        expect(asked).toEqual([])
+        expect(panel()?.querySelector('p')?.textContent).toBe(
+          'This server has no dictionary for a book that names no language.',
+        )
+      })
+    })
+
+    it('leaves the mode off for an l typed into the search box, and turns it on for one outside it', async () => {
+      const { host } = await reader(japanese)
+      const mode = () => localStorage.getItem('taiyaku.prefs.lookup')
+      press('/')
+      const box = host.querySelector('input[type="search"]') as HTMLInputElement
+      act(() => {
+        box.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'l',
+            bubbles: true,
+            cancelable: true,
+          }),
+        )
+      })
+      expect(JSON.parse(mode() ?? '{}').on).not.toBe(true)
+      press('Escape')
+      press('l')
+      expect(JSON.parse(mode() ?? '{}')).toEqual({ on: true })
+    })
+
+    it('lists the keys of finding and looking up once each in Help', async () => {
+      const { host } = await reader(japanese)
+      press('?')
+      const keys = [
+        ...host.querySelectorAll('[aria-label="Keyboard help"] kbd'),
+      ].map((key) => key.textContent)
+      for (const key of ['/', ']', '[', 'l']) {
+        expect(keys.filter((listed) => listed === key)).toEqual([key])
+      }
+    })
+
+    it('saves a word looked up from the selection bar on its own edition after a swap, with the mode off', async () => {
+      const { host, written } = await reader(sentenced, () =>
+        Response.json([who]),
+      )
+      await lookUpFromBar(host, 1, 0, 3)
+      press(' ')
+      await land()
+      act(() => saveWord()?.click())
+      await saved()
+      expect(written.at(-1)?.notes).toMatchObject([
+        { edition: 'en', slot: 1, text: { start: 0, end: 3 } },
+      ])
+    })
+  })
+
   it('hands over every highlight as cards for Anki from the notes list', async () => {
     const made: Blob[] = []
     vi.stubGlobal('URL', {
@@ -2152,6 +3200,25 @@ describe('BookReader', () => {
     expect(
       fetch.mock.calls.filter(([url]) => url === '/api/works/w/book'),
     ).toHaveLength(2)
+  })
+
+  it('leaves the mousedown of a tap that picks a paragraph to the browser', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.book-layout',
+      JSON.stringify({ mode: 'compare' }),
+    )
+    const { host } = await opened(undefined, book, [], true)
+    press('c')
+    const pick = host.querySelector('[data-pick="left:1"]') as Element
+    touch(host, { on: pick })
+    expect(host.querySelector('.book-pinning')?.textContent).toContain(
+      'Now pick its match on the right',
+    )
+    expect(
+      pick.dispatchEvent(
+        new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
+      ),
+    ).toBe(true)
   })
 
   it('waits for a paragraph on the left before a match on the right', async () => {

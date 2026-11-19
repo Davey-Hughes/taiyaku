@@ -2322,6 +2322,10 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
         get(crate::dictionary::lookup),
     ));
     routes.push((
+        "/api/dictionary/{lang}/at/{text}",
+        get(crate::dictionary::lookup_at),
+    ));
+    routes.push((
         "/api/sessions/{id}",
         axum::routing::delete(crate::session::revoke_session),
     ));
@@ -2704,6 +2708,13 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
             GrantIndependent {
                 reason: "a word looked up in a language's dictionary, which names \
                           no work and reaches no directory",
+            },
+        ),
+        (
+            "/api/dictionary/{lang}/at/{text}",
+            GrantIndependent {
+                reason: "the longest word a text begins with in a language's \
+                          dictionary, which names no work and reaches no directory",
             },
         ),
         (
@@ -3173,6 +3184,7 @@ pub(crate) fn narrowing_postures() -> Vec<(&'static str, NarrowingPosture)> {
         ("/api/keys/{id}", OWN),
         ("/api/sessions", OWN),
         ("/api/dictionary/{lang}/{word}", OWN),
+        ("/api/dictionary/{lang}/at/{text}", OWN),
         ("/api/sessions/{id}", OWN),
         ("/api/password", OWN),
         ("/api/library/home", Narrows),

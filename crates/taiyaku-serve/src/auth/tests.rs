@@ -71,6 +71,7 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/keys/{id}",
         "/api/sessions",
         "/api/dictionary/{lang}/{word}",
+        "/api/dictionary/{lang}/at/{text}",
         "/api/sessions/{id}",
         "/api/password",
         // Spec C1 §5's browse API. Guarded, which is the whole point of this
@@ -1688,7 +1689,7 @@ async fn every_route_declares_its_grant_posture() {
     );
     assert_eq!(
         table.len() - driven,
-        44,
+        45,
         "the remaining guarded routes must be GrantIndependent — \
          see the `driven` assertion just above, which this one is the other \
          half of. A new admin-only route is GrantIndependent: it changes who \
@@ -3002,7 +3003,7 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
     );
     assert_eq!(
         counted(|p| matches!(p, NarrowingPosture::NoPages { .. })),
-        47,
+        48,
         "the NoPages routes, declared and not driven: a route moved here from a driven posture \
          moves this count and one above, and a new route that reads no pages moves this alone"
     );

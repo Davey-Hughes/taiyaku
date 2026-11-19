@@ -18,11 +18,14 @@ export type Looked =
 export function LookupPanel({
   word,
   looked,
+  tapsPass = false,
   onSave,
   onClose,
 }: {
   word: string
   looked: Looked
+  /** Whether a tap goes through the panel to the text under it. */
+  tapsPass?: boolean
   onSave: (entry: DictionaryEntry) => void
   onClose: () => void
 }) {
@@ -30,11 +33,12 @@ export function LookupPanel({
   usePanelFocus(panelRef, true)
   return (
     <div
-      className="docked-panel"
+      className="docked-panel book-lookup-panel"
       role="dialog"
       aria-label="Look up"
       ref={panelRef}
       tabIndex={-1}
+      style={tapsPass ? { pointerEvents: 'none' } : undefined}
     >
       <div className="reader-panel-head">
         <strong className="reader-panel-title">{word}</strong>

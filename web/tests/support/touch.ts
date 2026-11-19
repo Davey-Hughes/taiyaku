@@ -2,25 +2,39 @@ import { cdp } from 'vitest/browser'
 import { middleWhereOver } from './callout'
 
 /**
- * A real finger's tap, at a point in the test's frame, outside `act`: a
- * touch pressed and lifted a frame apart, which Chromium turns into the
- * pointer events of a touch at the press and a tap's mouse events and click
- * after the lift, each sent to whatever is drawn topmost there then.
+ * A real finger's tap at a point in the test's frame, outside `act`: Chromium
+ * sends its pointer events at the press and its mouse events and click after
+ * the lift, each to whatever is topmost there then. The point is carried
+ * through the frame's own box, as `mouse` carries it.
  *
- * The session's coordinates are the browser window's, so a place in the
- * frame is carried through the frame's own box, as `mouse` carries it.
+ * `at`, in seconds since the epoch, stamps the press and the lift 20 ms after:
+ * unstamped, the gap between two taps is how long this machine took over them.
  */
-export async function tapAt(x: number, y: number) {
+export async function tapAt(x: number, y: number, at?: number) {
+  await touchDown(x, y, at)
+  await touchUp(at === undefined ? undefined : at + 0.02)
+}
+
+/** The press of `tapAt`, for a case about what happens before the lift. */
+export async function touchDown(x: number, y: number, at?: number) {
   const point = inWindow(x, y)
   await outsideAct(async () => {
     await cdp().send('Input.dispatchTouchEvent', {
       type: 'touchStart',
       touchPoints: [point],
+      ...(at === undefined ? {} : { timestamp: at }),
     })
     await nextFrame()
+  })
+}
+
+/** The lift of `tapAt`. */
+export async function touchUp(at?: number) {
+  await outsideAct(async () => {
     await cdp().send('Input.dispatchTouchEvent', {
       type: 'touchEnd',
       touchPoints: [],
+      ...(at === undefined ? {} : { timestamp: at }),
     })
     await nextFrame()
   })
@@ -38,17 +52,32 @@ export async function swipeAlong(
   from: number,
   to: number,
 ): Promise<void> {
+  await swipeBetween([x + from, y], [x + to, y])
+}
+
+/** The swipe of `swipeAlong`, from one point in the test's frame to another. */
+export async function swipeBetween(
+  [fromX, fromY]: [number, number],
+  [toX, toY]: [number, number],
+): Promise<void> {
   await outsideAct(async () => {
     await cdp().send('Input.dispatchTouchEvent', {
       type: 'touchStart',
-      touchPoints: [inWindow(x + from, y)],
+      touchPoints: [inWindow(fromX, fromY)],
     })
     await nextFrame()
-    const steps = Math.ceil(Math.abs(to - from) / 15)
+    const steps = Math.ceil(
+      Math.max(Math.abs(toX - fromX), Math.abs(toY - fromY)) / 15,
+    )
     for (let step = 1; step <= steps; step++) {
       await cdp().send('Input.dispatchTouchEvent', {
         type: 'touchMove',
-        touchPoints: [inWindow(x + from + ((to - from) * step) / steps, y)],
+        touchPoints: [
+          inWindow(
+            fromX + ((toX - fromX) * step) / steps,
+            fromY + ((toY - fromY) * step) / steps,
+          ),
+        ],
       })
       await nextFrame()
     }

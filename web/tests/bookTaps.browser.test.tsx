@@ -188,6 +188,15 @@ async function barsMeasured(host: HTMLElement) {
   return { back, library }
 }
 
+/** Whether each `mousedown` from here on in the test was prevented, heard after all else on its way. */
+function mouseDowns(): boolean[] {
+  const prevented: boolean[] = []
+  const heard = (event: Event) => prevented.push(event.defaultPrevented)
+  window.addEventListener('mousedown', heard)
+  onTestFinished(() => window.removeEventListener('mousedown', heard))
+  return prevented
+}
+
 /** The next touch's end prevented, so Chromium sends that tap no `click`. */
 function noClickFromNextTap() {
   const prevent = (event: Event) => event.preventDefault()
@@ -243,6 +252,45 @@ describe('a finger’s tap on the book’s text', () => {
     await tapAt(beside.x, beside.y)
     await settled()
     expect(full()).toBeNull()
+  })
+
+  it('leaves the mousedown of a tap on a reference, on a figure and of a double tap to the browser', async () => {
+    const host = await reader()
+    const prevented = mouseDowns()
+    const reference = middleOf(
+      host.querySelector('[data-block="0"] a') as Element,
+    )
+    await tapAt(reference.x, reference.y)
+    await settled()
+    expect(prevented).toEqual([false])
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      )
+    })
+    await settled()
+
+    prevented.length = 0
+    const figure = middleOf(host.querySelector('.book-figure img') as Element)
+    await tapAt(figure.x, figure.y)
+    await settled()
+    expect(prevented).toEqual([false])
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      )
+    })
+    await settled()
+
+    prevented.length = 0
+    const words = host.querySelector('[data-block="1"] [data-sentence]')
+    const line = (words as Element).getClientRects()[0]
+    const at = { x: line.left + line.width / 2, y: line.top + line.height / 2 }
+    const first = Date.now() / 1000
+    await tapAt(at.x, at.y, first)
+    await tapAt(at.x, at.y, first + 0.15)
+    await settled()
+    expect(prevented).toEqual([false, false])
   })
 
   it('keeps the jump its tap on a linked image made, though Back is drawn under the finger', async () => {

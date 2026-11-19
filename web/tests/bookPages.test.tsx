@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { anchorOf, kept, show, shows, topOf, wordNodes } from '../src/bookPages'
+import {
+  anchorOf,
+  bringIntoSight,
+  kept,
+  show,
+  shows,
+  topOf,
+  wordNodes,
+} from '../src/bookPages'
 
 /**
  * `bookPages.ts`'s places, on a laid-out text jsdom cannot lay out: twenty
@@ -281,5 +289,267 @@ describe('a place at a figure', () => {
     expect(shows(el, none)).toBe(false)
     show(el, none.block, none.at, none)
     expect(el.scrollLeft).toBe(2 * PAGE)
+  })
+})
+
+describe('a word brought into sight', () => {
+  /** How long the text runs along its reading axis. */
+  const LENGTH = 5000
+  const START = 1000
+
+  /** A screen `start` pixels into the text, along its reading axis. */
+  function screenOf({ paged = false, vertical = false } = {}, start = START) {
+    const el = document.createElement('div')
+    if (paged) el.dataset.paged = ''
+    if (vertical) el.dataset.vertical = ''
+    el.getBoundingClientRect = () => new DOMRect(0, 0, PAGE, TALL)
+    Object.defineProperties(el, {
+      clientWidth: { value: PAGE },
+      clientHeight: { value: TALL },
+      scrollWidth: { value: LENGTH },
+      scrollHeight: { value: LENGTH },
+    })
+    el.scrollTo = ((to: ScrollToOptions) => {
+      if (to.left !== undefined) el.scrollLeft = to.left
+      if (to.top !== undefined) el.scrollTop = to.top
+    }) as typeof el.scrollTo
+    el.scrollBy = ((by: ScrollToOptions) => {
+      el.scrollLeft += by.left ?? 0
+      el.scrollTop += by.top ?? 0
+    }) as typeof el.scrollBy
+    if (vertical && !paged) el.scrollLeft = 0 - start
+    else if (paged && !vertical) el.scrollLeft = start
+    else el.scrollTop = start
+    return el
+  }
+
+  const wordOf = (...boxes: DOMRect[]) =>
+    ({ getClientRects: () => boxes }) as unknown as Range
+  /** A word's box, `top` down the screen and `left` across it. */
+  const wordAt = (top: number, left = 100) => new DOMRect(left, top, 60, 20)
+  /** A cover across the whole screen, from `top` down to `bottom`. */
+  const band = (top: number, bottom: number) =>
+    new DOMRect(0, top, PAGE, bottom - top)
+  /** A cover down the whole screen, from `left` across to `right`. */
+  const strip = (left: number, right: number) =>
+    new DOMRect(left, 0, right - left, TALL)
+
+  describe('scrolled', () => {
+    it('scrolls on by the least that shows a word past the end of the screen', () => {
+      const el = screenOf()
+      bringIntoSight(el, wordOf(wordAt(500)), [])
+      expect(el.scrollTop).toBe(START + 120)
+    })
+
+    it('scrolls back by the least that shows a word before the screen', () => {
+      const el = screenOf()
+      bringIntoSight(el, wordOf(wordAt(-50)), [])
+      expect(el.scrollTop).toBe(START - 50)
+    })
+
+    it('lands on a whole pixel with all of the word showing, going on', () => {
+      const el = screenOf()
+      bringIntoSight(el, wordOf(wordAt(500.5)), [])
+      expect(el.scrollTop).toBe(START + 121)
+    })
+
+    it('lands on a whole pixel with all of the word showing, going back', () => {
+      const el = screenOf()
+      bringIntoSight(el, wordOf(wordAt(-50.5)), [])
+      expect(el.scrollTop).toBe(START - 51)
+    })
+
+    it('shows the last line of a word running on past the screen', () => {
+      const el = screenOf()
+      bringIntoSight(el, wordOf(wordAt(390), wordAt(410)), [])
+      expect(el.scrollTop).toBe(START + 30)
+    })
+
+    it('shows the first line of a word running back before the screen', () => {
+      const el = screenOf()
+      bringIntoSight(el, wordOf(wordAt(-40), wordAt(-20)), [])
+      expect(el.scrollTop).toBe(START - 40)
+    })
+
+    it('leaves a word in sight where it is', () => {
+      const el = screenOf()
+      bringIntoSight(el, wordOf(wordAt(100)), [])
+      expect(el.scrollTop).toBe(START)
+    })
+
+    it.each([-0.4, 380.4])(
+      'counts a word at %f, a hair over the edge, as in sight',
+      (top) => {
+        const el = screenOf()
+        bringIntoSight(el, wordOf(wordAt(top)), [])
+        expect(el.scrollTop).toBe(START)
+      },
+    )
+
+    it('clears a cover the word lies under', () => {
+      const el = screenOf()
+      bringIntoSight(el, wordOf(wordAt(350)), [band(300, TALL)])
+      expect(el.scrollTop).toBe(START + 70)
+    })
+
+    it('takes the shorter way back past a cover in the middle', () => {
+      const el = screenOf()
+      bringIntoSight(el, wordOf(wordAt(230)), [band(150, 250)])
+      expect(el.scrollTop).toBe(START - 20)
+    })
+
+    it('takes the shorter way on past a cover in the middle', () => {
+      const el = screenOf()
+      bringIntoSight(el, wordOf(wordAt(150)), [band(150, 250)])
+      expect(el.scrollTop).toBe(START + 20)
+    })
+
+    it('takes the longer way where the book does not reach back the shorter', () => {
+      const el = screenOf({}, 0)
+      bringIntoSight(el, wordOf(wordAt(230)), [band(150, 250)])
+      expect(el.scrollTop).toBe(100)
+    })
+
+    it('passes over a cover to one side of the word', () => {
+      const el = screenOf()
+      bringIntoSight(el, wordOf(wordAt(500)), [strip(300, PAGE)])
+      expect(el.scrollTop).toBe(START + 120)
+    })
+
+    it('stays where a cover hides the whole screen', () => {
+      const el = screenOf()
+      bringIntoSight(el, wordOf(wordAt(100)), [band(0, TALL)])
+      expect(el.scrollTop).toBe(START)
+    })
+
+    it('stays where the word is longer than the room a cover leaves', () => {
+      const el = screenOf()
+      const word = new DOMRect(100, 100, 60, 60)
+      bringIntoSight(el, wordOf(word), [band(50, TALL)])
+      expect(el.scrollTop).toBe(START)
+    })
+
+    it('stays at the start of the book where only going back would clear a cover', () => {
+      const el = screenOf({}, 0)
+      bringIntoSight(el, wordOf(wordAt(50)), [band(0, 100)])
+      expect(el.scrollTop).toBe(0)
+    })
+
+    it('stays at the end of the book where only going on would clear a cover', () => {
+      const end = LENGTH - TALL
+      const el = screenOf({}, end)
+      bringIntoSight(el, wordOf(wordAt(350)), [band(300, TALL)])
+      expect(el.scrollTop).toBe(end)
+    })
+
+    it('stays for a cover level with one piece of a word and across from the other', () => {
+      const el = screenOf()
+      const word = wordOf(wordAt(100, 500), wordAt(120, 0))
+      bringIntoSight(el, word, [new DOMRect(0, 90, 200, 25)])
+      expect(el.scrollTop).toBe(START)
+    })
+
+    it('moves for a cover over one piece of a word on two lines', () => {
+      const el = screenOf()
+      const word = wordOf(wordAt(100, 500), wordAt(120, 0))
+      bringIntoSight(el, word, [new DOMRect(0, 110, 200, 40)])
+      expect(el.scrollTop).toBe(START + 30)
+    })
+  })
+
+  describe('scrolled, in vertical text', () => {
+    const vertical = { vertical: true }
+    const columnAt = (left: number, top = 100) => new DOMRect(left, top, 30, 60)
+
+    it('scrolls on, leftward, to a column past the left of the screen', () => {
+      const el = screenOf(vertical)
+      bringIntoSight(el, wordOf(columnAt(-100)), [])
+      expect(el.scrollLeft).toBe(-START - 100)
+    })
+
+    it('scrolls back, rightward, to a column past the right of the screen', () => {
+      const el = screenOf(vertical)
+      bringIntoSight(el, wordOf(columnAt(650)), [])
+      expect(el.scrollLeft).toBe(-START + 80)
+    })
+
+    it('clears a cover narrower than the text', () => {
+      const el = screenOf(vertical)
+      const cover = new DOMRect(0, 300, 200, 100)
+      bringIntoSight(el, wordOf(columnAt(100, 320)), [cover])
+      expect(el.scrollLeft).toBe(-START - 100)
+    })
+
+    it('passes over a cover above the word’s own lines', () => {
+      const el = screenOf(vertical)
+      bringIntoSight(el, wordOf(columnAt(-100, 200)), [band(0, 100)])
+      expect(el.scrollLeft).toBe(-START - 100)
+    })
+
+    it('stays where a cover lies as wide as the text', () => {
+      const el = screenOf(vertical)
+      bringIntoSight(el, wordOf(columnAt(100, 320)), [band(300, TALL)])
+      expect(el.scrollLeft).toBe(-START)
+    })
+
+    it('stays at the start of the book where only going back would clear a cover', () => {
+      const el = screenOf(vertical, 0)
+      const cover = new DOMRect(400, 300, 200, 100)
+      bringIntoSight(el, wordOf(columnAt(500, 320)), [cover])
+      expect(el.scrollLeft).toBe(0)
+    })
+  })
+
+  describe('paged', () => {
+    const paged = { paged: true }
+    const ON_PAGE_TWO = 2 * PAGE
+
+    it('turns on to the page a word starts on', () => {
+      const el = screenOf(paged, ON_PAGE_TWO)
+      bringIntoSight(el, wordOf(wordAt(100, 700)), [])
+      expect(el.scrollLeft).toBe(3 * PAGE)
+    })
+
+    it('turns back to the page a word starts on', () => {
+      const el = screenOf(paged, ON_PAGE_TWO)
+      bringIntoSight(el, wordOf(wordAt(100, -700)), [])
+      expect(el.scrollLeft).toBe(0)
+    })
+
+    it('stays on the page a word is on', () => {
+      const el = screenOf(paged, ON_PAGE_TWO)
+      bringIntoSight(el, wordOf(wordAt(100, 100)), [])
+      expect(el.scrollLeft).toBe(ON_PAGE_TWO)
+    })
+
+    it('goes by the first piece of a word broken over a turn', () => {
+      const el = screenOf(paged, ON_PAGE_TWO)
+      bringIntoSight(el, wordOf(wordAt(100, 500), wordAt(0, 700)), [])
+      expect(el.scrollLeft).toBe(ON_PAGE_TWO)
+    })
+
+    it('stays on the word’s page whatever is drawn over it', () => {
+      const el = screenOf(paged, ON_PAGE_TWO)
+      bringIntoSight(el, wordOf(wordAt(100, 100)), [strip(0, 200)])
+      expect(el.scrollLeft).toBe(ON_PAGE_TWO)
+    })
+
+    it('moves nothing for a word with no boxes', () => {
+      const el = screenOf(paged, ON_PAGE_TWO)
+      bringIntoSight(el, wordOf(), [])
+      expect(el.scrollLeft).toBe(ON_PAGE_TWO)
+    })
+
+    it('turns down the screen in vertical text', () => {
+      const el = screenOf({ paged: true, vertical: true }, 2 * TALL)
+      bringIntoSight(el, wordOf(wordAt(500)), [])
+      expect(el.scrollTop).toBe(3 * TALL)
+    })
+
+    it('turns back up the screen in vertical text', () => {
+      const el = screenOf({ paged: true, vertical: true }, 2 * TALL)
+      bringIntoSight(el, wordOf(wordAt(-100)), [])
+      expect(el.scrollTop).toBe(TALL)
+    })
   })
 })
