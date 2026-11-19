@@ -13,10 +13,14 @@ use axum::{
 
 use crate::ServeState;
 
-/// The dictionary file for `lang`, or the answer that says there is none.
-/// 404 where this server has no dictionary for the language, which is how a
-/// reader learns to say so.
-fn dictionary_for(state: &ServeState, lang: &str) -> Result<std::path::PathBuf, Box<Response>> {
+/// The language `lang` names, without its region, and that language's
+/// dictionary file, or the answer that says there is none. 404 where this
+/// server has no dictionary for the language, which is how a reader learns to
+/// say so.
+fn dictionary_for(
+    state: &ServeState,
+    lang: &str,
+) -> Result<(String, std::path::PathBuf), Box<Response>> {
     // A book's language may carry a region, `ru-RU`; dictionaries are kept
     // by the language alone, and its name is a file's.
     let lang = lang
@@ -33,7 +37,7 @@ fn dictionary_for(state: &ServeState, lang: &str) -> Result<std::path::PathBuf, 
                 .into_response(),
         ));
     }
-    state
+    let path = state
         .dictionaries
         .as_ref()
         .map(|dir| dir.join(format!("{lang}.db")))
@@ -46,7 +50,8 @@ fn dictionary_for(state: &ServeState, lang: &str) -> Result<std::path::PathBuf, 
                 )
                     .into_response(),
             )
-        })
+        })?;
+    Ok((lang, path))
 }
 
 fn entries_json(found: Vec<taiyaku_library::dictionary::Found>) -> Vec<serde_json::Value> {
@@ -83,12 +88,19 @@ pub(crate) async fn lookup(
     State(state): State<Arc<ServeState>>,
     AxPath((lang, word)): AxPath<(String, String)>,
 ) -> Response {
-    let path = match dictionary_for(&state, &lang) {
-        Ok(path) => path,
+    let (lang, path) = match dictionary_for(&state, &lang) {
+        Ok(found) => found,
         Err(refused) => return *refused,
     };
     let found = tokio::task::spawn_blocking(move || {
-        taiyaku_library::dictionary::lookup(&open(&path)?, &word)
+        let conn = open(&path)?;
+        // Korean writes its particles onto the word, so it alone is read
+        // with them taken off.
+        if lang == "ko" {
+            taiyaku_library::dictionary::lookup_korean(&conn, &word)
+        } else {
+            taiyaku_library::dictionary::lookup(&conn, &word)
+        }
     })
     .await;
     match found {
@@ -106,8 +118,8 @@ pub(crate) async fn lookup_at(
     State(state): State<Arc<ServeState>>,
     AxPath((lang, text)): AxPath<(String, String)>,
 ) -> Response {
-    let path = match dictionary_for(&state, &lang) {
-        Ok(path) => path,
+    let (_, path) = match dictionary_for(&state, &lang) {
+        Ok(found) => found,
         Err(refused) => return *refused,
     };
     let most = taiyaku_library::dictionary::LONGEST_PREFIX;

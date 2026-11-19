@@ -172,7 +172,7 @@ import { useDocumentTitle } from './title'
 import { wheelNotches } from './viewport'
 import { TopBar } from './TopBar'
 import { useBookNotes } from './useBookNotes'
-import { beginsWord, headAt, wordAt } from './wordAt'
+import { beginsWord, headAt, isKorean, wordAt } from './wordAt'
 
 interface Props {
   work: string
@@ -358,8 +358,8 @@ type LookingUp = {
   lang: string | null
   /**
    * How a tap looked it up, its range selected once known: by the run of
-   * letters tapped, or as the longest word from the character tapped,
-   * whose answer is `looked`.
+   * letters tapped, a Korean run with the digits joined to it, or as the
+   * longest word from the character tapped, whose answer is `looked`.
    */
   tap?: 'word' | 'longest'
   /**
@@ -1528,8 +1528,9 @@ export function BookReader({ work, onLeave }: Props) {
   // A tap on a word, with the look-up mode on, looks it up there and then:
   // Japanese by the longest dictionary word from the character tapped, which
   // only the server's answer can select, and any other language by the run of
-  // letters tapped. Whether it looked anything up, so a tap off a word, on a
-  // note's mark or on an aside keeps its usual meaning.
+  // letters tapped, Korean's taking in the digits written onto it, since 10년
+  // is not the 년 that stands alone. Whether it looked anything up, so a tap
+  // off a word, on a note's mark or on an aside keeps its usual meaning.
   const lookUpTapped = (target: Element, x: number, y: number): boolean => {
     if (target.closest('.book-note-mark')) return false
     if (target.closest('[data-aside]:not(rt)')) return false
@@ -1577,7 +1578,9 @@ export function BookReader({ work, onLeave }: Props) {
         })
       return true
     }
-    const word = wordAt(block.text, point.at)
+    const word = wordAt(block.text, point.at, {
+      digits: isKorean(edition.language),
+    })
     if (!word) return false
     asking.current += 1
     const range = { start: word[0], end: word[1] }

@@ -601,6 +601,44 @@ describe('a tap with the look-up mode on', () => {
   })
 })
 
+/** One Korean paragraph, its edition's tag naming a region. */
+const KOREAN_TEXT = '그는 10년 동안 2000 번 살았다.'
+const korean = {
+  title: '해리',
+  hub: 'ko',
+  editions: {
+    ko: {
+      label: '한국어',
+      language: 'ko-KR',
+      blocks: [block(KOREAN_TEXT)],
+    },
+  },
+  alignments: [],
+}
+
+describe('a tap in a Korean book', () => {
+  it('looks up the digits joined to a word and lights them with it, from a digit or a letter', async () => {
+    const { host, asked } = await openReader(korean)
+    for (const at of [3, 4, 5]) {
+      const before = asked.length
+      await tapThenWait(...across(characterBox(host, 0, at), 0.5))
+      expect(asked.slice(before)).toEqual(['/api/dictionary/ko-KR/10년'])
+      expect(lookUpTitle()).toBe('10년')
+      expect(window.getSelection()?.toString()).toBe('10년')
+      await closeLookUp()
+    }
+  })
+
+  it('keeps a bare number’s tap as a tap', async () => {
+    const { host, asked } = await openReader(korean)
+    await tapThenWait(
+      ...across(characterBox(host, 0, KOREAN_TEXT.indexOf('2000') + 1), 0.5),
+    )
+    expect(asked).toEqual([])
+    expect(barsShown(host)).toBe(true)
+  })
+})
+
 describe('a tap on no character', () => {
   /**
    * What a tap at `where` in a reader on `drawn` with `prefs` does, the

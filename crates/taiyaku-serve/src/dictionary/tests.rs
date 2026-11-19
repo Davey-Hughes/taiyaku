@@ -2,8 +2,8 @@ use axum::body::to_bytes;
 
 use super::*;
 
-/// A server whose dictionaries directory holds Russian and Japanese, or a
-/// server given no dictionaries directory.
+/// A server whose dictionaries directory holds Russian, Japanese and Korean,
+/// or a server given no dictionaries directory.
 fn state(dir: &std::path::Path, with_dictionaries: bool) -> Arc<ServeState> {
     let words = dir.join("dictionaries");
     std::fs::create_dir_all(&words).unwrap();
@@ -12,6 +12,12 @@ fn state(dir: &std::path::Path, with_dictionaries: bool) -> Arc<ServeState> {
         &conn,
         r#"{"word":"говорить","pos":"verb","senses":[{"glosses":["to speak"]}],"forms":[{"form":"говори́т","tags":["present"]}]}"#
             .as_bytes(),
+    )
+    .unwrap();
+    let conn = rusqlite::Connection::open(words.join("ko.db")).unwrap();
+    taiyaku_library::dictionary::import(
+        &conn,
+        r#"{"word":"해리","pos":"name","senses":[{"glosses":["Harry"]}]}"#.as_bytes(),
     )
     .unwrap();
     let mut state = crate::test_support::state(dir);
@@ -215,4 +221,30 @@ async fn an_unreadable_dictionary_answers_500_to_a_tap() {
         body, "the dictionary could not be read; the server's log says why",
         "the cause stays in the log"
     );
+}
+
+#[tokio::test]
+async fn only_korean_has_particles_taken_off() {
+    let tmp = crate::test_support::Fixture::new("dictionary-russian-particle");
+    let (status, body) = asked(state(&tmp, true), "ru", "говорить가").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "[]");
+}
+
+#[tokio::test]
+async fn a_korean_word_is_found_through_its_particle() {
+    let tmp = crate::test_support::Fixture::new("dictionary-korean");
+    let state = state(&tmp, true);
+    for lang in ["ko", "ko-KR"] {
+        let (status, body) = asked(state.clone(), lang, "해리가").await;
+        assert_eq!(status, StatusCode::OK, "{lang}");
+        let found: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            found,
+            serde_json::json!([{
+                "word": "해리", "pos": "name", "glosses": ["Harry"], "via": "해리가"
+            }]),
+            "{lang}"
+        );
+    }
 }

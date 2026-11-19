@@ -13,6 +13,17 @@ const JOINERS = new Set(["'", '’', '-'])
 const letterAt = (text: string, i: number) =>
   i >= 0 && i < text.length && LETTER.test(text.slice(i, i + 2))
 
+/** Whether the character starting at UTF-16 offset `i` is a decimal digit. */
+const digitAt = (text: string, i: number) =>
+  i >= 0 && i < text.length && /^\p{Nd}/u.test(text.slice(i, i + 2))
+
+/**
+ * Whether a book's language tag names Korean, read as the server reads the
+ * language it is asked for: the part before the first - or _, in either case.
+ */
+export const isKorean = (tag: string | null | undefined) =>
+  /^ko(?:[-_]|$)/i.test(tag ?? '')
+
 /** Where the character holding UTF-16 offset `i` starts, so half a pair counts as the pair. */
 const charStart = (text: string, i: number) =>
   i > 0 &&
@@ -31,26 +42,43 @@ const after = (text: string, i: number) =>
 /**
  * The run of letters and marks around offset `at`, an apostrophe or hyphen
  * between two letters kept in it; none where `at` is on a space or
- * punctuation.
+ * punctuation. With `digits`, decimal digits count as part of the run, for a
+ * language that writes a counter onto its number; a run of digits with no
+ * letter in it is a number, not a word, so it finds none.
  */
-export function wordAt(text: string, at: number): [number, number] | undefined {
+export function wordAt(
+  text: string,
+  at: number,
+  { digits = false }: { digits?: boolean } = {},
+): [number, number] | undefined {
+  const inRun = (i: number) => letterAt(text, i) || (digits && digitAt(text, i))
   const from = charStart(text, at)
-  if (!letterAt(text, from)) return undefined
+  if (!inRun(from)) return undefined
   let start = from
   for (;;) {
     const prev = before(text, start)
-    if (letterAt(text, prev)) start = prev
-    else if (JOINERS.has(text[prev]) && letterAt(text, before(text, prev))) {
+    if (inRun(prev)) start = prev
+    else if (
+      JOINERS.has(text[prev]) &&
+      letterAt(text, start) &&
+      letterAt(text, before(text, prev))
+    ) {
       start = before(text, prev)
     } else break
   }
   let end = after(text, from)
   for (;;) {
-    if (letterAt(text, end)) end = after(text, end)
-    else if (JOINERS.has(text[end]) && letterAt(text, end + 1)) {
+    if (inRun(end)) end = after(text, end)
+    else if (
+      JOINERS.has(text[end]) &&
+      letterAt(text, before(text, end)) &&
+      letterAt(text, end + 1)
+    ) {
       end = after(text, end + 1)
     } else break
   }
+  const run = text.slice(start, end)
+  if (digits && /\p{Nd}/u.test(run) && !/\p{L}/u.test(run)) return undefined
   return [start, end]
 }
 

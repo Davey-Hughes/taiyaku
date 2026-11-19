@@ -180,8 +180,8 @@ and, for libraries whose directories overlap,
 
 ## What is built
 
-Six crates, 4048 tests, plus 5,637 in `web/`'s TypeScript — 1,965 in the `node`
-project and 3,672 in the `jsdom` one — and two thousand and eight
+Six crates, 4086 tests, plus 5,688 in `web/`'s TypeScript — 2,002 in the `node`
+project and 3,686 in the `jsdom` one — and two thousand and ten
 more in a **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, plus `axum`, `tokio`,
 `tower`, `tower-http` (feature `fs`, for `--web`) and `ureq` in the server, `rusqlite` (features `["backup", "bundled", "functions"]`,
@@ -259,7 +259,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twenty-six of the 4048 are standing checks in
+`rayon` exactly as `align` already did. Twenty-six of the 4086 are standing checks in
 the corpus run (`corpus::`) — seventeen in `crates/taiyaku-cli` (ten in `src/corpus.rs`,
 three in `src/corpus/tests.rs` and four in `src/score_corpus.rs`; the three in
 `corpus/tests.rs` and two of `score_corpus.rs`'s, which run on fixtures, need
@@ -1476,7 +1476,7 @@ both are waiting on L2.
 
 ### Open items
 
-Three hundred and seventy-three, each found by a whole-branch review, carried as a deferral,
+Three hundred and seventy-six, each found by a whole-branch review, carried as a deferral,
 turned up by reading a design against the code, turned up by running a
 command against its own usage text, turned up by reviewing what the fix
 before it left behind, turned up by measuring what a new feature or a fix
@@ -1511,7 +1511,7 @@ faster than the router could commit it, asked for by the owner, or turned up
 by answering a question an earlier item's notes wrote down and left open, and
 each judged not worth blocking on at the time. They
 are tracked here rather than left in a scratch file so that closing one is a
-visible act rather than a thing someone remembers. **Two hundred and nineteen are now closed — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20, O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43, O44, O47, O48, O53, O54, O55, O57, O58, O60, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96, O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O112, O113, O114, O115, O116, O117, O119, O120, O121, O133, O134, O135, O137, O138, O140, O141, O145, O146, O148, O149, O150, O151, O153, O154, O155, O156, O157, O158, O159, O160, O161, O163, O164, O165, O166, O171, O172, O173, O174, O175, O176, O177, O178, O179, O180, O182, O183, O184, O185, O186, O190, O191, O192, O193, O194, O195, O196, O197, O198, O199, O204, O205, O206, O207, O208, O210, O212, O213, O216, O218, O219, O220, O221, O223, O224, O228, O229, O231, O232, O233, O234, O235, O236, O237, O239, O240, O241, O244, O245, O247, O248, O250, O251, O252, O253, O254, O255, O256, O257, O262, O263, O264, O265, O266, O267, O269, O270, O273, O274, O275, O276, O277, O278, O279, O280, O281, O282, O283, O284, O285, O286, O288, O299, O301, O302, O303, O304, O305, O306, O307, O309, O310, O311, O312, O313, O320, O323 and O337 — leaving one hundred and fifty-four.** *(This sentence carried **two** errors before ⑤c rebuilt it from the table on 2026-09-25: it omitted **O151**, closed on 2026-09-24, and "leaving fifty-seven" stood against sixty-two open rows. It is generated from the table now rather than edited, which is the only reason the list and the word cannot disagree again.* **A larger warning sits in how this note first read.** It claimed six errors — the word disagreeing with its own list, O34 and O39 listed twice each, and O31 named while its row read `[ ]`. None of those four existed. The check that found them anchored on the string `are now closed`, which first matches a sentence about mutation survivors a hundred and fifty lines earlier, and then read everything from there to the next `— leaving` — so it counted O-numbers out of hundreds of lines of unrelated prose and reported them as this list's. The rebuilt sentence was right and the story about why was invented, which is worse than the drift it was describing: a wrong count invites a recount, and a wrong history is believed. Caught by ⑤c's pre-merge claim check, which re-derived it from `git show` rather than from this paragraph.)* *(It read "leaving fifty" against
+visible act rather than a thing someone remembers. **Two hundred and twenty are now closed — O1, O2, O3, O4, O5, O7, O8, O10, O12, O13, O14, O15, O16, O17, O18, O19, O20, O21, O22, O25, O26, O27, O28, O29, O30, O33, O34, O35, O36, O37, O38, O39, O40, O43, O44, O47, O48, O53, O54, O55, O57, O58, O60, O62, O64, O65, O67, O70, O71, O72, O73, O75, O76, O77, O78, O79, O80, O83, O84, O85, O86, O89, O90, O92, O93, O94, O95, O96, O97, O98, O99, O100, O101, O103, O104, O105, O106, O107, O108, O110, O111, O112, O113, O114, O115, O116, O117, O119, O120, O121, O133, O134, O135, O137, O138, O140, O141, O145, O146, O148, O149, O150, O151, O153, O154, O155, O156, O157, O158, O159, O160, O161, O163, O164, O165, O166, O171, O172, O173, O174, O175, O176, O177, O178, O179, O180, O182, O183, O184, O185, O186, O190, O191, O192, O193, O194, O195, O196, O197, O198, O199, O204, O205, O206, O207, O208, O210, O212, O213, O216, O218, O219, O220, O221, O223, O224, O228, O229, O231, O232, O233, O234, O235, O236, O237, O239, O240, O241, O244, O245, O247, O248, O250, O251, O252, O253, O254, O255, O256, O257, O262, O263, O264, O265, O266, O267, O269, O270, O273, O274, O275, O276, O277, O278, O279, O280, O281, O282, O283, O284, O285, O286, O288, O299, O301, O302, O303, O304, O305, O306, O307, O309, O310, O311, O312, O313, O320, O323, O337 and O377 — leaving one hundred and fifty-six.** *(This sentence carried **two** errors before ⑤c rebuilt it from the table on 2026-09-25: it omitted **O151**, closed on 2026-09-24, and "leaving fifty-seven" stood against sixty-two open rows. It is generated from the table now rather than edited, which is the only reason the list and the word cannot disagree again.* **A larger warning sits in how this note first read.** It claimed six errors — the word disagreeing with its own list, O34 and O39 listed twice each, and O31 named while its row read `[ ]`. None of those four existed. The check that found them anchored on the string `are now closed`, which first matches a sentence about mutation survivors a hundred and fifty lines earlier, and then read everything from there to the next `— leaving` — so it counted O-numbers out of hundreds of lines of unrelated prose and reported them as this list's. The rebuilt sentence was right and the story about why was invented, which is worse than the drift it was describing: a wrong count invites a recount, and a wrong history is believed. Caught by ⑤c's pre-merge claim check, which re-derived it from `git show` rather than from this paragraph.)* *(It read "leaving fifty" against
 forty-nine open rows from the moment O97 closed: the count of closed items
 moved and the count of open ones did not, which is the drift the sweep at the
 head of this section exists to catch and did not run. Corrected here. **It
@@ -1994,7 +1994,7 @@ each is in the detail below; the table is what a reader scans.
 | O356 | [ ] | **A number of one or two ASCII digits in vertical text with a run's edge inside it, a highlight's, a search match's, a mark's or a sentence's, draws its digits as two upright characters stacked down the line, not as one pair set across it.** A block's text is cut into runs wherever a highlight, a search match, a mark such as bold or a ruby, or a sentence begins or ends, and each run draws its part of a number in a `.book-upright` element of its own, so a number with such an edge inside it is two elements. Chromium does not combine text across an element's edge: `1<mark>2</mark>` inside one `text-combine-upright: all` element draws the 1 and the 2 upright one below the other, as two such elements do; the record is `.superpowers/sdd/book-search-vertical-evidence/t4-probe-upright.log`, with the probe that wrote it beside it (not committed). A match's edge lasts while it is lit; a highlight's, a mark's or a sentence's stays. The block's text and every offset are unchanged; only the drawing is. Today's stacked form is pinned by `web/tests/bookNotes.test.ts`, "a number in vertical text", "is found in the block’s text, so a run cut inside a number takes its part of it and never a number of its own": 第12話 with a match over [2, 3] gives the 1 and the 2 each its own upright part. A ruling on this row changes that assertion. Not built. | `bookNotes.ts`'s `pieces`, `BookRuns.tsx`'s `uprightIn` | the review of book search and vertical Japanese, 2026-11-18 |
 | O357 | [ ] | **A peek drawn inside vertical text is set vertical too, and a number in it lies on its side.** A peek, the next edition's text set under a block, is drawn inside the block, and `.book-peek` sets no writing mode of its own, so it takes the vertical text's `vertical-rl` whatever its edition's language. `Excerpts` asks `pieces` for no upright runs, so a number of one or two ASCII digits in a peek is drawn rotated where the block around it sets its own upright. Not built. | `book.css`'s `.book-peek`, `BookReader.tsx`'s `Excerpts` | the review of book search and vertical Japanese, 2026-11-18 |
 | O358 | [ ] | **A tap on the middle of a Japanese word looks up from the character tapped, not from the word's start.** Tap 食 of 食べました and it finds 食べる, but tap べ and it looks up from べ, which is a different word or none. The server matches the longest dictionary word from the first character it is given and the browser gives it the character under the finger, since only the dictionary can say where a Japanese word begins. A tap on a furigana-glossed kanji, its far half included, looks up from that kanji. Accepted in the design, a call open to the owner: the reader taps the word's first character, and a tap in the middle of a word is one the mode could not guess without segmenting. | `lookUpTapped` in `BookReader.tsx`; `GET /api/dictionary/{lang}/at/{text}` | the book tap look-up's design (2026-11-17) |
-| O359 | [ ] | **No Chinese or Korean segmentation, so a tap in either looks up the run of letters round it, which is not a word.** Spanish and Russian are well served by the run of letters, and Japanese by the dictionary; Chinese is written without spaces like Japanese, but the reader sends only Japanese to the prefix route, and Korean has no dictionary yet (project 4). Not built. | `lookUpTapped` in `BookReader.tsx` | the book tap look-up's design (2026-11-17) |
+| O359 | [ ] | **No Chinese segmentation, so a tap in Chinese looks up the run of letters round it, which is not a word.** Spanish and Russian are well served by the run of letters, Korean by that run with the digits joined to it, and Japanese by the dictionary; Chinese is written without spaces like Japanese, but the reader sends only Japanese to the prefix route. Not built. | `lookUpTapped` in `BookReader.tsx` | the book tap look-up's design (2026-11-17) |
 | O360 | [ ] | **In the compare layout no word can be looked up.** A tap keeps its usual meaning, and a selection there opens no selection bar, because the compared columns draw no `[data-text]` for `offsetAtPoint` and `selectionIn` to read. Not built. | `offsetAtPoint` and `selectionIn` in `bookNotes.ts`; the compare cells in `BookReader.tsx` | the review of the book tap look-up, 2026-11-18 |
 | O361 | [ ] | **In the paged layout a tap on a word in either outer third turns the page rather than looking the word up.** Only the middle third looks up, the outer thirds keeping their page turns, so a word in either outer third, two thirds of the page's width, is looked up only by selecting it. Recorded in the design's "Built differently" section, a call open to the owner. | `onPointerUp` in `BookReader.tsx` (`pageTurnedBy`) | the review of the book tap look-up, 2026-11-18 |
 | O362 | [ ] | **A variation selector or stress mark inside a word answers the shorter word before it.** A tap on 葛 of 葛+U+E0100+城 lights 葛 and shows its entry where the dictionary has 葛城, because `key` keeps a selector inside a word and that spelling is no headword's. A stress mark does the same on the route for another reason, that `key` strips it and `longest_at` skips a prefix `key` would change: во+U+0301+да finds во where вода is in the dictionary. The reader asks `/at` only of the Japanese dictionary, so it meets the selector and not the Russian case. Not built. | `longest_at` and `key` in `taiyaku-library::dictionary` | the review of the book tap look-up, 2026-11-18 |
@@ -2011,6 +2011,9 @@ each is in the detail below; the table is what a reader scans.
 | O373 | [ ] | **With Caps Lock on, `l` arrives as `L`, which the book reader takes as back to the library.** A reader pressing `l` to turn the look-up mode on leaves the book instead. Not built. | `BOOK_KEYS` in `book.ts` | the review of the book tap look-up, 2026-11-18 |
 | O374 | [ ] | **The tap look-up's tests have six gaps.** No sweep steps through the leading between a block's top edge and its first line. No test holds how far a point may lie from a glyph across its line where the next line has a character in that column. The double-tap matrix leaves out horizontal scrolled at 900 by 700 and 1440 by 900, horizontal paged at 1024 by 768, 1180 by 820 and 1440 by 900, vertical scrolled at 1180 by 820, and vertical paged at 1180 by 820 and 1440 by 900. No test holds the call that seats the panel again when bringing the word into sight has moved the text. Neither axis of `DOUBLE_TAP_REACH` is held on its own: a test notices the reach at 0, and none notices the comparison along x or along y removed. No test holds the `onScroll` handler's check that the sight check's own scroll is not the reader's. Not built. | `web/tests/bookLookup.browser.test.tsx`; `seatLookup`, `DOUBLE_TAP_REACH` and `sightLeft` in `BookReader.tsx` | the review of the book tap look-up, 2026-11-18 |
 | O375 | [ ] | **A second tap on the scrubber within 24 px of the first seeks and also counts as the double tap.** The reader lands where the scrubber sends them, the look-up closes, and a peek opens on the paragraph left behind. Not built. | `onPointerUpCapture` in `BookReader.tsx` (`DOUBLE_TAP_REACH`) | the review of the book tap look-up, 2026-11-18 |
+| O376 | [ ] | **A Korean verb or adjective is found only as its dictionary form and the forms kaikki lists, so a conjugated one in a book can miss.** `lookup_korean` takes particles off a noun and nothing else. kaikki's conjugation tables are large (있다 has 85 rows and 37 distinct forms; the median over the 3,443 verbs with forms is 98 rows and 79 distinct forms), but an ending the tables do not list misses, whether or not it carries a tense: 있는데 is a form of 있다 and 있었는데 is not, and 없다고, 싶지, 자랑스럽게 and 기이하거나, which carry no tense, are in no `form` row either. 있었는데 and those four are what is left of the 8 words of this kind among the 36 `lookup_korean` first missed in Harry Potter 1's first 200 Hangul words; the other three were nouns with the copula (금발이었고, 것이었는데, 정상적이라는), found now that the copula is a particle; `docs/notes.md`, "Korean dictionary: installed and measured on Harry Potter 1". Taking off endings needs a stem and ending table that respects irregular stems (ㅂ, ㄷ, ㅅ, 르, 하다), which is more than the particles' list and is not designed. Not built. | `taiyaku_library::dictionary::lookup_korean` | the Korean dictionary's measurement, 2026-11-17 |
+| O377 | [x] | **Closed 2026-11-17, on the owner's ruling of that day: a transliterated name is in no dictionary, so a lookup of it finds nothing, and one that collides with a common noun shows that noun; that is a known limit, accepted, with no per-book name list.** 해그리드, 더즐리, 포터, 두들리, 노버트, 퀴디치 and 핼러윈 have no Wiktionary entry, with or without a particle (해그리드의, 더즐리 on its own); 20 of the 36 first misses in Harry Potter 1's first 200 words, some the same name again. The route answers such a name 200 with an empty list, and the panel says "Not in the dictionary." (`BookLookup`). A name that is also a common noun finds an entry that is wrong: 해리 is in `ko.db` only as "nautical mile", so 해리가 shows "nautical mile, from 해리가". 론 is not like it: of its five entries the fourth is the name Ron, after three senses the book does not mean. Among the words particle-stripping newly finds across Harry Potter 1, 해리 is 1,465 and 론 454. The owner decided not to build a per-book name list and to accept 해리 and 론 showing their dictionary entries. | `taiyaku_library::dictionary::lookup_korean`; the reader's Look up | the Korean dictionary's measurement, 2026-11-17 |
+| O378 | [ ] | **A Korean numeral with a counter or a particle (9와, 4분의, 3번, 4번지에) misses, unless the dictionary has the number and counter as one word (7월, and 11월이 through 11월).** The digits make the word's key one no entry has, and the particle taken off leaves a digit. A tap in a Korean book takes in the digits joined to the word, so it sends what is printed: 10년 sends 10년 and answers "Not in the dictionary", from a tap on the digit or on the letter, and the whole run is lit. A tap on a bare number such as 2000 is no look-up and keeps its usual meaning. A drag across the digit sends the digit too and misses the same way. A drag over the letters alone sends only those letters, so 년 dragged out of 10년 is looked up as 년. Four of the 36 misses in Harry Potter 1's first 200 words. Looking a counter up without its number is not built. | `wordAt` and `isKorean` in `web/src/wordAt.ts`; `lookUpTapped` in `web/src/BookReader.tsx`; `taiyaku_library::dictionary::lookup_korean` | the Korean dictionary's measurement, 2026-11-17 |
 | O387 | [ ] | **A 500 can send the client the whole SQL statement that failed to prepare.** rusqlite 0.43 returns `Error::SqlInputError` for a prepare SQLite refuses at a position in the statement, and that error's text is SQLite's message, the statement and the offset; rusqlite 0.38 compiled that variant only under `modern_sqlite`, which this workspace did not turn on, so the text was the message alone. Routes whose 500 body is the store's error text pass it on. Any signed-in account can receive it from `library_api::failed` (the home lists, the series, a work, a search, a series cover, the library status and OPDS's library feeds), `list_works`, `get_truth`, `view::flags_or_refuse` and `opds::visible_editions_by_work`; an anonymous request is refused before any of them runs. An administrator can also receive it from the curation, metadata, stamp, rules, directory, library, account and backup routes and from `patch_alignments`. A listing's statement shows the client the store's table and column names and the shape of the query, with a `?` for each value, so no row's content. The one cause found is a listing past the build's parameter ceiling, 250000 in the image: `browse::editions_by_work`, `opens_by_work`, `missing_by_edition` and `books_among` bind one per work or edition, and `/api/library/series` and `/api/library/search` reach them. The ids come from the store and a search's words are one bound value, so a request cannot raise the count on a smaller library. Only a build at SQLite's default ceiling of 32766 was seen to answer this way, on both routes at 33000 works (`.superpowers/sdd/o265-bundled-sqlite-evidence/audit/logs/parameter-ceiling.log`, not committed). What clears it is a generic 500 body with the detail in the server's log, which `routes::answered_and_logged` already gives `NoProgress::Failed` and `NoNotes::Failed`. The owner accepted this for the pull request that closes O265. Not built. | `library_api::failed`; `routes::list_works`; `routes::NoTruth`; `view::flags_or_refuse`; `opds::visible_editions_by_work`; the `Failed` arms of `curation::NoAnswer`, `metadata::NoAnswer`, `config_api::NoAnswer`, `config_api::AdminAnswer` and `users_api::UserAnswer`; `backup_api::failed`; `routes::patch_alignments`; `routes::answered_and_logged` | the whole-branch review of O265, 2026-11-18 |
 
 Sites are named by symbol rather than line, because a line number in a document
@@ -5587,6 +5590,38 @@ whole-branch review; their bullets follow.
   to read the file by, and its work is rewritten without it. Found by
   reading the code. Not built.
 
+**The Korean dictionary of 2026-11-17**
+(`docs/superpowers/specs/2026-11-17-korean-dictionary-design.md`) opened
+O376, O377 and O378 from its measurement on Harry Potter 1, and the owner's
+ruling of that day closed O377; their bullets follow. `docs/notes.md`,
+"Korean dictionary: installed and measured on Harry Potter 1", has the
+measurement.
+
+- **O376 — a conjugated Korean verb or adjective can miss. Open.**
+  `lookup_korean` takes off particles and nothing else, so a verb is found
+  only in the forms kaikki lists: 있다 has 85 rows and 37 distinct forms, and
+  the median over the 3,443 verbs with forms is 98 rows and 79 distinct
+  forms. 있는데 is listed and 있었는데 is not, and 없다고, 싶지, 자랑스럽게 and
+  기이하거나, which carry no tense, are in no `form` row either. Taking endings
+  off needs a table that respects irregular stems, which is not designed.
+  Not built.
+- **O377 — a transliterated name is in no dictionary. Closed, on the owner's
+  ruling.** A missing name answers 200 with an empty list and the panel says
+  "Not in the dictionary." A name that collides with a noun shows the noun:
+  해리 is only "nautical mile", and 론's five entries hold the name Ron
+  fourth, after three senses the book does not mean. Among the words
+  particle-stripping newly finds across Harry Potter 1, 해리 is 1,465 and
+  론 454. The owner ruled out a per-book name list.
+- **O378 — a Korean numeral with a counter or a particle. Open.** The digit
+  stays in the key, so the word misses unless the dictionary has the number
+  and counter as one word (7월, and 11월이 through 11월). A tap in a Korean
+  book takes in the digits joined to the word and sends what is printed: 10년
+  sends 10년 and answers "Not in the dictionary", from the digit or the letter,
+  with the whole run lit. A tap on a bare number such as 2000 is no look-up. A
+  drag across the digit misses the same way. A drag over the letters alone
+  sends only those letters, so 년 dragged out of 10년 is looked up as 년.
+  Looking a counter up without its number is not built.
+
 **The resize polish of 2026-11-16**
 (`docs/superpowers/specs/2026-11-16-resize-polish-design.md`) opened and
 closed O303 to O306, for what the owner found trying its prototype, and
@@ -6245,7 +6280,7 @@ pointer's coordinates, the image's rect, a real keystroke. See `notes.md`,
 "M5c, reported from a real browser" and "The annotation overlay was placed on
 the page area, not on the page".
 
-What remains: the one hundred and fifty-four open items tabled above — **a large minority
+What remains: the one hundred and fifty-six open items tabled above — **a large minority
 of them opened by a review** rather than by building something, which is the
 fact worth carrying. **The count that used to stand here is deleted rather
 than corrected**, after three passes over one afternoon produced twenty-five,
@@ -7751,7 +7786,14 @@ mismatched pair said nothing at all.
   `hablar`, `говорит` to `говорить`, a Japanese reading to its word),
   Wiktionary's Russian stress marks left off the key as print leaves them.
   `serve --dictionaries DIR` answers `GET /api/dictionary/{lang}/{word}`, the
-  language its code alone (`ru-RU` reads `ru`), 404 where it has none. In the
+  language its code alone (`ru-RU` reads `ru`), 404 where it has none. A Korean
+  word with an entry of its own is answered as written; any other has up to
+  three particles taken off where they agree with the stem's final consonant,
+  a stem's affix entries (-거라, filed under 거라) being passed over
+  (`lookup_korean`), `via` giving the word's key. The `ko.db` built from
+  kaikki.org's extract holds 42,690 entries and 518,129 form rows, and finds
+  168 of Harry Potter 1's first 200 Hangul words where the plain lookup finds
+  121 (O376 to O378 are what misses). In the
   reader, the selection bar's **Look up** shows each entry and the form that
   led to it; **Save word** keeps the selection as a highlight whose note is
   the word's meaning, and the notes list's **Export words** hands over every
@@ -7868,7 +7910,8 @@ mismatched pair said nothing at all.
   dictionary word the text begins with, through inflected forms (up to 16
   characters, never past whitespace or punctuation), so 飛び in 飛び降りて finds
   飛ぶ; any other language looks up the run of letters round the tap by the
-  existing route. A tap acts at once, and a second tap within 300 ms closes the
+  existing route, a Korean run taking in the digits joined to it. A tap acts
+  at once, and a second tap within 300 ms closes the
   look-up and peeks; with the mode off every tap behaves as before. Paged, the
   outer thirds keep turning the page and only the middle third looks up. Where
   the text set in beside the panel would hide the lit word, the least scroll or

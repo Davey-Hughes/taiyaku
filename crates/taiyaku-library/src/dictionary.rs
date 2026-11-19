@@ -14,6 +14,10 @@ use std::io::BufRead;
 
 use rusqlite::{Connection, params};
 
+mod korean;
+
+pub use korean::lookup_korean;
+
 /// What a lookup finds: a headword, its part of speech and its first senses,
 /// and the form of it that was looked up where that was not the headword.
 #[derive(Debug, Clone, PartialEq, Eq)]

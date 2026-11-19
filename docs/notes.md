@@ -27162,9 +27162,10 @@ to 143,973 entries and 950,609 forms, 68 MB, in 28 s; Russian (905 MB) to
 Looked up through the server: hablaron to hablar, dijo to decir,
 счастливые to счастливый, семьи to семья, сказал to сказать, 言った to
 言う, and 親譲り, 無鉄砲 and 学校 as themselves; the first lookup in a
-language took 0.9-1 s (the file opened cold), each after 1-4 ms. Korean has
-no dictionary yet: its particles join the word they follow, and a lookup
-would need to take them off first.
+language took 0.9-1 s (the file opened cold), each after 1-4 ms. Korean had
+no dictionary then: its particles join the word they follow, and a lookup
+needed to take them off first, which the Korean dictionary's section below
+records.
 
 ## O285 and O288: the cover-size slider and the Continue row (2026-11-15)
 
@@ -29695,3 +29696,80 @@ it: Cancel stops the current pass only, and the next scan to end without a
 Cancel starts a pass that carries on from there. Dropping a read that had
 ended would take the line away at once and leave that file to be read again;
 at the hand-check the owner kept the behaviour as built.
+
+## Korean dictionary: installed and measured on Harry Potter 1 (2026-11-17)
+
+`kaikki.org-dictionary-Korean.jsonl` came down at 207,649,961 bytes, the size
+the design named, and `taiyaku dictionary import ko` built `ko.db` (34 MB)
+from it: 42,690 entries, 518,129 form rows, no line passed over. `es.db`,
+`ru.db` and `ja.db` were left as they were.
+
+The measure is the first 200 words of *Harry Potter 1* in Korean (the
+Pottermore EPUB, through `taiyaku_read::read_book`), taken as spaced words
+with the punctuation trimmed off the ends and the words with no Hangul
+skipped, against the real `ko.db`. These are words found, not words found
+correctly: a hit says the dictionary has an entry under the stem, not that
+it is the entry the book means. About 90 of the 200 words are the
+dedication and the table of contents, and 36 of the found words are the
+제 and 장 of the chapter markers, so the sample says little of running prose.
+
+First measure, before the fixes below:
+
+- `lookup` finds 121 of 200.
+- `lookup_korean` finds 164 of 200, so taking particles off is 43 words.
+
+The 36 words `lookup_korean` then missed, by why:
+
+- **Names**, 20 (some the same name again): 해그리드, 해그리드의, 더즐리 (five
+  times), 포터 (twice), 두들리라는, 두들리처럼, 노버트, 앨리, 제시카와, 다이애건,
+  플라멜, 프리벳, 그루닝스라는, 퀴디치, 핼러윈. Wiktionary has no entry for
+  these transliterated names, so the particle coming off does not help.
+  Some names do collide with a common noun: 해리 is in `ko.db` only as
+  "nautical mile", and 론 has five entries with the name Ron fourth among
+  them, so a lookup of 해리가 finds an entry and it is the wrong one, a hit
+  that the counts above cannot tell from a right one.
+- **A common compound**, 1: 사냥터지기 (a gamekeeper), which is not a name and
+  is in no entry.
+- **A conjugated verb or adjective**, 8: 있었는데, 없다고, 싶지, 자랑스럽게,
+  기이하거나, 정상적이라는, 금발이었고, 것이었는데. The headwords (있다, 없다, 싶다,
+  자랑스럽다, 기이하다) are in `ko.db`; the conjugated forms are in no `form`
+  row, and `lookup_korean` takes off particles only. The last three are
+  nouns with the copula, and the fixes below find them.
+- **A numeral with a counter or particle**, 4: 9와, 4분의, 3번, 4번지에. No entry has these with their digits, and taking the particle off leaves a digit. A tap in a Korean book sends the same run, because it takes in the digits joined to the word, so these answer "Not in the dictionary"; 3번 and 4번지에 no longer open on 번 and 번지. Where the dictionary has the number and counter as one word a tap finds it: 7월, and 11월이 through 11월. A tap on a bare number looks nothing up. A drag over the letters alone sends only those letters, so 년 dragged out of 10년 is looked up as 년.
+- **A contraction**, 1: 그건 for 그것은; and **누구라도**, one more particle
+  than the list has.
+- **An ideophone**, 1: 뒤룩뒤룩, which has no entry.
+
+The 해리 and 론 collision, counted over all of Harry Potter 1 among the words
+that taking particles off newly finds: 해리 1,465 and 론 454.
+
+After the fixes (the copula after a vowel, 야, 이야, 라는, 이라는, 라도,
+이라도, 인, 이고, 이었고, 이었는데, 만큼 and 대로 added, a word found only as a form of
+something also stripped, 이고 taken after a vowel as well as a consonant, and
+a stem's affix entries passed over), the same measure, and the whole of Harry
+Potter 1 (Korean) read the same way, 64,750 words with repeats, in a scratch
+test that is not in the tree:
+
+| | words | `lookup` | `lookup_korean` |
+|---|---|---|---|
+| first 200 | 200 | 121 | 168 |
+| whole book | 64,750 | 32,914 | 50,990 |
+
+The whole book finds 78.7% with particles against 50.8% plain, so taking
+particles off is 18,076 words, and the first 200 words' 84% is an
+overestimate of it by about five points, for the front matter's sake.
+
+The last two fixes changed the answer of 356 of the book's 17,463 distinct
+words, 2,123 occurrences. In 348 of them (2,094) a stem's affix entries left
+the list and the first headword stayed. Five (22) open on another headword:
+거라는 and 거라도 on 거, 밖에는 on 밖, 하고는 on 하고 and 만큼이나 on 만큼. 마법사이고 and
+사이이고, once each, are found where they were not. **갔을 (5) lost its only
+answer.** Its stem 갔 has only affix entries, the suffix -갔- and a form row
+leading to -겠-, and `ko.db` lists neither 갔 nor 갔을 as a form of 가다, though
+it lists 갔다 and 갔어. An affix still answers for the word as written, so 거라
+shows -거라, and 보는, a form of 보다, still lists the particle -보다 filed under
+the same key.
+
+The first group is a fact about the dictionary and the second a gap in the
+code; they are O377 and O376 in `docs/status.md`, with the numerals O378.
+The measuring program was a scratch test and is not in the tree.

@@ -2845,6 +2845,63 @@ describe('BookReader', () => {
       }
     })
 
+    describe('in a Korean book', () => {
+      /** The second block's text: 10년 at 3, 4번지에 at 7, 11월이 at 12, 2000 at 17. */
+      const KOREAN = '그는 10년 4번지에 11월이 2000 살았다.'
+
+      it.each([
+        ['the digit of 10년', 3, '10년'],
+        ['the letter of 10년', 5, '10년'],
+        ['the digit of 4번지에', 7, '4번지에'],
+        ['the particle of 4번지에', 10, '4번지에'],
+        ['the digit of 11월이', 12, '11월이'],
+        ['the particle of 11월이', 15, '11월이'],
+      ])(
+        'looks up and lights the whole run from %s',
+        async (_name, at, run) => {
+          on()
+          const { host, asked } = await reader(japaneseOf(KOREAN, 'ko'))
+          await tapOn(host, 1, at)
+          expect(asked).toEqual([`ko:${run}`])
+          expect(lookUpTitle()).toBe(run)
+          expect(selectedText()).toBe(run)
+        },
+      )
+
+      it.each(['ko', 'KO', 'ko-KR', 'ko_KR'])(
+        'takes digits in for an edition tagged %s',
+        async (tag) => {
+          on()
+          const { host, asked } = await reader(japaneseOf(KOREAN, tag))
+          await tapOn(host, 1, 3)
+          expect(asked).toEqual([`${tag}:10년`])
+        },
+      )
+
+      it('takes a tap on a bare number as a tap, looking nothing up', async () => {
+        on()
+        const { host, asked } = await reader(japaneseOf(KOREAN, 'ko'))
+        await tapOn(host, 1, 18)
+        expect(asked).toEqual([])
+        expect(bars(host)).toBe(true)
+      })
+
+      it.each([
+        ['Spanish', 'es'],
+        ['English', 'en'],
+        ['a language whose tag only begins as Korean’s does', 'kok'],
+      ])('leaves digits out of a word in %s', async (_name, tag) => {
+        on()
+        const { host, asked } = await reader(japaneseOf('Pasó 10años.', tag))
+        await tapOn(host, 1, 5)
+        expect(asked).toEqual([])
+        expect(bars(host)).toBe(true)
+        await tapOn(host, 1, 8)
+        expect(asked).toEqual([`${tag}:años`])
+        expect(selectedText()).toBe('años')
+      })
+    })
+
     it('saves a word looked up from the selection bar on its own edition after a swap, with the mode off', async () => {
       const { host, written } = await reader(sentenced, () =>
         Response.json([who]),

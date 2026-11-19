@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { beginsWord, headAt, wordAt } from '../src/wordAt'
+import { beginsWord, headAt, isKorean, wordAt } from '../src/wordAt'
 
 describe('wordAt', () => {
   it('finds the run of letters a character is in', () => {
@@ -34,6 +34,85 @@ describe('wordAt', () => {
   it('takes a letter past the basic plane whole, from either half', () => {
     expect(wordAt('a 𠮷野 b', 2)).toEqual([2, 5])
     expect(wordAt('a 𠮷野 b', 3)).toEqual([2, 5])
+  })
+
+  it('stops at a digit unless told to take digits in', () => {
+    expect(wordAt('10년', 0)).toBeUndefined()
+    expect(wordAt('10년', 2)).toEqual([2, 3])
+    expect(wordAt('en 10años', 3)).toBeUndefined()
+    expect(wordAt('en 10años', 5)).toEqual([5, 9])
+    expect(wordAt('10년', 2, { digits: false })).toEqual([2, 3])
+  })
+})
+
+describe('wordAt taking digits in', () => {
+  const digits = { digits: true }
+
+  it.each([
+    ['the first digit of 10년', '그는 10년 동안', 3, [3, 6]],
+    ['the second digit of 10년', '그는 10년 동안', 4, [3, 6]],
+    ['the letter of 10년', '그는 10년 동안', 5, [3, 6]],
+    ['the digit of 4번지에', '4번지에 살았다', 0, [0, 4]],
+    ['the last letter of 4번지에', '4번지에 살았다', 3, [0, 4]],
+    ['the digit of 11월이', '11월이 왔다', 1, [0, 4]],
+    ['the particle of 11월이', '11월이 왔다', 3, [0, 4]],
+    ['digits after the letters', '해리2 왔다', 2, [0, 3]],
+    ['digits between letters', '가1나 왔다', 1, [0, 3]],
+    ['full-width digits', '１０년', 0, [0, 3]],
+    ['Arabic-Indic digits', '٣번', 0, [0, 2]],
+    ['half of a digit past the basic plane', '\u{1D7CF}번', 1, [0, 3]],
+  ])('takes in %s', (_name, text, at, run) => {
+    expect(wordAt(text, at, digits)).toEqual(run)
+  })
+
+  it.each([
+    ['a bare number', '서기 2000 년', 4],
+    ['a bare number at the end of the text', '서기 2000', 6],
+    ['a single digit', '7 번', 0],
+    ['digits with a keycap’s marks on', '1\u{FE0F}\u{20E3}', 0],
+  ])('finds no word in %s', (_name, text, at) => {
+    expect(wordAt(text, at, digits)).toBeUndefined()
+  })
+
+  it('leaves a letter a space away from a number on its own', () => {
+    expect(wordAt('2000 년', 5, digits)).toEqual([5, 6])
+  })
+
+  it('counts only decimal digits', () => {
+    expect(wordAt('②번', 1, digits)).toEqual([1, 2])
+    expect(wordAt('²번', 1, digits)).toEqual([1, 2])
+    expect(wordAt('②번', 0, digits)).toBeUndefined()
+  })
+
+  it('still joins two letters over an apostrophe or hyphen, and no digit', () => {
+    expect(wordAt('10년-해리', 0, digits)).toEqual([0, 6])
+    expect(wordAt('해리-10년', 5, digits)).toEqual([3, 6])
+    expect(wordAt('10-년', 3, digits)).toEqual([3, 4])
+    expect(wordAt('10-년', 0, digits)).toBeUndefined()
+  })
+})
+
+describe('isKorean', () => {
+  it.each(['ko', 'KO', 'Ko', 'ko-KR', 'KO-kr', 'ko_KR', 'ko-Kore-KR'])(
+    'takes %s',
+    (tag) => {
+      expect(isKorean(tag)).toBe(true)
+    },
+  )
+
+  it.each([
+    'kok',
+    'kor',
+    'k',
+    'ja',
+    'en-ko',
+    'x-ko',
+    '',
+    '-ko',
+    null,
+    undefined,
+  ])('refuses %s', (tag) => {
+    expect(isKorean(tag)).toBe(false)
   })
 })
 
