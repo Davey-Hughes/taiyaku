@@ -23,7 +23,7 @@ rayon = "1.12.0"
 # and use `rusqlite::OptionalExtension` to resolve `--db`'s work rows. Same
 # version taiyaku-library and taiyaku-serve both pin, so the resolver unifies
 # one copy rather than two.
-rusqlite = "0.38"
+rusqlite = "0.43"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"

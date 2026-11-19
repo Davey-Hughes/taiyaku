@@ -831,13 +831,18 @@ fn roots_reads_the_directories_and_their_links_from_one_snapshot() {
     let b = Library::open(&db).expect("a second connection on the same file");
     REMOVER.with(|remover| *remover.borrow_mut() = Some((b, gone.id)));
 
-    let conn = a.conn();
+    let mut conn = a.conn();
     conn.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW,
         Some(removing_at_the_first_row),
-    );
+    )
+    .expect("installs the trace");
     let listed = roots(&conn).expect("lists");
-    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::empty(),
+        None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+    )
+    .expect("clears the trace");
 
     assert!(
         REMOVER.with(|remover| remover.borrow().is_none()),
@@ -892,13 +897,18 @@ fn scan_overlapped(
             *landed.borrow_mut() = Some(report);
         }));
     });
-    let conn = second.conn();
+    let mut conn = second.conn();
     conn.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
         Some(at_the_scan_write),
-    );
+    )
+    .expect("installs the trace");
     let seconds = scan_root(&conn, root);
-    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::empty(),
+        None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+    )
+    .expect("clears the trace");
     let firsts = firsts
         .borrow_mut()
         .take()
@@ -3623,15 +3633,20 @@ fn remove_root_sends_delete_from_root_inside_an_already_open_transaction() {
     }
 
     let fixture = crate::tests::library_with_two_roots_and_a_reading_position();
-    let conn = fixture.conn();
+    let mut conn = fixture.conn();
     let root = crate::scan::roots(&conn).unwrap()[1].id;
 
     conn.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
         Some(watch),
-    );
+    )
+    .expect("installs the trace");
     crate::scan::remove_root(&conn, root).expect("removing the root");
-    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::empty(),
+        None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+    )
+    .expect("clears the trace");
 
     let statements = STATEMENTS.lock().unwrap();
     let delete_root_index = statements
@@ -3942,7 +3957,7 @@ fn remove_root_repairs_a_surviving_documents_gap_only_after_its_own_commit() {
 
     let dir = crate::tests::tempdir("scan-remove-root-reconcile");
     let library = Library::open_in_memory().expect("library");
-    let conn = library.conn();
+    let mut conn = library.conn();
     write_archive(
         &dir.path()
             .join("root-a")
@@ -3999,9 +4014,14 @@ fn remove_root_repairs_a_surviving_documents_gap_only_after_its_own_commit() {
     conn.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
         Some(watch),
-    );
+    )
+    .expect("installs the trace");
     crate::scan::remove_root(&conn, root_b.id).expect("removing root b");
-    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::empty(),
+        None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+    )
+    .expect("clears the trace");
 
     assert!(
         expected_path.exists(),

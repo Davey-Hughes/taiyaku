@@ -2485,16 +2485,21 @@ fn apply_reads_the_rule_table_back_after_committing_not_before() {
     }
 
     let fixture = crate::tests::library_with_two_roots();
-    let conn = fixture.conn();
+    let mut conn = fixture.conn();
     let mut proposed = crate::rules::read(&conn).unwrap().0;
     proposed.push(crate::tests::a_rule_setting_series("Alpha"));
 
     conn.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
         Some(watch),
-    );
+    )
+    .expect("installs the trace");
     crate::preview::apply(&conn, &proposed).expect("the save must not fail");
-    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::empty(),
+        None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+    )
+    .expect("clears the trace");
 
     let statements = RULE_APPLY_STATEMENTS.lock().unwrap();
     let commit_at = statements

@@ -442,7 +442,7 @@ fn opens_arriving_while_another_builds_a_fresh_database_all_succeed_and_take_no_
     let dir = crate::tests::tempdir("fresh-build-race");
     let db = dir.path().join("library.db");
 
-    let builder = Connection::open(&db).expect("the builder opens the file");
+    let mut builder = Connection::open(&db).expect("the builder opens the file");
     let (held, is_held) = std::sync::mpsc::channel::<()>();
     let (release, released) = std::sync::mpsc::channel::<()>();
     let mut version_rows = 0;

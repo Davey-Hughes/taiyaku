@@ -1393,15 +1393,21 @@ thread_local! {
 ///
 /// Setting a WAL hook replaces the automatic checkpoint, which is SQLite's own
 /// WAL hook, so this sets the default back afterwards.
-fn wal_commits_during<T>(conn: &rusqlite::Connection, pass: impl FnOnce() -> T) -> (usize, T) {
-    fn count(_: &rusqlite::hooks::Wal, _: std::os::raw::c_int) -> rusqlite::Result<()> {
+fn wal_commits_during<T>(
+    conn: &mut rusqlite::Connection,
+    pass: impl FnOnce(&rusqlite::Connection) -> T,
+) -> (usize, T) {
+    fn count(_: &mut rusqlite::hooks::Wal, _: std::os::raw::c_int) -> rusqlite::Result<()> {
         WAL_COMMITS.with(|n| n.set(n.get() + 1));
         Ok(())
     }
     WAL_COMMITS.with(|n| n.set(0));
-    conn.wal_hook(Some(count));
-    let out = pass();
-    conn.wal_hook(None);
+    conn.wal_hook(Some(count)).expect("hooks");
+    let out = pass(conn);
+    conn.wal_hook(
+        None::<fn(&mut rusqlite::hooks::Wal, std::os::raw::c_int) -> rusqlite::Result<()>>,
+    )
+    .expect("unhooks");
     conn.pragma_update(None, "wal_autocheckpoint", 1000)
         .expect("restoring the automatic checkpoint");
     (WAL_COMMITS.with(std::cell::Cell::get), out)
@@ -1410,7 +1416,7 @@ fn wal_commits_during<T>(conn: &rusqlite::Connection, pass: impl FnOnce() -> T) 
 /// The write transactions `conn` commits while `pass` runs, counted by the
 /// commit hook, so one whose statements changed nothing counts too: it still
 /// held the write lock a save waits for (O272).
-fn commits_during<T>(conn: &Connection, pass: impl FnOnce() -> T) -> (usize, T) {
+fn commits_during<T>(conn: &mut Connection, pass: impl FnOnce(&Connection) -> T) -> (usize, T) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1421,7 +1427,7 @@ fn commits_during<T>(conn: &Connection, pass: impl FnOnce() -> T) -> (usize, T) 
         false
     }))
     .expect("hooks");
-    let out = pass();
+    let out = pass(conn);
     conn.commit_hook(None::<fn() -> bool>).expect("unhooks");
     (commits.load(Ordering::SeqCst), out)
 }
@@ -1437,14 +1443,14 @@ fn a_derive_commits_each_work_it_writes_once() {
     let tree = fixture();
     let store = crate::tests::tempdir("derive-commits");
     let library = Library::open(&store.path().join("library.db")).expect("open");
-    let conn = library.conn();
+    let mut conn = library.conn();
     let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
     conn.execute("UPDATE edition SET language = 'stale'", [])
         .expect("a value the next derive writes back");
 
-    let (commits, report) = wal_commits_during(&conn, || derive::derive(&conn));
+    let (commits, report) = wal_commits_during(&mut conn, derive::derive);
     let report = report.expect("second derive");
 
     assert_eq!(report.works, 2, "the fixture's two volumes: {report:?}");
@@ -1475,7 +1481,7 @@ fn a_derive_over_unchanged_files_writes_nothing() {
     let store = crate::tests::tempdir("derive-quiet");
     let db = store.path().join("library.db");
     let library = Library::open(&db).expect("open");
-    let conn = library.conn();
+    let mut conn = library.conn();
     for dir in [tree.path(), chapters.path(), first.path(), second.path()] {
         let root = scan::add_root(&conn, dir).expect("add");
         scan::scan_root(&conn, &root).expect("scan");
@@ -1549,7 +1555,7 @@ fn a_derive_over_unchanged_files_writes_nothing() {
     let changes = conn.total_changes();
     let counter = crate::structure::version(&conn).expect("reads");
 
-    let (commits, quiet) = commits_during(&conn, || derive::derive(&conn));
+    let (commits, quiet) = commits_during(&mut conn, derive::derive);
     let quiet = quiet.expect("a derive over nothing changed");
 
     assert_eq!(quiet, writing, "counted as a pass that writes");
@@ -1573,7 +1579,7 @@ fn a_derive_over_unchanged_files_writes_nothing() {
 fn a_derive_takes_no_write_for_a_dismissed_proposal_whose_score_moved() {
     let tree = fixture();
     let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
+    let mut conn = library.conn();
     let root = scan::add_root(&conn, tree.path()).expect("add");
     scan::scan_root(&conn, &root).expect("scan");
     derive::derive(&conn).expect("first derive");
@@ -1587,7 +1593,7 @@ fn a_derive_takes_no_write_for_a_dismissed_proposal_whose_score_moved() {
         .expect("dismissed at that score");
     assert_eq!(scalar(&conn, dismissed), 1, "the fixture: one proposal");
 
-    let (commits, report) = commits_during(&conn, || derive::derive(&conn));
+    let (commits, report) = commits_during(&mut conn, derive::derive);
     report.expect("derives");
 
     assert_eq!(
@@ -1674,7 +1680,7 @@ fn a_derive_writes_back_what_a_held_work_no_longer_holds() {
     let tree = fixture();
     let chapters = chaptered();
     let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
+    let mut conn = library.conn();
     for dir in [tree.path(), chapters.path()] {
         let root = scan::add_root(&conn, dir).expect("add");
         scan::scan_root(&conn, &root).expect("scan");
@@ -1823,9 +1829,9 @@ fn a_derive_writes_back_what_a_held_work_no_longer_holds() {
         held,
         "the fixture: a chapter source moved"
     );
-    let (written, _) = commits_during(&conn, || derive::derive(&conn).expect("derives"));
+    let (written, _) = commits_during(&mut conn, |conn| derive::derive(conn).expect("derives"));
     let after = work_rows(&conn);
-    let (again, _) = commits_during(&conn, || derive::derive(&conn).expect("derives"));
+    let (again, _) = commits_during(&mut conn, |conn| derive::derive(conn).expect("derives"));
     assert_eq!(written, 1, "the restore's chapter is written");
     assert_eq!(again, 0, "and the next pass leaves it");
     assert_eq!(work_rows(&conn), after, "as the pass before left it");
@@ -9404,7 +9410,7 @@ fn a_derive_over_unchanged_files_with_a_work_marked_commits_nothing() {
     let (dir, paths) = a_series_of("derive-quiet-while-marked", 2);
     let store = crate::tests::tempdir("derive-quiet-while-marked-db");
     let library = Library::open(&store.path().join("library.db")).expect("open");
-    let conn = library.conn();
+    let mut conn = library.conn();
     let root = root_in(&conn, dir.path(), "Manga", None);
     derive::derive(&conn).expect("derives");
     std::fs::remove_file(&paths[1]).expect("volume 2 goes");
@@ -9424,7 +9430,7 @@ fn a_derive_over_unchanged_files_with_a_work_marked_commits_nothing() {
     };
     let before = since(&conn);
 
-    let (commits, quiet) = commits_during(&conn, || derive::derive(&conn));
+    let (commits, quiet) = commits_during(&mut conn, derive::derive);
     let quiet = quiet.expect("a derive over nothing changed");
 
     assert_eq!(
@@ -9448,7 +9454,7 @@ fn a_derive_over_unchanged_files_with_a_work_marked_commits_nothing() {
 fn the_mark_and_the_clear_commit_as_one_transaction() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
+    let mut conn = library.conn();
     conn.execute("INSERT INTO root (id, path) VALUES (1, '/r')", [])
         .expect("a directory");
     seed_work(&conn, 1, "gone", &[("raw", "/r/a.cbz", "aaa")]);

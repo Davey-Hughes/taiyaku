@@ -1968,7 +1968,7 @@ have passed: on a push, on a dispatch, and every Sunday at 10:45 UTC
 refreshes, there so a week with no merge still ships patched Debian packages;
 a dispatch on another branch runs the four checks and skips this job. A
 refresh builds with `--no-cache-filter runtime`, which reruns the `runtime`
-stage's `apt-get upgrade` and `apt-get install`; the job's isolated builder
+stage's `apt-get upgrade`; the job's isolated builder
 resolves the base images on every build, so the compiled stages stay cached
 only while those are unchanged. It is never a required status: branch
 protection on `main` names the four `(pull_request)` contexts, and this job
@@ -2058,6 +2058,14 @@ workflow's header.
 
 `spike/Cargo.lock` is not checked: `probe` never ships, and the `tract-onnx`
 it drives is checked through `taiyaku-cli`'s dev-dependency.
+
+**This check covers the bundled SQLite.** `rusqlite`'s `bundled` feature
+compiles SQLite into the binary, so a SQLite security fix ships by updating
+`libsqlite3-sys` in the lockfile, with a `rusqlite` bump when the new release
+is outside the range `rusqlite` accepts, and `cargo deny` reports an advisory
+against the copy the lockfile holds. The image's weekly refresh does not bring
+one: it reruns `apt-get upgrade`, and the image installs no SQLite package for
+that to update.
 
 ## Why the variables say Forgejo and not GitHub
 

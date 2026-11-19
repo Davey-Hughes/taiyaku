@@ -1417,6 +1417,58 @@ fn giving_up_on_wal_says_how_long_it_waited_and_that_nothing_was_lost() {
     );
 }
 
+/// A deleted row's bytes must leave the file, whichever connection deleted it.
+/// `secure_delete` is a setting of the connection and off in the SQLite this
+/// crate compiles, so each connection that writes has to turn it on for itself.
+///
+/// Each marker is first shown to have reached the file, so that its absence
+/// afterwards is the delete's doing and not a search that could never match.
+#[test]
+fn a_deleted_row_leaves_nothing_readable_in_the_file_on_either_writing_connection() {
+    let dir = tempdir("secure-delete");
+    let db = dir.path().join("library.db");
+    let library = Library::open(&db).expect("opens");
+    let file_holds = |marker: &str| {
+        let bytes = std::fs::read(&db).expect("the store reads");
+        bytes
+            .windows(marker.len())
+            .any(|at| at == marker.as_bytes())
+    };
+    let checkpoint = |conn: &Connection| {
+        let busy: i64 = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+            .expect("the checkpoint answers");
+        assert_eq!(busy, 0, "a checkpoint that gave up left the file unwritten");
+    };
+    let written_then_deleted = |conn: &Connection, marker: &str| {
+        conn.execute("INSERT INTO deleted_probe (held) VALUES (?1)", [marker])
+            .expect("the marker is written");
+        checkpoint(conn);
+        assert!(file_holds(marker), "{marker} never reached the file");
+        conn.execute("DELETE FROM deleted_probe WHERE held = ?1", [marker])
+            .expect("the marker is deleted");
+        checkpoint(conn);
+        assert!(
+            !file_holds(marker),
+            "{marker} can still be read from the file after its row was deleted"
+        );
+    };
+
+    {
+        let first = library.conn();
+        first
+            .execute_batch("CREATE TABLE deleted_probe (held TEXT NOT NULL)")
+            .expect("the probe's table is created");
+        written_then_deleted(&first, "secure-delete-marker-on-the-first-connection");
+    }
+    let working = library.working().expect("a second connection");
+    assert!(
+        matches!(working, Working::Owned(_)),
+        "a file-backed library's working connection is a connection of its own"
+    );
+    written_then_deleted(&working, "secure-delete-marker-on-the-working-connection");
+}
+
 /// `PRAGMA foreign_keys` is a property of the **connection**, not of the
 /// database, and SQLite leaves it off by default for backward compatibility.
 /// A `Library::open` that forgets it turns every `REFERENCES` in the schema
@@ -1434,19 +1486,18 @@ fn every_connection_enforces_foreign_keys() {
     );
 }
 
-/// FTS5 is a property of the host's SQLite build, not of the crate, because
-/// this links the system library rather than bundling one. Debian and Arch both
-/// build it in; "both distros I checked" is not "every host". Without this
-/// check the failure surfaces as the schema migration dying part-way with
-/// `no such module: fts5`, on a half-created schema.
+/// FTS5 is a property of the SQLite a build links. The one this workspace
+/// compiles has it, but `LIBSQLITE3_SYS_USE_PKG_CONFIG` can point a build at the
+/// host's library instead. Without this check the failure surfaces as the
+/// schema migration dying part-way with `no such module: fts5`, on a
+/// half-created schema.
 ///
-/// This host has FTS5 — CI's rust:1-bookworm and this workstation both do —
-/// so there is no way to reach `require_fts5`'s refusal through the real
-/// probe statement.
+/// The SQLite under test has FTS5, so there is no way to reach
+/// `require_fts5`'s refusal through the real probe statement.
 ///
 /// This calls `require_fts5` itself, through `require_fts5_with_probe`,
 /// handing it a probe statement engineered to fail the exact way a real
-/// FTS5-less SQLite fails ("no such module") without needing a host that
+/// FTS5-less SQLite fails ("no such module") without needing a build that
 /// actually lacks FTS5. It runs the same `execute_batch`,
 /// same `map_err`, same message-building the real call site
 /// (`configure`, `lib.rs`) uses — only the SQL differs — so gutting
@@ -1458,7 +1509,7 @@ fn every_connection_enforces_foreign_keys() {
 /// `from_connection_runs_the_fts5_probe_before_applying_the_schema` below.
 #[test]
 fn opening_refuses_a_sqlite_without_fts5_and_names_what_is_missing() {
-    let library = Library::open_in_memory().expect("this host has FTS5");
+    let library = Library::open_in_memory().expect("the compiled SQLite has FTS5");
     let conn = library.conn();
     let err = require_fts5_with_probe(
         &conn,
@@ -1470,21 +1521,21 @@ fn opening_refuses_a_sqlite_without_fts5_and_names_what_is_missing() {
         "the message must name what is missing: {err}"
     );
     assert!(
-        err.contains("libsqlite3") || err.to_lowercase().contains("install"),
-        "the message must suggest a fix: {err}"
+        err.contains("LIBSQLITE3_SYS_USE_PKG_CONFIG"),
+        "the message must name the build setting that links another SQLite: {err}"
     );
 }
 
 /// The guard above is only worth anything if `from_connection` actually runs
-/// it: on a host with FTS5, deleting the `require_fts5` call would change
+/// it: on a SQLite with FTS5, deleting the `require_fts5` call would change
 /// nothing `open_in_memory` returns, so the probe could be removed entirely and
 /// every other test would stay green.
 ///
-/// It can be pinned without a host that lacks FTS5, and without widening the
+/// It can be pinned without a SQLite that lacks FTS5, and without widening the
 /// public constructors. `from_connection` is private but reachable from this
 /// module, and the probe names a specific table — `temp.taiyaku_fts5_probe`.
 /// Occupying that name before opening makes the probe's `CREATE VIRTUAL
-/// TABLE` fail on a host that has FTS5, which is exactly the branch that
+/// TABLE` fail on a SQLite that has FTS5, which is exactly the branch that
 /// otherwise cannot be reached.
 ///
 /// So the assertion is about **sequencing, not about FTS5**: the schema
@@ -1929,11 +1980,12 @@ fn committing_the_real_transaction_branch_sends_no_savepoint_statement() {
     }
 
     let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
+    let mut conn = library.conn();
     conn.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
         Some(watch),
-    );
+    )
+    .expect("installs the trace");
 
     // Nothing else is open, so `Nested::open` takes the real-transaction
     // branch — the one this scope's own `label` never becomes a `SAVEPOINT`
@@ -1943,7 +1995,11 @@ fn committing_the_real_transaction_branch_sends_no_savepoint_statement() {
         .commit()
         .expect("committing the real-transaction branch");
 
-    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::empty(),
+        None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+    )
+    .expect("clears the trace");
     assert_eq!(
         SAVEPOINT_STATEMENTS.load(Ordering::SeqCst),
         0,
@@ -1979,17 +2035,18 @@ fn committing_the_savepoint_branch_sends_no_rollback_to_savepoint_statement() {
     }
 
     let library = Library::open_in_memory().expect("open");
-    let conn = library.conn();
+    let mut conn = library.conn();
     conn.execute("CREATE TABLE probe (id INTEGER)", [])
         .expect("creating the probe table");
 
-    let outer = conn.unchecked_transaction().expect(
-        "opening the outer transaction, so the nested scope below takes the SAVEPOINT \
-                 branch rather than the real-transaction one",
-    );
     conn.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
         Some(watch),
+    )
+    .expect("installs the trace");
+    let outer = conn.unchecked_transaction().expect(
+        "opening the outer transaction, so the nested scope below takes the SAVEPOINT \
+                 branch rather than the real-transaction one",
     );
 
     let scope = Nested::open(&outer, "watched_savepoint")
@@ -1999,10 +2056,14 @@ fn committing_the_savepoint_branch_sends_no_rollback_to_savepoint_statement() {
                  immediately, since `commit` takes `self` by value",
     );
 
-    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
     outer
         .commit()
         .expect("committing the outer transaction for real");
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::empty(),
+        None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+    )
+    .expect("clears the trace");
 
     assert_eq!(
         ROLLBACK_TO_STATEMENTS.load(Ordering::SeqCst),

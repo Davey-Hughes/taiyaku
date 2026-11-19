@@ -189,6 +189,9 @@ A `Dockerfile` with four stages:
 4. **runtime**: `debian:bookworm-slim` with `libsqlite3-0`, the binary, and
    stage 2's `dist` at `/app/web`. Runs as `99:100`, Unraid's `nobody:users`.
 
+*Since O265 the server stage compiles SQLite into the binary and the runtime
+stage installs no `libsqlite3-0`; items 3 and 4 record the design as first built.*
+
 | Container path | Host | Why |
 | --- | --- | --- |
 | `/config` | `/mnt/user/appdata/taiyaku/config` | `XDG_DATA_HOME`: `library.db` and `backups/`. Appdata Backup copies it |

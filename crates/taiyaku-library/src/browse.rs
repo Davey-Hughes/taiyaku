@@ -597,9 +597,9 @@ fn aligned_clause(access: &Access, account: &Access) -> String {
 /// [`member_clause`] group.
 ///
 /// **The `ORDER BY` reads its own `series cs`, never the caller's `s`.**
-/// SQLite 3.40, the version CI and the image link, cannot resolve an outer
-/// column in a subquery's `ORDER BY` and refuses the statement with `no such
-/// column`; later versions accept it, so a local run does not show it.
+/// SQLite 3.40 cannot resolve an outer column in a subquery's `ORDER BY` and
+/// refuses the statement with `no such column`; the SQLite this crate compiles
+/// accepts both forms, so this one keeps the statement valid on either.
 fn cover_edition(access: &Access) -> String {
     let joined = member_clause(access);
     format!(
@@ -764,8 +764,8 @@ fn series_cards(
 /// one unbounded thing for another against.** `unfiled` takes no `LIMIT`, so
 /// `work_ids` is as long as the caller's set, and this issues one query with
 /// one placeholder per work, where a query per work could never exceed a
-/// parameter count. This is left unguarded, because a guard would be code no
-/// library can execute.
+/// parameter count. The image's ceiling is 250000 (the `Dockerfile`'s `server`
+/// stage); every other build keeps SQLite's default of 32766.
 ///
 /// Placeholders bind in text order, anonymous: `account`'s roots for page 0
 /// and the member join, `access`'s for the `EXISTS` clause, then `work_ids`.

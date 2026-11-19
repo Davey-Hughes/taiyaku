@@ -5878,13 +5878,18 @@ fn the_libraries_list_reads_its_links_and_names_from_one_snapshot() {
     let b = taiyaku_library::Library::open(&db).expect("a second connection");
     REMOVER.with(|remover| *remover.borrow_mut() = Some((b, kids)));
 
-    let conn = a.conn();
+    let mut conn = a.conn();
     conn.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW,
         Some(removing_a_library_at_the_first_row),
-    );
+    )
+    .expect("installs the trace");
     let listed = super::libraries_json(&conn, &std::collections::HashSet::new());
-    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::empty(),
+        None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+    )
+    .expect("clears the trace");
 
     assert!(
         REMOVER.with(|remover| remover.borrow().is_none()),

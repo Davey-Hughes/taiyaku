@@ -33,18 +33,4 @@ ignore = [
     Unmaintained, not vulnerable, and no release will follow: its repository \
     is archived. It is a proc macro, so it runs while rav1e and pulp compile \
     and none of it ships. Revisit when image's codecs move off it.""" },
-  # libsqlite3-sys 0.36.0, via rusqlite 0.38: a flaw in SQLite's own C source.
-  { id = "RUSTSEC-2026-0459", reason = """\
-    This crate's copy of SQLite is built only under one of its `bundled` \
-    features, and nothing here enables one: taiyaku links the system \
-    libsqlite3. The exposure is that library's, Debian bookworm's \
-    libsqlite3-0 in the image, and it needs a crafted database and `-wal` \
-    pair from a less trusted writer, where taiyaku opens only its own store, \
-    the file `--db` or the data directory names, and, read-only and only \
-    while a migration is pending, whatever regular file sits under the \
-    newest name of that migration's backup in the `backups` directory \
-    beside that store, normally the copy taiyaku wrote there, to read its \
-    version. The crate's fix is behind \
-    rusqlite 0.41, the image's behind a SQLite of 3.54 or later. \
-    Revisit with O265 in docs/status.md.""" },
 ]

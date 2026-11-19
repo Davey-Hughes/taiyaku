@@ -548,6 +548,12 @@ impl Library {
         // further user triggers.
         conn.pragma_update(None, "recursive_triggers", "ON")
             .map_err(|e| format!("enabling recursive triggers: {e}"))?;
+        // Also per connection, and off in the SQLite this crate compiles. With
+        // it off a deleted row's bytes stay in the file's free space, so a
+        // deleted account's password hash could still be read from the store
+        // and from any copy of its file.
+        conn.pragma_update(None, "secure_delete", "ON")
+            .map_err(|e| format!("enabling secure delete: {e}"))?;
         // **And the timeout only reaches the writes it is for once the
         // transaction takes its lock at `BEGIN`.** Every write in this crate
         // opens with `unchecked_transaction`, whose default is `BEGIN
@@ -927,12 +933,11 @@ impl Drop for Nested<'_> {
 
 /// Refuse a SQLite that cannot do FTS5, before any schema is applied.
 ///
-/// **This crate links the system `libsqlite3` rather than bundling one** — a
-/// choice made on build time, with CI having no cargo cache and a ten-minute
-/// job budget. The cost is that FTS5 stops being a guarantee of the dependency
-/// and becomes a property of the host. Debian and Arch both build it in; that
-/// is two distributions checked, not a promise about every host this will ever
-/// run on.
+/// **The SQLite this crate compiles has FTS5, so a normal build never refuses
+/// here.** A build can still be pointed at another library:
+/// `LIBSQLITE3_SYS_USE_PKG_CONFIG` makes `libsqlite3-sys` link the host's SQLite
+/// whatever the `bundled` feature says, and FTS5 is then a property of that
+/// host.
 ///
 /// Without this, the failure arrives as `no such module: fts5` from the middle
 /// of a migration, on a database that is half-created and half-not. Probing
@@ -954,24 +959,23 @@ fn require_fts5(conn: &Connection) -> Result<(), String> {
 /// `CREATE VIRTUAL TABLE temp.taiyaku_fts5_probe USING ...` statement rather
 /// than a hardcoded one.
 ///
-/// **Split out for exactly one reason: this host has FTS5**, so `require_fts5`
-/// itself can never be driven down its refusal branch by any test running
-/// here — CI's `rust:1-bookworm` and every workstation this has been built on
-/// both have it. A test that cannot reach a branch cannot pin what that branch
-/// does; see `tests.rs`'s
+/// **Split out for exactly one reason: the SQLite the tests run on has FTS5**,
+/// so `require_fts5` itself can never be driven down its refusal branch by any
+/// test. A test that cannot reach a branch cannot pin what that branch does;
+/// see `tests.rs`'s
 /// `opening_refuses_a_sqlite_without_fts5_and_names_what_is_missing`.
 /// Parameterising the probe statement lets a test hand in one that fails the
 /// same way a real FTS5-less SQLite fails — `no such module` — without
-/// needing such a host to exist. The caller's statement must still name the
+/// needing such a build to exist. The caller's statement must still name the
 /// table `temp.taiyaku_fts5_probe`, matching the `DROP` below, since only the
 /// `USING` clause is the point of variation.
 fn require_fts5_with_probe(conn: &Connection, create_probe_sql: &str) -> Result<(), String> {
     conn.execute_batch(create_probe_sql).map_err(|e| {
         format!(
             "this SQLite has no FTS5, which the library's search needs: {e}. \
-             taiyaku links the system libsqlite3 rather than bundling one, so \
-             install a build with FTS5 enabled (Debian's libsqlite3-0 and Arch's \
-             sqlite both have it)"
+             taiyaku compiles its own SQLite with FTS5 unless the build was told \
+             to link another one, so rebuild it without \
+             LIBSQLITE3_SYS_USE_PKG_CONFIG"
         )
     })?;
     conn.execute_batch("DROP TABLE temp.taiyaku_fts5_probe")

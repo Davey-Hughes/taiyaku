@@ -65,8 +65,15 @@ COPY crates/ crates/
 # anything but a full 40-character lowercase hash, and the server reports no
 # commit.
 ARG TAIYAKU_COMMIT
-# `rusqlite` links the system SQLite (`libsqlite3-dev` ships in this image),
-# so this stage and the runtime one below must be the same distribution.
+# `rusqlite` compiles SQLite into the binary (its `bundled` feature). The
+# binary still links this image's glibc, so this stage and the runtime one below
+# must be the same distribution.
+#
+# SQLite's default allows 32766 bound parameters and this image allows 250000:
+# `editions_by_work`, `opens_by_work`, `missing_by_edition` and `books_among` in
+# `browse.rs` bind one parameter per work or edition of a listing, so at the
+# default a large enough library answers its listings with an error.
+ENV LIBSQLITE3_FLAGS=-DSQLITE_MAX_VARIABLE_NUMBER=250000
 RUN --mount=type=cache,id=taiyaku-cargo-registry,sharing=locked,target=/usr/local/cargo/registry \
     --mount=type=cache,id=taiyaku-server-target,target=/src/target \
     cargo build --release --locked -p taiyaku-cli \
@@ -74,13 +81,13 @@ RUN --mount=type=cache,id=taiyaku-cargo-registry,sharing=locked,target=/usr/loca
 
 ########################  4. Runtime  ###########################################
 FROM debian:bookworm-slim AS runtime
-# `libsqlite3-0` is the one library the binary links that this image lacks;
-# `ureq`'s TLS roots are compiled in, so no `ca-certificates`. `apt-get
-# upgrade` first, so a rebuild ships Debian's security fixes before
+# Nothing is installed here. SQLite is compiled into the binary, so its security
+# fixes arrive through `libsqlite3-sys` in `Cargo.lock` and never through `apt`,
+# and `ureq`'s TLS roots are compiled in, so no `ca-certificates`.
+# `apt-get upgrade` runs so that a rebuild ships Debian's security fixes before
 # `debian:bookworm-slim` is republished with them.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
- && apt-get install -y --no-install-recommends libsqlite3-0 \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /config /cache \
  && chown 99:100 /config /cache

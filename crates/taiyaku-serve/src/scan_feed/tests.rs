@@ -378,10 +378,15 @@ async fn the_feeds_handler_runs_no_statement() {
     let nested = nested("feed-no-statement");
     let job = nested.a_job();
     Running::new(&job, None).at(Step::Hashing, 1, Some(2));
-    nested.state.library.conn().trace_v2(
-        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
-        Some(counting),
-    );
+    nested
+        .state
+        .library
+        .conn()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(counting),
+        )
+        .expect("installs the trace");
     nested
         .state
         .library
@@ -401,7 +406,11 @@ async fn the_feeds_handler_runs_no_statement() {
         .state
         .library
         .conn()
-        .trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .expect("clears the trace");
 
     assert_eq!(control, 1, "the fixture: the trace counts a statement");
     assert_eq!(

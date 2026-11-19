@@ -11,11 +11,13 @@ authors.workspace = true
 # This crate must never be reachable from `taiyaku-core` or `taiyaku-wasm`, both
 # of which compile to wasm32, where SQLite does not.
 #
-# **Against the system libsqlite3 rather than `bundled`**: bundled builds far
-# slower, and CI has no cargo cache and gives each job ten minutes. The cost is
-# that FTS5 is a property of the host's SQLite rather than a guarantee — see
-# `Library::open`, which refuses at open time with a named error rather than
-# letting a migration die part-way through.
+# **`bundled`: rusqlite compiles the SQLite it links.** Every build then runs the
+# same SQLite version, the image included, whatever its distribution ships. A
+# SQLite fix arrives by updating `libsqlite3-sys` in the lockfile, and
+# `cargo deny` reports an advisory against the locked copy. The cost is
+# compiling SQLite in a clean build, without optimisation in test builds. A build
+# told to link another SQLite can lack FTS5: `Library::open` refuses that at open
+# time with a named error rather than letting a migration die part-way through.
 #
 # There is no `fts5` Cargo feature on rusqlite; FTS5 is reached from plain SQL.
 [dependencies]
@@ -53,7 +55,7 @@ rand = "0.10.2"
 regex = "1.13"
 # `functions`: the grant asks a directory's exclude patterns inside its SQL
 # (`browse::member_under`, O91), and gitignore's language has no SQL form.
-rusqlite = { version = "0.38", features = ["backup", "functions"] }
+rusqlite = { version = "0.43", features = ["backup", "bundled", "functions"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
@@ -81,7 +83,7 @@ workspace = true
 # `hooks` on the same terms, for O210: `derive`'s tests count the commits a
 # pass writes to the WAL, and `wal_hook` is how they see one.
 [dev-dependencies]
-rusqlite = { version = "0.38", features = ["trace", "hooks"] }
+rusqlite = { version = "0.43", features = ["trace", "hooks"] }
 # `test-support` on the same terms, for O104: `stamp`'s tests assert the
 # syscalls `rewrite_one` makes, through the one strace parser `atomic`'s tests
 # already use rather than a second copy of it. And for O117's `TempDir`.

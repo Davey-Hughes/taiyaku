@@ -587,8 +587,8 @@ jobs:
       # runtime`, here and to the push.** The isolated builder set up above
       # resolves the base images against the registry on every build, but
       # with the base digest and the commit unchanged its cache would replay
-      # the old `apt-get upgrade` and `apt-get install` layer, which is the
-      # one thing a refresh exists to update. Only the `runtime` stage is
+      # the old `apt-get upgrade` layer, which is the one thing a refresh
+      # exists to update. Only the `runtime` stage is
       # rebuilt on purpose: the wasm, web and server stages stay cached only
       # while their bases are unchanged, and rebuild cold when one moved.
       # Both builds, so the probe runs an image built the way the pushed one
