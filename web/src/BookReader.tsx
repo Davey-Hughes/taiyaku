@@ -68,12 +68,17 @@ import {
   addProgress,
   anchorOf,
   bringIntoSight,
+  keepsRead,
   kept,
+  matchShows,
   movesAnchor,
   offScreen,
   type Pages,
   pagesOf,
   pageTurnedBy,
+  readingAt,
+  readPlaced,
+  resumeBlock,
   show,
   shows,
   topBlock,
@@ -188,6 +193,18 @@ interface Place {
   figure?: number
   /** How far into what is kept the screen starts: `Anchor.into`. */
   into?: number
+  /** The character of the column read kept on the page: `Anchor.read`. */
+  read?: Anchor['read']
+  /** The block the book was left at, as it opens: placed by its own words where `keepsRead` holds. */
+  saved?: boolean
+  /** Placed again as a docked panel sets the text in beside it or lets it out. */
+  setIn?: boolean
+  /**
+   * Laid out again where it stands, by a text size, a setting, a pin, a window
+   * size, an image or a docked panel's set-in, rather than moved to: a match
+   * gone to stays held through it, whatever page the new layout shows.
+   */
+  relaid?: boolean
 }
 
 type Panel =
@@ -221,6 +238,22 @@ function sidebarLayout(): boolean {
     typeof window.matchMedia !== 'function' ||
     window.matchMedia(SIDEBAR_LAYOUT).matches
   )
+}
+
+/**
+ * `place` sent back to `anchor`, for what moved the text from under it. A place
+ * still to be committed stays: the anchor is the place before it until that
+ * commit, which sets the new place out as the text is laid out by then. The
+ * place put back is `relaid`: the reader has not moved.
+ */
+function backTo(
+  place: Place | undefined,
+  committed: Place | undefined,
+  anchor: Anchor,
+): Place | undefined {
+  return place && place === committed
+    ? { edition: place.edition, ...anchor, relaid: true }
+    : place
 }
 
 /** The panel each module's toggle key opens and closes. */
@@ -420,16 +453,35 @@ export function BookReader({ work, onLeave }: Props) {
   const [prefs, setPrefs] = usePrefsMap(registry.all(), loadPrefs, savePrefs)
   const text = useRef<HTMLDivElement>(null)
   const anchor = useRef<Anchor>({ block: 0, at: 0 })
+  // The place last committed, which the anchor belongs to: `backTo`.
+  const placedBefore = useRef<Place>(undefined)
   // Where the last placing left the text scrolled. The scroll it sends is not
   // the reader's: an anchor taken afresh there is the start of its line as
   // the text is laid out now, so a panel opened and closed beside text it
   // sets in would take the reader back a line each time.
   const placedAt = useRef<ScrollSpot>(undefined)
+  // Whether that placing was the one a docked panel's set-in causes, which
+  // keeps the reader where they were in a layout of another width.
+  const placedSetIn = useRef(false)
   // Where the sight check last left the text, whose scroll is not the reader's
   // either, and whether the reader has gone on since the look-up was asked: an
   // answer landing after that must not take them back to the word.
   const sightLeft = useRef<ScrollSpot>(undefined)
   const movedOn = useRef(false)
+  // Where the sight check's scroll is still to be heard, set only when it
+  // moved the text: a change of scroll always sends one scroll event, which
+  // takes this whatever it finds, so a hand move landing on that spot later is
+  // the reader's. Not `sightLeft`, which stays and a reader can scroll back to.
+  const sightScroll = useRef<ScrollSpot>(undefined)
+  // The match a step placed, until a hand move or a navigation ends the hold,
+  // which the text laid out again keeps (`Place.relaid`): what `steppedFrom`
+  // goes on from, whether or not its words can be seen.
+  const heldMatch = useRef<Match>(undefined)
+  // Set by `savePlacing`, for the place effect to save the page it shows.
+  const savePlaced = useRef(false)
+  // The place the book would open at if left now: the one it opened at, until
+  // a save names another. Saving it again would send what is held already.
+  const reopensAt = useRef<Place>(undefined)
   const pressed = useRef<{ x: number; y: number; at: number }>(undefined)
   // Where the last press anywhere on the reader was, which `pressed` is only
   // for the text: the second tap of a double tap may land on anything.
@@ -865,20 +917,21 @@ export function BookReader({ work, onLeave }: Props) {
         setBook(loaded)
         // A saved block past the end is one a shorter copy of the book, read
         // again since, no longer has; its last block is the nearest.
-        setPlace(
-          resumed
-            ? {
-                edition: saved.edition,
-                block: Math.max(
-                  0,
-                  Math.min(
-                    saved.slot,
-                    loaded.editions[saved.edition].blocks.length - 1,
-                  ),
+        const opening: Place = resumed
+          ? {
+              edition: saved.edition,
+              block: Math.max(
+                0,
+                Math.min(
+                  saved.slot,
+                  loaded.editions[saved.edition].blocks.length - 1,
                 ),
-              }
-            : { edition: loaded.hub, block: 0 },
-        )
+              ),
+              saved: true,
+            }
+          : { edition: loaded.hub, block: 0 }
+        reopensAt.current = opening
+        setPlace(opening)
       })
       .catch((why: unknown) => {
         if (live) setFailed(String(why))
@@ -888,24 +941,39 @@ export function BookReader({ work, onLeave }: Props) {
     }
   }, [work])
 
-  const save = useMemo(
-    () =>
-      debounce(
-        (at: Place) =>
-          void putProgress(work, { edition: at.edition, slot: at.block }).catch(
-            () => undefined,
-          ),
-        SAVE_AFTER_MS,
-      ),
-    [work],
-  )
+  const save = useMemo(() => {
+    const put = debounce(
+      (at: Place) =>
+        void putProgress(work, { edition: at.edition, slot: at.block }).catch(
+          () => undefined,
+        ),
+      SAVE_AFTER_MS,
+    )
+    return Object.assign(
+      (at: Place) => {
+        reopensAt.current = at
+        put(at)
+      },
+      { flush: put.flush },
+    )
+  }, [work])
   useEffect(() => () => save.flush(), [save])
+  // What a placing saves as it is asked for, which paged the place effect
+  // replaces with the page it comes to show.
+  const savePlacing = useCallback(
+    (at: Place) => {
+      savePlaced.current = true
+      save(at)
+    },
+    [save],
+  )
 
   // A swap, the book's first draw, or the text laid out again scrolls to the
   // place, and the place is the anchor until the reader scrolls: scrolled, by
   // any amount; paged, off its page (`onScroll`, which tells the placing's own
   // scroll by `placedAt`). Scrolling by hand sets no `place`, so it never
   // fights the reader.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the panel is read, not a trigger: one opened or closed beside the text comes here as the place its set-in commits.
   useLayoutEffect(() => {
     if (!place) return
     // The anchor put back is the reader staying; any other place is a move.
@@ -915,19 +983,76 @@ export function BookReader({ work, onLeave }: Props) {
     ) {
       movedOn.current = true
     }
-    show(text.current, place.block, place.at, place)
+    const held = heldMatch.current
+    const own =
+      held?.edition === place.edition &&
+      held.block === place.block &&
+      held.start === (place.at ?? 0)
+    // Laid out again, the place can name another block than the match, as a
+    // size step compared does in going back to the start of a row before it;
+    // the reader has not moved, so the hold stays.
+    if (!own && !place.relaid) heldMatch.current = undefined
+    // A row's start can lie pages before the saved block's words, and a panel
+    // and its closing go by those words, so the book opens on them too.
+    const words = place.saved && keepsRead(text.current)
+    const stood = text.current && {
+      left: text.current.scrollLeft,
+      top: text.current.scrollTop,
+    }
+    show(
+      text.current,
+      place.block,
+      place.at,
+      words ? { read: { block: place.block, at: 0 } } : place,
+    )
+    const at = place.at ?? 0
     anchor.current = {
       block: place.block,
-      at: place.at ?? 0,
+      at,
       figure: place.figure,
       into: place.into,
+      // None at a match, held and named by this place, which a panel keeps in
+      // view rather than the page's first character. None taken with `into`
+      // either: that page was named by the row, and a character taken here
+      // would name another once the panel closes.
+      read:
+        place.read ??
+        (own || place.into !== undefined
+          ? undefined
+          : readPlaced(text.current, { block: place.block, at })),
     }
     placedAt.current = text.current
       ? { left: text.current.scrollLeft, top: text.current.scrollTop }
       : undefined
+    placedSetIn.current = place.setIn === true
     setTop(place.block)
     setPages(pagesOf(text.current, layout?.entries ?? [], place.block))
-  }, [place, layout])
+    // A placing on the page already showing sends no scroll for `onScroll` to
+    // save from, and the block it named can be one carried onto this page,
+    // which a book opened at it would go pages back for.
+    if (savePlaced.current) {
+      if (text.current?.dataset.paged !== undefined) {
+        save({ edition: place.edition, block: resumeBlock(text.current) })
+      }
+    } else if (
+      stood &&
+      scrolledTo(text.current, stood) &&
+      !place.saved &&
+      !(place.setIn && panel === 'lookup')
+    ) {
+      // Nor does the text laid out again where it stands, by a size step or
+      // a window made shorter, though the page can now begin at another
+      // block: the one saved from the old layout would reopen pages on. Not
+      // the book's opening, the place already saved, nor the look-up's set-in,
+      // which saves nothing for the reason `onScroll` gives.
+      const block = resumeBlock(text.current)
+      const last = reopensAt.current
+      if (last?.edition !== place.edition || last.block !== block) {
+        save({ edition: place.edition, block })
+      }
+    }
+    savePlaced.current = false
+  }, [place, layout, save])
 
   // Paged, the wheel sets the text larger or smaller as it zooms a page in the
   // page reader, a step a notch, the notches of a smooth wheel added up. The
@@ -944,7 +1069,12 @@ export function BookReader({ work, onLeave }: Props) {
       if (steps === 0) return
       notches -= steps
       setPlace(
-        (p) => p && { edition: p.edition, ...kept(host, anchor.current) },
+        (p) =>
+          p && {
+            edition: p.edition,
+            ...kept(host, anchor.current),
+            relaid: true,
+          },
       )
       setPrefs((map) =>
         changeSlice(map, bookTextModule, (p) => stepped(p, steps)),
@@ -989,7 +1119,7 @@ export function BookReader({ work, onLeave }: Props) {
       const image = event.target
       if (!(image instanceof HTMLImageElement)) return
       if (!movesAnchor(host, anchor.current, image)) return
-      setPlace((p) => p && { edition: p.edition, ...anchor.current })
+      setPlace((p) => backTo(p, placedBefore.current, anchor.current))
     }
     host.addEventListener('load', keep, true)
     return () => host.removeEventListener('load', keep, true)
@@ -1004,7 +1134,6 @@ export function BookReader({ work, onLeave }: Props) {
   // placed `whole`. In the phone layout a panel goes over the text, which is
   // not laid out again, so nothing is placed again either.
   const setIn = docked && sidebarLayout()
-  const placedBefore = useRef<Place>(undefined)
   const setInBefore = useRef(setIn)
   // biome-ignore lint/correctness/useExhaustiveDependencies: the layout's own keys are triggers, not reads: the text they set out is what is laid out again.
   useLayoutEffect(() => {
@@ -1014,7 +1143,15 @@ export function BookReader({ work, onLeave }: Props) {
     setInBefore.current = setIn
     if (placed) return
     const held = redrawn ? anchor.current : whole(anchor.current)
-    setPlace((p) => p && { edition: p.edition, ...held })
+    setPlace(
+      (p) =>
+        p && {
+          edition: p.edition,
+          ...held,
+          setIn: redrawn || undefined,
+          relaid: true,
+        },
+    )
   }, [place, vertical, mode, pagedPref, setIn])
 
   // At phone size the look-up's panel goes over the text, on the side of the
@@ -1110,16 +1247,14 @@ export function BookReader({ work, onLeave }: Props) {
         word,
         [...(over ?? [])].map((cover) => cover.getBoundingClientRect()),
       )
+      const moved = host.scrollLeft !== left || host.scrollTop !== top
+      if (moved) {
+        sightScroll.current = { left: host.scrollLeft, top: host.scrollTop }
+      }
       // Brought in, the word is nearer the panel than the panel was sized for.
       const side = seated.current?.side
       const seat = lookUpPanelOf(host)
-      if (
-        side &&
-        seat &&
-        (host.scrollLeft !== left || host.scrollTop !== top)
-      ) {
-        seatLookup(seat, word, side)
-      }
+      if (side && seat && moved) seatLookup(seat, word, side)
     }
     sightLeft.current = { left: host.scrollLeft, top: host.scrollTop }
   }, [panel, lookingUp, looked, place])
@@ -1142,7 +1277,7 @@ export function BookReader({ work, onLeave }: Props) {
   // measured now: the text has already been laid out at the new width.
   useEffect(() => {
     const keep = () => {
-      setPlace((p) => p && { edition: p.edition, ...whole(anchor.current) })
+      setPlace((p) => backTo(p, placedBefore.current, whole(anchor.current)))
       setResizes((n) => n + 1)
     }
     window.addEventListener('resize', keep)
@@ -1164,43 +1299,53 @@ export function BookReader({ work, onLeave }: Props) {
       // Each edition is read at its own pace in characters: a translation
       // runs shorter or longer than its original.
       session.current.paced = { since: Date.now(), read: 0 }
-      save({ edition: to, block })
+      savePlacing({ edition: to, block })
     },
-    [book, place, save],
+    [book, place, savePlacing],
   )
   // A match gone to, by the list, Enter, `]` or `[`: the text placed at its
   // first character, in its own edition, and lit.
   const goToMatch = useCallback(
     (m: Match) => {
       if (!place) return
+      heldMatch.current = m
       setFound({ match: m, drawn: true })
       if (m.edition !== place.edition) {
         swapTo(m.edition, { block: m.block, at: m.start })
         return
       }
       setPlace({ edition: m.edition, block: m.block, at: m.start })
-      save({ edition: m.edition, block: m.block })
+      savePlacing({ edition: m.edition, block: m.block })
     },
-    [place, swapTo, save],
+    [place, swapTo, savePlacing],
   )
-  // Where the reader is, for a step once the match last gone to is no longer
-  // listed: the anchor, which the last scroll or placing left. A figure after
-  // its block, as one closing the book is, is past all of that block's words.
-  const here = useCallback(
-    (): Here | undefined =>
-      book && place
-        ? {
-            edition: place.edition,
-            block: anchor.current.block,
-            at:
-              (anchor.current.figure ?? 0) > 0
-                ? Number.POSITIVE_INFINITY
-                : anchor.current.at,
-            order: editionOrder(book),
-          }
-        : undefined,
-    [book, place],
-  )
+  // Where the reader is, for a step with no match to go on from (`steppedFrom`)
+  // or one no longer listed: what the last scroll or placing left in the anchor,
+  // as `readingAt` reads it. A figure after its block, as one closing the book
+  // is, is past all of that block's words.
+  const here = useCallback((): Here | undefined => {
+    if (!book || !place) return undefined
+    const { block, at } = readingAt(text.current, anchor.current)
+    return {
+      edition: place.edition,
+      block,
+      at: (anchor.current.figure ?? 0) > 0 ? Number.POSITIVE_INFINITY : at,
+      order: editionOrder(book),
+    }
+  }, [book, place])
+  // The match a step goes on from: the one last gone to, in the edition read,
+  // while it is held or its first character is on the screen. Going to a match
+  // holds it, and the text laid out again keeps the hold whatever page it then
+  // shows (`Place.relaid`): a figure can push its words off the page, a layout
+  // may give no box to measure, and a step from behind it would land on it
+  // again and never move on. A hand move or a navigation ends the hold; once
+  // the match is off the screen too, a step goes from the reader's place.
+  const steppedFrom = useCallback((): Match | undefined => {
+    const match = found?.match
+    if (!match || match.edition !== place?.edition) return undefined
+    const held = heldMatch.current === match
+    return held || matchShows(text.current, match) ? match : undefined
+  }, [found, place])
 
   useEffect(() => {
     // Aloud from the sentence the page or screen starts with, in the
@@ -1327,7 +1472,7 @@ export function BookReader({ work, onLeave }: Props) {
       if (own?.intent === SEARCH_NEXT || own?.intent === SEARCH_PREVIOUS) {
         const next = stepFrom(
           matches,
-          found?.match,
+          steppedFrom(),
           own.intent === SEARCH_NEXT ? 1 : -1,
           here(),
         )
@@ -1358,6 +1503,7 @@ export function BookReader({ work, onLeave }: Props) {
         setPlace({
           edition: place.edition,
           ...kept(text.current, anchor.current),
+          relaid: true,
         })
         setPrefs((map) =>
           changeSlice(map, bookTextModule, (p) => resized(p, own.intent)),
@@ -1386,10 +1532,10 @@ export function BookReader({ work, onLeave }: Props) {
     figure,
     footnote,
     matches,
-    found,
     swapTo,
     goToMatch,
     here,
+    steppedFrom,
     vertical,
   ])
 
@@ -1485,6 +1631,7 @@ export function BookReader({ work, onLeave }: Props) {
       setPlace({
         edition: place.edition,
         ...kept(text.current, anchor.current),
+        relaid: true,
       })
       setNotice(undefined)
     } catch (why) {
@@ -1495,12 +1642,16 @@ export function BookReader({ work, onLeave }: Props) {
   // A setting that redraws the text, its size or its layout, would leave the
   // reader wherever the old scroll offset now falls, so it keeps the anchor.
   const change = (id: string, key: string, raw: unknown) => {
-    setPlace({ edition: place.edition, ...kept(text.current, anchor.current) })
+    setPlace({
+      edition: place.edition,
+      ...kept(text.current, anchor.current),
+      relaid: true,
+    })
     setPrefs((map) => fieldChanged(map, registry, id, key, raw))
   }
   const go = (block: number) => {
     setPlace({ edition: place.edition, block })
-    save({ edition: place.edition, block })
+    savePlacing({ edition: place.edition, block })
   }
   // Block `block` of edition `to`, gone to by its counterpart in the edition
   // read where the link was drawn in a peek or another column, and where the
@@ -1734,8 +1885,13 @@ export function BookReader({ work, onLeave }: Props) {
         onScroll={() => {
           const host = text.current
           const placing = scrolledTo(host, placedAt.current)
+          // The sight check's scroll is the app moving the text, not the
+          // reader: it ends no hold and saves no place.
+          const sight = scrolledTo(host, sightScroll.current)
+          sightScroll.current = undefined
           if (!placing) placedAt.current = undefined
-          if (!placing && !scrolledTo(host, sightLeft.current)) {
+          if (!placing && !sight) {
+            heldMatch.current = undefined
             movedOn.current = true
           }
           const now = topBlock(text.current)
@@ -1748,13 +1904,30 @@ export function BookReader({ work, onLeave }: Props) {
           if (!lookupOn || !placing) setSelected(undefined)
           // Paged, the anchor is held while it is on the page, or sizing the
           // text up and down creeps back a page at a time. Scrolled, a screen
-          // has no such edge: the line at the top is the reader's.
-          if (!placing && (!pagedPref || !shows(host, anchor.current))) {
+          // has no such edge: the line at the top is the reader's. A held
+          // match stays the anchor through the sight check's scroll, so the
+          // text laid out again, as closing a panel set in beside it does,
+          // goes back to the match; with none held the anchor follows that
+          // scroll, so laying out again keeps the word where it was taken.
+          if (
+            !placing &&
+            !(sight && heldMatch.current) &&
+            (!pagedPref || !shows(host, anchor.current))
+          ) {
             anchor.current = anchorOf(host)
           }
           setTop(now)
           setPages(pagesOf(text.current, entries, now))
-          save({ edition: place.edition, block: now })
+          // Beside the look-up the text is set in narrower. The set-in's own
+          // placing keeps the reader where they were, in a layout they never
+          // read in, so the block saved before still names their page and
+          // one taken here can reopen a page early at full width. Any other
+          // placing, a size step, a resize or reading aloud, lays the text
+          // out again or moves the reader, which leaves that block stale.
+          const kept = placing && placedSetIn.current && panel === 'lookup'
+          if (!sight && !kept) {
+            save({ edition: place.edition, block: resumeBlock(host) })
+          }
         }}
         onPointerDown={(event) => {
           setSelected(undefined)
@@ -1958,7 +2131,7 @@ export function BookReader({ work, onLeave }: Props) {
                 className="reader-button"
                 onClick={() => {
                   setPlace(back)
-                  save(back)
+                  savePlacing(back)
                   setBack(undefined)
                 }}
               >
@@ -2075,7 +2248,7 @@ export function BookReader({ work, onLeave }: Props) {
           notes={notes.notes}
           onOpen={(note) => {
             setPlace({ edition: note.edition, block: note.slot })
-            save({ edition: note.edition, block: note.slot })
+            savePlacing({ edition: note.edition, block: note.slot })
             opening(note.id)
           }}
           onClose={() => setPanel(undefined)}
@@ -2096,7 +2269,7 @@ export function BookReader({ work, onLeave }: Props) {
         book={book}
         edition={place.edition}
         entries={entries}
-        found={found?.match}
+        from={steppedFrom}
         here={here}
         onPick={goToMatch}
         onResults={setMatches}
@@ -2121,6 +2294,7 @@ export function BookReader({ work, onLeave }: Props) {
             setPlace({
               edition: place.edition,
               ...kept(text.current, anchor.current),
+              relaid: true,
             })
           }
           resetPrefs(id)

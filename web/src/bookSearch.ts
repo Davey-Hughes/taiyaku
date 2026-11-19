@@ -164,9 +164,9 @@ export interface Here {
 
 /**
  * The match `by` on from `from` in `matches`, round from either end. From
- * one no longer listed (the query or the edition changed), the first match on
- * from `here`, or the last back from it; from none, or with no `here`, the
- * first or the last.
+ * none (none gone to, or the reader has moved away from it), or one no longer
+ * listed (the query or the edition changed), the first match on from `here`,
+ * or the last back from it; with no `here`, the first or the last.
  */
 export function stepFrom(
   matches: Match[],
@@ -185,7 +185,7 @@ export function stepFrom(
       )
     : -1
   if (at !== -1) return matches[(at + by + matches.length) % matches.length]
-  if (!from || !here) return by === 1 ? matches[0] : matches.at(-1)
+  if (!here) return by === 1 ? matches[0] : matches.at(-1)
   // Matches are listed by edition, then block, then start, so the first one
   // not before the place splits them; one at the place is the screen's own,
   // so on, not back.

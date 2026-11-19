@@ -225,6 +225,19 @@ describe('ready', () => {
 describe('stepFrom', () => {
   const at = (block: number) => ({ edition: 'en', block, start: 0, end: 1 })
   const all = [at(0), at(1), at(2)]
+  const m = (block: number, start: number) => ({
+    edition: 'en',
+    block,
+    start,
+    end: start + 1,
+  })
+  const listed = [m(0, 5), m(1, 0), m(1, 8), m(3, 2)]
+  const here = (block: number, at: number) => ({
+    edition: 'en',
+    block,
+    at,
+    order: ['en'],
+  })
   it('steps on from the match given, round the ends', () => {
     expect(stepFrom(all, at(1), 1)).toEqual(at(2))
     expect(stepFrom(all, at(2), 1)).toEqual(at(0))
@@ -235,20 +248,16 @@ describe('stepFrom', () => {
     expect(stepFrom(all, undefined, -1)).toEqual(at(2))
     expect(stepFrom(all, at(9), 1)).toEqual(at(0))
   })
+  it('steps from the reader’s place where no match has been gone to', () => {
+    expect(stepFrom(listed, undefined, 1, here(1, 4))).toEqual(m(1, 8))
+    expect(stepFrom(listed, undefined, -1, here(1, 4))).toEqual(m(1, 0))
+    // A match at the place is on, not back.
+    expect(stepFrom(listed, undefined, 1, here(1, 0))).toEqual(m(1, 0))
+    // Round the ends.
+    expect(stepFrom(listed, undefined, 1, here(4, 0))).toEqual(m(0, 5))
+    expect(stepFrom(listed, undefined, -1, here(0, 0))).toEqual(m(3, 2))
+  })
   it('steps from the reader’s place where the match given is not in the list', () => {
-    const m = (block: number, start: number) => ({
-      edition: 'en',
-      block,
-      start,
-      end: start + 1,
-    })
-    const listed = [m(0, 5), m(1, 0), m(1, 8), m(3, 2)]
-    const here = (block: number, at: number) => ({
-      edition: 'en',
-      block,
-      at,
-      order: ['en'],
-    })
     expect(stepFrom(listed, m(9, 0), 1, here(1, 4))).toEqual(m(1, 8))
     expect(stepFrom(listed, m(9, 0), -1, here(1, 4))).toEqual(m(1, 0))
     expect(stepFrom(listed, m(9, 0), 1, here(2, 0))).toEqual(m(3, 2))

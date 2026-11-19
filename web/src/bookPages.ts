@@ -116,6 +116,64 @@ export function topBlock(text: HTMLElement | null): number {
   return Number(found?.dataset.block ?? 0)
 }
 
+/**
+ * The block to save for the page showing, the one a book opened there comes
+ * back to this page by. A book opens on the page a block's first line is on,
+ * compared its first words in the column read, so paged that is the first
+ * block to open on this page: `topBlock` can be one carried over from a page
+ * before, and saved it would open a page back. A page no block opens on is
+ * named by the block carried onto it, which compared can be inside a row, past
+ * the first block the row is named from.
+ */
+export function resumeBlock(text: HTMLElement | null): number {
+  const top = topBlock(text)
+  const first = text && topChild(text)
+  if (!text || !first || !flowOf(text).paged) return top
+  const flow = flowOf(text)
+  const size = pageSize(text, flow)
+  const page = Math.round(progress(text, flow) / size)
+  const carried = keepsRead(text) ? readOnPage(text, flow, first)?.block : top
+  // A page of a row holding only a figure or the other column's words is named
+  // by the last block of the column read to open before it in that row: the
+  // row's first can lie many pages further back. Where none has yet, it is the
+  // block the row is named from, since a block of an earlier row would reopen
+  // before this row begins.
+  let opened = top
+  for (
+    let child: Element | null = first;
+    child;
+    child = child.nextElementSibling
+  ) {
+    for (const { block, rect } of openingsIn(text, child)) {
+      const on = Math.floor(along(text, flow, blockStart(flow, rect)) / size)
+      if (on === page) return block
+      if (on > page) return carried ?? opened
+      opened = block
+    }
+  }
+  return carried ?? opened
+}
+
+/** The blocks that `child` of `text` opens, each with the box a book opened at it is placed by. */
+function openingsIn(
+  text: HTMLElement,
+  child: Element,
+): { block: number; rect: DOMRect }[] {
+  if (keepsRead(text)) {
+    const column = child.querySelectorAll<HTMLElement>(`[data-pick^="${READ}"]`)
+    return [...column].flatMap((words) => {
+      const rect = charRect(words, 0)
+      const block = Number(words.dataset.pick?.slice(READ.length))
+      return rect ? [{ block, rect }] : []
+    })
+  }
+  if (!(child instanceof HTMLElement) || child.dataset.block === undefined) {
+    return []
+  }
+  const rect = child.getClientRects()[0] ?? child.getBoundingClientRect()
+  return [{ block: Number(child.dataset.block), rect }]
+}
+
 /** `child` where it is a block, or the nearest block on from it, or back. */
 function nearBlock(child: HTMLElement, way: 'next' | 'back') {
   let at: Element | null = child
@@ -152,6 +210,16 @@ export interface Anchor {
    * rest place the anchor `whole`.
    */
   into?: number
+  /**
+   * Compared and paged: the character of the column read to keep on the page,
+   * named in that column's own block, since `into` counts both columns and at
+   * another width can name a page no longer holding what was read. The page's
+   * first such character after a turn or a scroll, and after a placing the one
+   * placed while it is on the page (`readPlaced`). None where the page holds
+   * only another column's words, or at a search match. What carries `into`
+   * carries this.
+   */
+  read?: { block: number; at: number }
 }
 
 /** The first character not yet scrolled past, found as `topBlock` finds its block. */
@@ -159,25 +227,36 @@ export function topOf(text: HTMLElement | null): Anchor {
   const block = topBlock(text)
   const words = text && wordsOf(text, block)
   if (!text || !words) return { block, at: 0 }
-  const past = pastStart(text, flowOf(text))
+  return { block, at: firstPast(words, pastStart(text, flowOf(text))) ?? 0 }
+}
+
+/**
+ * The first character of `words` that `past` holds for, found by halving, or
+ * their last where it holds for none; none where a range cannot be measured.
+ */
+function firstPast(
+  words: HTMLElement,
+  past: (rect: DOMRect) => boolean,
+): number | undefined {
   let lo = 0
   let hi = wordNodes(words).reduce((n, node) => n + node.length, 0) - 1
   while (lo < hi) {
     const mid = (lo + hi) >> 1
     const rect = charRect(words, mid)
-    if (!rect) return { block, at: 0 }
+    if (!rect) return undefined
     if (past(rect)) hi = mid
     else lo = mid + 1
   }
-  return { block, at: Math.max(lo, 0) }
+  return lo
 }
 
 /**
  * The reader's place as the screen now shows it: `topOf`'s character, or the
  * figure the screen starts in, which `topOf` passes over, and scrolled, how
  * far into either the screen starts. Paged, a page is placed whole, so that is
- * left out, except where a compared row carries over onto this page from an
- * earlier one: its block alone would name the page the row starts on.
+ * left out, except compared: a row's block alone would name the page the row
+ * starts on, so the anchor holds how far into the row the page is and the
+ * character read there (`Anchor.read`).
  */
 export function anchorOf(text: HTMLElement | null): Anchor {
   const child = text && topChild(text)
@@ -191,9 +270,58 @@ export function anchorOf(text: HTMLElement | null): Anchor {
   if (!rect || length <= 0) return anchor
   const start = blockStart(flow, text.getBoundingClientRect())
   const into = (start - blockStart(flow, rect)) / length
+  if (!flow.paged) return { ...anchor, into }
+  const read = child ? readOnPage(text, flow, child) : undefined
   // A row that starts on this page starts below its padding, short of the
   // screen's start: not into it at all, or narrowed it would reach back a page.
-  return { ...anchor, into: flow.paged ? Math.max(0, into) : into }
+  return { ...anchor, into: Math.max(0, into), ...(read && { read }) }
+}
+
+/**
+ * Whether `text` is placed by the character read: compared and paged, where a
+ * row's start can lie pages before the words being read.
+ */
+export function keepsRead(text: HTMLElement | null): boolean {
+  return text?.dataset.compared !== undefined && flowOf(text).paged
+}
+
+/**
+ * The character of the column read to keep after a placing at `place`: the
+ * one placed while it is on the page, as a block's first words can be part
+ * way down it, or else the page's first; none where `keepsRead` does not hold.
+ */
+export function readPlaced(
+  text: HTMLElement | null,
+  place: { block: number; at: number },
+): Anchor['read'] {
+  if (!text || !keepsRead(text)) return undefined
+  if (matchShows(text, { block: place.block, start: place.at })) return place
+  const child = topChild(text)
+  return child && readOnPage(text, flowOf(text), child)
+}
+
+/**
+ * The first character of the column read on the page showing, from row
+ * `first` on; none where this page holds only other columns' words.
+ */
+function readOnPage(
+  text: HTMLElement,
+  flow: Flow,
+  first: Element,
+): Anchor['read'] {
+  const past = pastStart(text, flow)
+  const end = blockEnd(flow, text.getBoundingClientRect())
+  for (let row: Element | null = first; row; row = row.nextElementSibling) {
+    const column = row.querySelectorAll<HTMLElement>(`[data-pick^="${READ}"]`)
+    for (const words of column) {
+      const at = firstPast(words, past) ?? 0
+      const rect = charRect(words, at)
+      if (!rect || !past(rect)) continue
+      if (blockStart(flow, rect) >= end - 1) return undefined
+      return { block: Number(words.dataset.pick?.slice(READ.length)), at }
+    }
+  }
+  return undefined
 }
 
 /**
@@ -202,8 +330,8 @@ export function anchorOf(text: HTMLElement | null): Anchor {
  * a fraction of a box that is no longer the one it was measured against.
  */
 export function whole(anchor: Anchor): Anchor {
-  if (anchor.into === undefined) return anchor
-  const { into: _, ...placed } = anchor
+  if (anchor.into === undefined && anchor.read === undefined) return anchor
+  const { into: _, read: __, ...placed } = anchor
   return placed
 }
 
@@ -269,6 +397,51 @@ function onScreen(
       ? figureOf(text, anchor)?.getBoundingClientRect()
       : words && charRect(words, anchor.at)
   if (!rect) return undefined
+  return reachesScreen(text, rect)
+}
+
+/**
+ * Whether a match's first character is on the page, or the screen, now
+ * showing. Compared, a block's words are not drawn on their own, so it is
+ * looked for in the column read, the one a search's matches are lit in.
+ */
+export function matchShows(
+  text: HTMLElement | null,
+  { block, start }: { block: number; start: number },
+): boolean {
+  if (!text) return false
+  const words = wordsOf(text, block)
+  const rect = words
+    ? charRect(words, start)
+    : readRect(text, { block, at: start })
+  return rect !== undefined && reachesScreen(text, rect)
+}
+
+/**
+ * The character the reader is at, for a step through a search's matches:
+ * `anchor`'s, except compared. There it is the anchor's `read` while that is
+ * on the screen, since a panel's narrower page can start on words already read.
+ * Failing that, a compared anchor names a row's start, which in a row longer
+ * than a screen lies behind the reader, so once that is off the screen too it
+ * is the first character of the column read on the screen. Where the screen
+ * holds none of that column's words, `anchor` is all there is.
+ */
+export function readingAt(
+  text: HTMLElement | null,
+  anchor: Anchor,
+): { block: number; at: number } {
+  if (text?.dataset.compared === undefined) return anchor
+  const { read } = anchor
+  if (read && matchShows(text, { block: read.block, start: read.at })) {
+    return read
+  }
+  if (matchShows(text, { block: anchor.block, start: anchor.at })) return anchor
+  const child = topChild(text)
+  return (child && readOnPage(text, flowOf(text), child)) ?? anchor
+}
+
+/** Whether `rect` reaches onto the page, or the screen, now showing. */
+function reachesScreen(text: HTMLElement, rect: DOMRect): boolean {
   const flow = flowOf(text)
   const box = text.getBoundingClientRect()
   // Reaching in by more than a pixel, as `topBlock` counts, since a scroll
@@ -293,24 +466,28 @@ export function kept(text: HTMLElement | null, anchor: Anchor): Anchor {
 /**
  * Bring block `block` to the top of `text`: paged, the page its first line is
  * on. With `at`, the page or the line its character `at` is on instead;
- * with an anchor's `figure`, the page or the place that figure is at; and
- * with its `into`, that far into its box.
+ * with an anchor's `figure`, the page or the place that figure is at; with
+ * its `into`, that far into its box; and with its `read`, while that character
+ * is drawn, the page holding it, whatever the fraction would name.
  */
 export function show(
   text: HTMLElement | null,
   block: number,
   at?: number,
-  { figure, into }: Pick<Anchor, 'figure' | 'into'> = {},
+  { figure, into, read }: Pick<Anchor, 'figure' | 'into' | 'read'> = {},
 ) {
   if (!text) return
   const flow = flowOf(text)
+  const character = read && readRect(text, read)
+  const fraction = character ? undefined : into
   const rect =
-    figure !== undefined || into !== undefined
+    character ??
+    (figure !== undefined || into !== undefined
       ? boxOf(text, { block, at: at ?? 0, figure })
-      : charAt(text, block, at)
+      : charAt(text, block, at))
   const from = rect && along(text, flow, blockStart(flow, rect))
   const past = rect
-    ? (into ?? 0) * (blockEnd(flow, rect) - blockStart(flow, rect))
+    ? (fraction ?? 0) * (blockEnd(flow, rect) - blockStart(flow, rect))
     : 0
   if (flow.paged) {
     const size = pageSize(text, flow)
@@ -319,7 +496,7 @@ export function show(
     const page =
       from === undefined
         ? pageOf(text, block, 'first')
-        : Math.floor((from + past + (into ? 0.5 : 0)) / size)
+        : Math.floor((from + past + (fraction ? 0.5 : 0)) / size)
     setProgress(text, page * size, flow)
   } else if (rect && from !== undefined) {
     setProgress(text, from + past, flow)
@@ -460,9 +637,30 @@ function rowWords(
   const row = holding(text, block) as HTMLElement | undefined
   if (text.dataset.compared === undefined || !row) return undefined
   if (at === 0 && row.dataset.block === String(block)) return undefined
+  return readWords(row, block)
+}
+
+/** What `data-pick` starts with on the words of a compared row's first column, the column read. */
+const READ = 'left:'
+
+/** Block `block`'s words in the column read of compared row `row`. */
+function readWords(
+  row: Element | undefined,
+  block: number,
+): HTMLElement | undefined {
   return (
-    row.querySelector<HTMLElement>(`[data-pick="left:${block}"]`) ?? undefined
+    row?.querySelector<HTMLElement>(`[data-pick="${READ}${block}"]`) ??
+    undefined
   )
+}
+
+/** The box of an anchor's `read` character, where it is drawn. */
+function readRect(
+  text: HTMLElement,
+  { block, at }: NonNullable<Anchor['read']>,
+): DOMRect | undefined {
+  const words = readWords(holding(text, block), block)
+  return words && charRect(words, at)
 }
 
 /**
@@ -604,7 +802,9 @@ export function pageTurnedBy(text: HTMLElement | null, x: number): number {
 /**
  * Whether `image`, newly loaded, can have moved `anchor` off its page: paged
  * only, since scrolled the browser's own scroll anchoring holds the line the
- * reader is on, and only an image before the anchor's block or in it.
+ * reader is on, and only an image before the row the reader is at or in it.
+ * That row is the one holding `read` where the anchor has it, which can be
+ * later than the anchor's own, and an image between the two moves what is read.
  */
 export function movesAnchor(
   text: HTMLElement | null,
@@ -612,7 +812,7 @@ export function movesAnchor(
   image: Element,
 ): boolean {
   if (!text || !flowOf(text).paged) return false
-  const held = holding(text, anchor.block)
+  const held = holding(text, anchor.read?.block ?? anchor.block)
   if (!held) return true
   return (
     held.contains(image) ||

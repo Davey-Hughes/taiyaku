@@ -113,7 +113,8 @@ const alternating = {
   alignments: [],
 }
 
-function server(sent: unknown) {
+/** The server for a book `sent`, with the reader's place saved at `slot` if given. */
+function server(sent: unknown, slot?: number) {
   return vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/works/w/book') return Response.json(sent)
     if (url === '/api/works/w/notes') {
@@ -123,12 +124,17 @@ function server(sent: unknown) {
       )
     }
     if (init?.method === 'PUT') return new Response(null, { status: 204 })
+    if (url === '/api/works/w/progress' && slot !== undefined) {
+      return Response.json({
+        positions: [{ edition: 'en', slot, updated: 'now' }],
+      })
+    }
     return new Response(null, { status: 204 })
   })
 }
 
-async function opened(sent: unknown = book) {
-  vi.stubGlobal('fetch', server(sent))
+async function opened(sent: unknown = book, slot?: number) {
+  vi.stubGlobal('fetch', server(sent, slot))
   Element.prototype.scrollIntoView = vi.fn()
   const host = mount(<BookReader work="w" onLeave={() => {}} />)
   await land()
@@ -190,6 +196,17 @@ function scrolledPast(first: number) {
       return { top: 0, bottom } as DOMRect
     },
   )
+}
+
+/** The reader's places written, each as sent. */
+function placesWritten() {
+  return vi
+    .mocked(fetch)
+    .mock.calls.filter(
+      ([url, init]) =>
+        url === '/api/works/w/progress' && init?.method === 'PUT',
+    )
+    .map(([, init]) => JSON.parse(String(init?.body)))
 }
 
 /** The notes documents written, each as sent. */
@@ -446,6 +463,48 @@ describe('searching a book', () => {
     await search(host, 'harr')
     press('Enter', { shiftKey: true }, box(host) as Element)
     expect(placed()).toEqual([4, 0])
+  })
+
+  for (const { saved, query, shiftKey, block } of [
+    { saved: 6, query: 'ron', shiftKey: false, block: 7 },
+    { saved: 6, query: 'ron', shiftKey: true, block: 5 },
+    { saved: 6, query: 'harry', shiftKey: false, block: 6 },
+    { saved: 9, query: 'harry', shiftKey: false, block: 0 },
+    { saved: 0, query: 'ron', shiftKey: true, block: 9 },
+  ]) {
+    it(`steps first from the place saved at block ${saved}, to ${query} in block ${block} on ${shiftKey ? 'Shift+Enter' : 'Enter'}`, async () => {
+      const host = await opened(alternating, saved)
+      press('/')
+      await search(host, query)
+      press('Enter', { shiftKey }, box(host) as Element)
+      expect(lit(host)).toEqual([[String(block), query]])
+    })
+  }
+
+  for (const { key, block } of [
+    { key: ']', block: 7 },
+    { key: '[', block: 5 },
+  ]) {
+    it(`steps first from the place saved on ${key}, the panel closed`, async () => {
+      const host = await opened(alternating, 6)
+      press('/')
+      await search(host, 'ron')
+      press('Escape', {}, box(host) as Element)
+      press(key)
+      expect(lit(host)).toEqual([[String(block), 'ron']])
+    })
+  }
+
+  it('saves the match the first step goes to as the reader’s place', async () => {
+    const host = await opened(alternating, 6)
+    press('/')
+    await search(host, 'ron')
+    press('Enter', {}, box(host) as Element)
+    expect(lit(host)).toEqual([['7', 'ron']])
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1100))
+    })
+    expect(placesWritten().at(-1)).toEqual({ edition: 'en', slot: 7 })
   })
 
   it('steps from the reader’s place on [ and ] once the edition changes', async () => {

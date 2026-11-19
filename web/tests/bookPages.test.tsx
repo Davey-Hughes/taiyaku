@@ -1,11 +1,18 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   anchorOf,
   bringIntoSight,
+  keepsRead,
   kept,
+  matchShows,
+  movesAnchor,
+  readingAt,
+  readPlaced,
+  resumeBlock,
   show,
   shows,
   topOf,
+  whole,
   wordNodes,
 } from '../src/bookPages'
 
@@ -26,7 +33,13 @@ const realRects = Range.prototype.getClientRects
 afterEach(() => {
   Range.prototype.getClientRects = realRects
   document.body.replaceChildren()
+  vi.unstubAllGlobals()
 })
+
+/** A window the phone layout's condition holds for, which jsdom has no `matchMedia` to say. */
+function inThePhoneLayout() {
+  vi.stubGlobal('matchMedia', () => ({ matches: false }))
+}
 
 /** Where each text node's first character falls in the book. */
 let bases = new WeakMap<Node, number>()
@@ -120,6 +133,83 @@ function text(
 /** Forty characters, a page's worth and more, then a short block. */
 const LONG = 'a'.repeat(45)
 
+/** A character's width in a compared column, twenty of which fill half a page. */
+const NARROW = PAGE / 2 / PER
+
+/**
+ * A compared row: each column's blocks as `[block, characters]`. It starts on
+ * the page after the last row's, or on page `on`, sharing the page that row
+ * ends on.
+ */
+interface Row {
+  left: [number, number][]
+  right: [number, number][]
+  on?: number
+}
+
+/**
+ * Two editions compared and paged, each row named from its first left block.
+ * A column runs on over the row's pages twenty characters to a page, the left
+ * one down the page's left half and the right one down its right half, so a
+ * page can hold the words of one column and none of the other.
+ */
+function compared(rows: Row[]) {
+  const el = document.createElement('div')
+  el.dataset.paged = ''
+  el.dataset.compared = ''
+  const spots = new WeakMap<Node, (offset: number) => DOMRect>()
+  let next = 0
+  for (const { left, right, on = next } of rows) {
+    const row = document.createElement('div')
+    row.dataset.block = String(left[0][0])
+    const column = (side: string, blocks: [number, number][], lane: number) => {
+      const cell = document.createElement('div')
+      let slot = 0
+      for (const [block, length] of blocks) {
+        const words = document.createElement('p')
+        words.dataset.pick = `${side}:${block}`
+        const node = document.createTextNode('a'.repeat(length))
+        const base = slot
+        spots.set(node, (offset) => {
+          const at = base + offset
+          const page = on + Math.floor(at / PER)
+          const x = page * PAGE + lane + (at % PER) * NARROW
+          return new DOMRect(x - el.scrollLeft, 0, NARROW, 20)
+        })
+        words.append(node)
+        cell.append(words)
+        slot += length
+      }
+      row.append(cell)
+      return slot
+    }
+    const read = column('left', left, 0)
+    const other = column('right', right, PAGE / 2)
+    const pages = Math.ceil(Math.max(read, other) / PER)
+    row.getBoundingClientRect = () =>
+      new DOMRect(on * PAGE - el.scrollLeft, 0, pages * PAGE, TALL)
+    el.append(row)
+    next = on + pages
+  }
+  el.getBoundingClientRect = () => new DOMRect(0, 0, PAGE, TALL)
+  Object.defineProperty(el, 'clientWidth', { value: PAGE })
+  el.scrollTo = ((to: ScrollToOptions) => {
+    el.scrollLeft = to.left ?? el.scrollLeft
+  }) as typeof el.scrollTo
+  Range.prototype.getClientRects = function (this: Range) {
+    const spot = spots.get(this.startContainer) as (at: number) => DOMRect
+    return [spot(this.startOffset)] as unknown as DOMRectList
+  }
+  document.body.append(el)
+  return el
+}
+
+/** One row of both columns over three pages. */
+const THREE_PAGES: Row[] = [{ left: [[0, 45]], right: [[0, 45]] }]
+
+/** A row whose left column ends on its first page and whose right runs onto a second. */
+const LEFT_ENDS_FIRST: Row = { left: [[0, 10]], right: [[0, 30]] }
+
 describe('a place finer than a block', () => {
   it('is the first character on the page, inside the block the page starts in', () => {
     const el = text(true, ['short', LONG])
@@ -210,6 +300,16 @@ describe('a place in vertical text', () => {
 })
 
 describe('a place in a compared row, paged', () => {
+  it('placed whole, forgets the character read as it forgets the fraction', () => {
+    const anchor = { block: 3, at: 0, into: 0.5, read: { block: 3, at: 40 } }
+    expect(whole(anchor)).toEqual({ block: 3, at: 0 })
+  })
+
+  it('placed whole, forgets a character read taken with no fraction', () => {
+    const anchor = { block: 3, at: 0, read: { block: 3, at: 40 } }
+    expect(whole(anchor)).toEqual({ block: 3, at: 0 })
+  })
+
   it('goes back to the page it was taken on, whatever its fraction rounds to', () => {
     // A row from 32 px, 1521.75 px long over two 1000 px pages: taken at the
     // second page's start, its fraction times its length falls a hair short.
@@ -233,6 +333,376 @@ describe('a place in a compared row, paged', () => {
     el.scrollLeft = 0
     show(el, anchor.block, anchor.at, anchor)
     expect(el.scrollLeft).toBe(1000)
+  })
+
+  it('turns to the page holding the character read, whatever the fraction would name', () => {
+    const el = compared(THREE_PAGES)
+    el.scrollLeft = 2 * PAGE
+    show(el, 0, 0, { into: 0.1, read: { block: 0, at: 25 } })
+    expect(el.scrollLeft).toBe(PAGE)
+    show(el, 0, 0, { into: 0.1, read: { block: 0, at: 44 } })
+    expect(el.scrollLeft).toBe(2 * PAGE)
+  })
+
+  it('goes by the fraction where the character read is no longer drawn', () => {
+    const el = compared(THREE_PAGES)
+    show(el, 0, 0, { into: 0.5, read: { block: 7, at: 0 } })
+    expect(el.scrollLeft).toBe(PAGE)
+  })
+})
+
+describe('the character read on a page a compared row carries over onto', () => {
+  it('is the first of the column read on that page', () => {
+    const el = compared(THREE_PAGES)
+    el.scrollLeft = PAGE
+    expect(anchorOf(el)).toEqual({
+      block: 0,
+      at: 0,
+      into: 1 / 3,
+      read: { block: 0, at: 20 },
+    })
+    el.scrollLeft = 2 * PAGE
+    expect(anchorOf(el)).toEqual({
+      block: 0,
+      at: 0,
+      into: 2 / 3,
+      read: { block: 0, at: 40 },
+    })
+  })
+
+  it('is named in the block the page reads in, past a block that ended on an earlier page', () => {
+    const el = compared([
+      {
+        left: [
+          [0, 10],
+          [1, 35],
+        ],
+        right: [[0, 45]],
+      },
+    ])
+    el.scrollLeft = PAGE
+    expect(anchorOf(el).read).toEqual({ block: 1, at: 10 })
+  })
+
+  it('is in the next row where the column read ended before this page and that row starts on it', () => {
+    const el = compared([
+      LEFT_ENDS_FIRST,
+      { left: [[1, 5]], right: [[1, 5]], on: 1 },
+    ])
+    el.scrollLeft = PAGE
+    expect(anchorOf(el)).toEqual({
+      block: 0,
+      at: 0,
+      into: 0.5,
+      read: { block: 1, at: 0 },
+    })
+  })
+
+  it('is the row’s first on the page the row starts on', () => {
+    const el = compared(THREE_PAGES)
+    expect(anchorOf(el)).toEqual({
+      block: 0,
+      at: 0,
+      into: 0,
+      read: { block: 0, at: 0 },
+    })
+  })
+
+  it('in the phone layout is taken on the page the row starts on too', () => {
+    inThePhoneLayout()
+    expect(anchorOf(compared(THREE_PAGES)).read).toEqual({ block: 0, at: 0 })
+  })
+
+  it('is none on a page holding only the other column’s words', () => {
+    const el = compared([LEFT_ENDS_FIRST])
+    el.scrollLeft = PAGE
+    expect(anchorOf(el)).toEqual({ block: 0, at: 0, into: 0.5 })
+  })
+
+  it('is none where the next row’s words start on a later page', () => {
+    const el = compared([LEFT_ENDS_FIRST, { left: [[1, 5]], right: [[1, 5]] }])
+    el.scrollLeft = PAGE
+    expect(anchorOf(el)).toEqual({ block: 0, at: 0, into: 0.5 })
+  })
+})
+
+describe('the character kept after a placing, compared and paged', () => {
+  it('is the one placed while that is on the page', () => {
+    const el = compared(THREE_PAGES)
+    el.scrollLeft = PAGE
+    expect(readPlaced(el, { block: 0, at: 25 })).toEqual({ block: 0, at: 25 })
+  })
+
+  it('is the page’s first of the column read once the one placed is off it', () => {
+    const el = compared(THREE_PAGES)
+    el.scrollLeft = PAGE
+    expect(readPlaced(el, { block: 0, at: 0 })).toEqual({ block: 0, at: 20 })
+  })
+
+  it('is none where the page holds only the other column’s words', () => {
+    const el = compared([LEFT_ENDS_FIRST])
+    el.scrollLeft = PAGE
+    expect(readPlaced(el, { block: 0, at: 0 })).toBeUndefined()
+  })
+
+  it('is the one placed in the phone layout too', () => {
+    inThePhoneLayout()
+    expect(readPlaced(compared(THREE_PAGES), { block: 0, at: 5 })).toEqual({
+      block: 0,
+      at: 5,
+    })
+  })
+
+  it('is none scrolled, outside compare, or with no text', () => {
+    const scrolled = compared(THREE_PAGES)
+    delete scrolled.dataset.paged
+    expect(readPlaced(scrolled, { block: 0, at: 0 })).toBeUndefined()
+    const single = text(true, ['short', LONG])
+    expect(readPlaced(single, { block: 0, at: 0 })).toBeUndefined()
+    expect(readPlaced(null, { block: 0, at: 0 })).toBeUndefined()
+  })
+})
+
+describe('whether a re-place goes by the character read', () => {
+  it('holds compared and paged in the sidebar layout', () => {
+    expect(keepsRead(compared(THREE_PAGES))).toBe(true)
+  })
+
+  it('holds in the phone layout too', () => {
+    inThePhoneLayout()
+    expect(keepsRead(compared(THREE_PAGES))).toBe(true)
+  })
+
+  it('does not hold scrolled, outside compare, or with no text', () => {
+    const scrolled = compared(THREE_PAGES)
+    delete scrolled.dataset.paged
+    expect(keepsRead(scrolled)).toBe(false)
+    expect(keepsRead(text(true, ['short', LONG]))).toBe(false)
+    expect(keepsRead(null)).toBe(false)
+  })
+})
+
+describe('the block saved for the page showing', () => {
+  /** Block 0 over pages 0 to 2, blocks 1 and 2 opening on page 2, block 3 on page 3. */
+  const BLOCKS = [LONG, 'b'.repeat(5), 'c'.repeat(20), 'd'.repeat(5)]
+
+  it('is the first block to open on the page, past one carried onto it', () => {
+    const el = text(true, BLOCKS)
+    el.scrollLeft = PAGE * 2
+    expect(topOf(el).block, 'the block carried over').toBe(0)
+    expect(resumeBlock(el)).toBe(1)
+  })
+
+  it('is the block carried onto a page none opens on', () => {
+    const el = text(true, BLOCKS)
+    el.scrollLeft = PAGE
+    expect(resumeBlock(el)).toBe(0)
+  })
+
+  it('is the block carried onto the book’s last page', () => {
+    const el = text(true, [LONG])
+    el.scrollLeft = PAGE * 2
+    expect(resumeBlock(el)).toBe(0)
+  })
+
+  it('passes over a figure at the top of the page', () => {
+    const el = text(true, ['a'.repeat(20), { figure: 1 }, 'b'.repeat(5)])
+    el.scrollLeft = PAGE
+    expect(resumeBlock(el)).toBe(1)
+  })
+
+  it('goes by the pages running down, vertical', () => {
+    const el = text(true, BLOCKS, true)
+    el.scrollTop = TALL * 2
+    expect(resumeBlock(el)).toBe(1)
+    el.scrollTop = TALL
+    expect(resumeBlock(el)).toBe(0)
+  })
+
+  it('is the top block scrolled, where a screen’s length on a block opens', () => {
+    const el = text(false, ['a'.repeat(500), 'b'.repeat(20)])
+    el.scrollTop = TALL + 20
+    expect(topOf(el).block).toBe(0)
+    expect(resumeBlock(el)).toBe(0)
+  })
+
+  it('is block 0 with no text', () => {
+    expect(resumeBlock(null)).toBe(0)
+  })
+
+  describe('compared', () => {
+    /** Blocks 4 to 6 of the column read in one row: pages 0, 1 and 3 are where they open. */
+    const MERGED: Row[] = [
+      {
+        left: [
+          [4, 30],
+          [5, 30],
+          [6, 30],
+        ],
+        right: [[4, 90]],
+      },
+    ]
+
+    it('is the block opening on the page, inside the row', () => {
+      const el = compared(MERGED)
+      el.scrollLeft = PAGE * 3
+      expect(topOf(el).block, 'the block the row is named from').toBe(4)
+      expect(resumeBlock(el)).toBe(6)
+    })
+
+    it('is the first of the blocks opening on the page', () => {
+      const el = compared([
+        {
+          left: [
+            [0, 25],
+            [1, 5],
+            [2, 5],
+          ],
+          right: [[0, 35]],
+        },
+      ])
+      el.scrollLeft = PAGE
+      expect(resumeBlock(el)).toBe(1)
+    })
+
+    it('is the block carried onto a page none opens on, not the row’s first', () => {
+      const el = compared(MERGED)
+      el.scrollLeft = PAGE * 2
+      expect(resumeBlock(el)).toBe(5)
+    })
+
+    it('is the row’s block where the page holds only the other column’s words', () => {
+      const el = compared([
+        { left: [[3, 10]], right: [[3, 30]] },
+        { left: [[4, 10]], right: [[4, 10]] },
+      ])
+      el.scrollLeft = PAGE
+      expect(resumeBlock(el)).toBe(3)
+    })
+
+    it('is the last block of the column read to open before a page of the row holding none of it', () => {
+      const el = compared([
+        {
+          left: [
+            [4, 30],
+            [5, 10],
+          ],
+          right: [[4, 90]],
+        },
+      ])
+      el.scrollLeft = PAGE * 3
+      expect(topOf(el).block, 'the block the row is named from').toBe(4)
+      expect(resumeBlock(el)).toBe(5)
+    })
+  })
+})
+
+describe('a match on the page', () => {
+  it('in a single column is on it while its own character is', () => {
+    const el = text(true, ['short', LONG])
+    el.scrollLeft = PAGE
+    expect(matchShows(el, { block: 1, start: 15 })).toBe(true)
+    expect(matchShows(el, { block: 1, start: 14 })).toBe(false)
+    expect(matchShows(el, { block: 1, start: 35 })).toBe(false)
+  })
+
+  it('compared is on it while the column read holds that character there', () => {
+    const el = compared(THREE_PAGES)
+    el.scrollLeft = PAGE
+    expect(matchShows(el, { block: 0, start: 20 })).toBe(true)
+    expect(matchShows(el, { block: 0, start: 39 })).toBe(true)
+    expect(matchShows(el, { block: 0, start: 19 })).toBe(false)
+    expect(matchShows(el, { block: 0, start: 40 })).toBe(false)
+  })
+
+  it('compared is looked for in the row holding its block', () => {
+    const el = compared([
+      { left: [[0, 25]], right: [[0, 25]] },
+      { left: [[1, 10]], right: [[1, 10]] },
+    ])
+    el.scrollLeft = 2 * PAGE
+    expect(matchShows(el, { block: 1, start: 2 })).toBe(true)
+    el.scrollLeft = PAGE
+    expect(matchShows(el, { block: 1, start: 2 })).toBe(false)
+  })
+
+  it('compared is not on it where only another column draws its block', () => {
+    const el = compared([{ left: [[0, 45]], right: [[9, 45]] }])
+    expect(matchShows(el, { block: 9, start: 0 })).toBe(false)
+  })
+})
+
+describe('the character the reader is at, stepping through matches', () => {
+  it('outside a compared text is the anchor’s own, with a character read on the page', () => {
+    const el = text(true, ['short', LONG])
+    el.scrollLeft = PAGE
+    const anchor = { block: 1, at: 15, read: { block: 1, at: 20 } }
+    expect(readingAt(el, anchor)).toBe(anchor)
+  })
+
+  it('compared is the character read while that is on the screen, ahead of the anchor’s own', () => {
+    const el = compared(THREE_PAGES)
+    el.scrollLeft = PAGE
+    const anchor = { block: 0, at: 21, read: { block: 0, at: 30 } }
+    expect(readingAt(el, anchor)).toBe(anchor.read)
+  })
+
+  it('compared is the anchor’s own once the character read is off the screen', () => {
+    const el = compared(THREE_PAGES)
+    el.scrollLeft = PAGE
+    const anchor = { block: 0, at: 21, read: { block: 0, at: 5 } }
+    expect(readingAt(el, anchor)).toBe(anchor)
+  })
+
+  it('compared is the first of the column read on the screen once both are off it', () => {
+    const el = compared(THREE_PAGES)
+    el.scrollLeft = 2 * PAGE
+    const anchor = { block: 0, at: 0, read: { block: 0, at: 25 } }
+    expect(readingAt(el, anchor)).toEqual({ block: 0, at: 40 })
+  })
+
+  it('compared is the anchor’s own where the screen holds none of the column read', () => {
+    const el = compared([LEFT_ENDS_FIRST])
+    el.scrollLeft = PAGE
+    const anchor = { block: 0, at: 3 }
+    expect(readingAt(el, anchor)).toBe(anchor)
+  })
+})
+
+describe('an image loading in a compared text, paged', () => {
+  /** Three one-page rows, blocks 0 to 2, with an image in row `at`. */
+  const withImage = (at: number) => {
+    const el = compared(
+      [0, 1, 2].map((block) => ({
+        left: [[block, 5]],
+        right: [[block, 5]],
+      })) as Row[],
+    )
+    const image = document.createElement('img')
+    el.children[at].append(image)
+    return { el, image }
+  }
+
+  it('moves what is read up to the row of the character read, later than the anchor’s own', () => {
+    const anchor = { block: 0, at: 0, read: { block: 2, at: 3 } }
+    const between = withImage(1)
+    expect(movesAnchor(between.el, anchor, between.image)).toBe(true)
+    const inside = withImage(2)
+    expect(movesAnchor(inside.el, anchor, inside.image)).toBe(true)
+  })
+
+  it('does not move what is read from a row after the character read', () => {
+    const anchor = { block: 0, at: 0, read: { block: 1, at: 3 } }
+    const after = withImage(2)
+    expect(movesAnchor(after.el, anchor, after.image)).toBe(false)
+  })
+
+  it('with no character read goes by the anchor’s own row', () => {
+    const anchor = { block: 1, at: 0 }
+    const before = withImage(0)
+    expect(movesAnchor(before.el, anchor, before.image)).toBe(true)
+    const after = withImage(2)
+    expect(movesAnchor(after.el, anchor, after.image)).toBe(false)
   })
 })
 

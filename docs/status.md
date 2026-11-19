@@ -180,9 +180,9 @@ and, for libraries whose directories overlap,
 
 ## What is built
 
-Six crates, 4336 tests, plus 5,688 in `web/`'s TypeScript — 2,002 in the `node`
-project and 3,686 in the `jsdom` one — and two thousand and ten
-more in a **browser** project of its own, no dependencies beyond
+Six crates, 4336 tests, plus 5,740 in `web/`'s TypeScript — 2,003 in the `node`
+project and 3,737 in the `jsdom` one — and two thousand four hundred and
+three more in a **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, and `compress-tools` in `taiyaku-read` behind its optional `rar-libarchive` feature, linking the system libarchive and taken from the owner's fork by commit (O382), plus `axum`, `tokio`,
 `tower`, `tower-http` (feature `fs`, for `--web`), `ureq` and `jxl-oxide` (since O130, for JPEG XL pages) in the server, `rusqlite` (features `["backup", "bundled", "functions"]`,
 compiling SQLite into the binary since O265, because no stable Debian release
@@ -2012,7 +2012,7 @@ each is in the detail below; the table is what a reader scans.
 | O371 | [ ] | **With look-up on, a tap on text only looks up, so bringing the bars back takes an empty spot, and nothing on screen says where.** A tap on a word opens the look-up and leaves the bars as they were; the bars come back from a tap that lands on no word. Not built. | `onPointerUp` in `BookReader.tsx` (`lookUpTapped`) | the review of the book tap look-up, 2026-11-18 |
 | O372 | [ ] | **On lines with readings, a point nearer the upper line can look up the next line's word.** Between two lines with furigana, a point still nearer the upper line can find the lower line's character, in a strip under two pixels deep. Not built. | `offsetAtPoint` in `bookNotes.ts` | the review of the book tap look-up, 2026-11-18 |
 | O373 | [ ] | **With Caps Lock on, `l` arrives as `L`, which the book reader takes as back to the library.** A reader pressing `l` to turn the look-up mode on leaves the book instead. Not built. | `BOOK_KEYS` in `book.ts` | the review of the book tap look-up, 2026-11-18 |
-| O374 | [ ] | **The tap look-up's tests have six gaps.** No sweep steps through the leading between a block's top edge and its first line. No test holds how far a point may lie from a glyph across its line where the next line has a character in that column. The double-tap matrix leaves out horizontal scrolled at 900 by 700 and 1440 by 900, horizontal paged at 1024 by 768, 1180 by 820 and 1440 by 900, vertical scrolled at 1180 by 820, and vertical paged at 1180 by 820 and 1440 by 900. No test holds the call that seats the panel again when bringing the word into sight has moved the text. Neither axis of `DOUBLE_TAP_REACH` is held on its own: a test notices the reach at 0, and none notices the comparison along x or along y removed. No test holds the `onScroll` handler's check that the sight check's own scroll is not the reader's. Not built. | `web/tests/bookLookup.browser.test.tsx`; `seatLookup`, `DOUBLE_TAP_REACH` and `sightLeft` in `BookReader.tsx` | the review of the book tap look-up, 2026-11-18 |
+| O374 | [ ] | **Narrowed 2026-11-19 by the book place fixes: of the sixth gap, the `onScroll` check, only its guard on `movedOn` is left unheld.** **The tap look-up's tests have six gaps.** No sweep steps through the leading between a block's top edge and its first line. No test holds how far a point may lie from a glyph across its line where the next line has a character in that column. The double-tap matrix leaves out horizontal scrolled at 900 by 700 and 1440 by 900, horizontal paged at 1024 by 768, 1180 by 820 and 1440 by 900, vertical scrolled at 1180 by 820, and vertical paged at 1180 by 820 and 1440 by 900. No test holds the call that seats the panel again when bringing the word into sight has moved the text. Neither axis of `DOUBLE_TAP_REACH` is held on its own: a test notices the reach at 0, and none notices the comparison along x or along y removed. The `onScroll` handler's check that the sight check's own scroll is not the reader's is held where it ends no hold on a match gone to, leaves a held match the anchor and saves no place, by the tests of the look-up's own scroll in `bookPlace.browser.test.tsx`; no test notices it taken off the line that sets `movedOn`, which decides whether an answer landing later brings the word into sight again. Not built. | `web/tests/bookLookup.browser.test.tsx`, `web/tests/bookPlace.browser.test.tsx`; `seatLookup`, `DOUBLE_TAP_REACH`, `sightScroll` and `movedOn` in `BookReader.tsx` | the review of the book tap look-up, 2026-11-18 |
 | O375 | [ ] | **A second tap on the scrubber within 24 px of the first seeks and also counts as the double tap.** The reader lands where the scrubber sends them, the look-up closes, and a peek opens on the paragraph left behind. Not built. | `onPointerUpCapture` in `BookReader.tsx` (`DOUBLE_TAP_REACH`) | the review of the book tap look-up, 2026-11-18 |
 | O376 | [ ] | **A Korean verb or adjective is found only as its dictionary form and the forms kaikki lists, so a conjugated one in a book can miss.** `lookup_korean` takes particles off a noun and nothing else. kaikki's conjugation tables are large (있다 has 85 rows and 37 distinct forms; the median over the 3,443 verbs with forms is 98 rows and 79 distinct forms), but an ending the tables do not list misses, whether or not it carries a tense: 있는데 is a form of 있다 and 있었는데 is not, and 없다고, 싶지, 자랑스럽게 and 기이하거나, which carry no tense, are in no `form` row either. 있었는데 and those four are what is left of the 8 words of this kind among the 36 `lookup_korean` first missed in Harry Potter 1's first 200 Hangul words; the other three were nouns with the copula (금발이었고, 것이었는데, 정상적이라는), found now that the copula is a particle; `docs/notes.md`, "Korean dictionary: installed and measured on Harry Potter 1". Taking off endings needs a stem and ending table that respects irregular stems (ㅂ, ㄷ, ㅅ, 르, 하다), which is more than the particles' list and is not designed. Not built. | `taiyaku_library::dictionary::lookup_korean` | the Korean dictionary's measurement, 2026-11-17 |
 | O377 | [x] | **Closed 2026-11-17, on the owner's ruling of that day: a transliterated name is in no dictionary, so a lookup of it finds nothing, and one that collides with a common noun shows that noun; that is a known limit, accepted, with no per-book name list.** 해그리드, 더즐리, 포터, 두들리, 노버트, 퀴디치 and 핼러윈 have no Wiktionary entry, with or without a particle (해그리드의, 더즐리 on its own); 20 of the 36 first misses in Harry Potter 1's first 200 words, some the same name again. The route answers such a name 200 with an empty list, and the panel says "Not in the dictionary." (`BookLookup`). A name that is also a common noun finds an entry that is wrong: 해리 is in `ko.db` only as "nautical mile", so 해리가 shows "nautical mile, from 해리가". 론 is not like it: of its five entries the fourth is the name Ron, after three senses the book does not mean. Among the words particle-stripping newly finds across Harry Potter 1, 해리 is 1,465 and 론 454. The owner decided not to build a per-book name list and to accept 해리 and 론 showing their dictionary entries. | `taiyaku_library::dictionary::lookup_korean`; the reader's Look up | the Korean dictionary's measurement, 2026-11-17 |
@@ -8038,12 +8038,13 @@ mismatched pair said nothing at all.
   **A book can be searched, and a Japanese one set vertically**
   (`bookSearch.ts`, `BookSearch.tsx`, `bookPages.ts`). `/` opens the search
   panel, and `]` and `[` step to the next and previous match, in the edition
-  read or, with **All editions** ticked, in every one; where the match last
-  gone to is no longer listed, because the query or the edition changed, they
-  step from the reader's place. Text is folded by NFKC and case before it is
-  compared, so a half-width katakana with its voicing mark finds its
-  full-width form (ｶﾞ finds ガ), and one letter of a CJK script is a query
-  where other scripts wait for two. The Text settings' **vertical** sets a
+  read or, with **All editions** ticked, in every one; before any match is
+  gone to, once the reader has moved away from the one last gone to, and where
+  it is no longer listed because the query or the edition changed, they step
+  from the reader's place. Text is folded by NFKC and case before it is
+  compared, so a half-width katakana with its voicing mark finds its full-width
+  form (ｶﾞ finds ガ), and one letter of a CJK script is a query where other
+  scripts wait for two. The Text settings' **vertical** sets a
   Japanese edition, known by its language tag or, untagged, by its kana and
   kanji, top to bottom and right to left, scrolled or paged; compared or
   interlinear it is not drawn vertical, and an edition that is not Japanese
@@ -8054,7 +8055,23 @@ mismatched pair said nothing at all.
   and the page count are measured along the vertical book's own axes. A docked
   panel sets the text in beside it where there is room, and the reader's place
   holds through one opened and closed and, outside compare, through a Settings
-  Reset, a figure at the top included. The text's side padding is at least its
+  Reset, a figure at the top included. Compared and paged, a book just opened
+  shows its saved block's first words in the column read. Where a panel sets
+  the text in, it keeps those words on the page, and on a page turned or
+  scrolled to it shows the page holding the first character of that column
+  there, where that page held any of it. A window resize while a book opens
+  keeps the saved place. Paged, in every reading mode, a book left with no panel
+  set in beside the text reopens on the page it was left on, and opening and
+  closing it moves neither that page nor its first character, whether it was
+  left by reading on, a match gone to, Back, a link, a note, a text size step or
+  a window made shorter. A saved place names a block, so a page no block starts
+  on reopens on the first page of the block carried onto it, and holds there. A
+  page holding only a figure names no block of its own, so it reopens on the
+  page of a block next to the figure, and holds there. Compared, a page of a
+  merged row holding none of the column read, only a figure or the other
+  column's words, reopens on the first page of the last block of that column to
+  open before it in that row, or where none has yet, on the first page of the
+  row's first block, and holds there. The text's side padding is at least its
   size, horizontal text's too, so a note's mark is not clipped beside a large
   text or a heading. What stays undone is O352 to O357.
   **A look-up mode comes to books** (`l`, or Look up words in the bars):
@@ -8069,10 +8086,14 @@ mismatched pair said nothing at all.
   look-up and peeks; with the mode off every tap behaves as before. Paged, the
   outer thirds keep turning the page and only the middle third looks up. Where
   the text set in beside the panel would hide the lit word, the least scroll or
-  page turn brings it back. At phone size the panel opens on the side of the
-  screen away from the word, no taller than 45% of the screen; it has run only
-  in Chromium and is untested on a real iPhone (O366). What it leaves undone is
-  O358 to O375.
+  page turn brings it back. That scroll is not the reader's, and setting the
+  text in as the panel opens keeps the reader where they were: neither saves,
+  so a book left straight after a word is looked up, the look-up still open,
+  reopens where leaving without the look-up would, and after a match gone to
+  `]` and `[` still step on from the match. At phone size the panel opens on
+  the side of the screen away from the word, no taller than 45% of the screen;
+  it has run only in Chromium and is untested on a real iPhone (O366). What it
+  leaves undone is O358 to O375.
 
 **L1 geometry left this list on 2026-08-08, and the line it left behind is kept
 rather than deleted.** It read:

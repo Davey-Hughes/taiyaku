@@ -25,9 +25,9 @@ interface BookSearchProps {
   edition: string
   /** `edition`'s contents, which its matches are grouped under. */
   entries: Entry[]
-  /** The match last gone to, which Enter steps on from. */
-  found?: Match
-  /** Where the reader is, asked at each step: Enter steps from it once `found` is no longer listed. */
+  /** The match Enter steps on from, asked at each step: the one last gone to, while the reader is still with it. */
+  from: () => Match | undefined
+  /** Where the reader is, asked at each step: Enter steps from it where `from` answers none or one no longer listed. */
   here: () => Here | undefined
   onPick: (m: Match) => void
   /** Every match of the query standing, for the reader to step through once closed. */
@@ -45,7 +45,7 @@ export function BookSearch({
   book,
   edition,
   entries,
-  found,
+  from,
   here,
   onPick,
   onResults,
@@ -140,7 +140,7 @@ export function BookSearch({
     // Enter before the pause is over searches what is typed, not what was.
     const list = typed === query ? results : matchesOf(book, typed, searched)
     setQuery(typed)
-    const next = stepFrom(list, found, by, here())
+    const next = stepFrom(list, from(), by, here())
     if (next) onPick(next)
   }
   const counted =
