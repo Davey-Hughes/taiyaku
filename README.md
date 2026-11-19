@@ -467,18 +467,21 @@ convenience. The proxy target defaults to `http://127.0.0.1:8080`, which is why 
 
 Members may be `.cbz`, `.zip`, any other zip-based archive whatever it is named,
 or a plain directory of page images, and, in a build with the `rar-libarchive`
-feature (the container image is one), a RAR archive. The container is identified
-by content rather than by extension, because extensions lie in both directions —
-a zip is often named `.cbr`, and a real RAR or 7-Zip archive is often named
-`.cbz`. The other formats are recognised so the error can name the format and
-say to convert it, rather than reporting a corrupt zip, and a build without the
-feature names a RAR and says it reads none. A RAR5 archive whose end-of-archive
-block is missing, or followed by anything but zero bytes, is refused. `align`,
-`duplicates`, `credits` and the other commands given member paths read a RAR in
-such a build, but a library scan still counts a RAR as unreadable and makes no
-member of it. Several members on either side of the `--` are concatenated before
-solving, which is how chapters map onto a volume and how two tankōbon map onto
-one deluxe edition.
+feature (the container image is one), a RAR archive. A page is an entry named
+`.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`, `.bmp`, `.avif`, `.tif`, `.tiff` or
+`.jxl` (JPEG XL). `serve` sends a JPEG XL page to a client whose `Accept` does
+not name `image/jxl` as a JPEG made from it once and cached. The container is
+identified by content rather than by extension, because extensions lie in both
+directions — a zip is often named `.cbr`, and a real RAR or 7-Zip archive is
+often named `.cbz`. The other formats are recognised so the error can name the
+format and say to convert it, rather than reporting a corrupt zip, and a build
+without the feature names a RAR and says it reads none. A RAR5 archive whose
+end-of-archive block is missing, or followed by anything but zero bytes, is
+refused. `align`, `duplicates`, `credits` and the other commands given member
+paths read a RAR in such a build, but a library scan still counts a RAR as
+unreadable and makes no member of it. Several members on either side of the `--`
+are concatenated before solving, which is how chapters map onto a volume and how
+two tankōbon map onto one deluxe edition.
 
 Before any alignment there is often a prior question — you have three copies of
 volume 1 and want to know which one to keep. Two commands answer it, and neither

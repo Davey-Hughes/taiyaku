@@ -2810,3 +2810,415 @@ fn a_folder_whose_pages_do_not_hash_to_its_digest_is_said_once_a_pass() {
         "no rewrite said of the folder that could not be read; the child's stderr: {stderr}"
     );
 }
+
+/// A cbz at `path` holding `pages`, each entry's bytes as given.
+fn cbz_holding(path: &Path, pages: &[(&str, &[u8])]) {
+    use std::io::Write as _;
+    let dir = path.parent().expect("a file under the tree");
+    std::fs::create_dir_all(dir).expect("makes its directory");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).expect("creates the cbz"));
+    for (name, bytes) in pages {
+        zip.start_file(*name, zip::write::SimpleFileOptions::default())
+            .expect("starts an entry");
+        zip.write_all(bytes).expect("writes an entry");
+    }
+    zip.finish().expect("finishes the cbz");
+}
+
+/// A library over `<fixture>/lib` holding one volume of `pages`, walked and
+/// derived.
+fn scanned_volume(tag: &str, pages: &[(&str, &[u8])]) -> (Fixture, Arc<Library>, scan::Root) {
+    let fixture = Fixture::new(tag);
+    let top = fixture.join("lib");
+    cbz_holding(&top.join(VOLUMES[0]), pages);
+    let library = test_support::library();
+    let root = {
+        let conn = library.conn();
+        let root = scan::add_root(&conn, &top).expect("adds the directory");
+        scan::scan_root(&conn, &root).expect("walks it");
+        derive::derive(&conn).expect("derives");
+        root
+    };
+    (fixture, library, root)
+}
+
+/// `image` knows JPEG XL only through the hooks `serve` installs before any
+/// pass starts, and a pass decodes a page by guessing its format, so without
+/// them every page of this volume would be stored as undecoded.
+#[test]
+fn a_pass_prints_every_page_of_a_volume_of_jpeg_xl_pages() {
+    crate::jxl::register();
+    let pages = [
+        ("000.jxl", test_support::jxl_fixture("lossy.jxl")),
+        ("001.jxl", test_support::jxl_fixture("grey.jxl")),
+    ];
+    let (fixture, library, root) = scanned_volume("pass-jxl-pages", &pages);
+    let state = state_of(Arc::clone(&library), &fixture, PassSettings::default());
+
+    kicked(&state);
+
+    let row = row_of(&library, &root, VOLUMES[0]).expect("the volume has a row");
+    assert_eq!(row.outcome, Outcome::Whole, "its reason: {:?}", row.reason);
+    assert_eq!(row.pages, 2, "both pages");
+    let prints = fingerprint::decode(&row.prints).expect("the row's prints decode");
+    assert_eq!(prints.len(), 2, "one record per page");
+    assert!(
+        prints.iter().all(Option::is_some),
+        "a print of each page: {prints:?}"
+    );
+    assert_ne!(prints[0], prints[1], "each page's own print");
+}
+
+/// A re-count keeps a file's digest, and a row is keyed by that digest, so the
+/// row made under the old page numbers stands until a read replaces it: it
+/// numbers fewer pages than the entry now counts, and it is partial by another
+/// build.
+#[test]
+fn a_mixed_volumes_row_is_read_again_under_the_pages_its_re_count_numbers() {
+    crate::jxl::register();
+    let pages = [
+        ("000.jpg", test_support::jxl_fixture("recompressed.jpg")),
+        ("001.jxl", test_support::jxl_fixture("lossy.jxl")),
+        ("002.jpg", test_support::jxl_fixture("trailing.jpg")),
+    ];
+    let (fixture, library, root) = scanned_volume("pass-mixed-recount", &pages);
+    let digest = digest_at(&library, root.id, VOLUMES[0]).expect("the derive took its digest");
+    let earlier =
+        fingerprint::describe_page(&image::GrayImage::new(8, 8), fingerprint::Border::default());
+    let count = |library: &Library| -> i64 {
+        library
+            .conn()
+            .query_row(
+                "SELECT pages FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+                rusqlite::params![root.id, VOLUMES[0]],
+                |r| r.get(0),
+            )
+            .expect("reads the entry's count")
+    };
+    {
+        let conn = library.conn();
+        conn.execute(
+            "UPDATE scan_entry SET pages = 2, counted_by = NULL
+              WHERE root_id = ?1 AND rel_path = ?2",
+            rusqlite::params![root.id, VOLUMES[0]],
+        )
+        .expect("leaves the entry as a build that did not count JPEG XL did");
+        fingerprints::store(
+            &conn,
+            &Row {
+                sha256: digest.clone(),
+                version: fingerprint::VERSION,
+                outcome: Outcome::Partial,
+                reason: Some("001.jxl is of a type the reader does not read".to_owned()),
+                build: Some("a build before JPEG XL".to_owned()),
+                pages: 2,
+                prints: fingerprint::encode(&[Some(earlier), Some(earlier)]),
+            },
+        )
+        .expect("stores that build's row");
+        scan::scan_root(&conn, &root).expect("walks it again");
+    }
+    assert_eq!(count(&library), 3, "the re-count takes in the JPEG XL page");
+    assert_eq!(
+        digest_at(&library, root.id, VOLUMES[0]),
+        Some(digest.clone()),
+        "the re-count keeps the digest the row is keyed by"
+    );
+    let state = state_of(Arc::clone(&library), &fixture, PassSettings::default());
+
+    kicked(&state);
+
+    let row = fingerprints::read(&library.conn(), &digest)
+        .expect("reads the row")
+        .expect("the row stands");
+    assert_eq!(row.outcome, Outcome::Whole, "its reason: {:?}", row.reason);
+    assert_eq!(row.pages, 3, "the page the re-count took in");
+    let prints = fingerprint::decode(&row.prints).expect("the row's prints decode");
+    assert_eq!(prints.len(), 3, "one record per page as now numbered");
+    assert!(
+        prints
+            .iter()
+            .all(|print| print.is_some() && *print != Some(earlier)),
+        "every page read again: {prints:?}"
+    );
+}
+
+/// `folder`'s row, under the stamp the folder holds now: what a walk by a reader
+/// that passed over the page just added left there.
+fn stamped_as_walked(library: &Library, root: &scan::Root, folder: &str) {
+    let (size, mtime) =
+        fingerprints::stamp_of(&root.path.join(folder)).expect("reads the folder's stamp");
+    library
+        .conn()
+        .execute(
+            "UPDATE scan_entry SET size = ?1, mtime = ?2 WHERE root_id = ?3 AND rel_path = ?4",
+            rusqlite::params![size, mtime, root.id, folder],
+        )
+        .expect("records the stamp");
+}
+
+/// A row as a build that read only `pages` of a file left it.
+fn earlier_row(sha256: &str, outcome: Outcome, pages: u32) -> Row {
+    let print =
+        fingerprint::describe_page(&image::GrayImage::new(8, 8), fingerprint::Border::default());
+    Row {
+        sha256: sha256.to_owned(),
+        version: fingerprint::VERSION,
+        outcome,
+        reason: (outcome != Outcome::Whole).then(|| "the reader does not read 001.jxl".to_owned()),
+        build: Some("a build before JPEG XL".to_owned()),
+        pages,
+        prints: fingerprint::encode(&vec![Some(print); pages as usize]),
+    }
+}
+
+/// What the pass still has to read under this build.
+fn still_listed(library: &Library) -> Vec<String> {
+    fingerprints::due(
+        &library.conn(),
+        fingerprint::VERSION,
+        crate::about::this_build().as_deref(),
+    )
+    .expect("lists what is due")
+    .into_iter()
+    .map(|unit| unit.rel_path)
+    .collect()
+}
+
+const MIXED_FOLDER: &str = "Delta/Delta v01";
+
+/// A library holding [`MIXED_FOLDER`]'s two JPEG pages, walked and derived, then
+/// the JPEG XL page between them, which a build that did not read it passed
+/// over: so the row holds that build's digest, count and stamp.
+fn mixed_folder_as_an_earlier_build_left_it(
+    fixture: &Fixture,
+    twin: Option<&str>,
+) -> (Arc<Library>, scan::Root, String) {
+    let top = fixture.join("lib");
+    let dir = top.join(MIXED_FOLDER);
+    std::fs::create_dir_all(&dir).expect("makes the folder");
+    let jpegs = [
+        ("000.jpg", test_support::jxl_fixture("recompressed.jpg")),
+        ("002.jpg", test_support::jxl_fixture("trailing.jpg")),
+    ];
+    for (name, bytes) in jpegs {
+        std::fs::write(dir.join(name), bytes).expect("writes a page");
+        if let Some(twin) = twin {
+            std::fs::create_dir_all(top.join(twin)).expect("makes the twin");
+            std::fs::write(top.join(twin).join(name), bytes).expect("writes a page");
+        }
+    }
+    let library = test_support::library();
+    let root = {
+        let conn = library.conn();
+        let root = scan::add_root(&conn, &top).expect("adds the directory");
+        scan::scan_root(&conn, &root).expect("walks it");
+        derive::derive(&conn).expect("derives");
+        root
+    };
+    let earlier = digest_at(&library, root.id, MIXED_FOLDER).expect("the derive took a digest");
+    std::fs::write(dir.join("001.jxl"), test_support::jxl_fixture("lossy.jxl"))
+        .expect("writes the JPEG XL page");
+    stamped_as_walked(&library, &root, MIXED_FOLDER);
+    (library, root, earlier)
+}
+
+/// The digest an earlier build took hashed the JPEG pages alone, and a read
+/// now hashes all three, so a row under it could never be stored.
+#[test]
+fn a_mixed_folder_an_earlier_build_read_is_read_under_the_pages_it_now_numbers() {
+    crate::jxl::register();
+    let fixture = Fixture::new("pass-mixed-folder");
+    let (library, root, earlier) = mixed_folder_as_an_earlier_build_left_it(&fixture, None);
+    fingerprints::store(&library.conn(), &earlier_row(&earlier, Outcome::Partial, 2))
+        .expect("stores that build's row");
+    {
+        let conn = library.conn();
+        scan::scan_root(&conn, &root).expect("walks it again");
+        derive::derive(&conn).expect("derives again");
+    }
+    let digest = digest_at(&library, root.id, MIXED_FOLDER).expect("the digest is taken again");
+    assert_ne!(digest, earlier, "the digest takes in the JPEG XL page");
+    let state = state_of(Arc::clone(&library), &fixture, PassSettings::default());
+
+    kicked(&state);
+
+    let row = fingerprints::read(&library.conn(), &digest)
+        .expect("reads the row")
+        .expect("the read is stored under the digest it hashes to");
+    assert_eq!(row.outcome, Outcome::Whole, "its reason: {:?}", row.reason);
+    assert_eq!(row.pages, 3, "every page the entry numbers");
+    assert_eq!(
+        still_listed(&library),
+        Vec::<String>::new(),
+        "nothing is left due"
+    );
+    assert_eq!(
+        fingerprints::read(&library.conn(), &earlier).expect("reads the store"),
+        None,
+        "no file holds the earlier row's digest now"
+    );
+}
+
+/// An earlier build's digest ignored the JPEG XL page, so the folder shared it
+/// with a copy of its JPEG pages, whose whole row spoke for both.
+#[test]
+fn a_mixed_folder_sharing_a_twins_whole_row_is_read_under_its_own_digest() {
+    crate::jxl::register();
+    const TWIN: &str = "Eta/Eta v01";
+    let fixture = Fixture::new("pass-mixed-twin");
+    let (library, root, earlier) = mixed_folder_as_an_earlier_build_left_it(&fixture, Some(TWIN));
+    assert_eq!(
+        digest_at(&library, root.id, TWIN).as_deref(),
+        Some(earlier.as_str()),
+        "the fixture: the two share a digest"
+    );
+    fingerprints::store(&library.conn(), &earlier_row(&earlier, Outcome::Whole, 2))
+        .expect("stores the twin's row");
+    {
+        let conn = library.conn();
+        scan::scan_root(&conn, &root).expect("walks it again");
+        derive::derive(&conn).expect("derives again");
+    }
+    let state = state_of(Arc::clone(&library), &fixture, PassSettings::default());
+
+    kicked(&state);
+
+    let row = row_of(&library, &root, MIXED_FOLDER).expect("the folder has a row of its own");
+    assert_eq!(row.outcome, Outcome::Whole, "its reason: {:?}", row.reason);
+    assert_eq!(row.pages, 3, "every page the entry numbers");
+    let twin = row_of(&library, &root, TWIN).expect("the twin keeps its row");
+    assert_eq!(
+        (twin.sha256.as_str(), twin.pages),
+        (earlier.as_str(), 2),
+        "the twin's digest and row stand"
+    );
+    assert_eq!(
+        still_listed(&library),
+        Vec::<String>::new(),
+        "nothing is left due"
+    );
+}
+
+/// The row is this very build's, so no build stamp marks it stale: only its
+/// count against the re-count does.
+#[test]
+fn a_row_of_this_build_numbering_fewer_pages_than_the_re_count_is_read_again() {
+    crate::jxl::register();
+    let pages = [
+        ("000.jpg", test_support::jxl_fixture("recompressed.jpg")),
+        ("001.jxl", test_support::jxl_fixture("lossy.jxl")),
+        ("002.jpg", test_support::jxl_fixture("trailing.jpg")),
+    ];
+    let (fixture, library, root) = scanned_volume("pass-other-pages", &pages);
+    let digest = digest_at(&library, root.id, VOLUMES[0]).expect("the derive took its digest");
+    {
+        let conn = library.conn();
+        conn.execute(
+            "UPDATE scan_entry SET pages = 2, counted_by = NULL
+              WHERE root_id = ?1 AND rel_path = ?2",
+            rusqlite::params![root.id, VOLUMES[0]],
+        )
+        .expect("leaves the count a build that did not read JPEG XL took");
+        fingerprints::store(
+            &conn,
+            &Row {
+                build: crate::about::this_build(),
+                ..earlier_row(&digest, Outcome::Partial, 2)
+            },
+        )
+        .expect("stores the row");
+        scan::scan_root(&conn, &root).expect("counts it again");
+    }
+    let state = state_of(Arc::clone(&library), &fixture, PassSettings::default());
+
+    kicked(&state);
+
+    let row = fingerprints::read(&library.conn(), &digest)
+        .expect("reads the row")
+        .expect("the row stands");
+    assert_eq!(row.outcome, Outcome::Whole, "its reason: {:?}", row.reason);
+    assert_eq!(row.pages, 3, "the page the re-count took in");
+}
+
+/// Every outcome a read can store, and a folder whose walk leaves out a page its
+/// read takes in: one pass settles them all, so the next has nothing to read.
+#[test]
+fn no_row_a_pass_stores_is_due_for_the_next() {
+    crate::jxl::register();
+    const FOLDER: &str = "Delta/Delta v01";
+    let jpeg = test_support::jxl_fixture("recompressed.jpg");
+    let jxl = test_support::jxl_fixture("lossy.jxl");
+    let fixture = Fixture::new("pass-settles");
+    let top = fixture.join("lib");
+    cbz_holding(
+        &top.join("Alpha/Alpha v01.cbz"),
+        &[("000.jpg", jpeg), ("001.jxl", jxl)],
+    );
+    cbz_holding(
+        &top.join("Beta/Beta v01.cbz"),
+        &[("000.jpg", jpeg), ("001.jpg", b"no image".as_slice())],
+    );
+    cbz_holding(
+        &top.join("Gamma/Gamma v01.cbz"),
+        &[("000.jpg", b"no image".as_slice())],
+    );
+    std::fs::create_dir_all(top.join(FOLDER)).expect("makes the folder");
+    for name in ["000.jpg", "001.jpg", "credit.jpg"] {
+        std::fs::write(top.join(FOLDER).join(name), jpeg).expect("writes a page");
+    }
+    let library = test_support::library();
+    let root = {
+        let conn = library.conn();
+        let added = scan::add_root(&conn, &top).expect("adds the directory");
+        conn.execute(
+            "UPDATE root SET exclude_globs = 'credit.jpg' WHERE id = ?1",
+            [added.id],
+        )
+        .expect("excludes a page from the walk");
+        let root = scan::roots(&conn)
+            .expect("lists the directories")
+            .into_iter()
+            .find(|root| root.id == added.id)
+            .expect("the directory just added");
+        scan::scan_root(&conn, &root).expect("walks it");
+        derive::derive(&conn).expect("derives");
+        root
+    };
+    let state = state_of(Arc::clone(&library), &fixture, PassSettings::default());
+
+    kicked(&state);
+
+    assert_eq!(
+        [
+            "Alpha/Alpha v01.cbz",
+            "Beta/Beta v01.cbz",
+            "Gamma/Gamma v01.cbz",
+            FOLDER
+        ]
+        .map(|rel_path| outcome_of(&library, &root, rel_path)),
+        [
+            Some(Outcome::Whole),
+            Some(Outcome::Partial),
+            Some(Outcome::Unreadable),
+            Some(Outcome::Whole),
+        ],
+        "the fixture: one of each outcome"
+    );
+    assert_eq!(
+        row_of(&library, &root, FOLDER).map(|row| row.pages),
+        Some(3),
+        "the fixture: the read takes in the page the walk's total of 2 leaves out"
+    );
+    assert_eq!(
+        still_listed(&library),
+        Vec::<String>::new(),
+        "nothing is left due"
+    );
+    let next = state_of(Arc::clone(&library), &fixture, PassSettings::default());
+    kicked(&next);
+    assert!(
+        next.fingerprints.job().is_none(),
+        "the next pass reads nothing"
+    );
+}

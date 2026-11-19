@@ -21202,7 +21202,9 @@ and the archive had never been a member, so no content key named it.
   unreadable until it was converted, above. `image` 0.25.9, which the server decodes pages with, has
   no JPEG XL decoder of its own; its `hooks` module only lets one be
   registered. Not looked into beyond that and this one archive. *Filed as O130
-  on 2026-09-17, and the archive converted — see above.*
+  on 2026-09-17, and the archive converted — see above.* *(O130 has since
+  closed, on 2026-11-17 — see "JPEG XL pages: the decoder, the clients and a
+  real archive (2026-11-17)".)*
 
 ### Counts
 
@@ -29591,6 +29593,16 @@ an increment under `POSIXLY_CORRECT`. Both commands are in
 Where they are missing the pass runs at the server's own priority, and the
 coordinator says so on stderr.
 
+**A lowered thread decodes alone.** jxl-oxide renders on rayon's shared
+pool by default, and that pool's threads keep the priority of the thread
+that first used it. A pass's decode there would run at normal priority, and
+a lowered thread that started the pool would leave every reader's decode at
+its priority. So a decode on a thread below the main thread's priority
+renders on that thread, and any other uses the pool (`jxl::render_pool`,
+`priority::thread_is_lowered`). The measure is the main thread, not niceness
+0, so a server started under `nice` still decodes in parallel, and a worker
+`renice` could not lower is not below the main thread and uses the pool.
+
 **Which rows a pass drops.** At the end of each pass the store drops every
 row whose digest no claimed unit holds, in any directory, covered or not,
 and no entry's held reading names (`fingerprints::drop_unclaimed`). The
@@ -30061,3 +30073,221 @@ bounded by `MAX_BLOCKS` (2^20 blocks), where the walk stops and the file is
 refused: page 0 of a 7.3 MB RAR4 of 1,040,000 comment blocks took a median of
 1,916 ms over five rounds at a load of 15 to 17, against 11.5 ms before the
 check, and a file over the cap was refused after 2,027 ms.
+
+## JPEG XL pages: the decoder, the clients and a real archive (2026-11-17)
+
+O130, closed by the JPEG XL pages PR. The evidence is in
+`.superpowers/sdd/jxl-pages-evidence/`, not committed: `T1/` holds the
+decoder comparison, its harness (`T1/compare/`, a standalone crate with a
+counting global allocator) and the script that makes the test fixtures,
+which the PR keeps as `crates/taiyaku-serve/fixtures/jxl/make.sh`; `T9/`
+holds the run over a real archive. Each figure below names its file there.
+
+**The decoder.** Task 1 decoded every page of the Bisque Doll original, a
+zip of 185 `.jxl` pages, with each candidate through its own `image`
+decoder, and compared each page with `djxl` 0.12.0's PNG of it, channel by
+channel. `jxlinfo -v` read every page as a bare codestream, lossy and 8-bit,
+173 grey and 12 RGB, with no ICC profile (`T1-report.md`, "Step 1" and
+"Colour").
+
+| | jxl-oxide 0.12.6 | jxl 0.8.0 |
+|---|---|---|
+| Licence (its `Cargo.toml`) | MIT OR Apache-2.0 | BSD-3-Clause |
+| Pages decoded (`correct.log`) | 185 of 185 | 185 of 185 |
+| The worst page's largest difference from `djxl` (`correct.log`) | 1 level | 1 level |
+| The smallest `max_alloc` that decodes an image (`threshold.log`) | a little below its peak heap on each Bisque page tried: the limit counts its working memory | exactly twice the image's output buffer on every image tried, whatever the decode then takes |
+| `rust-version` (its `Cargo.toml`) | none declared | 1.89.0 |
+| A recompressed JPEG rebuilt (`rebuild.log`) | byte for byte, ending `FF D9` | no API for it |
+| All 185 pages on the NAS, default threads (`nas.log`) | 29.39 s, 8 threads | 18.57 s, one thread, through `image`; 4.93 s through its own API with a parallel runner |
+
+Correctness came first, so jxl-oxide won: `jxl` fails the plan's
+Decision 7 (a decoder counts its own working memory against `max_alloc`),
+and its `rust-version` of 1.89 was above the 1.88 the workspace declared
+when the comparison was made (it declares 1.91 since #265). Speed would have
+chosen `jxl`. jxl-oxide is also the heavier: its peak heap was more than twice the
+page's decoded size on all 185 pages and `jxl`'s on 77, and the worst page
+took 26.81 and 2.34 times it (`mem.log`, its summary line). A
+GPL-3.0-or-later program can take in either licence. The NAS runs ran in a
+container of the deployed image with the share mounted read-only
+(`T1-report.md`, "Step 5"), at a load average between 3.34 and 5.26
+(`nas.log`).
+
+**The real archive.** Task 9 copied the Bisque Doll original and four
+volumes of two Bocchi the Rock! series into a scratch library and scanned
+it with release builds of main and of this branch. Main's scan counted the
+Bisque archive unreadable: "4 unreadable (1 whose pages could not be
+counted: …/Bisque Doll de Chu ♡.cbz, 3 holding no page images)"
+(`main-scan.txt`). This branch's scan of a copy of main's store read
+"0 added, 0 updated, 0 gone; derived 3 series, 5 works, 5 editions, 5
+members, 3 unreadable (3 holding no page images)" (`branch-scan.txt`). The
+Bisque row now holds 185 pages and the original's SHA-256, and every other
+row's count and digest are as main left them (`main-entries.tsv`,
+`branch-entries.tsv`). Bytes
+read per archive by that scan, under `strace` (`strace-bytes.tsv`):
+
+| Archive | Size | Bytes read | Reads |
+|---|---|---|---|
+| Bisque Doll de Chu ♡ | 167,884,874 | 167,975,902 | 11 |
+| Bocchi the Rock! - Anthology Comic v01 | 47,143,620 | 85,706 | 10 |
+| Bocchi the Rock! - Anthology Comic v02 | 46,959,500 | 86,938 | 10 |
+| Bocchi the Rock! - Gaiden v01 | 72,139,695 | 243,170 | 10 |
+| Bocchi the Rock! - Gaiden v02 | 72,951,385 | 244,374 | 10 |
+
+The Bisque archive was read whole once, to hash it, since main never hashes
+an entry it could not count (`strace.txt`); nothing else was hashed again.
+
+**A page each way.** On a release server over loopback, at a one-minute load
+average of 17.38 (`step5-curl.tsv`), the first and last pages of that
+work, as stored and as the JPEG made for a client that does not name
+`image/jxl`:
+
+| Page | As stored | The JPEG, made | The JPEG, from the cache |
+|---|---|---|---|
+| 0 | `image/jxl`, 339,199 bytes, 0.0186 s | 515,496 bytes, 0.206 s | 0.0012 s |
+| 184 | `image/jxl`, 474 bytes, 0.0105 s | 71,607 bytes, 0.142 s | 0.0008 s |
+
+Both JPEGs were decoded and encoded, not rebuilt: no page of this archive
+carries the data to rebuild a JPEG (`T1/rebuild.log`). Every answer
+carried `Vary: Accept`, and the stored body equalled the entry's bytes.
+The work's cover, asked for with each of the four curl `Accept`s below,
+was a JPEG at a `-j1` address (`v=…-0-2-j1`) with no `Vary` each time; the
+512 px cover's tag ends `-j1` as well, and the 160 px tile has no tag
+(`step5-cover.tsv`).
+
+**What each client sends.** The `Accept` a client sends for a page image,
+whether it names `image/jxl`, and what it was sent for a JPEG XL page at
+full size. The curl rows replay the three strings the plan's tests use,
+copied from earlier logs, and are not this run's devices:
+
+| Client | `Accept` | Names `image/jxl` | Sent | Where read |
+|---|---|---|---|---|
+| curl, with iPhone Safari's string (Version/26.6.1, from `o145-o146-o175-evidence/requests.jsonl`) | `image/webp,image/avif,image/jxl,image/heic,image/heic-sequence,video/*;q=0.8,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5` | yes | `image/jxl`, as stored | `T9/step5-curl.tsv`, `T9/requests.jsonl` |
+| curl, with Panels/950's string (from `panels-o55.jsonl`) | `image/jxl, image/heic, image/avif, image/webp, image/jpg, image/jpeg, image/jpe, image/jfif, image/jfi, image/jif, image/png, image/gif, image/bmp, image/dib, image/tiff, image/tif, image/*` | yes | `image/jxl`, as stored | `T9/step5-curl.tsv`, `T9/requests.jsonl` |
+| curl, with Chrome 154's string (from `o182-o138-evidence/requests.jsonl`) | `image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8` | no | `image/jpeg` | `T9/step5-curl.tsv`, `T9/requests.jsonl` |
+| curl, with no `Accept` | none | no | `image/jpeg` | `T9/step5-curl.tsv` |
+| Desktop Chrome 157, Linux | `image/jxl,image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8` | yes | `image/jxl`, as stored | `T9/chrome-network.tsv`, `T9/requests.jsonl` |
+| iPhone Safari 27.0.1 (`Version/`; the `iPhone OS 18_7` token is frozen), the owner's phone, in the reader | `image/webp,image/avif,image/jxl,image/heic,image/heic-sequence,video/*;q=0.8,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5` | yes | `?w=3072` pages 1-5: bytes equal the stored entries', so `image/jxl` as stored | `T9/clients.md`, `T9/requests.jsonl` lines 327-332 |
+| Desktop Firefox 161, Linux, the owner's, in the reader | `image/avif,image/jxl,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5` | yes | `?w=3072` pages 1-4: bytes equal the stored entries', so `image/jxl` as stored | `T9/clients.md`, `T9/requests.jsonl` lines 367-371 |
+| Panels/979 on the owner's iPad (iPadOS 27.0.1), over OPDS | `image/jxl, image/heic, image/avif, image/webp, image/jpg, image/jpeg, image/jpe, image/jfif, image/jfi, image/jif, image/png, image/gif, image/bmp, image/dib, image/tiff, image/tif, image/*` | yes | `/raw/pages/{n}` with no width, 101 pages: all 102 byte counts equal the stored entries', so `image/jxl` as stored; the cover (46,838 bytes) was no entry's size | `T9/clients.md`, `T9/requests.jsonl` lines 383-490 |
+
+Chrome 157 names `image/jxl` where the Chrome 154 the plan copied did not.
+In the reader it asked for its pages at `?w=1024`, a long edge below
+their own, so they were resized, and a resized page is always a JPEG: in
+the reader Chrome was sent JPEGs, tagged as the stored variant
+(`chrome-network.tsv`). The tests keep Chrome 154's string
+as a client that does not name JPEG XL.
+
+The owner judged the pages right in both, and, of Panels over OPDS, which asked for 101 pages with no width and was sent each as the stored JPEG XL, wrote "ok it seems to work" (`T9/clients.md`). The reader's widest rung, a long edge of 3072, is one the pages they read already fit, so both were sent the stored JPEG XL (byte counts equal the entries'; the log holds no content type; `T9/clients.md`), not the JPEG that Chrome's `?w=1024` got.
+
+**The one-time cost (the plan's Decision 3).** The variant is chosen from
+the request before the page is read, so a client that does not name
+`image/jxl` is given JPEG-variant tags, ending `-j1`, for every page it
+asks for, JPEG XL or not. After the upgrade such a client holds tags
+without it, so it fetches each page it had cached once more, and every
+library cover's `v=` gains `-j1` (`step5-cover.tsv`: `…-0-2-j1`), so each
+cover is fetched once at its new address. A client that names `image/jxl`
+keeps its tags. The owner was told of both on 2026-11-17 and raised no
+objection.
+
+**Memory after a burst (O349).** The release server above, at rest and
+while a client sending Chrome 154's `Accept` read all 185 pages at full
+size, four at a time (`t1d-summary.txt`, read from `/proc`):
+
+| When | VmRSS | Load average, one minute |
+|---|---|---|
+| At rest | 46,356 kB | 35.75 |
+| Peak, at the end of the read | 960,704 kB | 37.55 |
+| 30 s after the last response | 956,560 kB | 28.94 |
+| About 4.5 minutes later, Chrome's requests between | 754,880 kB | 13.15 |
+
+The read took 26.10 s, and two decodes run at once
+(`MAX_CONCURRENT_GENERATIONS`). Measured on this desktop, not on the NAS.
+
+**The ICC profile (O350).** Read in the source, not measured. jxl-color
+0.11.0's `read_icc` (`src/icc/decode.rs`) refuses an encoded size or a
+profile size above `1 << 28`, and resizes a buffer to the encoded size
+before decoding it; jxl-oxide 0.12.6's `JxlImageBuilder::read` reads its
+input 4 KiB at a time and, until the header is complete, calls `try_init`,
+which reads the profile, after each read. A file
+that does this has to be built by hand: in the whole-branch review `cjxl`
+refused a 100 MB profile from a PNG (`final-review-a.md`, M1).
+
+**Beyond the plan.** A page cut short is never decoded in part:
+jxl-oxide renders what it has of a frame not fully read, so the decoder
+first checks the first frame is whole; where the server has to decode such
+a page it refuses it, and a client that names `image/jxl` is sent the
+stored bytes as they are. Where the server has to decode a page, metadata
+boxes, `brob` boxes and a `jbrd` box's compressed stream, are capped at 16
+MiB together before jxl-oxide inflates them, which it does outside
+`max_alloc`; a page sent as stored at full size is not decoded, so the cap
+does not reach it. And every
+JPEG the server encodes from an image with transparency, of any format,
+lays it on white, covers and tiles included, with no format version
+moved: a rendering of a PNG page with transparency cached before the
+upgrade, a resized page, a tile or a cover, keeps the ground it was cached
+with until it is made again.
+
+### The rebase and its fix round (2026-11-18)
+
+Review after the rebase onto `be02b5ab` found the following. Each was changed
+on this branch except O388, which stays open. The logs named are under
+`.superpowers/sdd/jxl-pages-evidence/rebase-2026-11-18/fix-round/`.
+
+- **A folder kept a digest no read could hash to.** A folder's digest covers
+  the pages the reader of its day read, and counting `.jxl` moves no stamp,
+  so a folder holding both kinds kept that digest at its new count, and a
+  folder of just the hashed pages passed for it. A folder that holds a
+  digest, was listed whole and is walked at another page count than it
+  stored now gives the digest up as a changed folder does
+  (`scan::Held::digest_outdated_by`). In `real-upgrade.log`, a scratch
+  library scanned by main and then by a build with this change, `Delta v01`
+  went from 2 pages under `Eta v01`'s digest to 3 pages under a digest of
+  its own at the first scan, and the second scan reported 0 updated. While
+  its directory is paused such a folder waits for the Scan, read by its held
+  reading, which reverses call 6 of the paused-directory design's §8. A zip
+  keeps its digest, so O390 stands for zips alone.
+- **A directory newly nested over such a folder kept the old digest.** The
+  take-over copied it onto a row the nested walk had already written at the
+  new count, so no later walk saw the counts differ. `scan::carry_reading`
+  now gives the digest up and holds it, as the outer directory's walk would.
+- **A walk short of a directory stored its short count on a folder that kept
+  its digest.** Two defects had that one cause. A 3-page volume an outer walk
+  could not list whole was stored at 1 page; once it listed whole and a nested
+  directory took it over, the count of 3 read as a change, and a derive with
+  that directory paused wrote 1 page to the member with all 3 on disk. And a
+  nested directory's first walk that could not list `c001/part` stored 1 page
+  beside the digest of all 3; `part` then deleted, which moves no stamp of the
+  volume's, every later walk counted the 1 it had stored and the digest stayed.
+  A walk not listed whole, at a size and mtime that did not move, now changes
+  no digested folder's count, whether its total is lower or higher
+  (`scan::record`, `scan::carry_reading`); a folder whose size or mtime moved
+  is read as changed, its digest cleared and the walk's total stored. A higher
+  total stored hid the same loss: in
+  `probe-raised-count-then-lost-directory.log` a throwaway test stored 6 pages
+  beside a digest of 3, and the whole walk after the loss kept that digest. The
+  next walk that lists the folder whole compares its total with the stored
+  count and takes the digest again where they differ.
+- **O388: a zip replaced at the same size and mtime with another page count is
+  read by every pass.** A throwaway pass test read such a file again at each of
+  three passes, with the entry's stamp set to the replacement's rather than a
+  zip built to the same size. An intact copy sharing the digest was left with
+  the replaced file's row when the pass read the replaced file for it; when the
+  pass read the copy, the replaced file was left with the old pages' row, the
+  counts agreed and neither was read again (`item3-o388-probe.log`).
+- **A stored fingerprint row could number other pages than its file.** A
+  re-count keeps a zip's digest, so a row read before it went on numbering
+  the old pages. A whole or partial row of a zip this reader counted, whose
+  page count differs from the entry's, is now read again whichever build
+  stored it (`fingerprints::numbers_other_pages`).
+- **A lowered decode used the shared pool.** With the defect in place, a
+  decode on a lowered thread that started rayon's pool left the pool's
+  threads at niceness 19 with the process at 0
+  (`d3-red-against-the-defect.log`). A decode below the main thread's
+  priority now renders on that thread (`jxl::render_pool`).
+- **No test held `serve` to registering the decoder.**
+  `serve_registers_the_jpeg_xl_decoder` now starts `serve` in a process of
+  its own and decodes a JPEG XL fixture there.
+- **The metadata cap was claimed too widely**, as the page cut short had
+  been: a client that names `image/jxl` and asks for the page at full size
+  is sent the stored bytes with nothing decoded, so the cap holds where the
+  server has to decode the page.

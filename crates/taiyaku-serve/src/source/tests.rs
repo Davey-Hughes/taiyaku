@@ -165,3 +165,56 @@ fn a_riff_that_is_not_webp_and_an_ftyp_that_is_not_avif_are_not_images() {
     bare.extend_from_slice(b"avif");
     assert_eq!(sniffed_type(&bare), None);
 }
+
+/// Both JPEG XL signatures, each by its own assertion: a codestream is two
+/// bytes and a container twelve, so a check for one that were loosened to
+/// swallow the other would still pass the other's input.
+#[test]
+fn jpeg_xl_bytes_sniff_as_jpeg_xl() {
+    let mut codestream = JXL_CODESTREAM.to_vec();
+    codestream.extend_from_slice(&[0x12, 0x34]);
+    assert_eq!(
+        sniffed_type(&codestream),
+        Some("image/jxl"),
+        "the codestream signature and bytes after it"
+    );
+
+    let mut container = JXL_CONTAINER.to_vec();
+    container.extend_from_slice(b"ftyp");
+    assert_eq!(
+        sniffed_type(&container),
+        Some("image/jxl"),
+        "the container signature and bytes after it"
+    );
+
+    assert_eq!(
+        sniffed_type(JXL_CODESTREAM),
+        Some("image/jxl"),
+        "the two codestream bytes alone"
+    );
+
+    let mut broken = container.clone();
+    broken[7] ^= 0xff;
+    assert_eq!(
+        sniffed_type(&broken),
+        None,
+        "a container signature with its eighth byte changed"
+    );
+
+    assert_eq!(
+        sniffed_type(b"\xff\xd8\xff\xe0\x00\x10JFIF"),
+        Some("image/jpeg"),
+        "a JPEG still sniffs as a JPEG"
+    );
+    assert_eq!(
+        sniffed_type(b"\xff\xd8"),
+        None,
+        "two bytes of a JPEG signature are not a codestream"
+    );
+    assert_eq!(
+        sniffed_type(b"\xff\x0b\x00\x00"),
+        None,
+        "FF followed by anything but 0A is not a codestream"
+    );
+    assert_eq!(type_from_extension("p.JXL"), "image/jxl");
+}

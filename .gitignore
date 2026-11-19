@@ -13,8 +13,8 @@
 # directory is meant here.
 #
 # `fixtures/` and `testdata/` below are deliberately left unanchored: those names
-# carry the copyright risk this block exists for wherever they appear, and the
-# one legitimate `fixtures/` in the tree is re-admitted by name just below. If a
+# carry the copyright risk this block exists for wherever they appear, and each
+# legitimate `fixtures/` in the tree is re-admitted by name just below. If a
 # source directory ever needs one of those names, re-admit it the same way rather
 # than loosening the rule.
 /corpus/
@@ -34,6 +34,11 @@ testdata/
 !crates/taiyaku-read/fixtures/rar/*.rar
 !crates/taiyaku-read/fixtures/rar/*.manifest
 !crates/taiyaku-read/fixtures/rar/make.sh
+
+# The JPEG XL decoder's fixtures: drawn from fixed seeds by the make.sh beside
+# them, never taken from a published page, so there is nothing copyrighted to
+# keep out. Its images are re-admitted one by one under "images" below.
+!crates/taiyaku-serve/fixtures/
 
 # Generated alignment output and derived caches. Reproducible from the corpus.
 taiyaku.json
@@ -217,10 +222,39 @@ web/.vitest-attachments/
 *.gif
 *.webp
 *.avif
+*.jxl
 *.bmp
 *.tiff
 *.tif
 *.ico
 *.svg
 
-# Deliberate images, one `!` line each. (None yet.)
+# Deliberate images, one `!` line each.
+#
+# The JPEG XL decoder's pages, references and sources, drawn by
+# crates/taiyaku-serve/fixtures/jxl/make.sh from fixed seeds: no published page.
+!crates/taiyaku-serve/fixtures/jxl/alpha.djxl.png
+!crates/taiyaku-serve/fixtures/jxl/alpha.jxl
+!crates/taiyaku-serve/fixtures/jxl/animated.djxl.png
+!crates/taiyaku-serve/fixtures/jxl/animated.frame1.png
+!crates/taiyaku-serve/fixtures/jxl/animated.frame2.png
+!crates/taiyaku-serve/fixtures/jxl/animated.jxl
+!crates/taiyaku-serve/fixtures/jxl/bomb.jxl
+!crates/taiyaku-serve/fixtures/jxl/grey.djxl.png
+!crates/taiyaku-serve/fixtures/jxl/grey.jxl
+!crates/taiyaku-serve/fixtures/jxl/large.djxl.png
+!crates/taiyaku-serve/fixtures/jxl/large.jxl
+!crates/taiyaku-serve/fixtures/jxl/lossless.djxl.png
+!crates/taiyaku-serve/fixtures/jxl/lossless.jxl
+!crates/taiyaku-serve/fixtures/jxl/lossless.png
+!crates/taiyaku-serve/fixtures/jxl/lossy.djxl.png
+!crates/taiyaku-serve/fixtures/jxl/lossy.jxl
+!crates/taiyaku-serve/fixtures/jxl/metadata-at-cap.jxl
+!crates/taiyaku-serve/fixtures/jxl/metadata-past-cap.jxl
+!crates/taiyaku-serve/fixtures/jxl/metadata-two-4mib.jxl
+!crates/taiyaku-serve/fixtures/jxl/metadata-two-9mib.jxl
+!crates/taiyaku-serve/fixtures/jxl/recompressed.djxl.png
+!crates/taiyaku-serve/fixtures/jxl/recompressed.jpg
+!crates/taiyaku-serve/fixtures/jxl/recompressed.jxl
+!crates/taiyaku-serve/fixtures/jxl/trailing.jpg
+!crates/taiyaku-serve/fixtures/jxl/trailing.jxl

@@ -54,7 +54,7 @@ pub(crate) fn write_archive(path: &Path, pages: usize) {
 /// `jpg`.
 ///
 /// O90: an archive whose entries are all a format `taiyaku-read` does not
-/// read as a page (`jxl`, say) opens cleanly and still has no page count,
+/// read as a page (`heic`, say) opens cleanly and still has no page count,
 /// which is a different fact from an archive that will not open.
 pub(crate) fn write_archive_of(path: &Path, pages: usize, extension: &str) {
     write_archive_labelled(path, pages, extension, &path.to_string_lossy());
@@ -697,7 +697,7 @@ fn an_unchanged_container_is_not_reopened() {
 fn a_files_modification_time_reaches_its_scan_entry() {
     let dir = crate::tests::tempdir("scan-mtime");
     // A member is a *directory* of pages, which is why its mtime is the field
-    // `unchanged` compares — and why O56 exists: a directory's stamp does not
+    // `due` compares — and why O56 exists: a directory's stamp does not
     // move when the bytes inside an existing child change.
     let volume = dir.path().join("Series").join("Series - v01");
     write_pages(&volume, 2);
@@ -742,7 +742,7 @@ fn a_files_modification_time_reaches_its_scan_entry() {
         member.mtime, STAMPED,
         "the scan entry carries a modification time that is not the member's; a \
          constant here makes every rescan see an unchanged tree, because \
-         `unchanged` compares (size, mtime)"
+         `due` compares (size, mtime)"
     );
 }
 
@@ -10122,7 +10122,8 @@ fn read_on_raw_slot_2() -> (String, i64, String, i64, Option<String>) {
 /// nothing removed; the works, the reader's position and note and the
 /// hand-set title are kept; each file's row is Manga's again, at `kids/…`, and
 /// is copied with the digest and title Kids held; its members are Manga's; and the series
-/// is Manga's `kids` again. Removing Kids' whole library does the same.
+/// is Manga's `kids` again. Removing Kids' whole library does the same. Each row
+/// keeps the reader it was counted by, so Manga's next scan counts neither again.
 #[test]
 fn removing_a_nested_directory_hands_its_files_to_the_directory_around_it() {
     for whole_library in [false, true] {
@@ -10143,6 +10144,14 @@ fn removing_a_nested_directory_hands_its_files_to_the_directory_around_it() {
             [h.kids.id],
         )
         .expect("titles Kids' rows");
+        assert_eq!(
+            conn.execute(
+                "UPDATE scan_entry SET counted_by = ?2 WHERE root_id = ?1 AND kind = 'file'",
+                rusqlite::params![h.kids.id, zip_signature()],
+            ),
+            Ok(2),
+            "the fixture: Kids' two files, counted by this reader"
+        );
         {
             // The digests as copied, before a derive could hash the files again.
             let tx = crate::Nested::open(&conn, "hand_back").expect("opens a transaction");
@@ -10198,6 +10207,11 @@ fn removing_a_nested_directory_hands_its_files_to_the_directory_around_it() {
                 "every member of {rel} is Manga's: {roots:?}"
             );
             assert_eq!(held, [h.manga.id], "{rel}'s member_root");
+            assert_eq!(
+                count_at(&conn, h.manga.id, &format!("kids/{rel}")).2,
+                zip_signature(),
+                "{rel}'s reader, whole_library={whole_library}"
+            );
         }
         assert_eq!(
             (
@@ -10210,6 +10224,11 @@ fn removing_a_nested_directory_hands_its_files_to_the_directory_around_it() {
         assert_eq!(the_reader(&conn, h.v01), read_on_raw_slot_2());
         assert!(h.series_before.contains(&"kids".to_string()), "the fixture");
         assert_eq!(series_names(&conn), h.series_before);
+        assert_eq!(
+            scanned_reading(&conn, &h.manga).1,
+            Some(0),
+            "Manga's next scan counts nothing again, whole_library={whole_library}"
+        );
     }
 }
 
@@ -12368,4 +12387,1101 @@ fn a_listing_counts_loose_page_images_as_files_found() {
             .collect::<Vec<_>>(),
         "four page images and one archive, each reported as it is found"
     );
+}
+
+// --- Counting again when the reader changes (O130) --------------------------
+
+/// The signature this build counts a zip's pages under.
+fn zip_signature() -> Option<String> {
+    taiyaku_read::Format::Zip
+        .token()
+        .and_then(taiyaku_read::reader_signature)
+}
+
+/// A digest planted by hand: `digit` 64 times.
+fn planted(digit: char) -> String {
+    digit.to_string().repeat(64)
+}
+
+/// `root_id`'s row at `rel_path`: its `pages`, `sha256` and `counted_by`.
+fn count_at(
+    conn: &Connection,
+    root_id: i64,
+    rel_path: &str,
+) -> (Option<i64>, Option<String>, Option<String>) {
+    conn.query_row(
+        "SELECT pages, sha256, counted_by FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+        rusqlite::params![root_id, rel_path],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .unwrap_or_else(|e| panic!("{rel_path} has a row: {e}"))
+}
+
+/// Scan `root`, and answer its report and how many entries it had to read:
+/// the `of` of its first Resolving report.
+fn scanned_reading(conn: &Connection, root: &Root) -> (ScanReport, Option<u64>) {
+    let watch = crate::test_support::Recording::default();
+    let outcome = scan_root_watched(conn, root, &watch).expect("scans");
+    let Outcome::Done(report) = outcome else {
+        panic!("the scan ran to the end: {outcome:?}");
+    };
+    let of = watch
+        .reports()
+        .into_iter()
+        .find(|(step, _, _)| *step == Step::Resolving)
+        .and_then(|(_, _, of)| of);
+    (report, of)
+}
+
+/// `a.cbz` (three `.jxl` pages) and `b.cbz` (two JPEG pages), scanned, then
+/// planted as counted before signatures existed: by no signature, `a.cbz`
+/// with no count, and each with a digest (`planted('a')`, `planted('b')`).
+fn counted_before_signatures(label: &str) -> (crate::tests::TempDir, Library, Root) {
+    let tree = crate::tests::tempdir(label);
+    write_archive_of(&tree.path().join("a.cbz"), 3, "jxl");
+    write_archive(&tree.path().join("b.cbz"), 2);
+    let library = Library::open_in_memory().expect("open");
+    let root = {
+        let conn = library.conn();
+        let root = add_root(&conn, tree.path()).expect("add");
+        scan_root(&conn, &root).expect("scans");
+        conn.execute_batch(&format!(
+            "UPDATE scan_entry SET pages = NULL, counted_by = NULL, sha256 = '{}'
+              WHERE rel_path = 'a.cbz';
+             UPDATE scan_entry SET counted_by = NULL, sha256 = '{}' WHERE rel_path = 'b.cbz';",
+            planted('a'),
+            planted('b'),
+        ))
+        .expect("plants a row counted before signatures existed");
+        assert_eq!(
+            (
+                count_at(&conn, root.id, "a.cbz"),
+                count_at(&conn, root.id, "b.cbz")
+            ),
+            (
+                (None, Some(planted('a')), None),
+                (Some(2), Some(planted('b')), None)
+            ),
+            "the fixture: counted before signatures existed"
+        );
+        root
+    };
+    (tree, library, root)
+}
+
+/// What a scan before signatures left is counted again by the next scan,
+/// which opens each archive and hashes neither: `a.cbz` gets its count, both
+/// keep their digests, and neither reads as updated or added (O130).
+#[test]
+fn an_archive_counted_by_another_reader_is_counted_again_and_not_hashed() {
+    let (_tree, library, root) = counted_before_signatures("scan-recount");
+    let conn = library.conn();
+
+    let (report, of) = scanned_reading(&conn, &root);
+
+    assert_eq!(of, Some(2), "both archives are read again");
+    assert_eq!(
+        count_at(&conn, root.id, "a.cbz"),
+        (Some(3), Some(planted('a')), zip_signature()),
+        "a.cbz"
+    );
+    assert_eq!(
+        count_at(&conn, root.id, "b.cbz"),
+        (Some(2), Some(planted('b')), zip_signature()),
+        "b.cbz"
+    );
+    assert_eq!((report.updated, report.added), (0, 0), "{report:?}");
+}
+
+/// A count taken again holds the reading it replaces as a changed file's is
+/// held: the first one only, so a reading already held is kept, and only where
+/// the count changes, so a count taken again at the same number holds nothing.
+#[test]
+fn a_count_taken_again_holds_only_a_first_reading_and_only_where_the_count_changes() {
+    let (_tree, library, root) = counted_before_signatures("scan-recount-held");
+    let conn = library.conn();
+    let held = (
+        Some(planted('h')),
+        Some("zip".to_string()),
+        Some(7),
+        Some("held title".to_string()),
+    );
+    assert_eq!(
+        conn.execute(
+            "UPDATE scan_entry
+                SET held_sha256 = ?2, held_format = ?3, held_pages = ?4, held_title = ?5
+              WHERE root_id = ?1 AND rel_path = 'a.cbz'",
+            rusqlite::params![root.id, held.0, held.1, held.2, held.3],
+        ),
+        Ok(1),
+        "the fixture: a.cbz already holds a reading"
+    );
+
+    scan_root(&conn, &root).expect("scans again");
+
+    assert_eq!(
+        (
+            count_at(&conn, root.id, "a.cbz").0,
+            held_reading(&conn, root.id, "a.cbz")
+        ),
+        (Some(3), held),
+        "a.cbz is counted again at three pages and keeps the reading it held"
+    );
+    assert_eq!(
+        (
+            count_at(&conn, root.id, "b.cbz").0,
+            held_reading(&conn, root.id, "b.cbz")
+        ),
+        (Some(2), (None, None, None, None)),
+        "b.cbz is counted again at the two pages it had and holds nothing"
+    );
+}
+
+/// Counted again once, an archive is not opened by the scan after.
+#[test]
+fn an_archive_counted_by_this_reader_is_not_opened_again() {
+    let (_tree, library, root) = counted_before_signatures("scan-recounted");
+    let conn = library.conn();
+    assert_eq!(
+        scanned_reading(&conn, &root).1,
+        Some(2),
+        "the fixture: both archives are counted again"
+    );
+
+    let (_, of) = scanned_reading(&conn, &root);
+
+    assert_eq!(of, Some(0));
+}
+
+/// A folder's pages are counted by every walk, so it keeps no signature, and
+/// a folder of `.jxl` pages is not read again (O130).
+#[test]
+fn a_folder_is_not_counted_again_by_signature() {
+    let tree = crate::tests::tempdir("scan-recount-folder");
+    let folder = tree.path().join("Vol 1");
+    std::fs::create_dir_all(&folder).expect("mkdir");
+    for page in 0..3 {
+        std::fs::write(
+            folder.join(format!("{page:03}.jxl")),
+            format!("not really a jxl: page {page}"),
+        )
+        .expect("write");
+    }
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("add");
+    scan_root(&conn, &root).expect("scans");
+    assert_eq!(
+        count_at(&conn, root.id, "Vol 1"),
+        (Some(3), None, None),
+        "three pages, by no signature"
+    );
+
+    let (_, of) = scanned_reading(&conn, &root);
+
+    assert_eq!(of, Some(0));
+}
+
+/// Review Focus 4: a scan cancelled while counts are due writes nothing, and
+/// the next scan counts the archives again.
+#[test]
+fn a_cancel_while_counting_again_writes_nothing() {
+    let (_tree, library, root) = counted_before_signatures("scan-recount-cancel");
+    let conn = library.conn();
+    let watch = crate::test_support::Recording::cancelling(|(step, _, _)| step == Step::Resolving);
+
+    let outcome = scan_root_watched(&conn, &root, &watch).expect("walks");
+
+    assert!(
+        matches!(outcome, Outcome::Cancelled(Step::Resolving)),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        (
+            count_at(&conn, root.id, "a.cbz"),
+            count_at(&conn, root.id, "b.cbz")
+        ),
+        (
+            (None, Some(planted('a')), None),
+            (Some(2), Some(planted('b')), None)
+        ),
+        "the rows are as planted"
+    );
+    scan_root(&conn, &root).expect("scans again");
+    assert_eq!(
+        count_at(&conn, root.id, "a.cbz"),
+        (Some(3), Some(planted('a')), zip_signature()),
+        "the next scan counts a.cbz again"
+    );
+}
+
+/// A zip that will not open has no count under this reader either, and is
+/// counted once: its signature is stored with no count, so the scan after it
+/// does not open it again.
+#[test]
+fn an_archive_that_will_not_open_is_counted_once() {
+    let tree = crate::tests::tempdir("scan-recount-broken");
+    let mut bytes = b"PK\x03\x04".to_vec();
+    bytes.extend_from_slice(b"and no zip entry after the signature");
+    std::fs::write(tree.path().join("broken.cbz"), bytes).expect("write");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("add");
+    scan_root(&conn, &root).expect("scans");
+    conn.execute(
+        "UPDATE scan_entry SET counted_by = NULL WHERE rel_path = 'broken.cbz'",
+        [],
+    )
+    .expect("plants a row counted before signatures existed");
+    let format: Option<String> = conn
+        .query_row(
+            "SELECT format FROM scan_entry WHERE rel_path = 'broken.cbz'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("reads the row");
+    assert_eq!(
+        format.as_deref(),
+        taiyaku_read::Format::Zip.token(),
+        "the fixture: the bytes sniff as a zip"
+    );
+
+    scan_root(&conn, &root).expect("scans again");
+
+    assert_eq!(
+        count_at(&conn, root.id, "broken.cbz"),
+        (None, None, zip_signature()),
+        "no count, by this reader"
+    );
+    assert_eq!(scanned_reading(&conn, &root).1, Some(0), "not opened again");
+}
+
+/// A count taken again whose read fails keeps the row as it was, signature
+/// and all, so a reader change never costs a member its count, and the next
+/// scan tries again. Each case's bytes are replaced at the size and mtime the
+/// row holds, so the walk still sees the file unchanged.
+#[test]
+fn a_count_taken_again_whose_read_fails_keeps_the_row_and_is_tried_again() {
+    for (case, page_extension, zip_signature_kept) in [
+        ("a counted zip that no longer sniffs as one", "jpg", false),
+        ("a counted zip that no longer opens", "jpg", true),
+        (
+            "an uncounted zip that no longer sniffs as one",
+            "heic",
+            false,
+        ),
+    ] {
+        let tree = crate::tests::tempdir("scan-recount-unread");
+        let archive = tree.path().join("a.cbz");
+        write_archive_of(&archive, 2, page_extension);
+        let library = Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        let root = add_root(&conn, tree.path()).expect("add");
+        scan_root(&conn, &root).expect("scans");
+        conn.execute(
+            "UPDATE scan_entry SET counted_by = NULL WHERE rel_path = 'a.cbz'",
+            [],
+        )
+        .expect("plants a row counted before signatures existed");
+        let row = |conn: &Connection| -> (Option<String>, Option<i64>, Option<String>) {
+            conn.query_row(
+                "SELECT format, pages, counted_by FROM scan_entry WHERE rel_path = 'a.cbz'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("reads the row")
+        };
+        let planted = row(&conn);
+        let was = std::fs::metadata(&archive).expect("stats the archive");
+        let mut junk = if zip_signature_kept {
+            b"PK\x03\x04".to_vec()
+        } else {
+            Vec::new()
+        };
+        junk.resize(usize::try_from(was.len()).expect("a small archive"), b'x');
+        std::fs::write(&archive, &junk).expect("overwrites the archive");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&archive)
+            .and_then(|file| file.set_modified(was.modified()?))
+            .expect("puts the mtime back");
+        let now = std::fs::metadata(&archive).expect("stats the archive again");
+        assert_eq!(
+            (
+                (now.len(), now.modified().ok()),
+                taiyaku_read::sniff(&archive)
+                    .ok()
+                    .and_then(taiyaku_read::Format::token),
+                taiyaku_read::member_pages(&archive).is_err(),
+                planted.clone(),
+            ),
+            (
+                (was.len(), was.modified().ok()),
+                taiyaku_read::Format::Zip
+                    .token()
+                    .filter(|_| zip_signature_kept),
+                true,
+                (
+                    taiyaku_read::Format::Zip.token().map(str::to_string),
+                    (page_extension == "jpg").then_some(2),
+                    None
+                ),
+            ),
+            "the fixture, {case}: unchanged to the walk, unreadable, and counted before signatures existed"
+        );
+
+        scan_root(&conn, &root).expect("scans again");
+
+        assert_eq!(row(&conn), planted, "{case}: the row is kept");
+        assert_eq!(
+            scanned_reading(&conn, &root).1,
+            Some(1),
+            "{case}: the next scan tries again"
+        );
+    }
+}
+
+/// A file new to the store, and one whose bytes changed, are each counted by
+/// this reader, so no later scan counts them again.
+#[test]
+fn a_new_or_changed_archive_records_this_readers_signature() {
+    let tree = crate::tests::tempdir("scan-signature-written");
+    let archive = tree.path().join("a.cbz");
+    write_archive(&archive, 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("add");
+    scan_root(&conn, &root).expect("scans");
+    assert_eq!(
+        count_at(&conn, root.id, "a.cbz").2,
+        zip_signature(),
+        "the new file's row"
+    );
+    conn.execute(
+        "UPDATE scan_entry SET counted_by = NULL WHERE rel_path = 'a.cbz'",
+        [],
+    )
+    .expect("plants a row counted before signatures existed");
+    write_archive(&archive, 3);
+
+    let report = scan_root(&conn, &root).expect("scans again");
+
+    assert_eq!(report.updated, 1, "the fixture: a.cbz changed");
+    assert_eq!(
+        count_at(&conn, root.id, "a.cbz").2,
+        zip_signature(),
+        "the changed file's row"
+    );
+}
+
+/// The folder volume [`counted_short_of_a_page`] leaves.
+pub(crate) const SHORT_FOLDER: &str = "S/S - v01";
+
+/// [`SHORT_FOLDER`] under `top` as a reader that did not read `.jxl` left it:
+/// walked and derived over its two JPEG pages, with a third page beside them
+/// that reader passed over.
+pub(crate) fn counted_short_of_a_page(conn: &Connection, top: &Path) -> Root {
+    write_pages(&top.join(SHORT_FOLDER), 2);
+    let root = add_root(conn, top).expect("adds the directory");
+    scan_root(conn, &root).expect("walks it");
+    crate::derive::derive(conn).expect("derives");
+    holds_a_page_it_was_not_counted_with(conn, &root, SHORT_FOLDER);
+    root
+}
+
+/// A page in `folder` that the walk behind its row passed over: the row takes
+/// the folder's stamp as it stands with the page there, so no stamp moves when
+/// a reader first counts it.
+pub(crate) fn holds_a_page_it_was_not_counted_with(conn: &Connection, root: &Root, folder: &str) {
+    let dir = root.path.join(folder);
+    std::fs::write(dir.join("002.jxl"), b"a page that reader passed over").expect("write");
+    let (size, mtime) = crate::fingerprints::stamp_of(&dir).expect("the folder's stamp");
+    conn.execute(
+        "UPDATE scan_entry SET size = ?1, mtime = ?2 WHERE root_id = ?3 AND rel_path = ?4",
+        rusqlite::params![size, mtime, root.id, folder],
+    )
+    .expect("records the stamp");
+}
+
+/// `page` of `dir` rewritten in place, which moves no stamp of the folder's, so
+/// the digest a hash would find differs from `digest` from here on: a digest
+/// still `digest` afterwards was not taken again.
+fn rewritten_so_a_hash_would_show(dir: &Path, page: &str, digest: &str) {
+    std::fs::write(dir.join(page), b"other bytes under the same name").expect("write");
+    assert_ne!(
+        taiyaku_read::member_digest(dir).expect("hashes the folder"),
+        digest,
+        "the fixture: a hash now finds other bytes"
+    );
+}
+
+/// The digest hashed the pages one reader read, and this reader counts more
+/// under the same stamp, so no read of the folder hashes to it again.
+#[test]
+fn a_folder_counted_anew_under_a_still_stamp_gives_up_its_digest_and_holds_it() {
+    let tree = crate::tests::tempdir("scan-counted-anew");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = counted_short_of_a_page(&conn, tree.path());
+    let digest = digest_at(&conn, &root, SHORT_FOLDER).expect("the derive took its digest");
+
+    let report = scan_root(&conn, &root).expect("walks it again");
+
+    assert_eq!(report.updated, 1, "read as a changed folder is");
+    assert_eq!(
+        digest_at(&conn, &root, SHORT_FOLDER),
+        None,
+        "its digest goes"
+    );
+    assert_eq!(
+        held_reading(&conn, root.id, SHORT_FOLDER),
+        (Some(digest), Some("dir".to_string()), Some(2), None),
+        "and is held with the count it was taken under"
+    );
+}
+
+/// The upgrade promises to hash only what it must.
+#[test]
+fn a_folder_whose_count_stands_is_not_hashed_again() {
+    let tree = crate::tests::tempdir("scan-count-stands");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    write_pages(&tree.path().join(SHORT_FOLDER), 2);
+    let root = add_root(&conn, tree.path()).expect("adds the directory");
+    scan_root(&conn, &root).expect("walks it");
+    crate::derive::derive(&conn).expect("derives");
+    let digest = digest_at(&conn, &root, SHORT_FOLDER).expect("the derive took its digest");
+    rewritten_so_a_hash_would_show(&root.path.join(SHORT_FOLDER), "000.jpg", &digest);
+
+    let report = scan_root(&conn, &root).expect("walks it again");
+    crate::derive::derive(&conn).expect("derives again");
+
+    assert_eq!(report.updated, 0, "nothing the walk read as changed");
+    assert_eq!(digest_at(&conn, &root, SHORT_FOLDER), Some(digest));
+}
+
+/// An archive's walk finds no page total to hold its count against.
+#[test]
+fn an_archive_the_walk_passes_keeps_its_digest() {
+    const ARCHIVE: &str = "S/S - v01.cbz";
+    let tree = crate::tests::tempdir("scan-archive-stands");
+    write_archive(&tree.path().join(ARCHIVE), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("adds the directory");
+    scan_root(&conn, &root).expect("walks it");
+    crate::derive::derive(&conn).expect("derives");
+    let digest = digest_at(&conn, &root, ARCHIVE).expect("the derive took its digest");
+
+    let report = scan_root(&conn, &root).expect("walks it again");
+
+    assert_eq!(report.updated, 0, "nothing the walk read as changed");
+    assert_eq!(digest_at(&conn, &root, ARCHIVE), Some(digest));
+}
+
+/// The count is stored as the digest goes, so the next walk finds them agreeing
+/// and every walk after the first costs no hash.
+#[test]
+fn a_walk_after_the_digest_was_taken_again_hashes_nothing() {
+    let tree = crate::tests::tempdir("scan-second-walk");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = counted_short_of_a_page(&conn, tree.path());
+    let earlier = digest_at(&conn, &root, SHORT_FOLDER).expect("the derive took its digest");
+    scan_root(&conn, &root).expect("walks it again");
+    crate::derive::derive(&conn).expect("derives again");
+    let taken = digest_at(&conn, &root, SHORT_FOLDER).expect("the digest is taken again");
+    assert_ne!(taken, earlier, "the fixture: it hashed the third page too");
+    rewritten_so_a_hash_would_show(&root.path.join(SHORT_FOLDER), "000.jpg", &taken);
+
+    let report = scan_root(&conn, &root).expect("walks it a third time");
+    crate::derive::derive(&conn).expect("derives a third time");
+
+    assert_eq!(report.updated, 0, "nothing the walk read as changed");
+    assert_eq!(digest_at(&conn, &root, SHORT_FOLDER), Some(taken));
+}
+
+/// A series folder's total moves with every volume beneath it, and it holds no
+/// digest to take again.
+#[test]
+fn a_total_moved_from_beneath_hashes_no_folder_that_holds_no_digest() {
+    let tree = crate::tests::tempdir("scan-series-total");
+    write_pages(&tree.path().join("S").join("S - v01"), 2);
+    write_pages(&tree.path().join("S").join("S - v02"), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("adds the directory");
+    scan_root(&conn, &root).expect("walks it");
+    crate::derive::derive(&conn).expect("derives");
+    let untouched = digest_at(&conn, &root, "S/S - v01").expect("the volume's digest");
+    assert_eq!(digest_at(&conn, &root, "S"), None, "the fixture: no digest");
+    write_pages(&tree.path().join("S").join("S - v02"), 3);
+
+    let report = scan_root(&conn, &root).expect("walks it again");
+    crate::derive::derive(&conn).expect("derives again");
+
+    assert_eq!(
+        report.updated, 1,
+        "the volume that changed, and not its series"
+    );
+    assert_eq!(digest_at(&conn, &root, "S"), None);
+    assert_eq!(digest_at(&conn, &root, "S/S - v01"), Some(untouched));
+}
+
+/// A volume's digest takes in its chapter folders, so a page added to one moves
+/// the volume's total and its digest, once.
+#[test]
+fn a_page_added_beneath_a_volume_has_it_hashed_once() {
+    let tree = crate::tests::tempdir("scan-beneath-a-volume");
+    let volume = tree.path().join(SHORT_FOLDER);
+    write_pages(&volume, 1);
+    write_pages(&volume.join("c001"), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("adds the directory");
+    scan_root(&conn, &root).expect("walks it");
+    crate::derive::derive(&conn).expect("derives");
+    let earlier = digest_at(&conn, &root, SHORT_FOLDER).expect("the volume's digest");
+    write_pages(&root.path.join(SHORT_FOLDER).join("c001"), 3);
+
+    scan_root(&conn, &root).expect("walks it again");
+    crate::derive::derive(&conn).expect("derives again");
+    let taken = digest_at(&conn, &root, SHORT_FOLDER).expect("the digest is taken again");
+    assert_ne!(taken, earlier, "the new page is in the digest");
+    rewritten_so_a_hash_would_show(&root.path.join(SHORT_FOLDER), "000.jpg", &taken);
+
+    scan_root(&conn, &root).expect("walks it a third time");
+    crate::derive::derive(&conn).expect("derives a third time");
+
+    assert_eq!(digest_at(&conn, &root, SHORT_FOLDER), Some(taken));
+}
+
+/// A total short of what could not be listed says nothing of the pages, and a
+/// digest given up now could not be taken again while the folder stays
+/// unreadable: the derive would name the volume gone.
+#[test]
+fn a_folder_the_walk_could_not_list_whole_keeps_its_digest() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let tree = crate::tests::tempdir("scan-unlisted-beneath");
+    let volume = tree.path().join(SHORT_FOLDER);
+    write_pages(&volume, 1);
+    write_pages(&volume.join("c001").join("part"), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("adds the directory");
+    scan_root(&conn, &root).expect("walks it");
+    crate::derive::derive(&conn).expect("derives");
+    let digest = digest_at(&conn, &root, SHORT_FOLDER).expect("the volume's digest");
+    let locked = root.path.join(SHORT_FOLDER).join("c001").join("part");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    // chmod does not stop root, which CI's container runs as.
+    if std::fs::read_dir(&locked).is_ok() {
+        eprintln!(
+            "NOT MEASURED: a_folder_the_walk_could_not_list_whole_keeps_its_digest (this process can list a 0000 directory)"
+        );
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        return;
+    }
+
+    let report = scan_root(&conn, &root).expect("walks what it can");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    assert_eq!(
+        report.unreadable_dirs.len(),
+        1,
+        "the fixture: part is not listed"
+    );
+    assert_eq!(digest_at(&conn, &root, SHORT_FOLDER), Some(digest));
+    assert_eq!(
+        held_reading(&conn, root.id, SHORT_FOLDER).0,
+        None,
+        "nothing held"
+    );
+}
+
+/// A page gone from a chapter moves the volume's total and no stamp of the
+/// volume's, so only the count says the digest hashed a page it no longer holds.
+#[test]
+fn a_page_removed_beneath_a_volume_has_it_hashed_once() {
+    let tree = crate::tests::tempdir("scan-removed-beneath");
+    let volume = tree.path().join(SHORT_FOLDER);
+    write_pages(&volume, 1);
+    write_pages(&volume.join("c001"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("adds the directory");
+    scan_root(&conn, &root).expect("walks it");
+    crate::derive::derive(&conn).expect("derives");
+    let earlier = digest_at(&conn, &root, SHORT_FOLDER).expect("the volume's digest");
+    let stamp = crate::fingerprints::stamp_of(&volume);
+    std::fs::remove_file(volume.join("c001").join("002.jpg")).expect("removes a page");
+    assert_eq!(
+        crate::fingerprints::stamp_of(&volume),
+        stamp,
+        "the fixture: the volume's stamp stands"
+    );
+
+    scan_root(&conn, &root).expect("walks it again");
+    crate::derive::derive(&conn).expect("derives again");
+
+    let taken = digest_at(&conn, &root, SHORT_FOLDER).expect("the digest is taken again");
+    assert_ne!(taken, earlier, "the removed page has left the digest");
+    assert_eq!(
+        taken,
+        taiyaku_read::member_digest(&volume).expect("hashes the folder")
+    );
+}
+
+/// The walk of a directory newly nested over a folder is the first to count it
+/// anew, and every walk after it finds its own count standing, so the digest
+/// has to go here or it never goes.
+#[test]
+fn a_folder_counted_anew_gives_up_its_digest_to_the_directory_nested_over_it() {
+    const OWN: &str = "S - v01";
+    let tree = crate::tests::tempdir("scan-nested-counted-anew");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = counted_short_of_a_page(&conn, tree.path());
+    let digest = digest_at(&conn, &root, SHORT_FOLDER).expect("the derive took its digest");
+    let kids = add_root_checked_in(&conn, &root.path.join("S"), InLibrary::Named("Kids"))
+        .expect("Kids is added inside the directory")
+        .root;
+
+    scan_root(&conn, &kids).expect("walks it");
+
+    assert_eq!(digest_at(&conn, &kids, OWN), None, "its digest goes");
+    assert_eq!(
+        held_reading(&conn, kids.id, OWN),
+        (Some(digest), Some("dir".to_string()), Some(2), None),
+        "and is held with the count it was taken under"
+    );
+    crate::derive::derive(&conn).expect("derives");
+    assert_eq!(
+        digest_at(&conn, &kids, OWN),
+        Some(taiyaku_read::member_digest(&kids.path.join(OWN)).expect("hashes the folder")),
+        "the derive takes it again over every page"
+    );
+}
+
+/// The upgrade hashes only what it must, and a take-over is no reason to.
+#[test]
+fn a_folder_whose_count_stands_keeps_its_digest_for_the_directory_nested_over_it() {
+    const OWN: &str = "S - v01";
+    let tree = crate::tests::tempdir("scan-nested-count-stands");
+    write_pages(&tree.path().join(SHORT_FOLDER), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("adds the directory");
+    scan_root(&conn, &root).expect("walks it");
+    crate::derive::derive(&conn).expect("derives");
+    let digest = digest_at(&conn, &root, SHORT_FOLDER).expect("the derive took its digest");
+    rewritten_so_a_hash_would_show(&root.path.join(SHORT_FOLDER), "000.jpg", &digest);
+    let kids = add_root_checked_in(&conn, &root.path.join("S"), InLibrary::Named("Kids"))
+        .expect("Kids is added inside the directory")
+        .root;
+
+    scan_root(&conn, &kids).expect("walks it");
+    crate::derive::derive(&conn).expect("derives again");
+
+    assert_eq!(digest_at(&conn, &kids, OWN), Some(digest));
+    assert_eq!(held_reading(&conn, kids.id, OWN).0, None, "nothing held");
+}
+
+/// A nested walk short of a directory it could not list says no more of the
+/// pages than the outer directory's walk would.
+#[test]
+fn a_folder_a_nested_walk_could_not_list_whole_keeps_its_digest() {
+    use std::os::unix::fs::PermissionsExt as _;
+    const OWN: &str = "S - v01";
+    let tree = crate::tests::tempdir("scan-nested-unlisted");
+    let volume = tree.path().join(SHORT_FOLDER);
+    write_pages(&volume, 1);
+    write_pages(&volume.join("c001").join("part"), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("adds the directory");
+    scan_root(&conn, &root).expect("walks it");
+    crate::derive::derive(&conn).expect("derives");
+    let digest = digest_at(&conn, &root, SHORT_FOLDER).expect("the volume's digest");
+    let kids = add_root_checked_in(&conn, &root.path.join("S"), InLibrary::Named("Kids"))
+        .expect("Kids is added inside the directory")
+        .root;
+    let locked = root.path.join(SHORT_FOLDER).join("c001").join("part");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    // chmod does not stop root, which CI's container runs as.
+    if std::fs::read_dir(&locked).is_ok() {
+        eprintln!(
+            "NOT MEASURED: a_folder_a_nested_walk_could_not_list_whole_keeps_its_digest (this process can list a 0000 directory)"
+        );
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        return;
+    }
+
+    let report = scan_root(&conn, &kids).expect("walks what it can");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    assert_eq!(
+        report.unreadable_dirs.len(),
+        1,
+        "the fixture: part is not listed"
+    );
+    assert_eq!(digest_at(&conn, &kids, OWN), Some(digest));
+    assert_eq!(held_reading(&conn, kids.id, OWN).0, None, "nothing held");
+}
+
+/// [`SHORT_FOLDER`] under `top`, walked: one page of its own and two in
+/// `c001/part`, the directory a test goes on to make unlistable.
+fn walked_volume_with_a_part(conn: &Connection, top: &Path) -> Root {
+    let volume = top.join(SHORT_FOLDER);
+    write_pages(&volume, 1);
+    write_pages(&volume.join("c001").join("part"), 2);
+    let root = add_root(conn, top).expect("adds the directory");
+    scan_root(conn, &root).expect("walks it");
+    root
+}
+
+/// What `walk` returns while `dir` cannot be listed, or `None` where this
+/// process lists a 0000 directory all the same, as root in CI's container does.
+fn while_unlistable<T>(dir: &Path, test: &str, walk: impl FnOnce() -> T) -> Option<T> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let walked = if std::fs::read_dir(dir).is_ok() {
+        eprintln!("NOT MEASURED: {test} (this process can list a 0000 directory)");
+        None
+    } else {
+        Some(walk())
+    };
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    walked
+}
+
+/// The pages of the member holding `digest`.
+fn member_pages_of(conn: &Connection, digest: &str) -> i64 {
+    conn.query_row(
+        "SELECT pages FROM member WHERE sha256 = ?1",
+        [digest],
+        |r| r.get(0),
+    )
+    .expect("the digest is a member's")
+}
+
+/// Stored short, the count would read as a change once the folder lists whole,
+/// and a paused directory's derive would write the short count to the member.
+#[test]
+fn a_walk_short_of_a_directory_leaves_a_digested_folders_count_standing() {
+    const OWN: &str = "S - v01";
+    let tree = crate::tests::tempdir("scan-short-walk-count");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = walked_volume_with_a_part(&conn, tree.path());
+    crate::derive::derive(&conn).expect("derives");
+    let digest = digest_at(&conn, &root, SHORT_FOLDER).expect("the volume's digest");
+    let part = root.path.join(SHORT_FOLDER).join("c001").join("part");
+
+    let Some(report) = while_unlistable(
+        &part,
+        "a_walk_short_of_a_directory_leaves_a_digested_folders_count_standing",
+        || scan_root(&conn, &root).expect("walks what it can"),
+    ) else {
+        return;
+    };
+
+    assert_eq!(
+        report.unreadable_dirs.len(),
+        1,
+        "the fixture: part is not listed"
+    );
+    assert_eq!(count_at(&conn, root.id, SHORT_FOLDER).0, Some(3));
+    let kids = add_root_checked_in(&conn, &root.path.join("S"), InLibrary::Named("Kids"))
+        .expect("Kids is added inside the directory")
+        .root;
+    scan_root(&conn, &kids).expect("walks it whole");
+    pause(&conn, std::slice::from_ref(&kids)).expect("pauses");
+    crate::derive::derive(&conn).expect("derives with Kids frozen");
+    assert_eq!(member_pages_of(&conn, &digest), 3, "all three are on disk");
+    assert_eq!(digest_at(&conn, &kids, OWN), Some(digest));
+    assert_eq!(held_reading(&conn, kids.id, OWN).0, None, "nothing held");
+}
+
+/// A directory lost while no walk could list it moves no stamp of the volume's,
+/// so only the count the digest was taken under can show the digest is stale.
+#[test]
+fn a_directory_lost_after_a_nested_walk_could_not_list_it_has_the_digest_taken_again() {
+    const OWN: &str = "S - v01";
+    let tree = crate::tests::tempdir("scan-short-nested-walk-lost");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = walked_volume_with_a_part(&conn, tree.path());
+    crate::derive::derive(&conn).expect("derives");
+    let digest = digest_at(&conn, &root, SHORT_FOLDER).expect("the volume's digest");
+    let kids = add_root_checked_in(&conn, &root.path.join("S"), InLibrary::Named("Kids"))
+        .expect("Kids is added inside the directory")
+        .root;
+    let volume = root.path.join(SHORT_FOLDER);
+    let part = volume.join("c001").join("part");
+
+    let Some(report) = while_unlistable(
+        &part,
+        "a_directory_lost_after_a_nested_walk_could_not_list_it_has_the_digest_taken_again",
+        || scan_root(&conn, &kids).expect("walks what it can"),
+    ) else {
+        return;
+    };
+
+    assert_eq!(
+        report.unreadable_dirs.len(),
+        1,
+        "the fixture: part is not listed"
+    );
+    assert_eq!(
+        count_at(&conn, kids.id, OWN),
+        (Some(3), Some(digest.clone()), None),
+        "the carried row keeps the count its digest was taken under"
+    );
+    let stamp = crate::fingerprints::stamp_of(&volume);
+    std::fs::remove_dir_all(&part).expect("removes part");
+    assert_eq!(
+        crate::fingerprints::stamp_of(&volume),
+        stamp,
+        "the fixture: the volume's stamp stands"
+    );
+
+    scan_root(&conn, &kids).expect("walks it whole");
+    crate::derive::derive(&conn).expect("derives again");
+
+    let taken = digest_at(&conn, &kids, OWN).expect("the digest is taken again");
+    assert_ne!(taken, digest, "the lost pages have left the digest");
+    assert_eq!(
+        taken,
+        taiyaku_read::member_digest(&volume).expect("hashes the folder")
+    );
+    assert_eq!(member_pages_of(&conn, &taken), 1);
+}
+
+/// The first reading held is the one the works were written from: a digest
+/// hashed since and never written must not take its place at a take-over.
+#[test]
+fn a_nested_directory_keeps_the_first_reading_a_row_it_takes_over_held() {
+    const OWN: &str = "S - v01";
+    let tree = crate::tests::tempdir("scan-take-over-first-held");
+    write_pages(&tree.path().join(SHORT_FOLDER), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("adds the directory");
+    scan_root(&conn, &root).expect("walks it");
+    crate::derive::derive(&conn).expect("derives");
+    assert!(
+        digest_at(&conn, &root, SHORT_FOLDER).is_some(),
+        "the fixture: a digest hashed since the held reading"
+    );
+    let held = (
+        Some(planted('a')),
+        Some("dir".to_string()),
+        Some(7),
+        Some("held title".to_string()),
+    );
+    assert_eq!(
+        conn.execute(
+            "UPDATE scan_entry
+                SET mtime = mtime - 100,
+                    held_sha256 = ?3, held_format = ?4, held_pages = ?5, held_title = ?6
+              WHERE root_id = ?1 AND rel_path = ?2",
+            rusqlite::params![root.id, SHORT_FOLDER, held.0, held.1, held.2, held.3],
+        ),
+        Ok(1),
+        "the fixture: the row changed since it held a reading"
+    );
+    let kids = add_root_checked_in(&conn, &root.path.join("S"), InLibrary::Named("Kids"))
+        .expect("Kids is added inside the directory")
+        .root;
+
+    scan_root(&conn, &kids).expect("walks it");
+
+    assert_eq!(digest_at(&conn, &kids, OWN), None, "the stamp moved");
+    assert_eq!(held_reading(&conn, kids.id, OWN), held);
+}
+
+/// A folder with no digest has no count a digest was taken under to protect,
+/// so the walk's total stands on it, short or not.
+#[test]
+fn a_short_walk_stores_its_total_on_a_folder_with_no_digest() {
+    const OWN: &str = "S - v01";
+    const TEST: &str = "a_short_walk_stores_its_total_on_a_folder_with_no_digest";
+    let tree = crate::tests::tempdir("scan-short-walk-no-digest");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = walked_volume_with_a_part(&conn, tree.path());
+    let part = root.path.join(SHORT_FOLDER).join("c001").join("part");
+
+    let Some(_) = while_unlistable(&part, TEST, || {
+        scan_root(&conn, &root).expect("walks what it can")
+    }) else {
+        return;
+    };
+    assert_eq!(count_at(&conn, root.id, SHORT_FOLDER).0, Some(1), "walked");
+
+    scan_root(&conn, &root).expect("walks it whole");
+    assert_eq!(count_at(&conn, root.id, SHORT_FOLDER).0, Some(3), "whole");
+    let kids = add_root_checked_in(&conn, &root.path.join("S"), InLibrary::Named("Kids"))
+        .expect("Kids is added inside the directory")
+        .root;
+    let Some(_) = while_unlistable(&part, TEST, || {
+        scan_root(&conn, &kids).expect("walks what it can")
+    }) else {
+        return;
+    };
+    assert_eq!(count_at(&conn, kids.id, OWN).0, Some(1), "taken over");
+}
+
+/// The stored count is all the next whole walk has to compare with, so a short
+/// walk's total stored in its place, higher as much as lower, could hide the
+/// loss of the directory that walk could not list.
+#[test]
+fn a_short_walk_that_finds_more_pages_leaves_a_digested_folders_count_standing() {
+    const OWN: &str = "S - v01";
+    const TEST: &str =
+        "a_short_walk_that_finds_more_pages_leaves_a_digested_folders_count_standing";
+    let tree = crate::tests::tempdir("scan-short-walk-more");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = walked_volume_with_a_part(&conn, tree.path());
+    crate::derive::derive(&conn).expect("derives");
+    let digest = digest_at(&conn, &root, SHORT_FOLDER).expect("the volume's digest");
+    let c001 = root.path.join(SHORT_FOLDER).join("c001");
+    let part = c001.join("part");
+    write_pages(&c001, 5);
+
+    let Some(report) = while_unlistable(&part, TEST, || {
+        scan_root(&conn, &root).expect("walks what it can")
+    }) else {
+        return;
+    };
+    assert_eq!(
+        report.unreadable_dirs.len(),
+        1,
+        "the fixture: part is not listed"
+    );
+    assert_eq!(
+        count_at(&conn, root.id, SHORT_FOLDER),
+        (Some(3), Some(digest.clone()), None),
+        "the walk found six and the digest was taken over three"
+    );
+
+    write_pages(&c001, 7);
+    let kids = add_root_checked_in(&conn, &root.path.join("S"), InLibrary::Named("Kids"))
+        .expect("Kids is added inside the directory")
+        .root;
+    let Some(report) = while_unlistable(&part, TEST, || {
+        scan_root(&conn, &kids).expect("walks what it can")
+    }) else {
+        return;
+    };
+    assert_eq!(
+        report.unreadable_dirs.len(),
+        1,
+        "the fixture: part is not listed"
+    );
+    assert_eq!(
+        count_at(&conn, kids.id, OWN),
+        (Some(3), Some(digest), None),
+        "the walk found eight and the carried digest was taken over three"
+    );
+}
+
+/// `walked` goes short of `part` with five more pages beside it in `c001`, and
+/// `part` is then lost under a stamp of the volume's that stands; `None` where
+/// this process lists a 0000 directory all the same.
+fn short_walk_finding_more_then_part_lost(
+    conn: &Connection,
+    volume: &Path,
+    walked: &Root,
+    test: &str,
+) -> Option<()> {
+    let c001 = volume.join("c001");
+    let part = c001.join("part");
+    write_pages(&c001, 5);
+    let report = while_unlistable(&part, test, || {
+        scan_root(conn, walked).expect("walks what it can")
+    })?;
+    assert_eq!(
+        report.unreadable_dirs.len(),
+        1,
+        "the fixture: part is not listed"
+    );
+    let stamp = crate::fingerprints::stamp_of(volume);
+    std::fs::remove_dir_all(&part).expect("removes part");
+    assert_eq!(
+        crate::fingerprints::stamp_of(volume),
+        stamp,
+        "the fixture: the volume's stamp stands"
+    );
+    Some(())
+}
+
+/// With the short walk's higher total stored, the whole walk after the loss
+/// would find the count it expects and leave a digest of pages that are gone.
+#[test]
+fn a_directory_lost_after_a_short_walk_found_more_pages_has_the_digest_taken_again() {
+    let tree = crate::tests::tempdir("scan-short-walk-more-lost");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = walked_volume_with_a_part(&conn, tree.path());
+    crate::derive::derive(&conn).expect("derives");
+    let digest = digest_at(&conn, &root, SHORT_FOLDER).expect("the volume's digest");
+    let volume = root.path.join(SHORT_FOLDER);
+    let Some(()) = short_walk_finding_more_then_part_lost(
+        &conn,
+        &volume,
+        &root,
+        "a_directory_lost_after_a_short_walk_found_more_pages_has_the_digest_taken_again",
+    ) else {
+        return;
+    };
+
+    scan_root(&conn, &root).expect("walks it whole");
+    crate::derive::derive(&conn).expect("derives again");
+
+    let taken = digest_at(&conn, &root, SHORT_FOLDER).expect("the digest is taken again");
+    assert_ne!(taken, digest, "the lost pages have left the digest");
+    assert_eq!(
+        taken,
+        taiyaku_read::member_digest(&volume).expect("hashes the folder")
+    );
+    assert_eq!(member_pages_of(&conn, &taken), 6);
+}
+
+/// The same loss after a nested directory's first walk, which carries the row
+/// the outer directory's walk left.
+#[test]
+fn a_directory_lost_after_a_nested_short_walk_found_more_pages_has_the_digest_taken_again() {
+    const OWN: &str = "S - v01";
+    let tree = crate::tests::tempdir("scan-short-nested-walk-more-lost");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = walked_volume_with_a_part(&conn, tree.path());
+    crate::derive::derive(&conn).expect("derives");
+    let digest = digest_at(&conn, &root, SHORT_FOLDER).expect("the volume's digest");
+    let kids = add_root_checked_in(&conn, &root.path.join("S"), InLibrary::Named("Kids"))
+        .expect("Kids is added inside the directory")
+        .root;
+    let volume = root.path.join(SHORT_FOLDER);
+    let Some(()) = short_walk_finding_more_then_part_lost(
+        &conn,
+        &volume,
+        &kids,
+        "a_directory_lost_after_a_nested_short_walk_found_more_pages_has_the_digest_taken_again",
+    ) else {
+        return;
+    };
+
+    scan_root(&conn, &kids).expect("walks it whole");
+    crate::derive::derive(&conn).expect("derives again");
+
+    let taken = digest_at(&conn, &kids, OWN).expect("the digest is taken again");
+    assert_ne!(taken, digest, "the lost pages have left the digest");
+    assert_eq!(
+        taken,
+        taiyaku_read::member_digest(&volume).expect("hashes the folder")
+    );
+    assert_eq!(member_pages_of(&conn, &taken), 6);
 }

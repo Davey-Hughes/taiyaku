@@ -24,7 +24,7 @@ pub use naming::{chapter_number, natural_cmp, volume_number, volume_number_marke
 pub use pages::{
     Page, PageEntry, archive_page, for_each_member_page, is_page_name, member_digest, member_entry,
     member_page, member_page_entries, member_page_names, member_page_sizes, member_pages,
-    member_unread_entries, read_edition, read_members_in_order,
+    member_unread_entries, read_edition, read_members_in_order, reader_signature,
 };
 
 /// How much a single image decode may allocate.

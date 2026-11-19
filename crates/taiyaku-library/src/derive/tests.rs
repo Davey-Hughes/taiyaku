@@ -3446,12 +3446,11 @@ fn each_refused_format_is_counted_under_its_own_token() {
     );
 }
 
-/// A zip that opens cleanly and holds only JPEG XL pages, which `taiyaku-read`
-/// does not read. The walk cannot count its pages, so derivation names it with
-/// the archives that would not open. It is not a vanished member.
+/// A zip of JPEG XL pages is a member with its pages counted, beside a JPEG
+/// volume: it is a work of its own, not an archive named as uncounted.
 #[test]
-fn an_archive_of_pages_taiyaku_does_not_read_is_named_as_uncounted() {
-    let tree = crate::tests::tempdir("derive-jxl-archive");
+fn an_archive_of_jpeg_xl_pages_is_a_member_with_its_pages_counted() {
+    let tree = crate::tests::tempdir("derive-jxl-counted");
     let series = tree.path().join("Bisque Doll");
     write_archive_of(&series.join("Bisque Doll - v01.cbz"), 3, "jxl");
     write_archive(&series.join("Bisque Doll - v02.cbz"), 2);
@@ -3462,11 +3461,39 @@ fn an_archive_of_pages_taiyaku_does_not_read_is_named_as_uncounted() {
 
     let report = derive::derive(&conn).expect("derive");
 
-    assert_eq!(report.works, 1, "v02, and not the JPEG XL archive");
+    assert_eq!(report.works, 2, "the JPEG XL volume and the JPEG one");
+    assert_eq!(report.unreadable, derive::Unreadable::default());
+    let pages: i64 = conn
+        .query_row(
+            "SELECT pages FROM member WHERE path LIKE '%v01%'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the JPEG XL member");
+    assert_eq!(pages, 3, "its pages counted");
+}
+
+/// A zip that opens cleanly and holds only HEIC pages, which `taiyaku-read`
+/// does not read. The walk cannot count its pages, so derivation names it with
+/// the archives that would not open. It is not a vanished member.
+#[test]
+fn an_archive_of_pages_taiyaku_does_not_read_is_named_as_uncounted() {
+    let tree = crate::tests::tempdir("derive-heic-archive");
+    let series = tree.path().join("Undecoded");
+    write_archive_of(&series.join("Undecoded - v01.cbz"), 3, "heic");
+    write_archive(&series.join("Undecoded - v02.cbz"), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+
+    let report = derive::derive(&conn).expect("derive");
+
+    assert_eq!(report.works, 1, "v02, and not the HEIC archive");
     assert_eq!(
         report.unreadable,
         derive::Unreadable {
-            uncounted: vec![under(&root, "Bisque Doll/Bisque Doll - v01.cbz")],
+            uncounted: vec![under(&root, "Undecoded/Undecoded - v01.cbz")],
             ..derive::Unreadable::default()
         },
     );
@@ -3521,7 +3548,7 @@ fn a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress() {
     .expect("write");
     // The member is the *directory*, and a directory's `mtime` moves when an
     // entry is added or removed — not when the bytes inside an existing one
-    // change. So without this stamp `unchanged` skips the re-hash and the
+    // change. So without this stamp `scan::due` skips the re-hash and the
     // digest stays what it was, which is the same second-resolution flake as
     // `a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive`.
     let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
@@ -3598,7 +3625,7 @@ fn a_volume_replaced_by_a_copy_of_another_does_not_fail_the_derive() {
         )
         .expect("copy");
     }
-    // **The rescan has to be able to see the change.** `unchanged` compares
+    // **The rescan has to be able to see the change.** `scan::due` compares
     // `(size, mtime)`, a directory's size is its block size whether it holds
     // three entries or five, and `mtime` has second resolution — so a rebuild
     // that lands in the same second as the first scan is skipped and Beta
@@ -10235,6 +10262,72 @@ fn a_held_reading_survives_a_second_cancelled_scan() {
     );
 }
 
+/// A count taken again (the reader changed) that differs from the one a
+/// paused directory's works were written from is held with the digest, as a
+/// changed file's reading is, so the frozen derive keeps the member's pages
+/// (O130, O320).
+#[test]
+fn a_paused_directory_keeps_the_count_its_works_hold_when_a_file_is_counted_again() {
+    let tree = crate::tests::tempdir("frozen-recount");
+    two_file_volume(tree.path());
+    let c002 = tree.path().join(C002);
+    {
+        let file = std::fs::File::create(&c002).expect("creates c002");
+        let mut zip = zip::ZipWriter::new(file);
+        for name in ["000.jpg", "001.jpg", "002.jxl"] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .expect("starts an entry");
+            std::io::Write::write_all(&mut zip, format!("not really: c002 {name}").as_bytes())
+                .expect("writes an entry");
+        }
+        zip.finish().expect("finishes c002");
+    }
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    let digest = digest_at(&conn, r.id, C002);
+    // Counted before signatures existed: c002 at its two JPEG pages, and its
+    // work written from that count.
+    assert_eq!(
+        (
+            conn.execute(
+                "UPDATE scan_entry SET pages = 2, counted_by = NULL WHERE rel_path = ?1",
+                [C002],
+            ),
+            conn.execute(
+                "UPDATE member SET pages = 2 WHERE path = ?1",
+                [r.path.join(C002).to_string_lossy()],
+            ),
+        ),
+        (Ok(1), Ok(1)),
+        "the fixture: c002 counted before signatures existed"
+    );
+    let before = standing(&conn);
+    pause(&conn, &r);
+    scan::scan_root(&conn, &r).expect("walks R again");
+    let counted: (Option<i64>, Option<String>) = conn
+        .query_row(
+            "SELECT pages, sha256 FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+            rusqlite::params![r.id, C002],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("reads c002's row");
+    assert_eq!(
+        (counted, digest.is_some()),
+        ((Some(3), digest), true),
+        "the fixture: c002 is counted again at three pages and keeps its digest"
+    );
+
+    derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        standing(&conn),
+        before,
+        "c002's member keeps the two pages its work was written from"
+    );
+}
+
 #[test]
 fn a_cancel_while_writing_leaves_exactly_the_works_written() {
     let (tree, paths) = three_undigested_archives("frozen-cancel-writing");
@@ -11020,6 +11113,7 @@ fn a_reading_migration_27_held_is_dropped_by_the_derive_that_writes_its_work() {
          ALTER TABLE scan_entry DROP COLUMN held_format;
          ALTER TABLE scan_entry DROP COLUMN held_pages;
          ALTER TABLE scan_entry DROP COLUMN held_title;
+         ALTER TABLE scan_entry DROP COLUMN counted_by;
          UPDATE meta SET value = '26' WHERE key = 'schema_version';
          UPDATE scan_entry SET sha256 = NULL, pages = 4 WHERE rel_path = '{C002}';"
     ))
@@ -11369,4 +11463,134 @@ fn claimed_units_are_the_entries_the_derive_claims() {
         "the archive inside it speaks for itself"
     );
     assert_eq!(claimed.len(), 5, "and nothing else is claimed");
+}
+
+/// A folder counted anew gives its digest up as a changed folder does, so a
+/// paused directory's derive reads it by the reading its works were written
+/// from until Scan, and Scan takes the digest again (O320).
+#[test]
+fn a_paused_directory_holds_the_reading_of_a_folder_counted_anew() {
+    use crate::scan::tests::{SHORT_FOLDER, counted_short_of_a_page};
+    let tree = crate::tests::tempdir("frozen-counted-anew");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = counted_short_of_a_page(&conn, tree.path());
+    let digest = digest_at(&conn, root.id, SHORT_FOLDER).expect("the derive took its digest");
+    let before = standing(&conn);
+    pause(&conn, &root);
+
+    scan::scan_root(&conn, &root).expect("walks it again");
+    assert_eq!(
+        digest_at(&conn, root.id, SHORT_FOLDER),
+        None,
+        "the fixture: the walk gave the digest up"
+    );
+    derive::derive(&conn).expect("derives");
+
+    assert_eq!(standing(&conn), before, "its work stands as it was written");
+    assert_eq!(
+        held_of(&conn, root.id, SHORT_FOLDER),
+        Some(digest.clone()),
+        "the frozen derive keeps the reading"
+    );
+    assert_eq!(
+        digest_at(&conn, root.id, SHORT_FOLDER),
+        None,
+        "and hashes nothing"
+    );
+
+    scan::unpause(&conn, std::slice::from_ref(&root)).expect("unpauses");
+    scan::scan_root(&conn, &root).expect("walks it for the pressed Scan");
+    derive::derive(&conn).expect("derives");
+
+    let taken = digest_at(&conn, root.id, SHORT_FOLDER).expect("Scan takes the digest");
+    assert_ne!(taken, digest, "over the third page too");
+    assert_eq!(
+        conn.query_row("SELECT sha256, pages FROM member", [], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })
+        .expect("the one member"),
+        (taken, 3),
+        "the member follows"
+    );
+    assert_eq!(
+        held_of(&conn, root.id, SHORT_FOLDER),
+        None,
+        "the reading is dropped"
+    );
+}
+
+/// What a derive leaves of a folder volume with a position on it, after
+/// `change`: the same work, how many works it reports re-keyed, the position's
+/// slot, the member's pages and whether its digest moved.
+fn a_folder_volume_after(
+    tag: &str,
+    change: impl FnOnce(&Connection, &scan::Root),
+) -> (bool, usize, i64, i64, bool) {
+    use crate::scan::tests::SHORT_FOLDER;
+    let tree = crate::tests::tempdir(tag);
+    write_pages(&tree.path().join(SHORT_FOLDER), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+    derive::derive(&conn).expect("first");
+    let work: i64 = conn
+        .query_row("SELECT id FROM work WHERE volume = 1.0", [], |r| r.get(0))
+        .expect("work");
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 7)",
+        [work],
+    )
+    .expect("progress");
+    let digest = digest_at(&conn, root.id, SHORT_FOLDER);
+
+    change(&conn, &root);
+    scan::scan_root(&conn, &root).expect("rescan");
+    let report = derive::derive(&conn).expect("second");
+
+    let still: i64 = conn
+        .query_row("SELECT id FROM work WHERE volume = 1.0", [], |r| r.get(0))
+        .expect("one work");
+    let slot: i64 = conn
+        .query_row(
+            "SELECT slot FROM progress WHERE work_id = ?1",
+            [still],
+            |r| r.get(0),
+        )
+        .expect("the position survived");
+    let pages: i64 = conn
+        .query_row("SELECT pages FROM member", [], |r| r.get(0))
+        .expect("one member");
+    (
+        still == work,
+        report.rekeyed,
+        slot,
+        pages,
+        digest_at(&conn, root.id, SHORT_FOLDER) != digest,
+    )
+}
+
+#[test]
+fn a_folder_counted_anew_keeps_its_work_and_position_as_a_changed_folder_does() {
+    use crate::scan::tests::{SHORT_FOLDER, holds_a_page_it_was_not_counted_with};
+    let changed = a_folder_volume_after("derive-folder-changed", |_, root| {
+        let dir = root.path.join(SHORT_FOLDER);
+        std::fs::write(dir.join("002.jpg"), b"one more page").expect("write");
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+        std::fs::File::open(&dir)
+            .expect("open the member directory")
+            .set_times(std::fs::FileTimes::new().set_modified(later))
+            .expect("stamp it as changed");
+    });
+    let counted = a_folder_volume_after("derive-folder-counted", |conn, root| {
+        holds_a_page_it_was_not_counted_with(conn, root, SHORT_FOLDER);
+    });
+
+    assert_eq!(
+        changed,
+        (true, 1, 7, 3, true),
+        "the fixture: a changed folder"
+    );
+    assert_eq!(counted, changed, "a folder counted anew goes the same way");
 }

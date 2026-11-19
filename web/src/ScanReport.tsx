@@ -166,7 +166,7 @@ function Declines({ declined }: { declined: Declined[] }) {
  * Why derivation made nothing of an entry: the total, then each cause — O90.
  *
  * **One number cannot stand for four causes**, and a bare total cannot tell
- * RAR archives from an archive of JPEG XL pages. Each cause is its own row
+ * RAR archives from an archive of HEIC pages. Each cause is its own row
  * with its own `data-field`, drawn at zero too, for this file's rule that an
  * empty row is a fact rather than a row to skip.
  *

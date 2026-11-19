@@ -2802,3 +2802,180 @@ mod answered_without_a_server_path {
         assert!(!body.contains(&dir), "{body}");
     }
 }
+
+/// JPEG XL pages over the PSE stream and the cover: the reader's rule
+/// (`routes::page_variant`), applied to the route Panels reads pages by.
+mod jpeg_xl_by_what_the_client_accepts {
+    use crate::routes::{PageVariant, page_etag};
+    use crate::source::JXL_CODESTREAM;
+    use crate::test_support::{PANELS_ACCEPT, jxl_fixture, router_over_a_scanned_jxl_cbz};
+    use axum::body::Body;
+    use axum::http::{HeaderMap, Request, StatusCode, header};
+    use tower::ServiceExt;
+
+    const PAGE_0: &str = "/opds/v1.2/works/scanned-v01/raw/pages/0";
+
+    async fn fetch(
+        router: &axum::Router,
+        uri: &str,
+        accept: Option<&str>,
+        if_none_match: Option<&str>,
+    ) -> (StatusCode, HeaderMap, axum::body::Bytes) {
+        let mut request = Request::get(uri);
+        if let Some(accept) = accept {
+            request = request.header(header::ACCEPT, accept);
+        }
+        if let Some(tag) = if_none_match {
+            request = request.header(header::IF_NONE_MATCH, tag);
+        }
+        let response = router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = axum::body::to_bytes(response.into_body(), 1 << 22)
+            .await
+            .unwrap();
+        (status, headers, body)
+    }
+
+    fn varies_on_accept(headers: &HeaderMap) -> bool {
+        headers
+            .get_all(header::VARY)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .any(|name| name.trim().eq_ignore_ascii_case("accept"))
+    }
+
+    /// Page 0's member digest and offset, which its tags are named by.
+    fn located(state: &crate::ServeState) -> (String, u32) {
+        let found = state
+            .find_blocking("scanned-v01")
+            .expect("the fixture's work");
+        let view =
+            crate::view::EditionView::build(found, "raw", None).expect("the fixture's edition");
+        view.locate(0)
+            .map(|(member, offset)| (member.sha256.clone(), offset))
+            .expect("page 0 of the fixture")
+    }
+
+    fn dimensions(bytes: &[u8]) -> (u32, u32) {
+        image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .expect("reads from memory")
+            .into_dimensions()
+            .expect("an image")
+    }
+
+    #[tokio::test]
+    async fn the_pse_stream_sends_jpeg_xl_as_stored_to_a_client_that_names_it() {
+        assert!(
+            jxl_fixture("lossy.jxl").starts_with(JXL_CODESTREAM),
+            "the fixture: page 0 is a bare codestream"
+        );
+        let (router, state, _fixture) = router_over_a_scanned_jxl_cbz();
+        let (sha, offset) = located(&state);
+
+        let (status, headers, body) = fetch(&router, PAGE_0, Some(PANELS_ACCEPT), None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jxl");
+        assert!(
+            body.as_ref() == jxl_fixture("lossy.jxl"),
+            "the stored bytes, {} of them, not {}",
+            jxl_fixture("lossy.jxl").len(),
+            body.len()
+        );
+        assert!(
+            varies_on_accept(&headers),
+            "Vary: {:?}",
+            headers.get(header::VARY)
+        );
+        assert_eq!(
+            headers[header::ETAG],
+            page_etag(&sha, offset, None, PageVariant::Stored).as_str()
+        );
+
+        let (status, headers, body) = fetch(
+            &router,
+            PAGE_0,
+            Some(PANELS_ACCEPT),
+            Some(&page_etag(&sha, offset, None, PageVariant::Stored)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        assert!(body.is_empty(), "a 304 sends no body");
+        assert!(varies_on_accept(&headers), "the 304's Vary");
+    }
+
+    #[tokio::test]
+    async fn the_pse_stream_sends_jpeg_xl_as_a_jpeg_to_any_other_client() {
+        let (router, state, _fixture) = router_over_a_scanned_jxl_cbz();
+        let (sha, offset) = located(&state);
+        let jpeg = page_etag(&sha, offset, None, PageVariant::JxlAsJpeg);
+        let stored = page_etag(&sha, offset, None, PageVariant::Stored);
+        assert_ne!(jpeg, stored, "the fixture: the two variants' tags differ");
+
+        let (status, headers, body) = fetch(&router, PAGE_0, None, None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+        assert_eq!(dimensions(&body), (96, 128), "the page's own size");
+        assert_eq!(headers[header::ETAG], jpeg.as_str());
+        assert!(
+            varies_on_accept(&headers),
+            "Vary: {:?}",
+            headers.get(header::VARY)
+        );
+
+        // Cross-check: each variant's tag answers only its own client.
+        let (status, headers, _) = fetch(&router, PAGE_0, None, Some(&stored)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the stored tag from a client sending no Accept"
+        );
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+        let (status, headers, _) = fetch(&router, PAGE_0, Some(PANELS_ACCEPT), Some(&jpeg)).await;
+        assert_eq!(status, StatusCode::OK, "the JPEG's tag from Panels");
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jxl");
+        let (status, headers, body) = fetch(&router, PAGE_0, None, Some(&jpeg)).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_MODIFIED,
+            "the JPEG's tag, from its own client"
+        );
+        assert!(body.is_empty(), "a 304 sends no body");
+        assert!(varies_on_accept(&headers), "the 304's Vary");
+    }
+
+    /// An OPDS cover is always a JPEG, whatever the client accepts: a reading
+    /// app draws it in a list with no say in what the server sends, so the
+    /// page's own JPEG XL bytes would not show.
+    #[tokio::test]
+    async fn an_opds_cover_of_a_jpeg_xl_edition_is_a_jpeg() {
+        let (router, _state, _fixture) = router_over_a_scanned_jxl_cbz();
+        for accept in [None, Some(PANELS_ACCEPT)] {
+            let (status, headers, body) = fetch(
+                &router,
+                "/opds/v1.2/works/scanned-v01/raw/cover",
+                accept,
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "Accept: {accept:?}");
+            assert_eq!(
+                headers[header::CONTENT_TYPE],
+                "image/jpeg",
+                "Accept: {accept:?}"
+            );
+            assert!(
+                body.starts_with(&[0xFF, 0xD8]),
+                "Accept: {accept:?}: JPEG bytes, not the page's own"
+            );
+        }
+    }
+}

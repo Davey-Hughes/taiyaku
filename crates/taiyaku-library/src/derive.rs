@@ -1198,8 +1198,8 @@ fn entries(conn: &Connection, root_id: i64) -> Result<Vec<Entry>, String> {
 /// copy's too. A chapter-only entry passes as it is; else one whose held
 /// reading is held, read by it; else one whose digest is; else one of no
 /// pages. Any other entry waits, with the chapter-only entries it claims. Its
-/// works can still change: by a folder volume's page count the walk rewrote,
-/// a rules save, or another directory's file joining one (spec §7, §8).
+/// works can still change: by a folder the walk could not list whole, a rules
+/// save, or another directory's file joining one (spec §7, §8).
 fn frozen_entries(conn: &Connection, engine: &Engine, root: &Root) -> Result<Vec<Entry>, String> {
     type Row = (
         Entry,

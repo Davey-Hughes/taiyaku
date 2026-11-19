@@ -13,7 +13,7 @@ use std::sync::Arc;
 use axum::{
     Router,
     extract::{Path as AxPath, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -108,8 +108,7 @@ impl IntoResponse for NotAPageIndex {
 /// answer `304` for every page after the first one a client had fetched —
 /// the entire member would look unchanged.
 ///
-/// Quoted, per RFC 9110 §8.8.3: an `ETag`'s value is a `quoted-string`, not
-/// a bare token.
+/// Quoted, per RFC 9110 §8.8.3: an `ETag`'s value is a `quoted-string`.
 /// **The requested long edge is part of the tag**, and leaving it out would be
 /// the subtle way to break this. One page has as many representations as a
 /// reader has viewport sizes; a tag naming only the member and offset would let
@@ -121,13 +120,119 @@ impl IntoResponse for NotAPageIndex {
 /// **A resized tag is `cover::page_key`, quoted, and so carries the format
 /// version as well (O106).** The same trap applies: a resized page is a
 /// rendering, and a bump of `PAGE_FORMAT_VERSION` is a new rendering under an
-/// unchanged size. The full-size tag is left alone: the member's own bytes do
-/// not depend on how this server resizes anything.
-pub(crate) fn page_etag(sha256: &str, offset: u32, long_edge: Option<u32>) -> String {
-    match long_edge {
-        Some(edge) => format!("\"{}\"", crate::cover::page_key(sha256, offset, edge)),
-        None => format!("\"{sha256}-p{offset}\""),
+/// unchanged size. The full-size stored tag is left alone: the member's own
+/// bytes do not depend on how this server resizes anything. **The variant is
+/// part of every tag**, for `PageVariant`'s reason.
+pub(crate) fn page_etag(
+    sha256: &str,
+    offset: u32,
+    long_edge: Option<u32>,
+    variant: PageVariant,
+) -> String {
+    let key = match (long_edge, variant) {
+        (None, PageVariant::Stored) => format!("{sha256}-p{offset}"),
+        (None, PageVariant::JxlAsJpeg) => crate::cover::jxl_jpeg_key(sha256, offset),
+        (Some(edge), PageVariant::Stored) => crate::cover::page_key(sha256, offset, edge),
+        (Some(edge), PageVariant::JxlAsJpeg) => crate::cover::jxl_variant_at(
+            &crate::cover::page_key(sha256, offset, edge),
+            crate::cover::JXL_JPEG_VERSION,
+        ),
+    };
+    format!("\"{key}\"")
+}
+
+/// Which rendering of a page a request is sent, read from its `Accept` by
+/// `page_variant`. It is in the page's tag: one address sends a JPEG XL page as
+/// stored to a client that names `image/jxl` and as a JPEG to any other, so a
+/// shared tag would answer one client `304` over the other's rendering. It comes
+/// from the request, not the page, because a matching `If-None-Match` is
+/// answered before the page is read, so every page a client that does not name
+/// JPEG XL asks for has the JPEG variant's tag: `cover::jxl_variant_at`'s, and
+/// at full size its cache file's stem (O106).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PageVariant {
+    /// Every page as stored: the client names JPEG XL.
+    Stored,
+    /// A JPEG XL page as the JPEG made for it (`as_variant`), any other page as
+    /// stored: the client does not name JPEG XL, so it may not draw it.
+    JxlAsJpeg,
+}
+
+/// `Stored` exactly when the request names JPEG XL: an element of any of its
+/// `Accept` lines is `image/jxl` at a weight above zero. `image/*`, `*/*` and
+/// no `Accept` do not name it, since a browser that draws no JPEG XL sends
+/// `image/*`. Every line is read: a list may be split over several.
+pub(crate) fn page_variant(headers: &HeaderMap) -> PageVariant {
+    let names_it = headers
+        .get_all(header::ACCEPT)
+        .iter()
+        .filter_map(|line| line.to_str().ok())
+        .flat_map(|line| line.split(','))
+        .any(names_jpeg_xl);
+    if names_it {
+        PageVariant::Stored
+    } else {
+        PageVariant::JxlAsJpeg
     }
+}
+
+/// Whether one element of an `Accept` list is `image/jxl` with a weight above
+/// zero.
+fn names_jpeg_xl(element: &str) -> bool {
+    let mut parts = element.split(';');
+    let media_type = parts.next().unwrap_or_default().trim();
+    media_type.eq_ignore_ascii_case("image/jxl")
+        && !parts.any(|parameter| {
+            parameter.split_once('=').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case("q") && weighs_nothing(value)
+            })
+        })
+}
+
+/// A `q` of zero: `0`, or `0.` and only zeros after it, which takes in every
+/// spelling RFC 9110 §12.4.2 allows.
+fn weighs_nothing(qvalue: &str) -> bool {
+    qvalue.trim().strip_prefix('0').is_some_and(|rest| {
+        rest.is_empty()
+            || rest
+                .strip_prefix('.')
+                .is_some_and(|zeros| zeros.bytes().all(|digit| digit == b'0'))
+    })
+}
+
+/// `response`, marked as chosen by the request's `Accept`, so a cache keyed on
+/// the address alone does not hand one client the rendering made for another.
+pub(crate) fn vary_on_accept(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .append(header::VARY, HeaderValue::from_static("Accept"));
+    response
+}
+
+/// `page` as `variant` sends it: under `JxlAsJpeg` a JPEG XL page becomes the
+/// JPEG made for it, from the cache or made once, and every other page passes
+/// unchanged. A JPEG XL page that does not decode is an error, as any page that
+/// cannot be read is, and leaves no cache file.
+pub(crate) fn as_variant(
+    state: &ServeState,
+    page: crate::source::ServedPage,
+    sha256: &str,
+    offset: u32,
+    variant: PageVariant,
+) -> Result<crate::source::ServedPage, String> {
+    if variant == PageVariant::Stored || page.content_type != "image/jxl" {
+        return Ok(page);
+    }
+    let bytes = crate::cover::cached_or_generated_jxl_jpeg(
+        &state.thumb_cache_dir(),
+        sha256,
+        offset,
+        &page.bytes,
+    )?;
+    Ok(crate::source::ServedPage {
+        bytes,
+        content_type: "image/jpeg".to_string(),
+    })
 }
 
 /// Whether a request's `If-None-Match` already names `tag`.
@@ -737,9 +842,9 @@ pub(crate) fn missing_reason(slug: &str) -> String {
 /// A query parameter rather than a separate route, unlike `get_thumb`: a tile
 /// is a different *thing* — always JPEG, cropped for a strip, no validator —
 /// where this is the same page at a different size, wanting the same
-/// `If-None-Match` fast path and the same freshness. Absent `w` is the original
-/// bytes, byte for byte, which is what `zoom` asks for and what a client that
-/// sends no `w` gets.
+/// `If-None-Match` fast path and the same freshness. Absent `w` is the page at
+/// full size, what `zoom` asks for: its stored bytes, or the JPEG made for a
+/// JPEG XL page when the client does not name `image/jxl` (`as_variant`).
 #[derive(Debug, serde::Deserialize)]
 struct PageQuery {
     w: Option<u32>,
@@ -781,11 +886,12 @@ async fn get_page(
         .filter(|edge| *edge > 1)
         .map(|edge| edge.min(crate::cover::MAX_FIT_LONG_EDGE));
 
-    serve_page(state, view, index, long_edge, None, &headers).await
+    let variant = page_variant(&headers);
+    vary_on_accept(serve_page(state, view, index, long_edge, None, variant, &headers).await)
 }
 
-/// A page, at `long_edge` or as the archive holds it, after whatever refusals
-/// the route that called this has already made.
+/// A page, at `long_edge` or at full size, after whatever refusals the route
+/// that called this has already made.
 ///
 /// `get_page` calls it for every page, after its stream check; `get_thumb`
 /// calls it for a library cover — page 0 at one of `cover::COVER_LONG_EDGES` —
@@ -803,6 +909,7 @@ async fn serve_page(
     index: u32,
     long_edge: Option<u32>,
     version: Option<&str>,
+    variant: PageVariant,
     headers: &HeaderMap,
 ) -> Response {
     // O1: the validator comes from what the sidecar already holds in
@@ -824,7 +931,9 @@ async fn serve_page(
         Ok((member, offset)) => (member.sha256.clone(), offset),
         Err(message) => return not_found(message),
     };
-    let tag = page_etag(&sha256, offset, long_edge);
+    // `variant` names the tag and, for a JPEG XL page, the rendering: `get_page`
+    // reads it from the request, and a cover is always `JxlAsJpeg`.
+    let tag = page_etag(&sha256, offset, long_edge, variant);
     // Compared against the page just located, so a `v` from a list read
     // before its member changed is answered `PAGE_CACHE_CONTROL`, and its
     // address is never kept over the new bytes. The `304` carries the same
@@ -853,25 +962,34 @@ async fn serve_page(
     // `PageSource` stays synchronous deliberately. The boundary belongs here,
     // where there is exactly one of it, rather than in each implementation.
     let fetched = tokio::task::spawn_blocking(move || {
-        let Some(edge) = long_edge else {
-            return state.page(&view, index);
+        let page = match long_edge {
+            None => state.page(&view, index)?,
+            Some(edge) => {
+                let dir = state.thumb_cache_dir();
+                let fitted =
+                    crate::cover::cached_or_generated_page(&dir, &sha256, offset, edge, || {
+                        state.page(&view, index)
+                    })?;
+                match fitted {
+                    // A resize always writes JPEG, and says so rather than
+                    // echoing whatever the archive held.
+                    crate::cover::Fitted::Resized(bytes) => {
+                        return Ok(crate::source::ServedPage {
+                            bytes,
+                            content_type: "image/jpeg".to_string(),
+                        });
+                    }
+                    // Already within the requested edge: the page as the fetch
+                    // above read it, with the content type its source gave it.
+                    // That read is the one that decided it fits, so serving it
+                    // costs no second one.
+                    crate::cover::Fitted::Original(page) => page,
+                }
+            }
         };
-        let dir = state.thumb_cache_dir();
-        let fitted = crate::cover::cached_or_generated_page(&dir, &sha256, offset, edge, || {
-            state.page(&view, index)
-        })?;
-        match fitted {
-            // A resize always writes JPEG, and says so rather than echoing
-            // whatever the archive held.
-            crate::cover::Fitted::Resized(bytes) => Ok(crate::source::ServedPage {
-                bytes,
-                content_type: "image/jpeg".to_string(),
-            }),
-            // Already within the requested edge: the page as the fetch above
-            // read it, with the content type its source gave it. That read is
-            // the one that decided it fits, so serving it costs no second one.
-            crate::cover::Fitted::Original(page) => Ok(page),
-        }
+        // A page that fits is the page as stored, as a full-size read is, so
+        // a JPEG XL one is no more drawable by a client that does not name it.
+        as_variant(&state, page, &sha256, offset, variant)
     })
     .await;
 
@@ -944,7 +1062,7 @@ fn tile_edge(w: Option<&str>) -> Option<u32> {
 /// two have different content types: a page is whatever the archive holds, a
 /// tile is always JPEG. (A library cover, below, is the exception: it is the
 /// page route's answer, so a page 0 already within the size is the archive's
-/// own bytes and type.)
+/// own bytes and type, but for a JPEG XL page 0, which is the JPEG made for it.)
 ///
 /// The tile sends `Cache-Control` and **no `ETag`**: none is defined for it.
 /// One would have to name the tile's long edge and `cover::FORMAT_VERSION`,
@@ -984,7 +1102,19 @@ async fn get_thumb(
     };
     if let Some(edge) = cover_edge(index, first_query_value(&query, "w")) {
         let version = first_query_value(&query, "v");
-        return serve_page(state, view, index, Some(edge), version, &headers).await;
+        // The JPEG variant whatever the request accepts, and no `Vary`: the
+        // address is kept for good (`COVER_CACHE_CONTROL`), so what it names
+        // cannot depend on who asks.
+        return serve_page(
+            state,
+            view,
+            index,
+            Some(edge),
+            version,
+            PageVariant::JxlAsJpeg,
+            &headers,
+        )
+        .await;
     }
     // O134. Below `cover_edge` deliberately: page 0 at a *cover* size stays
     // O133's cover — the page route's own answer, validator and all — and a

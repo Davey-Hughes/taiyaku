@@ -1466,8 +1466,8 @@ fn migration_20_adds_missing_since_leaving_existing_works_present() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_twenty_eight() {
-    assert_eq!(SCHEMA_VERSION, 28);
+fn the_schema_version_is_twenty_nine() {
+    assert_eq!(SCHEMA_VERSION, 29);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -3331,6 +3331,35 @@ fn the_migration_gives_every_directory_a_paused_at_of_null() {
     );
 }
 
+/// No entry in the store was counted under a reader signature, so the first
+/// scan after the upgrade counts each file once more; a signature written here
+/// would keep a count this reader takes differently.
+#[test]
+fn the_migration_gives_every_entry_a_counted_by_of_null() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..28]).expect("migrates to 28");
+    conn.execute_batch(
+        "INSERT INTO root (id, path) VALUES (7, '/srv/manga');
+         INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime, pages)
+         VALUES (7, '', 'dir', 'dir', 0, 100, 3), (7, 'a.cbz', 'file', 'zip', 10, 100, 3);",
+    )
+    .expect("seeds a schema-28 folder and archive");
+
+    migrate_with(&conn, &MIGRATIONS[..29]).expect("migrates to 29");
+
+    assert_eq!(version(&conn).expect("reads the version"), 29);
+    assert_eq!(
+        rows_of(
+            &conn,
+            "SELECT rel_path, counted_by FROM scan_entry ORDER BY rel_path"
+        ),
+        [[r#"Text("")"#, "Null"], [r#"Text("a.cbz")"#, "Null"]],
+        "no entry was counted under a signature"
+    );
+}
+
 /// An entry no member names holds no reading: a reading held here is what a
 /// paused directory's derive reads in place of the entry's own (O320), and no
 /// work was written from one.
@@ -3516,6 +3545,7 @@ fn a_directory_paused_before_migration_27_keeps_its_members() {
          ALTER TABLE scan_entry DROP COLUMN held_format;
          ALTER TABLE scan_entry DROP COLUMN held_pages;
          ALTER TABLE scan_entry DROP COLUMN held_title;
+         ALTER TABLE scan_entry DROP COLUMN counted_by;
          UPDATE meta SET value = '26' WHERE key = 'schema_version';
          UPDATE scan_entry SET sha256 = NULL, pages = 4 WHERE rel_path = '{c002}';"
     ))
@@ -3543,7 +3573,7 @@ fn migration_28_turns_matching_on_for_every_library() {
     conn.execute_batch("INSERT INTO library (id, name) VALUES (70, 'Shelf'), (80, 'Other');")
         .expect("seeds two schema-27 libraries");
 
-    migrate(&conn).expect("migrates to 28");
+    migrate_with(&conn, &MIGRATIONS[..28]).expect("migrates to 28");
 
     assert_eq!(version(&conn).expect("reads the version"), 28);
     let switch = |id: i64| -> i64 {

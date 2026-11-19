@@ -1337,7 +1337,9 @@ async fn a_hidden_work_is_refused_before_its_validator_is_answered() {
         .locate(0)
         .map(|(member, offset)| (member.sha256.clone(), offset))
         .expect("page 0 of `raw`");
-    let page_tag = page_etag(&sha256, offset, None);
+    // Each route's tag for a request that sends no `Accept`.
+    let page_tag = page_etag(&sha256, offset, None, PageVariant::JxlAsJpeg);
+    let stream_tag = page_etag(&sha256, offset, None, PageVariant::JxlAsJpeg);
     let sidecar_tag = sidecar_etag(&found.sidecar());
     let if_none_match = |tag: &str| {
         let mut headers = HeaderMap::new();
@@ -1382,7 +1384,7 @@ async fn a_hidden_work_is_refused_before_its_validator_is_answered() {
         let response = crate::opds::stream_page(
             State(Arc::clone(&state)),
             page(),
-            if_none_match(&page_tag),
+            if_none_match(&stream_tag),
             as_a_reader_granted(vec![root]),
         )
         .await;
@@ -1611,7 +1613,10 @@ async fn a_validator_from_one_size_does_not_satisfy_a_request_for_another() {
 fn a_resized_page_tag_is_the_cache_key_it_was_rendered_under() {
     let path = crate::cover::page_cache_path(std::path::Path::new("/cache"), "abc", 3, 800);
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap();
-    assert_eq!(page_etag("abc", 3, Some(800)), format!("\"{stem}\""));
+    assert_eq!(
+        page_etag("abc", 3, Some(800), PageVariant::Stored),
+        format!("\"{stem}\"")
+    );
 }
 
 /// O106, from the client's side: a tag issued before the format version was
@@ -1627,13 +1632,30 @@ async fn a_resized_page_tag_from_before_the_format_version_is_not_honoured() {
     let (state, _fixture) = crate::test_support::state_with_real_pages();
     let app = build_router(state);
 
-    let full = etag_of(&app, "/api/works/w/a/pages/0").await;
+    // Safari names JPEG XL, so both answers are the stored variant, whose
+    // resized tag differs from the old one by the format version alone.
+    let accept = crate::test_support::SAFARI_ACCEPT;
+    let first = app
+        .clone()
+        .oneshot(
+            Request::get("/api/works/w/a/pages/0")
+                .header(header::ACCEPT, accept)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let full = first.headers()[header::ETAG]
+        .to_str()
+        .expect("ascii")
+        .to_owned();
     assert!(full.ends_with("-p0\""), "the full-size tag's shape: {full}");
     let old = format!("{}-r8\"", full.trim_end_matches('"'));
 
     let response = app
         .oneshot(
             Request::get("/api/works/w/a/pages/0?w=8")
+                .header(header::ACCEPT, accept)
                 .header(header::IF_NONE_MATCH, old.clone())
                 .body(Body::empty())
                 .unwrap(),
@@ -1963,7 +1985,9 @@ async fn a_width_above_the_ceiling_is_resized_and_cached_at_the_ceiling() {
         "the page served is the one cached at the ceiling"
     );
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap();
-    assert_eq!(headers[header::ETAG], format!("\"{stem}\"").as_str());
+    // No `Accept`, so the JPEG variant's tag of that stem.
+    let tag = crate::cover::jxl_variant_at(stem, crate::cover::JXL_JPEG_VERSION);
+    assert_eq!(headers[header::ETAG], format!("\"{tag}\"").as_str());
 }
 
 /// O108: a page that already fits inside `?w=` is served its own bytes, read by
@@ -8569,6 +8593,7 @@ mod narrowing {
             2,
             None,
             None,
+            PageVariant::JxlAsJpeg,
             &axum::http::HeaderMap::new(),
         )
         .await;
@@ -12000,6 +12025,517 @@ mod answered_without_a_server_path {
         assert!(
             !body.contains(&fixture.path().display().to_string()),
             "{body}"
+        );
+    }
+}
+
+/// A JPEG XL page by what the client accepts: as stored to a client that names
+/// `image/jxl`, as the JPEG made for it to any other (`page_variant`,
+/// `as_variant`), and a library cover always as the JPEG.
+mod jpeg_xl_by_what_the_client_accepts {
+    use super::*;
+    use crate::source::{JXL_CODESTREAM, JXL_CONTAINER};
+    use crate::test_support::{
+        CHROME_ACCEPT, PANELS_ACCEPT, SAFARI_ACCEPT, jxl_fixture, router_over_a_scanned_jxl_cbz,
+    };
+    use PageVariant::{JxlAsJpeg, Stored};
+
+    const WORK: &str = "scanned-v01";
+
+    fn page_uri(index: u32, query: &str) -> String {
+        format!("/api/works/{WORK}/raw/pages/{index}{query}")
+    }
+
+    /// A GET sending `accept` and `if_none_match` where given: its status,
+    /// headers and body.
+    async fn fetch_accepting(
+        router: &axum::Router,
+        uri: &str,
+        accept: Option<&str>,
+        if_none_match: Option<&str>,
+    ) -> (StatusCode, HeaderMap, axum::body::Bytes) {
+        let mut request = Request::get(uri);
+        if let Some(accept) = accept {
+            request = request.header(header::ACCEPT, accept);
+        }
+        if let Some(tag) = if_none_match {
+            request = request.header(header::IF_NONE_MATCH, tag);
+        }
+        let response = router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = axum::body::to_bytes(response.into_body(), 1 << 22)
+            .await
+            .unwrap();
+        (status, headers, body)
+    }
+
+    /// Page `index`'s member digest and offset: what its tags and cache files
+    /// are named by.
+    fn located(state: &crate::ServeState, index: u32) -> (String, u32) {
+        let found = state.find_blocking(WORK).expect("the fixture's work");
+        let view =
+            crate::view::EditionView::build(found, "raw", None).expect("the fixture's edition");
+        view.locate(index)
+            .map(|(member, offset)| (member.sha256.clone(), offset))
+            .expect("a page of the fixture")
+    }
+
+    /// Whether `headers` say the answer was chosen by the request's `Accept`.
+    fn varies_on_accept(headers: &HeaderMap) -> bool {
+        headers
+            .get_all(header::VARY)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .any(|name| name.trim().eq_ignore_ascii_case("accept"))
+    }
+
+    /// An image's width and height, read through the registered decoders.
+    fn dimensions(bytes: &[u8]) -> (u32, u32) {
+        image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .expect("reads from memory")
+            .into_dimensions()
+            .expect("an image")
+    }
+
+    /// Review Focus 5: the `Accept` headers clients send, and the edges of the
+    /// rule.
+    #[test]
+    fn page_variant_reads_whether_accept_names_jpeg_xl() {
+        assert!(
+            CHROME_ACCEPT.contains("image/*") && !CHROME_ACCEPT.contains("jxl"),
+            "the fixture: Chrome's list takes any image and names no JPEG XL"
+        );
+        let one_line = |accept: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::ACCEPT, accept.parse().expect("a header value"));
+            page_variant(&headers)
+        };
+        for (accept, expected) in [
+            (SAFARI_ACCEPT, Stored),
+            (PANELS_ACCEPT, Stored),
+            ("image/jxl;q=0.1", Stored),
+            ("IMAGE/JXL", Stored),
+            ("image/png, image/jxl", Stored),
+            (CHROME_ACCEPT, JxlAsJpeg),
+            ("image/*", JxlAsJpeg),
+            ("image/jxl;q=0", JxlAsJpeg),
+            ("image/jxl; q=0.000", JxlAsJpeg),
+            ("image/jxl-x", JxlAsJpeg),
+        ] {
+            assert_eq!(one_line(accept), expected, "Accept: {accept}");
+        }
+        assert_eq!(page_variant(&HeaderMap::new()), JxlAsJpeg, "no Accept");
+
+        let mut two_lines = HeaderMap::new();
+        two_lines.append(header::ACCEPT, HeaderValue::from_static("image/png"));
+        two_lines.append(header::ACCEPT, HeaderValue::from_static("image/jxl"));
+        assert_eq!(
+            two_lines.get_all(header::ACCEPT).iter().count(),
+            2,
+            "the fixture: two Accept lines"
+        );
+        assert_eq!(
+            page_variant(&two_lines),
+            Stored,
+            "Accept: image/png, then Accept: image/jxl"
+        );
+    }
+
+    /// O106 for the JPEG variant: its full-size tag is the key its cache file
+    /// is named by, so a bump of `JXL_JPEG_VERSION` reaches both.
+    #[test]
+    fn the_jpeg_variants_full_size_tag_is_its_cache_key() {
+        assert_eq!(
+            page_etag("abc", 3, None, JxlAsJpeg),
+            format!("\"{}\"", crate::cover::jxl_jpeg_key("abc", 3))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_jpeg_xl_page_is_sent_as_stored_to_a_client_that_names_it() {
+        assert!(
+            jxl_fixture("lossy.jxl").starts_with(JXL_CODESTREAM),
+            "the fixture: page 0 is a bare codestream"
+        );
+        let (router, state, _fixture) = router_over_a_scanned_jxl_cbz();
+        let (sha, offset) = located(&state, 0);
+
+        let (status, headers, body) =
+            fetch_accepting(&router, &page_uri(0, ""), Some(SAFARI_ACCEPT), None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jxl");
+        assert!(
+            body.as_ref() == jxl_fixture("lossy.jxl"),
+            "the stored bytes, {} of them, not {}",
+            jxl_fixture("lossy.jxl").len(),
+            body.len()
+        );
+        assert!(
+            varies_on_accept(&headers),
+            "Vary: {:?}",
+            headers.get_all(header::VARY).iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            headers[header::ETAG],
+            page_etag(&sha, offset, None, Stored).as_str()
+        );
+    }
+
+    /// Chrome 154's `Accept`, and none at all, which is what a client that sends
+    /// no header names.
+    #[tokio::test]
+    async fn a_jpeg_xl_page_is_sent_as_a_jpeg_to_any_other_client() {
+        for accept in [Some(CHROME_ACCEPT), None] {
+            let (router, state, _fixture) = router_over_a_scanned_jxl_cbz();
+            let (sha, offset) = located(&state, 0);
+            let cache = crate::cover::jxl_jpeg_cache_path(&state.thumb_cache_dir(), &sha, offset);
+            assert!(!cache.exists(), "the fixture: no JPEG made yet");
+
+            let (status, headers, body) =
+                fetch_accepting(&router, &page_uri(0, ""), accept, None).await;
+
+            assert_eq!(status, StatusCode::OK, "Accept: {accept:?}");
+            assert_eq!(
+                headers[header::CONTENT_TYPE],
+                "image/jpeg",
+                "Accept: {accept:?}"
+            );
+            assert_eq!(dimensions(&body), (96, 128), "Accept: {accept:?}");
+            let tag = page_etag(&sha, offset, None, JxlAsJpeg);
+            assert_eq!(headers[header::ETAG], tag.as_str(), "Accept: {accept:?}");
+            assert_ne!(
+                tag,
+                page_etag(&sha, offset, None, Stored),
+                "unlike the stored page's tag"
+            );
+            assert!(varies_on_accept(&headers), "Accept: {accept:?}");
+            assert!(cache.is_file(), "Accept: {accept:?}: {}", cache.display());
+        }
+    }
+
+    #[tokio::test]
+    async fn neither_variant_is_revalidated_with_the_others_tag() {
+        let (router, state, _fixture) = router_over_a_scanned_jxl_cbz();
+        let (sha, offset) = located(&state, 0);
+        let stored = page_etag(&sha, offset, None, Stored);
+        let jpeg = page_etag(&sha, offset, None, JxlAsJpeg);
+        let uri = page_uri(0, "");
+
+        let (status, headers, _) =
+            fetch_accepting(&router, &uri, Some(CHROME_ACCEPT), Some(&stored)).await;
+        assert_eq!(status, StatusCode::OK, "the stored tag, from Chrome");
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+
+        let (status, headers, _) =
+            fetch_accepting(&router, &uri, Some(SAFARI_ACCEPT), Some(&jpeg)).await;
+        assert_eq!(status, StatusCode::OK, "the JPEG's tag, from Safari");
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jxl");
+
+        for (accept, tag) in [(SAFARI_ACCEPT, &stored), (CHROME_ACCEPT, &jpeg)] {
+            let (status, headers, body) =
+                fetch_accepting(&router, &uri, Some(accept), Some(tag)).await;
+            assert_eq!(status, StatusCode::NOT_MODIFIED, "{tag} from {accept}");
+            assert!(body.is_empty(), "{tag}: a 304 sends no body");
+            assert_eq!(headers[header::ETAG], tag.as_str(), "{tag} from {accept}");
+            assert!(varies_on_accept(&headers), "{tag} from {accept}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_page_that_fits_follows_the_same_rule() {
+        let (router, state, _fixture) = router_over_a_scanned_jxl_cbz();
+        assert!(
+            dimensions(jxl_fixture("lossy.jxl")).1 <= 4096,
+            "the fixture: page 0 fits 4096 px"
+        );
+        let (sha, offset) = located(&state, 0);
+        let uri = page_uri(0, "?w=4096");
+
+        let (status, stored, body) =
+            fetch_accepting(&router, &uri, Some(SAFARI_ACCEPT), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(stored[header::CONTENT_TYPE], "image/jxl", "from Safari");
+        assert!(
+            body.as_ref() == jxl_fixture("lossy.jxl"),
+            "from Safari, the stored bytes"
+        );
+        assert_eq!(
+            stored[header::ETAG],
+            page_etag(&sha, offset, Some(4096), Stored).as_str()
+        );
+
+        let (status, jpeg, body) = fetch_accepting(&router, &uri, Some(CHROME_ACCEPT), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(jpeg[header::CONTENT_TYPE], "image/jpeg", "from Chrome");
+        assert_eq!(
+            dimensions(&body),
+            (96, 128),
+            "from Chrome, the page's own size"
+        );
+        assert_eq!(
+            jpeg[header::ETAG],
+            page_etag(&sha, offset, Some(4096), JxlAsJpeg).as_str()
+        );
+        assert_ne!(stored[header::ETAG], jpeg[header::ETAG]);
+    }
+
+    #[tokio::test]
+    async fn a_resized_jpeg_xl_page_is_a_jpeg_for_both() {
+        let (router, state, _fixture) = router_over_a_scanned_jxl_cbz();
+        assert!(
+            dimensions(jxl_fixture("lossy.jxl")).1 > 32,
+            "the fixture: page 0 is larger than 32 px"
+        );
+        let (sha, offset) = located(&state, 0);
+        let key = crate::cover::page_key(&sha, offset, 32);
+        let jpeg_version = crate::cover::JXL_JPEG_VERSION;
+
+        for (accept, tag) in [
+            (SAFARI_ACCEPT, format!("\"{key}\"")),
+            (CHROME_ACCEPT, format!("\"{key}-j{jpeg_version}\"")),
+        ] {
+            let (status, headers, body) =
+                fetch_accepting(&router, &page_uri(0, "?w=32"), Some(accept), None).await;
+            assert_eq!(status, StatusCode::OK, "{accept}");
+            assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg", "{accept}");
+            let (width, height) = dimensions(&body);
+            assert_eq!(width.max(height), 32, "{accept}");
+            assert_eq!(headers[header::ETAG], tag.as_str(), "{accept}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_page_in_another_format_is_sent_as_stored_to_every_client() {
+        assert!(
+            jxl_fixture("lossless.png").starts_with(b"\x89PNG\r\n\x1a\n"),
+            "the fixture: page 1 is a PNG"
+        );
+        let (router, _state, _fixture) = router_over_a_scanned_jxl_cbz();
+
+        let (status, headers, body) =
+            fetch_accepting(&router, &page_uri(1, ""), Some(CHROME_ACCEPT), None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "image/png");
+        assert!(
+            body.as_ref() == jxl_fixture("lossless.png"),
+            "the stored bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_recompressed_page_is_sent_as_its_original_jpeg() {
+        assert!(
+            jxl_fixture("recompressed.jxl").starts_with(JXL_CONTAINER),
+            "the fixture: page 2 is a container"
+        );
+        let (router, _state, _fixture) = router_over_a_scanned_jxl_cbz();
+
+        let (status, headers, body) =
+            fetch_accepting(&router, &page_uri(2, ""), Some(CHROME_ACCEPT), None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+        assert!(
+            body.as_ref() == jxl_fixture("recompressed.jpg"),
+            "the JPEG the page was made from, byte for byte"
+        );
+    }
+
+    /// A cover's address is kept for good, so it is the JPEG whoever asks, with
+    /// no `Vary`. Page 0 fits 256 px, so this is the page that fits, made a JPEG.
+    #[tokio::test]
+    async fn a_library_cover_of_a_jpeg_xl_page_is_always_a_jpeg() {
+        let (router, state, _fixture) = router_over_a_scanned_jxl_cbz();
+        assert!(
+            dimensions(jxl_fixture("lossy.jxl")).1 <= 256,
+            "the fixture: page 0 fits a 256 px cover"
+        );
+        let (sha, offset) = located(&state, 0);
+        let v = crate::cover::cover_version(&sha, offset);
+        let uri = format!("/api/works/{WORK}/raw/pages/0/thumb?w=256&v={v}");
+
+        let (status, headers, body) =
+            fetch_accepting(&router, &uri, Some(SAFARI_ACCEPT), None).await;
+
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg", "{uri}");
+        assert_eq!(dimensions(&body), (96, 128), "{uri}: the page as it fits");
+        assert!(
+            headers.get(header::VARY).is_none(),
+            "{uri}: Vary: {:?}",
+            headers.get(header::VARY)
+        );
+        assert_eq!(
+            headers[header::ETAG],
+            page_etag(&sha, offset, Some(256), JxlAsJpeg).as_str(),
+            "{uri}"
+        );
+        assert_eq!(cache_control(&headers), COVER_CACHE_CONTROL, "{uri}");
+
+        let tile = format!("/api/works/{WORK}/raw/pages/0/thumb");
+        let (status, headers, _) = fetch_accepting(&router, &tile, Some(SAFARI_ACCEPT), None).await;
+        assert_eq!(status, StatusCode::OK, "{tile}");
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg", "{tile}");
+    }
+
+    /// Review Focus 2: a page that will not decode is refused as any unreadable
+    /// page is (O267), and leaves nothing in the cache.
+    #[tokio::test]
+    async fn a_jpeg_xl_page_that_will_not_decode_is_refused_as_unreadable() {
+        let junk = [
+            JXL_CODESTREAM,
+            b"and no codestream after the signature".as_slice(),
+        ]
+        .concat();
+        assert_eq!(
+            crate::source::sniffed_type(&junk),
+            Some("image/jxl"),
+            "the fixture: page 0 is sent as JPEG XL"
+        );
+        let (router, state, _fixture) =
+            crate::test_support::router_over_a_scanned_jxl_cbz_with_page_0(&junk);
+        let (sha, offset) = located(&state, 0);
+
+        let (status, _, body) =
+            fetch_accepting(&router, &page_uri(0, ""), Some(CHROME_ACCEPT), None).await;
+
+        let body = String::from_utf8_lossy(&body);
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(
+            body,
+            "page 0 of `raw` of `scanned-v01` could not be read; the server's log says why"
+        );
+        let cache = crate::cover::jxl_jpeg_cache_path(&state.thumb_cache_dir(), &sha, offset);
+        assert!(!cache.exists(), "no JPEG is left at {}", cache.display());
+    }
+
+    /// Whether `page`'s top-left quarter, `alpha.jxl`'s and `alpha.djxl.png`'s
+    /// transparent ground, is black at alpha 0 in the page itself: the colour a
+    /// JPEG that drops the alpha shows.
+    fn transparent_quarter_is_black(page: &[u8]) -> bool {
+        crate::jxl::register();
+        let image = image::ImageReader::new(std::io::Cursor::new(page))
+            .with_guessed_format()
+            .expect("reads from memory")
+            .decode()
+            .expect("the page decodes")
+            .into_rgba8();
+        (0..image.height() / 2)
+            .all(|y| (0..image.width() / 2).all(|x| image.get_pixel(x, y).0 == [0, 0, 0, 0]))
+    }
+
+    /// The mean of each channel over the 8x8 block at the centre of `jpeg`'s
+    /// top-left quarter, which stays 8 px inside that quarter down to half of
+    /// `alpha.jxl`'s size, so a JPEG's ringing at the quarter's edge is not
+    /// what is measured.
+    fn transparent_quarter_mean(jpeg: &[u8]) -> [u32; 3] {
+        let image = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg)
+            .expect("a JPEG")
+            .into_rgb8();
+        let (x0, y0) = (image.width() / 4 - 4, image.height() / 4 - 4);
+        let mut sums = [0; 3];
+        for y in y0..y0 + 8 {
+            for x in x0..x0 + 8 {
+                for (sum, value) in sums.iter_mut().zip(image.get_pixel(x, y).0) {
+                    *sum += u32::from(value);
+                }
+            }
+        }
+        sums.map(|sum| sum / 64)
+    }
+
+    /// `uri` from `router`, sent `accept`: a JPEG, and the mean of its
+    /// transparent quarter.
+    async fn transparent_quarter_served(
+        router: &axum::Router,
+        uri: &str,
+        accept: &str,
+    ) -> [u32; 3] {
+        let (status, headers, body) = fetch_accepting(router, uri, Some(accept), None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg", "{uri}");
+        transparent_quarter_mean(&body)
+    }
+
+    /// Review Focus 1 at a width: a resized page is a JPEG for every client, its
+    /// transparent ground white.
+    async fn a_resized_alpha_page_is_white_where_it_is_transparent(accept: &str) {
+        assert!(
+            transparent_quarter_is_black(jxl_fixture("alpha.jxl")),
+            "the fixture: alpha.jxl's top-left quarter is black at alpha 0"
+        );
+        let (router, _state, _fixture) =
+            crate::test_support::router_over_a_scanned_jxl_cbz_with_page_0(jxl_fixture(
+                "alpha.jxl",
+            ));
+
+        let ground = transparent_quarter_served(&router, &page_uri(0, "?w=64"), accept).await;
+
+        assert!(
+            ground.iter().all(|&channel| channel >= 250),
+            "the transparent ground at 64 px for {accept}: {ground:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resized_jpeg_xl_page_has_a_white_ground_for_a_client_that_does_not_name_it() {
+        a_resized_alpha_page_is_white_where_it_is_transparent(CHROME_ACCEPT).await;
+    }
+
+    #[tokio::test]
+    async fn a_resized_jpeg_xl_page_has_a_white_ground_for_a_client_that_names_it() {
+        a_resized_alpha_page_is_white_where_it_is_transparent(SAFARI_ACCEPT).await;
+    }
+
+    #[tokio::test]
+    async fn a_jpeg_xl_tile_has_a_white_ground() {
+        assert!(
+            transparent_quarter_is_black(jxl_fixture("alpha.jxl")),
+            "the fixture: alpha.jxl's top-left quarter is black at alpha 0"
+        );
+        let (router, _state, _fixture) =
+            crate::test_support::router_over_a_scanned_jxl_cbz_with_page_0(jxl_fixture(
+                "alpha.jxl",
+            ));
+        let tile = format!("/api/works/{WORK}/raw/pages/0/thumb");
+
+        let ground = transparent_quarter_served(&router, &tile, CHROME_ACCEPT).await;
+
+        assert!(
+            ground.iter().all(|&channel| channel >= 250),
+            "the tile's transparent ground: {ground:?}"
+        );
+    }
+
+    /// The rule is the format's, not JPEG XL's: a PNG page with a transparent
+    /// ground is white at a width too.
+    #[tokio::test]
+    async fn a_resized_png_page_has_a_white_ground_too() {
+        let page = jxl_fixture("alpha.djxl.png");
+        assert!(
+            page.starts_with(b"\x89PNG") && transparent_quarter_is_black(page),
+            "the fixture: alpha.djxl.png is a PNG whose top-left quarter is black at alpha 0"
+        );
+        let (router, _state, _fixture) = crate::test_support::router_over_a_scanned_cbz_holding(
+            "scanned-alpha-png",
+            &[("000.png", page)],
+        );
+
+        let ground =
+            transparent_quarter_served(&router, &page_uri(0, "?w=64"), CHROME_ACCEPT).await;
+
+        assert!(
+            ground.iter().all(|&channel| channel >= 250),
+            "the PNG page's transparent ground at 64 px: {ground:?}"
         );
     }
 }

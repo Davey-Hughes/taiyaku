@@ -8,7 +8,7 @@
 //! route does waits on it. A row is stored as each file is read, so a pass
 //! stopped partway, by a cancel or a restart, resumes at the next file.
 
-mod priority;
+pub(crate) mod priority;
 mod read;
 
 use std::collections::{HashSet, VecDeque};

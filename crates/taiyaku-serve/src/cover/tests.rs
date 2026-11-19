@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::jxl_fixture;
 use std::sync::atomic::Ordering;
 
 /// A pixel channel value synthesized for a fixture image below.
@@ -886,47 +887,88 @@ fn changing_any_rendering_parameter_changes_the_page_key() {
     }
 }
 
-/// A cover's version changes exactly when the `ETag` of a cover size would,
-/// whatever the size: it is what lets `routes::COVER_CACHE_CONTROL` keep an
-/// address for good, so an input the tags have and the version lacks would
-/// keep old bytes under an address that no longer names them.
+/// A cover's version changes exactly when the `ETag` of a cover size (the JPEG
+/// variant's, which every cover is) would, whatever the size: it is what lets
+/// `routes::COVER_CACHE_CONTROL` keep an address for good, so an input the tags
+/// have and the version lacks would keep old bytes under an address that no
+/// longer names them.
 ///
 /// Every pair of inputs below is compared both ways at every cover size: the
 /// two tags differ if and only if the two versions do. Each input changes on
 /// its own, for `changing_any_rendering_parameter_changes_the_page_key`'s
-/// reason. The size is not an argument, so the three sizes of one page share
-/// one version.
+/// reason; the three sizes of one page share one version.
 ///
-/// **Hex and `-` only** over a real digest. `cover_address` encodes it all
-/// the same, since an imported sidecar's hash need not be hex.
+/// **Hex, `-` and `j` only** over a real digest. `cover_address` encodes it
+/// all the same, since an imported sidecar's hash need not be hex.
 #[test]
 fn a_cover_version_changes_exactly_when_a_cover_tag_does_at_every_size() {
     let sha = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
     let other_sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    let current = cover_version_at(sha, 0, PAGE_FORMAT_VERSION);
+    let current = cover_version_at(sha, 0, PAGE_FORMAT_VERSION, JXL_JPEG_VERSION);
     assert_eq!(
         current,
         cover_version(sha, 0),
-        "cover_version must use the real constant, not a copy of it"
+        "cover_version must use the real constants, not copies of them"
     );
     assert!(
-        current.chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
-        "hex and `-` only: {current}"
+        current
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == '-' || c == 'j'),
+        "hex, `-` and `j` only: {current}"
     );
 
+    // A cover's tag with its versions as arguments, pinned to the one
+    // `routes::page_etag` sends at today's versions, so the loop below compares
+    // the route's tags and not a copy of them.
+    let cover_tag = |sha: &str, offset: u32, edge: u32, format_version: u32, jpeg_version: u32| {
+        jxl_variant_at(
+            &page_key_at(sha, offset, edge, format_version),
+            jpeg_version,
+        )
+    };
+    for edge in COVER_LONG_EDGES {
+        assert_eq!(
+            format!(
+                "\"{}\"",
+                cover_tag(sha, 0, edge, PAGE_FORMAT_VERSION, JXL_JPEG_VERSION)
+            ),
+            crate::routes::page_etag(sha, 0, Some(edge), crate::routes::PageVariant::JxlAsJpeg),
+            "the tag a cover is sent at {edge} px"
+        );
+    }
+
     let inputs = [
-        ("as it is", sha, 0, PAGE_FORMAT_VERSION),
-        ("sha256", other_sha, 0, PAGE_FORMAT_VERSION),
-        ("offset", sha, 1, PAGE_FORMAT_VERSION),
-        ("format version", sha, 0, PAGE_FORMAT_VERSION + 1),
+        ("as it is", sha, 0, PAGE_FORMAT_VERSION, JXL_JPEG_VERSION),
+        (
+            "sha256",
+            other_sha,
+            0,
+            PAGE_FORMAT_VERSION,
+            JXL_JPEG_VERSION,
+        ),
+        ("offset", sha, 1, PAGE_FORMAT_VERSION, JXL_JPEG_VERSION),
+        (
+            "format version",
+            sha,
+            0,
+            PAGE_FORMAT_VERSION + 1,
+            JXL_JPEG_VERSION,
+        ),
+        (
+            "JPEG version",
+            sha,
+            0,
+            PAGE_FORMAT_VERSION,
+            JXL_JPEG_VERSION + 1,
+        ),
     ];
-    for (a_name, a_sha, a_offset, a_format) in inputs {
-        for (b_name, b_sha, b_offset, b_format) in inputs {
-            let versions_differ = cover_version_at(a_sha, a_offset, a_format)
-                != cover_version_at(b_sha, b_offset, b_format);
+    for (a_name, a_sha, a_offset, a_format, a_jpeg) in inputs {
+        for (b_name, b_sha, b_offset, b_format, b_jpeg) in inputs {
+            let versions_differ = cover_version_at(a_sha, a_offset, a_format, a_jpeg)
+                != cover_version_at(b_sha, b_offset, b_format, b_jpeg);
             for edge in COVER_LONG_EDGES {
-                let tags_differ = page_key_at(a_sha, a_offset, edge, a_format)
-                    != page_key_at(b_sha, b_offset, edge, b_format);
+                let tags_differ = cover_tag(a_sha, a_offset, edge, a_format, a_jpeg)
+                    != cover_tag(b_sha, b_offset, edge, b_format, b_jpeg);
                 assert_eq!(
                     versions_differ, tags_differ,
                     "{a_name} against {b_name} at {edge} px: the tags differ \
@@ -1035,4 +1077,362 @@ fn tile_long_edges_is_pinned_to_its_literal() {
          missing from either side is answered with the 160 px tile instead of \
          failing loudly"
     );
+}
+
+/// Whether `bytes` are a whole JPEG, its start and end markers, and if so
+/// the size it decodes to.
+fn whole_jpeg_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if !(bytes.starts_with(b"\xff\xd8\xff") && bytes.ends_with(b"\xff\xd9")) {
+        return None;
+    }
+    let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Jpeg).ok()?;
+    Some((image.width(), image.height()))
+}
+
+/// Made once: the second call is a hit, so it answers whatever page it is
+/// handed.
+#[test]
+fn a_jpeg_xl_page_is_made_into_a_jpeg_once_and_cached() {
+    crate::jxl::register();
+    let page = jxl_fixture("lossy.jxl");
+    assert_eq!(
+        crate::jxl::rebuilt_jpeg(page),
+        None,
+        "the fixture: lossy.jxl has no JPEG to rebuild, so its JPEG is encoded"
+    );
+    let dir = tempdir_for_test();
+
+    let made =
+        cached_or_generated_jxl_jpeg(dir.path(), "abc", 3, page).expect("lossy.jxl makes a JPEG");
+
+    assert_eq!(
+        whole_jpeg_size(&made),
+        Some((96, 128)),
+        "a whole JPEG of the page"
+    );
+    let written = std::fs::read(jxl_jpeg_cache_path(dir.path(), "abc", 3)).ok();
+    assert!(
+        written.as_ref() == Some(&made),
+        "written at its cache path: {:?} bytes there, {} made",
+        written.map(|bytes| bytes.len()),
+        made.len()
+    );
+    let again = cached_or_generated_jxl_jpeg(dir.path(), "abc", 3, b"not a page");
+    assert!(
+        again.as_ref() == Ok(&made),
+        "a second call is a hit, whatever page it is handed: {:?}",
+        again.map(|bytes| bytes.len())
+    );
+}
+
+/// A page cjxl made from a JPEG, keeping the data to rebuild it, is that
+/// JPEG's own bytes, with no second generation of loss.
+#[test]
+fn a_recompressed_jpeg_page_is_its_original_jpeg() {
+    crate::jxl::register();
+    let page = jxl_fixture("recompressed.jxl");
+    let original = jxl_fixture("recompressed.jpg");
+    assert!(
+        page.starts_with(crate::source::JXL_CONTAINER),
+        "the fixture: recompressed.jxl is a container, which can carry a JPEG's reconstruction data"
+    );
+    assert_eq!(
+        whole_jpeg_size(original),
+        Some((96, 128)),
+        "the fixture: recompressed.jpg is the whole page"
+    );
+    let dir = tempdir_for_test();
+
+    let made = cached_or_generated_jxl_jpeg(dir.path(), "abc", 0, page);
+    assert!(
+        made.as_deref() == Ok(original),
+        "recompressed.jpg's own {} bytes: {:?}",
+        original.len(),
+        made.map(|bytes| bytes.len())
+    );
+}
+
+/// A page made from a JPEG with bytes after its end marker is encoded as any
+/// other is, so its file is one `cached` takes back: the rebuild would end on
+/// those bytes and be made again on every request.
+#[test]
+fn a_rebuild_with_bytes_after_its_end_marker_is_encoded_and_kept() {
+    crate::jxl::register();
+    let page = jxl_fixture("trailing.jxl");
+    let original = jxl_fixture("trailing.jpg");
+    let rebuilt = crate::jxl::rebuilt_jpeg(page);
+    assert!(
+        rebuilt.as_deref() == Some(original) && !original.ends_with(b"\xff\xd9"),
+        "the fixture: trailing.jxl rebuilds trailing.jpg, bytes after its end marker and all: \
+         {:?} bytes rebuilt, {} in trailing.jpg",
+        rebuilt.map(|bytes| bytes.len()),
+        original.len()
+    );
+    let dir = tempdir_for_test();
+
+    let made = cached_or_generated_jxl_jpeg(dir.path(), "abc", 0, page)
+        .expect("trailing.jxl makes a JPEG");
+
+    assert_eq!(
+        whole_jpeg_size(&made),
+        Some((96, 128)),
+        "a whole JPEG, ending on its end marker"
+    );
+    let again = cached_or_generated_jxl_jpeg(dir.path(), "abc", 0, b"not a page");
+    assert!(
+        again.as_ref() == Ok(&made),
+        "a second call is a hit, whatever page it is handed: {:?}",
+        again.map(|bytes| bytes.len())
+    );
+}
+
+/// O105 and Review Focus 3, for the JPEG of a JPEG XL page: a JPEG cut short
+/// at its cache path is a miss, made again and replaced, never served.
+#[test]
+fn a_cut_short_jpeg_in_the_cache_is_made_again() {
+    crate::jxl::register();
+    let page = jxl_fixture("lossy.jxl");
+    let elsewhere = tempdir_for_test();
+    let whole = cached_or_generated_jxl_jpeg(elsewhere.path(), "abc", 3, page)
+        .expect("lossy.jxl makes a JPEG");
+    let half = &whole[..whole.len() / 2];
+    assert!(
+        half.starts_with(b"\xff\xd8\xff") && !half.ends_with(b"\xff\xd9"),
+        "the fixture: the first half of a JPEG, its start marker without its end"
+    );
+    let dir = tempdir_for_test();
+    let path = jxl_jpeg_cache_path(dir.path(), "abc", 3);
+    std::fs::write(&path, half).unwrap();
+
+    let served =
+        cached_or_generated_jxl_jpeg(dir.path(), "abc", 3, page).expect("lossy.jxl makes a JPEG");
+
+    assert_eq!(
+        whole_jpeg_size(&served),
+        Some((96, 128)),
+        "a whole JPEG, made again"
+    );
+    let written = std::fs::read(&path).ok();
+    assert!(
+        written.as_ref() == Some(&served),
+        "the cut-short file is replaced: {:?} bytes there, {} served",
+        written.map(|bytes| bytes.len()),
+        served.len()
+    );
+}
+
+/// The top left of the 8x8 block sampled in `alpha.jxl`'s transparent quarter
+/// (0..48, 0..64), at least 8 px inside it, so a JPEG's ringing at the
+/// quarter's edge is not what is measured.
+const TRANSPARENT_SAMPLE: (u32, u32) = (16, 24);
+
+/// The top left of the 8x8 block sampled in `alpha.jxl`'s opaque ground, for
+/// `TRANSPARENT_SAMPLE`'s reason at least 8 px from the quarter, the image's
+/// edge and any ink.
+const OPAQUE_SAMPLE: (u32, u32) = (8, 76);
+
+/// The mean of each channel over the 8x8 block whose top left is `at`.
+fn block_mean(image: &image::RgbaImage, at: (u32, u32)) -> [u32; 4] {
+    let mut sums = [0; 4];
+    for y in at.1..at.1 + 8 {
+        for x in at.0..at.0 + 8 {
+            for (sum, value) in sums.iter_mut().zip(image.get_pixel(x, y).0) {
+                *sum += u32::from(value);
+            }
+        }
+    }
+    sums.map(|sum| sum / 64)
+}
+
+/// Review Focus 1: a JPEG has no alpha, so a transparent ground is laid on
+/// white, as a page's paper is, and not dropped to the black its pixels hold.
+#[test]
+fn a_transparent_ground_becomes_white() {
+    crate::jxl::register();
+    let reference =
+        image::load_from_memory_with_format(jxl_fixture("alpha.djxl.png"), image::ImageFormat::Png)
+            .expect("alpha.djxl.png decodes")
+            .into_rgba8();
+    assert!(
+        (0..64).all(|y| (0..48).all(|x| reference.get_pixel(x, y).0 == [0, 0, 0, 0])),
+        "the fixture: alpha.djxl.png's top-left quarter is black at alpha 0"
+    );
+    assert!(
+        (OPAQUE_SAMPLE.1..OPAQUE_SAMPLE.1 + 8).all(|y| (OPAQUE_SAMPLE.0..OPAQUE_SAMPLE.0 + 8)
+            .all(|x| reference.get_pixel(x, y).0[3] == u8::MAX)),
+        "the fixture: the opaque sample is opaque throughout"
+    );
+    let expected = block_mean(&reference, OPAQUE_SAMPLE);
+    let dir = tempdir_for_test();
+
+    let made = cached_or_generated_jxl_jpeg(dir.path(), "abc", 0, jxl_fixture("alpha.jxl"))
+        .expect("alpha.jxl makes a JPEG");
+    let made = image::load_from_memory_with_format(&made, image::ImageFormat::Jpeg)
+        .expect("a JPEG")
+        .into_rgba8();
+
+    let ground = block_mean(&made, TRANSPARENT_SAMPLE);
+    assert!(
+        ground[..3].iter().all(|&channel| channel >= 250),
+        "the transparent ground is white: {ground:?}"
+    );
+    let opaque = block_mean(&made, OPAQUE_SAMPLE);
+    assert!(
+        opaque[..3]
+            .iter()
+            .zip(&expected[..3])
+            .all(|(made, expected)| made.abs_diff(*expected) <= 12),
+        "the opaque page is as it was: {opaque:?} against {expected:?}"
+    );
+}
+
+/// This JPEG is the page a reader looks at, so it is encoded above the quality
+/// covers and tiles are; on the same pixels, a longer file is the sign of it.
+#[test]
+fn the_jpeg_of_a_jpeg_xl_page_is_encoded_above_the_cover_quality() {
+    crate::jxl::register();
+    let page = jxl_fixture("lossless.jxl");
+    assert_eq!(
+        crate::jxl::rebuilt_jpeg(page),
+        None,
+        "the fixture: lossless.jxl has no JPEG to rebuild, so its JPEG is encoded"
+    );
+    let decoded = decode_limited(page, "test").expect("lossless.jxl decodes");
+    assert!(
+        !decoded.color().has_alpha(),
+        "the fixture: lossless.jxl has no alpha, so both encode the same pixels"
+    );
+    let at_cover_quality = encode_jpeg(decoded, "test").expect("encodes").len();
+    let dir = tempdir_for_test();
+
+    let made = cached_or_generated_jxl_jpeg(dir.path(), "abc", 0, page)
+        .expect("lossless.jxl makes a JPEG");
+
+    assert!(
+        made.len() > at_cover_quality,
+        "{} bytes against the cover quality's {at_cover_quality}",
+        made.len()
+    );
+}
+
+/// A cut-short JPEG XL page makes no JPEG and leaves no file: neither the
+/// rebuild nor the decode may take the part that arrived as the page. Cut one
+/// byte past its header, at each eighth and one byte short of the whole.
+#[test]
+fn a_cut_short_jpeg_xl_page_makes_no_jpeg_and_leaves_no_file() {
+    crate::jxl::register();
+    let page = jxl_fixture("recompressed.jxl");
+    assert!(
+        crate::jxl::rebuilt_jpeg(page).is_some(),
+        "the fixture: the whole page rebuilds its JPEG, so a cut copy meets the rebuild first"
+    );
+    let header = (1..page.len())
+        .find(|&length| {
+            image::ImageReader::new(std::io::Cursor::new(&page[..length]))
+                .with_guessed_format()
+                .expect("guessing reads from memory")
+                .into_dimensions()
+                .is_ok()
+        })
+        .expect("a header that ends before the file does");
+    let mut lengths: Vec<usize> = [header + 1, page.len() - 1]
+        .into_iter()
+        .chain((1..8).map(|eighths| page.len() * eighths / 8))
+        .collect();
+    lengths.sort_unstable();
+    lengths.dedup();
+
+    for length in lengths {
+        let dir = tempdir_for_test();
+        let made = cached_or_generated_jxl_jpeg(dir.path(), "abc", 0, &page[..length]);
+        assert!(
+            made.is_err(),
+            "cut to {length} of {} bytes: made {} bytes",
+            page.len(),
+            made.as_ref().map_or(0, Vec::len)
+        );
+        assert!(
+            !jxl_jpeg_cache_path(dir.path(), "abc", 0).exists(),
+            "cut to {length} of {} bytes: a file is left",
+            page.len()
+        );
+    }
+}
+
+/// The name of the JPEG of a JPEG XL page, which is both its cache file's stem
+/// and its full-size tag (O106), in the shape every such file is cached under.
+#[test]
+fn the_jpeg_cache_name_is_the_page_tag() {
+    let sha = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    let key = jxl_jpeg_key(sha, 3);
+
+    assert_eq!(
+        key,
+        format!("{sha}-p3-j1"),
+        "the name every such file is cached under (O106)"
+    );
+    assert_eq!(
+        jxl_jpeg_cache_path(Path::new("/cache"), sha, 3)
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str),
+        Some(format!("{key}.jpg").as_str()),
+        "the cache file is named by the key"
+    );
+}
+
+/// A cover is always the JPEG variant, so its version names the JPEG version
+/// too: a bump left out would keep old bytes under an address kept for good.
+#[test]
+fn a_cover_version_names_the_jpeg_xl_rendering() {
+    let sha = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+    assert_ne!(
+        cover_version_at(sha, 0, 2, 1),
+        cover_version_at(sha, 0, 2, 2),
+        "a changed JPEG version changes the cover version"
+    );
+    assert_eq!(
+        cover_version(sha, 0),
+        cover_version_at(sha, 0, PAGE_FORMAT_VERSION, JXL_JPEG_VERSION),
+        "cover_version must use the real constants, not copies of them"
+    );
+}
+
+/// A pixel part transparent is blended with white by its alpha, as a page's
+/// paper would show through it, not dropped to its colour or to white: alpha
+/// 128 over black is mid grey.
+#[test]
+fn a_part_transparent_pixel_is_blended_onto_white() {
+    let pixels: [[u8; 4]; 5] = [
+        [0, 0, 0, 128],
+        [200, 50, 0, 64],
+        [10, 100, 200, 192],
+        [10, 100, 200, 255],
+        [10, 100, 200, 0],
+    ];
+    assert!(
+        pixels
+            .iter()
+            .filter(|[.., alpha]| (1..255).contains(alpha))
+            .count()
+            == 3,
+        "the fixture: three of the pixels are part transparent"
+    );
+    let image = image::RgbaImage::from_fn(5, 1, |x, _| {
+        image::Rgba(pixels[usize::try_from(x).unwrap()])
+    });
+
+    let flat = onto_white(image::DynamicImage::ImageRgba8(image));
+
+    for (x, [red, green, blue, alpha]) in (0..).zip(pixels) {
+        let alpha = f64::from(alpha) / 255.0;
+        for (index, value) in [red, green, blue].into_iter().enumerate() {
+            let expected = f64::from(value) * alpha + 255.0 * (1.0 - alpha);
+            let made = flat.get_pixel(x, 0).0[index];
+            assert!(
+                (f64::from(made) - expected).abs() <= 1.0,
+                "pixel {x}, channel {index}: {made}, expected {expected:.1}"
+            );
+        }
+    }
 }

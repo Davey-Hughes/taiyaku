@@ -774,27 +774,39 @@ pub(crate) async fn stream_page(
     // `None`: the OPDS stream serves the member's own bytes at full size and
     // takes no `?w=`. A reading client fetching through this feed is not the
     // browser reader and has no viewport this server knows about, so there is
-    // nothing to fit to, and the tag is `page_etag`'s for no width.
-    let tag = crate::routes::page_etag(&sha256, offset, None);
+    // nothing to fit to, and the tag is `page_etag`'s for no width. The variant
+    // is the reader route's rule, so a client sees one rendering of a JPEG XL
+    // page whichever of the two routes it asks.
+    let variant = crate::routes::page_variant(&headers);
+    let tag = crate::routes::page_etag(&sha256, offset, None, variant);
     if crate::routes::if_none_match_hits(&headers, &tag) {
-        return crate::routes::not_modified(&tag, Some(crate::routes::PAGE_CACHE_CONTROL));
+        return crate::routes::vary_on_accept(crate::routes::not_modified(
+            &tag,
+            Some(crate::routes::PAGE_CACHE_CONTROL),
+        ));
     }
 
-    let fetched = tokio::task::spawn_blocking(move || state.page(&view, index)).await;
+    let fetched = tokio::task::spawn_blocking(move || {
+        let page = state.page(&view, index)?;
+        crate::routes::as_variant(&state, page, &sha256, offset, variant)
+    })
+    .await;
 
     match fetched {
-        Ok(Ok(page)) => (
-            [
-                (header::CONTENT_TYPE, page.content_type),
-                (header::ETAG, tag),
-                (
-                    header::CACHE_CONTROL,
-                    crate::routes::PAGE_CACHE_CONTROL.to_string(),
-                ),
-            ],
-            page.bytes,
-        )
-            .into_response(),
+        Ok(Ok(page)) => crate::routes::vary_on_accept(
+            (
+                [
+                    (header::CONTENT_TYPE, page.content_type),
+                    (header::ETAG, tag),
+                    (
+                        header::CACHE_CONTROL,
+                        crate::routes::PAGE_CACHE_CONTROL.to_string(),
+                    ),
+                ],
+                page.bytes,
+            )
+                .into_response(),
+        ),
         Ok(Err(e)) => crate::routes::unreadable(&what, &e),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -170,7 +170,14 @@ pub(crate) async fn get_book_image(
     else {
         return no_book();
     };
-    let tag = crate::routes::page_etag(&edition.members[0].sha256, index, None);
+    // `Stored`: a book's images are sent as the book holds them, whatever the
+    // client accepts, so the tag names no other rendering.
+    let tag = crate::routes::page_etag(
+        &edition.members[0].sha256,
+        index,
+        None,
+        crate::routes::PageVariant::Stored,
+    );
     let freshness = crate::routes::PAGE_CACHE_CONTROL;
     if crate::routes::if_none_match_hits(&headers, &tag) {
         return crate::routes::not_modified(&tag, Some(freshness));

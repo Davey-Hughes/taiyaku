@@ -13,10 +13,11 @@
 //! needs it because a directory-format edition's page count is the sum of
 //! what is beneath it, and a single pass would have to record a row before it
 //! could know that number. **The third has no `inventory` counterpart**:
-//! between measuring and recording, `scan_root` resolves every new-or-moved
-//! entry's format and page count — `sniff` and `member_pages`, the expensive
-//! calls the next paragraph is about — so that recording itself is nothing
-//! but SQL over facts already in hand. See `Resolved`.
+//! between measuring and recording, `scan_root` resolves the format and page
+//! count of every new-or-moved entry and every file counted by another reader
+//! (`Due`) — `sniff` and `member_pages`, the expensive calls the next
+//! paragraph is about — so that recording itself is nothing but SQL over facts
+//! already in hand. See `Resolved`.
 //!
 //! **What the cheap walk actually saves, since the phrase invites the wrong
 //! implementation.** `dir_state`'s mtime and entry count do NOT license
@@ -29,8 +30,9 @@
 //! header, opens and parses it a second time; `member_pages` opens it again
 //! to list its entries. Both are the expensive calls here, and an entry is
 //! only reopened when its `(size, mtime)` has moved from what `scan_entry`
-//! already holds. Hashing is skipped entirely: `sha256` stays NULL until
-//! `derive.rs` needs it, per §3.
+//! already holds, or when it is a file this reader counts differently from
+//! the reader its count was taken by (`counted_by`). Hashing is skipped
+//! entirely: `sha256` stays NULL until `derive.rs` needs it, per §3.
 //!
 //! **Each file is scanned once, under the deepest directory that holds it**
 //! (overlapping-libraries spec §4). A directory of another library may sit
@@ -1636,35 +1638,50 @@ fn copy_entry(
     tx.execute(
         "INSERT INTO scan_entry
              (root_id, rel_path, kind, format, size, mtime, pages, title, sha256, first_seen,
-              last_seen, held_sha256, held_format, held_pages, held_title)
+              last_seen, held_sha256, held_format, held_pages, held_title, counted_by)
          SELECT ?1, ?2, kind, format, size, mtime, pages, title, sha256, first_seen, last_seen,
-                held_sha256, held_format, held_pages, held_title
+                held_sha256, held_format, held_pages, held_title, counted_by
            FROM scan_entry WHERE root_id = ?3 AND rel_path = ?4
          ON CONFLICT (root_id, rel_path) DO NOTHING",
         rusqlite::params![to, to_rel, from, rel_path],
     )
 }
 
-/// Give the row directory `to`'s walk recorded at `to_rel` the reading of
-/// directory `from`'s row at `rel_path`, as [`record`] would have left it on
-/// `from`'s: the digest where size and mtime are the same, the held reading,
-/// and where the file changed and nothing is held yet, the reading the change
-/// clears. A taken-over row otherwise holds no reading, and a nested directory
-/// paused before its first derive would freeze its works with nothing they are
-/// held by (O320). A row that already holds a reading of its own keeps it.
+/// Give the row directory `to`'s walk recorded for `seen` the reading of
+/// directory `from`'s row at `rel_path`, as a change of bytes would have left
+/// it under [`record`]: the digest where size and mtime are the same, the held
+/// reading, and where the file changed and nothing is held yet, the reading the
+/// change clears. A count `from` took under another reader is not held (O390).
+/// Without this a nested directory paused before its first derive would freeze
+/// its works with nothing they are held by (O320). A row that already holds a
+/// reading of its own keeps it.
 fn carry_reading(
     tx: &Connection,
     from: i64,
     rel_path: &str,
     to: i64,
-    to_rel: &str,
+    seen: &Seen,
 ) -> rusqlite::Result<usize> {
-    let same = "o.size = n.size AND o.mtime = n.mtime";
+    // A folder this walk outdates counts as changed: the walk stores the new
+    // count, so no later walk sees the two differ and the digest would stay.
+    let outdated: bool = tx.query_row(
+        "SELECT kind, pages, sha256 IS NOT NULL FROM scan_entry
+          WHERE root_id = ?1 AND rel_path = ?2",
+        rusqlite::params![from, rel_path],
+        |r| {
+            let is_dir = r.get::<_, String>(0)? == Kind::Dir.as_str();
+            Ok(digest_outdated(is_dir, r.get(2)?, r.get(1)?, seen))
+        },
+    )?;
+    let same = "NOT ?5 AND o.size = n.size AND o.mtime = n.mtime";
     let holds = format!("NOT ({same}) AND o.held_sha256 IS NULL AND o.sha256 IS NOT NULL");
+    // The carried digest keeps its count: see [`Seen::listed_whole`].
+    let short = format!("{same} AND ?6 AND o.sha256 IS NOT NULL");
     tx.execute(
         &format!(
             "UPDATE scan_entry AS n
                 SET sha256 = CASE WHEN {same} THEN o.sha256 END,
+                    pages = CASE WHEN {short} THEN o.pages ELSE n.pages END,
                     held_sha256 = CASE WHEN {holds} THEN o.sha256 ELSE o.held_sha256 END,
                     held_format = CASE WHEN {holds} THEN o.format ELSE o.held_format END,
                     held_pages = CASE WHEN {holds} THEN o.pages ELSE o.held_pages END,
@@ -1673,7 +1690,14 @@ fn carry_reading(
               WHERE n.root_id = ?1 AND n.rel_path = ?2 AND o.root_id = ?3 AND o.rel_path = ?4
                 AND n.sha256 IS NULL AND n.held_sha256 IS NULL"
         ),
-        rusqlite::params![to, to_rel, from, rel_path],
+        rusqlite::params![
+            to,
+            seen.rel_path,
+            from,
+            rel_path,
+            outdated,
+            !seen.listed_whole
+        ],
     )
 }
 
@@ -3176,7 +3200,7 @@ fn scan_root_inner(
 
     let to_read: Vec<&Seen> = seen
         .iter()
-        .filter(|entry| !unchanged(held.get(&entry.rel_path).copied(), entry))
+        .filter(|entry| due(held.get(&entry.rel_path).copied(), entry) != Due::Unchanged)
         .collect();
     let of = Some(to_read.len() as u64);
     watch.at(Step::Resolving, 0, of);
@@ -3194,6 +3218,7 @@ fn scan_root_inner(
                 format,
                 pages,
                 title,
+                counted_by: format.and_then(taiyaku_read::reader_signature),
             },
         );
         watch.at(Step::Resolving, read, of);
@@ -3259,7 +3284,10 @@ fn scan_root_inner(
     )?;
     report.gone = gone;
     report.forgotten_by_exclusion = forgotten_by_exclusion;
-    let recorded: HashSet<&str> = seen.iter().map(|entry| entry.rel_path.as_str()).collect();
+    let recorded: HashMap<&str, &Seen> = seen
+        .iter()
+        .map(|entry| (entry.rel_path.as_str(), entry))
+        .collect();
     let taken = take_over(&tx, root, &recorded, &excluder, &mut carried)?;
     report.taken_over = taken.recorded;
     report.gone += taken.gone;
@@ -3300,6 +3328,14 @@ struct Seen {
     /// `dir_state`. See the module doc for what this does and does not
     /// license skipping.
     entry_count: Option<i64>,
+    /// Whether `pages` counts all this entry holds: false for a directory with
+    /// one beneath it that could not be listed. Such a total, at a size and mtime
+    /// that did not move, leaves the count of a folder that holds a digest as it
+    /// is, lower or higher ([`record`], [`carry_reading`]): that count is all the next whole walk compares with,
+    /// so with the total stored in its place, pages still there would read as a
+    /// change and a loss while unlisted as none, and a digest of pages gone would
+    /// stand.
+    listed_whole: bool,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -3319,16 +3355,40 @@ impl Kind {
     }
 }
 
-/// Whether `held` already matches `seen`'s current `(size, mtime)`.
+/// What [`scan_root`] resolves for an entry before the transaction opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Due {
+    /// Held at its `(size, mtime)`, and counted by this reader: nothing.
+    Unchanged,
+    /// Held at its `(size, mtime)`, a file this reader counts differently
+    /// ([`Held::recount`]): counted again, and its digest kept.
+    Recount,
+    /// New, its `(size, mtime)` moved, or a folder whose digest hashed another
+    /// list of pages ([`Held::digest_outdated_by`]): read in full.
+    Read,
+}
+
+/// What `held` makes `seen` [`Due`].
 ///
 /// The one test that decides two things that must never disagree: what
 /// `scan_root` resolves before the transaction opens, and which branch
 /// `record` takes once it has. A single function computing it, rather than
 /// the same comparison written out twice, is what keeps those two decisions
 /// from drifting apart.
-fn unchanged(held: Option<Held>, seen: &Seen) -> bool {
+fn due(held: Option<Held>, seen: &Seen) -> Due {
     let size = i64::try_from(seen.size).unwrap_or(i64::MAX);
-    held.is_some_and(|held| held.size == size && held.mtime == seen.mtime)
+    match held {
+        Some(held) if held.size == size && held.mtime == seen.mtime => {
+            if held.recount {
+                Due::Recount
+            } else if held.digest_outdated_by(seen) {
+                Due::Read
+            } else {
+                Due::Unchanged
+            }
+        }
+        _ => Due::Read,
+    }
 }
 
 /// Write one entry, using facts `scan_root` already resolved rather than
@@ -3338,17 +3398,17 @@ fn unchanged(held: Option<Held>, seen: &Seen) -> bool {
 /// plus a full central-directory parse for anything carrying a zip header —
 /// and `member_pages`, another archive open, are the expensive calls this
 /// saves, and neither happens here: `scan_root` pays them only for entries
-/// whose size and mtime moved. An entry that did not move keeps its stored
-/// `sha256`, and a file its stored `pages`, and is otherwise touched only to
-/// move `last_seen` forward. A directory's total is rewritten either way —
-/// see the branch below — because a directory's mtime does not move when
-/// something changes beneath it.
+/// whose size and mtime moved, and files another reader counted. An entry
+/// that did not move keeps its `sha256`, unless [`Held::digest_outdated_by`],
+/// and a file its `pages` unless counted again, and is otherwise touched only
+/// to move `last_seen` forward. A directory's total is rewritten — see the
+/// branch below for the one it keeps — because a directory's mtime does not
+/// move when something changes beneath it.
 ///
-/// **`resolved` is `Some` exactly when `held` says this entry is new or has
-/// moved**, which is also exactly when a branch below needs a format or a
-/// page count to write. The match is shaped on that pairing directly, rather
-/// than on a separately recomputed flag that could disagree with it — the
-/// fourth combination, a new entry with nothing resolved, is a bug in the
+/// **`resolved` is `Some` exactly when [`due`] answers other than
+/// `Unchanged`**, which is also exactly when a branch below needs a format or
+/// a page count to write. The match is shaped on that pairing directly — any
+/// other pairing, such as a new entry with nothing resolved, is a bug in the
 /// caller rather than a case this function silently absorbs.
 ///
 /// `sha256` stays NULL either way — §3 makes hashing lazy, and `derive.rs` is
@@ -3363,8 +3423,22 @@ fn record(
 ) -> Result<(), String> {
     let size = i64::try_from(seen.size).unwrap_or(i64::MAX);
 
-    match (held.is_some(), resolved) {
-        (true, None) => {
+    // A file another reader counted is one this reader opens too, so a count
+    // taken again that finds no format, or no count where the row holds one,
+    // is a read that failed (an I/O error on the share, say). The row is kept
+    // as it is, signature and all, and the next scan counts it again: a reader
+    // change must never cost a member the count it had.
+    let pairing = match (due(held, seen), resolved) {
+        (Due::Recount, Some(resolved))
+            if resolved.format.is_none()
+                || (resolved.pages.is_none() && held.is_some_and(|held| held.pages.is_some())) =>
+        {
+            (Due::Unchanged, None)
+        }
+        pairing => pairing,
+    };
+    match pairing {
+        (Due::Unchanged, None) => {
             // `last_seen`, and for a directory its recursive page total.
             //
             // **A directory's total is written even when the directory itself
@@ -3374,16 +3448,47 @@ fn record(
             // forever, and `derive.rs` reads exactly those totals to pick the
             // deepest directory that is a member.
             //
-            // It costs nothing: the walk summed it on the way past, so no container
-            // is opened. `COALESCE` leaves a file's stored count alone.
+            // It costs nothing: the walk summed it, so no container is opened. `COALESCE`
+            // leaves a file's count alone, `CASE` a digested folder's ([`Seen::listed_whole`]).
             conn.execute(
-                "UPDATE scan_entry SET last_seen = datetime('now'), pages = COALESCE(?3, pages)
+                "UPDATE scan_entry
+                    SET last_seen = datetime('now'),
+                        pages = CASE WHEN ?4 AND sha256 IS NOT NULL THEN pages
+                                     ELSE COALESCE(?3, pages) END
                   WHERE root_id = ?1 AND rel_path = ?2",
-                rusqlite::params![root.id, seen.rel_path, dir_pages(seen)],
+                rusqlite::params![root.id, seen.rel_path, dir_pages(seen), !seen.listed_whole],
             )
             .map_err(|e| format!("touching {}: {e}", seen.rel_path))?;
         }
-        (true, Some(resolved)) => {
+        (Due::Recount, Some(resolved)) => {
+            // The bytes did not move, so the digest stays and this is no
+            // update. A count that changes holds the reading it replaces, as
+            // a changed file's does below, so a paused directory's derive
+            // keeps the count its works were written from.
+            let holds = "pages IS NOT ?4 AND held_sha256 IS NULL AND sha256 IS NOT NULL";
+            conn.execute(
+                &format!(
+                    "UPDATE scan_entry
+                        SET format = ?3, pages = ?4, title = ?5, counted_by = ?6,
+                            last_seen = datetime('now'),
+                            held_sha256 = CASE WHEN {holds} THEN sha256 ELSE held_sha256 END,
+                            held_format = CASE WHEN {holds} THEN format ELSE held_format END,
+                            held_pages = CASE WHEN {holds} THEN pages ELSE held_pages END,
+                            held_title = CASE WHEN {holds} THEN title ELSE held_title END
+                      WHERE root_id = ?1 AND rel_path = ?2"
+                ),
+                rusqlite::params![
+                    root.id,
+                    seen.rel_path,
+                    resolved.format,
+                    resolved.pages,
+                    resolved.title,
+                    resolved.counted_by,
+                ],
+            )
+            .map_err(|e| format!("counting {} again: {e}", seen.rel_path))?;
+        }
+        (Due::Read, Some(resolved)) if held.is_some() => {
             report.updated += 1;
             // The reading cleared here is held, so a paused directory's derive
             // still reads what its works were written from (O320). Only the
@@ -3393,7 +3498,7 @@ fn record(
             conn.execute(
                 "UPDATE scan_entry
                     SET kind = ?3, format = ?4, size = ?5, mtime = ?6, pages = ?7,
-                        title = ?8, sha256 = NULL, last_seen = datetime('now'),
+                        title = ?8, counted_by = ?9, sha256 = NULL, last_seen = datetime('now'),
                         held_sha256 = COALESCE(held_sha256, sha256),
                         held_format = CASE WHEN held_sha256 IS NULL AND sha256 IS NOT NULL
                                            THEN format ELSE held_format END,
@@ -3411,16 +3516,17 @@ fn record(
                     seen.mtime,
                     resolved.pages,
                     resolved.title,
+                    resolved.counted_by,
                 ],
             )
             .map_err(|e| format!("updating {}: {e}", seen.rel_path))?;
         }
-        (false, Some(resolved)) => {
+        (Due::Read, Some(resolved)) => {
             report.added += 1;
             conn.execute(
                 "INSERT INTO scan_entry
-                     (root_id, rel_path, kind, format, size, mtime, pages, title)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                     (root_id, rel_path, kind, format, size, mtime, pages, title, counted_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 rusqlite::params![
                     root.id,
                     seen.rel_path,
@@ -3430,15 +3536,17 @@ fn record(
                     seen.mtime,
                     resolved.pages,
                     resolved.title,
+                    resolved.counted_by,
                 ],
             )
             .map_err(|e| format!("recording {}: {e}", seen.rel_path))?;
         }
-        (false, None) => {
+        (due, resolved) => {
             return Err(format!(
-                "{}: classified as new but arrived with no resolved facts — an internal \
+                "{}: classified as {due:?} but arrived with{} resolved facts — an internal \
                  inconsistency between scan_root's classification and record's",
-                seen.rel_path
+                seen.rel_path,
+                if resolved.is_some() { "" } else { " no" },
             ));
         }
     }
@@ -3464,11 +3572,11 @@ fn record(
 
 /// What this entry's bytes say it is.
 ///
-/// **Called only when an entry is new or has moved**, which is what makes
-/// this module's cheap-walk claim true rather than aspirational. `sniff`
-/// opens the file, and for anything carrying a zip header opens it a second
-/// time and parses the entire central directory — so calling it from the
-/// walk, on every file, on every scan, would be the expensive thing this
+/// **Called only for an entry [`due`] reads or counts again**, which is what
+/// makes this module's cheap-walk claim true rather than aspirational.
+/// `sniff` opens the file, and for anything carrying a zip header opens it a
+/// second time and parses the entire central directory — so calling it from
+/// the walk, on every file, on every scan, would be the expensive thing this
 /// module says it avoids.
 ///
 /// A file whose bytes cannot be read is `None` rather than an error, for the
@@ -3483,8 +3591,8 @@ fn format_of(root: &Root, seen: &Seen) -> Option<&'static str> {
     }
 }
 
-/// A page count for an entry that is new or has moved, or `None` where one
-/// does not apply, and the title it declares.
+/// A page count for an entry [`due`] reads or counts again, or `None` where
+/// one does not apply, and the title it declares.
 ///
 /// A directory's count comes from the walk, which summed it on the way past.
 /// A file's costs an archive open, so it is only paid for a format this
@@ -3541,8 +3649,8 @@ fn dir_pages(seen: &Seen) -> Option<u32> {
     }
 }
 
-/// What a new-or-moved entry's bytes turned out to say, resolved before the
-/// write transaction opens.
+/// What the bytes of an entry [`due`] reads or counts again turned out to
+/// say, resolved before the write transaction opens.
 ///
 /// **The whole point of this type is where it is built.** Sniffing and counting
 /// pages are filesystem operations, and doing them inside `tx` would hold the
@@ -3554,12 +3662,14 @@ struct Resolved {
     pages: Option<u32>,
     /// The title the file declares, a book's `dc:title`.
     title: Option<String>,
+    /// [`taiyaku_read::reader_signature`] of `format`: what counted `pages`.
+    counted_by: Option<String>,
 }
 
 /// One row `scan_entry` already holds for this root, as much of it as the
-/// walk needs: `(size, mtime)` to decide whether anything must be reopened,
-/// and `is_dir` so [`forget_unseen`] can ask [`Excluder`] about a stale path
-/// without a second query.
+/// walk needs: `(size, mtime)` and `recount` to decide whether anything must
+/// be reopened, and `is_dir` so [`forget_unseen`] can ask [`Excluder`] about a
+/// stale path without a second query.
 ///
 /// A named type, the shape [`Seen`], [`Resolved`] and [`Measured`] use. `Copy`
 /// because `held_for`'s map is read by value throughout this module.
@@ -3568,9 +3678,38 @@ struct Held {
     size: i64,
     mtime: i64,
     is_dir: bool,
+    /// Whether this reader counts the row's format differently from the
+    /// signature its count was taken under (`counted_by`). Never for a
+    /// folder: it has no signature, as every walk counts its pages.
+    recount: bool,
+    /// The row's page count, so [`record`] can tell a count taken again that
+    /// failed from a file with none, and a folder's can be held against the
+    /// total its walk finds.
+    pages: Option<i64>,
+    /// Whether the row holds a digest.
+    digested: bool,
 }
 
-/// What `(size, mtime, is_dir)` this root already holds, by `rel_path`.
+impl Held {
+    /// [`digest_outdated`], of this row.
+    fn digest_outdated_by(self, seen: &Seen) -> bool {
+        digest_outdated(self.is_dir, self.digested, self.pages, seen)
+    }
+}
+
+/// Whether a folder's digest hashed another list of pages than the walk counts
+/// now under a stamp that did not move, as a reader taking in more names or a
+/// page added beneath it leaves: no read hashes to that digest, so no
+/// fingerprint could be stored under it, and a folder of just the pages it
+/// hashed would pass for this one. The count is stored as the digest goes, so
+/// one walk settles it. A total short of a directory the walk could not list
+/// says nothing of the pages, and the derive could not take the digest again
+/// while that directory stays unreadable.
+fn digest_outdated(is_dir: bool, digested: bool, pages: Option<i64>, seen: &Seen) -> bool {
+    is_dir && digested && seen.listed_whole && seen.pages.map(i64::from) != pages
+}
+
+/// What [`Held`] this root already holds, by `rel_path`.
 ///
 /// One query rather than one per entry, and outside the transaction, so the
 /// decision about what needs opening is made before any lock is taken. That
@@ -3579,7 +3718,10 @@ struct Held {
 /// two differ.
 fn held_for(conn: &Connection, root_id: i64) -> Result<HashMap<String, Held>, String> {
     let mut stmt = conn
-        .prepare("SELECT rel_path, size, mtime, kind FROM scan_entry WHERE root_id = ?1")
+        .prepare(
+            "SELECT rel_path, size, mtime, kind, format, counted_by, pages, sha256 IS NOT NULL
+               FROM scan_entry WHERE root_id = ?1",
+        )
         .map_err(|e| format!("reading what this directory held: {e}"))?;
     let rows = stmt
         .query_map([root_id], |r| {
@@ -3589,6 +3731,13 @@ fn held_for(conn: &Connection, root_id: i64) -> Result<HashMap<String, Held>, St
                     size: r.get(1)?,
                     mtime: r.get(2)?,
                     is_dir: r.get::<_, String>(3)? == Kind::Dir.as_str(),
+                    recount: r
+                        .get::<_, Option<String>>(4)?
+                        .as_deref()
+                        .and_then(taiyaku_read::reader_signature)
+                        != r.get::<_, Option<String>>(5)?,
+                    pages: r.get(6)?,
+                    digested: r.get(7)?,
                 },
             ))
         })
@@ -3802,7 +3951,7 @@ struct Taken {
 fn take_over(
     conn: &Connection,
     root: &Root,
-    recorded: &HashSet<&str>,
+    recorded: &HashMap<&str, &Seen>,
     excluder: &Excluder,
     carried: &mut Carried,
 ) -> Result<Taken, String> {
@@ -3818,7 +3967,7 @@ fn take_over(
     let here = root.path.to_string_lossy().into_owned();
     // Each recorded file's member path, joined as `derive::classify` joins it.
     let recorded_paths: HashSet<String> = recorded
-        .iter()
+        .keys()
         .map(|rel| root.path.join(rel).to_string_lossy().into_owned())
         .collect();
     let enclosing = Enclosing::of(&all, root);
@@ -3842,9 +3991,9 @@ fn take_over(
         for (rel_path, kind) in &held {
             let own = relative_to(rel_path, &rel);
             let is_dir = kind == Kind::Dir.as_str();
-            if recorded.contains(own) {
+            if let Some(entry) = recorded.get(own) {
                 taken.recorded += 1;
-                carry_reading(conn, outer.id, rel_path, root.id, own)
+                carry_reading(conn, outer.id, rel_path, root.id, entry)
                     .map_err(|e| failed(rel_path, e))?;
             } else if let Some((to, to_rel)) =
                 outer_holder(enclosing.as_ref(), excluder, own, is_dir)
@@ -3949,6 +4098,7 @@ struct Measured {
     mtime: i64,
     pages: Option<u32>,
     entry_count: Option<i64>,
+    listed_whole: bool,
     children: Vec<Measured>,
 }
 
@@ -4156,6 +4306,7 @@ fn measure_dir(
     file_entries.sort();
 
     let mut pages = here;
+    let mut listed_whole = true;
     let mut children = Vec::new();
     for (child_rel, child_path) in dir_entries {
         match measure_dir(
@@ -4171,12 +4322,16 @@ fn measure_dir(
                 if let Some(child_pages) = child.pages {
                     pages += child_pages;
                 }
+                listed_whole &= child.listed_whole;
                 children.push(child);
             }
             // Skipped, not propagated: this directory cannot speak for
             // whatever is unreadable beneath it, but it can still speak for
             // everything else it holds. See `ScanReport::unreadable_dirs`.
-            Err(MeasureError::Unreadable(message)) => walk.unreadable.push(message),
+            Err(MeasureError::Unreadable(message)) => {
+                listed_whole = false;
+                walk.unreadable.push(message);
+            }
             // A cycle's depth is a property of the whole path down to it, not
             // of this one directory — caught here it would look like an
             // ordinary permission refusal and be silently skipped, which is
@@ -4199,6 +4354,7 @@ fn measure_dir(
         mtime: mtime_secs(&meta),
         pages: Some(pages),
         entry_count: Some(entry_count),
+        listed_whole,
         children,
     })
 }
@@ -4239,6 +4395,7 @@ fn measure_file(path: &Path, rel_path: String) -> Option<Measured> {
         mtime: mtime_secs(&meta),
         pages: None,
         entry_count: None,
+        listed_whole: true,
         children: Vec::new(),
     })
 }
@@ -4279,6 +4436,7 @@ fn flatten_into(measured: &Measured, seen: &mut Vec<Seen>) {
         mtime: measured.mtime,
         pages: measured.pages,
         entry_count: measured.entry_count,
+        listed_whole: measured.listed_whole,
     });
     for child in &measured.children {
         flatten_into(child, seen);

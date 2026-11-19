@@ -2544,3 +2544,66 @@ fn align_without_split_spreads_prints_the_table_to_stdout_and_the_figures_to_std
     assert!(stderr.contains("3/3 pages paired"), "the figures: {stderr}");
     assert!(!stderr.contains("offset +0"), "stderr: {stderr}");
 }
+
+/// A cbz of three of the JPEG XL fixtures, one page each.
+fn jxl_cbz(dir: &Path, name: &str) -> std::path::PathBuf {
+    use std::io::Write;
+    let pages: [(&str, &[u8]); 3] = [
+        (
+            "1.jxl",
+            include_bytes!("../../taiyaku-serve/fixtures/jxl/lossy.jxl"),
+        ),
+        (
+            "2.jxl",
+            include_bytes!("../../taiyaku-serve/fixtures/jxl/grey.jxl"),
+        ),
+        (
+            "3.jxl",
+            include_bytes!("../../taiyaku-serve/fixtures/jxl/lossless.jxl"),
+        ),
+    ];
+    let path = dir.join(name);
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).expect("create cbz"));
+    for (entry, bytes) in pages {
+        zip.start_file(entry, zip::write::SimpleFileOptions::default())
+            .expect("start entry");
+        zip.write_all(bytes).expect("write entry");
+    }
+    zip.finish().expect("finish cbz");
+    path
+}
+
+#[test]
+fn verify_reads_editions_of_jpeg_xl_pages() {
+    let dir = TempDir::new("verify-jxl");
+    let a = jxl_cbz(dir.path(), "a.cbz");
+    let b = jxl_cbz(dir.path(), "b.cbz");
+    let report = dir.path().join("report.html");
+    let (a, b, out) = (
+        a.to_str().expect("a utf-8 path"),
+        b.to_str().expect("a utf-8 path"),
+        report.to_str().expect("a utf-8 path"),
+    );
+
+    let run = taiyaku()
+        .args(["verify", a, "--", b, "--out", out])
+        .output()
+        .expect("the binary runs");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "{stderr}");
+
+    let html = std::fs::read_to_string(&report).expect("the report is written");
+    for side in ["A", "B"] {
+        for page in 0..3 {
+            let alt = format!("alt=\"edition {side} page {page}\"");
+            let tag = html
+                .split("<img ")
+                .find(|tag| tag.contains(&alt))
+                .unwrap_or_else(|| panic!("an img for {side} page {page}"));
+            assert!(
+                tag.starts_with("src=\"data:image/jpeg;base64,"),
+                "a thumbnail for {side} page {page}"
+            );
+        }
+    }
+}

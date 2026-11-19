@@ -26,6 +26,35 @@ pub(in crate::fingerprint_pass) fn io_class() -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
+/// A line `proc(5)` describes, its name holding what would end a naive read.
+const STAT: &str = "7 (a) b (c) S 1 7 7 0 -1 4194304 90 0 0 0 3 1 0 0 20 19 2 0 12 0 0";
+
+#[test]
+fn niceness_is_read_from_after_the_last_parenthesis_of_the_name() {
+    assert_eq!(niceness_of(STAT), Some(19));
+    assert_eq!(niceness_of("7 (a) S 1"), None, "a line cut short has none");
+    assert_eq!(niceness_of("no name at all"), None);
+}
+
+#[test]
+fn a_thread_is_lowered_only_when_it_runs_below_the_main_thread() {
+    assert!(lowered_given(Some(19), Some(0)), "below the main thread");
+    assert!(
+        lowered_given(Some(19), Some(5)),
+        "below a niced main thread"
+    );
+    assert!(!lowered_given(Some(0), Some(0)), "level with it");
+    assert!(!lowered_given(Some(5), Some(5)), "level under `nice`");
+    assert!(!lowered_given(Some(0), Some(5)), "above it");
+}
+
+#[test]
+fn a_niceness_that_cannot_be_read_counts_as_lowered() {
+    assert!(lowered_given(None, Some(0)));
+    assert!(lowered_given(Some(0), None));
+    assert!(lowered_given(None, None));
+}
+
 /// The niceness (field 19) and the id (field 1) come from the thread's own
 /// `stat`, not from [`lower`]'s reading of its id, so a `lower` that acts on
 /// the process id lowers another thread and this sees it.

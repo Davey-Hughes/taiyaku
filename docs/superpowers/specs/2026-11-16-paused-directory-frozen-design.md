@@ -199,6 +199,16 @@ subfolder gained a page reaches a frozen derive with its digest held
 and its new page count, and its member's pages follow, as they would
 today. Nothing is hashed for it and nothing is dropped. (My call; §8.)
 
+*Note, 2026-11-18: the JPEG XL pages PR reversed this call, because no read of
+a folder whose page count moved could hash to the old digest. A folder the
+walk lists whole now gives up its digest as a changed folder does
+(`Held::digest_outdated_by` in `scan.rs`), so while its directory is paused it
+waits for the Scan, read by its held reading. A walk that could not list the
+folder whole, at a size and mtime that did not move, leaves the count of a
+folder that holds a digest as it is, whether its total is lower or higher, so
+it brings no new count to a frozen derive; the next walk that lists the folder
+whole compares its total with that count.*
+
 The held reading is dropped when a derive that is not frozen for the
 entry's directory **writes** its current reading: in the write phase,
 not at classify, so a derive cancelled before writing keeps it. A
@@ -288,6 +298,10 @@ over it until the next press. (My call; §8.)
    Chapter-only entries pass through a freeze as they are.
 6. A folder volume whose page count the walk rewrote without clearing
    its digest reaches a frozen derive with the new count, as today.
+   *Note, 2026-11-18: reversed by the JPEG XL pages PR, since no read could
+   hash to the old digest: a folder the walk lists whole gives up its digest,
+   and a walk that could not list it whole, at a size and mtime that did not
+   move, leaves its count alone; §7, "The held reading", has the note.*
 7. Works a cancelled derive wrote before the cancel stand as written
    and are frozen as such (goal 3).
 

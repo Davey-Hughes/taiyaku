@@ -87,9 +87,17 @@ pub(crate) fn type_from_extension(name: &str) -> &'static str {
         Some("bmp") => "image/bmp",
         Some("avif") => "image/avif",
         Some("tif" | "tiff") => "image/tiff",
+        Some("jxl") => "image/jxl",
         _ => "application/octet-stream",
     }
 }
+
+/// A bare JPEG XL codestream starts with these two bytes.
+pub(crate) const JXL_CODESTREAM: &[u8] = b"\xff\x0a";
+
+/// A JPEG XL container starts with this twelve-byte signature box. The sniff
+/// below and any other detection must agree on it, so it has one spelling.
+pub(crate) const JXL_CONTAINER: &[u8] = b"\x00\x00\x00\x0cJXL \x0d\x0a\x87\x0a";
 
 /// What the bytes say they are, where they say it unambiguously.
 ///
@@ -113,10 +121,14 @@ pub(crate) fn sniffed_type(bytes: &[u8]) -> Option<&'static str> {
         && matches!(bytes.get(8..12), Some(b"avif" | b"avis"))
     {
         Some("image/avif")
+    } else if starts(JXL_CONTAINER) {
+        Some("image/jxl")
     } else if starts(b"BM") {
         // Two bytes, so it goes last: everything with a longer magic has
         // already had its say.
         Some("image/bmp")
+    } else if starts(JXL_CODESTREAM) {
+        Some("image/jxl")
     } else {
         None
     }

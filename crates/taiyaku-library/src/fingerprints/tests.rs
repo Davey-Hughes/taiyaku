@@ -712,3 +712,156 @@ fn a_reading_held_after_the_snapshot_keeps_its_row() {
     );
     assert_eq!(read(&conn, "never held"), Ok(None), "the other goes");
 }
+
+/// A re-count keeps a file's digest, so only the count can say that the row
+/// under it numbers other pages, and it says so to a build with no stamp too.
+#[test]
+fn a_row_numbering_other_pages_than_the_files_count_is_due_whatever_its_build() {
+    const PATH: &str = "Alpha/Alpha v01.cbz";
+    let tree = crate::tests::tempdir("fingerprints-other-pages");
+    write_archive(&tree.path().join("Alpha").join("Alpha v01.cbz"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scanned(&conn, tree.path());
+    derive::derive(&conn).expect("derives");
+    let sha256 = digest_at(&conn, root.id, PATH).expect("the derive's digest");
+    let unit = due_by_path(&conn, None).remove(PATH).expect("no row yet");
+
+    for outcome in [Outcome::Whole, Outcome::Partial] {
+        let row = Row {
+            pages: 2,
+            ..a_row(&sha256, VERSION, outcome, None)
+        };
+        store(&conn, &row).expect("stores");
+        assert!(
+            due_by_path(&conn, None).contains_key(PATH),
+            "{outcome:?} is listed"
+        );
+        assert!(
+            still_due(&conn, &unit, VERSION, None).expect("asks"),
+            "{outcome:?} is still due as the pass reaches it"
+        );
+
+        store(&conn, &a_row(&sha256, VERSION, outcome, None)).expect("stores");
+        assert!(
+            !due_by_path(&conn, None).contains_key(PATH),
+            "{outcome:?} at its count"
+        );
+        assert!(
+            !still_due(&conn, &unit, VERSION, None).expect("asks"),
+            "{outcome:?} at its count is settled as the pass reaches it"
+        );
+    }
+}
+
+/// Each count a read of the file cannot bring a row to: were any of these due,
+/// every pass would read the file and store the same row again.
+#[test]
+fn a_row_no_read_would_renumber_stays_settled() {
+    const ARCHIVE: &str = "Alpha/Alpha v01.cbz";
+    const FOLDER: &str = "Beta/Beta v01";
+    let tree = crate::tests::tempdir("fingerprints-no-renumbering");
+    write_archive(&tree.path().join("Alpha").join("Alpha v01.cbz"), 3);
+    write_pages(&tree.path().join("Beta").join("Beta v01"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scanned(&conn, tree.path());
+    derive::derive(&conn).expect("derives");
+    let archive = digest_at(&conn, root.id, ARCHIVE).expect("the archive's digest");
+    let folder = digest_at(&conn, root.id, FOLDER).expect("the folder's digest");
+    let short = |sha256: &str, outcome| Row {
+        pages: 2,
+        ..a_row(sha256, VERSION, outcome, None)
+    };
+
+    store(&conn, &short(&archive, Outcome::Unreadable)).expect("stores");
+    store(&conn, &short(&folder, Outcome::Whole)).expect("stores");
+    assert_eq!(
+        due_by_path(&conn, None).len(),
+        0,
+        "an unreadable row holds no prints to renumber, and a folder's walk leaves out \
+         what its patterns exclude where a read takes it in"
+    );
+
+    store(&conn, &short(&archive, Outcome::Whole)).expect("stores");
+    set_entry(&conn, root.id, ARCHIVE, "counted_by = NULL");
+    assert_eq!(
+        due_by_path(&conn, None).len(),
+        0,
+        "a count another reader took says nothing until a scan counts it again"
+    );
+
+    let signature = zip_signature().expect("a zip has a signature");
+    set_entry(
+        &conn,
+        root.id,
+        ARCHIVE,
+        &format!("counted_by = '{signature}'"),
+    );
+    assert!(
+        due_by_path(&conn, None).contains_key(ARCHIVE),
+        "the fixture: under this reader's count the short row is due"
+    );
+}
+
+/// A re-count can lower a file's count, and a row numbering more pages than the
+/// file holds is as far from it as one numbering fewer.
+#[test]
+fn a_row_numbering_more_pages_than_the_files_count_is_due() {
+    const PATH: &str = "Alpha/Alpha v01.cbz";
+    let tree = crate::tests::tempdir("fingerprints-more-pages");
+    write_archive(&tree.path().join("Alpha").join("Alpha v01.cbz"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scanned(&conn, tree.path());
+    derive::derive(&conn).expect("derives");
+    let sha256 = digest_at(&conn, root.id, PATH).expect("the derive's digest");
+    let unit = due_by_path(&conn, None).remove(PATH).expect("no row yet");
+
+    let row = Row {
+        pages: 4,
+        ..a_row(&sha256, VERSION, Outcome::Whole, None)
+    };
+    store(&conn, &row).expect("stores");
+
+    assert!(due_by_path(&conn, None).contains_key(PATH), "it is listed");
+    assert!(
+        still_due(&conn, &unit, VERSION, None).expect("asks"),
+        "it is still due as the pass reaches it"
+    );
+}
+
+/// A count another reader took says nothing of the pages this reader numbers,
+/// so the row stays settled until a scan counts the file again.
+#[test]
+fn a_row_under_a_count_another_reader_took_stays_settled() {
+    const PATH: &str = "Alpha/Alpha v01.cbz";
+    let tree = crate::tests::tempdir("fingerprints-another-readers-count");
+    write_archive(&tree.path().join("Alpha").join("Alpha v01.cbz"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scanned(&conn, tree.path());
+    derive::derive(&conn).expect("derives");
+    let sha256 = digest_at(&conn, root.id, PATH).expect("the derive's digest");
+    let unit = due_by_path(&conn, None).remove(PATH).expect("no row yet");
+    let row = Row {
+        pages: 2,
+        ..a_row(&sha256, VERSION, Outcome::Whole, None)
+    };
+    store(&conn, &row).expect("stores");
+    assert!(
+        due_by_path(&conn, None).contains_key(PATH),
+        "the fixture: under this reader's count the short row is due"
+    );
+
+    set_entry(&conn, root.id, PATH, "counted_by = 'another reader'");
+
+    assert!(
+        !due_by_path(&conn, None).contains_key(PATH),
+        "it is not listed"
+    );
+    assert!(
+        !still_due(&conn, &unit, VERSION, None).expect("asks"),
+        "it is settled as the pass reaches it"
+    );
+}

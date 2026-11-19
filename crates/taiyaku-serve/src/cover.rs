@@ -66,14 +66,14 @@ pub const TILE_LONG_EDGES: [u32; 3] = [THUMB_LONG_EDGE, 320, 480];
 /// `routes.rs::get_thumb` tries `cover_edge` before `tile_edge`, and
 /// `cover_edge` matches on page 0 alone but on *any* size in
 /// `COVER_LONG_EDGES` — so a `w` that landed in both arrays would take the
-/// cover branch on page 0 and never reach `tile_edge` at all. Page 0 at exactly
-/// the size someone added expecting a sharper tile would be served with an
-/// `ETag`, as the archive's own bytes and content type whenever page 0 already
-/// fits that size, silently breaking "a tile is always JPEG" for that one page
-/// while the rest of the filmstrip kept working, and every other page's `w`
-/// still found `tile_edge` unaffected. Today the two are disjoint by
-/// construction, not by anything that stops them from drifting apart; this
-/// makes drifting apart a build failure instead of a bug report.
+/// cover branch on page 0 and never reach `tile_edge`. Page 0 at exactly the
+/// size someone added expecting a sharper tile would be served with an `ETag`,
+/// as the archive's own bytes and content type (a JPEG XL page 0 as the JPEG
+/// made for it) whenever page 0 already fits that size, silently breaking "a
+/// tile is always JPEG" for that one page while the rest of the filmstrip kept
+/// working, and every other page's `w` still found `tile_edge`. Today the two
+/// are disjoint by construction, not by anything that stops them from drifting
+/// apart; this makes drifting apart a build failure instead of a bug report.
 const _: () = {
     let mut i = 0;
     while i < TILE_LONG_EDGES.len() {
@@ -177,19 +177,59 @@ fn page_key_at(sha256: &str, offset: u32, long_edge: u32, format_version: u32) -
 }
 
 /// What a cover's `ETag` is made of but its long edge: so it changes exactly
-/// when the `ETag` of any cover size would.
+/// when the `ETag` of any cover size would. A cover is always the JPEG
+/// variant (a JPEG XL page's cover is the JPEG made for it), so the JPEG
+/// version is in it too.
 ///
 /// Without the edge because one address per edition carries it and the client
 /// adds the size, one per screen density. Its alphabet is free:
 /// `cover_address` encodes it into the query string.
 pub(crate) fn cover_version(sha256: &str, offset: u32) -> String {
-    cover_version_at(sha256, offset, PAGE_FORMAT_VERSION)
+    cover_version_at(sha256, offset, PAGE_FORMAT_VERSION, JXL_JPEG_VERSION)
 }
 
-/// `cover_version`, with the format version as an argument, for `page_key_at`'s
+/// `cover_version`, with the versions as arguments, for `page_key_at`'s
 /// reason.
-fn cover_version_at(sha256: &str, offset: u32, format_version: u32) -> String {
-    format!("{sha256}-{offset}-{format_version}")
+fn cover_version_at(
+    sha256: &str,
+    offset: u32,
+    format_version: u32,
+    jxl_jpeg_version: u32,
+) -> String {
+    jxl_variant_at(
+        &format!("{sha256}-{offset}-{format_version}"),
+        jxl_jpeg_version,
+    )
+}
+
+/// `key` as the name of its JPEG variant, the rendering a client that does not
+/// take JPEG XL is sent. The one place the suffix is spelled, so the cache
+/// file of a JPEG XL page's JPEG, the tags that name it and `cover_version`
+/// cannot drift apart (O106).
+pub(crate) fn jxl_variant_at(key: &str, jxl_jpeg_version: u32) -> String {
+    format!("{key}-j{jxl_jpeg_version}")
+}
+
+/// The version of the JPEG made for a JPEG XL page. Bumped when a change to
+/// how it is made would make one already made the wrong output: it is in the
+/// cache file's name, every JPEG-variant tag and `cover_version`, so a bump
+/// renames every such file and changes every tag a client holds.
+pub(crate) const JXL_JPEG_VERSION: u32 = 1;
+
+/// Above the quality `encode_jpeg` gives covers and tiles: this JPEG is the
+/// whole page a reader looks at, and screentone and thin ink survive 90.
+const JXL_JPEG_QUALITY: u8 = 90;
+
+/// The name of the JPEG made for one JPEG XL page: the member, the page's
+/// offset within it and `JXL_JPEG_VERSION`. Both the cache file's stem and the
+/// page's full-size JPEG-variant tag, for `page_key`'s reason (O106).
+pub(crate) fn jxl_jpeg_key(sha256: &str, offset: u32) -> String {
+    jxl_variant_at(&format!("{sha256}-p{offset}"), JXL_JPEG_VERSION)
+}
+
+/// Where the JPEG made for one JPEG XL page is cached.
+pub fn jxl_jpeg_cache_path(dir: &Path, sha256: &str, offset: u32) -> PathBuf {
+    dir.join(format!("{}.jpg", jxl_jpeg_key(sha256, offset)))
 }
 
 /// `FORMAT_VERSION`'s counterpart for reading-sized pages, versioned separately
@@ -359,9 +399,9 @@ pub fn cached_or_generated_page<P: AsRef<[u8]>>(
 /// `atomic::write` renames the new file over the broken one, so the next
 /// request is a real hit.
 ///
-/// Every file in these caches came out of `encode_jpeg`, which always starts
-/// with SOI and ends with EOI, so the check rejects only the shapes a copy cut
-/// off leaves: an empty file, a zero-filled one, and one cut short.
+/// Every file in these caches came out of `encode_jpeg` or `jpeg_of_jxl`, which
+/// only ever make a [`whole_jpeg`], so the check rejects only the shapes a copy
+/// cut off leaves: an empty file, a zero-filled one, and one cut short.
 ///
 /// A marker check rather than a decode, because the hit is the cheap path.
 /// It runs outside `GENERATION_LIMIT` so that a warm grid stays fully
@@ -374,11 +414,17 @@ pub fn cached_or_generated_page<P: AsRef<[u8]>>(
 /// decided hit and drops its result, so it can never turn a hit into a miss.
 fn cached(path: &Path) -> Option<Vec<u8>> {
     let found = std::fs::read(path).ok()?;
-    if !(found.starts_with(b"\xff\xd8\xff") && found.ends_with(b"\xff\xd9")) {
+    if !whole_jpeg(&found) {
         return None;
     }
     let _ = record_use(path);
     Some(found)
+}
+
+/// Whether `bytes` start with SOI and end with EOI: what `cached` takes as a
+/// hit, and so what every generation must make.
+fn whole_jpeg(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\xff\xd8\xff") && bytes.ends_with(b"\xff\xd9")
 }
 
 /// How stale a rendering's recorded use may grow before a hit sets it to now.
@@ -425,10 +471,11 @@ const MAX_CONCURRENT_GENERATIONS: usize = 2;
 
 /// The permits [`MAX_CONCURRENT_GENERATIONS`] describes.
 ///
-/// Guards only the *generation* step — fetching and decoding a cover or tile in
-/// `at_path`, resizing a reading page in `cached_or_generated_page` — never the
-/// cache-hit read, which has to stay fully parallel or a warm OPDS grid would
-/// queue behind a decode limit it does not need.
+/// Guards only the *generation* step — fetching and decoding a cover or tile, or
+/// making the JPEG of a JPEG XL page, in `at_path`, resizing a reading page in
+/// `cached_or_generated_page` — never the cache-hit read, which has to stay
+/// fully parallel or a warm OPDS grid would queue behind a decode limit it does
+/// not need.
 static GENERATION_LIMIT: crate::limit::Semaphore =
     crate::limit::Semaphore::new(MAX_CONCURRENT_GENERATIONS);
 
@@ -454,7 +501,8 @@ fn decode_limited(page: &[u8], what: &str) -> Result<image::DynamicImage, String
         .map_err(|e| format!("{what}: undecodable page: {e}"))
 }
 
-/// Encode as JPEG, whatever came in.
+/// Encode as JPEG, whatever came in, any transparent ground laid on white by
+/// [`onto_white`] first.
 ///
 /// Always JPEG: an OPDS entry declares one type per link and a client is
 /// entitled to believe it, so emitting whatever the page happened to be would
@@ -462,8 +510,7 @@ fn decode_limited(page: &[u8], what: &str) -> Result<image::DynamicImage, String
 /// the same reason.
 fn encode_jpeg(image: image::DynamicImage, what: &str) -> Result<Vec<u8>, String> {
     let mut out = std::io::Cursor::new(Vec::new());
-    image
-        .into_rgb8()
+    onto_white(image)
         .write_to(&mut out, image::ImageFormat::Jpeg)
         .map_err(|e| format!("{what}: encoding: {e}"))?;
     Ok(out.into_inner())
@@ -490,6 +537,73 @@ pub fn thumbnail_at(page: &[u8], long_edge: u32) -> Result<Vec<u8>, String> {
     // a reader actually looks at goes through `resize_to_long_edge` instead,
     // which says why.
     encode_jpeg(decoded.thumbnail(long_edge, long_edge), "cover")
+}
+
+/// The JPEG of a JPEG XL page, for a client that does not take JPEG XL: from
+/// the cache, or made once and cached.
+///
+/// Made under `GENERATION_LIMIT` as every decode is. Where the page carries
+/// the data to rebuild the JPEG it was made from, it is that JPEG's own bytes,
+/// with no second generation of loss. Otherwise the page is decoded, its
+/// transparent ground laid on white and encoded at `JXL_JPEG_QUALITY`. A page
+/// that cannot be read makes nothing and leaves no file.
+pub fn cached_or_generated_jxl_jpeg(
+    dir: &Path,
+    sha256: &str,
+    offset: u32,
+    page: &[u8],
+) -> Result<Vec<u8>, String> {
+    at_path(
+        &jxl_jpeg_cache_path(dir, sha256, offset),
+        dir,
+        || Ok(page),
+        jpeg_of_jxl,
+    )
+}
+
+/// `cached_or_generated_jxl_jpeg`'s generation. A rebuild is taken only when it
+/// is a [`whole_jpeg`]: it ends where its original did, and one whose original
+/// had bytes after EOI would be refused by `cached` and made again on every
+/// request, so that page is encoded as any other is.
+fn jpeg_of_jxl(page: &[u8]) -> Result<Vec<u8>, String> {
+    if let Some(original) = crate::jxl::rebuilt_jpeg(page).filter(|jpeg| whole_jpeg(jpeg)) {
+        return Ok(original);
+    }
+    let flat = onto_white(decode_limited(page, "jxl")?);
+    let mut out = Vec::new();
+    flat.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+        &mut out,
+        JXL_JPEG_QUALITY,
+    ))
+    .map_err(|e| format!("jxl: encoding: {e}"))?;
+    Ok(out)
+}
+
+/// `image` with any transparent ground laid on white. A JPEG has no alpha, and
+/// dropping it would show whatever colour the transparent pixels hold, black
+/// as encoders usually leave them, where a page's ground is paper. Every JPEG
+/// made here passes through it, so a page, a tile and a cover agree, whatever
+/// format the page was.
+fn onto_white(image: image::DynamicImage) -> image::RgbImage {
+    if !image.color().has_alpha() {
+        return image.into_rgb8();
+    }
+    let mut rgba = image.into_rgba8();
+    for pixel in rgba.pixels_mut() {
+        let [red, green, blue, alpha] = pixel.0;
+        let alpha = u32::from(alpha);
+        let over_white = |channel: u8| {
+            let blended = (u32::from(channel) * alpha + 255 * (255 - alpha) + 127) / 255;
+            u8::try_from(blended).unwrap_or(u8::MAX)
+        };
+        pixel.0 = [
+            over_white(red),
+            over_white(green),
+            over_white(blue),
+            u8::MAX,
+        ];
+    }
+    image::DynamicImage::ImageRgba8(rgba).into_rgb8()
 }
 
 /// Read a cached cover, or make one and cache it.
@@ -538,20 +652,20 @@ pub fn cached_or_generated_thumb(
 /// atomic publish via a per-attempt temp name.
 ///
 /// Takes the decode-and-resize step as a closure — `thumbnail` for a cover,
-/// `thumbnail_at(_, long_edge)` for a tile — rather than a bare
-/// `long_edge`, so each caller keeps calling the entry point named in its own
-/// doc comment instead of `at_path` re-deriving which one to use from a
-/// number.
+/// `thumbnail_at(_, long_edge)` for a tile, `jpeg_of_jxl` for a JPEG XL page's
+/// JPEG — rather than a bare `long_edge`, so each caller keeps calling the entry
+/// point its doc names instead of `at_path` re-deriving it from a number. `P`
+/// is the page as its caller holds it, lent where it is already in hand.
 ///
-/// Both callers get the same concurrency bound, which matters more for tiles
+/// Every caller gets the same concurrency bound, which matters more for tiles
 /// than for covers: a cold filmstrip asks for every page of a volume, and
 /// unbounded decodes at `MAX_DECODE_ALLOC` each is what
 /// `MAX_CONCURRENT_GENERATIONS` exists to prevent.
-fn at_path(
+fn at_path<P>(
     path: &Path,
     dir: &Path,
-    page: impl FnOnce() -> Result<Vec<u8>, String>,
-    generate: impl FnOnce(Vec<u8>) -> Result<Vec<u8>, String>,
+    page: impl FnOnce() -> Result<P, String>,
+    generate: impl FnOnce(P) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
     if let Some(found) = cached(path) {
         return Ok(found);

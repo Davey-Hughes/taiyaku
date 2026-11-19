@@ -1248,7 +1248,7 @@ fn unread_entries_are_what_the_reader_neither_reads_nor_knows() {
         "cache.DB",
         "odd.DS_STORE",
     ];
-    const UNREAD: [&str; 5] = ["002.jxl", "003.heic", "004.heif", "005.jp2", "extra.xyz"];
+    const UNREAD: [&str; 5] = ["002.jxr", "003.heic", "004.heif", "005.jp2", "extra.xyz"];
     let entries: Vec<&str> = ["001.png"]
         .into_iter()
         .chain(COMPANIONS)
@@ -1318,4 +1318,47 @@ fn a_tar_is_named_even_when_the_source_reads_one_byte_at_a_time() {
     )
     .unwrap_err();
     assert!(error.contains("this is a tar archive"), "{error}");
+}
+
+/// JPEG XL entries are pages, whatever the case of the extension: a reader
+/// that stopped at the extension list would count a JPEG XL volume as empty.
+#[test]
+fn a_jpeg_xl_entry_is_a_page() {
+    assert!(is_page_name("001.jxl"), "the lower-case extension");
+    assert!(is_page_name("001.JXL"), "the upper-case extension");
+
+    let dir = TempDir::new("jxl-pages");
+    let path = cbz(&dir, "jxl.cbz", &["001.jxl", "ComicInfo.xml", "000.jxl"]);
+
+    assert_eq!(member_pages(&path).unwrap(), 2, "the pages counted");
+    assert_eq!(
+        member_page_names(&path).unwrap(),
+        ["000.jxl", "001.jxl"],
+        "the two JPEG XL entries in page order, and not ComicInfo.xml"
+    );
+}
+
+/// Every page extension is in the zip signature, so adding one counts each zip
+/// again; no other format has one, so a change here counts no other file again.
+#[test]
+fn the_reader_signature_names_every_page_extension_for_zip() {
+    let zip = reader_signature("zip");
+
+    assert_eq!(zip, Some(format!("zip:{}", IMAGE_EXTENSIONS.join(","))));
+    assert!(
+        zip.as_deref().is_some_and(|zip| zip.ends_with(",jxl")),
+        "{zip:?}"
+    );
+    for token in [
+        "dir",
+        "epub-reflow",
+        "epub-fixed",
+        "pdf",
+        "rar",
+        "7z",
+        "tar",
+        "",
+    ] {
+        assert_eq!(reader_signature(token), None, "{token:?}");
+    }
 }

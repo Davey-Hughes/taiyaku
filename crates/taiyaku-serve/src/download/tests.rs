@@ -1712,3 +1712,50 @@ mod answered_without_a_server_path {
         assert!(!body.contains(&tmp.path().display().to_string()), "{body}");
     }
 }
+
+/// A generated download hands every page over as stored. Rewriting a lossless
+/// JPEG XL page as a JPEG here would lose what the file holds, and a download
+/// is for keeping the file.
+#[tokio::test]
+async fn a_generated_download_keeps_jpeg_xl_pages_as_stored() {
+    use crate::test_support::{get, jxl_fixture, router_over_a_scanned_folder_of_jxl_pages};
+    let (router, _state, fixture) = router_over_a_scanned_folder_of_jxl_pages();
+    let folder = fixture.join("tree").join("Scanned").join("Scanned - v01");
+    let pages: Vec<(String, Vec<u8>)> = ["000.jxl", "001.jxl"]
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                std::fs::read(folder.join(name)).expect("reads a page"),
+            )
+        })
+        .collect();
+    assert!(
+        pages[0].1 == jxl_fixture("lossy.jxl") && pages[1].1 == jxl_fixture("grey.jxl"),
+        "the fixture: the folder holds the lossy and the grey page"
+    );
+
+    let response = get(&router, "/api/works/scanned-v01/raw/download").await;
+    assert_eq!(response.status(), 200);
+    let bytes = all_of(response).await;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("a cbz");
+    assert!(
+        archive.by_name("ComicInfo.xml").is_ok(),
+        "the fixture: the folder is generated into a cbz, not passed through"
+    );
+    let mut sent: Vec<(String, Vec<u8>)> = Vec::new();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).expect("an entry");
+        if entry.name().expect("a name").ends_with(".xml") {
+            continue;
+        }
+        let mut read = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut read).expect("reads the entry");
+        sent.push((entry.name().expect("a name").into_owned(), read));
+    }
+    assert_eq!(sent.len(), pages.len(), "one entry for each page");
+    for ((name, bytes), (file, original)) in sent.iter().zip(&pages) {
+        assert!(name.ends_with(".jxl"), "{name} for {file} keeps its type");
+        assert!(bytes == original, "{name} is {file} byte for byte");
+    }
+}

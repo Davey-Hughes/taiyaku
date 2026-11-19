@@ -30,8 +30,8 @@ pub fn prepare(pages: &[Page], width: u32) -> Result<(Vec<PageHash>, Vec<String>
     let prepared: Result<Vec<(PageHash, String)>, String> = pages
         .par_iter()
         .map(|page| {
-            let decoded =
-                image::load_from_memory(&page.bytes).map_err(|e| format!("{}: {e}", page.name))?;
+            let decoded = crate::fingerprint::decode_page(&page.bytes)
+                .map_err(|e| format!("{}: {e}", page.name))?;
             let hash = fingerprint(&decoded.to_luma8());
             let thumb = thumbnail(&decoded, width)?;
             Ok((hash, thumb))

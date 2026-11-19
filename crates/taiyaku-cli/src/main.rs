@@ -136,6 +136,9 @@ use taiyaku_core::{
 };
 
 fn main() {
+    // Every image decode in this binary guesses its format, and JPEG XL is
+    // recognised only once the hooks are installed.
+    taiyaku_serve::jxl::register();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Err(message) = run(&args) {
         eprintln!("taiyaku: {message}");

@@ -373,13 +373,19 @@ including the `cargo llvm-cov nextest` run `check-all.sh` and `ci.yml` both
 use, neither of which passes one. So under root, where the `chmod` buys
 nothing, the `NOT MEASURED:` line does reach the log.
 
-The filter names **all four** self-skipping tests in the workspace: the two
-`CAP_DAC_OVERRIDE` ones in `taiyaku-library`, `taiyaku-serve`'s
+The filter names eight self-skipping tests: the four `CAP_DAC_OVERRIDE` ones in
+`taiyaku-library`, `taiyaku-serve`'s
 `one_work_that_cannot_be_forgotten_does_not_stop_the_others` — the test that
-set the pattern, and which this section previously left out — and
+set the pattern, and which this section previously left out —
 `taiyaku-read`'s `a_hand_written_tar_is_one_gnu_tar_can_list`, which skips
-where `tar` is not on `PATH`. Two of those were added *after* the override and
-not added to it, which is this trap arriving a second time in the same branch.
+where `tar` is not on `PATH`, and the fingerprint pass's
+`lower_renices_and_idles_this_thread_alone` and `a_worker_runs_niced_and_idle`,
+which skip where `renice` or `ionice` is not on `PATH` or the thread is already
+lowered. It also names a module, `jxl::process_tests`, whose priority tests
+skip where `renice`, `ionice` or `nice` is not on `PATH` or the process
+is already near niceness 19. Two of the four this section first named were added
+*after* the override and not added to it, which is this trap arriving a second time in the
+same branch.
 
 **A new self-skipping test does not join it by itself.** nextest's `filter`
 selects tests by name, not by what they print, so there is no expression that

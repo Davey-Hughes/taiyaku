@@ -10,7 +10,9 @@ use taiyaku_core::PageHash;
 
 use taiyaku_read::Page;
 use taiyaku_serve::fingerprint::describe_page;
-pub use taiyaku_serve::fingerprint::{LARGE_PAGE_BYTES, common_border, decode_luma, fingerprint};
+pub use taiyaku_serve::fingerprint::{
+    LARGE_PAGE_BYTES, common_border, decode_luma, decode_page, fingerprint,
+};
 // Only the test-only experiments name it outside the tests.
 #[cfg(test)]
 pub use taiyaku_serve::fingerprint::Border;

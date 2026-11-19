@@ -15,13 +15,27 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::format::Format;
 use crate::naming::natural_cmp;
 #[cfg(rar)]
 use crate::rar::backend;
 
 const IMAGE_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "tif", "tiff",
+    "jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "tif", "tiff", "jxl",
 ];
+
+/// What this reader counts as a page in a container of `format`, a
+/// `scan_entry.format` token, and which backend opens it. A scan stores it with
+/// each file's count and counts again, without hashing, each file whose stored
+/// one differs, so a change here re-counts exactly the files of that format,
+/// and any other change to which entries are pages must change it too.
+/// `None` for every other format: a folder is counted on every walk, a
+/// reflowable EPUB by its text, and the rest have no count.
+#[must_use]
+pub fn reader_signature(format: &str) -> Option<String> {
+    (Some(format) == Format::Zip.token())
+        .then(|| format!("{format}:{}", IMAGE_EXTENSIONS.join(",")))
+}
 
 /// The most a `Vec::with_capacity` hint for one archive entry's raw bytes may
 /// reserve, before `read_archive`/`member_page` read the entry for real.
@@ -83,7 +97,8 @@ impl std::fmt::Debug for Page {
 /// Public because the duplicate inventory counts pages without reading them and
 /// must not carry its own copy of this list — which entries are pages is
 /// normative (`docs/sidecar.md`, "How a member becomes pages"), and a second
-/// list is a duplication (O10).
+/// list is a duplication (O10). A change to what this answers must change
+/// [`reader_signature`] too, or a zip counted before it keeps its old count.
 #[must_use]
 pub fn is_page_name(name: &str) -> bool {
     Path::new(name)
@@ -312,6 +327,9 @@ fn page_names_from<R: Read + Seek>(zip: &zip::ZipArchive<R>) -> Vec<String> {
                 return None;
             }
             let name = entry.name().ok()?.into_owned();
+            // A change to what this listing skips or reads must change
+            // `reader_signature` too, or a zip counted before it keeps its old
+            // count.
             is_listed_page(&name).then_some(name)
         })
         .collect();

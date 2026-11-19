@@ -92,6 +92,22 @@ pub struct Coverage {
 const STALE: &str =
     "version IS NOT ?1 OR (outcome IN ('partial', 'unreadable') AND build IS NOT ?2)";
 
+/// An entry `e` whose row `f` numbers other pages than this reader counted in
+/// the file, as a re-count leaves one, since it keeps the digest the row is
+/// keyed by. `signature` names the parameter holding [`zip_signature`]: a read
+/// numbers a zip's pages as this reader counts them, so a pass settles the row.
+/// Not a folder, whose walk leaves out pages its read takes in, nor a count
+/// another reader took, nor a row with no prints: no read would bring those to
+/// the entry's count, and each would be read again by every pass.
+fn numbers_other_pages(signature: &str) -> String {
+    format!("e.counted_by = {signature} AND f.outcome <> 'unreadable' AND e.pages <> f.pages")
+}
+
+/// What this reader stamps a zip's count with.
+fn zip_signature() -> Option<String> {
+    Format::Zip.token().and_then(taiyaku_read::reader_signature)
+}
+
 /// The directories whose files are matched: those any library with matching
 /// on reaches ([`reach::of_libraries`]), less the paused ([`scan::paused`]).
 /// A directory one library switched off stays covered through another.
@@ -120,9 +136,10 @@ pub fn coverage(conn: &Connection) -> Result<Coverage, String> {
 
 /// Every unit due to be read by a build writing layout `version`, stamped
 /// `build`: a claimed entry of a covered directory, an archive or a folder
-/// holding pages, whose digest is unknown or has no row this build would keep
-/// (`STALE`). Newest `first_seen` first, then by path, and one unit per
-/// known digest, the first, since one read serves every copy.
+/// holding pages, whose digest is unknown, has no row this build would keep
+/// (`STALE`), or has one numbering other pages ([`numbers_other_pages`]).
+/// Newest `first_seen` first, then by path, and one unit per known digest, the
+/// first, since one read serves every copy.
 ///
 /// # Errors
 ///
@@ -145,6 +162,18 @@ pub fn due(conn: &Connection, version: u32, build: Option<&str>) -> Result<Vec<U
                 .collect()
         })
         .map_err(failed)?;
+    let renumbered: HashSet<(i64, String)> = conn
+        .prepare(&format!(
+            "SELECT e.root_id, e.rel_path
+               FROM scan_entry e JOIN fingerprint f ON f.sha256 = e.sha256
+              WHERE {}",
+            numbers_other_pages("?1")
+        ))
+        .and_then(|mut stmt| {
+            stmt.query_map([zip_signature()], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })
+        .map_err(failed)?;
 
     let mut wanted: HashMap<i64, HashMap<String, derive::Claimed>> = HashMap::new();
     for claimed in derive::claimed_units(conn)? {
@@ -154,10 +183,11 @@ pub fn due(conn: &Connection, version: u32, build: Option<&str>) -> Result<Vec<U
         if paths.contains_key(&claimed.root_id)
             && Format::PAGED.contains(&format)
             && (format != Format::Dir || claimed.pages.is_some_and(|pages| pages > 0))
-            && !claimed
-                .sha256
-                .as_ref()
-                .is_some_and(|sha256| settled.contains(sha256))
+            && (renumbered.contains(&(claimed.root_id, claimed.rel_path.clone()))
+                || !claimed
+                    .sha256
+                    .as_ref()
+                    .is_some_and(|sha256| settled.contains(sha256)))
         {
             wanted
                 .entry(claimed.root_id)
@@ -206,8 +236,9 @@ pub fn due(conn: &Connection, version: u32, build: Option<&str>) -> Result<Vec<U
 }
 
 /// Whether `unit` is still worth reading: its directory is covered now, and
-/// its digest, if known, has no row this build would keep. A pass asks before
-/// each read, since a switch, a pause or a twin's row can land mid-pass.
+/// its digest, if known, has no row this build would keep that numbers the
+/// pages its entry counts. A pass asks before each read, since a switch, a
+/// pause or a twin's row can land mid-pass.
 ///
 /// # Errors
 ///
@@ -227,9 +258,22 @@ pub fn still_due(
     let settled: bool = conn
         .query_row(
             &format!(
-                "SELECT EXISTS (SELECT 1 FROM fingerprint WHERE sha256 = ?3 AND NOT ({STALE}))"
+                "SELECT EXISTS (
+                   SELECT 1 FROM fingerprint f WHERE f.sha256 = ?3 AND NOT ({STALE})
+                      AND NOT EXISTS (
+                        SELECT 1 FROM scan_entry e
+                         WHERE e.root_id = ?4 AND e.rel_path = ?5 AND e.sha256 = f.sha256
+                           AND {}))",
+                numbers_other_pages("?6")
             ),
-            rusqlite::params![version, build, sha256],
+            rusqlite::params![
+                version,
+                build,
+                sha256,
+                unit.root_id,
+                unit.rel_path,
+                zip_signature()
+            ],
             |r| r.get(0),
         )
         .map_err(|e| format!("asking whether {} is still due: {e}", unit.rel_path))?;

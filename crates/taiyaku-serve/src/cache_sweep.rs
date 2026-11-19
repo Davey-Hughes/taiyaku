@@ -134,9 +134,10 @@ pub(crate) fn parse(name: &str) -> Option<Parsed<'_>> {
 }
 
 /// The digest of a cover `{digest}-{edge}v{n}.jpg`, a tile
-/// `{digest}-p{offset}-{edge}v{n}.jpg` or a reading page
-/// `{digest}-p{offset}-r{edge}v{n}.jpg`. Any edge, offset and version, so a
-/// file of an old version or rung is still a key.
+/// `{digest}-p{offset}-{edge}v{n}.jpg`, a reading page
+/// `{digest}-p{offset}-r{edge}v{n}.jpg` or the JPEG of a JPEG XL page
+/// `{digest}-p{offset}-j{n}.jpg`. Any edge, offset and version, so a file of
+/// an old version or rung is still a key.
 fn key(name: &str) -> Option<&str> {
     let stem = name.strip_suffix(".jpg")?;
     let (digest, rest) = stem.split_at_checked(64)?;
@@ -152,6 +153,9 @@ fn key(name: &str) -> Option<&str> {
             let (offset, sized) = paged.split_once('-')?;
             if !digits(offset) {
                 return None;
+            }
+            if let Some(version) = sized.strip_prefix('j') {
+                return digits(version).then_some(digest);
             }
             sized.strip_prefix('r').unwrap_or(sized)
         }

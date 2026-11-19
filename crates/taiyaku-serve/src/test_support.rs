@@ -1597,7 +1597,69 @@ fn router_over_a_written_tree_with(
 ///
 /// Panics if the tree cannot be written or the scan fails.
 pub(crate) fn router_over_a_scanned_cbz() -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
-    let prefix = "scanned-cbz";
+    router_over_a_scanned_cbz_holding(
+        "scanned-cbz",
+        &[("000.jpg", b"000.jpg"), ("001.jpg", b"001.jpg")],
+    )
+}
+
+/// What iPhone Safari sends for an image: it names `image/jxl`.
+pub(crate) const SAFARI_ACCEPT: &str = "image/webp,image/avif,image/jxl,image/heic,image/heic-sequence,video/*;q=0.8,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5";
+
+/// What Panels sends for a page over OPDS: `image/jxl` first, in a spaced list.
+pub(crate) const PANELS_ACCEPT: &str = "image/jxl, image/heic, image/avif, image/webp, image/jpg, image/jpeg, image/jpe, image/jfif, image/jfi, image/jif, image/png, image/gif, image/bmp, image/dib, image/tiff, image/tif, image/*";
+
+/// What desktop Chrome 154 sent for an image: `image/*`, and no `image/jxl`.
+pub(crate) const CHROME_ACCEPT: &str =
+    "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
+
+/// [`router_over_a_scanned_cbz`] with the decoder registered and an archive of
+/// JPEG XL fixtures: page 0 `lossy.jxl` (a bare codestream), page 1
+/// `lossless.png` and page 2 `recompressed.jxl` (a container).
+pub(crate) fn router_over_a_scanned_jxl_cbz() -> (axum::Router, std::sync::Arc<ServeState>, Fixture)
+{
+    router_over_a_scanned_jxl_cbz_with_page_0(jxl_fixture("lossy.jxl"))
+}
+
+/// [`router_over_a_scanned_jxl_cbz`] with `page_0` in place of `lossy.jxl`.
+pub(crate) fn router_over_a_scanned_jxl_cbz_with_page_0(
+    page_0: &[u8],
+) -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    crate::jxl::register();
+    router_over_a_scanned_cbz_holding(
+        "scanned-jxl-cbz",
+        &[
+            ("000.jxl", page_0),
+            ("001.png", jxl_fixture("lossless.png")),
+            ("002.jxl", jxl_fixture("recompressed.jxl")),
+        ],
+    )
+}
+
+/// A router over one scanned edition whose member is a **folder** of JPEG XL
+/// pages: `000.jxl` the `lossy` fixture and `001.jxl` the `grey` one. The
+/// other folder fixtures write fixed `.jpg` pages of invented bytes, which no
+/// route can decode.
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written or the scan fails.
+pub(crate) fn router_over_a_scanned_folder_of_jxl_pages()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    crate::jxl::register();
+    let fixture = Fixture::new("scanned-jxl-folder");
+    let dir = fixture.join("tree").join("Scanned").join("Scanned - v01");
+    std::fs::create_dir_all(&dir).expect("creates the volume folder");
+    std::fs::write(dir.join("000.jxl"), jxl_fixture("lossy.jxl")).expect("writes page 0");
+    std::fs::write(dir.join("001.jxl"), jxl_fixture("grey.jxl")).expect("writes page 1");
+    router_over_a_written_tree(fixture)
+}
+
+/// [`router_over_a_scanned_cbz`], its archive holding `entries` (name, bytes).
+pub(crate) fn router_over_a_scanned_cbz_holding(
+    prefix: &str,
+    entries: &[(&str, &[u8])],
+) -> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
     let fixture = Fixture::new(prefix);
     // **Everything under the one fixture directory, which is unique per
     // call.** Keying a sibling path on `prefix` instead puts every test using
@@ -1613,10 +1675,10 @@ pub(crate) fn router_over_a_scanned_cbz() -> (axum::Router, std::sync::Arc<Serve
 
     let path = dir.join("Scanned - v01.cbz");
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).expect("creates the archive"));
-    for entry in ["000.jpg", "001.jpg"] {
-        zip.start_file(entry, zip::write::SimpleFileOptions::default())
+    for (name, bytes) in entries {
+        zip.start_file(*name, zip::write::SimpleFileOptions::default())
             .expect("starts an entry");
-        zip.write_all(entry.as_bytes()).expect("writes an entry");
+        zip.write_all(bytes).expect("writes an entry");
     }
     zip.finish().expect("finishes the archive");
 
@@ -3943,4 +4005,45 @@ pub(crate) fn every_page_reads(running: bool, word: &str) -> serde_json::Value {
         "roots": word,
         "libraries": [word],
     })
+}
+
+/// A file of `fixtures/jxl/`, by its file name. `make.sh` there writes them
+/// and says what each one shows. Compiled in, so a test reads no file and the
+/// set cannot go missing from under it.
+pub(crate) fn jxl_fixture(name: &str) -> &'static [u8] {
+    macro_rules! fixtures {
+        ($($file:literal),* $(,)?) => {
+            match name {
+                $($file => include_bytes!(concat!("../fixtures/jxl/", $file)),)*
+                _ => panic!("no JPEG XL fixture is named {name}"),
+            }
+        };
+    }
+    fixtures!(
+        "alpha.djxl.png",
+        "alpha.jxl",
+        "animated.djxl.png",
+        "animated.frame1.png",
+        "animated.frame2.png",
+        "animated.jxl",
+        "bomb.jxl",
+        "grey.djxl.png",
+        "grey.jxl",
+        "large.djxl.png",
+        "large.jxl",
+        "lossless.djxl.png",
+        "lossless.jxl",
+        "lossless.png",
+        "lossy.djxl.png",
+        "lossy.jxl",
+        "metadata-at-cap.jxl",
+        "metadata-past-cap.jxl",
+        "metadata-two-4mib.jxl",
+        "metadata-two-9mib.jxl",
+        "recompressed.djxl.png",
+        "recompressed.jpg",
+        "recompressed.jxl",
+        "trailing.jpg",
+        "trailing.jxl",
+    )
 }

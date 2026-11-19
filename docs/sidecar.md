@@ -308,7 +308,7 @@ detect it. These rules are therefore part of the format:
    natural order** — not the order the archive stores them in, and not by
    basename.
 3. **An entry is a page if its extension is an image extension** — `jpg`,
-   `jpeg`, `png`, `webp`, `gif`, `bmp`, `avif`, `tif`, `tiff`, matched
+   `jpeg`, `png`, `webp`, `gif`, `bmp`, `avif`, `tif`, `tiff`, `jxl`, matched
    case-insensitively. Directories, anything under `__MACOSX`, and any entry
    whose basename begins with `.` are excluded. `pages` counts exactly these,
    so a `ComicInfo.xml` neither counts nor shifts the numbering.

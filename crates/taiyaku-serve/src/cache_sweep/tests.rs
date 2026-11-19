@@ -137,6 +137,7 @@ fn every_name_the_cache_mints_parses_with_its_digest() {
     let mut minted = vec![cover::cache_path(dir, UNHELD)];
     minted.extend(cover::TILE_LONG_EDGES.map(|edge| cover::thumb_cache_path(dir, UNHELD, 7, edge)));
     minted.push(cover::page_cache_path(dir, UNHELD, 7, 1536));
+    minted.push(cover::jxl_jpeg_cache_path(dir, UNHELD, 7));
     for path in &minted {
         assert_eq!(
             parse(name(path)),
@@ -152,6 +153,49 @@ fn every_name_the_cache_mints_parses_with_its_digest() {
             staging.display()
         );
     }
+}
+
+/// The JPEG of a JPEG XL page is a key at any version, and its version is
+/// digits as every other field's is.
+#[test]
+fn the_jpeg_of_a_jpeg_xl_page_parses_and_a_version_not_digits_does_not() {
+    let staging = taiyaku_read::atomic::temp_path(Path::new(&format!("{UNHELD}-p3-j1.jpg")), "jpg");
+    for (file, parsed) in [
+        (
+            format!("{UNHELD}-p3-j1.jpg"),
+            Some(Parsed::Key { digest: UNHELD }),
+        ),
+        (name(&staging).to_owned(), Some(Parsed::Staging)),
+        (format!("{UNHELD}-p3-j.jpg"), None),
+        (format!("{UNHELD}-p3-jx.jpg"), None),
+    ] {
+        assert_eq!(parse(&file), parsed, "{file}");
+    }
+}
+
+/// An hour older than the process, so one taken for a staging file would go
+/// as a leftover.
+#[test]
+fn an_unheld_digest_s_jpeg_of_a_jpeg_xl_page_goes_and_a_held_one_s_stays() {
+    let store = store("sweep-jxl-jpeg");
+    let started = started();
+    let held = cover::jxl_jpeg_cache_path(&store.thumbs, &store.held, 3);
+    let unheld = cover::jxl_jpeg_cache_path(&store.thumbs, UNHELD, 3);
+    plant_used(&held, 10, started, 1);
+    plant_used(&unheld, 100, started, 1);
+
+    let swept = store.sweep(started).expect("sweeps");
+
+    assert!(held.exists(), "{} stays", held.display());
+    assert!(!unheld.exists(), "{} goes", unheld.display());
+    assert_eq!(
+        swept,
+        Swept {
+            orphans: tally(1, 100),
+            left: tally(1, 10),
+            ..Swept::default()
+        }
+    );
 }
 
 #[test]

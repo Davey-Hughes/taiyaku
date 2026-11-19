@@ -30,15 +30,23 @@ const GRID: u32 = 16;
 /// so"), so page size has to bound concurrency; ordinary pages decode side by side.
 pub const LARGE_PAGE_BYTES: usize = 32 * 1024 * 1024;
 
-/// Decode an encoded page to greyscale.
-pub fn decode_luma(bytes: &[u8]) -> Result<GrayImage, String> {
+/// Decode an encoded page, guessing its format and bounded by
+/// `MAX_DECODE_ALLOC`. Guessing through `ImageReader` is what reaches the
+/// JPEG XL hooks `crate::jxl::register` installs; `image::load_from_memory`
+/// neither reaches them nor takes limits.
+pub fn decode_page(bytes: &[u8]) -> Result<image::DynamicImage, String> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
     reader.limits(limits);
-    Ok(reader.decode().map_err(|e| e.to_string())?.to_luma8())
+    reader.decode().map_err(|e| e.to_string())
+}
+
+/// Decode an encoded page to greyscale.
+pub fn decode_luma(bytes: &[u8]) -> Result<GrayImage, String> {
+    Ok(decode_page(bytes)?.to_luma8())
 }
 
 /// A border to remove from every page of a member, in pixels.

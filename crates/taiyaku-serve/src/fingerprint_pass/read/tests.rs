@@ -332,7 +332,10 @@ fn an_unread_entry_makes_a_file_partial() {
     for folder in [false, true] {
         let tree = TempDir::new("read-unit-unread");
         let mut entries = print_fixture_pages();
-        entries.push(("p26.jxl".to_owned(), b"a page format not read yet".to_vec()));
+        entries.push((
+            "p26.heic".to_owned(),
+            b"a page format not read yet".to_vec(),
+        ));
         let rel_path = plant(&tree, folder, entries);
         let (unit, digest) = scanned(&tree, rel_path);
         let row = stored(read(&unit, &digest, &mut |_, _| true));
@@ -345,8 +348,8 @@ fn an_unread_entry_makes_a_file_partial() {
         assert!(
             row.reason
                 .as_deref()
-                .is_some_and(|why| why.contains("p26.jxl")),
-            "{rel_path}: the reason names p26.jxl: {:?}",
+                .is_some_and(|why| why.contains("p26.heic")),
+            "{rel_path}: the reason names p26.heic: {:?}",
             row.reason
         );
         let prints = decode(&row.prints).expect("the prints read back");
@@ -358,15 +361,15 @@ fn an_unread_entry_makes_a_file_partial() {
 
     let tree = TempDir::new("read-unit-unread-only");
     cbz_of(
-        &tree.join("jxl.cbz"),
-        ["p00.jxl", "p01.jxl"].map(|name| (name.to_owned(), b"not read yet".to_vec())),
+        &tree.join("heic.cbz"),
+        ["p00.heic", "p01.heic"].map(|name| (name.to_owned(), b"not read yet".to_vec())),
     );
-    let (unit, digest) = scanned(&tree, "jxl.cbz");
+    let (unit, digest) = scanned(&tree, "heic.cbz");
     let row = stored(read(&unit, &digest, &mut |_, _| true));
     assert_eq!(row.outcome, Outcome::Unreadable, "no page");
     assert_eq!(row.pages, 0, "no page");
     assert!(row.prints.is_empty(), "no record");
-    for name in ["p00.jxl", "p01.jxl"] {
+    for name in ["p00.heic", "p01.heic"] {
         assert!(
             row.reason.as_deref().is_some_and(|why| why.contains(name)),
             "the reason names {name}: {:?}",

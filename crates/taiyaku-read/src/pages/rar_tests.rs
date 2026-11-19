@@ -1004,7 +1004,7 @@ fn a_rar_names_the_entries_the_reader_does_not_read() {
         ("p01.png", true),
         ("extra10.xyz", true),
         ("extra2.xyz", true),
-        ("deep/p03.jxl", true),
+        ("deep/p03.heic", true),
         ("ComicInfo.xml", true),
         ("Thumbs.db", true),
         ("__MACOSX/._p01.png", true),
@@ -1015,8 +1015,28 @@ fn a_rar_names_the_entries_the_reader_does_not_read() {
     let unread = with_backend(&HOLDS, || member_unread_entries(&path));
     assert_eq!(
         unread.expect("the listing is the backend's"),
-        ["deep/p03.jxl", "extra2.xyz", "extra10.xyz"]
+        ["deep/p03.heic", "extra2.xyz", "extra10.xyz"]
     );
+}
+
+/// A RAR's pages are named by the list a zip's are, so a JPEG XL entry is a page
+/// and is not among what the reader leaves unread.
+#[test]
+fn a_rar_counts_a_jpeg_xl_entry_as_a_page() {
+    static HOLDS: Lists = Lists(&[
+        ("p02.jxl", true),
+        ("p01.png", true),
+        ("p03.JXL", true),
+        ("p04.heic", true),
+    ]);
+    let path = fixture("rar5-stored.rar").path;
+    let names = with_backend(&HOLDS, || member_page_names(&path));
+    assert_eq!(
+        names.expect("the listing is the backend's"),
+        ["p01.png", "p02.jxl", "p03.JXL"]
+    );
+    let unread = with_backend(&HOLDS, || member_unread_entries(&path));
+    assert_eq!(unread.expect("the listing is the backend's"), ["p04.heic"]);
 }
 
 /// Lists and reads as the first backend does; its visits hand nothing over.

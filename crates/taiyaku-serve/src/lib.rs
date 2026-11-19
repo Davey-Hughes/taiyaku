@@ -34,6 +34,7 @@ mod dirs_api;
 pub(crate) mod download;
 pub mod fingerprint;
 mod fingerprint_pass;
+pub mod jxl;
 mod libraries_api;
 pub mod library_api;
 mod library_job;
@@ -462,6 +463,10 @@ pub async fn serve(
     works: Works,
     options: ServeOptions,
 ) -> Result<(), String> {
+    // First, before anything can decode a page: `image` reads JPEG XL only
+    // through the hook this installs, and refuses a JPEG XL page as an
+    // unknown format until it has run.
+    jxl::register();
     let ServeOptions {
         addr,
         stump,
