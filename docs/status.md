@@ -251,8 +251,8 @@ CSS asset (243.22 kB gzip). The thirty-two run under Vitest's browser mode
 over Playwright's
 Chromium, and cover only what no Node environment can answer: `jsdom` has no
 layout engine and no real `HTMLImageElement.decode()`, and every defect the page
-area has shipped was one or the other. They are **not** a CI job — a cacheless
-CI would download a browser on every run — so `pnpm -C web run test:coverage`, which
+area has shipped was one or the other. They are **not** a CI job — CI's `web`
+job has no cache and would download a browser on every run — so `pnpm -C web run test:coverage`, which
 is what CI and `check-all.sh` both run, stays the `node` and `jsdom` projects, and
 `check-all.sh` runs the browser one separately and locally, naming it
 unmeasured when the browser is absent. That adds `@vitest/browser`,

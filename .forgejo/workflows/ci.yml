@@ -64,6 +64,16 @@ jobs:
     timeout-minutes: 10
     container:
       image: rust:1-trixie
+      # The three names must match the runner's `container.valid_volumes` glob,
+      # `taiyaku-ci-*`. The `Build volumes` step needs the clone, which its
+      # script comes from. Here it also follows `Formatting`, which compiles
+      # nothing, so a formatting failure waits for no fetch; every cargo call
+      # after the step builds in the kept directory, when the step took one.
+      # See docs/ci.md, "Build volumes, and what a run keeps".
+      volumes:
+        - taiyaku-ci-cargo-registry:/usr/local/cargo/registry
+        - taiyaku-ci-cargo-git:/usr/local/cargo/git
+        - taiyaku-ci-target-lint:/ci/target
     steps:
       - name: Checkout
         env:
@@ -77,6 +87,9 @@ jobs:
           git checkout -q FETCH_HEAD
       - name: Formatting
         run: cargo fmt --all -- --check
+      - name: Build volumes
+        run: |
+          ./scripts/ci-volumes.sh || echo "not using a build volume: scripts/ci-volumes.sh failed"
       - name: Install libarchive's headers
         # Both clippy steps, the doc links and the check at the declared Rust
         # version below build with `--all-features`, which turns on
@@ -165,6 +178,11 @@ jobs:
     timeout-minutes: 10
     container:
       image: rust:1-trixie
+      # As in `lint`, whose `volumes:` comment gives the reasons.
+      volumes:
+        - taiyaku-ci-cargo-registry:/usr/local/cargo/registry
+        - taiyaku-ci-cargo-git:/usr/local/cargo/git
+        - taiyaku-ci-target-test:/ci/target
     steps:
       - name: Checkout
         env:
@@ -176,6 +194,9 @@ jobs:
           git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
           git fetch -q --depth 1 origin "$FORGEJO_REF"
           git checkout -q FETCH_HEAD
+      - name: Build volumes
+        run: |
+          ./scripts/ci-volumes.sh || echo "not using a build volume: scripts/ci-volumes.sh failed"
       - name: Add llvm-tools
         run: rustup component add llvm-tools-preview
       - name: Install cargo-llvm-cov
@@ -401,6 +422,11 @@ jobs:
     timeout-minutes: 10
     container:
       image: rust:1-trixie
+      # As in `lint`, whose `volumes:` comment gives the reasons.
+      volumes:
+        - taiyaku-ci-cargo-registry:/usr/local/cargo/registry
+        - taiyaku-ci-cargo-git:/usr/local/cargo/git
+        - taiyaku-ci-target-default-features:/ci/target
     steps:
       - name: Checkout
         env:
@@ -412,6 +438,9 @@ jobs:
           git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
           git fetch -q --depth 1 origin "$FORGEJO_REF"
           git checkout -q FETCH_HEAD
+      - name: Build volumes
+        run: |
+          ./scripts/ci-volumes.sh || echo "not using a build volume: scripts/ci-volumes.sh failed"
       - name: Install cargo-nextest
         # The same version, URL and digest as the `test` job's; bump them together.
         run: |
@@ -466,6 +495,11 @@ jobs:
     timeout-minutes: 10
     container:
       image: rust:1-trixie
+      # As in `lint`, whose `volumes:` comment gives the reasons.
+      volumes:
+        - taiyaku-ci-cargo-registry:/usr/local/cargo/registry
+        - taiyaku-ci-cargo-git:/usr/local/cargo/git
+        - taiyaku-ci-target-wasm:/ci/target
     steps:
       - name: Checkout
         env:
@@ -477,6 +511,9 @@ jobs:
           git remote add origin "${scheme}://x-access-token:${TOKEN}@${host}/${FORGEJO_REPOSITORY}.git"
           git fetch -q --depth 1 origin "$FORGEJO_REF"
           git checkout -q FETCH_HEAD
+      - name: Build volumes
+        run: |
+          ./scripts/ci-volumes.sh || echo "not using a build volume: scripts/ci-volumes.sh failed"
       - name: Add wasm target
         run: rustup target add wasm32-unknown-unknown
       - name: Build core for wasm
@@ -569,8 +606,8 @@ jobs:
         # run, which is why this replaces the separate `test` and `test:jsdom`
         # steps rather than joining them — the same trade the `test` job makes
         # with `cargo llvm-cov`. The `browser` project is deliberately not here;
-        # it needs a Chromium download this cacheless CI would repeat every run,
-        # and a gate must measure what CI can reproduce.
+        # it needs a Chromium download this job, having no cache, would repeat
+        # every run, and a gate must measure what CI can reproduce.
         #
         # The thresholds are in `web/vite.config.ts` and fire only under
         # `--coverage`, so a plain `vitest run` here would leave the web half of

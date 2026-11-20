@@ -40,9 +40,9 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 # what keeps it out of the `taiyaku` binary while leaving the module inside the
 # workspace, compiled by CI, and unable to rot.
 #
-# It is not free: CI has no cargo cache (see `.forgejo/workflows/ci.yml`), so
-# both the clippy job and the test job compile it from scratch every run. That
-# cost is accepted rather than hidden behind an optional feature, because
+# It is not free: both the clippy job and the test job of CI compile it, from
+# nothing whenever no build volume holds it (see `.forgejo/workflows/ci.yml`).
+# That cost is accepted rather than hidden behind an optional feature, because
 # dodging it would mean dropping `--all-features` from two CI invocations and
 # leaving this module never compiled by the gate.
 [dev-dependencies]

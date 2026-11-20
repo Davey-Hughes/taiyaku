@@ -8,9 +8,9 @@
 #   scripts/check-all.sh --corpus-debug  # corpus checks in debug — see "Two profiles" below
 #
 # The `web` job additionally runs a small **browser** test project that CI does
-# not: it needs a downloaded Chromium, which a cacheless CI would fetch on every
-# run. It covers what no Node environment can — real layout and a real image
-# decode — and is named as unmeasured when the browser is absent.
+# not: it needs a downloaded Chromium, which CI's `web` job has no cache for and
+# would fetch on every run. It covers what no Node environment can — real layout
+# and a real image decode — and is named as unmeasured when the browser is absent.
 #
 # The point of this file is that the local gate and the CI gate cannot drift: CI's five jobs are
 # reproduced here in the same order with the same flags. When a job changes there, change it here.
@@ -138,8 +138,8 @@ fi
 
 # --- a coverage build another rustc made, which is not a CI job ---
 # Checked before the lint job, so a stale build is refused in seconds rather
-# than after it and a full instrumented build. Local only: CI starts from an empty
-# target directory, so it never has a build to compare. Under the same tool
+# than after it and a full instrumented build. Local only: CI's coverage build is
+# in a fresh clone or a directory named for its toolchain. Under the same tool
 # condition as the coverage run below, since without the tools nothing measures.
 if command -v cargo-llvm-cov >/dev/null 2>&1 && command -v cargo-nextest >/dev/null 2>&1; then run scripts/coverage-build-guard.sh; fi
 
@@ -494,7 +494,7 @@ else
     # --- the browser tests, which are not a CI job ---
     # `test:coverage` above is the `node` and `jsdom` projects, which is exactly
     # what the forge runs: a browser project would need a
-    # Chromium download on every CI run, and CI has no cache to keep one in. So
+    # Chromium download on every CI run, as the `web` job has no cache for one. So
     # these are local-only, and named here when they cannot run rather than
     # passed over.
     #

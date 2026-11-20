@@ -92,9 +92,13 @@ the workspace's `[patch.crates-io]` until a release carries its fixes (O382).
 The fork's `taiyaku-rar` branch is the only ref that holds that commit, so it
 is kept, and not moved, until the patch goes.
 Cargo loads a patch's source whenever it resolves the workspace, with the
-feature or without it, so every job in `ci.yml` that runs cargo fetches it
-from there, as do the image build's two Rust stages whenever they rebuild,
-and `advisories.yml`'s fetch step.
+feature or without it. The image build's two Rust stages fetch it from there
+whenever they rebuild, and `advisories.yml`'s fetch step does on every run.
+The four Rust jobs of `ci.yml` fetch it only when their git volume does not
+already hold it (see "Build volumes, and what a run keeps"). So if the ref
+moved or went, those four jobs could stay green from the volume while the
+image build and `advisories.yml` failed, and the four would fail too once the
+volume was cleared.
 
 ### The workflows that are not jobs
 
@@ -117,6 +121,9 @@ gate green having had nothing run against it at all**. The `wasm` job had
 drifted the narrower way over the same period — its two `cargo build`s were
 mirrored, but not the `wasm-pack` package build or the smoke run, which is the
 only thing anywhere that *executes* the generated module.
+
+The `Build volumes` step of the four Rust jobs is CI's alone, and the script
+does not mirror it: a local target directory already persists between runs.
 
 Skips are named twice, once where they happen and again in a closing summary
 that refuses to print a bare `all green` when anything was skipped:
@@ -186,9 +193,12 @@ much faster under `--release`, so why not the forge. It is the wrong move here,
 for three reasons that are properties of *this* CI rather than of release builds
 in general:
 
-- **There is no cache.** Every job above clones with `git init` and a `--depth 1`
-  fetch into a fresh container, so every run compiles the workspace from
-  nothing. There is no warm second run for a release profile to pay off across.
+- **Only the dependencies are kept between runs.** Every job above clones with
+  `git init` and a `--depth 1` fetch into a fresh container, and cargo rebuilds
+  whatever is older than its source, so every run still compiles the
+  workspace's own crates from nothing (see "Build volumes, and what a run
+  keeps"). That is the part a release profile slows, and it has no warm second
+  run to pay off across.
 - **There is no corpus.** CI's `test` job runs the unit suite alone — 4.4
   seconds in debug. The tests release actually speeds up are the thirteen
   standing corpus checks, and CI skips every one.
@@ -196,8 +206,9 @@ in general:
   `lto = "thin"` with `codegen-units = 1` is the slowest configuration to build,
   across an `axum`/`tokio` tree.
 
-Measured cold, with an empty `CARGO_TARGET_DIR`, which is CI's condition on
-every run:
+Measured cold, with an empty `CARGO_TARGET_DIR`, which was CI's condition on
+every run when this was measured. The release figures, and the 64 seconds drawn
+from them below, were not re-measured with the build volumes:
 
 | Profile | `cargo test --workspace --all-features --no-run` |
 | ------- | ----------------------------------------------: |
@@ -1152,7 +1163,10 @@ measure over that folder while the record names another rustc, naming the
 folder to delete and both versions; it deletes nothing itself. A folder with no
 record is trusted, and a `cargo llvm-cov` run by hand is not recorded, so
 measure the other toolchain in a folder of its own
-(`CARGO_LLVM_COV_TARGET_DIR`).
+(`CARGO_LLVM_COV_TARGET_DIR`). CI runs no such guard: its coverage build sits
+in a fresh clone's `target/` or in a build-volume directory named for the pin,
+and a channel that floats gets no build directory (see "Build volumes, and
+what a run keeps").
 
 ## The other half: `scripts/coverage-floor.mjs`
 
@@ -1262,9 +1276,9 @@ underneath mean anything.
 ### Why component tests are in `jsdom` and not the browser project
 
 `web/` has three vitest projects and the gate runs two of them. The `browser`
-project needs a downloaded Chromium, and this CI has no cache to keep one in, so
-it would be re-fetched on every run — the same cost reasoning recorded under
-"Caching, and why there is none".
+project needs a downloaded Chromium, and the `web` job has no cache to keep one
+in, so it would be re-fetched on every run: "Build volumes, and what a run
+keeps" lists that job among those with no volume.
 
 The consequence is the deciding one, and it is about the gate's integrity rather
 than about speed: **anything measured in the browser project is invisible to the
@@ -1928,48 +1942,272 @@ Probe jobs settled it — a container with no action passes, an action with no
 container passes, and both together is the only failing combination.
 
 The consequence to keep in mind: **no action can be added to these workflows
-while the image is `rust:1-trixie`**. Caching, artifact upload and the rest
-are all JavaScript actions. The escape hatch, when one is wanted, is an image
-carrying both toolchains; two are measured working below.
+while the image is `rust:1-trixie`**. Cache actions, artifact upload and the
+rest are all JavaScript actions; the build volumes the Rust jobs mount are not
+an action and need none. The escape hatch, when an action is wanted, is an
+image carrying both toolchains; two are measured working below.
 
-## Caching, and why there is none
+## Build volumes, and what a run keeps
 
-Every job compiles from cold. `Swatinem/rust-cache` was in the first version of
-this workflow and was removed with the rest of the actions, and no replacement
-was added, because there is no such thing as a cache action that is not
-JavaScript — `actions/cache` and every Rust-specific wrapper alike.
+The four Rust jobs (`lint`, `test`, `default-features`, `wasm`) keep cargo's
+downloads and their built dependencies in named Docker volumes, so that a run
+need not download and build the third-party crates again. Nothing has to be
+there: with no volume a job builds in `./target` from nothing and gives the
+same verdict.
 
-The measurement says not to care yet, but it is older than the pipeline it
-describes. On a green run the **three** jobs of the time took 51s, 39s and 17s,
-and they run in parallel, so the pipeline was under a minute wall-clock.
-Caching would save perhaps twenty or thirty seconds of dependency compilation
-against real added complexity. Revisit when a single job passes a couple of
-minutes, or when artifact upload is wanted for the `verify` reports.
+**What is kept, and where.** Six volumes, named under each job's
+`container.volumes` in `ci.yml`:
 
-**Two things have been added since those figures were taken, and neither has
-been timed on the runner.** The `web` job is a fourth job that did not exist
-then, and the `wasm` job has grown three steps — the node tarball fetch, the
-`wasm-pack` fetch and the package build plus smoke run — with no total
-estimate above any more (the figure that used to stand there leaned on
-`apt-get`'s cost, which this job no longer pays; see above). So the 17s
-figure is certainly low and the "under a minute" conclusion is no longer
-measured, only inherited. It is left standing because the *decision* it supports
-— do not add caching yet — does not turn on the difference, and replacing a
-stale number with a guess would be worse than marking it stale. Take fresh
-figures before using this paragraph to argue anything.
+| Volume | Mounted at | Jobs |
+| ------ | ---------- | ---- |
+| `taiyaku-ci-cargo-registry` | `/usr/local/cargo/registry` | all four |
+| `taiyaku-ci-cargo-git` | `/usr/local/cargo/git` | all four |
+| `taiyaku-ci-target-lint` | `/ci/target` | `lint` |
+| `taiyaku-ci-target-test` | `/ci/target` | `test` |
+| `taiyaku-ci-target-default-features` | `/ci/target` | `default-features` |
+| `taiyaku-ci-target-wasm` | `/ci/target` | `wasm` |
 
-Two options exist that do not need an action at all, neither yet tested:
+The first two hold the crates cargo downloads and the git dependencies it
+checks out. The other four hold what cargo builds, one volume per job, so the
+jobs of one run never wait on each other's build. Every name must match the
+runner's `container.valid_volumes` glob, `taiyaku-ci-*`. The mounts are two
+directories of cargo's home and not `/usr/local/cargo` itself, because an empty
+volume mounted over a directory the image fills is filled from the image once
+and hides it from then on: the image's cargo and rustup binaries would stay
+the first run's.
 
-- **Named Docker volumes** on the job container, mounting `/usr/local/cargo` and
-  the target directory across runs. Pure workflow YAML. The risk is that
-  `act_runner` gates mounts behind `container.valid_volumes`, which denies by
-  default, so it may need a runner config change.
-- **Installing a throwaway node as the first step**, via the container's own
-  package manager rather than a pinned tarball — this path needs *a* node, not
-  a specific version, so the fastest available install is fine. JavaScript
-  actions then work for the rest of the job, since the runner only needs a
-  node when it reaches the action. That install costs most of what caching
-  would save.
+**What is not kept.**
+
+- The workspace's own crates. A fresh clone's files are newer than any output
+  in the volume, so cargo rebuilds them on every run. It rebuilds them whole:
+  the script sets `CARGO_INCREMENTAL=0` for a run that builds in a kept
+  directory. The dev profile is incremental, and without that setting each
+  workspace crate's incremental state would stay in the directory and the
+  next run's Clippy, test build and wasm builds would start from it.
+- rustup's download of the pinned toolchain (see "Toolchain note") and the tool
+  tarballs each job fetches.
+- The `web` and `docker` jobs, `advisories.yml` and `mutants.yml` get no
+  volume. What the `docker` job keeps between runs is buildx's own layer cache;
+  see "The image job".
+
+**The `Build volumes` step.** `scripts/ci-volumes.sh` runs as one step of each
+of the four jobs. In `test`, `default-features` and `wasm` it is the step
+after the clone, and no earlier, because the script comes from the clone. In
+`lint` it is the step after `Formatting`: `cargo fmt --check` compiles
+nothing, so a kept directory has nothing to give it, and a formatting failure
+waits for no fetch. The script prints which of its three mount points are
+volumes, fetches, takes a build directory, and writes `CARGO_TARGET_DIR` and
+`CARGO_INCREMENTAL=0` to `$GITHUB_ENV` for the steps after it. A run that
+takes no directory gets neither line, and builds in `./target` as a job with
+no volume does.
+
+The step never fails a job, by design. Its `run:` line is the script followed
+by `|| echo "not using a build volume: scripts/ci-volumes.sh failed"`, so a
+script that fails shows only as that line and a slower job, and a green job
+does not show that a volume was used. Read the step's last line: it is either
+`build directory:` with the directory in use, or `not using a build volume:`
+with the reason. For a script that failed, that reason says only
+`scripts/ci-volumes.sh failed`, and the cause is the line above it.
+
+**Inside a target volume.** Cargo builds in a directory named for the toolchain
+`rust-toolchain.toml` pins, so moving the pin starts a new directory and
+deletes nothing another run may be building in. Each toolchain has two,
+`<channel>-a` and `<channel>-b`, because the runner's capacity is 2 and two
+runs of one job must not share a directory. Cargo's own build lock does not
+keep them apart. It ends with the build, while the tests and the coverage
+report go on reading the directory with no lock held, so a second run's
+`cargo llvm-cov` would clean and rebuild under the first. And cargo takes an
+output newer than its source file as built from it, so a run whose clone is
+older than another run's build could pass on the other commit's code.
+
+So the script takes a lock on its directory without waiting and holds it for
+the whole job: a background `sleep` inherits the lock's descriptor and lives
+until the job's container is removed. A run that finds `-a` locked takes
+`-b`. A third run finds both locked and builds in `./target`.
+
+A channel that is not an exact three-part version, such as `stable`, gets no
+directory: a floating channel would put two compilers' coverage builds in one
+place, which is what `scripts/coverage-build-guard.sh` refuses locally.
+
+Each run marks its directory as used, in a file named `.last-used`. It then
+removes every directory of another toolchain in its volume whose mark is more
+than two weeks old (`keep_days=14` in the script), taking that directory's
+lock first, so a directory a run is building in is kept. A directory with no
+mark is given one, since its age is unknown. The pinned toolchain's two
+directories are never removed for age. The second is used only when two runs
+of one job overlap, so its mark can be old while it is still wanted, and
+removing it would leave the next overlapping run to build from nothing.
+
+A directory is renamed to `<name>.removing` before it is removed, still under
+its lock. A removal that is cut short, by the job's time limit for one, then
+leaves the remainder under a name no run builds in, where a half-removed
+directory under its own name would be given a new mark by the next run and
+built in by a later one. A run removes any `.removing` directory it finds.
+
+Both lock files are opened for appending, so a lock file that has been
+replaced by a link to another file empties nothing.
+
+The `lint` job's check at the declared Rust version runs with the
+`CARGO_TARGET_DIR` the step wrote, like every step after it, so it builds in
+the directory named for the pin, with an older compiler. It is a `cargo check`
+and makes no coverage build.
+
+**The fetch, under a lock.** Cargo's own download lock is a file in its home
+directory. Only `registry/` and `git/` of that directory are volumes, so each
+job's container has that file to itself, and two jobs could unpack one crate
+into the shared registry at once. The script therefore runs one
+`cargo fetch --locked` under a `flock` on a file inside the registry volume.
+After it every crate `Cargo.lock` names is in the volume, and the cargo calls
+that follow have none to download. The first cargo call in a container
+installs the pinned toolchain, so the script makes one before it takes the
+lock (in `lint`, `Formatting` has made it already), and that install holds up
+nobody's fetch. The wait for the lock is
+bounded (`flock -w 300`). A fetch that fails, or never gets the lock, prints
+`cargo fetch did not finish; the job downloads as it builds`, and the job goes
+on.
+
+**Why nothing stale is read.** No step or script reads by name a file an
+earlier run left:
+
+- The two files later steps read by name, `target/nextest/default/junit.xml`
+  and `target/rust-coverage.json`, are written under the workspace's `target/`
+  wherever `CARGO_TARGET_DIR` points, so both are this run's own, in a fresh
+  clone. The script makes that directory: `cargo llvm-cov report` does not
+  make the parent of its `--output-path`, and with the build elsewhere only
+  nextest's junit file would otherwise have made it.
+- `cargo llvm-cov`, run without `--no-clean` as CI runs it, removes the
+  workspace crates' artifacts and the old profile data from its build
+  directory before each run, and keeps the dependencies'. The review of this
+  branch checked the profile data on a scratch crate, in one kept directory:
+  a function a test ran in one run and no test ran in the next read as not
+  executed in the second run's report, and as executed when the second run
+  was given `--no-clean`.
+- No incremental state is read from a kept directory, because none is written
+  to one: see `CARGO_INCREMENTAL=0` under "What is not kept".
+- The script sets every cloned file's time to now after it has the directory's
+  lock, because the clone was made before the lock was held. It then refreshes
+  git's index, which would otherwise report every file as changed.
+
+**Trust.** Any run, a pull request's included, writes the volumes that
+`main`'s gate jobs later read, and those jobs execute what the volumes hold:
+a kept build script's output is used and a kept proc-macro library is loaded
+by rustc, as root in the job's container, without being built again. That is
+no wider than what a job has already, since the runner mounts the host's
+Docker socket into every job container (see "Runner requirements"). The forge
+is sign-in only, and the image the `docker` job ships never comes from the
+volumes: that job mounts none.
+
+**No size cap.** Nothing limits a volume's size, because a wipe under a build
+another run is in the middle of fails that run. A toolchain's directory grows
+by what a `Cargo.lock` change leaves behind, and in `lint`'s volume also by
+what the check at the declared Rust version built before `rust-version`
+moved. The registry and git volumes are never pruned: cargo's own cache
+collection keeps its record of what was last used in cargo's home directory,
+outside the two volumes, so every container starts without one. A step that
+took a directory prints the sizes instead: each directory in its target
+volume, the registry and the git checkouts. To clear the volumes by hand, wait
+until the runner is idle and remove all six in one command:
+
+    docker volume rm taiyaku-ci-cargo-registry taiyaku-ci-cargo-git taiyaku-ci-target-lint taiyaku-ci-target-test taiyaku-ci-target-default-features taiyaku-ci-target-wasm
+
+**One host.** The volumes belong to the Docker of the host the runner uses, so
+a job that lands on a runner on another host does not find these.
+
+**What was checked locally.** The script was run case by case in
+`rust:1-trixie` on scratch volumes:
+
+- no volume mounted, and a read-only one: the job is left to build in
+  `./target`, with nothing written to `GITHUB_ENV`;
+- a first run on an empty volume, whose `GITHUB_ENV` file then held
+  `CARGO_TARGET_DIR` and `CARGO_INCREMENTAL=0` and whose workspace had a
+  `target/`, a second run beside it, which took the other directory, a third,
+  which took none, and a run started after the first had gone, which took the
+  first directory again;
+- channels that are not an exact version: nothing was written;
+- the removal: a directory with an old mark went, and one with a recent mark,
+  one with no mark, an old one whose lock another container held and the
+  pinned toolchain's second directory with an old mark all stayed;
+- a removal stopped part way, by a mount point inside the directory that `rm`
+  could not remove: what was left was under the `.removing` name, with nothing
+  under the directory's own, and the next run removed it;
+- lock files that were links to files with content: the run took its
+  directory, the old directory beside it was removed, and neither file was
+  emptied;
+- the clone's file times and git's index after the step;
+- two fetches at once into an empty registry: one downloaded, and both could
+  then fetch offline;
+- the failure paths: a run's own old mark is renewed, an old directory whose
+  lock file cannot be opened is kept, another directory that cannot be marked
+  does not cost the run its own, a `GITHUB_ENV` file that cannot be written
+  leaves the lock released, and the toolchain install does not wait for the
+  registry lock.
+
+The directory's lock and the removal's, the removal's age test and its two
+guards, the file times, the index refresh, the fetch's lock and the toolchain
+install ahead of it, the renewed mark, the place of the `GITHUB_ENV` write,
+the `CARGO_INCREMENTAL=0` line and its absence where no directory is taken,
+the making of `./target`, each lock file's append mode, the rename ahead of a
+removal, the removal of a `.removing` directory and the pinned toolchain's
+exemption were then each broken by hand, one at a time, and the case that
+covers it watched going red.
+
+The `test` and `wasm` jobs' steps, and `lint`'s up to `Clippy`, were then run
+in the same image on scratch volumes. These runs used the script as it stood
+before the review's corrections, which wrote no `CARGO_INCREMENTAL=0`:
+
+- the `test` job on volumes an earlier run had filled, against the `test` job
+  with no volume: every step of both exited 0, and the two coverage reports
+  gave the same line counts for every file. The run on filled volumes compiled
+  the workspace's crates and no other, and its `junit.xml` and
+  `rust-coverage.json` were under the workspace's `target/`, with neither in
+  the volume;
+- the fill before it was a run of a different tree, the same commit with an
+  uncalled function planted in one `taiyaku-core` file, and its container was
+  removed once while the build was compiling. Run again, it exited 0 at every
+  step, and its report differed from the other two in the planted file alone.
+  The run after it is the one compared above: it reported what the run with no
+  volume reported, so no binary the fill built was read. The comparison says
+  nothing of the fill's profile data: every run ran the same tests, so the
+  fill's counts merged into the report would have read the same. The check on
+  a scratch crate, under "Why nothing stale is read", is what covers that;
+- the `wasm` job twice on one set of volumes: every step of both exited 0, and
+  the second compiled the workspace's crates and no other;
+- `lint` up to `Clippy`, with its `Build volumes` step ahead of `Formatting`,
+  where it then was: first as committed, which passed, and then on the same
+  volumes with an unused variable planted: `Clippy` failed and named the
+  planted line, having compiled no crate outside the workspace;
+- the script and a `cargo check` with `rust-toolchain.toml`'s channel set to
+  the declared Rust version: the script took a new directory, the dependencies
+  were compiled in it from nothing, and nothing in the old directory was
+  written.
+
+The `default-features` job's steps were run after the corrections, in the
+same image: from a tree with a statement planted in one `taiyaku-core`
+function, then from the commit itself on the volumes the first run had filled,
+then from the commit with no volume. Every step of all three exited 0. The
+second run compiled the workspace's crates and no other. After each run on
+volumes the build directory's `incremental` directory, which cargo makes
+whatever the setting, was empty. All three ran the same number of tests. The
+first of them did not start from empty volumes: an earlier attempt, whose
+planted function `Clippy` refused as unused, had filled the registry and
+left a part-built directory.
+
+The scripts and logs are in `.superpowers/sdd/ci-volumes-evidence/trial/` of
+the main checkout, and the review's check on a scratch crate is in `review/`
+beside it. Neither directory is committed. All of it ran on a development
+machine; none of it is a run on the forge.
+
+**Two approaches not taken.**
+
+- **A cache action after a throwaway node install.** Every cache action is
+  JavaScript, `actions/cache` and each Rust-specific wrapper alike, which is
+  why `Swatinem/rust-cache` left this workflow with the rest of the actions.
+  Installing a node as a job's first step, from the container's own package
+  manager, would let one run, since the runner needs a node only when it
+  reaches the action. It puts a node install in every Rust job and moves the
+  build through the forge's cache store on every run.
+- **An image with the dependencies built in.** It needs an image build, a
+  registry to hold it and a rebuild on every `Cargo.lock` change.
 
 ## Images carrying both Rust and node
 
@@ -1988,9 +2226,10 @@ The control is the point of the table: it failed the same way the real jobs did,
 which is what makes the two passes mean something rather than being a guess that
 happened to work.
 
-**Not switched, deliberately.** The only thing an image change buys today is the
-caching described above, and that is not worth paying for yet. The costs are
-real: `cimg/rust` adds 200 MB and runs as a non-root user, and the probe run
+**Not switched, deliberately.** An image change buys JavaScript actions and
+nothing else, and caching no longer needs one: the build volumes above keep
+the dependencies without an action. The costs are real: `cimg/rust` adds
+200 MB and runs as a non-root user, and the probe run
 spent five minutes pulling these images before any job started, which is what a
 cold layer cache costs on this runner. `catthehacker/ubuntu` is the closer match
 to a GitHub-style runner if the deciding factor ever becomes action
