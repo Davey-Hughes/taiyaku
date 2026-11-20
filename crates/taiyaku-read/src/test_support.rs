@@ -840,15 +840,16 @@ pub const PRINT_FIXTURE: [PinnedPrint; 26] = [
 pub enum RarEntryKind {
     File,
     Dir,
-    /// A file whose data is encrypted: listed as a file, and its read fails.
+    /// A file whose data is encrypted, which refuses the archive it is in.
     Encrypted,
-    /// A file stored as a reference to an identical one (rar's `-oi`): listed
-    /// as a file, and its read fails.
+    /// A file stored as a reference to an earlier identical one (rar's `-oi`),
+    /// or as a hard link to an earlier name of it (`-oh`): listed as a file,
+    /// and read as its target's bytes.
     Reference,
-    /// A file of no bytes: listed as a file, and its read fails.
+    /// A file of no bytes, which reads as none.
     Empty,
-    /// A file continued from or into another volume of a set: listed as a
-    /// file, and its read fails, since one volume does not hold it whole.
+    /// A file continued from or into another volume of a set, whose archive
+    /// is refused as one volume.
     Split,
 }
 
@@ -869,9 +870,8 @@ pub struct RarFixture {
     pub format: String,
     /// In archive order.
     pub entries: Vec<RarFixtureEntry>,
-    /// In reading order, with each page's sha256, or `None` where its read
-    /// fails (`encrypted`, `reference`, `empty` or `split` in the manifest).
-    pub pages: Vec<(String, Option<String>)>,
+    /// In reading order, with each page's sha256.
+    pub pages: Vec<(String, String)>,
     /// Entries read by name that are not pages, with their sha256.
     pub others: Vec<(String, String)>,
     /// What an archive that cannot be listed is refused with.
@@ -882,8 +882,8 @@ pub struct RarFixture {
 ///
 /// `make.sh` writes the manifests: tab-separated, one fact a line, each
 /// `format <rar4|rar5>`, `entry <name> <file|dir|encrypted|reference|empty|split>
-/// <size>`, `page <name> <sha256|encrypted|reference|empty|split>`, `other <name>
-/// <sha256>` or `refused <text>`.
+/// <size>`, `page <name> <sha256>`, `other <name> <sha256>` or
+/// `refused <text>`.
 ///
 /// # Panics
 ///
@@ -939,11 +939,8 @@ fn rar_fixture(manifest: &Path) -> RarFixture {
                     .parse()
                     .unwrap_or_else(|_| panic!("{}: not a size", malformed())),
             }),
-            ["page", name, "encrypted" | "reference" | "empty" | "split"] => {
-                fixture.pages.push((name.to_owned(), None));
-            }
             ["page", name, sha] if is_sha256(sha) => {
-                fixture.pages.push((name.to_owned(), Some(sha.to_owned())));
+                fixture.pages.push((name.to_owned(), sha.to_owned()));
             }
             ["other", name, sha] if is_sha256(sha) => {
                 fixture.others.push((name.to_owned(), sha.to_owned()));

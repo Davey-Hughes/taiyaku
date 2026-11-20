@@ -5,17 +5,16 @@
 //! and a real RAR frequently `.cbz`. The scanner's §3 makes that a rule —
 //! `scan_entry.format` is sniffed, never derived from a suffix.
 //!
-//! **Recognising a format is not a step towards reading it.** `Pdf`, `Rar`,
+//! **Recognising a format is not a step towards reading it.** `Pdf`,
 //! `SevenZip`, `Tar` and the fixed-layout EPUB exist so a scan can record what
-//! it met and a reader can be told why nothing opens it. `Zip` and `Dir` are
-//! readable as pages, and the reflowable EPUB as text (`book.rs`);
-//! [`Format::is_readable`] is the statement of that, and `pages.rs` is what
-//! enforces it for pages — `unsupported_container` and `read_member` are where
-//! a caller actually meets the refusal, and they answer from the bytes in
-//! front of them rather than by asking this enum. In a build with a RAR
-//! backend `pages.rs` opens RAR too, while [`Format::is_readable`] still
-//! answers `false` for it: what the library admits is decided here, not by
-//! what `pages.rs` can open.
+//! it met and a reader can be told why nothing opens it, and so does `Rar` in
+//! a build without a RAR backend. `Zip` and `Dir` are readable as pages, as
+//! `Rar` is in a build with a RAR backend, and the reflowable EPUB as text
+//! (`book.rs`); [`Format::is_readable`] is the statement of that, and
+//! `pages.rs` is what enforces it for pages — `unsupported_container` and
+//! `read_member` are where a caller actually meets the refusal, and they answer
+//! from the bytes in front of them rather than by asking this enum. What the
+//! library admits is decided here, not by what `pages.rs` can open.
 
 use std::io::Read;
 use std::path::Path;
@@ -46,10 +45,15 @@ pub enum Format {
 // values for the same reason.
 
 impl Format {
-    /// The containers a library's derive admits as pages, and so what a fingerprint
-    /// pass reads. A build with a RAR backend reads a RAR's pages too, but the derive
-    /// admits none ([`is_readable`](Self::is_readable)).
-    pub const PAGED: &'static [Self] = &[Self::Dir, Self::Zip];
+    /// The containers a library's derive admits as pages, and so what a scan
+    /// counts and a fingerprint pass reads. RAR only in a build with a RAR
+    /// backend, the one build whose `pages.rs` opens it.
+    pub const PAGED: &'static [Self] = &[
+        Self::Dir,
+        Self::Zip,
+        #[cfg(rar)]
+        Self::Rar,
+    ];
 
     /// The `scan_entry.format` value, or `None` for a file nothing recognised.
     ///
@@ -95,18 +99,18 @@ impl Format {
     /// [`from_token`](Self::from_token), so this is the one list of what a
     /// derive admits.
     ///
-    /// **The six `false`s are a decision, not a backlog — O90.** [`sniff`]
+    /// **The `false`s are a decision, not a backlog — O90.** [`sniff`]
     /// names eight containers so a scan can say what it met, and this admits
-    /// three; the sixth `false` is `Unknown`, which is no container at all.
-    /// **RAR in particular is refused on licence, not on difficulty.**
-    /// taiyaku is GPL-3.0-or-later, and RARLAB's UnRAR source, which `unrar`
-    /// builds and `unrar-rs` incorporates, carries a restriction the GPL does
-    /// not allow a distributor to add. The clean-room `rar` crate was too
-    /// immature for the crate every page read passes through when this
-    /// was decided.
+    /// three, or four in a build with a RAR backend; the last `false` is
+    /// `Unknown`, which is no container at all. **RAR is refused on licence,
+    /// not on difficulty**, so only a build with the `rar-libarchive` feature
+    /// admits it, through libarchive's own BSD-2-Clause RAR readers: taiyaku is
+    /// GPL-3.0-or-later, and RARLAB's UnRAR source, which `unrar` builds and
+    /// `unrar-rs` incorporates, carries a restriction the GPL does not allow a
+    /// distributor to add.
     /// `docs/superpowers/specs/2026-09-15-o90-unreadable-attribution-design.md`
-    /// §1 is the record, and names what would reopen it: a library where
-    /// repacking is not available.
+    /// §1 and `docs/superpowers/specs/2026-11-17-rar-libarchive-design.md`
+    /// ("Readability") are the record.
     ///
     /// A refusal reaches a person as `DeriveReport::unreadable`'s
     /// `by_format`, which counts each refused format under its token.

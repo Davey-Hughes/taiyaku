@@ -94,18 +94,27 @@ const STALE: &str =
 
 /// An entry `e` whose row `f` numbers other pages than this reader counted in
 /// the file, as a re-count leaves one, since it keeps the digest the row is
-/// keyed by. `signature` names the parameter holding [`zip_signature`]: a read
-/// numbers a zip's pages as this reader counts them, so a pass settles the row.
-/// Not a folder, whose walk leaves out pages its read takes in, nor a count
-/// another reader took, nor a row with no prints: no read would bring those to
-/// the entry's count, and each would be read again by every pass.
-fn numbers_other_pages(signature: &str) -> String {
-    format!("e.counted_by = {signature} AND f.outcome <> 'unreadable' AND e.pages <> f.pages")
+/// keyed by. The `signatures` parameters from `?{first}` hold
+/// [`paged_signatures`]: a read numbers a zip's or a RAR's pages as this
+/// reader counts them, so a pass settles the row. Not a folder, whose walk
+/// leaves out pages its read takes in, nor a count another reader took, nor a
+/// row with no prints: no read would bring those to the entry's count, and each
+/// would be read again by every pass.
+fn numbers_other_pages(first: usize, signatures: usize) -> String {
+    let parameters = (first..first + signatures)
+        .map(|n| format!("?{n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("e.counted_by IN ({parameters}) AND f.outcome <> 'unreadable' AND e.pages <> f.pages")
 }
 
-/// What this reader stamps a zip's count with.
-fn zip_signature() -> Option<String> {
-    Format::Zip.token().and_then(taiyaku_read::reader_signature)
+/// What this reader stamps the count of each paged format with: a zip's, and
+/// a RAR's in a build with a RAR backend. A folder has none.
+fn paged_signatures() -> Vec<String> {
+    Format::PAGED
+        .iter()
+        .filter_map(|format| format.token().and_then(taiyaku_read::reader_signature))
+        .collect()
 }
 
 /// The directories whose files are matched: those any library with matching
@@ -162,16 +171,19 @@ pub fn due(conn: &Connection, version: u32, build: Option<&str>) -> Result<Vec<U
                 .collect()
         })
         .map_err(failed)?;
+    let signatures = paged_signatures();
     let renumbered: HashSet<(i64, String)> = conn
         .prepare(&format!(
             "SELECT e.root_id, e.rel_path
                FROM scan_entry e JOIN fingerprint f ON f.sha256 = e.sha256
               WHERE {}",
-            numbers_other_pages("?1")
+            numbers_other_pages(1, signatures.len())
         ))
         .and_then(|mut stmt| {
-            stmt.query_map([zip_signature()], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect()
+            stmt.query_map(rusqlite::params_from_iter(&signatures), |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect()
         })
         .map_err(failed)?;
 
@@ -255,6 +267,15 @@ pub fn still_due(
     let Some(sha256) = &unit.sha256 else {
         return Ok(true);
     };
+    let signatures = paged_signatures();
+    let mut bound: Vec<&dyn rusqlite::ToSql> =
+        vec![&version, &build, sha256, &unit.root_id, &unit.rel_path];
+    let first = bound.len() + 1;
+    bound.extend(
+        signatures
+            .iter()
+            .map(|signature| signature as &dyn rusqlite::ToSql),
+    );
     let settled: bool = conn
         .query_row(
             &format!(
@@ -264,16 +285,9 @@ pub fn still_due(
                         SELECT 1 FROM scan_entry e
                          WHERE e.root_id = ?4 AND e.rel_path = ?5 AND e.sha256 = f.sha256
                            AND {}))",
-                numbers_other_pages("?6")
+                numbers_other_pages(first, signatures.len())
             ),
-            rusqlite::params![
-                version,
-                build,
-                sha256,
-                unit.root_id,
-                unit.rel_path,
-                zip_signature()
-            ],
+            bound.as_slice(),
             |r| r.get(0),
         )
         .map_err(|e| format!("asking whether {} is still due: {e}", unit.rel_path))?;

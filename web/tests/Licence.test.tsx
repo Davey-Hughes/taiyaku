@@ -36,9 +36,11 @@ const GPL = local('../../LICENSE')
 const SHIPPORI = read(resolve('@fontsource/shippori-mincho-b1/LICENSE'))
 const ZEN = read(resolve('@fontsource/zen-kaku-gothic-new/LICENSE'))
 const MARKS = local('../src/styles/fonts/OFL.txt')
+const LIBARCHIVE = local('../src/licences/libarchive-COPYING.txt')
 
 /** What the page draws after its header and contents: a section per work. */
 const WORKS_DRAWN = [
+  'settings-section',
   'settings-section',
   'settings-section',
   'settings-section',
@@ -180,7 +182,7 @@ function parts(section: HTMLElement) {
 }
 
 describe('Licence', () => {
-  it('draws taiyaku’s licence first and then each font’s', async () => {
+  it('draws taiyaku’s licence first, then each font’s, then libarchive’s', async () => {
     const host = await settle()
     expect(
       [...host.querySelectorAll('.settings-section h2')].map(
@@ -191,6 +193,7 @@ describe('Licence', () => {
       'Shippori Mincho B1',
       'Zen Kaku Gothic New',
       'taiyaku marks',
+      'libarchive',
     ])
   })
 
@@ -240,6 +243,18 @@ describe('Licence', () => {
     },
   )
 
+  it('says libarchive reads RAR in a build with RAR support and is BSD-2-Clause, above the full text of its COPYING', async () => {
+    const { terms, text } = parts(section(await settle(), 'libarchive'))
+    expect(terms).toBe(
+      'The library that reads RAR archives in a build with RAR support (the container image is one), licensed under the BSD 2-Clause License (BSD-2-Clause), with the exceptions its notice lists.',
+    )
+    expect(text).toContain('The libarchive distribution as a whole')
+    expect(text).toContain(
+      'Redistribution and use in source and binary forms, with or without',
+    )
+    expect(text).toBe(LIBARCHIVE)
+  })
+
   /**
    * **The contents, between the header and the first licence**: a link per
    * licence, in the order the licences are drawn, each naming the work and
@@ -269,6 +284,7 @@ describe('Licence', () => {
       ['Shippori Mincho B1 (OFL-1.1)', '#shippori-mincho-b1'],
       ['Zen Kaku Gothic New (OFL-1.1)', '#zen-kaku-gothic-new'],
       ['taiyaku marks (OFL-1.1)', '#taiyaku-marks'],
+      ['libarchive (BSD-2-Clause)', '#libarchive'],
     ])
     expect(
       links.map((link, i) => {
@@ -285,6 +301,7 @@ describe('Licence', () => {
       [1, true, 'Shippori Mincho B1'],
       [1, true, 'Zen Kaku Gothic New'],
       [1, true, 'taiyaku marks'],
+      [1, true, 'libarchive'],
     ])
   })
 
@@ -358,6 +375,7 @@ describe('Licence', () => {
     ['#shippori-mincho-b1', 'Shippori Mincho B1'],
     ['#zen-kaku-gothic-new', 'Zen Kaku Gothic New'],
     ['#taiyaku-marks', 'taiyaku marks'],
+    ['#libarchive', 'libarchive'],
   ])(
     'loaded with %s, puts focus on the heading of %s, on a first visit and on a return',
     async (fragment, name) => {
@@ -488,6 +506,7 @@ describe('Licence', () => {
         ['Shippori Mincho B1', 'shippori-mincho-b1'],
         ['Zen Kaku Gothic New', 'zen-kaku-gothic-new'],
         ['taiyaku marks', 'taiyaku-marks'],
+        ['libarchive', 'libarchive'],
       ].map((heading) => ({
         heading,
         links: 2,
@@ -649,7 +668,7 @@ describe('Licence', () => {
       await licenceTextsLanded()
       expect(host.querySelector('[role="alert"]')).toBeNull()
       expect(host.querySelector('nav.licence-contents')).not.toBeNull()
-      expect(host.querySelectorAll('.settings-section')).toHaveLength(4)
+      expect(host.querySelectorAll('.settings-section')).toHaveLength(5)
     } finally {
       vi.doUnmock('../src/licenceTexts')
     }
@@ -719,7 +738,7 @@ describe('Licence', () => {
       }
       expect(host.querySelector('.page-title')?.textContent).toBe('Licence')
       expect(host.querySelector('nav.licence-contents')).not.toBeNull()
-      expect(host.querySelectorAll('.settings-section')).toHaveLength(4)
+      expect(host.querySelectorAll('.settings-section')).toHaveLength(5)
     } finally {
       root.unmount()
       host.remove()

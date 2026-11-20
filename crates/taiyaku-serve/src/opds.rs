@@ -667,10 +667,10 @@ pub(crate) async fn work_feed(
 ///
 /// **Off the async worker, because the answer is a `stat` — O120.**
 /// [`crate::download::advertised_type`] asks the filesystem whether an edition
-/// of one member is a file. On the async worker a `stat` holds a runtime worker
-/// thread for as long as the filesystem takes to answer. This server's host
-/// bind-mounts its library from a FUSE share, where nothing promises that
-/// is quick.
+/// of one member is a file, and the store, or else the file itself, what it
+/// is. On the async worker a `stat` holds a runtime worker thread as long as
+/// the filesystem takes, and this server's host bind-mounts its library from a
+/// FUSE share, where nothing promises that is quick.
 ///
 /// One trip for the whole feed. `sidecar` is the work as the account is sent
 /// it, the snapshot the feed builds its entries from, so a type and its entry
@@ -700,7 +700,7 @@ async fn advertised_types(
                 .map(|(key, edition)| {
                     (
                         key.clone(),
-                        crate::download::advertised_type(&work, edition),
+                        crate::download::advertised_type(&state.library, &work, edition),
                     )
                 })
                 .collect(),

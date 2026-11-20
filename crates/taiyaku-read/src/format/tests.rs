@@ -182,7 +182,7 @@ fn every_format_names_its_schema_token_and_says_whether_it_can_be_read() {
         (Format::EpubFixed, Some("epub-fixed"), false),
         (Format::EpubReflow, Some("epub-reflow"), true),
         (Format::Pdf, Some("pdf"), false),
-        (Format::Rar, Some("rar"), false),
+        (Format::Rar, Some("rar"), cfg!(rar)),
         (Format::SevenZip, Some("7z"), false),
         (Format::Tar, Some("tar"), false),
         (Format::Unknown, None, false),
@@ -214,11 +214,12 @@ fn paged_formats_are_the_readable_ones_less_reflowable_books() {
         !Format::PAGED.contains(&Format::EpubReflow),
         "as text, not as pages"
     );
-    assert!(!Format::Rar.is_readable(), "the derive admits no RAR");
-    assert!(
-        !Format::PAGED.contains(&Format::Rar),
-        "so no pass reads one"
+    assert_eq!(
+        Format::Rar.is_readable(),
+        cfg!(rar),
+        "the derive admits RAR exactly in a build with a RAR backend"
     );
+    assert_eq!(Format::PAGED.contains(&Format::Rar), cfg!(rar), "as pages");
 }
 
 #[test]

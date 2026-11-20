@@ -3,17 +3,20 @@
 # each fixture was made. Every page with bytes is generated noise or a
 # gradient, so no published page is in the repository.
 #
-#   make.sh <rar 7.23> <rar 6.24> <empty output directory>
+#   make.sh <rar 7.23> <rar 6.24> <rar 2.80> <empty output directory>
 #
 # rar 7.23 has no -ma switch and cannot write RAR4, so the RAR4 fixtures need
-# rar 6.24's -ma4. Everything is written inside the output directory.
+# rar 6.24's -ma4. RAR 2.80, the rar-2.80 binary of deb-multimedia's
+# rar-2.80_2.80-dmo1_i386.deb, writes the RAR 2.0 fixtures. Everything is
+# written inside the output directory.
 set -euo pipefail
 
-[ $# -eq 3 ] || { echo "usage: make.sh <rar 7.23> <rar 6.24> <empty output directory>" >&2; exit 2; }
+[ $# -eq 4 ] || { echo "usage: make.sh <rar 7.23> <rar 6.24> <rar 2.80> <empty output directory>" >&2; exit 2; }
 RAR7=$(realpath "$1")
 RAR6=$(realpath "$2")
-OUT=$(realpath "$3")
-[ -d "$OUT" ] && [ -z "$(ls -A "$OUT")" ] || { echo "not an empty directory: $3" >&2; exit 2; }
+RAR2=$(realpath "$3")
+OUT=$(realpath "$4")
+[ -d "$OUT" ] && [ -z "$(ls -A "$OUT")" ] || { echo "not an empty directory: $4" >&2; exit 2; }
 # rar reads non-ASCII names from the command line in the locale's encoding.
 export LC_ALL=C.UTF-8
 SRC=$OUT/src
@@ -28,13 +31,24 @@ entry() {
   [ "$2" = dir ] || size=$(stat -c %s "$DIR/$1")
   printf 'entry\t%s\t%s\t%s\n' "$1" "$2" "$size" >> "$MAN"
 }
-# `page <name> <reason>`, the reason `encrypted` or `reference`, lists a page in
-# reading order whose read fails.
-page() { printf 'page\t%s\t%s\n' "$1" "${2:-$(sum "$1")}" >> "$MAN"; }
+# Pages are listed in reading order.
+page() { printf 'page\t%s\t%s\n' "$1" "$(sum "$1")" >> "$MAN"; }
 other() { printf 'other\t%s\t%s\n' "$1" "$(sum "$1")" >> "$MAN"; }
-refused() { printf 'refused\tnot a readable RAR archive\n' >> "$MAN"; }
+# `refused [cause]`: the archive is not listed, with the cause where taiyaku's
+# own rule refuses it rather than libarchive.
+refused() { printf 'refused\tnot a readable RAR archive%s\n' "${1:+: $1}" >> "$MAN"; }
 rar7() { (cd "$DIR" && "$RAR7" a -cfg- -idq "$@"); }
 rar6() { (cd "$DIR" && "$RAR6" a -cfg- -idq -ma4 "$@"); }
+# RAR 2.80 is an i386 binary of 2001: it runs by its path in a throwaway i386
+# container, so nothing is installed, and writes only to the output directory.
+# Its archive is named as the container sees it, /out/<fixture>. The image is
+# pinned by digest, so a rerun runs the same i386 userland.
+rar2() {
+  docker run --rm --init --user "$(id -u):$(id -g)" --network none --platform linux/386 \
+    -e HOME=/tmp -e LANG=C -v "$OUT:/out" -v "$RAR2:/rar-2.80:ro" -w "/out/src/$FX" \
+    i386/debian:bookworm-slim@sha256:abd54731664e83f582c92db7581fb65a7bb81498c8b7001101844301bf6efe36 \
+    /rar-2.80 a -cfg- -y -idp "$@"
+}
 
 # Pages: noise for the size-bound fixtures, so data dominates headers; an 8x8
 # gradient elsewhere, its colour set per page so no two pages share bytes.
@@ -63,14 +77,15 @@ rar7 -s "$OUT/$FX" p1.png p2.png p3.png p4.png
 entry p1.png file; entry p2.png file; entry p3.png file; entry p4.png file
 page p1.png; page p2.png; page p3.png; page p4.png
 
-# Three runs, so only the middle entry carries a password.
+# Three runs, so only the middle entry carries a password, which refuses the
+# whole archive.
 begin rar5-encrypted-entry.rar rar5
 small 80 p01.png; small 90 p02.png; small 100 p03.png
 rar7 "$OUT/$FX" p01.png
 rar7 -psecret "$OUT/$FX" p02.png
 rar7 "$OUT/$FX" p03.png
 entry p01.png file; entry p02.png encrypted; entry p03.png file
-page p01.png; page p02.png encrypted; page p03.png
+refused 'an entry is encrypted'
 
 # Headers encrypted: nothing can be listed without the password.
 begin rar5-headers-encrypted.rar rar5
@@ -113,7 +128,43 @@ begin rar5-file-reference.rar rar5
 small 220 p01.png; cp "$DIR/p01.png" "$DIR/p02.png"
 rar7 -oi1:1 "$OUT/$FX" p01.png p02.png
 entry p01.png file; entry p02.png reference
-page p01.png; page p02.png reference
+page p01.png; page p02.png
+
+# Deleting a reference's target leaves the reference naming an entry the
+# archive no longer holds.
+begin rar5-dangling-reference.rar rar5
+small 55 p00.png; small 65 p01.png; cp "$DIR/p01.png" "$DIR/p02.png"; small 75 p03.png
+rar7 -oi1:1 "$OUT/$FX" p00.png p01.png p02.png p03.png
+"$RAR7" d -cfg- -idq "$OUT/$FX" p01.png
+entry p00.png file; entry p02.png reference; entry p03.png file
+refused 'an entry is a reference or hard link, and its target is not an earlier entry of that name'
+
+# -oh stores a second name of one file as a hard link to the first. The first
+# is a dotfile, which is no page, so reading every page wants the link and not
+# its target, with a page between the two.
+begin rar5-hard-link.rar rar5
+small 145 .p02.png; small 155 p01.png; ln "$DIR/.p02.png" "$DIR/p02.png"
+rar7 -oh "$OUT/$FX" .p02.png p01.png p02.png
+entry .p02.png file; entry p01.png file; entry p02.png reference
+page p01.png; page p02.png
+
+# A file reference whose target is stored, so that damage to the target's
+# bytes meets taiyaku's CRC32 check: libarchive checks a compressed entry's
+# data itself. The target is a dotfile, as in rar5-hard-link, and its name
+# holds no other entry's.
+begin rar5-stored-reference.rar rar5
+small 165 .p00.png; small 175 p01.png; cp "$DIR/.p00.png" "$DIR/p02.png"
+rar7 -m0 -oi1:1 "$OUT/$FX" .p00.png p01.png p02.png
+entry .p00.png file; entry p01.png file; entry p02.png reference
+page p01.png; page p02.png
+
+# Two file references to one target, so that a read keeps the target's bytes
+# past the first reference for the second.
+begin rar5-two-references.rar rar5
+small 185 p01.png; cp "$DIR/p01.png" "$DIR/p02.png"; cp "$DIR/p01.png" "$DIR/p03.png"
+rar7 -oi1:1 "$OUT/$FX" p01.png p02.png p03.png
+entry p01.png file; entry p02.png reference; entry p03.png reference
+page p01.png; page p02.png; page p03.png
 
 begin rar4.rar rar4
 for i in 1 2 3 4; do noise "$((10 + i))" 148x148 "p0$i.png"; done
@@ -128,7 +179,7 @@ rar6 "$OUT/$FX" p01.png
 rar6 -psecret "$OUT/$FX" p02.png
 rar6 "$OUT/$FX" p03.png
 entry p01.png file; entry p02.png encrypted; entry p03.png file
-page p01.png; page p02.png encrypted; page p03.png
+refused 'an entry is encrypted'
 
 # libarchive reads no solid RAR4: it refuses the archive at its second entry.
 begin rar4-solid.rar rar4
@@ -148,45 +199,57 @@ begin rar5-empty.rar rar5
 small 245 p01.png; : > "$DIR/p02.png"
 rar7 "$OUT/$FX" p01.png p02.png
 entry p01.png file; entry p02.png empty
-page p01.png; page p02.png empty
+page p01.png; page p02.png
+
+# libarchive fails to read an empty file's data in a solid RAR5, here a page
+# between two others and a ComicInfo.xml at the end. -ds keeps the order given,
+# where a solid archive is otherwise sorted by type.
+begin rar5-solid-empty.rar rar5
+small 125 p01.png; : > "$DIR/p02.png"; small 135 p03.png; : > "$DIR/ComicInfo.xml"
+rar7 -s -ds "$OUT/$FX" p01.png p02.png p03.png ComicInfo.xml
+entry p01.png file; entry p02.png empty; entry p03.png file; entry ComicInfo.xml empty
+page p01.png; page p02.png; page p03.png
+other ComicInfo.xml
 
 begin rar4-empty.rar rar4
 small 235 p01.png; : > "$DIR/p02.png"
 rar6 "$OUT/$FX" p01.png p02.png
 entry p01.png file; entry p02.png empty
-page p01.png; page p02.png empty
+page p01.png; page p02.png
 
-# The first two volumes of a set of three, each read alone. A volume holds a
-# whole page and the part of a page that goes on into the next volume.
+# The first two volumes of a set of three, each refused alone, as every volume
+# is. A volume holds a whole page and the part of a page that goes on into the
+# next volume.
 begin rar4-split.part1.rar rar4
 for i in 1 2 3 4; do noise "$((40 + i))" 64x64 "p0$i.png"; done
 PAGES=$DIR
 rar6 -m0 -v20k "$OUT/rar4-split.rar" p01.png p02.png p03.png p04.png
 rm "$OUT/rar4-split.part3.rar"
 entry p01.png file; entry p02.png split
-page p01.png; page p02.png split
+refused 'it is one volume of a multi-volume set'
 
 begin rar4-split.part2.rar rar4
 cp "$PAGES"/p0*.png "$DIR"
 entry p02.png split; entry p03.png file; entry p04.png split
-page p02.png split; page p03.png; page p04.png split
+refused 'it is one volume of a multi-volume set'
 
 begin rar5-split.part1.rar rar5
 for i in 1 2 3 4; do noise "$((50 + i))" 64x64 "p0$i.png"; done
 rar7 -m0 -v20k "$OUT/rar5-split.rar" p01.png p02.png p03.png p04.png
 rm "$OUT"/rar5-split.part[2-9].rar
 entry p01.png file; entry p02.png split
-refused
+refused 'it is one volume of a multi-volume set'
 
 # The last volume of a set of two: it opens with the end of a page begun in the
-# first volume, which libarchive does not list, and holds two whole pages.
+# first volume, which libarchive does not list, and holds two whole pages. It is
+# refused all the same, as every volume is.
 begin rar5-split-last.part2.rar rar5
 for i in 1 2 3; do noise "$((60 + i))" 64x64 "p0$i.png"; done
 noise 64 32x32 p04.png
 rar7 -m0 -v24k "$OUT/rar5-split-last.rar" p01.png p02.png p03.png p04.png
 rm "$OUT/rar5-split-last.part1.rar"
 entry p03.png file; entry p04.png file
-page p03.png; page p04.png
+refused 'it is one volume of a multi-volume set'
 
 # A comment and a recovery record are service blocks with data of their own.
 begin rar4-comment.rar rar4
@@ -198,5 +261,19 @@ page p01.png; page p02.png
 begin rar4-recovery.rar rar4
 small 35 p01.png; small 45 p02.png
 rar6 -rr5p "$OUT/$FX" p01.png p02.png
+entry p01.png file; entry p02.png file
+page p01.png; page p02.png
+
+# RAR 2.80 compresses at unpack version 20, which libarchive's RAR4 reader does
+# not decode, and stores at version 20 too, which it reads.
+begin rar4-v20.rar rar4
+small 85 p01.png; small 95 p02.png
+rar2 -m3 "/out/$FX" p01.png p02.png
+entry p01.png file; entry p02.png file
+refused 'an entry uses RAR 2.0 compression or another method libarchive does not decode'
+
+begin rar4-v20-stored.rar rar4
+small 105 p01.png; small 115 p02.png
+rar2 -m0 "/out/$FX" p01.png p02.png
 entry p01.png file; entry p02.png file
 page p01.png; page p02.png

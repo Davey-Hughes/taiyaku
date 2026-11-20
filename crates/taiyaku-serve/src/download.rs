@@ -152,9 +152,15 @@ use crate::{ServeState, cbz};
 /// its acquisition link against.
 pub(crate) const CBZ_TYPE: &str = "application/vnd.comicbook+zip";
 
+/// The registered type for a comic archive that is a RAR.
+const CBR_TYPE: &str = "application/vnd.comicbook-rar";
+
+/// What a file is sent as when nothing more is known of it.
+const OCTET_STREAM: &str = "application/octet-stream";
+
 /// Every member of an edition, resolved against the document's own directory.
 ///
-/// The other half of [`passthrough_extension`]'s job: it builds that test's
+/// The other half of [`passthrough_as`]'s job: it builds that test's
 /// input, so the root rule — and the scanned-work case where these paths are
 /// already absolute and the join is the identity — is not written out again in
 /// each caller.
@@ -170,8 +176,8 @@ pub(crate) fn member_paths(
     edition.members.iter().map(|m| root.join(&m.path)).collect()
 }
 
-/// The extension a **passthrough** download of these members would serve, or
-/// `None` where the download is generated.
+/// The extension and the type a **passthrough** download of these members
+/// would be sent with, or `None` where the download is generated.
 ///
 /// One member that is a file is served byte for byte, and §7's rule is that
 /// its type and its extension follow the bytes rather than the route: a
@@ -182,14 +188,77 @@ pub(crate) fn member_paths(
 /// Extracted so [`prepare`] and [`advertised_type`] cannot disagree. A feed
 /// advertising one type while the route sends another is that same lie in a
 /// third place.
-fn passthrough_extension(paths: &[std::path::PathBuf]) -> Option<String> {
-    (paths.len() == 1 && paths[0].is_file()).then(|| {
-        paths[0]
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("cbz")
-            .to_ascii_lowercase()
-    })
+fn passthrough_as(
+    library: &taiyaku_library::Library,
+    paths: &[std::path::PathBuf],
+) -> Option<(String, &'static str)> {
+    (paths.len() == 1 && paths[0].is_file()).then(|| sent_as(library, &paths[0]))
+}
+
+/// The extension and the type the file at `path` is sent with: those of the
+/// format a scan sniffed it as (plan D6), where the file has the size and mtime
+/// that scan saw, or else of what it sniffs as now. Not the name's, because
+/// names lie both ways: a RAR is often named `.cbz` and a zip `.cbr`.
+///
+/// Its own extension is kept where it names that format, as `.zip` names a zip,
+/// and otherwise replaced. Only bytes that match no signature take their type
+/// from the name; a 7-Zip or tar archive, which this server reads nothing of,
+/// is sent as bytes under its own name.
+fn sent_as(library: &taiyaku_library::Library, path: &std::path::Path) -> (String, &'static str) {
+    use taiyaku_read::Format;
+    // The connection is held for neither the stat nor a sniff, which may each
+    // wait on a network share.
+    let stamp = taiyaku_library::fingerprints::stamp_of(path);
+    let stored = stamp.and_then(|stamp| stored_format(&library.conn(), path, stamp));
+    let format = stored.or_else(|| taiyaku_read::sniff(path).ok());
+    let own = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("cbz")
+        .to_ascii_lowercase();
+    let (names, content_type): (&[&str], _) = match format {
+        Some(Format::Zip) => (&["cbz", "zip"], CBZ_TYPE),
+        Some(Format::Rar) => (&["cbr", "rar"], CBR_TYPE),
+        Some(Format::Pdf) => (&["pdf"], "application/pdf"),
+        Some(Format::EpubFixed | Format::EpubReflow) => (&["epub"], "application/epub+zip"),
+        Some(Format::SevenZip | Format::Tar | Format::Dir) => (&[], OCTET_STREAM),
+        Some(Format::Unknown) | None => (&[], type_for(&own)),
+    };
+    let extension = match names.first() {
+        Some(first) if !names.contains(&own.as_str()) => (*first).to_owned(),
+        _ => own,
+    };
+    (extension, content_type)
+}
+
+/// The format a scan sniffed the file at `path` as, from the row of its
+/// `stamp`, its size and mtime, under the latest seen library directory to
+/// hold it: a file converted in place is not what an older row describes.
+/// `None` where there is none or the store fails; [`sent_as`] then sniffs.
+///
+/// A scanned member's path is its directory's with the entry's joined on
+/// (`derive`'s `Candidate`), so taking the directory back off finds the entry
+/// on `scan_entry`'s `UNIQUE (root_id, rel_path)`, as
+/// `proposals::edition_formats` does; `rtrim` is for a directory that is `/`.
+fn stored_format(
+    conn: &rusqlite::Connection,
+    path: &std::path::Path,
+    (size, mtime): (i64, i64),
+) -> Option<taiyaku_read::Format> {
+    let path = path.to_str()?;
+    conn.query_row(
+        "SELECT e.format FROM root r
+           JOIN scan_entry e ON e.root_id = r.id
+            AND e.rel_path = substr(?1, length(rtrim(r.path, '/')) + 2)
+          WHERE substr(?1, 1, length(rtrim(r.path, '/')) + 1) = rtrim(r.path, '/') || '/'
+            AND e.format IS NOT NULL AND e.size = ?2 AND e.mtime = ?3
+          ORDER BY e.last_seen DESC
+          LIMIT 1",
+        rusqlite::params![path, size, mtime],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|token| taiyaku_read::Format::from_token(&token))
 }
 
 /// What a download of this edition would answer with as its `Content-Type`.
@@ -205,35 +274,40 @@ fn passthrough_extension(paths: &[std::path::PathBuf]) -> Option<String> {
 /// `PageSource` and this route does not — see `opds::work_feed`, which states
 /// that asymmetry where the link is built.)
 ///
-/// The cost is one `metadata` call per edition of one member — an edition of
-/// several is generated and asks nothing — in a feed that otherwise touches no
-/// disk. Bounded — one work, its editions, metadata only, no archive opened —
-/// and it is what buys the feed and the route being unable to drift apart.
+/// The cost, in a feed that otherwise touches no disk, is `metadata` calls and
+/// a look in the store per edition of one member, and a sniff where the store
+/// has no format for the file as it is; an edition of several is generated and
+/// asks nothing. It buys the feed and the route being unable to drift apart.
 ///
 /// **It blocks, so the feed asks it on the blocking pool**, through
 /// `opds::advertised_types` — O120.
-pub(crate) fn advertised_type(work: &crate::Work, edition: &taiyaku_core::Edition) -> &'static str {
-    match passthrough_extension(&member_paths(work, edition)) {
-        Some(extension) => type_for(&extension),
+pub(crate) fn advertised_type(
+    library: &taiyaku_library::Library,
+    work: &crate::Work,
+    edition: &taiyaku_core::Edition,
+) -> &'static str {
+    match passthrough_as(library, &member_paths(work, edition)) {
+        Some((_, content_type)) => content_type,
         None => CBZ_TYPE,
     }
 }
 
-/// What a passthrough download says it is.
+/// What a file's name says it is: the type [`sent_as`] gives a file whose
+/// bytes match no signature, which leaves the name the only word on it.
 ///
-/// **The type follows the bytes, not the route.** A single-member edition may
-/// not be a comic archive at all — `member.format` admits `pdf` and both epub
-/// kinds — and calling a PDF `application/vnd.comicbook+zip` would be a lie
-/// told in the header as well as in the filename. Spec §7. Only the *generated*
-/// path is unconditionally [`CBZ_TYPE`], because there the container is this
-/// module's own.
+/// **Everywhere else the type follows the bytes, not the route or the name.**
+/// A single-member edition may not be a comic archive at all — it may be a
+/// PDF or an EPUB — and calling a PDF `application/vnd.comicbook+zip` would be
+/// a lie told in the header as well as in the filename. Spec §7. Only the
+/// *generated* path is unconditionally [`CBZ_TYPE`], because there the
+/// container is this module's own.
 fn type_for(extension: &str) -> &'static str {
     match extension {
         "cbz" | "zip" => CBZ_TYPE,
         "pdf" => "application/pdf",
         "epub" => "application/epub+zip",
-        "cbr" | "rar" => "application/vnd.comicbook-rar",
-        _ => "application/octet-stream",
+        "cbr" | "rar" => CBR_TYPE,
+        _ => OCTET_STREAM,
     }
 }
 
@@ -635,11 +709,10 @@ fn prepare(
     let unreadable =
         |why: &str| crate::routes::unreadable(&format!("`{edition_key}` of `{slug}`"), why);
 
-    if let Some(extension) = passthrough_extension(&paths) {
+    if let Some((extension, content_type)) = passthrough_as(&state.library, &paths) {
         let length = std::fs::metadata(&paths[0])
             .map_err(|e| unreadable(&format!("{}: {e}", paths[0].display())))?
             .len();
-        let content_type = type_for(&extension);
         let name = download_name(series.as_deref(), volume, &title, &found.label, &extension);
         return Ok((
             Shape::Passthrough {
@@ -652,7 +725,9 @@ fn prepare(
     }
 
     // Generated. Describe every page first — for an archive member this reads
-    // only central directories.
+    // its listing: a zip's central directory, or a RAR's entry headers and the
+    // data of a page among them that declares no CRC32, and of every entry of a
+    // solid RAR.
     let mut described: Vec<taiyaku_read::PageEntry> = Vec::new();
     for path in &paths {
         let entries = taiyaku_read::member_page_entries(path).map_err(|why| unreadable(&why))?;
@@ -963,8 +1038,8 @@ fn generated(
     for path in members {
         // The plan is authoritative about names and lengths; the member is
         // asked only for bytes. A mismatch means the archive changed since
-        // `prepare` read its central directory, and continuing would produce
-        // a file whose own directory lies.
+        // `prepare` listed it, and continuing would produce a file whose own
+        // directory lies.
         let mut failed: Option<String> = None;
         let mut gone = false;
         let visited = taiyaku_read::for_each_member_page(path, &mut |entry, bytes| {
@@ -974,16 +1049,16 @@ fn generated(
                 .ok_or_else(|| format!("{}: more pages than the plan named", path.display()))?;
             if planned.size != entry.size || planned.crc32 != entry.crc32 {
                 // **Two causes, one refusal, and the message must not pick
-                // one.** The plan's size is what the archive's central
-                // directory *declared*; `entry.size` is what
-                // `for_each_member_page` actually read. They differ either
-                // because the archive was replaced since `prepare` read it,
-                // or because it declares a size it never had — `zip` fails
-                // a read that runs past the declared length, but an entry
-                // that declares more than it holds reaches here with a
-                // perfectly good crc. Either way the local header already
-                // sent states a length these bytes do not have, so the only
-                // safe move is to stop.
+                // one.** The plan's size is what the archive *declared*, in a
+                // zip's central directory or a RAR's block header;
+                // `entry.size` is what `for_each_member_page` actually read.
+                // They differ either because the archive was replaced since
+                // `prepare` read it, or because a zip entry declares more than
+                // it holds and reaches here with a perfectly good crc, as
+                // `zip` fails only a read that runs past the declared length
+                // and a RAR read refuses any other length itself. Either way
+                // the local header already sent states a length these bytes
+                // do not have, so the only safe move is to stop.
                 return Err(format!(
                     "{}: `{}` is not the {} bytes this download was planned around",
                     path.display(),
@@ -1103,7 +1178,9 @@ pub(crate) async fn member(
         ));
     };
 
-    let prepared = tokio::task::spawn_blocking(move || prepare_member(&slug, &view, ordinal)).await;
+    let prepared =
+        tokio::task::spawn_blocking(move || prepare_member(&state.library, &slug, &view, ordinal))
+            .await;
     let (path, length, content_type, name) = match prepared {
         Ok(Ok(four)) => four,
         Ok(Err(refusal)) => return refusal,
@@ -1182,6 +1259,7 @@ pub(crate) async fn member(
               comment says buys nothing a comment does not already say"
 )]
 fn prepare_member(
+    library: &taiyaku_library::Library,
     slug: &str,
     view: &crate::view::EditionView,
     ordinal: usize,
@@ -1214,21 +1292,36 @@ fn prepare_member(
             )
         })?
         .len();
-    let extension = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("cbz")
-        .to_ascii_lowercase();
-    let content_type = type_for(&extension);
-    // **A member keeps its own filename.** The edition download gets a name
-    // built from the library's rows because it is a file that did not exist
-    // before; a member already had one, and it is the name the person who
-    // packed it chose.
+    let (extension, content_type) = sent_as(library, &path);
+    // **A member keeps its own filename**, but for an extension that names
+    // another format than its bytes. The edition download gets a name built
+    // from the library's rows because it is a file that did not exist before;
+    // a member already had one, and it is the name the person who packed it
+    // chose.
     let name = path.file_name().map_or_else(
         || format!("member-{ordinal}.{extension}"),
-        |n| n.to_string_lossy().to_string(),
+        |n| renamed(std::path::Path::new(n), &extension),
     );
     Ok((path, length, content_type, name))
+}
+
+/// `name` sent with `extension`: unchanged where its own is that one,
+/// with `extension` in place of its own where its own names a format
+/// [`sent_as`] types, and with `extension` after it otherwise, so that the
+/// last dot of `Foo v1.5` is not taken for an extension.
+fn renamed(name: &std::path::Path, extension: &str) -> String {
+    let own = name
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match own.as_deref() {
+        Some(own) if own == extension => name.to_string_lossy().into_owned(),
+        Some("cbz" | "zip" | "cbr" | "rar" | "pdf" | "epub" | "cb7" | "7z" | "cbt" | "tar") => name
+            .with_extension(extension)
+            .to_string_lossy()
+            .into_owned(),
+        _ => format!("{}.{extension}", name.to_string_lossy()),
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,4 @@
 format	rar5
 entry	p03.png	file	12651
 entry	p04.png	file	3403
-page	p03.png	3d8c640bce82bc317673b680255b0efad39d40fcb69f0ed4d864d4a49baf4a15
-page	p04.png	6a1ea35a8e976e95276273b11708c3c34ccedaa42500cedbbbcf7490af3bee0f
+refused	not a readable RAR archive: it is one volume of a multi-volume set

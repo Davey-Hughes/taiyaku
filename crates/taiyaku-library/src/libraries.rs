@@ -296,7 +296,8 @@ pub fn match_by_content_of(conn: &Connection, id: i64) -> Result<Option<bool>, S
 /// How many entries the scans of the directories library `id` reaches
 /// recorded as an EPUB with no text counted (fixed-layout, or reflowable and
 /// all pictures) or a PDF, which derivation does not admit. Entries in other
-/// formats it does not admit, such as rar, 7z and tar, are not counted.
+/// formats it does not admit, such as 7z, tar, and rar in a build without a
+/// RAR backend, are not counted.
 ///
 /// The Libraries screen says "no readable files yet" on this, for a library
 /// that holds such files and no work.

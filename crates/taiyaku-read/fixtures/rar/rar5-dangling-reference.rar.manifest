@@ -1,0 +1,5 @@
+format	rar5
+entry	p00.png	file	321
+entry	p02.png	reference	327
+entry	p03.png	file	323
+refused	not a readable RAR archive: an entry is a reference or hard link, and its target is not an earlier entry of that name

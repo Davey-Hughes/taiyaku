@@ -1479,7 +1479,7 @@ fn a_multi_member_edition_advertises_the_comic_type() {
     let sidecar = work.sidecar();
     let edition = sidecar.editions.get("raw").expect("fixture edition");
     assert_eq!(
-        crate::download::advertised_type(&work, edition),
+        crate::download::advertised_type(&crate::test_support::library(), &work, edition),
         crate::download::CBZ_TYPE
     );
 }
@@ -1495,7 +1495,7 @@ fn a_single_pdf_member_advertises_the_pdf_type() {
     let sidecar = work.sidecar();
     let edition = sidecar.editions.get("raw").expect("fixture edition");
     assert_eq!(
-        crate::download::advertised_type(&work, edition),
+        crate::download::advertised_type(&crate::test_support::library(), &work, edition),
         "application/pdf",
         "the route serves this passthrough as application/pdf, so the feed \
          must not advertise it as a comic archive"
@@ -1511,9 +1511,83 @@ fn a_missing_member_falls_back_to_the_comic_type() {
     let sidecar = work.sidecar();
     let edition = sidecar.editions.get("raw").expect("fixture edition");
     assert_eq!(
-        crate::download::advertised_type(&work, edition),
+        crate::download::advertised_type(&crate::test_support::library(), &work, edition),
         crate::download::CBZ_TYPE
     );
+}
+
+/// Bytes that match no signature leave the name the only word on what a file
+/// is, so a `.cbr` or a `.rar` of them is advertised as a RAR.
+#[test]
+fn a_member_whose_bytes_match_no_signature_is_typed_by_its_name() {
+    for name in ["volume.cbr", "volume.rar"] {
+        let tmp = crate::test_support::Fixture::new(&format!("download-advertised-{name}"));
+        let work = one_member_work(&tmp, name, false);
+        std::fs::write(tmp.join(name), b"no signature").unwrap();
+        let sidecar = work.sidecar();
+        let edition = sidecar.editions.get("raw").expect("fixture edition");
+        assert_eq!(
+            crate::download::advertised_type(&crate::test_support::library(), &work, edition),
+            crate::download::CBR_TYPE,
+            "{name}"
+        );
+    }
+}
+
+/// A file's own extension is kept where it names the format of its bytes, as
+/// `.zip` names a zip and `.rar` a RAR, rather than replaced by the first
+/// name of that format.
+#[test]
+fn an_extension_that_names_the_format_of_the_bytes_is_kept() {
+    let tmp = crate::test_support::Fixture::new("download-own-extension");
+    let zip = taiyaku_read::test_support::cbz_pages(&tmp, "Foo v01.zip", 1, 0);
+    let rar = tmp.join("Foo v01.rar");
+    let fixture = taiyaku_read::test_support::rar_fixtures()
+        .into_iter()
+        .find(|fixture| fixture.file == "rar5-compressed.rar")
+        .expect("the fixture");
+    std::fs::copy(&fixture.path, &rar).expect("copies the fixture");
+    let library = crate::test_support::library();
+    assert_eq!(
+        crate::download::sent_as(&library, &zip),
+        ("zip".to_string(), crate::download::CBZ_TYPE)
+    );
+    assert_eq!(
+        crate::download::sent_as(&library, &rar),
+        ("rar".to_string(), crate::download::CBR_TYPE)
+    );
+}
+
+/// A member's name is sent as it is where its own extension, in any case, is
+/// the one it is sent with: a `.CBZ` is not renamed `.cbz`, nor is a 7-Zip
+/// archive, sent under its own extension, given a second one.
+#[test]
+fn a_member_named_with_the_extension_it_is_sent_with_keeps_its_name() {
+    let renamed = |name: &str, extension: &str| {
+        crate::download::renamed(std::path::Path::new(name), extension)
+    };
+    assert_eq!(renamed("Foo v01.CBZ", "cbz"), "Foo v01.CBZ");
+    assert_eq!(renamed("Foo v01.7z", "7z"), "Foo v01.7z");
+}
+
+/// A member whose own extension names another format than the one it is sent
+/// as, a 7-Zip or tar archive's too, takes that one's in its place rather than
+/// after it: a zip named `.cb7` is sent as `.cbz`, not `.cb7.cbz`. A name
+/// whose last dot starts no extension keeps it.
+#[test]
+fn a_member_named_as_another_format_takes_the_extension_it_is_sent_with() {
+    let renamed = |name: &str, extension: &str| {
+        crate::download::renamed(std::path::Path::new(name), extension)
+    };
+    for (name, extension, sent) in [
+        ("Foo v01.cb7", "cbz", "Foo v01.cbz"),
+        ("Foo v01.7z", "cbz", "Foo v01.cbz"),
+        ("Foo v01.cbt", "cbr", "Foo v01.cbr"),
+        ("Foo v01.TAR", "pdf", "Foo v01.pdf"),
+        ("Foo v1.5", "cbz", "Foo v1.5.cbz"),
+    ] {
+        assert_eq!(renamed(name, extension), sent, "{name} sent as {extension}");
+    }
 }
 
 /// Spec §3.8's downloads, over
@@ -1757,5 +1831,397 @@ async fn a_generated_download_keeps_jpeg_xl_pages_as_stored() {
     for ((name, bytes), (file, original)) in sent.iter().zip(&pages) {
         assert!(name.ends_with(".jxl"), "{name} for {file} keeps its type");
         assert!(bytes == original, "{name} is {file} byte for byte");
+    }
+}
+
+/// RAR members, scanned in a build with a RAR backend, download as zip members
+/// do, and a member passed through is typed and named by what the scan sniffed
+/// it as, not by its name (plan D6), over
+/// [`crate::test_support::router_over_scanned_rar_archives`].
+mod rar_members {
+    use axum::http::{StatusCode, header};
+
+    use crate::download::CBZ_TYPE;
+    use crate::test_support::{self, Fixture, edition_holding};
+
+    const RAR_TYPE: &str = "application/vnd.comicbook-rar";
+
+    fn reads_rar() -> bool {
+        taiyaku_read::Format::Rar.is_readable()
+    }
+
+    /// The sha256 of each page of the RAR fixture `file`, in reading order.
+    fn pages_of(file: &str) -> Vec<String> {
+        let fixture = taiyaku_read::test_support::rar_fixtures()
+            .into_iter()
+            .find(|fixture| fixture.file == file)
+            .unwrap_or_else(|| panic!("no RAR fixture {file}"));
+        fixture.pages.into_iter().map(|(_, sha)| sha).collect()
+    }
+
+    /// `uri`'s status, `Content-Type` and `Content-Disposition`, and its body.
+    async fn sent(router: &axum::Router, uri: &str) -> (StatusCode, String, String, Vec<u8>) {
+        let response = test_support::get(router, uri).await;
+        let header_of = |name: header::HeaderName| {
+            response
+                .headers()
+                .get(name)
+                .map(|value| value.to_str().unwrap().to_string())
+                .unwrap_or_default()
+        };
+        let (content_type, disposition) = (
+            header_of(header::CONTENT_TYPE),
+            header_of(header::CONTENT_DISPOSITION),
+        );
+        let status = response.status();
+        (
+            status,
+            content_type,
+            disposition,
+            super::all_of(response).await,
+        )
+    }
+
+    /// An edition of two RAR members, a RAR4 and a RAR5, downloads as one cbz
+    /// holding every page of the first and then of the second, each the bytes
+    /// its manifest names, under a local header whose CRC32 those bytes meet.
+    #[tokio::test]
+    async fn an_edition_of_two_rar_members_downloads_as_a_cbz_of_their_pages() {
+        let (router, state, _fixture) = test_support::router_over_scanned_rar_archives();
+        let held = edition_holding(&state, "Parts v01 part1.cbr");
+        if !reads_rar() {
+            assert_eq!(
+                held, None,
+                "a build without a RAR backend makes no work of a RAR"
+            );
+            return;
+        }
+        let (slug, key) = held.expect("the parts are an edition");
+        assert_eq!(
+            edition_holding(&state, "Parts v01 part2.cbr"),
+            Some((slug.clone(), key.clone())),
+            "the fixture: both parts are members of one edition"
+        );
+        let want: Vec<String> = ["rar4.rar", "rar5-compressed.rar"]
+            .into_iter()
+            .flat_map(pages_of)
+            .collect();
+
+        let (status, content_type, _, bytes) =
+            sent(&router, &format!("/api/works/{slug}/{key}/download")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type, CBZ_TYPE);
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("a cbz");
+        let mut pages = Vec::new();
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).expect("an entry");
+            let name = entry.name().expect("a name").into_owned();
+            if name == "ComicInfo.xml" {
+                continue;
+            }
+            let declared = entry.crc32();
+            let mut read = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut read).expect("reads the entry");
+            assert_eq!(declared, crc32fast::hash(&read), "{name}'s CRC32");
+            pages.push(taiyaku_read::test_support::sha256_hex(&read));
+        }
+        assert_eq!(pages, want, "part1's pages, then part2's");
+    }
+
+    /// The type and extension each of the edition download, the member
+    /// download and the feed's acquisition link give the one member `file`,
+    /// which the route sends byte for byte.
+    async fn passed_through(
+        router: &axum::Router,
+        state: &crate::ServeState,
+        fixture: &Fixture,
+        file: &str,
+    ) -> Vec<(&'static str, String, String)> {
+        let (slug, key) =
+            edition_holding(state, file).unwrap_or_else(|| panic!("{file} is no member"));
+        let series = file.split(' ').next().expect("a series");
+        let on_disk = std::fs::read(fixture.join("tree").join(series).join(file)).expect("reads");
+        let mut typed = Vec::new();
+        for (what, uri) in [
+            ("edition", format!("/api/works/{slug}/{key}/download")),
+            (
+                "member",
+                format!("/api/works/{slug}/{key}/members/0/download"),
+            ),
+        ] {
+            let (status, content_type, disposition, body) = sent(router, &uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            assert!(body == on_disk, "{uri} sends {file} byte for byte");
+            let named = disposition
+                .split("filename=\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .unwrap_or_else(|| panic!("{uri}: no filename in {disposition}"));
+            let extension = named
+                .rsplit_once('.')
+                .map_or("", |(_, extension)| extension);
+            typed.push((what, content_type, extension.to_string()));
+        }
+        let (status, _, _, feed) = sent(router, &format!("/opds/v1.2/works/{slug}")).await;
+        assert_eq!(status, StatusCode::OK);
+        let feed = String::from_utf8_lossy(&feed);
+        let declared = feed
+            .split("<entry>")
+            .find(|entry| entry.contains(&format!(":{key}</id>")))
+            .and_then(|entry| {
+                entry
+                    .split(r#"rel="http://opds-spec.org/acquisition" type=""#)
+                    .nth(1)
+            })
+            .and_then(|link| link.split('"').next())
+            .unwrap_or_else(|| panic!("no acquisition link of {file}'s edition: {feed}"));
+        typed.push(("feed", declared.to_string(), String::new()));
+        typed
+    }
+
+    /// Plan D6: a member passed through is sent with the type and extension of
+    /// what the scan sniffed it as, whatever it is named: a RAR named `.cbz`
+    /// as a RAR named `.cbr`, and a zip named `.cbr` as a zip named `.cbz`,
+    /// by the edition download, the member download and the feed alike. A
+    /// member download keeps the rest of its file's name.
+    #[tokio::test]
+    async fn a_passthrough_is_typed_and_named_by_its_bytes_not_its_name() {
+        let (router, state, fixture) = test_support::router_over_scanned_rar_archives();
+        let mut cases = vec![("Zip v01.cbr", CBZ_TYPE, "cbz")];
+        if reads_rar() {
+            cases.push(("Rar v01.cbz", RAR_TYPE, "cbr"));
+        } else {
+            let held = edition_holding(&state, "Rar v01.cbz");
+            assert_eq!(
+                held, None,
+                "a build without a RAR backend makes no work of a RAR"
+            );
+        }
+        for (file, content_type, extension) in cases {
+            let typed = passed_through(&router, &state, &fixture, file).await;
+            let want = [
+                ("edition", content_type.to_string(), extension.to_string()),
+                ("member", content_type.to_string(), extension.to_string()),
+                ("feed", content_type.to_string(), String::new()),
+            ];
+            assert_eq!(typed, want, "{file}");
+            let (slug, key) = edition_holding(&state, file).expect("a member");
+            let uri = format!("/api/works/{slug}/{key}/members/0/download");
+            let (_, _, disposition, _) = sent(&router, &uri).await;
+            let stem = file.rsplit_once('.').expect("an extension").0;
+            assert!(
+                disposition.contains(&format!("filename=\"{stem}.{extension}\"")),
+                "{uri}: {disposition}"
+            );
+        }
+    }
+
+    /// Plan D6: the type is the token the scan stored, so a feed opens no file a
+    /// scan has sniffed. A token planted against the bytes and the name both is
+    /// what every route sends.
+    #[tokio::test]
+    async fn a_passthrough_is_typed_by_the_token_the_scan_stored() {
+        let (router, state, fixture) = test_support::router_over_scanned_rar_archives();
+        let planted = state.library.conn().execute(
+            "UPDATE scan_entry SET format = 'pdf' WHERE rel_path = 'Zip/Zip v01.cbr'",
+            [],
+        );
+        assert_eq!(planted, Ok(1), "the zip's row");
+        let typed = passed_through(&router, &state, &fixture, "Zip v01.cbr").await;
+        let pdf = "application/pdf".to_string();
+        let want = [
+            ("edition", pdf.clone(), "pdf".to_string()),
+            ("member", pdf.clone(), "pdf".to_string()),
+            ("feed", pdf, String::new()),
+        ];
+        assert_eq!(typed, want);
+    }
+
+    /// A row whose size or mtime is not the file's describes other bytes than
+    /// those on disk, as after a RAR is converted to a zip in place under its
+    /// own name, so the bytes decide until a scan sees the file again.
+    #[tokio::test]
+    async fn a_passthrough_whose_row_is_not_of_its_file_is_typed_by_its_bytes() {
+        for column in ["size", "mtime"] {
+            let (router, state, fixture) = test_support::router_over_scanned_rar_archives();
+            let planted = state.library.conn().execute(
+                &format!(
+                    "UPDATE scan_entry SET format = 'pdf', {column} = {column} + 1
+                      WHERE rel_path = 'Zip/Zip v01.cbr'"
+                ),
+                [],
+            );
+            assert_eq!(planted, Ok(1), "the zip's row");
+            let typed = passed_through(&router, &state, &fixture, "Zip v01.cbr").await;
+            let want = [
+                ("edition", CBZ_TYPE.to_string(), "cbz".to_string()),
+                ("member", CBZ_TYPE.to_string(), "cbz".to_string()),
+                ("feed", CBZ_TYPE.to_string(), String::new()),
+            ];
+            assert_eq!(typed, want, "the row's {column} is not the file's");
+        }
+    }
+
+    /// The path of the one library directory the fixture scanned.
+    fn scanned_root(state: &crate::ServeState) -> String {
+        let conn = state.library.conn();
+        let roots = conn.query_row("SELECT count(*) FROM root", [], |row| row.get(0));
+        assert_eq!(roots, Ok(1_i64), "the fixture scans one directory");
+        conn.query_row("SELECT path FROM root", [], |row| row.get(0))
+            .expect("the one directory")
+    }
+
+    /// Adds a library directory at `path` whose scan saw `rel_path` under it as
+    /// a PDF, last at `seen`, at the size and mtime the zip's own row holds, so
+    /// that the row's directory alone tells it from a row of the zip.
+    fn plant_pdf_row(state: &crate::ServeState, path: &str, rel_path: &str, seen: &str) {
+        let conn = state.library.conn();
+        let (size, mtime): (i64, i64) = conn
+            .query_row(
+                "SELECT size, mtime FROM scan_entry WHERE rel_path = 'Zip/Zip v01.cbr'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("the zip's row");
+        conn.execute("INSERT INTO root (path) VALUES (?1)", [path])
+            .expect("adds the directory");
+        let planted = conn.execute(
+            "INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime, last_seen)
+             VALUES (last_insert_rowid(), ?1, 'file', 'pdf', ?2, ?3, ?4)",
+            rusqlite::params![rel_path, size, mtime, seen],
+        );
+        assert_eq!(planted, Ok(1), "{path}: {rel_path}");
+    }
+
+    /// Plan D6: a row types only a file under its own library directory. A
+    /// directory whose path is as long as the scanned one's, with a row for the
+    /// same relative path seen later, is passed over.
+    #[tokio::test]
+    async fn a_passthrough_is_typed_by_no_row_of_another_directory() {
+        let (router, state, fixture) = test_support::router_over_scanned_rar_archives();
+        let root = scanned_root(&state);
+        let beside = root.strip_suffix("tree").map_or_else(
+            || panic!("the fixture scans `tree`: {root}"),
+            |stem| format!("{stem}trex"),
+        );
+        plant_pdf_row(&state, &beside, "Zip/Zip v01.cbr", "9999-12-31 23:59:59");
+        let typed = passed_through(&router, &state, &fixture, "Zip v01.cbr").await;
+        let want = [
+            ("edition", CBZ_TYPE.to_string(), "cbz".to_string()),
+            ("member", CBZ_TYPE.to_string(), "cbz".to_string()),
+            ("feed", CBZ_TYPE.to_string(), String::new()),
+        ];
+        assert_eq!(typed, want);
+    }
+
+    /// Plan D6: where nested library directories both hold the file, the row
+    /// seen last types it, whichever directory it is under.
+    #[tokio::test]
+    async fn a_passthrough_under_nested_directories_is_typed_by_the_row_seen_last() {
+        let (earlier, later) = ("1000-01-01 00:00:00", "9999-12-31 23:59:59");
+        for (outer, inner, content_type, extension) in [
+            (earlier, later, "application/pdf", "pdf"),
+            (later, earlier, CBZ_TYPE, "cbz"),
+        ] {
+            let (router, state, fixture) = test_support::router_over_scanned_rar_archives();
+            let seen = state.library.conn().execute(
+                "UPDATE scan_entry SET last_seen = ?1 WHERE rel_path = 'Zip/Zip v01.cbr'",
+                [outer],
+            );
+            assert_eq!(seen, Ok(1), "the zip's row");
+            let root = scanned_root(&state);
+            plant_pdf_row(&state, &format!("{root}/Zip"), "Zip v01.cbr", inner);
+            let typed = passed_through(&router, &state, &fixture, "Zip v01.cbr").await;
+            let want = [
+                ("edition", content_type.to_string(), extension.to_string()),
+                ("member", content_type.to_string(), extension.to_string()),
+                ("feed", content_type.to_string(), String::new()),
+            ];
+            assert_eq!(typed, want, "the outer row seen {outer}, the inner {inner}");
+        }
+    }
+
+    /// Plan D6: a member no scan holds, as in a work imported from its document,
+    /// is sniffed. A RAR named `.cbz` is sent as a RAR named `.cbr` in any
+    /// build, since passing it through reads none of it.
+    #[tokio::test]
+    async fn a_member_no_scan_holds_is_typed_by_a_sniff() {
+        let tmp = Fixture::new("download-unscanned-rar");
+        let rar = taiyaku_read::test_support::rar_fixtures()
+            .into_iter()
+            .find(|fixture| fixture.file == "rar5-compressed.rar")
+            .expect("the fixture");
+        std::fs::copy(&rar.path, tmp.join("volume.cbz")).expect("copies the fixture");
+        let on_disk = std::fs::read(&rar.path).expect("reads the fixture");
+        let state = std::sync::Arc::new(crate::ServeState {
+            library: test_support::library(),
+            works: crate::Works::fixed(vec![super::one_member_work(&tmp, "volume.cbz", false)]),
+            source: std::sync::Arc::new(crate::LocalLibrary),
+            cache_dir: tmp.join("covers"),
+            dictionaries: None,
+            log: None,
+            auth: crate::session::AuthConfig::default(),
+            scans: std::sync::Arc::default(),
+            jobs_ended: std::sync::Arc::default(),
+            library_job: std::sync::Arc::default(),
+            fingerprints: std::sync::Arc::default(),
+            dirs: Vec::new(),
+        });
+        let router =
+            test_support::authenticating(crate::build_router(state.clone()), &state.library);
+
+        for (uri, named) in [
+            ("/api/works/t/raw/download", "T (Raw).cbr"),
+            ("/api/works/t/raw/members/0/download", "volume.cbr"),
+        ] {
+            let (status, content_type, disposition, body) = sent(&router, uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            assert_eq!(content_type, RAR_TYPE, "{uri}");
+            assert!(
+                disposition.contains(&format!("filename=\"{named}\"")),
+                "{uri}: {disposition}"
+            );
+            assert!(body == on_disk, "{uri} sends the file byte for byte");
+        }
+        let (_, _, _, feed) = sent(&router, "/opds/v1.2/works/t").await;
+        let feed = String::from_utf8_lossy(&feed);
+        assert!(
+            feed.contains(&format!(
+                r#"rel="http://opds-spec.org/acquisition" type="{RAR_TYPE}""#
+            )),
+            "{feed}"
+        );
+    }
+
+    /// O295: a comic archive named `.epub` and a reflowable EPUB named `.zip`
+    /// are each sent as what the scan read, by the edition download, the
+    /// member download and the feed alike, a member under its own name with
+    /// that format's extension, over [`test_support::misnamed`].
+    #[tokio::test]
+    async fn a_misnamed_passthrough_is_typed_and_named_by_what_the_scan_read() {
+        let fixture = Fixture::new("download-misnamed");
+        let (state, _, _) = test_support::misnamed(&fixture);
+        let router =
+            test_support::authenticating(crate::build_router(state.clone()), &state.library);
+        let epub = "application/epub+zip";
+        for (file, content_type, extension, named) in [
+            ("Comic v01.epub", CBZ_TYPE, "cbz", "Comic v01.cbz"),
+            ("Story v01.zip", epub, "epub", "Story v01.epub"),
+        ] {
+            let typed = passed_through(&router, &state, &fixture, file).await;
+            let want = [
+                ("edition", content_type.to_string(), extension.to_string()),
+                ("member", content_type.to_string(), extension.to_string()),
+                ("feed", content_type.to_string(), String::new()),
+            ];
+            assert_eq!(typed, want, "{file}");
+            let (slug, key) = edition_holding(&state, file).expect("a member");
+            let uri = format!("/api/works/{slug}/{key}/members/0/download");
+            let (_, _, disposition, _) = sent(&router, &uri).await;
+            assert!(
+                disposition.contains(&format!("filename=\"{named}\"")),
+                "{uri}: {disposition}"
+            );
+        }
     }
 }

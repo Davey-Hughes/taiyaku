@@ -75,9 +75,9 @@ const SCANNER_CHAPTER_SOURCE: &str = "filename";
 /// cause — [`DeriveReport::unreadable`]. O90.
 ///
 /// **A path where a person has to find the file, a count where they do not.**
-/// A refused format is counted per token, because RAR archives are fixed by
-/// one loop and their names add nothing to it, and `by_format` is bounded by
-/// the formats there are rather than by the size of the library. A container
+/// A refused format is counted per token, because one loop fixes the archives
+/// of one format and their names add nothing to it, and `by_format` is bounded
+/// by the formats there are rather than by the size of the library. A container
 /// holding no pages of its own is counted, because its usual instance is a
 /// volume directory holding archives, which is a layout and not a fault. The
 /// other two are single files that something is wrong with, so they are named,
@@ -100,8 +100,9 @@ pub struct Unreadable {
     pub by_format: BTreeMap<String, usize>,
     /// Containers whose pages the walk could not count, so `pages` is NULL:
     /// an archive that would not open, **or one that opened and held nothing
-    /// `taiyaku-read` reads as a page**. The walk keeps no record of which,
-    /// because `pages_of` swallows `member_pages`' refusal whole.
+    /// `taiyaku-read` reads as a page**. The store keeps no record of which:
+    /// `pages_of` hands `member_pages`' refusal to the scan's log, not to the
+    /// row (O131).
     ///
     /// The second is not hypothetical (`docs/notes.md`, "O90").
     pub uncounted: Vec<String>,

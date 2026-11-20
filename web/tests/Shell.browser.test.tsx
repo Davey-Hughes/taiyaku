@@ -2014,6 +2014,7 @@ describe('the licence page’s contents, under the phone bar', () => {
       ['Shippori Mincho B1', '#shippori-mincho-b1', true, true, true],
       ['Zen Kaku Gothic New', '#zen-kaku-gothic-new', true, true, true],
       ['taiyaku marks', '#taiyaku-marks', true, true, true],
+      ['libarchive', '#libarchive', true, true, true],
     ])
   })
 

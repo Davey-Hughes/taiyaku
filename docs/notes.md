@@ -30878,3 +30878,240 @@ turns on only `background_threads` and the default
 `background_threads_runtime_support`, so C code, the bundled SQLite and the
 image's libarchive among it, still calls glibc's `malloc`. Not measured on
 the NAS.
+
+## RAR PR 2: libraries read RAR (2026-11-19)
+
+A build with the `rar-libarchive` feature, the container image among them,
+counts, derives, fingerprints, serves and downloads RAR members as it does
+zips, and refuses at the count, naming the file and the cause, any RAR of a
+kind libarchive could not read whole. The plan is
+`docs/superpowers/plans/2026-11-19-rar-libarchive-pr2.md`, and the design's
+PR 2 notes (`docs/superpowers/specs/2026-11-17-rar-libarchive-design.md`,
+"Decisions") say where the work departed from the design. `docs/status.md`
+records it as O391, opened and closed here; it closes O295, O381, O384 and
+O385, and narrows O131, O351 and O386. The evidence named below is under
+`.superpowers/sdd/rar-pr2-evidence/` in the main checkout, which is not
+committed.
+
+### The owner's rulings
+
+Given on 2026-11-19, before the plan was written:
+
+- **P2-R1 (O384):** `member_page` lists a RAR and reads its page through one
+  open file.
+- **P2-R2 (O385):** a RAR holding two entries of one name is refused at
+  listing.
+- **P2-R3 (O386):** an archive with an entry compressed by RAR 2.0 is refused
+  at the count, from the unpack version and method its headers declare.
+  Nothing is decoded at scan time.
+- **P2-R4 (O381):** the proper fix, through taiyaku's own walk of the block
+  headers. The owner's compress-tools fork cannot supply it: libarchive gives
+  no target for a `rar -oi` file reference, and marks a RAR5 entry encrypted
+  only from 3.7.7. So an empty file reads as empty, a reference or hard link
+  reads its target, and an encrypted entry is refused.
+- **P2-R5:** the reader signature names the libarchive version that
+  `pkg-config --modversion libarchive` gives `taiyaku-read`'s build script,
+  not the one loaded at run time. The fork is not changed.
+- **P2-R6:** a volume of a multi-volume set, RAR4 or RAR5, is refused at the
+  count.
+- Standing: encrypted archives are out of scope, nothing is pushed to the
+  fork, an entry that declares only a BLAKE2 hash stays unchecked (O383),
+  O386 stays open, and taiyaku reads RAR for its users while the owner's own
+  library aims to hold none.
+
+### The decisions, as built
+
+- **D1.** `Libarchive::entries` walks the block headers
+  (`rar::libarchive::headers`) over the same open file libarchive lists from,
+  so a listing refuses what every read of the archive would.
+- **D2.** The listing refuses, each as
+  `{path}: not a readable RAR archive: {cause}`, a volume of a set; a RAR4
+  file whose bytes are compressed at any unpack version but 29, since
+  libarchive's RAR4 reader decodes RAR 2.9's compression alone, while a
+  stored file is read whatever version wrote it; an encrypted entry; a
+  reference or hard link whose target is not an earlier entry of that name,
+  or whose size is not its target's (added at review); two readable entries
+  of one name, a rule in `pages.rs` that holds for every backend; and, added
+  at the whole-branch review, a RAR5 entry libarchive lists as a regular file
+  that no read gives whole: a junction or a redirection of a type libarchive
+  does not read, which it gives no bytes for, and a file whose header marks
+  it a directory. libarchive 3.7.4 lists such a file and the walk refuses it,
+  while 3.8.11 refuses one that holds data as it lists it, with its own
+  cause, "directory entries cannot have any data"
+  (`pages::rar_tests::a_file_no_read_gives_whole_refuses_the_archive`).
+- **D3.** An empty file reads as no bytes without asking libarchive, which
+  fails on one in a solid RAR5. A reference or hard link reads its target's
+  bytes.
+- **D4.** `member_page` reads a RAR through `rar::Backend::read_listed`: one
+  open, listed, the page picked from the listing, and read by its position.
+- **D5.** The signature is `rar:libarchive-<version>:<the page extensions>`.
+  The store the real-material check scanned holds
+  `rar:libarchive-3.8.11:jpg,jpeg,png,webp,gif,bmp,avif,tif,tiff,jxl`
+  (`real/store-1-scan_entry.tsv`).
+- **D6.** A download passed through takes its type and its extension from the
+  format the scan stored for the file (`scan_entry.format`), not from its
+  name, and from a sniff of the file where the store has no format for it as
+  it is (`download::sent_as`). Since the whole-branch review the stored
+  format counts only where the file still has the size and mtime that scan
+  saw, so a RAR converted to a zip in place is sent as a zip before the next
+  scan. Its own extension is kept where it names that format, bytes no
+  signature matches are typed by their name, and a 7-Zip or tar archive is
+  sent as `application/octet-stream` under its own name. A member download
+  keeps the member's file name, its extension replaced by the one sent where
+  it names a format (`.cb7`, `.7z`, `.cbt` and `.tar` among them since the
+  review), so a zip named `X.cb7` is sent as `X.cbz`. This closes O295, a
+  download typed by its name, which the plan did not name and the
+  whole-branch review found fixed
+  (`download::tests::rar_members::a_misnamed_passthrough_is_typed_and_named_by_what_the_scan_read`).
+- **D7.** A generated download takes a RAR page's CRC32 and size from its
+  header where the header declares a CRC32.
+- **D8.** The fingerprint pass's renumber rule binds the signature of every
+  paged format (`fingerprints::paged_signatures`), so a RAR's row settles
+  after one read, as a zip's does.
+- **D9.** A count the reader refuses is written to stderr with its path,
+  `taiyaku: the scan left a file uncounted: …`, for a zip as for a RAR in a
+  build with the feature; a build without it hands the reader no RAR to count
+  (`scan::pages_of`). It is a line on stderr, not the levelled `warn` the plan
+  named. The store still keeps no cause, so O131 narrows and stays open.
+- **D10.** The rollback was checked on a copy of the store a feature scan
+  built from a scratch library of real archives, below; the NAS's live store
+  was not used.
+
+Decided while it was built: the licence page shows libarchive's `COPYING`
+and no other notice of its files; `debian:trixie-slim`, the image's runtime
+base, keeps every package's copyright file and no other doc file, and
+`libarchive13t64` installed into it keeps its copyright file
+(`licence-copyright-check.log`).
+
+### What a reader of the code might not expect
+
+- **D6 changes builds without the feature too.** `download::sent_as` asks no
+  build question, so in every build a zip named `.cbr` downloads as `.cbz`
+  with the zip type, and a RAR member already in the store, or in a work
+  imported from its document, is still passed through as a RAR named `.cbr`,
+  since passing it through reads none of it
+  (`download::tests::rar_members::a_member_no_scan_holds_is_typed_by_a_sniff`
+  runs in both builds).
+- **D9's line is expected in test output.** It goes to stderr, so the output
+  of `taiyaku-library`'s and `taiyaku-serve`'s tests carries such lines for
+  the archives their fixtures refuse; they are not failures.
+- **A rollback keeps counted RAR rows, not refused ones.** A scan by a build
+  without the feature keeps a row a feature build counted, with its count,
+  signature and digest, and sniffs the file again at each scan without
+  counting it. A row a feature build refused at the count loses its
+  signature, so the next feature scan tries the count again and writes its
+  cause again
+  (`scan::tests::a_rar_counted_by_a_build_that_reads_rar_keeps_its_row_through_any_build`,
+  `scan::tests::a_rar_refused_at_the_count_is_counted_again_by_the_build_after_another`).
+- **A server built without the feature drops every RAR fingerprint row.**
+  Its pass keeps only the rows of what its derive claims
+  (`fingerprints::drop_unclaimed`), and that derive claims no RAR, so after a
+  rollback the next feature server reads each RAR once more. A scan by such
+  a build keeps the rows. Found on real material (F1 in `real/report.md`) and
+  accepted: scan rows, works and saved places are untouched.
+- **The signature names the libarchive version `pkg-config` gave the build.**
+  A store scanned by a development build (3.8.11 here) is counted again, once
+  per RAR, by the image (3.7.4). The version is the one `pkg-config` gave
+  when the build script last ran.
+- **Serving one page of a solid RAR5 decodes the whole archive**, as it did
+  before this PR: `member_page` has listed before it reads since RAR PR 1,
+  and listing one decodes every entry (measured on 3.8.11, below). What this
+  PR adds is a library that counts such an archive and serves its pages. O380
+  holds the cost.
+- **A target's bytes are kept for its references.** One pass of
+  `Libarchive::visit` keeps a target's bytes from its own position to its
+  last reference's, so a crafted archive can hold several pages in memory
+  during it.
+- **A refused page carries main's sidecar hint.** `source::LocalLibrary`
+  appends "the sidecar records N pages for this member; it may have been
+  replaced" to every `member_page` error, so the log line for a RAR page
+  refused by a build without the feature carries it too (F2 in
+  `real/report.md`). It is main's wording, reaches the log only, and is left
+  for the owner.
+
+### The owner's RARs
+
+Checked on the branch as it stood after its licence-page commit, in
+`real/report.md`. **These 21 RARs are not RAR PR 1's 21.** That census
+(2026-11-17) covered every archive under `Manga/` and `Comics/`; since then
+the owner converted Fantastic Four v1 360 to a zip, and the check took in
+Pokemon Ep.14, a RAR4 under `Magazines/`, outside the census's scope. So
+the 21 here are the census's other 20 and Pokemon Ep.14
+(`real/census-pr2.txt`), while the 21 that the notes above and O380, O383
+and O386 name are the census's. The scratch library held copies, made with
+`cp` from the NAS, which was only read, of these 21 and of Fantastic Four
+v1 360's RAR 2.0 original, kept since the conversion; every copy's sha256
+was unchanged at the end (`real/copy-sha256.log`,
+`real/library-sha256-at-end.txt`).
+
+- **Read whole.** A probe built from the branch read every page of the 21,
+  3,054 pages, with no refusal, on libarchive 3.8.11 and on 3.7.4 in
+  `rust:1-trixie`, and the two runs agreed archive by archive, page counts
+  and first and last page names included. The RAR 2.0 original was refused
+  at listing with D2's cause on both (`real/t8real-3.8.11.log`,
+  `real/t8real-3.7.4.log`, `real/pagenames.tsv`).
+- **Counted.** A feature build's scan counted each of the 21 at the page count
+  `bsdtar -tf` lists after taiyaku's filter, and left the original uncounted,
+  writing its cause (`real/counts.tsv`, `real/scan-1-feature.log`).
+- **Served.** A test server answered the first and last page of each with
+  the bytes `unrar p` gives (`real/pages-first-last.tsv`), a cover, resized
+  pages, passthrough downloads of RARs named `.cbz` and `.cbr` with the RAR
+  type and a `.cbr` name, and a generated download of an edition of four RAR
+  members whose pages match `unrar x` of each member and the served pages,
+  in order.
+- **Fingerprinted once.** The pass read each counted RAR once; a rescan and a
+  restart started no further pass (D8; `real/fp-1-after-first-pass.tsv` to
+  `real/fp-3-after-restart.tsv`).
+- **Rolled back.** On a copy of that store, a scan and a server built without
+  the feature kept every work, member, counted row and saved place, and
+  refused each work's first page and thumbnail, the log saying the build
+  reads no RAR; a feature scan and server afterwards gave back the same rows,
+  works and first and last pages as before (`real/rollback-*`). The surprise
+  was the fingerprint rows (F1, above).
+
+The image, built from the branch before the sweep's tests were added, runs
+Debian 13.7 with `libarchive13t64` 3.7.4-4+deb13u1, links
+`libarchive.so.13.7.4`, starts healthy and answers `/`
+(`T8b-image-checks.log`, `T8b-image-run.log`).
+
+### The mutation sweep
+
+Two sweeps over the branch's diff before the whole-branch review's fixes;
+`docs/mutants-baseline.md`'s run log has their figures. Five survivors of the
+first were real, and each is now killed by a test watched failing with the
+mutant put back by hand; the other two are equivalent `|`-as-`^` entries this
+branch moved, re-keyed in the baseline. Both sweeps timed out on
+`scan_root_inner -> Ok(None)`, a scan with no outcome that a test waits on.
+Every unviable mutant replaces a whole body with a value that does not compile
+there, and the seven functions left with no viable mutant were each put wrong
+by hand and failed tests (`T8b-hand-*.log`).
+
+### What describing a solid RAR costs
+
+`member_page_entries` takes a RAR's sizes and CRC32s from its entry headers
+where the header declares a CRC32, but the listing it reads them from walks
+libarchive past every entry, and in a solid RAR5 libarchive decodes each entry
+it passes.
+
+Measured on libarchive 3.8.11 with a throwaway test in `taiyaku-read`:
+`rar5-solid.rar` with the data of `p2.png`, or of its last page `p4.png`, XORed
+with 0x55 failed `member_page_entries` and `member_page_names` alike with
+`Block checksum error`: the listing read into the damaged data.
+`rar5-compressed.rar`, which is not solid, damaged the same way in `p1.png` or
+`p10.png`, still listed its three pages through both. So the docs of
+`PageEntry`, `rar_page_entries`, `member_page_names` and the describe step in
+`download::prepare` say a solid RAR's listing decodes it whole. Reading one
+entry by name (`Backend::read`) stops at it, as
+`reading_a_solid_entry_decodes_nothing_after_it` pins, but `member_page` lists
+through `read_listed` before it reads, so serving one page of a solid RAR5 still
+decodes the whole archive.
+
+In a library that cost multiplies; this is read from the code, not measured.
+The fingerprint pass lists a counted RAR twice (`member_page_names`,
+`member_unread_entries`), reads a sample of its pages
+(`fingerprint::border_sample`) through `member_page`, which lists before each
+read, and lists it once more to walk it (`fingerprint_pass/read.rs`). Where a
+solid RAR5's archive order is not its reading order, that walk and a generated
+download's both read each page by name (`pages::rar_for_each_page`), and each
+read decodes every entry before its page, so their cost grows with the square
+of the page count.

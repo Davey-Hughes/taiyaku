@@ -45,8 +45,11 @@ it now: the owner chose to.
 - Encrypted RAR entries: they are skipped, as zip skips them today.
   *Ruled otherwise on 2026-11-17: encrypted archives are not a concern for
   this project, nothing detects an encrypted entry, and one is listed as a
-  page (O381).*
-- Multi-volume sets (`.part1.rar` and its siblings).
+  page (O381).* *PR 2, on the owner's ruling P2-R4 of 2026-11-19: taiyaku's
+  own walk of the block headers finds an encrypted entry, and the archive
+  is refused at the count (O381, closed).*
+- Multi-volume sets (`.part1.rar` and its siblings). *PR 2 refuses a volume
+  of a set, RAR4 or RAR5, at the count (ruling P2-R6).*
 - A cache for solid archives (see Decisions).
 - Making a plain `cargo build` need libarchive. (CI and the local gate do
   need it: see CI and the local gate.)
@@ -173,6 +176,13 @@ capacity clamp. It also computes each RAR page's crc32 from the bytes rather
 than trusting a backend to report it, so planning a download of a RAR
 edition decodes it once.
 
+*Changed in PR 2: the walk of the block headers runs at listing too, so a
+listing carries each entry's CRC32 where the header declares a CRC32 and, for
+a reference or hard link, its target. A download is planned from those (the
+notes' D7). A fourth call, `read_listed`, lists and reads through one open
+(O384). A fifth, `signature`, gives the backend's part of the reader
+signature: its name and the libarchive version `pkg-config` gave the build.*
+
 *Added on 2026-11-18: libarchive does not compare a stored entry's data with
 its header's checksum, so the backend does. Every read walks the archive's
 block headers and holds each entry to the CRC32 its header declares. A RAR5
@@ -204,6 +214,11 @@ signature, with libarchive's version read at run time where the binding
 exposes it (a change re-counts only RAR entries, so a libarchive update
 costs a header walk of each RAR), and the crate's version otherwise.
 
+*PR 2, on the owner's ruling P2-R5 of 2026-11-19: the signature names the
+libarchive version `pkg-config` gives `taiyaku-read`'s build script, not one
+read at run time, and the fork is unchanged. It reads
+`rar:libarchive-<version>:<the page extensions>`.*
+
 Content fingerprints (branch `content-fingerprints`, its Design 9) asks
 `taiyaku-read` which formats it opens, so RAR files become due for
 fingerprinting the day this switches on, with nothing more from this work.
@@ -226,6 +241,12 @@ fingerprinting the day this switches on, with nothing more from this work.
   deleted and saved places are kept. Scanning with the feature again makes
   them readable. The builder proves this on a copy of a real store rather
   than assuming it.
+  *Proved in PR 2 on a copy of a store built from the owner's RARs: works,
+  members, counted rows and saved places held. Two costs were found: a row
+  refused at the count loses its signature to a scan without the feature,
+  so the next scan with it counts it again; and a server without the
+  feature drops every RAR fingerprint row, so the next server with it reads
+  each RAR once more.*
 
 ### CI and the local gate
 
@@ -282,9 +303,28 @@ part of builds with RAR support.
   pages served, since neither the import nor the server checks a member's
   format. The derive and the scan still refuse RAR. PR 1 adds no refusal for
   the sidecar, since PR 2 makes serving it the intended behaviour.*
+  *PR 2 did this on 2026-11-19, and departed from the design. The fixes of
+  O381 come from taiyaku's own walk of the block headers, run at listing as
+  well as at reads, and not from the owner's fork, which cannot supply them:
+  libarchive gives no target for a `rar -oi` file reference, and marks a RAR5
+  entry encrypted only from 3.7.7 (ruling P2-R4). A reference or hard link
+  whose size is not its target's, and a RAR5 entry listed as a file that no
+  read gives whole (a junction, a redirection of a type libarchive does not
+  read, or a file whose header marks it a directory, the last of which
+  libarchive 3.8.11 refuses itself, with its own cause, where it holds data),
+  are refused at the count (`RESIZED`, `UNREAD_REDIRECTION` and
+  `MARKED_DIRECTORY` in `rar::libarchive::headers`). And a download passed
+  through takes its type and extension from the format the scan stored, where
+  the file is as that scan saw it, and otherwise from a sniff of the file,
+  not from the file's name, in every build and not only with the feature (the
+  plan's D6).
+  `docs/notes.md`, "RAR PR 2: libraries read RAR (2026-11-19)", has the
+  rest.*
 - **O-numbers.** RAR reading gets a new row, opened and closed by PR 2; the
   solid-archive cache gets its own open row. Numbers come from the next free
   range when the plan is written, after the claims of the branches in flight.
+  *RAR reading is O391, opened and closed by PR 2; the solid-archive cache
+  is O380, still open.*
 
 ## Checks on real material (PR 2)
 
@@ -311,6 +351,15 @@ Fantastic Four v1 360 is refused on 3.6.2, 3.7.4 and 3.8.11 alike, since
 no libarchive release decodes RAR 2.0. On the owner's word it was converted
 to a stored zip on 2026-11-19, so the checks above run over the other 20 of
 the 21; O386 stays open for a user's RAR 2.0 archive.*
+
+*Run in PR 2 over copies of 21 of the owner's RARs, the census's other 20
+and Pokemon Ep.14, a RAR4 under `Magazines/` outside the census's scope,
+with Fantastic Four v1 360's RAR 2.0 original beside them: each count
+equalled `bsdtar`'s; the first and last page of each, a cover, resized pages
+and a generated download of an edition of four RAR members came back right;
+and the rollback kept works and saved places. The original was refused at
+the count, its cause written. `docs/notes.md`, "RAR PR 2: libraries read RAR
+(2026-11-19)", "The owner's RARs".*
 
 ## Left to the builder
 

@@ -1681,6 +1681,34 @@ fn a_reflowable_epub_becomes_a_book_counted_in_blocks() {
     assert_eq!(title, "The Story", "named by the book, not by its file");
 }
 
+/// A fixed-layout EPUB is recorded with its format and with neither a count
+/// nor a title, though it holds text and a `dc:title`: only a reflowable one
+/// is read as a book.
+#[test]
+fn a_fixed_layout_epub_is_recorded_with_no_count_and_no_title() {
+    let top = crate::tests::tempdir("scan-epub-fixed");
+    taiyaku_read::test_support::epub_with(
+        top.path(),
+        "Story v01.epub",
+        r#"<dc:title>The Story</dc:title><meta property="rendition:layout">pre-paginated</meta>"#,
+        &["One.", "Two."],
+    );
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, top.path()).expect("add");
+
+    scan_root(&conn, &root).expect("scan");
+
+    let entry: (String, Option<i64>, Option<String>) = conn
+        .query_row(
+            "SELECT format, pages, title FROM scan_entry WHERE rel_path = 'Story v01.epub'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("the entry");
+    assert_eq!(entry, ("epub-fixed".to_string(), None, None));
+}
+
 /// An EPUB with no text to read, its pages pictures, is not a book of no
 /// blocks: the derive names it among the files whose pages could not be
 /// counted, and its library counts it among the files it cannot read.
@@ -12569,6 +12597,251 @@ fn an_archive_counted_by_another_reader_is_counted_again_and_not_hashed() {
         "b.cbz"
     );
     assert_eq!((report.updated, report.added), (0, 0), "{report:?}");
+}
+
+/// The RAR fixture these tests scan: three pages, and a `ComicInfo.xml` that is
+/// no page.
+pub(crate) const READABLE_RAR: &str = "rar5-compressed.rar";
+
+/// The RAR fixture `file`, with what its manifest says it holds.
+pub(crate) fn rar_fixture(file: &str) -> taiyaku_read::test_support::RarFixture {
+    taiyaku_read::test_support::rar_fixtures()
+        .into_iter()
+        .find(|fixture| fixture.file == file)
+        .unwrap_or_else(|| panic!("no RAR fixture {file}"))
+}
+
+/// What this build stamps a RAR's count with: `None` in a build without a RAR
+/// backend.
+fn rar_signature() -> Option<String> {
+    taiyaku_read::Format::Rar
+        .token()
+        .and_then(taiyaku_read::reader_signature)
+}
+
+/// `root_id`'s row at `rel_path`, each column by name, all but `last_seen`,
+/// which every scan moves.
+fn whole_row(
+    conn: &Connection,
+    root_id: i64,
+    rel_path: &str,
+) -> Vec<(String, rusqlite::types::Value)> {
+    let mut stmt = conn
+        .prepare("SELECT * FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2")
+        .expect("prepares");
+    let names: Vec<String> = stmt.column_names().map(str::to_owned).collect();
+    stmt.query_row(rusqlite::params![root_id, rel_path], |r| {
+        (0..names.len())
+            .map(|i| Ok((names[i].clone(), r.get(i)?)))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .unwrap_or_else(|e| panic!("{rel_path} has a row: {e}"))
+    .into_iter()
+    .filter(|(name, _)| name != "last_seen")
+    .collect()
+}
+
+/// What a scan of a build without a RAR backend left of a RAR, which it could
+/// not count (ruling P2-R5): no count and no signature, and a digest planted
+/// as `planted('r')`. A build with a RAR backend counts it at the next scan,
+/// keeps its digest, and hashes nothing; a build without one has nothing to
+/// count it again with and does not open it.
+#[test]
+fn a_rar_no_reader_counted_is_counted_again_and_not_hashed_by_a_build_that_reads_rar() {
+    let fixture = rar_fixture(READABLE_RAR);
+    let tree = crate::tests::tempdir("scan-recount-rar");
+    std::fs::copy(&fixture.path, tree.path().join("a.cbz")).expect("copies the fixture");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("add");
+    scan_root(&conn, &root).expect("scans");
+    conn.execute(
+        "UPDATE scan_entry SET pages = NULL, counted_by = NULL, sha256 = ?1
+          WHERE rel_path = 'a.cbz'",
+        [planted('r')],
+    )
+    .expect("plants a row a build without a RAR backend left");
+
+    let (report, of) = scanned_reading(&conn, &root);
+
+    let reads_rar = taiyaku_read::Format::Rar.is_readable();
+    assert_eq!(
+        of,
+        Some(u64::from(reads_rar)),
+        "read again where RAR is read"
+    );
+    let pages = i64::try_from(fixture.pages.len()).expect("a few pages");
+    assert_eq!(
+        count_at(&conn, root.id, "a.cbz"),
+        (
+            reads_rar.then_some(pages),
+            Some(planted('r')),
+            rar_signature()
+        ),
+        "counted where RAR is read, under its signature, and not hashed"
+    );
+    assert_eq!((report.updated, report.added), (0, 0), "{report:?}");
+}
+
+/// Review Focus 2, the rollback: a RAR row a build with a RAR backend counted,
+/// with the digest a derive took, is rewritten by no scan of either build. A
+/// build without a RAR backend has no count to give it, so it keeps the row and
+/// sniffs the file again at each scan; a build with one counted it under the
+/// signature it holds and does not open it again. The test is the first of
+/// those two scans in a build without the feature and the second in a build
+/// with it, so the two builds' runs together take a store from the feature, to
+/// none, to the feature again.
+#[test]
+fn a_rar_counted_by_a_build_that_reads_rar_keeps_its_row_through_any_build() {
+    let fixture = rar_fixture(READABLE_RAR);
+    let tree = crate::tests::tempdir("scan-rar-rollback");
+    std::fs::copy(&fixture.path, tree.path().join("a.cbz")).expect("copies the fixture");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("add");
+    scan_root(&conn, &root).expect("scans");
+    // A build without a RAR backend has no RAR signature of its own, and any
+    // one differs from its none, as the feature's would.
+    let feature = rar_signature().unwrap_or_else(|| "rar:a RAR backend".to_owned());
+    conn.execute(
+        "UPDATE scan_entry SET pages = ?1, counted_by = ?2, sha256 = ?3
+          WHERE rel_path = 'a.cbz'",
+        rusqlite::params![
+            i64::try_from(fixture.pages.len()).expect("a few pages"),
+            feature,
+            planted('r')
+        ],
+    )
+    .expect("plants the row a build with a RAR backend left");
+    let planted_row = whole_row(&conn, root.id, "a.cbz");
+
+    let (report, of) = scanned_reading(&conn, &root);
+
+    let sniffs = u64::from(!taiyaku_read::Format::Rar.is_readable());
+    assert_eq!(
+        of,
+        Some(sniffs),
+        "opened only by a build without a RAR backend"
+    );
+    assert_eq!(
+        whole_row(&conn, root.id, "a.cbz"),
+        planted_row,
+        "the row, its count and its digest are kept"
+    );
+    assert_eq!((report.updated, report.added), (0, 0), "{report:?}");
+    assert_eq!(
+        scanned_reading(&conn, &root).1,
+        Some(sniffs),
+        "and so at the scan after"
+    );
+}
+
+/// Review Focus 2, the rollback of a RAR refused at the count: a build with a
+/// RAR backend stamps it with its signature and no count, a build without one
+/// has no signature to give it and so counts it again and takes the stamp off,
+/// and the next build with one counts it again, refuses it again and stamps it
+/// again. Each opens it once, keeps its digest, and opens it at no scan after.
+/// The test is the scan after a feature scan in a build without the feature,
+/// and the scan after that one in a build with it.
+#[test]
+fn a_rar_refused_at_the_count_is_counted_again_by_the_build_after_another() {
+    let fixture = rar_fixture("rar5-encrypted-entry.rar");
+    assert!(
+        fixture.refused.is_some(),
+        "the fixture: refused at the count"
+    );
+    let tree = crate::tests::tempdir("scan-rar-refused-rollback");
+    std::fs::copy(&fixture.path, tree.path().join("a.cbz")).expect("copies the fixture");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("add");
+    scan_root(&conn, &root).expect("scans");
+    // The row the scan before left. In a build without a RAR backend that scan
+    // had one and stamped a signature, for which any string stands in, since
+    // every one differs from this build's none; in a build with one, that scan
+    // had none and stamped none.
+    let reads_rar = taiyaku_read::Format::Rar.is_readable();
+    let before = (!reads_rar).then(|| "rar:a RAR backend".to_owned());
+    conn.execute(
+        "UPDATE scan_entry SET pages = NULL, counted_by = ?1, sha256 = ?2
+          WHERE rel_path = 'a.cbz'",
+        rusqlite::params![before, planted('r')],
+    )
+    .expect("plants the row the build before left");
+
+    let (report, of) = scanned_reading(&conn, &root);
+
+    assert_eq!(of, Some(1), "counted again by either build");
+    assert_eq!(
+        count_at(&conn, root.id, "a.cbz"),
+        (None, Some(planted('r')), rar_signature()),
+        "no count, the digest kept, and this build's signature or none"
+    );
+    assert_eq!((report.updated, report.added), (0, 0), "{report:?}");
+    assert_eq!(
+        scanned_reading(&conn, &root).1,
+        Some(0),
+        "and not opened at the scan after"
+    );
+}
+
+/// [`pages_of`] for the file at `rel_path` under `root`, as a scan asks it.
+fn pages_counted(root: &Root, rel_path: &str) -> Result<(Option<u32>, Option<String>), String> {
+    let meta = std::fs::metadata(root.path.join(rel_path)).expect("stats the file");
+    let seen = Seen {
+        rel_path: rel_path.to_owned(),
+        kind: Kind::File,
+        size: meta.len(),
+        mtime: mtime_secs(&meta),
+        pages: None,
+        entry_count: None,
+        listed_whole: true,
+    };
+    pages_of(root, &seen, format_of(root, &seen))
+}
+
+/// D9: the line a scan logs of a file whose count was refused names the file
+/// and the refusal: a zip that will not open, and in a build that reads RAR,
+/// each RAR fixture with the cause its manifest gives. A build without a RAR
+/// backend counts no RAR, so it logs none, at each scan that sniffs one again.
+#[test]
+fn a_file_whose_count_is_refused_is_logged_with_its_cause() {
+    let tree = crate::tests::tempdir("scan-uncounted-logged");
+    let mut bytes = b"PK\x03\x04".to_vec();
+    bytes.extend_from_slice(b"and no zip entry after the signature");
+    std::fs::write(tree.path().join("broken.cbz"), bytes).expect("write");
+    let refused: Vec<_> = taiyaku_read::test_support::rar_fixtures()
+        .into_iter()
+        .filter(|fixture| fixture.refused.is_some())
+        .collect();
+    assert!(refused.len() > 1, "the fixture: RARs refused at the count");
+    for fixture in &refused {
+        std::fs::copy(&fixture.path, tree.path().join(&fixture.file)).expect("copies");
+    }
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = add_root(&conn, tree.path()).expect("add");
+    let logged = |rel_path: &str, cause: &str| {
+        let line = pages_counted(&root, rel_path).expect_err(rel_path);
+        let start = format!(
+            "taiyaku: the scan left a file uncounted: {}: ",
+            root.path.join(rel_path).display()
+        );
+        assert!(
+            line.starts_with(&start) && line.contains(cause),
+            "{rel_path}: {line}"
+        );
+    };
+
+    logged("broken.cbz", "not a readable cbz");
+    for fixture in &refused {
+        let file = &fixture.file;
+        if taiyaku_read::Format::Rar.is_readable() {
+            logged(file, fixture.refused.as_deref().expect("refused"));
+        } else {
+            assert_eq!(pages_counted(&root, file), Ok((None, None)), "{file}");
+        }
+    }
 }
 
 /// A count taken again holds the reading it replaces as a changed file's is

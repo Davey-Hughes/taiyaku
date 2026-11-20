@@ -54,6 +54,7 @@
 //! file the scanner ever creates is `watch.rs`'s probe, which is not this.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -3211,7 +3212,11 @@ fn scan_root_inner(
             return Ok(Some(Outcome::Cancelled(Step::Resolving)));
         }
         let format = format_of(root, entry);
-        let (pages, title) = pages_of(root, entry, format);
+        let (pages, title) = pages_of(root, entry, format).unwrap_or_else(|uncounted| {
+            // Not `eprintln!`, which panics when nothing reads stderr.
+            let _ = writeln!(std::io::stderr(), "{uncounted}");
+            (None, None)
+        });
         resolved.insert(
             entry.rel_path.clone(),
             Resolved {
@@ -3580,8 +3585,8 @@ fn record(
 /// module says it avoids.
 ///
 /// A file whose bytes cannot be read is `None` rather than an error, for the
-/// same reason [`pages_of`] swallows a refusal: one unreadable file must not
-/// leave a whole library unscanned.
+/// same reason the scan logs a refusal from [`pages_of`] and goes on: one
+/// unreadable file must not leave a whole library unscanned.
 fn format_of(root: &Root, seen: &Seen) -> Option<&'static str> {
     match seen.kind {
         Kind::Dir => taiyaku_read::Format::Dir.token(),
@@ -3592,38 +3597,44 @@ fn format_of(root: &Root, seen: &Seen) -> Option<&'static str> {
 }
 
 /// A page count for an entry [`due`] reads or counts again, or `None` where
-/// one does not apply, and the title it declares.
+/// one does not apply, and the title it declares; or, for an archive whose
+/// count was refused, the line the scan writes to stderr in its place.
 ///
 /// A directory's count comes from the walk, which summed it on the way past.
-/// A file's costs an archive open, so it is only paid for a format this
-/// project can read, a reflowable EPUB counting its blocks and naming its
-/// `dc:title`; a PDF or fixed-layout EPUB is recorded with no count.
+/// A file's costs an open, so it is only paid for a format this project reads,
+/// a paged archive (`Format::PAGED`) or a reflowable EPUB. The rest get no
+/// count and say nothing, so a build without a RAR backend writes no line for
+/// each RAR it sniffs again.
 ///
-/// **A container that will not open is not an error.** `member_pages` refuses
-/// a truncated zip, and a scan that aborted on one would leave a whole
-/// library unscanned because of a single bad download. The count stays `None`
-/// and the row still records what the bytes said the file was.
+/// **A container that will not open is not an error**: a scan that aborted on a
+/// truncated zip would leave a whole library unscanned. The count stays `None`
+/// and the row still records what the bytes said the file was; the store keeps
+/// no cause (O131), so the line is where a person learns why.
 ///
-/// Takes the token [`format_of`] just produced rather than re-sniffing, and
-/// compares against `Format::Zip.token()` rather than a `"zip"` literal —
-/// that vocabulary is the schema's, and a second copy of it here is what
-/// `Format::token`'s own doc warns against.
+/// Takes [`format_of`]'s token rather than sniffing again, and reads it back
+/// through `Format::from_token`, not a literal: the vocabulary is the schema's.
 fn pages_of(
     root: &Root,
     seen: &Seen,
     format: Option<&'static str>,
-) -> (Option<u32>, Option<String>) {
+) -> Result<(Option<u32>, Option<String>), String> {
+    use taiyaku_read::Format;
+    let format = format.and_then(Format::from_token);
     match seen.kind {
-        Kind::Dir => (seen.pages, None),
-        Kind::File if format == taiyaku_read::Format::Zip.token() => (
-            taiyaku_read::member_pages(&root.path.join(&seen.rel_path)).ok(),
-            None,
-        ),
-        Kind::File if format == taiyaku_read::Format::EpubReflow.token() => {
-            // A book with no text has no count, as `member_pages` refuses an
-            // archive with no page images: the derive names a container with
-            // no count as unreadable, and takes a zero for a directory of
-            // archives, counted and never named.
+        Kind::Dir => Ok((seen.pages, None)),
+        Kind::File
+            if format
+                .is_some_and(|format| format != Format::Dir && Format::PAGED.contains(&format)) =>
+        {
+            taiyaku_read::member_pages(&root.path.join(&seen.rel_path))
+                .map(|pages| (Some(pages), None))
+                .map_err(|why| format!("taiyaku: the scan left a file uncounted: {why}"))
+        }
+        // A book with no text has no count, as `member_pages` refuses an
+        // archive with no page images: the derive names a container with no
+        // count as unreadable, and takes a zero for a directory of archives,
+        // counted and never named.
+        Kind::File if format == Some(Format::EpubReflow) => Ok(
             match taiyaku_read::read_book(&root.path.join(&seen.rel_path)) {
                 Ok(book) => (
                     u32::try_from(book.blocks.len())
@@ -3632,9 +3643,9 @@ fn pages_of(
                     book.title,
                 ),
                 Err(_) => (None, None),
-            }
-        }
-        Kind::File => (None, None),
+            },
+        ),
+        Kind::File => Ok((None, None)),
     }
 }
 

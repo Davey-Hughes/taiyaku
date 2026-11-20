@@ -1509,6 +1509,61 @@ async fn a_width_smaller_than_the_page_resizes_it_and_declares_jpeg() {
     );
 }
 
+/// An edition of two RAR members, a RAR4 and a RAR5, scanned in a build with a
+/// RAR backend, is read as one of zips is: its first and last pages are the
+/// bytes their manifests name, a page resizes, and a page's thumb answers.
+#[tokio::test]
+async fn an_edition_of_rar_members_serves_its_pages_resized_and_as_thumbs() {
+    let (router, state, _fixture) = crate::test_support::router_over_scanned_rar_archives();
+    let held = crate::test_support::edition_holding(&state, "Parts v01 part1.cbr");
+    if !taiyaku_read::Format::Rar.is_readable() {
+        assert_eq!(
+            held, None,
+            "a build without a RAR backend makes no work of a RAR"
+        );
+        return;
+    }
+    let (slug, key) = held.expect("the parts are an edition");
+    let pages: Vec<String> = ["rar4.rar", "rar5-compressed.rar"]
+        .into_iter()
+        .flat_map(|file| {
+            let fixture = taiyaku_read::test_support::rar_fixtures()
+                .into_iter()
+                .find(|fixture| fixture.file == file)
+                .unwrap_or_else(|| panic!("no RAR fixture {file}"));
+            fixture.pages.into_iter().map(|(_, sha)| sha)
+        })
+        .collect();
+    let page = |i: usize| format!("/api/works/{slug}/{key}/pages/{i}");
+
+    for i in [0, pages.len() - 1] {
+        let (status, _, body) = fetch(&router, &page(i), None).await;
+        assert_eq!(status, StatusCode::OK, "page {i}");
+        assert_eq!(
+            taiyaku_read::test_support::sha256_hex(&body),
+            pages[i],
+            "page {i}"
+        );
+    }
+
+    let (_, _, first) = fetch(&router, &page(0), None).await;
+    let whole = image::load_from_memory(&first).expect("page 0 decodes");
+    let edge = whole.width().max(whole.height()) / 2;
+    let (status, headers, body) = fetch(&router, &format!("{}?w={edge}", page(0)), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+    let resized = image::load_from_memory(&body).expect("a decodable image");
+    assert_eq!(
+        resized.width().max(resized.height()),
+        edge,
+        "resized to ?w="
+    );
+
+    let (status, _, thumb) = fetch(&router, &format!("{}/thumb", page(0)), None).await;
+    assert_eq!(status, StatusCode::OK, "the thumb");
+    image::load_from_memory(&thumb).expect("the thumb decodes");
+}
+
 /// The half that makes this safe on every edition: a page already within
 /// the requested edge is handed back untouched rather than re-encoded, so
 /// asking for a size no larger than the source costs nothing and loses no

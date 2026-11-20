@@ -437,10 +437,10 @@ shows the commit
 (linked into the repository when the build has one), the source link, the OPDS
 catalog's address and each format taiyaku writes, with its version and a line
 saying what it is, and links on to `/about/licence`, which gives taiyaku's
-licence and the fonts', each above its full text, under a list of contents
-linking to each. A page's **View** button holds the browse preferences that act
-there — layout, edition selector, panel and density on a series page, the
-continue strip and density on the library. The reader's own chrome has a
+licence, the fonts' and libarchive's, each above its full text, under a list of
+contents linking to each. A page's **View** button holds the browse preferences
+that act there — layout, edition selector, panel and density on a series page,
+the continue strip and density on the library. The reader's own chrome has a
 `Library` button for the way back out. The binding is generated and gitignored,
 but install order does not decide whether `taiyaku-wasm` resolves:
 `taiyaku-wasm` is a `link:` symlink, and pnpm creates it whether or not `pkg/`
@@ -473,13 +473,26 @@ feature (the container image is one), a RAR archive. A page is an entry named
 not name `image/jxl` as a JPEG made from it once and cached. The container is
 identified by content rather than by extension, because extensions lie in both
 directions — a zip is often named `.cbr`, and a real RAR or 7-Zip archive is
-often named `.cbz`. The other formats are recognised so the error can name the
-format and say to convert it, rather than reporting a corrupt zip, and a build
-without the feature names a RAR and says it reads none. A RAR5 archive whose
-end-of-archive block is missing, or followed by anything but zero bytes, is
-refused. `align`, `duplicates`, `credits` and the other commands given member
-paths read a RAR in such a build, but a library scan still counts a RAR as
-unreadable and makes no member of it. Several members on either side of the `--`
+often named `.cbz`. Downloads go by content too: in every build, a member sent
+whole takes its type and its extension from the format the scan found in its
+bytes or, where the store has no format for the file as it is now, from a sniff
+of the file, so a RAR named `.cbz` is sent as `.cbr` and a zip named `.cbr` as
+`.cbz`. The other formats are recognised so the error can name the format and
+say to convert it, rather than reporting a corrupt zip, and a build without the
+feature names a RAR and says it reads none. In a build with the feature,
+`align`, `duplicates`, `credits` and the other commands given member paths read
+a RAR, and a library counts, serves and downloads RAR members as it does zips.
+Both refuse, naming the file and the cause, a RAR5 archive whose end-of-archive
+block is missing or followed by anything but zero bytes, or that holds an entry
+listed as a file that no read gives whole (a junction, a redirection of a type
+libarchive does not read, or a file whose header marks it a directory, the last
+of which libarchive 3.8.11 refuses itself, with a cause of its own, where it
+holds data), and any RAR that is one volume of a multi-volume set, or holds an
+encrypted entry, a RAR4 file compressed by RAR 2.0 or another method libarchive
+does not decode (a stored file is read whatever version wrote it), a reference
+or hard link whose target is not a file listed earlier under the name it gives
+or whose size is not its target's, or two files of one name. A library scan
+writes the cause to standard error. Several members on either side of the `--`
 are concatenated before solving, which is how chapters map onto a volume and how
 two tankōbon map onto one deluxe edition.
 
@@ -913,5 +926,7 @@ is the real constraint.
 taiyaku is GPL-3.0-or-later. See [LICENSE](LICENSE).
 
 The fonts it ships are OFL-1.1: Shippori Mincho B1, Zen Kaku Gothic New, and
-the marks subset cut from Zen Kaku Gothic New. The app's `/about/licence`
-shows each licence with its full text.
+the marks subset cut from Zen Kaku Gothic New. A build with the `rar-libarchive`
+feature (the container image is one) links libarchive, which is BSD-2-Clause,
+with the exceptions its notice lists. The app's `/about/licence` shows each
+licence with its full text.

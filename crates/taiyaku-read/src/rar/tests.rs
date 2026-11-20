@@ -33,8 +33,7 @@ fn refusal<T>(got: Result<T, String>, path: &Path, at: &str) -> String {
 fn sha_of<'a>(fixture: &'a RarFixture, name: &str) -> Option<&'a str> {
     let page = fixture.pages.iter().find(|(page, _)| page == name);
     let other = fixture.others.iter().find(|(other, _)| other == name);
-    page.and_then(|(_, sha)| sha.as_deref())
-        .or(other.map(|(_, sha)| sha.as_str()))
+    page.or(other).map(|(_, sha)| sha.as_str())
 }
 
 /// One entry a visit handed over.
@@ -78,10 +77,16 @@ fn every_entry_is_listed_in_archive_order_with_its_kind() {
             assert_eq!(got.len(), fixture.entries.len(), "{at}: {got:?}");
             for (index, (entry, want)) in got.iter().zip(&fixture.entries).enumerate() {
                 assert_eq!(entry.name, want.name, "{at}: entry {index}");
-                // A reference's header size is its target's; libarchive gives none.
-                if !matches!(want.kind, RarEntryKind::Dir | RarEntryKind::Reference) {
+                // A reference's size is its target's, as the manifest gives it.
+                if want.kind != RarEntryKind::Dir {
                     assert_eq!(entry.size, want.size, "{at}: {}", want.name);
                 }
+                assert_eq!(
+                    entry.target.is_some(),
+                    want.kind == RarEntryKind::Reference,
+                    "{at}: {}",
+                    want.name
+                );
                 assert_eq!(
                     entry.readable,
                     want.kind != RarEntryKind::Dir,
@@ -100,11 +105,7 @@ fn each_page_and_other_entry_reads_to_its_manifest_bytes() {
     for backend in BACKENDS {
         for fixture in fixtures() {
             let at = format!("{} on {}", backend.name(), fixture.file);
-            let pages = fixture
-                .pages
-                .iter()
-                .filter_map(|(name, sha)| Some((name, sha.as_ref()?)));
-            for (name, sha) in pages.chain(fixture.others.iter().map(|(name, sha)| (name, sha))) {
+            for (name, sha) in fixture.pages.iter().chain(&fixture.others) {
                 let bytes = backend
                     .read(&fixture.path, name)
                     .unwrap_or_else(|e| panic!("{at}: {e}"));
@@ -116,16 +117,79 @@ fn each_page_and_other_entry_reads_to_its_manifest_bytes() {
     assert!(reads > 0, "no page or other entry was read");
 }
 
+/// An archive refused at listing is refused by every call, a read of an entry
+/// before the one that refuses it too, and with the same cause, so no page of
+/// it reads by another way in.
 #[test]
-fn an_encrypted_entry_does_not_read() {
+fn a_refused_fixture_is_refused_by_every_call() {
+    let mut calls = 0;
     for backend in BACKENDS {
-        for file in ["rar5-encrypted-entry.rar", "rar4-encrypted-entry.rar"] {
-            let at = format!("{} on {file}", backend.name());
-            let fixture = fixture(file);
-            let error = refusal(backend.read(&fixture.path, "p02.png"), &fixture.path, &at);
-            assert!(error.contains("p02.png"), "{at}: {error}");
+        for fixture in fixtures() {
+            let Some(text) = &fixture.refused else {
+                continue;
+            };
+            let at = format!("{} on {}", backend.name(), fixture.file);
+            let path = &fixture.path;
+            let mut got = vec![("listing", backend.entries(path).map(drop))];
+            for entry in &fixture.entries {
+                got.push((
+                    entry.name.as_str(),
+                    backend.read(path, &entry.name).map(drop),
+                ));
+            }
+            got.push(("visit", visited(*backend, path, &|_| true).0));
+            for (call, got) in got {
+                let error = refusal(got, path, &format!("{at}: {call}"));
+                assert!(error.contains(text.as_str()), "{at}: {call}: {error}");
+                calls += 1;
+            }
         }
     }
+    assert!(calls > 0, "no refused fixture was called");
+}
+
+/// The listing gives each entry the CRC32 its header declares, so that a whole
+/// read can be known without decoding: a reference's is its target's, and none
+/// where the header declares a BLAKE2 hash alone or there are no bytes.
+#[test]
+fn a_listing_gives_each_entry_the_crc32_its_header_declares() {
+    let mut checked = 0;
+    for backend in BACKENDS {
+        for fixture in fixtures().into_iter().filter(|f| f.refused.is_none()) {
+            let at = format!("{} on {}", backend.name(), fixture.file);
+            let listed = backend
+                .entries(&fixture.path)
+                .unwrap_or_else(|e| panic!("{at}: {e}"));
+            assert_eq!(listed.len(), fixture.entries.len(), "{at}");
+            for (entry, want) in listed.iter().zip(&fixture.entries) {
+                let at = format!("{at}: {}", want.name);
+                match want.kind {
+                    RarEntryKind::File if fixture.file == "rar5-blake2.rar" => {
+                        assert_eq!(entry.crc, None, "{at}: BLAKE2 alone");
+                    }
+                    RarEntryKind::File => {
+                        let bytes = backend.read(&fixture.path, &want.name);
+                        let bytes = bytes.unwrap_or_else(|e| panic!("{at}: {e}"));
+                        assert_eq!(entry.crc, Some(crc32fast::hash(&bytes)), "{at}");
+                        checked += 1;
+                    }
+                    // rar declares the CRC32 of no bytes.
+                    RarEntryKind::Empty => assert_eq!(entry.crc, Some(0), "{at}"),
+                    RarEntryKind::Dir => assert_eq!(entry.crc, None, "{at}"),
+                    RarEntryKind::Reference => {
+                        let target = entry.target.and_then(|target| listed.get(target));
+                        let want = target.and_then(|target| target.crc);
+                        assert!(want.is_some(), "{at}: {entry:?}");
+                        assert_eq!(entry.crc, want, "{at}");
+                    }
+                    RarEntryKind::Encrypted | RarEntryKind::Split => {
+                        panic!("{at}: listed, where its archive must be refused");
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "no entry's CRC32 was compared");
 }
 
 #[test]
@@ -136,14 +200,7 @@ fn a_visit_decodes_wanted_readable_entries_in_archive_order() {
             let (got, seen) = visited(*backend, &fixture.path, &|_| true);
             if let Some(text) = &fixture.refused {
                 let error = refusal(got, &fixture.path, &at);
-                // A split entry fails by its own name, before the listing
-                // reaches what refuses the archive.
-                let split = fixture
-                    .entries
-                    .iter()
-                    .find(|entry| entry.kind == RarEntryKind::Split);
-                let text = split.map_or(text.as_str(), |entry| entry.name.as_str());
-                assert!(error.contains(text), "{at}: {error}");
+                assert!(error.contains(text.as_str()), "{at}: {error}");
                 // A visit stops at the entry that refuses the archive, and may
                 // hand over those before it, as a solid RAR4's first.
                 assert!(seen.len() < fixture.entries.len().max(1), "{at}: {seen:?}");
@@ -153,33 +210,14 @@ fn a_visit_decodes_wanted_readable_entries_in_archive_order() {
                 }
                 continue;
             }
-            // An encrypted entry or a reference fails to read, and the visit
-            // stops there.
+            got.unwrap_or_else(|e| panic!("{at}: {e}"));
             let readable: Vec<_> = fixture
                 .entries
                 .iter()
                 .filter(|entry| entry.kind != RarEntryKind::Dir)
                 .collect();
-            let stop = readable.iter().position(|entry| {
-                matches!(
-                    entry.kind,
-                    RarEntryKind::Encrypted
-                        | RarEntryKind::Reference
-                        | RarEntryKind::Empty
-                        | RarEntryKind::Split
-                )
-            });
-            let handed = &readable[..stop.unwrap_or(readable.len())];
-            match stop {
-                Some(at_entry) => {
-                    let error = refusal(got, &fixture.path, &at);
-                    let name = &readable[at_entry].name;
-                    assert!(error.contains(name.as_str()), "{at}: {error}");
-                }
-                None => got.unwrap_or_else(|e| panic!("{at}: {e}")),
-            }
-            assert_eq!(seen.len(), handed.len(), "{at}: {seen:?}");
-            for (got, want) in seen.iter().zip(handed) {
+            assert_eq!(seen.len(), readable.len(), "{at}: {seen:?}");
+            for (got, want) in seen.iter().zip(&readable) {
                 assert_eq!(got.name, want.name, "{at}");
                 assert_eq!(got.len, want.size, "{at}: {}", got.name);
                 if let Some(sha) = sha_of(&fixture, &got.name) {
@@ -197,20 +235,90 @@ fn a_visit_decodes_wanted_readable_entries_in_archive_order() {
     }
 }
 
-/// A file reference lists as a regular file and yields no bytes, so only its
-/// refusal keeps it from being an empty page.
+/// A file reference lists with the position, size and CRC32 of the earlier
+/// entry whose bytes it reads.
 #[test]
-fn a_file_reference_is_refused_as_no_data() {
+fn a_reference_lists_as_the_earlier_entry_it_reads() {
     let fixture = fixture("rar5-file-reference.rar");
     for backend in BACKENDS {
         let at = format!("{} on {}", backend.name(), fixture.file);
-        let error = refusal(backend.read(&fixture.path, "p02.png"), &fixture.path, &at);
-        assert!(error.contains("p02.png: no data"), "{at}: {error}");
-        let (got, seen) = visited(*backend, &fixture.path, &|_| true);
-        let error = refusal(got, &fixture.path, &at);
-        assert!(error.contains("p02.png: no data"), "{at}: {error}");
-        let names: Vec<_> = seen.iter().map(|got| got.name.as_str()).collect();
-        assert_eq!(names, ["p01.png"], "{at}");
+        let listed = backend
+            .entries(&fixture.path)
+            .unwrap_or_else(|e| panic!("{at}: {e}"));
+        let targets: Vec<_> = listed.iter().map(|entry| entry.target).collect();
+        assert_eq!(targets, [None, Some(0)], "{at}");
+        let (reference, target) = (&listed[1], &listed[0]);
+        assert_eq!(
+            (reference.size, reference.crc),
+            (target.size, target.crc),
+            "{at}"
+        );
+        assert!(target.crc.is_some(), "{at}: {target:?}");
+    }
+}
+
+/// A file reference or hard link, which libarchive lists as a regular file and
+/// gives no bytes for, reads its target's: by name, by position, and in a visit
+/// that wants it and not its target, which comes before it.
+#[test]
+fn a_reference_reads_its_targets_bytes() {
+    for (file, reference, target) in [
+        ("rar5-file-reference.rar", "p02.png", "p01.png"),
+        ("rar5-hard-link.rar", "p02.png", ".p02.png"),
+    ] {
+        let fixture = fixture(file);
+        let path = &fixture.path;
+        for backend in BACKENDS {
+            let at = format!("{} on {file}", backend.name());
+            let want = backend.read(path, target);
+            let want = want.unwrap_or_else(|e| panic!("{at}: {target}: {e}"));
+            let sha = sha256_hex(&want);
+            assert_eq!(sha_of(&fixture, reference), Some(sha.as_str()), "{at}");
+            let by_name = backend.read(path, reference);
+            assert_eq!(by_name.as_ref(), Ok(&want), "{at}: by name");
+            let by_position = backend.read_listed(path, &mut |entries| {
+                let position = entries.iter().position(|entry| entry.name == reference);
+                Ok(position.expect("the reference is listed"))
+            });
+            assert_eq!(by_position.as_ref(), Ok(&want), "{at}: by position");
+            let (got, seen) = visited(*backend, path, &|name| name == reference);
+            got.unwrap_or_else(|e| panic!("{at}: {e}"));
+            let seen: Vec<_> = seen
+                .iter()
+                .map(|got| (got.name.as_str(), got.sha.as_str()))
+                .collect();
+            assert_eq!(seen, [(reference, sha.as_str())], "{at}: a visit");
+        }
+    }
+}
+
+/// `read_listed` reads a regular file the listing gave: a directory's position
+/// or one past the listing is refused, naming the path, and an error from the
+/// pick comes back as it is.
+#[test]
+fn a_listed_read_refuses_a_position_that_is_no_regular_file() {
+    let fixture = fixture("rar5-layout.rar");
+    let path = &fixture.path;
+    let directory = fixture
+        .entries
+        .iter()
+        .position(|entry| entry.kind == RarEntryKind::Dir);
+    let directory = directory.expect("a directory entry");
+    let past = fixture.entries.len();
+    let shown = path.display();
+    let named = &fixture.entries[directory].name;
+    let cases = [
+        (directory, format!("{shown}: {named}: not a regular file")),
+        (past, format!("{shown}: no entry at {past}")),
+    ];
+    for backend in BACKENDS {
+        for (position, cause) in &cases {
+            let at = format!("{}: {cause}", backend.name());
+            let got = backend.read_listed(path, &mut |_| Ok(*position));
+            assert_eq!(refusal(got, path, &at), *cause, "{at}");
+        }
+        let got = backend.read_listed(path, &mut |_| Err("picked none".to_owned()));
+        assert_eq!(got, Err("picked none".to_owned()), "{}", backend.name());
     }
 }
 
@@ -346,7 +454,7 @@ fn six_threads_reading_one_archive_each_get_their_own_page() {
             for thread in threads {
                 let (name, sha, got) = thread.join().expect("the reading thread");
                 let bytes = got.unwrap_or_else(|e| panic!("{}: {e}", backend.name()));
-                assert_eq!(Some(sha256_hex(&bytes)), *sha, "{}: {name}", backend.name());
+                assert_eq!(sha256_hex(&bytes), *sha, "{}: {name}", backend.name());
             }
         });
     }
@@ -360,10 +468,20 @@ impl Backend for Absent {
     fn name(&self) -> &'static str {
         "absent"
     }
+    fn signature(&self) -> String {
+        self.name().to_owned()
+    }
     fn entries(&self, path: &Path) -> Result<Vec<Entry>, String> {
         Err(path.display().to_string())
     }
     fn read(&self, path: &Path, _: &str) -> Result<Vec<u8>, String> {
+        Err(path.display().to_string())
+    }
+    fn read_listed(
+        &self,
+        path: &Path,
+        _: &mut dyn FnMut(&[Entry]) -> Result<usize, String>,
+    ) -> Result<Vec<u8>, String> {
         Err(path.display().to_string())
     }
     fn visit(
@@ -437,12 +555,25 @@ mod walk {
     use super::super::libarchive::headers::{Header, Walk, walk, walk_at_most};
     use super::{BACKENDS, RarEntryKind, TempDir, fixture, fixtures};
 
+    const ONE_VOLUME: &str = "it is one volume of a multi-volume set";
+    const ENCRYPTED: &str = "an entry is encrypted";
+    const UNDECODED: &str =
+        "an entry uses RAR 2.0 compression or another method libarchive does not decode";
+    const DANGLING: &str =
+        "an entry is a reference or hard link, and its target is not an earlier entry of that name";
+    const RESIZED: &str = "an entry is a reference or hard link, and its size is not its target's";
+    const UNREAD_REDIRECTION: &str =
+        "an entry is a junction or a redirection of a type libarchive does not read";
+    const MARKED_DIRECTORY: &str =
+        "an entry's header marks it a directory and its attributes a file";
+
     fn walked(bytes: &[u8]) -> Walk {
         walk(&mut Cursor::new(bytes)).expect("a walk of memory does not fail")
     }
 
     /// Every entry of every listable fixture, in order, with the checksum of
-    /// the bytes it holds and none where they cannot be checked.
+    /// the bytes it holds and none where they cannot be checked. A fixture
+    /// refused for what the walk finds stops it there, with that cause.
     #[test]
     fn a_walk_gives_each_entry_its_own_checksum() {
         let mut checked = 0;
@@ -451,9 +582,27 @@ mod walk {
             let at = fixture.file.as_str();
             let bytes = std::fs::read(&fixture.path).expect("the fixture reads");
             let walked = walked(&bytes);
-            assert_eq!(walked.stopped, None, "{at}");
-            assert_eq!(walked.headers.len(), fixture.entries.len(), "{at}");
-            assert_eq!(walked.solid, at == "rar5-solid.rar", "{at}");
+            let stop = fixture.refused.as_deref().and_then(|text| {
+                [ONE_VOLUME, ENCRYPTED, UNDECODED, DANGLING]
+                    .into_iter()
+                    .find(|cause| text.ends_with(cause))
+            });
+            assert_eq!(walked.stopped, stop, "{at}");
+            // A walk stops where the entry that refuses the archive starts, or
+            // at a volume's main header, before any entry.
+            let first = |kind| fixture.entries.iter().position(|entry| entry.kind == kind);
+            let kept = match stop {
+                None => Some(fixture.entries.len()),
+                Some(ONE_VOLUME) => Some(0),
+                Some(ENCRYPTED) => first(RarEntryKind::Encrypted),
+                Some(DANGLING) => first(RarEntryKind::Reference),
+                // Every file of a RAR 2.0 fixture is compressed so.
+                Some(UNDECODED) => first(RarEntryKind::File),
+                Some(cause) => panic!("{at}: no stop position for {cause}"),
+            };
+            assert_eq!(Some(walked.headers.len()), kept, "{at}");
+            let solid = matches!(at, "rar5-solid.rar" | "rar5-solid-empty.rar");
+            assert_eq!(walked.solid, solid, "{at}");
             for (header, entry) in walked.headers.iter().zip(&fixture.entries) {
                 let at = format!("{at}: {}", entry.name);
                 match entry.kind {
@@ -470,13 +619,20 @@ mod walk {
                         assert_eq!(header.size, entry.size, "{at}");
                         checked += 1;
                     }
-                    // An empty file's bytes are refused before any checksum.
-                    RarEntryKind::Empty => assert_eq!(header.size, 0, "{at}"),
+                    // rar declares the CRC32 of no bytes.
+                    RarEntryKind::Empty => {
+                        assert_eq!((header.size, header.crc), (0, Some(0)), "{at}");
+                    }
                     RarEntryKind::Dir
                     | RarEntryKind::Encrypted
                     | RarEntryKind::Reference
                     | RarEntryKind::Split => assert_eq!(header.crc, None, "{at}"),
                 }
+                assert_eq!(
+                    header.target.is_some(),
+                    entry.kind == RarEntryKind::Reference,
+                    "{at}"
+                );
             }
         }
         assert!(checked > 0, "no entry's checksum was compared");
@@ -496,7 +652,7 @@ mod walk {
     /// block says so.
     #[test]
     fn a_cut_walk_keeps_the_headers_before_the_cut() {
-        for file in ["rar5-compressed.rar", "rar4-encrypted-entry.rar"] {
+        for file in ["rar5-compressed.rar", "rar4-comment.rar"] {
             let bytes = std::fs::read(fixture(file).path).expect("the fixture reads");
             let whole = walked(&bytes);
             for len in 0..bytes.len() {
@@ -585,8 +741,10 @@ mod walk {
         rar5_block(2, flags, &rar5_file_fields(extra))
     }
 
-    /// Offsets in `rar5_file_fields(&[])`: the mode's three bytes and the
-    /// compression and host after the CRC.
+    /// Offsets in `rar5_file_fields(&[])`: the file flags, the size, the
+    /// mode's three bytes, and the compression and host after the CRC.
+    const RAR5_FILE_FLAGS: usize = 1;
+    const RAR5_SIZE: usize = 2;
     const RAR5_MODE: usize = 3;
     const RAR5_COMPRESSION: usize = 10;
     const RAR5_HOST: usize = 11;
@@ -632,12 +790,17 @@ mod walk {
         let whole = Header {
             size: 5,
             crc: Some(0x1234_5678),
+            target: None,
         };
         let with_flag = |flag: u8| {
             let block = rar5_block(2, 0x02 | flag, &rar5_file_fields(&[]));
             walked(&rar5(&[block, rar5_file(&[]), rar5_end()])).headers
         };
-        let starts = Header { size: 5, crc: None };
+        let starts = Header {
+            size: 5,
+            crc: None,
+            target: None,
+        };
         assert_eq!(with_flag(0x10), [starts, whole], "goes on into the next");
         assert_eq!(with_flag(0x08), [whole], "continued from the previous");
         assert_eq!(with_flag(0x18), [whole], "continued and going on");
@@ -670,25 +833,40 @@ mod walk {
         let want = Header {
             size: 5,
             crc: Some(0x1234_5678),
+            target: None,
         };
         assert_eq!(plain.headers, [want]);
         assert_eq!(plain.stopped, None);
 
-        // Records of two bytes: a size of 1, then the type.
-        for (kind, crc) in [
-            (1, None),
-            (5, None),
-            (2, Some(0x1234_5678)),
-            (3, Some(0x1234_5678)),
-        ] {
+        // Records of two bytes: a size of 1, then the type. Type 1,
+        // encryption, stops the walk instead.
+        for (kind, crc) in [(2, Some(0x1234_5678)), (3, Some(0x1234_5678))] {
             let walked = walked(&rar5(&[rar5_file(&[1, kind]), rar5_end()]));
             assert_eq!(
                 walked.headers,
-                [Header { size: 5, crc }],
+                [Header {
+                    size: 5,
+                    crc,
+                    target: None,
+                }],
                 "record type {kind}"
             );
         }
-        for broken in [&[0_u8, 0][..], &[5, 1], &[0x80]] {
+        // Type 5, redirection: the entry is a link, so its bytes are not its own.
+        let linked = walked(&rar5(&[
+            rar5_file(&redirect(UNIX_SYMLINK, b'z')),
+            rar5_end(),
+        ]));
+        let unchecked = Header {
+            size: 5,
+            crc: None,
+            target: None,
+        };
+        assert_eq!(linked.headers, [unchecked], "a symbolic link");
+        // The last two: a redirection record of its type alone, and one whose
+        // name runs past it.
+        let broken: [&[u8]; 5] = [&[0, 0], &[5, 1], &[0x80], &[1, 5], &[4, 5, 4, 0, 1]];
+        for broken in broken {
             let walked = walked(&rar5(&[rar5_file(broken), rar5_end()]));
             assert_eq!(
                 walked.stopped,
@@ -801,12 +979,19 @@ mod walk {
 
     #[test]
     fn a_rar4_file_block_gives_its_checksum_unless_its_flags_rule_it_out() {
-        let want = |crc| [Header { size: 5, crc }];
+        let want = |crc| {
+            [Header {
+                size: 5,
+                crc,
+                target: None,
+            }]
+        };
         assert_eq!(
             walked(&rar4(&[rar4_file(0, 0, None)])).headers,
             want(Some(0x1234_5678))
         );
-        for flags in [0x01, 0x02, 0x04] {
+        // 0x04, encryption, stops the walk instead.
+        for flags in [0x01, 0x02] {
             let walked = walked(&rar4(&[rar4_file(flags, 0, None)]));
             assert_eq!(walked.headers, want(None), "flags {flags:#x}");
         }
@@ -920,6 +1105,7 @@ mod walk {
             [Header {
                 size: (2 << 32) | 5,
                 crc: Some(0x1234_5678),
+                target: None,
             }]
         );
     }
@@ -941,6 +1127,292 @@ mod walk {
         assert_eq!(
             walked(&rar4(&[short])).stopped,
             Some("a block header cannot be read")
+        );
+    }
+
+    /// The unpack version and the method of a RAR4 file block.
+    const RAR4_VERSION: usize = 24;
+    const RAR4_METHOD: usize = 25;
+
+    /// Ruling P2-R3, with the set read from libarchive 3.7.4's RAR4 reader: it
+    /// copies a stored entry's bytes (method 0x30) whatever version it names,
+    /// decodes methods 0x31 to 0x35 as RAR 2.9 compresses them (version 29),
+    /// and reads no version at all. Every other regular file with bytes stops
+    /// the walk where it starts, every pair of the two bytes tried. A directory
+    /// and a symbolic link are no page, and an empty file has nothing to decode.
+    #[test]
+    fn a_rar4_file_libarchive_does_not_decode_stops_the_walk() {
+        const STORED: u8 = 0x30;
+        const DECODED: [(u8, u8); 5] = [(29, 0x31), (29, 0x32), (29, 0x33), (29, 0x34), (29, 0x35)];
+        let file = |version: u8, method: u8| {
+            let mut file = rar4_file(0, 0, None);
+            file[RAR4_VERSION] = version;
+            file[RAR4_METHOD] = method;
+            file
+        };
+        let walk = |middle: Vec<u8>| {
+            let got = walked(&rar4(&[file(29, STORED), middle, file(29, STORED)]));
+            (got.stopped, got.headers.len())
+        };
+        for version in 0..=u8::MAX {
+            for method in 0..=u8::MAX {
+                let want = if method == STORED || DECODED.contains(&(version, method)) {
+                    (None, 3)
+                } else {
+                    (Some(UNDECODED), 1)
+                };
+                let at = format!("version {version}, method {method:#x}");
+                assert_eq!(walk(file(version, method)), want, "{at}");
+            }
+        }
+        let kinds = [
+            ("a directory", 3, 0o040_755),
+            ("a Windows directory", 2, 0x10),
+            ("a symbolic link", 3, 0o120_777),
+        ];
+        for (what, host, attributes) in kinds {
+            let mut entry = file(20, 0x33);
+            entry[15] = host;
+            entry[28..32].copy_from_slice(&u32::to_le_bytes(attributes));
+            assert_eq!(walk(entry), (None, 3), "{what}");
+        }
+        let mut empty = file(20, 0x33);
+        empty[11..15].copy_from_slice(&0_u32.to_le_bytes());
+        assert_eq!(walk(empty), (None, 3), "an empty file");
+    }
+
+    /// RAR5 redirection types: a link elsewhere, and two that read another
+    /// entry's bytes.
+    const UNIX_SYMLINK: u8 = 1;
+    const HARD_LINK: u8 = 4;
+    const FILE_COPY: u8 = 5;
+
+    /// A redirection record of `kind` naming the one byte `target`: its size,
+    /// then its type (5), the kind, flags, the name's length and the name.
+    fn redirect(kind: u8, target: u8) -> [u8; 6] {
+        [5, 5, kind, 0, 1, target]
+    }
+
+    /// A RAR5 file named by the one byte `name`, with these extra records.
+    fn rar5_named(name: u8, extra: &[u8]) -> Vec<u8> {
+        rar5_sized(name, 5, extra)
+    }
+
+    /// [`rar5_named`], declaring `size` bytes.
+    fn rar5_sized(name: u8, size: u8, extra: &[u8]) -> Vec<u8> {
+        let mut fields = rar5_file_fields(extra);
+        // An extra area's size moves every field after it on by one.
+        let shift = usize::from(!extra.is_empty());
+        fields[RAR5_SIZE + shift] = size;
+        // The name follows the host.
+        fields[RAR5_HOST + 2 + shift] = name;
+        rar5_block(2, if extra.is_empty() { 0x02 } else { 0x03 }, &fields)
+    }
+
+    /// A hard link or file reference reads its target's bytes whole, so one
+    /// that declares another size stops the walk where it starts, through
+    /// another reference too.
+    #[test]
+    fn a_reference_of_another_size_than_its_target_stops_the_walk() {
+        for kind in [HARD_LINK, FILE_COPY] {
+            let at = |case: &str| format!("redirection type {kind}: {case}");
+            let walk = |blocks: &[Vec<u8>]| {
+                let mut blocks = blocks.to_vec();
+                blocks.push(rar5_end());
+                let got = walked(&rar5(&blocks));
+                (got.stopped, got.headers.len())
+            };
+            let file = rar5_named(b'a', &[]);
+            let to = |name, target, size| rar5_sized(name, size, &redirect(kind, target));
+            assert_eq!(
+                walk(&[file.clone(), to(b'b', b'a', 5)]),
+                (None, 2),
+                "{}",
+                at("as large")
+            );
+            for size in [0, 4, 6] {
+                let blocks = [file.clone(), to(b'b', b'a', size)];
+                assert_eq!(
+                    walk(&blocks),
+                    (Some(RESIZED), 1),
+                    "{}",
+                    at(&size.to_string())
+                );
+            }
+            let blocks = [file.clone(), to(b'b', b'a', 5), to(b'c', b'b', 6)];
+            assert_eq!(
+                walk(&blocks),
+                (Some(RESIZED), 2),
+                "{}",
+                at("through another")
+            );
+        }
+    }
+
+    /// Ruling P2-R4: a hard link or file reference reads the first earlier
+    /// regular file of the name its record gives, or what that file reads
+    /// where it is one too. Any other stops the walk where it starts, as unrar
+    /// resolves one only to an entry it has already extracted.
+    #[test]
+    fn a_reference_reads_an_earlier_regular_file_of_its_targets_name() {
+        let walk = |blocks: &[Vec<u8>]| {
+            let mut blocks = blocks.to_vec();
+            blocks.push(rar5_end());
+            let got = walked(&rar5(&blocks));
+            let targets: Vec<_> = got.headers.iter().map(|header| header.target).collect();
+            (got.stopped, targets)
+        };
+        let file = |name| rar5_named(name, &[]);
+        let mut directory = rar5_file_fields(&[]);
+        directory[RAR5_MODE..RAR5_MODE + 3].copy_from_slice(&[0xed, 0x83, 0x01]); // 0o40755
+        let directory = rar5_block(2, 0x02, &directory);
+        let symlink = rar5_named(b'a', &redirect(UNIX_SYMLINK, b'z'));
+        for kind in [HARD_LINK, FILE_COPY] {
+            let to = |name, target| rar5_named(name, &redirect(kind, target));
+            let at = |case: &str| format!("redirection type {kind}: {case}");
+            let reads = [
+                (
+                    vec![file(b'a'), to(b'b', b'a')],
+                    vec![None, Some(0)],
+                    "after it",
+                ),
+                (
+                    vec![file(b'a'), file(b'a'), to(b'b', b'a')],
+                    vec![None, None, Some(0)],
+                    "the first of two",
+                ),
+                (
+                    vec![file(b'a'), to(b'b', b'a'), to(b'c', b'b')],
+                    vec![None, Some(0), Some(0)],
+                    "through another",
+                ),
+            ];
+            for (blocks, targets, case) in reads {
+                assert_eq!(walk(&blocks), (None, targets), "{}", at(case));
+            }
+            let dangles = [
+                (vec![file(b'a'), to(b'b', b'x')], 1, "no entry of that name"),
+                (vec![to(b'b', b'a'), file(b'a')], 0, "a later one"),
+                (vec![to(b'a', b'a')], 0, "itself"),
+                (vec![file(b'A'), to(b'b', b'a')], 1, "another case"),
+                (vec![directory.clone(), to(b'b', b'a')], 1, "a directory"),
+                (vec![symlink.clone(), to(b'b', b'a')], 1, "a symbolic link"),
+            ];
+            for (blocks, kept, case) in dangles {
+                assert_eq!(
+                    walk(&blocks),
+                    (Some(DANGLING), vec![None; kept]),
+                    "{}",
+                    at(case)
+                );
+            }
+        }
+    }
+
+    /// libarchive lists a regular file redirected as a junction, or by a type
+    /// it does not know, as a file it gives no bytes for, so the walk stops
+    /// where it starts. A link or reference, and a junction whose attributes
+    /// are a directory's, pass.
+    #[test]
+    fn a_file_redirected_as_no_link_or_reference_stops_the_walk() {
+        const JUNCTION: u8 = 3;
+        const WINDOWS_SYMLINK: u8 = 2;
+        let walk = |redirected: Vec<u8>| {
+            let got = walked(&rar5(&[rar5_named(b'a', &[]), redirected, rar5_end()]));
+            (got.stopped, got.headers.len())
+        };
+        for kind in [JUNCTION, 9] {
+            let redirected = rar5_named(b'b', &redirect(kind, b'a'));
+            let at = format!("redirection type {kind}");
+            assert_eq!(walk(redirected), (Some(UNREAD_REDIRECTION), 1), "{at}");
+        }
+        for kind in [UNIX_SYMLINK, WINDOWS_SYMLINK, HARD_LINK, FILE_COPY] {
+            let redirected = rar5_named(b'b', &redirect(kind, b'a'));
+            assert_eq!(walk(redirected), (None, 2), "redirection type {kind}");
+        }
+        // Each offset moves on by one for the extra area's size.
+        let mut junction = rar5_file_fields(&redirect(JUNCTION, b'a'));
+        junction[RAR5_MODE + 1..RAR5_MODE + 4].copy_from_slice(&[0x90, 0x80, 0x00]); // 0x10
+        junction[RAR5_HOST + 1] = 0;
+        junction[RAR5_HOST + 3] = b'b';
+        let junction = rar5_block(2, 0x03, &junction);
+        assert_eq!(walk(junction), (None, 2), "a Windows directory's junction");
+    }
+
+    /// A file block whose header marks it a directory, its attributes a
+    /// regular file's, is one libarchive refuses as it lists it or cannot
+    /// read, so the walk stops where it starts; a directory so marked passes.
+    #[test]
+    fn a_file_marked_a_directory_stops_the_walk() {
+        let walk = |fields: &[u8]| {
+            let marked = rar5_block(2, 0x02, fields);
+            let got = walked(&rar5(&[rar5_named(b'a', &[]), marked, rar5_end()]));
+            (got.stopped, got.headers.len())
+        };
+        let mut marked = rar5_file_fields(&[]);
+        marked[RAR5_FILE_FLAGS] |= 0x01;
+        marked[RAR5_HOST + 2] = b'b';
+        assert_eq!(walk(&marked), (Some(MARKED_DIRECTORY), 1), "a regular file");
+        marked[RAR5_MODE..RAR5_MODE + 3].copy_from_slice(&[0xed, 0x83, 0x01]); // 0o40755
+        assert_eq!(walk(&marked), (None, 2), "a directory");
+    }
+
+    /// Ruling P2-R6: a main header that marks the archive one volume of a set
+    /// stops the walk before any entry, in either format, and no other flag
+    /// there does.
+    #[test]
+    fn a_volume_stops_the_walk_at_its_main_header() {
+        let rar5_main = |flags: u8| {
+            let blocks = [rar5_block(1, 0, &[flags]), rar5_file(&[]), rar5_end()];
+            let walked = walked(&rar5(&blocks));
+            (walked.stopped, walked.headers.len())
+        };
+        assert_eq!(rar5_main(0x01), (Some(ONE_VOLUME), 0), "RAR5");
+        assert_eq!(rar5_main(0x04), (None, 1), "RAR5, solid");
+        let rar4_main = |flags: u16| {
+            let mut main = vec![0, 0, 0x73];
+            main.extend(flags.to_le_bytes());
+            main.extend(13_u16.to_le_bytes());
+            main.resize(13, 0);
+            let walked = walked(&rar4(&[main, rar4_file(0, 0, None)]));
+            (walked.stopped, walked.headers.len())
+        };
+        assert_eq!(rar4_main(0x0001), (Some(ONE_VOLUME), 0), "RAR4");
+        assert_eq!(rar4_main(0x0008), (None, 1), "RAR4, solid");
+    }
+
+    /// An encrypted entry stops the walk where it starts, in either format,
+    /// keeping the entries before it.
+    #[test]
+    fn an_encrypted_entry_stops_the_walk_where_it_starts() {
+        let plain = [Header {
+            size: 5,
+            crc: Some(0x1234_5678),
+            target: None,
+        }];
+        // A RAR5 extra record of a size of 1, then type 1: encryption.
+        let blocks = [
+            rar5_file(&[]),
+            rar5_file(&[1, 1]),
+            rar5_file(&[]),
+            rar5_end(),
+        ];
+        let got = walked(&rar5(&blocks));
+        assert_eq!(
+            (got.stopped, &got.headers[..]),
+            (Some(ENCRYPTED), &plain[..]),
+            "RAR5"
+        );
+        let files = [
+            rar4_file(0, 0, None),
+            rar4_file(0x04, 0, None),
+            rar4_file(0, 0, None),
+        ];
+        let got = walked(&rar4(&files));
+        assert_eq!(
+            (got.stopped, &got.headers[..]),
+            (Some(ENCRYPTED), &plain[..]),
+            "RAR4"
         );
     }
 
@@ -972,8 +1444,13 @@ mod walk {
         let checked = [Header {
             size: 5,
             crc: Some(0x1234_5678),
+            target: None,
         }];
-        let unchecked = [Header { size: 5, crc: None }];
+        let unchecked = [Header {
+            size: 5,
+            crc: None,
+            target: None,
+        }];
         for host in 0..=2 {
             assert_eq!(headers(host, 0x20), checked, "host {host}: a file");
             assert_eq!(headers(host, 0x10), unchecked, "host {host}: a directory");
@@ -1064,19 +1541,24 @@ mod walk {
         let checked = Header {
             size: 5,
             crc: Some(7),
+            target: None,
         };
-        let unchecked = Header { size: 9, crc: None };
+        let unchecked = Header {
+            size: 9,
+            crc: None,
+            target: None,
+        };
         let walk = Walk {
             headers: vec![checked, unchecked],
             ..Walk::default()
         };
-        assert_eq!(walk.expected(0, Some(5)), Ok(Some(7)));
-        assert_eq!(walk.expected(0, Some(4)), Err(differ), "another size");
-        assert_eq!(walk.expected(0, None), Err(differ), "not a regular file");
-        assert_eq!(walk.expected(1, None), Ok(None), "nothing to meet");
-        assert_eq!(walk.expected(1, Some(1)), Ok(None), "nothing to meet");
+        assert_eq!(walk.listed(0, Some(5)), Ok(&checked));
+        assert_eq!(walk.listed(0, Some(4)), Err(differ), "another size");
+        assert_eq!(walk.listed(0, None), Err(differ), "not a regular file");
+        assert_eq!(walk.listed(1, None), Ok(&unchecked), "nothing to meet");
+        assert_eq!(walk.listed(1, Some(1)), Ok(&unchecked), "nothing to meet");
         assert_eq!(
-            walk.expected(2, Some(1)),
+            walk.listed(2, Some(1)),
             Err(differ),
             "an entry the walk lacks"
         );
@@ -1089,9 +1571,9 @@ mod walk {
             stopped: Some("cut"),
             solid: false,
         };
-        assert_eq!(cut.expected(0, Some(5)), Ok(Some(7)), "read before the cut");
+        assert_eq!(cut.listed(0, Some(5)), Ok(&checked), "read before the cut");
         assert_eq!(
-            cut.expected(1, Some(5)),
+            cut.listed(1, Some(5)),
             Err("cut"),
             "the cause, past the cut"
         );

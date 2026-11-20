@@ -4,7 +4,9 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use super::*;
-use crate::scan::tests::{write_archive, write_archive_labelled, write_pages};
+use crate::scan::tests::{
+    READABLE_RAR, rar_fixture, write_archive, write_archive_labelled, write_pages,
+};
 use crate::test_support::library_of_root;
 use crate::{Library, derive, libraries, scan};
 
@@ -78,7 +80,8 @@ fn switch(conn: &Connection, library: i64, on: bool) {
 
 /// The EPUB and the empty chapter folder are claimed, so only the due rule's
 /// own filters keep them out: the EPUB by its format, the folder by its page
-/// count.
+/// count. A RAR is due in a build that reads RAR, and refused by its format
+/// in one that does not.
 #[test]
 fn due_takes_paged_units_of_covered_roots() {
     let tree = crate::tests::tempdir("fingerprints-due");
@@ -90,11 +93,11 @@ fn due_takes_paged_units_of_covered_roots() {
     taiyaku_read::test_support::epub(&top.join("Story"), "Story v01.epub", &["One."]);
     std::fs::create_dir_all(top.join("Gamma").join("Gamma - c001")).expect("mkdir");
     std::fs::create_dir_all(top.join("Delta")).expect("mkdir");
-    std::fs::write(
+    std::fs::copy(
+        rar_fixture(READABLE_RAR).path,
         top.join("Delta").join("Delta v01.cbr"),
-        b"Rar!\x1a\x07\x00 one",
     )
-    .expect("write");
+    .expect("copies the fixture");
     let library = Library::open_in_memory().expect("open");
     let conn = library.conn();
     let root = scanned(&conn, top);
@@ -142,11 +145,18 @@ fn due_takes_paged_units_of_covered_roots() {
         !due.contains_key("Gamma/Gamma - c001"),
         "a folder of no page has nothing to read"
     );
-    assert!(
-        !due.contains_key("Delta/Delta v01.cbr"),
-        "a RAR is not read"
+    let reads_rar = Format::Rar.is_readable();
+    let rar = due.get("Delta/Delta v01.cbr");
+    assert_eq!(rar.is_some(), reads_rar, "a RAR is read where RAR is read");
+    if let Some(rar) = rar {
+        assert!(rar.sha256.is_some(), "with the digest the derive took");
+        assert_eq!(rar.sha256, digest_at(&conn, root.id, "Delta/Delta v01.cbr"));
+    }
+    assert_eq!(
+        due.len(),
+        3 + usize::from(reads_rar),
+        "and nothing else is due"
     );
-    assert_eq!(due.len(), 3, "and nothing else is due");
 }
 
 /// Directory D is in libraries A and B, and Inner, nested in D, is in C alone.
@@ -754,6 +764,51 @@ fn a_row_numbering_other_pages_than_the_files_count_is_due_whatever_its_build() 
     }
 }
 
+/// D8: a re-count keeps a RAR's digest as it keeps a zip's, so a RAR row
+/// numbering other pages than this reader counts in the file is due again, in
+/// a build that reads RAR, and settled once a read brings it to the count. A
+/// build without a RAR backend reads no RAR.
+#[test]
+fn a_rar_row_numbering_other_pages_than_the_files_count_is_due() {
+    const PATH: &str = "Alpha/Alpha v01.cbz";
+    let fixture = rar_fixture(READABLE_RAR);
+    let tree = crate::tests::tempdir("fingerprints-rar-other-pages");
+    std::fs::create_dir_all(tree.path().join("Alpha")).expect("mkdir");
+    std::fs::copy(&fixture.path, tree.path().join(PATH)).expect("copies the fixture");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scanned(&conn, tree.path());
+    derive::derive(&conn).expect("derives");
+    if !Format::Rar.is_readable() {
+        assert!(
+            !due_by_path(&conn, None).contains_key(PATH),
+            "a build without a RAR backend reads no RAR"
+        );
+        return;
+    }
+    let sha256 = digest_at(&conn, root.id, PATH).expect("the derive's digest");
+    let unit = due_by_path(&conn, None).remove(PATH).expect("no row yet");
+    let pages = u32::try_from(fixture.pages.len()).expect("a few pages");
+    let numbering = |pages: u32| Row {
+        pages,
+        ..a_row(&sha256, VERSION, Outcome::Whole, None)
+    };
+
+    store(&conn, &numbering(pages - 1)).expect("stores");
+    assert!(due_by_path(&conn, None).contains_key(PATH), "it is listed");
+    assert!(
+        still_due(&conn, &unit, VERSION, None).expect("asks"),
+        "it is still due as the pass reaches it"
+    );
+
+    store(&conn, &numbering(pages)).expect("stores");
+    assert!(!due_by_path(&conn, None).contains_key(PATH), "at its count");
+    assert!(
+        !still_due(&conn, &unit, VERSION, None).expect("asks"),
+        "at its count it is settled as the pass reaches it"
+    );
+}
+
 /// Each count a read of the file cannot bring a row to: were any of these due,
 /// every pass would read the file and store the same row again.
 #[test]
@@ -791,7 +846,10 @@ fn a_row_no_read_would_renumber_stays_settled() {
         "a count another reader took says nothing until a scan counts it again"
     );
 
-    let signature = zip_signature().expect("a zip has a signature");
+    let signature = Format::Zip
+        .token()
+        .and_then(taiyaku_read::reader_signature)
+        .expect("a zip has a signature");
     set_entry(
         &conn,
         root.id,

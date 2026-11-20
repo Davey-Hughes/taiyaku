@@ -167,6 +167,7 @@ it mutates only changed code and takes minutes.
 | 2026-11-18 | RAR PR 1 after the fixes to its header walk, `--since main` (316 mutants) | **280 caught, 26 unviable, 10 missed, 0 timeouts.** Six of the ten are the accepted entries, re-keyed below. The other four are the equivalents recorded under `rar/libarchive/headers.rs`, `\|` as `^` on values that share no bit; each was also applied by hand and every `taiyaku-read` test passed |
 | 2026-11-17 | JPEG XL pages, `--since main` on the branch as its review fixes left it (202 mutants, 82 m), then `--file` `jxl.rs` twice after the kills (92 mutants, 38 m and 31 m) | **The sweep: 131 caught, 62 unviable, 8 missed, 1 timeout. The last re-run of `jxl.rs`: 42 caught, 50 unviable, 0 missed, 0 timeouts.** All eight missed were in code the branch wrote, and each is killed by a test the branch added for it, put back by hand and watched failing: `METADATA_CAP`'s two `*` as `+` (a cap of about 1 MiB or 17 KiB) fail `a_page_whose_metadata_is_well_under_the_cap_decodes` and `…_is_rebuilt` (two 4 MiB boxes); `metadata_fits`' `>` as `>=` fails `metadata_that_inflates_to_exactly_the_cap_is_accepted`; its `-=` as `+=` fails `two_boxes_each_under_the_cap_are_refused_together_over_it` and as `/=` the two 4 MiB tests; `boxes`' `<` as `==` and as `<=` end the walk at an empty box and fail `an_empty_box_ahead_of_a_bomb_does_not_hide_it`, the input on which they and the original differ, a box whose size is its header's; and `onto_white`'s rounding `+ 127` as `* 127`, which turns a part-transparent pixel white while leaving alpha 0 and 255 alone, fails `a_part_transparent_pixel_is_blended_onto_white`. None is baselined. **The first re-run reported both `METADATA_CAP` mutants as unviable, not caught**: the two-box test had checked its fixture against the cap in a `const` block, so a changed cap stopped the tests compiling, and cargo-mutants counts a build that fails as a mutant that cannot be built. The test now checks it at run time, and the second re-run catches all four of the cap's operator mutants. `cover.rs` was not re-swept: the script scopes by file, not by function, and of `cover.rs`'s 93 mutants 14 are `onto_white`'s; its survivor was put back by hand instead. **The timeout is a hang the tests detected**: `scan_root_inner -> Ok(None)` leaves a scan with no outcome, and a test waiting on it ran into the 1,204 s bound. **The 62 unviable were read against the branch.** Fifty are `jxl.rs`'s: `image::ImageResult` is an alias, and for it cargo-mutants writes `ImageResult::new()` and `::from(…)`, never `Ok(…)`; `ColorType` and `ImageError` derive no `Default`; and `boxes`' `iter::once` bodies do not compile. That left seven functions with no viable mutant, and `routes::page_variant` an eighth (`PageVariant` derives no `Default`), so their whole-body mutants were put in by hand, with `whole_first_frame`'s: `color_type` as `L8` failed 24 tests, `set_limits` as `Ok(())` 2, `read_image` and `read_image_boxed` as `Ok(())` 10 each, `out_of_memory_as_limits` returning its error 1, `whole_first_frame` as `Ok(())` 3, and `page_variant` as `Stored` 10 and as `JxlAsJpeg` 8. `icc_profile` and `exif_metadata` as `Ok(None)` failed nothing, and are equivalent as the code stands: nothing in the workspace, and nothing in `image` 0.25.9's decode, reads either. The other twelve replace a whole body with a value that does not compile there (`as_variant`'s `ServedPage`, `scan_root_inner`'s `Outcome`, `due`'s `Due`, `held_for`'s `Held`, `report::prepare`'s `PageHash`), and each of those functions has viable mutants that were caught. cargo-mutants makes no mutant of a string literal or SQL, so five were put wrong by hand: `"image/jxl"` in `names_jpeg_xl` failed 8 tests, among them `page_variant_reads_whether_accept_names_jpeg_xl`; `jxl_variant_at`'s `-j` failed 4, among them `the_jpeg_cache_name_is_the_page_tag`; `reader_signature` without its `zip:` failed `the_reader_signature_names_every_page_extension_for_zip`; `copy_entry` without `counted_by` in either column list failed `removing_a_nested_directory_hands_its_files_to_the_directory_around_it`; and the scan's `INSERT` without `counted_by`, its `?9` still bound, failed 3, among them `a_new_or_changed_archive_records_this_readers_signature` |
 | 2026-11-19 | the colour profile cap (O350), `--since main`, twice: on the branch as its two code commits left it, with the cap at 1 MiB, then after its review fixes and its first rebase onto main (`f5fa08df`), started 11:13 UTC (26 mutants, 17 m each) | **26 caught, 0 unviable, 0 missed, 0 timeouts, both times.** The branch's later rebase onto main changed no code the sweep mutated. Each mutant of the new code, `ICC_CAP`, `icc_fits`, `codestream` and the check added at each call site, was caught both times by a colour-profile test the branch added; in the second run, `ICC_CAP`'s `*` as `+` was also caught by the test of the worst profile the cap passes, at its fixture check. cargo-mutants makes no mutant of `icc_fits` refusing a size it cannot read or a header that does not parse, nor of `codestream` keeping a `jxlp` payload's index or ending after the first box; each was put in by hand and watched failing (`docs/notes.md`, "JPEG XL pages: a cap on the embedded colour profile (O350, 2026-11-19)") |
+| 2026-11-19 | RAR PR 2 (libraries read RAR), `--since main`, twice, before the whole-branch review's fixes (232 mutants each, 46 m and 44 m) | **The first run: 198 caught, 26 unviable, 7 missed, 1 timeout; the second: 203 caught, 26 unviable, 2 missed, 1 timeout.** Five of the first run's seven were real, and each is killed by a test watched failing against it put back by hand: `visit`'s `==` as `!=` drops a target's kept bytes at the first of two references to it, which no fixture had, so `rar5-two-references.rar` is one now; `pages_of`'s reflowable-EPUB guard as `true` gives a fixed-layout EPUB a count and a title; and in a passthrough's name and type, `sent_as`'s guard as `true` renames a `.zip` to `.cbz`, `type_for` without its `cbr`/`rar` arm sends a `.cbr` of unknown bytes as `application/octet-stream`, and `renamed`'s guard as `false` turns `.CBZ` into `.cbz`. The other two are equivalent `\|`-as-`^` entries below that this branch moved: they are re-keyed, as is their packed-size twin, which no hunk of the branch reaches (its key from `cargo mutants --list`), and the entry for `SPLIT \| ENCRYPTED` is dropped with the expression. The timeout is `scan_root_inner -> Ok(None)`, a scan with no outcome that a test waits on. Every unviable mutant replaces a whole body with a value that does not compile there, which left seven functions with no viable mutant: `member_page`, `rar_member_page`, `libarchive::open` and `listed`, `Walk::listed` and `bytes_of`, and `download::prepare`. A mutant put in by hand failed tests in each. **The two `Libarchive::name` entries are dropped**: `pages::tests::the_reader_signature_names_libarchives_build_time_version_for_rar` kills both (`.superpowers/sdd/rar-pr2-evidence/CC2-fix-name-mutants.log`) |
 
 <!-- entries -->
 
@@ -733,9 +734,6 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-
-### `crates/taiyaku-library/src/librarydoc.rs`
-
 - `crates/taiyaku-library/src/librarydoc.rs:730:5: replace apply_with_series_id -> Result<(), String> with Ok(())`
   DEFERRED behind **O87**, and verified false rather than assumed so — for the
   second time, on the same function. Every suite in `taiyaku-library` passes
@@ -856,8 +854,8 @@ it mutates only changed code and takes minutes.
   and prints the total on every run for exactly that reason. Triaging one means
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
-- `crates/taiyaku-library/src/proposals.rs:2446:40: replace - with + in interior_indices`
-  Equivalent: the bound becomes `page_count + 1`.
+- `crates/taiyaku-library/src/proposals.rs:2446:40: replace - with / in interior_indices`
+  Equivalent: the bound becomes `page_count / 1`, which is `page_count`.
   **The upper half of the `clamp` never fires**, so raising its bound cannot
   change a returned value: `page_count * 3 / 5 <= page_count - 1` holds for
   every `page_count >= 2`, and the function returns empty below two.
@@ -870,8 +868,8 @@ it mutates only changed code and takes minutes.
   whichever fractions somebody later picks. A test could only kill them by
   asserting on fractions that do not exist, and a fix that deleted the bound
   would leave the next fraction free to run off the end.
-- `crates/taiyaku-library/src/proposals.rs:2446:40: replace - with / in interior_indices`
-  Equivalent: the bound becomes `page_count / 1`, which is `page_count`.
+- `crates/taiyaku-library/src/proposals.rs:2446:40: replace - with + in interior_indices`
+  Equivalent: the bound becomes `page_count + 1`.
   **The upper half of the `clamp` never fires**, so raising its bound cannot
   change a returned value: `page_count * 3 / 5 <= page_count - 1` holds for
   every `page_count >= 2`, and the function returns empty below two.
@@ -1177,33 +1175,16 @@ it mutates only changed code and takes minutes.
   deciding which of three it is: an equivalent mutant, a decision inside output
   nobody asserts on, or a missing assertion. Only the third is work on the tests.
 
-### `crates/taiyaku-read/src/rar/libarchive.rs`
-
-- `crates/taiyaku-read/src/rar/libarchive.rs:20:9: replace <impl Backend for Libarchive>::name -> &'static str with ""`
-  **A decision inside output nobody asserts on.** Only tests call
-  `Backend::name` (outside them it is `expect(dead_code)`): to say in a
-  failure which backend ran, to name each backend's copies in the strace test,
-  and to tell the chosen backend from the first compiled one, against what the
-  same function returns elsewhere. Neither name the sweep tries matters to
-  them, since neither is a test backend's (`"absent"`, `"hands-nothing"`).
-  There is no decision to extract; a test of the string would pin a label's
-  spelling.
-- `crates/taiyaku-read/src/rar/libarchive.rs:20:9: replace <impl Backend for Libarchive>::name -> &'static str with "xyzzy"`
-  **A decision inside output nobody asserts on**, as the empty name above is.
-
 ### `crates/taiyaku-read/src/rar/libarchive/headers.rs`
 
-- `crates/taiyaku-read/src/rar/libarchive/headers.rs:348:55: replace | with ^ in rar4_fields`
+- `crates/taiyaku-read/src/rar/libarchive/headers.rs:520:55: replace | with ^ in rar4_fields`
   **Equivalent mutant.** The low half of the packed size is a `u32` widened to
   `u64`, so it is below 2^32, and the high half is shifted left past it. No bit
   is set in both, so `|` and `^` give the same value.
-- `crates/taiyaku-read/src/rar/libarchive/headers.rs:350:62: replace | with ^ in rar4_fields`
-  **Equivalent mutant**, as `:348:55` is, for the unpacked size.
-- `crates/taiyaku-read/src/rar/libarchive/headers.rs:365:29: replace | with ^ in rar4_file`
+- `crates/taiyaku-read/src/rar/libarchive/headers.rs:525:62: replace | with ^ in rar4_fields`
+  **Equivalent mutant**, as `:520:55` is, for the unpacked size.
+- `crates/taiyaku-read/src/rar/libarchive/headers.rs:544:29: replace | with ^ in rar4_file`
   **Equivalent mutant.** `0x01` and `0x02`, the two flags `SPLIT` joins, share
-  no bit.
-- `crates/taiyaku-read/src/rar/libarchive/headers.rs:375:45: replace | with ^ in rar4_file`
-  **Equivalent mutant.** `SPLIT` is `0x03` and `ENCRYPTED` is `0x04`, which share
   no bit.
 
 ### `crates/taiyaku-serve/src/auth.rs`
@@ -1261,19 +1242,6 @@ it mutates only changed code and takes minutes.
   different connections. `session::tests::a_failure_the_limiter_cannot_record_is_answered_as_a_lockout`
   and its `Basic` twin cover the case where both fail.
 
-### `crates/taiyaku-serve/src/fingerprint.rs`
-
-- `crates/taiyaku-serve/src/fingerprint.rs:200:22: replace || with && in flat_border`
-  Equivalent. Neither half of `right <= left || bottom <= top` can hold: the
-  guard above it returns for a page under 8 on either axis, and each side's
-  scan stops a quarter of the way in, so `left` ends at most at `w / 4` and
-  `right` at least at `w - 1 - w / 4`, which is greater for every `w` of 8 or
-  more, and `top` and `bottom` likewise. No page tells `||` from `&&`; only
-  deleting the guard would kill it. The first workspace-wide sweep,
-  2026-08-19, recorded it as UNTRIAGED at
-  `crates/taiyaku-cli/src/fingerprint.rs:167:22`; it was triaged when content
-  matching's PR 2 moved the code here.
-
 ### `crates/taiyaku-serve/src/fingerprint_pass/read.rs`
 
 - `crates/taiyaku-serve/src/fingerprint_pass/read.rs:229:25: replace && with || in walk`
@@ -1286,6 +1254,19 @@ it mutates only changed code and takes minutes.
   Equivalent. The walk stops at the listed count, so `prints.len()` never
   passes it, and `<=` adds only the case where the two are equal, where
   `resize(count, None)` changes nothing.
+
+### `crates/taiyaku-serve/src/fingerprint.rs`
+
+- `crates/taiyaku-serve/src/fingerprint.rs:200:22: replace || with && in flat_border`
+  Equivalent. Neither half of `right <= left || bottom <= top` can hold: the
+  guard above it returns for a page under 8 on either axis, and each side's
+  scan stops a quarter of the way in, so `left` ends at most at `w / 4` and
+  `right` at least at `w - 1 - w / 4`, which is greater for every `w` of 8 or
+  more, and `top` and `bottom` likewise. No page tells `||` from `&&`; only
+  deleting the guard would kill it. The first workspace-wide sweep,
+  2026-08-19, recorded it as UNTRIAGED at
+  `crates/taiyaku-cli/src/fingerprint.rs:167:22`; it was triaged when content
+  matching's PR 2 moved the code here.
 
 ### `crates/taiyaku-serve/src/lib.rs`
 

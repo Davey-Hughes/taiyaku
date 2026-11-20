@@ -2,6 +2,4 @@ format	rar5
 entry	p01.png	file	325
 entry	p02.png	encrypted	321
 entry	p03.png	file	327
-page	p01.png	258b2a2282f9ea2600d978f6dd8d0d7325a6ce38be64a1857afb8cab9219deae
-page	p02.png	encrypted
-page	p03.png	ff7b0f6ce82f56d5e54a04e5828a65f62ea66e6f8c7623fc8e63d60cb4cbd9f9
+refused	not a readable RAR archive: an entry is encrypted

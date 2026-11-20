@@ -433,7 +433,7 @@ fn a_corpus_edition_with_members(
 /// A `(router, slug, edition key, absolute path)` over the first corpus edition
 /// whose one member is a plain file — not a directory of loose page images,
 /// which several of this corpus's `raw-mono` editions are, and which
-/// `download::passthrough_extension`'s `paths[0].is_file()` guard already
+/// `download::passthrough_as`'s `paths[0].is_file()` guard already
 /// routes away from passthrough. Scanned rather than taken on faith, like
 /// [`a_corpus_edition_with_members`] above.
 ///

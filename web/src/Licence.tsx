@@ -1,7 +1,7 @@
 /**
- * `/about/licence`: taiyaku's licence and then each font's, every one above
- * its full text, as `licenceTexts.ts` bundles them from their files, under a
- * list of contents that links to each.
+ * `/about/licence`: taiyaku's licence, then each font's, then libarchive's,
+ * every one above its full text, as `licenceTexts.ts` bundles them from
+ * their files, under a list of contents that links to each.
  *
  * **The texts arrive by `import()`**, so they are a chunk this page loads
  * and the entry chunk every page loads does not carry them. Until the chunk
@@ -70,6 +70,9 @@ let loaded: Texts | undefined
 
 const OFL = `the SIL Open Font License, version 1.1 (${FONT_LICENCE})`
 
+/** libarchive's licence. Not in `spdx.ts`, since About does not name it. */
+const LIBARCHIVE_LICENCE = 'BSD-2-Clause'
+
 /**
  * The licensed works, in the order the page draws them. `id` is the
  * section heading's, and so the fragment that leads to it: written here
@@ -110,6 +113,13 @@ const WORKS: readonly {
     licence: FONT_LICENCE,
     terms: `Seven characters cut from Zen Kaku Gothic New, licensed under ${OFL}.`,
     text: 'marks',
+  },
+  {
+    id: 'libarchive',
+    name: 'libarchive',
+    licence: LIBARCHIVE_LICENCE,
+    terms: `The library that reads RAR archives in a build with RAR support (the container image is one), licensed under the BSD 2-Clause License (${LIBARCHIVE_LICENCE}), with the exceptions its notice lists.`,
+    text: 'libarchive',
   },
 ]
 

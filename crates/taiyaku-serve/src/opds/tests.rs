@@ -949,13 +949,13 @@ async fn a_feed_streams_the_pages_of_a_comic_archive_named_epub() {
 
 /// **The work feed asks the filesystem off the async worker** — O120.
 ///
-/// `download::advertised_type` stats an edition of one member to learn what a
-/// download of it will be sent as, and `work_feed` must not do that in the
-/// handler, on the async worker. A `stat` of a file on this machine's disk
-/// answers at once, so nothing stands still for
-/// `test_support::the_runtime_stalls_on`'s watchdog to notice, and the feed is
-/// the same wherever the `stat` ran. So this asks the kernel which thread
-/// made it.
+/// `download::advertised_type` stats an edition of one member, and sniffs one
+/// no scan holds, as these are, to learn what a download of it will be sent
+/// as, and `work_feed` must not do that in the handler, on the async worker.
+/// A `stat` of a file on this machine's disk answers at once, so nothing
+/// stands still for `test_support::the_runtime_stalls_on`'s watchdog to
+/// notice, and the feed is the same wherever the `stat` ran. So this asks the
+/// kernel which thread made it.
 ///
 /// The test runs itself again as a child under `strace`, as O104's tests do.
 /// The child builds a current-thread runtime and calls the handler through
@@ -988,7 +988,8 @@ fn the_work_feed_stats_its_members_on_the_blocking_pool() {
     let work_dir = dir.join("work");
     std::fs::create_dir(&work_dir).unwrap();
     for (_, member, _) in MEMBERS {
-        std::fs::write(work_dir.join(member), b"statted, never read").unwrap();
+        // No signature, so each is typed by its name.
+        std::fs::write(work_dir.join(member), b"statted and sniffed").unwrap();
     }
 
     let log = taiyaku_read::test_support::strace(
@@ -2684,9 +2685,10 @@ mod narrowing {
         (declared, href)
     }
 
-    /// An account that sees one member of a merged edition, a file that is
-    /// not a `.cbz`, is advertised that file's own type and is sent that file:
-    /// the feed's type and the download it links describe one thing.
+    /// An account that sees one member of a merged edition, a zip named
+    /// `.cbr`, is advertised the type of its bytes and is sent that file under
+    /// that type and its extension (plan D6): the feed's type and the download
+    /// it links describe one thing, and neither is the name's.
     #[tokio::test]
     async fn a_narrowed_editions_one_member_is_advertised_and_sent_as_itself() {
         let merged =
@@ -2712,13 +2714,20 @@ mod narrowing {
         let on_disk = std::fs::read(&sidecar.editions["raw"].members[1].path).expect("part2");
 
         let (declared, href) = raw_acquisition(&merged, Reader::KidsOnly).await;
-        assert_eq!(declared, "application/vnd.comicbook-rar");
+        assert_eq!(declared, crate::download::CBZ_TYPE);
         let sent = merged.get(Reader::KidsOnly, &href, None).await;
         assert_eq!(sent.status(), StatusCode::OK, "{href}");
         assert_eq!(
             sent.headers()[header::CONTENT_TYPE].to_str().unwrap(),
             declared,
             "{href} is sent as the feed declared it"
+        );
+        let disposition = sent.headers()[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap();
+        assert!(
+            disposition.contains(".cbz\""),
+            "{href} is named as a zip: {disposition}"
         );
         assert!(sent.body() == &on_disk, "{href} is part2 byte for byte");
     }

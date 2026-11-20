@@ -29,6 +29,12 @@ image = { version = "0.25.9", default-features = false, features = ["png"], opti
 # build without it links no libarchive and refuses RAR.
 compress-tools = { version = "0.16", optional = true }
 
+[build-dependencies]
+# Optional, with the libarchive backend: `build.rs` asks it for the libarchive
+# version the reader signature names. The version compress-tools' own build
+# script already uses, so the lock holds one copy.
+pkg-config = { version = "0.3.34", optional = true }
+
 # Exposes `test_support` to other crates' tests. Enabled only from a
 # `[dev-dependencies]` entry, so it reaches test builds and `--all-features`
 # builds and no binary this workspace ships — see that module's own doc for
@@ -36,7 +42,7 @@ compress-tools = { version = "0.16", optional = true }
 [features]
 test-support = ["dep:image"]
 # `build.rs` sets the `rar` cfg when any RAR backend's feature is on.
-rar-libarchive = ["dep:compress-tools"]
+rar-libarchive = ["dep:compress-tools", "dep:pkg-config"]
 
 [lints]
 workspace = true

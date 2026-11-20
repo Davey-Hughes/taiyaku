@@ -1,0 +1,4 @@
+format	rar4
+entry	p01.png	file	326
+entry	p02.png	file	321
+refused	not a readable RAR archive: an entry uses RAR 2.0 compression or another method libarchive does not decode

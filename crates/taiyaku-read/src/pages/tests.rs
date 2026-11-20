@@ -1338,8 +1338,9 @@ fn a_jpeg_xl_entry_is_a_page() {
     );
 }
 
-/// Every page extension is in the zip signature, so adding one counts each zip
-/// again; no other format has one, so a change here counts no other file again.
+/// Every page extension is in the zip signature, and the RAR one, so adding one
+/// counts each zip and RAR again; no other format has a signature, so a change
+/// here counts no other file again.
 #[test]
 fn the_reader_signature_names_every_page_extension_for_zip() {
     let zip = reader_signature("zip");
@@ -1349,16 +1350,48 @@ fn the_reader_signature_names_every_page_extension_for_zip() {
         zip.as_deref().is_some_and(|zip| zip.ends_with(",jxl")),
         "{zip:?}"
     );
-    for token in [
-        "dir",
-        "epub-reflow",
-        "epub-fixed",
-        "pdf",
-        "rar",
-        "7z",
-        "tar",
-        "",
-    ] {
+    for token in ["dir", "epub-reflow", "epub-fixed", "pdf", "7z", "tar", ""] {
         assert_eq!(reader_signature(token), None, "{token:?}");
     }
+}
+
+/// Ruling P2-R5: the RAR signature names the backend and the libarchive
+/// version pkg-config gave the build, so a build that gains RAR counts every
+/// RAR again.
+///
+/// pkg-config is found as the `pkg-config` crate finds it for the build script
+/// of a native build where no target-specific or `HOST_` variable is set:
+/// `PKG_CONFIG` where it is set, else `pkg-config`, else `pkgconf`, so a build
+/// pointed at another pkg-config is checked against it.
+#[cfg(rar)]
+#[test]
+fn the_reader_signature_names_libarchives_build_time_version_for_rar() {
+    let version = env!("TAIYAKU_LIBARCHIVE_VERSION");
+    let modversion = |exe: &std::ffi::OsStr| {
+        std::process::Command::new(exe)
+            .args(["--modversion", "libarchive"])
+            .output()
+    };
+    let probed = match std::env::var_os("PKG_CONFIG") {
+        Some(exe) => modversion(&exe),
+        None => modversion("pkg-config".as_ref()).or_else(|_| modversion("pkgconf".as_ref())),
+    }
+    .expect("pkg-config runs, as it did for the build");
+    assert!(probed.status.success(), "{probed:?}");
+    assert_eq!(String::from_utf8_lossy(&probed.stdout).trim(), version);
+
+    assert_eq!(
+        reader_signature("rar"),
+        Some(format!(
+            "rar:libarchive-{version}:{}",
+            IMAGE_EXTENSIONS.join(",")
+        ))
+    );
+}
+
+/// A build without a RAR backend counts no RAR, so it has no RAR signature.
+#[cfg(not(rar))]
+#[test]
+fn a_build_without_a_rar_backend_has_no_rar_signature() {
+    assert_eq!(reader_signature("rar"), None);
 }

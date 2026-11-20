@@ -3384,10 +3384,12 @@ fn under(root: &scan::Root, rel_path: &str) -> String {
 }
 
 /// O90's own case. A RAR archive named `.cbz` is sniffed as `rar` from its
-/// bytes and refused by format, and the refusal is counted under the token
-/// its bytes gave rather than under what its name claims.
+/// bytes and refused for them, not for what its name claims: by format in a
+/// build without a RAR backend, counted under the token its bytes gave, and in
+/// a build with one, where a header and no archive behind it has no count, as
+/// a file named uncounted.
 #[test]
-fn a_rar_archive_named_cbz_is_refused_by_its_bytes_and_counted_as_rar() {
+fn a_rar_header_named_cbz_is_refused_by_its_bytes() {
     let tree = crate::tests::tempdir("derive-rar-named-cbz");
     let series = tree.path().join("Vagabond");
     write_pages(&series.join("Vagabond - v01"), 2);
@@ -3404,19 +3406,29 @@ fn a_rar_archive_named_cbz_is_refused_by_its_bytes_and_counted_as_rar() {
     let report = derive::derive(&conn).expect("derive");
 
     assert_eq!(report.works, 1, "v01, and not the RAR");
+    let rar = "Vagabond/Vagabond - v02.cbz";
     assert_eq!(
         report.unreadable,
-        derive::Unreadable {
-            by_format: formats(&[("rar", 1)]),
-            ..derive::Unreadable::default()
+        if taiyaku_read::Format::Rar.is_readable() {
+            derive::Unreadable {
+                uncounted: vec![under(&root, rar)],
+                ..derive::Unreadable::default()
+            }
+        } else {
+            derive::Unreadable {
+                by_format: formats(&[("rar", 1)]),
+                ..derive::Unreadable::default()
+            }
         },
     );
 }
 
 /// `by_format` counts per token, so a library holding two refused formats
-/// says how many of each. Two RARs, one 7-Zip and a file no signature matched,
-/// which has no token and is counted as `unknown`, the spelling
-/// `taiyaku-serve`'s `stamp` already gives a format nothing recognised.
+/// says how many of each. Two RAR headers, one 7-Zip and a file no signature
+/// matched, which has no token and is counted as `unknown`, the spelling
+/// `taiyaku-serve`'s `stamp` already gives a format nothing recognised. A
+/// build with a RAR backend admits RAR, so it names the two headers, which have
+/// no count, as uncounted instead.
 #[test]
 fn each_refused_format_is_counted_under_its_own_token() {
     let tree = crate::tests::tempdir("derive-refused-formats");
@@ -3437,11 +3449,24 @@ fn each_refused_format_is_counted_under_its_own_token() {
 
     let report = derive::derive(&conn).expect("derive");
 
+    let mut unreadable = report.unreadable;
+    unreadable.uncounted.sort();
     assert_eq!(
-        report.unreadable,
-        derive::Unreadable {
-            by_format: formats(&[("7z", 1), ("rar", 2), ("unknown", 1)]),
-            ..derive::Unreadable::default()
+        unreadable,
+        if taiyaku_read::Format::Rar.is_readable() {
+            derive::Unreadable {
+                by_format: formats(&[("7z", 1), ("unknown", 1)]),
+                uncounted: vec![
+                    under(&root, "Series/Series - v01.cbz"),
+                    under(&root, "Series/Series - v02.cbr"),
+                ],
+                ..derive::Unreadable::default()
+            }
+        } else {
+            derive::Unreadable {
+                by_format: formats(&[("7z", 1), ("rar", 2), ("unknown", 1)]),
+                ..derive::Unreadable::default()
+            }
         },
     );
 }
@@ -3471,6 +3496,128 @@ fn an_archive_of_jpeg_xl_pages_is_a_member_with_its_pages_counted() {
         )
         .expect("the JPEG XL member");
     assert_eq!(pages, 3, "its pages counted");
+}
+
+/// The RAR fixtures, each copied into `series` as a volume of it named `.cbz`,
+/// as most RARs are, in the fixtures' order: `(fixture, rel_path)`.
+fn rar_volumes(
+    fixtures: Vec<taiyaku_read::test_support::RarFixture>,
+    series: &std::path::Path,
+) -> Vec<(taiyaku_read::test_support::RarFixture, String)> {
+    std::fs::create_dir_all(series).expect("mkdir");
+    let name = series
+        .file_name()
+        .expect("a series directory")
+        .to_string_lossy()
+        .into_owned();
+    (1..)
+        .zip(fixtures)
+        .map(|(volume, fixture)| {
+            let file = format!("{name} - v{volume:02}.cbz");
+            std::fs::copy(&fixture.path, series.join(&file)).expect("copies the fixture");
+            (fixture, format!("{name}/{file}"))
+        })
+        .collect()
+}
+
+/// Each RAR fixture that reads whole is a member with the pages its manifest
+/// lists counted, a volume and a work of its own, in a build with a RAR
+/// backend. A build without one refuses each by its format, as O90 did.
+#[test]
+fn a_rar_archive_is_a_member_with_its_pages_counted_in_a_build_that_reads_rar() {
+    let tree = crate::tests::tempdir("derive-rar-counted");
+    let readable = rar_volumes(
+        taiyaku_read::test_support::rar_fixtures()
+            .into_iter()
+            .filter(|fixture| fixture.refused.is_none() && !fixture.pages.is_empty())
+            .collect(),
+        &tree.path().join("Rar"),
+    );
+    assert!(readable.len() > 1, "the fixture: RARs that read whole");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+
+    let report = derive::derive(&conn).expect("derive");
+
+    if !taiyaku_read::Format::Rar.is_readable() {
+        assert_eq!(report.works, 0, "{report:?}");
+        assert_eq!(
+            report.unreadable,
+            derive::Unreadable {
+                by_format: formats(&[("rar", readable.len())]),
+                ..derive::Unreadable::default()
+            },
+        );
+        return;
+    }
+    assert_eq!(report.works, readable.len(), "one work a volume");
+    assert_eq!(report.unreadable, derive::Unreadable::default());
+    for (fixture, rel_path) in &readable {
+        let pages: i64 = conn
+            .query_row(
+                "SELECT pages FROM member WHERE path = ?1",
+                [under(&root, rel_path)],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("{}: a member: {e}", fixture.file));
+        assert_eq!(
+            usize::try_from(pages).ok(),
+            Some(fixture.pages.len()),
+            "{}",
+            fixture.file
+        );
+    }
+}
+
+/// Each RAR fixture refused at the count, and the one that holds no page, is
+/// named as uncounted in a build with a RAR backend: the derive admits RAR
+/// there, and the scan had no count to give it. A build without one refuses
+/// each by its format.
+#[test]
+fn a_rar_archive_refused_at_the_count_is_named_as_uncounted_in_a_build_that_reads_rar() {
+    let tree = crate::tests::tempdir("derive-rar-uncounted");
+    let refused = rar_volumes(
+        taiyaku_read::test_support::rar_fixtures()
+            .into_iter()
+            .filter(|fixture| fixture.refused.is_some() || fixture.pages.is_empty())
+            .collect(),
+        &tree.path().join("Rar"),
+    );
+    assert!(
+        refused.iter().any(|(fixture, _)| fixture.refused.is_none()),
+        "the fixture: a RAR holding no page"
+    );
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scan::add_root(&conn, tree.path()).expect("add");
+    scan::scan_root(&conn, &root).expect("scan");
+
+    let report = derive::derive(&conn).expect("derive");
+
+    assert_eq!(report.works, 0, "{report:?}");
+    let mut unreadable = report.unreadable;
+    unreadable.uncounted.sort();
+    let mut uncounted: Vec<String> = refused
+        .iter()
+        .map(|(_, rel_path)| under(&root, rel_path))
+        .collect();
+    uncounted.sort();
+    assert_eq!(
+        unreadable,
+        if taiyaku_read::Format::Rar.is_readable() {
+            derive::Unreadable {
+                uncounted,
+                ..derive::Unreadable::default()
+            }
+        } else {
+            derive::Unreadable {
+                by_format: formats(&[("rar", refused.len())]),
+                ..derive::Unreadable::default()
+            }
+        },
+    );
 }
 
 /// A zip that opens cleanly and holds only HEIC pages, which `taiyaku-read`

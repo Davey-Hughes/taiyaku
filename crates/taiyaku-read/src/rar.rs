@@ -18,13 +18,21 @@ pub(crate) struct Entry {
     /// refuses the whole archive as not a readable RAR archive, where a zip
     /// keeps the page under a garbled name: the RAR4 row in `docs/status.md`.
     pub(crate) name: String,
-    /// The uncompressed size the header declares, or 0 where the backend is
-    /// given none: libarchive gives none for a hard link or file reference.
+    /// The uncompressed size the header declares. A hard link's or file
+    /// reference's is its target's, whose bytes it reads.
     pub(crate) size: u64,
     /// A regular file: directories and symbolic links are not. Hard links and
-    /// file references are, though they hold no data and their reads fail, and
-    /// so is an encrypted entry, since encryption is not detected (O381).
+    /// file references are, and read their target's bytes.
     pub(crate) readable: bool,
+    /// The CRC32 the header declares for the bytes the entry reads, which a
+    /// whole read of them meets: a hard link's or file reference's is its
+    /// target's. None where it declares none, as with a BLAKE2 hash in its
+    /// place, and for a directory or a symbolic link.
+    pub(crate) crc: Option<u32>,
+    /// For a hard link or file reference, the archive position of the earlier
+    /// entry whose bytes it reads. An archive holding one with no such entry
+    /// is refused where it is listed.
+    pub(crate) target: Option<usize>,
 }
 
 /// What [`Backend::visit`] hands each decoded entry to, with its name.
@@ -36,16 +44,38 @@ pub(crate) type Visitor<'a> = dyn FnMut(&str, &[u8]) -> Result<(), String> + 'a;
 /// `"{path}: {name}: {cause}"` when one entry will not read, as when its
 /// bytes differ from its declared size or checksum or none arrive.
 pub(crate) trait Backend: Sync + std::fmt::Debug {
-    #[cfg_attr(not(test), expect(dead_code, reason = "only a test names its backend"))]
+    /// The backend's name, as the tests give it and as its
+    /// [`signature`](Backend::signature) begins.
     fn name(&self) -> &'static str;
-    /// Every entry, in archive order.
+    /// The backend's part of the reader signature, so that a build reading RAR
+    /// another way counts every RAR again.
+    fn signature(&self) -> String;
+    /// Every entry, in archive order. An archive of a kind no read could give
+    /// whole is refused here, where it is counted: one volume of a multi-volume
+    /// set, or one holding an encrypted entry, a RAR4 entry compressed in a way
+    /// the backend does not decode, a hard link or file reference with no earlier
+    /// target or of another size than its target, or a file it lists but reads no
+    /// bytes of.
     fn entries(&self, path: &Path) -> Result<Vec<Entry>, String>;
-    /// The bytes of the first entry named `name`, or `"{path}: {name}: no
-    /// such entry"`.
+    /// The bytes of the first regular file named `name`, or `"{path}: {name}:
+    /// no such entry"`. A directory or link of that name holds no bytes to read.
     fn read(&self, path: &Path, name: &str) -> Result<Vec<u8>, String>;
+    /// Lists the archive as [`Backend::entries`] does, hands the listing to
+    /// `pick`, and reads the regular file at the position `pick` returns, all
+    /// through one open of the file: a file renamed over `path` between the
+    /// listing and the read cannot hand over another archive's bytes for a
+    /// position this listing gave. An `Err` from `pick` is returned unchanged.
+    fn read_listed(
+        &self,
+        path: &Path,
+        pick: &mut dyn FnMut(&[Entry]) -> Result<usize, String>,
+    ) -> Result<Vec<u8>, String>;
     /// Decodes, in archive order, each readable entry `wanted` accepts and
-    /// hands it to `f`. The rest are skipped, undecoded unless the archive is
-    /// solid. An `Err` from `f` stops the visit and is returned unchanged.
+    /// hands it to `f`. A hard link or file reference hands over its target's
+    /// bytes, kept from the target's own decode, which happens for it even
+    /// where `wanted` passes the target over. The rest are skipped, undecoded
+    /// unless the archive is solid. An `Err` from `f` stops the visit and is
+    /// returned unchanged.
     fn visit(
         &self,
         path: &Path,

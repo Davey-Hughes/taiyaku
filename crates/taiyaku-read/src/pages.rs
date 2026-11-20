@@ -29,12 +29,21 @@ const IMAGE_EXTENSIONS: &[&str] = &[
 /// each file's count and counts again, without hashing, each file whose stored
 /// one differs, so a change here re-counts exactly the files of that format,
 /// and any other change to which entries are pages must change it too.
+///
 /// `None` for every other format: a folder is counted on every walk, a
-/// reflowable EPUB by its text, and the rest have no count.
+/// reflowable EPUB by its text, and the rest, RAR in a build without a backend
+/// among them, have no count.
 #[must_use]
 pub fn reader_signature(format: &str) -> Option<String> {
-    (Some(format) == Format::Zip.token())
-        .then(|| format!("{format}:{}", IMAGE_EXTENSIONS.join(",")))
+    let pages = || IMAGE_EXTENSIONS.join(",");
+    // A RAR's signature holds the part its backend gives (ruling P2-R5).
+    // libarchive's version is the one pkg-config gave when this crate's build
+    // script last ran.
+    #[cfg(rar)]
+    if Some(format) == Format::Rar.token() {
+        return Some(format!("{format}:{}:{}", backend().signature(), pages()));
+    }
+    (Some(format) == Format::Zip.token()).then(|| format!("{format}:{}", pages()))
 }
 
 /// The most a `Vec::with_capacity` hint for one archive entry's raw bytes may
@@ -511,11 +520,11 @@ fn page_count(n: usize) -> u32 {
     u32::try_from(n).expect("page count exceeds u32::MAX")
 }
 
-/// The names of a member's pages, in reading order, without reading any bytes.
+/// The names of a member's pages, in reading order.
 ///
-/// For a zip this reads only the central directory, for a RAR its entry
-/// headers, and for a directory the listing. That is what makes serving one
-/// page of a 195-page volume cost one page rather than the volume.
+/// Read from a zip's central directory, a directory's listing or a RAR's entry
+/// headers, so serving one page costs a page, not the volume; but listing a
+/// solid RAR5 decodes every entry (O380).
 ///
 /// A zip entry name that is not valid UTF-8 does not fail this: `zip`'s decode
 /// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
@@ -585,21 +594,16 @@ pub fn member_page(path: &Path, index: u32) -> Result<Page, String> {
             bytes,
         });
     }
-    let archive = open_archive(path)?;
-    let names = match &archive {
-        Archive::Zip(zip) => page_names_from(zip),
+    let mut zip = match open_archive(path)? {
+        Archive::Zip(zip) => zip,
         #[cfg(rar)]
-        Archive::Rar => rar_page_names(path)?,
+        Archive::Rar => return rar_member_page(path, i),
     };
-    let name = names
+    let name = page_names_from(&zip)
         .get(i)
         .cloned()
         .ok_or_else(|| format!("{}: no page {index}", path.display()))?;
-    match archive {
-        Archive::Zip(mut zip) => entry_page(&mut zip, path, name),
-        #[cfg(rar)]
-        Archive::Rar => rar_page(path, name),
-    }
+    entry_page(&mut zip, path, name)
 }
 
 /// One page of the archive at `path`, by the name [`member_page_names`]
@@ -683,7 +687,7 @@ pub fn member_digest(path: &Path) -> Result<String, String> {
     }))
 }
 
-/// How many pages a member holds, without reading any of them.
+/// How many pages a member holds, from its listing ([`member_page_names`]).
 ///
 /// A zip entry name that is not valid UTF-8 does not fail this: `zip`'s decode
 /// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
@@ -714,7 +718,7 @@ pub fn member_pages(path: &Path) -> Result<u32, String> {
 }
 
 /// The uncompressed byte size of each of a member's pages, in reading order,
-/// without reading any of them.
+/// from its listing ([`member_page_names`]).
 ///
 /// Directory pages are sized from their metadata and archive entries from the
 /// zip central directory or the RAR entry headers, which record the
@@ -722,8 +726,8 @@ pub fn member_pages(path: &Path) -> Result<u32, String> {
 /// loose images and a `.cbz` of the same scan then produce the same list, and
 /// seeing through packaging is the whole job of the signature this feeds.
 ///
-/// A listing, not a read — the property that lets an inventory run over a NAS
-/// and decide what is worth copying.
+/// A listing, not a read (a solid RAR5 aside) — the property that lets an
+/// inventory run over a NAS and decide what is worth copying.
 ///
 /// A zip entry name that is not valid UTF-8 does not fail this: `zip`'s decode
 /// cannot fail — a name that is valid UTF-8 is read as UTF-8 whatever the UTF-8
@@ -771,16 +775,16 @@ pub fn member_page_sizes(path: &Path) -> Result<Vec<u64>, String> {
         .collect()
 }
 
-/// One page entry, described without being decoded.
+/// One page entry, described without decoding it where its container allows.
 ///
 /// The triple a `STORE` zip's local header needs, and the reason this exists
 /// beside `member_page_names` and `member_page_sizes` rather than replacing
-/// them: those two are listings, and this one hashes. For a **zip** all three
-/// come out of the central directory, so its page data is never touched; a
-/// **directory** has no crc anywhere and a **RAR**'s backend gives none, so
-/// each page is read once to compute it. Spec C2 §4 records why paying that on
-/// directory members beat the alternative (data descriptors) and why folding
-/// the listings onto this would have been a regression, not a de-duplication.
+/// them: those two are listings, and this one hashes. A **zip**'s three come
+/// out of its central directory and a **RAR**'s out of its entry headers, but
+/// listing a solid RAR decodes every entry, and a RAR page whose header gives a
+/// BLAKE2 hash and no CRC32 is read to compute one. A **directory** has no crc
+/// anywhere, so each of its pages is read once. Spec C2 §4 records why that
+/// beat data descriptors, and why folding the listings onto this would regress.
 ///
 /// `size` is the **uncompressed** size on both sides, which is what a `STORE`
 /// output writes and what makes a directory of loose images and a `.cbz` of the
@@ -835,8 +839,8 @@ fn directory_page_entry(member: &Path, page: &Path) -> Result<(PageEntry, Vec<u8
 /// opened, if its leading bytes identify a recognised-but-unsupported
 /// container — 7-Zip, tar, or RAR in a build without a RAR backend, named as
 /// such — if it parses as neither a zip archive nor a RAR archive the backend
-/// can list, or if a listed entry cannot be looked up again by name or, in a
-/// RAR, read.
+/// can list, if a listed zip entry cannot be looked up again by name, or if a
+/// RAR page whose header declares no CRC32 cannot be read.
 pub fn member_page_entries(path: &Path) -> Result<Vec<PageEntry>, String> {
     if path.is_dir() {
         return directory_page_paths(path)?
@@ -847,7 +851,7 @@ pub fn member_page_entries(path: &Path) -> Result<Vec<PageEntry>, String> {
     let mut zip = match open_archive(path)? {
         Archive::Zip(zip) => zip,
         #[cfg(rar)]
-        Archive::Rar => return rar_visit_keeping(path, &rar_page_names(path)?, rar_page_entry),
+        Archive::Rar => return rar_page_entries(path),
     };
     let names = page_names_from(&zip);
     names
@@ -876,27 +880,23 @@ type PageVisitor<'a> = dyn FnMut(&PageEntry, &[u8]) -> Result<(), String> + 'a;
 ///
 /// **One page in memory at a time, and one archive open for a zip.** A RAR is
 /// opened twice, or once more per page where it does not store its pages in
-/// reading order. `member_page` opens per index, right for a route
-/// serving one page and wrong for a download reading two hundred of them: this
-/// is that loop with the open hoisted out. `read_edition` holds *every* page.
+/// reading order, and holds more than one page's bytes only for an entry a
+/// later file reference or hard link reads: each is kept until its last
+/// reference has passed, whether or not that reference is a page.
+/// `member_page` opens per index, right for a route serving one page and
+/// wrong for a download reading two hundred of them: this is that loop with
+/// the open hoisted out. `read_edition` holds *every* page.
 ///
 /// The `PageEntry` travels with the bytes so a caller that planned an output
-/// from `member_page_entries` can check the member still matches as it
-/// streams — on both `size` and `crc32`. That is true of `crc32` on its own
-/// regardless: `zip`'s `Crc32Reader` validates it against the real bytes on
-/// every read, so a lying crc32 fails inside `read_to_end` before this
-/// function ever sees the entry. It is true of `size` too only because this
-/// function, for an archive, reports the byte count `read_to_end` actually
-/// produced rather than the central directory's declared `uncompressed_size`.
-/// `zip` fails a read that runs past that field, but an entry that declares
-/// more than it holds reads back whole with a good crc32. `member_page_entries`
-/// reports the declared size, because reading the bytes to verify it would
-/// destroy the property that function exists for. So the two deliberately
-/// disagree on an archive that overstates its own size: a plan built from
-/// `member_page_entries` and a stream read through this function are then
-/// comparable on `size` as well as `crc32`, and an archive replaced — or
-/// corrupted — mid-download is detectable rather than producing a file whose
-/// local header states a length its payload does not have.
+/// from `member_page_entries` can check that the member still matches as it
+/// streams, on both `size` and `crc32`. A lying crc32 fails inside the read, as
+/// `zip`'s `Crc32Reader` checks it. The `size` is, for an archive, the byte
+/// count the read produced, not the declared one `member_page_entries` takes
+/// from the listing, since a zip entry that declares more than it holds reads
+/// back whole with a good crc32: the plan and the stream then disagree on
+/// `size`, and the caller can refuse an archive replaced or corrupted
+/// mid-download rather than send a file whose local header states a length its
+/// payload does not have.
 ///
 /// **`f`'s `Err` stops the walk on the spot** and is returned unchanged. A
 /// client that hung up must not cost the rest of the volume.
@@ -1095,31 +1095,84 @@ fn is_companion(name: &str) -> bool {
             .is_some_and(|e| COMPANION_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
-/// Every entry of a RAR, refusing one that holds none: libarchive lists a
-/// file cut short after its signature as an empty archive.
+/// Every entry of a RAR, held to [`rar_listing_holds`].
 #[cfg(rar)]
 fn rar_entries(path: &Path) -> Result<Vec<crate::rar::Entry>, String> {
     let entries = backend().entries(path)?;
+    rar_listing_holds(path, &entries)?;
+    Ok(entries)
+}
+
+/// Refuses a RAR listing that holds no entries, since libarchive lists a file
+/// cut short after its signature as an empty archive, and one where two
+/// regular files share a name, since a read by name hands over the first one's
+/// bytes for either.
+#[cfg(rar)]
+fn rar_listing_holds(path: &Path, entries: &[crate::rar::Entry]) -> Result<(), String> {
     if entries.is_empty() {
         return Err(format!(
             "{}: not a readable RAR archive: no entries",
             path.display()
         ));
     }
-    Ok(entries)
+    let mut names = std::collections::HashSet::new();
+    let repeated = entries
+        .iter()
+        .filter(|entry| entry.readable)
+        .find(|entry| !names.insert(entry.name.as_str()));
+    if let Some(entry) = repeated {
+        return Err(format!(
+            "{}: not a readable RAR archive: two entries are named `{}`",
+            path.display(),
+            entry.name
+        ));
+    }
+    Ok(())
 }
 
-/// A RAR's page entries in reading order, by the rules a zip's follow, and
-/// whether the archive already stores them in that order.
+/// The positions in `entries` of a RAR's pages, in reading order, by the rules
+/// a zip's follow.
+#[cfg(rar)]
+fn rar_page_positions(entries: &[crate::rar::Entry]) -> Vec<usize> {
+    let mut pages: Vec<usize> = (0..entries.len())
+        .filter(|&at| entries[at].readable && is_listed_page(&entries[at].name))
+        .collect();
+    // Stable, so pages of names the order takes as equal keep archive order.
+    pages.sort_by(|&a, &b| natural_cmp(&entries[a].name, &entries[b].name));
+    pages
+}
+
+/// A RAR's page entries in reading order, and whether the archive already
+/// stores them in that order.
 #[cfg(rar)]
 fn rar_pages(path: &Path) -> Result<(Vec<crate::rar::Entry>, bool), String> {
-    let mut pages: Vec<_> = rar_entries(path)?
+    let entries = rar_entries(path)?;
+    let positions = rar_page_positions(&entries);
+    let stored_in_order = positions.is_sorted();
+    let pages = positions
         .into_iter()
-        .filter(|entry| entry.readable && is_listed_page(&entry.name))
+        .map(|at| entries[at].clone())
         .collect();
-    let stored_in_order = pages.is_sorted_by(|a, b| natural_cmp(&a.name, &b.name).is_le());
-    pages.sort_by(|a, b| natural_cmp(&a.name, &b.name));
     Ok((pages, stored_in_order))
+}
+
+/// One page of a RAR, by its index in reading order. Listed and read through
+/// one open of the file, so that a file renamed over `path` between the two
+/// cannot hand over another archive's page at that index (O384).
+#[cfg(rar)]
+fn rar_member_page(path: &Path, index: usize) -> Result<Page, String> {
+    let no_page = || format!("{}: no page {index}", path.display());
+    let mut name = None;
+    let bytes = backend().read_listed(path, &mut |entries| {
+        rar_listing_holds(path, entries)?;
+        let at = *rar_page_positions(entries).get(index).ok_or_else(no_page)?;
+        name = Some(entries[at].name.clone());
+        Ok(at)
+    })?;
+    Ok(Page {
+        name: name.ok_or_else(no_page)?,
+        bytes,
+    })
 }
 
 /// A RAR's regular files that are neither a page nor a companion.
@@ -1147,8 +1200,10 @@ fn rar_page(path: &Path, name: String) -> Result<Page, String> {
     Ok(Page { name, bytes })
 }
 
-/// Described from the bytes the backend handed over, since its listing gives
-/// no crc32.
+/// Described from the bytes the backend handed over, which it has held to the
+/// size and CRC32 their header declares, so a stream checked against
+/// [`member_page_entries`]' plan is checked on the bytes it sends. A page whose
+/// header declares a BLAKE2 hash and no CRC32 has only its bytes to give one.
 #[cfg(rar)]
 fn rar_page_entry(name: &str, bytes: &[u8]) -> PageEntry {
     PageEntry {
@@ -1156,6 +1211,43 @@ fn rar_page_entry(name: &str, bytes: &[u8]) -> PageEntry {
         size: bytes.len() as u64,
         crc32: crc32fast::hash(bytes),
     }
+}
+
+/// A RAR's pages described from their headers, which declare the size and the
+/// CRC32 a whole read of each meets, a reference's being its target's (plan
+/// D7), so a generated download can plan before it sends a byte. Only a page
+/// whose header declares a BLAKE2 hash and no CRC32 is read for its bytes, but
+/// the listing decodes a solid archive whole, as does the visit for such a
+/// page. A page damaged on disk is refused when the download reads it, as a
+/// zip's is, or by a solid archive's listing here.
+#[cfg(rar)]
+fn rar_page_entries(path: &Path) -> Result<Vec<PageEntry>, String> {
+    let (pages, _) = rar_pages(path)?;
+    let unchecked: Vec<String> = pages
+        .iter()
+        .filter(|page| page.crc.is_none())
+        .map(|page| page.name.clone())
+        .collect();
+    // An empty visit still decodes every entry of a solid archive.
+    let hashed = if unchecked.is_empty() {
+        Vec::new()
+    } else {
+        rar_visit_keeping(path, &unchecked, rar_page_entry)?
+    };
+    let mut hashed = hashed.into_iter();
+    pages
+        .into_iter()
+        .map(|page| match page.crc {
+            Some(crc32) => Ok(PageEntry {
+                name: page.name,
+                size: page.size,
+                crc32,
+            }),
+            None => hashed
+                .next()
+                .ok_or_else(|| format!("{}: {}: not read", path.display(), page.name)),
+        })
+        .collect()
 }
 
 /// What `keep` makes of each page in `names`, from one visit, in the order of
@@ -1185,9 +1277,10 @@ fn rar_visit_keeping<T>(
 #[cfg(rar)]
 fn rar_for_each_page(path: &Path, f: &mut PageVisitor<'_>) -> Result<(), String> {
     let (pages, stored_in_order) = rar_pages(path)?;
-    // Either way one page is in memory at a time. A visit decodes each page
-    // once, but hands them over in archive order; a read per name keeps the
-    // reading order, and in a solid archive decodes every entry before it.
+    // Either way one page is in memory at a time, besides what a later
+    // reference reads. A visit decodes each page once, but hands them over in
+    // archive order; a read per name keeps the reading order, and in a solid
+    // archive decodes every entry before it.
     if stored_in_order {
         let wanted: std::collections::HashSet<&str> =
             pages.iter().map(|page| page.name.as_str()).collect();

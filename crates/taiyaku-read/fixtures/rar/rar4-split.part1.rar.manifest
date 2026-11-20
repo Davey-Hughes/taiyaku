@@ -1,5 +1,4 @@
 format	rar4
 entry	p01.png	file	12651
 entry	p02.png	split	12651
-page	p01.png	07795f21f7dc46e6f3a610c0065e634b4c38056590b094620bb1caed6bfa9d77
-page	p02.png	split
+refused	not a readable RAR archive: it is one volume of a multi-volume set

@@ -1,7 +1,8 @@
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use crate::rar::{BACKENDS, Backend, Entry, Visitor, with_backend};
-use crate::test_support::{RarEntryKind, RarFixture, TempDir, rar_fixtures, sha256_hex};
+use crate::test_support::{RarFixture, TempDir, rar_fixtures, sha256_hex};
 use crate::{
     PageEntry, archive_page, for_each_member_page, member_entry, member_page, member_page_entries,
     member_page_names, member_page_sizes, member_pages, member_unread_entries, read_edition,
@@ -58,14 +59,19 @@ fn every_fixture_reads_as_its_manifest_says() {
 /// Review Focus 2: an archive that cannot be listed has no page count, and no
 /// function reads a page of it, not even one before the entry that refuses it.
 fn reads_nothing_of_a_refused_fixture(fixture: &RarFixture, at: &str) {
-    let path = &fixture.path;
-    let text = "not a readable RAR archive";
+    let text = fixture.refused.as_deref().expect("a refused fixture");
+    reads_nothing_of(&fixture.path, text, at);
+}
+
+/// That every function refuses `path` with `text` and hands over no page.
+fn reads_nothing_of(path: &Path, text: &str, at: &str) {
     let at = |call: &str| format!("{at}: {call}");
     refusal(member_pages(path), path, text, &at("count"));
     refusal(member_page_names(path), path, text, &at("names"));
     refusal(member_page_sizes(path), path, text, &at("sizes"));
     refusal(member_page(path, 0), path, text, &at("page 0"));
-    // make.sh puts a p01.png first in every archive it refuses.
+    // Most archives refused here hold a p01.png, and the text shows that the
+    // refusal is the archive's, not a missing name's.
     refusal(archive_page(path, "p01.png"), path, text, &at("p01.png"));
     refusal(member_page_entries(path), path, text, &at("entries"));
     refusal(member_unread_entries(path), path, text, &at("unread"));
@@ -78,7 +84,7 @@ fn reads_nothing_of_a_refused_fixture(fixture: &RarFixture, at: &str) {
     assert_eq!(handed, 0, "{}", at("each page"));
     let other = member_entry(path, "ComicInfo.xml");
     refusal(other, path, text, &at("ComicInfo.xml"));
-    let edition = read_edition(std::slice::from_ref(path));
+    let edition = read_edition(&[path.to_path_buf()]);
     refusal(edition, path, text, &at("edition"));
 }
 
@@ -95,23 +101,13 @@ fn reads_as_its_manifest_says(fixture: &RarFixture, at: &str) {
         assert_eq!(member_pages(path), Ok(index(names.len())), "{at}");
     }
 
-    // Each readable page's bytes as member_page gave them, or the name of the
-    // first page whose read fails.
+    // Each page's bytes as member_page gave them.
     let mut read = Vec::new();
-    let mut fails = None;
     for (i, (name, sha)) in fixture.pages.iter().enumerate() {
-        let by_index = member_page(path, index(i));
-        let by_name = archive_page(path, name);
-        let Some(sha) = sha else {
-            refusal(by_index, path, name, &format!("{at}: page {i}"));
-            refusal(by_name, path, name, &format!("{at}: {name}"));
-            fails = fails.or(Some(name));
-            continue;
-        };
-        let page = by_index.unwrap_or_else(|e| panic!("{at}: page {i}: {e}"));
+        let page = member_page(path, index(i)).unwrap_or_else(|e| panic!("{at}: page {i}: {e}"));
         assert_eq!(page.name, *name, "{at}: page {i}");
         assert_eq!(sha256_hex(&page.bytes), *sha, "{at}: page {i}");
-        let again = by_name.unwrap_or_else(|e| panic!("{at}: {name}: {e}"));
+        let again = archive_page(path, name).unwrap_or_else(|e| panic!("{at}: {name}: {e}"));
         assert_eq!(sha256_hex(&again.bytes), *sha, "{at}: {name} by name");
         read.push(page.bytes);
     }
@@ -131,23 +127,10 @@ fn reads_as_its_manifest_says(fixture: &RarFixture, at: &str) {
             .iter()
             .find(|entry| entry.name == *name)
             .unwrap_or_else(|| panic!("{at}: page {name} is no entry"));
-        // A reference's header size is its target's; libarchive gives none.
-        if entry.kind != RarEntryKind::Reference {
-            assert_eq!(*size, entry.size, "{at}: {name}");
-        }
+        assert_eq!(*size, entry.size, "{at}: {name}");
     }
 
-    if let Some(name) = fails {
-        // A2: what reads the whole member fails on the page that does not read.
-        let entries = member_page_entries(path);
-        let each = for_each_member_page(path, &mut |_, _| Ok(()));
-        let edition = read_edition(std::slice::from_ref(path));
-        refusal(entries, path, name, &format!("{at}: entries"));
-        refusal(each, path, name, &format!("{at}: each page"));
-        refusal(edition, path, name, &format!("{at}: edition"));
-    } else {
-        reads_whole(fixture, &read, at);
-    }
+    reads_whole(fixture, &read, at);
 
     for (name, sha) in &fixture.others {
         let lower = name.to_ascii_lowercase();
@@ -213,6 +196,48 @@ fn reads_whole(fixture: &RarFixture, read: &[Vec<u8>], at: &str) {
     }
 }
 
+/// Review Focus 1: a fixture whose listing counts its pages hands over every
+/// page that listing names through `for_each_member_page`, whole: in reading
+/// order, each at the size the listing gives it and meeting the CRC32 its
+/// header declares.
+#[test]
+fn every_page_a_listing_counts_reads_whole() {
+    let (handed_pages, crcs_met) = (Cell::new(0), Cell::new(0));
+    each_backend(|backend| {
+        for fixture in fixtures().into_iter().filter(|f| f.refused.is_none()) {
+            let at = format!("{backend} on {}", fixture.file);
+            let path = &fixture.path;
+            let names = member_page_names(path).unwrap_or_else(|e| panic!("{at}: {e}"));
+            let sizes = member_page_sizes(path).unwrap_or_else(|e| panic!("{at}: {e}"));
+            let listed = crate::rar::backend().entries(path);
+            let listed = listed.unwrap_or_else(|e| panic!("{at}: {e}"));
+            let mut handed = Vec::new();
+            for_each_member_page(path, &mut |entry, bytes| {
+                handed.push((
+                    entry.name.clone(),
+                    bytes.len() as u64,
+                    crc32fast::hash(bytes),
+                ));
+                Ok(())
+            })
+            .unwrap_or_else(|e| panic!("{at}: {e}"));
+            let got: Vec<&String> = handed.iter().map(|(name, ..)| name).collect();
+            assert_eq!(got, names.iter().collect::<Vec<_>>(), "{at}");
+            for ((name, len, crc), size) in handed.iter().zip(&sizes) {
+                assert_eq!(len, size, "{at}: {name}");
+                let entry = listed.iter().find(|entry| entry.name == *name);
+                if let Some(declared) = entry.and_then(|entry| entry.crc) {
+                    assert_eq!(*crc, declared, "{at}: {name}");
+                    crcs_met.set(crcs_met.get() + 1);
+                }
+            }
+            handed_pages.set(handed_pages.get() + handed.len());
+        }
+    });
+    assert!(handed_pages.get() > 0, "no page was handed over");
+    assert!(crcs_met.get() > 0, "no page met a declared CRC32");
+}
+
 /// The suite above, run again with no locale in the environment but C, as in
 /// the container: libarchive converts entry names through the locale, and a
 /// name outside ASCII must still list and read whole. "1 passed", because a
@@ -247,23 +272,168 @@ fn the_suite_holds_under_the_c_locale() {
     );
 }
 
-/// Ruling R8: an entry that declares no size does not read, though a zip
-/// reads an empty entry as empty. No fixture holds an empty file that is not a
-/// page, so this is the file reference.
+/// Ruling P2-R4: a hard link or file reference reads its target's bytes
+/// through every call, listed at their size. `rar5-hard-link`'s target is a
+/// dotfile, which is no page, so reading every page wants the link and not its
+/// target, with a page between the two.
 #[test]
-fn an_entry_declaring_no_size_does_not_read_by_name() {
-    let fixture = fixture("rar5-file-reference.rar");
-    let path = &fixture.path;
+fn a_reference_reads_its_targets_bytes_through_every_call() {
+    for (file, reference, target) in [
+        ("rar5-file-reference.rar", "p02.png", "p01.png"),
+        ("rar5-hard-link.rar", "p02.png", ".p02.png"),
+    ] {
+        let fixture = fixture(file);
+        let path = &fixture.path;
+        let size = |name: &str| {
+            let entry = fixture.entries.iter().find(|entry| entry.name == name);
+            entry.map_or(0, |entry| entry.size)
+        };
+        let i = fixture.pages.iter().position(|(name, _)| name == reference);
+        let i = i.expect("the reference is a page");
+        each_backend(|backend| {
+            let at = format!("{backend} on {file}");
+            let listed = crate::rar::backend().entries(path);
+            let listed = listed.unwrap_or_else(|e| panic!("{at}: {e}"));
+            let declared = |name: &str| {
+                let entry = listed.iter().find(|entry| entry.name == name);
+                entry.map(|entry| (entry.size, entry.readable))
+            };
+            assert!(size(target) > 0, "{at}: {target}");
+            assert_eq!(declared(reference), Some((size(target), true)), "{at}");
+            let want = crate::rar::backend().read(path, target);
+            let want = want.unwrap_or_else(|e| panic!("{at}: {target}: {e}"));
+            assert_eq!(sha256_hex(&want), fixture.pages[i].1, "{at}");
+            let entry = PageEntry {
+                name: reference.to_owned(),
+                size: size(target),
+                crc32: crc32fast::hash(&want),
+            };
+
+            let page = member_page(path, index(i)).unwrap_or_else(|e| panic!("{at}: {e}"));
+            assert_eq!(
+                (page.name.as_str(), &page.bytes),
+                (reference, &want),
+                "{at}"
+            );
+            let page = archive_page(path, reference).map(|page| page.bytes);
+            assert_eq!(page.as_ref(), Ok(&want), "{at}: by name");
+            let upper = reference.to_ascii_uppercase();
+            assert_eq!(member_entry(path, &upper), Ok(Some(want.clone())), "{at}");
+            let mut handed = Vec::new();
+            for_each_member_page(path, &mut |got, bytes| {
+                handed.push((got.clone(), bytes.to_vec()));
+                Ok(())
+            })
+            .unwrap_or_else(|e| panic!("{at}: {e}"));
+            assert_eq!(handed.get(i), Some(&(entry.clone(), want.clone())), "{at}");
+            let entries = member_page_entries(path).unwrap_or_else(|e| panic!("{at}: {e}"));
+            assert_eq!(entries.get(i), Some(&entry), "{at}: entries");
+            let edition = read_edition(std::slice::from_ref(path));
+            let edition = edition.unwrap_or_else(|e| panic!("{at}: {e}"));
+            let page = edition.get(i).map(|page| (page.name.as_str(), &page.bytes));
+            assert_eq!(page, Some((reference, &want)), "{at}: edition");
+        });
+    }
+}
+
+/// A reference's bytes are its target's, so they meet its target's CRC32: a
+/// target damaged on disk is refused through its reference by every call that
+/// reads it, and the page before them still reads. A read of the reference
+/// names the reference; reading every page decodes the target, which is no
+/// page, only for the reference, and names the target. Describing the pages
+/// reads none of them (plan D7), so it gives the reference the size and CRC32
+/// of its target's header.
+#[test]
+fn a_damaged_target_is_refused_through_its_reference() {
+    const TARGET: &str = ".p00.png";
+    const REFERENCE: &str = "p02.png";
+    let file = "rar5-stored-reference.rar";
+    let fixture = fixture(file);
+    let original = std::fs::read(&fixture.path).expect("the fixture reads");
+    let at_page = fixture.pages.iter().position(|(name, _)| name == REFERENCE);
+    let at_page = at_page.expect("the reference is a page");
+    let i = index(at_page);
+    let page = member_page(&fixture.path, i).expect("the reference reads");
+    let described = PageEntry {
+        name: REFERENCE.to_owned(),
+        size: page.bytes.len() as u64,
+        crc32: crc32fast::hash(&page.bytes),
+    };
+    let dir = TempDir::new("rar-damaged-target");
+    let path = dir.join(file);
+    // A reference holds no bytes, so the only copy of the page is its target's.
+    let damaged = with_stored_byte_flipped(&original, &page.bytes, 0);
+    std::fs::write(&path, damaged).expect("the copy writes");
     each_backend(|backend| {
-        let at = format!("{backend} on {}", fixture.file);
-        let declared = crate::rar::backend()
-            .entries(path)
-            .unwrap_or_else(|e| panic!("{at}: {e}"))
-            .into_iter()
-            .find(|entry| entry.name == "p02.png")
-            .map(|entry| (entry.size, entry.readable));
-        assert_eq!(declared, Some((0, true)), "{at}");
-        refusal(member_entry(path, "P02.PNG"), path, "p02.png", &at);
+        let at = |call: &str| format!("{backend}: {call}");
+        crc_refusal(member_page(&path, i), &path, REFERENCE, &at("member_page"));
+        let by_name = archive_page(&path, REFERENCE);
+        crc_refusal(by_name, &path, REFERENCE, &at("archive_page"));
+        let entry = member_entry(&path, REFERENCE);
+        crc_refusal(entry, &path, REFERENCE, &at("member_entry"));
+        let each = for_each_member_page(&path, &mut |_, _| Ok(()));
+        crc_refusal(each, &path, TARGET, &at("for_each_member_page"));
+        let edition = read_edition(std::slice::from_ref(&path));
+        crc_refusal(edition, &path, TARGET, &at("read_edition"));
+        let entries = member_page_entries(&path);
+        let entries = entries.unwrap_or_else(|e| panic!("{}: {e}", at("member_page_entries")));
+        let entry = entries.get(at_page);
+        assert_eq!(entry, Some(&described), "{}", at("member_page_entries"));
+        let first = member_page(&path, 0).map(|page| sha256_hex(&page.bytes));
+        assert_eq!(first.as_ref(), Ok(&fixture.pages[0].1), "{backend}: page 0");
+    });
+}
+
+/// Plan D3: an empty file reads as no bytes through every call. libarchive
+/// fails when asked for an empty entry of a solid RAR5, on every version this
+/// runs on, so `rar5-solid-empty` shows that it is not asked.
+#[test]
+fn an_empty_page_reads_as_empty_through_every_call() {
+    const EMPTY: &str = "p02.png";
+    for file in ["rar5-empty.rar", "rar4-empty.rar", "rar5-solid-empty.rar"] {
+        let fixture = fixture(file);
+        let path = &fixture.path;
+        let i = fixture.pages.iter().position(|(name, _)| name == EMPTY);
+        let i = i.expect("the empty file is a page");
+        let entry = PageEntry {
+            name: EMPTY.to_owned(),
+            size: 0,
+            crc32: 0,
+        };
+        each_backend(|backend| {
+            let at = format!("{backend} on {file}");
+            let page = member_page(path, index(i)).unwrap_or_else(|e| panic!("{at}: {e}"));
+            assert_eq!((page.name.as_str(), page.bytes.len()), (EMPTY, 0), "{at}");
+            let page = archive_page(path, EMPTY).map(|page| page.bytes.len());
+            assert_eq!(page, Ok(0), "{at}: by name");
+            let mut handed = Vec::new();
+            for_each_member_page(path, &mut |got, bytes| {
+                handed.push((got.clone(), bytes.len()));
+                Ok(())
+            })
+            .unwrap_or_else(|e| panic!("{at}: {e}"));
+            assert_eq!(handed.len(), fixture.pages.len(), "{at}: {handed:?}");
+            assert_eq!(handed.get(i), Some(&(entry.clone(), 0)), "{at}");
+            let entries = member_page_entries(path).unwrap_or_else(|e| panic!("{at}: {e}"));
+            assert_eq!(entries.get(i), Some(&entry), "{at}: entries");
+            let edition = read_edition(std::slice::from_ref(path));
+            let edition = edition.unwrap_or_else(|e| panic!("{at}: {e}"));
+            let page = edition
+                .get(i)
+                .map(|page| (page.name.as_str(), page.bytes.len()));
+            assert_eq!(page, Some((EMPTY, 0)), "{at}: edition");
+        });
+    }
+}
+
+/// An empty `ComicInfo.xml`, here the last entry of a solid RAR5, is there
+/// and holds nothing, as a zip's would.
+#[test]
+fn an_empty_comicinfo_reads_as_empty() {
+    let path = fixture("rar5-solid-empty.rar").path;
+    each_backend(|backend| {
+        let got = member_entry(&path, "comicinfo.xml");
+        assert_eq!(got, Ok(Some(Vec::new())), "{backend}");
     });
 }
 
@@ -290,7 +460,7 @@ fn a_zip_member_and_a_rar_member_read_in_order() {
     want.extend(
         rar.pages
             .iter()
-            .map(|(name, sha)| (name.as_str(), sha.as_deref())),
+            .map(|(name, sha)| (name.as_str(), Some(sha.as_str()))),
     );
     each_backend(|backend| {
         let pages = crate::read_members_in_order(&[zip.clone(), rar.path.clone()])
@@ -503,6 +673,65 @@ fn rename_rar5_entry(bytes: &mut [u8], from: &str, to: &str) {
     bytes[start..start + 4].copy_from_slice(&crc);
 }
 
+/// `value` as a RAR5 vint: seven bits a byte, lowest first, the high bit set
+/// on every byte but the last.
+fn rar5_vint(mut value: u64) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    while value >= 0x80 {
+        bytes.push(u8::try_from(value & 0x7f).expect("seven bits") | 0x80);
+        value >>= 7;
+    }
+    bytes.push(u8::try_from(value).expect("under 0x80"));
+    bytes
+}
+
+/// The length of the vint at `at` in `bytes`.
+fn rar5_vint_len(bytes: &[u8], at: usize) -> usize {
+    let last = bytes[at..].iter().position(|byte| byte & 0x80 == 0);
+    last.expect("a vint") + 1
+}
+
+/// Where a field of the RAR5 file header naming `name` starts, after the
+/// block's start and header end. The fields counted are the file flags (0),
+/// the unpacked size (1) and the attributes (2).
+fn rar5_field_at(bytes: &[u8], name: &str, field: usize) -> (usize, usize, usize) {
+    let (start, header_end, _) = rar5_block_named(bytes, name);
+    let vint_len = |at: usize| rar5_vint_len(bytes, at);
+    // After the CRC: the header's size, its type and its flags, then the extra
+    // area's size and the data's size where the flags give them.
+    let mut at = start + 4;
+    at += vint_len(at);
+    at += vint_len(at);
+    let flags = bytes[at];
+    assert!(flags < 0x80, "{name}: flags of one byte");
+    at += 1;
+    if flags & 0x01 != 0 {
+        at += vint_len(at);
+    }
+    if flags & 0x02 != 0 {
+        at += vint_len(at);
+    }
+    for _ in 0..field {
+        at += vint_len(at);
+    }
+    (start, header_end, at)
+}
+
+/// Sets a field of the RAR5 file header naming `name`, as [`rar5_field_at`]
+/// counts them, to `value`, a vint as long as the one it replaces, under a
+/// valid header CRC.
+fn rar5_set_field(bytes: &mut [u8], name: &str, field: usize, value: &[u8]) {
+    let (start, header_end, at) = rar5_field_at(bytes, name, field);
+    assert_eq!(
+        rar5_vint_len(bytes, at),
+        value.len(),
+        "{name}: field {field}"
+    );
+    bytes[at..at + value.len()].copy_from_slice(value);
+    let crc = crc32fast::hash(&bytes[start + 4..header_end]).to_le_bytes();
+    bytes[start..start + 4].copy_from_slice(&crc);
+}
+
 /// Renames RAR4 entry `from` to `to`, of the same length, under a valid
 /// header CRC.
 fn rename_rar4_entry(bytes: &mut [u8], from: &str, to: &str) {
@@ -534,12 +763,14 @@ fn with_stored_byte_flipped(archive: &[u8], page: &[u8], skip: usize) -> Vec<u8>
     damaged
 }
 
-/// The CRC refusal `got` must be: its path, the entry and the cause.
+/// The CRC refusal `got` must be: its path, the entry and the cause. The
+/// entry is matched whole, as a name contained in another, such as `p02.png`
+/// in `.p02.png`, would otherwise pass for it.
 fn crc_refusal<T: std::fmt::Debug>(got: Result<T, String>, path: &Path, name: &str, at: &str) {
     let error = got.expect_err(at);
     assert!(
         error.contains(&path.display().to_string())
-            && error.contains(name)
+            && error.contains(&format!(": {name}: "))
             && error.contains("CRC32"),
         "{at}: {error}"
     );
@@ -567,8 +798,6 @@ fn a_damaged_stored_page_is_refused_by_every_read() {
             crc_refusal(each, &path, name, &at("for_each_member_page"));
             let edition = read_edition(std::slice::from_ref(&path));
             crc_refusal(edition, &path, name, &at("read_edition"));
-            let entries = member_page_entries(&path);
-            crc_refusal(entries, &path, name, &at("member_page_entries"));
             let entry = member_entry(&path, name);
             crc_refusal(entry, &path, name, &at("member_entry"));
             let members = crate::read_members_in_order(std::slice::from_ref(&path));
@@ -593,12 +822,8 @@ fn the_pages_around_a_damaged_one_still_read() {
             let at = format!("{backend} on {file}");
             for i in [0, 1, 3] {
                 let got = member_page(&path, i).unwrap_or_else(|e| panic!("{at}: page {i}: {e}"));
-                let want = fixture.pages[i as usize].1.as_deref();
-                assert_eq!(
-                    Some(sha256_hex(&got.bytes).as_str()),
-                    want,
-                    "{at}: page {i}"
-                );
+                let want = &fixture.pages[i as usize].1;
+                assert_eq!(sha256_hex(&got.bytes), *want, "{at}: page {i}");
             }
             let mut handed = Vec::new();
             let each = for_each_member_page(&path, &mut |entry, _| {
@@ -608,6 +833,41 @@ fn the_pages_around_a_damaged_one_still_read() {
             crc_refusal(each, &path, &page.name, &at);
             let before: Vec<&String> = fixture.pages[..2].iter().map(|(name, _)| name).collect();
             assert_eq!(handed.iter().collect::<Vec<_>>(), before, "{at}");
+        });
+    }
+}
+
+/// Plan D7: a RAR's pages are described from their headers, as a zip's are from
+/// its central directory, so a page damaged on disk under a whole header is
+/// described with the size and CRC32 its header declares, and refused when it
+/// is read, as a generated download reads it.
+#[test]
+fn a_damaged_page_is_described_by_its_header_and_refused_when_read() {
+    let dir = TempDir::new("rar-damaged-described");
+    for file in ["rar4.rar", "rar5-stored.rar"] {
+        let fixture = fixture(file);
+        let original = std::fs::read(&fixture.path).expect("the fixture reads");
+        let page = member_page(&fixture.path, 2).expect("the fixture's page reads");
+        let path = dir.join(file);
+        let damaged = with_stored_byte_flipped(&original, &page.bytes, 0);
+        std::fs::write(&path, damaged).expect("the copy writes");
+        let described = PageEntry {
+            name: page.name.clone(),
+            size: page.bytes.len() as u64,
+            crc32: crc32fast::hash(&page.bytes),
+        };
+        each_backend(|backend| {
+            let at = format!("{backend} on {file}");
+            let listed = crate::rar::backend().entries(&path);
+            let listed = listed.unwrap_or_else(|e| panic!("{at}: {e}"));
+            let header = listed.iter().find(|entry| entry.name == page.name);
+            let header = header.map(|entry| (entry.size, entry.crc));
+            let want = (described.size, Some(described.crc32));
+            assert_eq!(header, Some(want), "{at}: the header is whole");
+            let entries = member_page_entries(&path).unwrap_or_else(|e| panic!("{at}: {e}"));
+            assert_eq!(entries.get(2), Some(&described), "{at}: entries");
+            let each = for_each_member_page(&path, &mut |_, _| Ok(()));
+            crc_refusal(each, &path, &page.name, &at);
         });
     }
 }
@@ -639,8 +899,10 @@ fn sha_of_page(fixture: &RarFixture, name: &str) -> String {
         .pages
         .iter()
         .find(|(page, _)| page == name)
-        .and_then(|(_, sha)| sha.clone())
-        .unwrap_or_else(|| panic!("{}: no sha for {name}", fixture.file))
+        .map_or_else(
+            || panic!("{}: no sha for {name}", fixture.file),
+            |(_, sha)| sha.clone(),
+        )
 }
 
 /// Ruling R22: an entry that declares a BLAKE2 hash and no CRC32 stays unchecked,
@@ -662,8 +924,7 @@ fn a_stored_blake2_entry_is_read_unchecked() {
             "{backend}: the flip reached the page"
         );
         let first = member_page(&path, 0).unwrap_or_else(|e| panic!("{backend}: {e}"));
-        let want = fixture.pages[0].1.as_deref();
-        assert_eq!(Some(sha256_hex(&first.bytes).as_str()), want, "{backend}");
+        assert_eq!(sha256_hex(&first.bytes), fixture.pages[0].1, "{backend}");
     });
 }
 
@@ -717,6 +978,159 @@ fn two_entries_of_one_name_each_meet_their_own_checksum() {
     }
 }
 
+/// Ruling P2-R2: two readable entries of one name refuse the archive at its
+/// count, since a read by name hands over the first one's bytes for either.
+/// RAR5 keeps a name repeated at once, and RAR4 is renamed two apart, since
+/// libarchive reads a RAR4 name repeated at once as a split file's next part.
+/// The control renames the same entry to a name of its own.
+#[test]
+fn two_readable_entries_of_one_name_refuse_the_archive() {
+    type Rename = fn(&mut [u8], &str, &str);
+    let dir = TempDir::new("rar-repeated-name");
+    let cases: [(&str, &str, Rename); 2] = [
+        ("rar5-stored.rar", "p02.png", rename_rar5_entry),
+        ("rar4.rar", "p03.png", rename_rar4_entry),
+    ];
+    let text = "not a readable RAR archive: two entries are named `p01.png`";
+    for (file, renamed, rename) in cases {
+        let fixture = fixture(file);
+        let original = std::fs::read(&fixture.path).expect("the fixture reads");
+        let renamed_to = |to: &str| {
+            let mut bytes = original.clone();
+            rename(&mut bytes, renamed, to);
+            let path = dir.join(format!("{to}-{file}"));
+            std::fs::write(&path, bytes).expect("the copy writes");
+            path
+        };
+        let (control, repeated) = (renamed_to("q01.png"), renamed_to("p01.png"));
+        each_backend(|backend| {
+            let at = format!("{backend} on {file}");
+            let pages = member_pages(&control);
+            assert_eq!(pages, Ok(index(fixture.pages.len())), "{at}: control");
+            reads_nothing_of(&repeated, text, &at);
+        });
+    }
+}
+
+/// The rule holds above the backend, for any backend's listing, and counts
+/// regular files alone: a directory's name is no page's.
+#[test]
+fn a_repeated_name_is_refused_for_every_backend_unless_one_is_no_file() {
+    static TWICE: Lists = Lists(&[("p01.png", true), ("p02.png", true), ("p01.png", true)]);
+    static AND_A_DIRECTORY: Lists = Lists(&[("p01.png", true), ("p01.png", false)]);
+    let path = fixture("rar5-stored.rar").path;
+    let twice = with_backend(&TWICE, || member_pages(&path));
+    refusal(twice, &path, "two entries are named `p01.png`", "twice");
+    let and_a_directory = with_backend(&AND_A_DIRECTORY, || member_pages(&path));
+    assert_eq!(and_a_directory, Ok(1), "and a directory");
+}
+
+/// A read by name is of the regular file of that name, passing over a
+/// directory or symbolic link of the name before it, which holds no page. rar
+/// writes directories after the files, so these are crafted: the first page
+/// made a directory or a link, and the second renamed to its name.
+#[test]
+fn a_read_by_name_passes_over_a_directory_or_link_of_that_name() {
+    let fixture = fixture("rar5-stored.rar");
+    let original = std::fs::read(&fixture.path).expect("the fixture reads");
+    let second = &fixture.pages[1].1;
+    let dir = TempDir::new("rar-named-twice");
+    for (kind, mode) in [("directory", 0o40_755), ("link", 0o120_777)] {
+        let mut bytes = original.clone();
+        rar5_set_field(&mut bytes, "p01.png", 2, &rar5_vint(mode));
+        rename_rar5_entry(&mut bytes, "p02.png", "p01.png");
+        let path = dir.join(format!("{kind}.rar"));
+        std::fs::write(&path, &bytes).expect("the copy writes");
+        each_backend(|backend| {
+            let at = format!("{backend}: a {kind} named p01.png first");
+            let read = crate::rar::backend().read(&path, "p01.png");
+            assert_eq!(
+                read.map(|bytes| sha256_hex(&bytes)).as_ref(),
+                Ok(second),
+                "{at}"
+            );
+            let page = archive_page(&path, "p01.png").map(|page| sha256_hex(&page.bytes));
+            assert_eq!(page.as_ref(), Ok(second), "{at}: by name");
+            let page = member_page(&path, 0).map(|page| (page.name, sha256_hex(&page.bytes)));
+            assert_eq!(page, Ok(("p01.png".to_owned(), second.clone())), "{at}");
+            let count = member_pages(&path);
+            assert_eq!(count, Ok(index(fixture.pages.len() - 1)), "{at}: count");
+        });
+    }
+}
+
+/// A reference declaring another size than its target's is refused where it
+/// is counted: what it reads is its target's bytes, which are not that size.
+#[test]
+fn a_reference_of_another_size_than_its_target_refuses_the_archive() {
+    let fixture = fixture("rar5-file-reference.rar");
+    let original = std::fs::read(&fixture.path).expect("the fixture reads");
+    let entry = fixture.entries.iter().find(|entry| entry.name == "p02.png");
+    let size = entry.expect("p02.png is an entry").size;
+    let dir = TempDir::new("rar-reference-size");
+    let text = "not a readable RAR archive: \
+                an entry is a reference or hard link, and its size is not its target's";
+    for declared in [size - 1, size + 1] {
+        let mut bytes = original.clone();
+        rar5_set_field(&mut bytes, "p02.png", 1, &rar5_vint(declared));
+        let path = dir.join(format!("{declared}.rar"));
+        std::fs::write(&path, &bytes).expect("the copy writes");
+        each_backend(|backend| {
+            let at = format!("{backend}: p02.png declaring {declared} bytes");
+            reads_nothing_of(&path, text, &at);
+        });
+    }
+}
+
+/// An entry libarchive lists as a regular file, and that no read gives whole,
+/// is refused where it is counted: a junction or a redirection of a type
+/// libarchive does not know, which it gives no bytes for, and a file whose
+/// header marks it a directory.
+#[test]
+fn a_file_no_read_gives_whole_refuses_the_archive() {
+    let dir = TempDir::new("rar-unreadable-file");
+    let reference = std::fs::read(fixture("rar5-file-reference.rar").path).expect("reads");
+    for kind in [3, 9] {
+        let area = rar5_redirection(kind, "p01.png");
+        let path = dir.join(format!("redirection-{kind}.rar"));
+        let crafted = with_rar5_extra_area(&reference, "p02.png", &area);
+        std::fs::write(&path, crafted).expect("the copy writes");
+        let text = "not a readable RAR archive: \
+                    an entry is a junction or a redirection of a type libarchive does not read";
+        each_backend(|backend| {
+            let at = format!("{backend}: p02.png redirected by type {kind}");
+            reads_nothing_of(&path, text, &at);
+        });
+    }
+
+    let mut marked = std::fs::read(fixture("rar5-stored.rar").path).expect("reads");
+    let (_, _, at) = rar5_field_at(&marked, "p02.png", 0);
+    let flags = marked[at];
+    assert_eq!(
+        flags & 0x81,
+        0,
+        "p02.png's file flags: one byte, no directory"
+    );
+    rar5_set_field(&mut marked, "p02.png", 0, &[flags | 0x01]);
+    let path = dir.join("marked-a-directory.rar");
+    std::fs::write(&path, marked).expect("the copy writes");
+    // libarchive 3.8.11 refuses the entry itself as it lists it; 3.7.4 lists
+    // it by its attributes, and the walk refuses it.
+    let causes = [
+        "an entry's header marks it a directory and its attributes a file",
+        "directory entries cannot have any data",
+    ];
+    each_backend(|backend| {
+        let at = format!("{backend}: p02.png marked a directory");
+        reads_nothing_of(&path, "not a readable RAR archive: ", &at);
+        let count = member_pages(&path).expect_err(&at);
+        assert!(
+            causes.iter().any(|cause| count.contains(cause)),
+            "{at}: {count}"
+        );
+    });
+}
+
 /// libarchive reads a RAR4 name repeated at once as a split file's next part and
 /// gives the entry no name, so such an archive is refused whole and no entry of
 /// it goes unchecked.
@@ -754,16 +1168,16 @@ fn a_rar4_cut_short_of_its_last_block_reads_no_page() {
     each_backend(|backend| {
         for path in [&in_data, &in_header] {
             let at = format!("{backend} on {}", path.display());
-            refusal(
-                member_page(path, 0),
-                path,
-                "not a readable RAR archive",
-                &at,
-            );
+            let text = "not a readable RAR archive";
+            refusal(member_pages(path), path, text, &format!("{at}: count"));
+            refusal(member_page_names(path), path, text, &format!("{at}: names"));
+            refusal(member_page(path, 0), path, text, &at);
         }
+        let before = fixture.pages.iter().position(|(name, _)| name == "p04.png");
+        let before = index(before.expect("p04.png is a page"));
+        assert_eq!(member_pages(&between), Ok(before), "{backend}: count");
         let first = member_page(&between, 0).unwrap_or_else(|e| panic!("{backend}: {e}"));
-        let want = fixture.pages[0].1.as_deref();
-        assert_eq!(Some(sha256_hex(&first.bytes).as_str()), want, "{backend}");
+        assert_eq!(sha256_hex(&first.bytes), fixture.pages[0].1, "{backend}");
         let each = for_each_member_page(&in_header, &mut |_, _| Ok(()));
         refusal(each, &in_header, "not a readable RAR archive", backend);
     });
@@ -803,27 +1217,6 @@ fn a_damaged_page_is_refused_whichever_host_wrote_it() {
             std::fs::write(&path, damaged).expect("the copy writes");
             crc_refusal(member_page(&path, 2), &path, &page.name, &at);
         }
-    });
-}
-
-/// A last volume opens with the end of a page begun in the volume before. That
-/// block is no entry, and the whole pages after it each meet their own checksum.
-#[test]
-fn a_last_volumes_whole_pages_meet_their_own_checksums() {
-    let fixture = fixture("rar5-split-last.part2.rar");
-    let original = std::fs::read(&fixture.path).expect("the fixture reads");
-    let page = member_page(&fixture.path, 0).expect("the fixture's page reads");
-    let dir = TempDir::new("rar5-last-volume");
-    let path = dir.join(&fixture.file);
-    let damaged = with_stored_byte_flipped(&original, &page.bytes, 0);
-    std::fs::write(&path, damaged).expect("the copy writes");
-    each_backend(|backend| {
-        let at = format!("{backend} on {}", fixture.file);
-        crc_refusal(member_page(&path, 0), &path, &page.name, &at);
-        crc_refusal(archive_page(&path, &page.name), &path, &page.name, &at);
-        let next = member_page(&path, 1).unwrap_or_else(|e| panic!("{at}: {e}"));
-        let want = fixture.pages[1].1.as_deref();
-        assert_eq!(Some(sha256_hex(&next.bytes).as_str()), want, "{at}");
     });
 }
 
@@ -895,15 +1288,22 @@ fn a_header_declaring_more_than_the_file_holds_is_refused() {
 /// redirection to `target` inside what the walk passed over.
 fn rar5_extra_read_two_ways(target: &str) -> Vec<u8> {
     const HASH_RECORD_END: usize = 3 + 32;
-    let name_len = u8::try_from(target.len()).expect("a short name");
-    let mut redirection = vec![name_len + 4, 5, 5, 0, name_len];
-    redirection.extend_from_slice(target.as_bytes());
+    let redirection = rar5_redirection(5, target);
     let mut area = vec![2, 2, 0];
     area.resize(HASH_RECORD_END, 0);
     area[3] = u8::try_from(HASH_RECORD_END - 4 + redirection.len()).expect("a small record");
     area[4] = 0x7f;
     area.extend(redirection);
     area
+}
+
+/// A RAR5 redirection record of type `kind` naming `target`: its size, its
+/// record type (5), the kind, its flags, the name's length and the name.
+fn rar5_redirection(kind: u8, target: &str) -> Vec<u8> {
+    let name_len = u8::try_from(target.len()).expect("a short name");
+    let mut record = vec![name_len + 4, 5, kind, 0, name_len];
+    record.extend_from_slice(target.as_bytes());
+    record
 }
 
 /// `bytes` with the extra area of the RAR5 block naming `name` replaced by
@@ -927,9 +1327,10 @@ fn with_rar5_extra_area(bytes: &[u8], name: &str, area: &[u8]) -> Vec<u8> {
     [&bytes[..start], &crc, &header, &bytes[header_end..]].concat()
 }
 
-/// A read lists on past its page, so that it refuses a file a visit refuses.
-/// The last entry here is a checked file to the walk and an empty copy of
-/// another entry to libarchive, which the entry count cannot show.
+/// The listing meets each entry's header, and a read lists on past its page,
+/// so that both refuse a file a visit refuses. The last entry here is a
+/// checked file to the walk and an empty copy of another entry to libarchive,
+/// which the entry count cannot show.
 #[test]
 fn a_later_entry_listed_unlike_its_header_refuses_every_page() {
     let fixture = fixture("rar5-stored.rar");
@@ -938,17 +1339,20 @@ fn a_later_entry_listed_unlike_its_header_refuses_every_page() {
     let dir = TempDir::new("rar-listed-as-a-copy");
     let path = dir.join("listed-as-a-copy.rar");
     std::fs::write(&path, crafted).expect("the copy writes");
+    let differ = "not a readable RAR archive: its block headers and its listing differ";
 
     each_backend(|backend| {
-        let sizes = member_page_sizes(&path).expect("the listing alone reads");
-        assert_eq!(sizes.len(), fixture.pages.len(), "{backend}");
-        assert_eq!(sizes.last(), Some(&0), "{backend}: listed as a copy");
+        refusal(member_page_sizes(&path), &path, differ, backend);
         for page in 0..fixture.pages.len() {
             let at = format!("{backend}: page {page}");
-            let got = member_page(&path, index(page));
-            refusal(got, &path, "its block headers and its listing differ", &at);
+            refusal(member_page(&path, index(page)), &path, differ, &at);
         }
     });
+    for backend in BACKENDS {
+        let first = &fixture.pages[0].0;
+        let at = format!("{} reading {first}", backend.name());
+        refusal(backend.read(&path, first), &path, differ, &at);
+    }
 }
 
 /// Reading one entry of a solid archive stops at it: going on to list the rest
@@ -979,16 +1383,28 @@ impl Backend for Lists {
     fn name(&self) -> &'static str {
         "lists"
     }
+    fn signature(&self) -> String {
+        self.name().to_owned()
+    }
     fn entries(&self, _: &Path) -> Result<Vec<Entry>, String> {
         let entry = |&(name, readable): &(&str, bool)| Entry {
             name: name.to_owned(),
             size: 1,
             readable,
+            crc: None,
+            target: None,
         };
         Ok(self.0.iter().map(entry).collect())
     }
     fn read(&self, path: &Path, name: &str) -> Result<Vec<u8>, String> {
         Err(format!("{}: {name}: not read", path.display()))
+    }
+    fn read_listed(
+        &self,
+        path: &Path,
+        _: &mut dyn FnMut(&[Entry]) -> Result<usize, String>,
+    ) -> Result<Vec<u8>, String> {
+        Err(format!("{}: not read", path.display()))
     }
     fn visit(&self, _: &Path, _: &dyn Fn(&str) -> bool, _: &mut Visitor<'_>) -> Result<(), String> {
         Ok(())
@@ -1047,11 +1463,21 @@ impl Backend for HandsNothing {
     fn name(&self) -> &'static str {
         "hands-nothing"
     }
+    fn signature(&self) -> String {
+        self.name().to_owned()
+    }
     fn entries(&self, path: &Path) -> Result<Vec<Entry>, String> {
         BACKENDS[0].entries(path)
     }
     fn read(&self, path: &Path, name: &str) -> Result<Vec<u8>, String> {
         BACKENDS[0].read(path, name)
+    }
+    fn read_listed(
+        &self,
+        path: &Path,
+        pick: &mut dyn FnMut(&[Entry]) -> Result<usize, String>,
+    ) -> Result<Vec<u8>, String> {
+        BACKENDS[0].read_listed(path, pick)
     }
     fn visit(&self, _: &Path, _: &dyn Fn(&str) -> bool, _: &mut Visitor<'_>) -> Result<(), String> {
         Ok(())
@@ -1060,6 +1486,8 @@ impl Backend for HandsNothing {
 
 /// A page listed by one open and missing from the next visit, as when the
 /// file is replaced between them, is an error, never a short member.
+/// Describing the pages visits only one whose header declares no CRC32, as
+/// each of `rar5-blake2`'s does (plan D7).
 #[test]
 fn a_listed_page_no_visit_hands_over_is_not_read() {
     // Stored in reading order, so `for_each_member_page` visits too.
@@ -1076,20 +1504,104 @@ fn a_listed_page_no_visit_hands_over_is_not_read() {
             want,
             "edition"
         );
-        assert_eq!(member_page_entries(path).map(drop), want, "entries");
+        let described = member_page_entries(path).map(|entries| entries.len());
+        assert_eq!(described, Ok(fixture.pages.len()), "entries");
         let each = for_each_member_page(path, &mut |_, _| Ok(()));
         assert_eq!(each, want, "each page");
+        let blake2 = self::fixture("rar5-blake2.rar");
+        let want = Err(format!(
+            "{}: {}: not read",
+            blake2.path.display(),
+            blake2.pages[0].0
+        ));
+        assert_eq!(member_page_entries(&blake2.path).map(drop), want, "BLAKE2");
     });
 }
 
-/// Criterion 1: one page reads the entry headers and that page's data, not the
-/// data of the pages before it, and every page together reads the file once
-/// plus what one page costs (its opens and listing), never a read per page.
-/// The test runs itself again as a child under `strace`, as
+/// Lists, reads and visits as the first backend does, and renames
+/// `<path>.next` over `path` once the archive is listed and before any page
+/// of it is read, as a download renames a new file into place.
+#[derive(Debug)]
+struct ReplacedAfterListing;
+
+impl ReplacedAfterListing {
+    fn replace(path: &Path) -> Result<(), String> {
+        let next = PathBuf::from(format!("{}.next", path.display()));
+        if next.exists() {
+            std::fs::rename(&next, path).map_err(|e| format!("{}: {e}", next.display()))?;
+        }
+        Ok(())
+    }
+}
+
+impl Backend for ReplacedAfterListing {
+    fn name(&self) -> &'static str {
+        "replaced-after-listing"
+    }
+    fn signature(&self) -> String {
+        self.name().to_owned()
+    }
+    fn entries(&self, path: &Path) -> Result<Vec<Entry>, String> {
+        let entries = BACKENDS[0].entries(path);
+        Self::replace(path)?;
+        entries
+    }
+    fn read(&self, path: &Path, name: &str) -> Result<Vec<u8>, String> {
+        BACKENDS[0].read(path, name)
+    }
+    fn read_listed(
+        &self,
+        path: &Path,
+        pick: &mut dyn FnMut(&[Entry]) -> Result<usize, String>,
+    ) -> Result<Vec<u8>, String> {
+        BACKENDS[0].read_listed(path, &mut |entries| {
+            Self::replace(path)?;
+            pick(entries)
+        })
+    }
+    fn visit(
+        &self,
+        path: &Path,
+        wanted: &dyn Fn(&str) -> bool,
+        f: &mut Visitor<'_>,
+    ) -> Result<(), String> {
+        BACKENDS[0].visit(path, wanted, f)
+    }
+}
+
+/// Ruling P2-R1 (O384): a page is read from the file its index was listed
+/// from. Another archive, holding pages of the same names, is renamed over the
+/// path between the two, where a second open would read it.
+#[test]
+fn a_page_is_read_from_the_archive_it_was_listed_from() {
+    static REPLACED: ReplacedAfterListing = ReplacedAfterListing;
+    let (original, replacement) = (fixture("rar5-stored.rar"), fixture("rar4.rar"));
+    let dir = TempDir::new("rar-replaced");
+    let (path, next) = (dir.join("book.rar"), dir.join("book.rar.next"));
+    let replaced = std::fs::read(&replacement.path).expect("the fixture reads");
+    for (i, (name, sha)) in original.pages.iter().enumerate() {
+        let at = format!("page {i}");
+        std::fs::copy(&original.path, &path).expect("the copy writes");
+        std::fs::copy(&replacement.path, &next).expect("the copy writes");
+        let page = with_backend(&REPLACED, || member_page(&path, index(i)));
+        let page = page.unwrap_or_else(|e| panic!("{at}: {e}"));
+        assert_eq!((&page.name, &sha256_hex(&page.bytes)), (name, sha), "{at}");
+        let now = std::fs::read(&path).expect("the path reads");
+        assert!(
+            now == replaced,
+            "{at}: the replacement was not renamed into place"
+        );
+    }
+}
+
+/// Criterion 1, on archives that are not solid: one page reads the entry
+/// headers and that page's data, not the data of the pages before it; every
+/// page together reads the file once plus what one page costs (its opens and
+/// listing); and describing every page reads the headers alone (plan D7). It
+/// sums the bytes read from each copy in a child run under `strace`, as
 /// `listing_an_archive_reads_no_more_for_four_hundred_pages_than_for_four`
-/// does, and sums the bytes read from each copy. The skip bound is a half:
-/// the binding hands libarchive 16 KiB a read, so on fixtures this small each
-/// header costs at least that.
+/// does. The skip bound is a half: the binding hands libarchive 16 KiB a read,
+/// so on fixtures this small each header costs at least that.
 #[cfg(target_os = "linux")]
 #[test]
 fn reading_rar_pages_skips_what_it_does_not_need() {
@@ -1163,30 +1675,39 @@ fn reading_rar_pages_skips_what_it_does_not_need() {
             // Every entry here is a stored page, so reading them all reads the
             // file through, plus at most the opens and listing page 0 also pays.
             assert!(stream >= size, "{figures}");
-            assert!(plan >= size, "{figures}");
             assert!(stream <= size + first, "{figures}");
-            assert!(plan <= size + first, "{figures}");
+            // The listing page 0 also pays, without its data.
+            assert!(plan <= first, "{figures}");
+            assert!(plan < size, "{figures}");
         }
     }
 }
 
 /// The checksums and the data must come from one file: a second open of the
-/// path could pair one archive's headers with another's bytes if the file were
-/// replaced between the two.
+/// path could pair one archive's headers with another's listing or bytes if
+/// the file were replaced between the two.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_read_or_a_visit_opens_the_archive_once() {
+fn a_listing_a_read_or_a_visit_opens_the_archive_once() {
     const CHILD: &str = "TAIYAKU_TEST_RAR_ONE_OPEN_CHILD";
     const FILE: &str = "rar5-stored.rar";
-    const CALLS: [&str; 2] = ["read", "visit"];
+    const CALLS: [&str; 4] = ["entries", "read", "read_listed", "visit"];
     let copy = |dir: &Path, backend: &str, call: &str| dir.join(format!("{backend}-{call}-{FILE}"));
     if let Some(dir) = std::env::var_os(CHILD) {
         let dir = Path::new(&dir);
         let name = fixture(FILE).pages[0].0.clone();
         for backend in BACKENDS {
             backend
+                .entries(&copy(dir, backend.name(), "entries"))
+                .expect("the archive lists");
+            backend
                 .read(&copy(dir, backend.name(), "read"), &name)
                 .expect("the page reads");
+            backend
+                .read_listed(&copy(dir, backend.name(), "read_listed"), &mut |entries| {
+                    Ok(entries.len() - 1)
+                })
+                .expect("the last page reads");
             backend
                 .visit(
                     &copy(dir, backend.name(), "visit"),
@@ -1208,7 +1729,7 @@ fn a_read_or_a_visit_opens_the_archive_once() {
         }
     }
     let log = crate::test_support::strace(
-        "pages::rar_tests::a_read_or_a_visit_opens_the_archive_once",
+        "pages::rar_tests::a_listing_a_read_or_a_visit_opens_the_archive_once",
         (CHILD, dir.as_os_str()),
         "openat",
         &dir.join("strace.log"),

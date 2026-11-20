@@ -1,0 +1,9 @@
+format	rar5
+entry	p01.png	file	321
+entry	p02.png	empty	0
+entry	p03.png	file	327
+entry	ComicInfo.xml	empty	0
+page	p01.png	789057876ea504f8de8e3bfe7bd70e6e3a0592f65012bb2c17eadec68103197f
+page	p02.png	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+page	p03.png	94bd4071b20efd7533c18104ea071b046bff63a25573ecf8d9429775819ff991
+other	ComicInfo.xml	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

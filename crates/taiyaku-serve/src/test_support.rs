@@ -1655,6 +1655,64 @@ pub(crate) fn router_over_a_scanned_folder_of_jxl_pages()
     router_over_a_written_tree(fixture)
 }
 
+/// A router over a scanned tree of RAR fixtures and one zip, each named
+/// against its bytes or as one part of a volume: `Rar/Rar v01.cbz` is
+/// `rar5-stored.rar`, the one member of its edition; `Parts/Parts v01
+/// part1.cbr` and `part2.cbr` are `rar4.rar` and `rar5-compressed.rar`, the
+/// two members of theirs; and `Zip/Zip v01.cbr` is a zip of two pages. A
+/// build without a RAR backend derives a work from the zip alone.
+///
+/// # Panics
+///
+/// Panics if the tree cannot be written or the scan fails.
+pub(crate) fn router_over_scanned_rar_archives()
+-> (axum::Router, std::sync::Arc<ServeState>, Fixture) {
+    let fixture = Fixture::new("scanned-rar");
+    let tree = fixture.join("tree");
+    let rar_fixtures = taiyaku_read::test_support::rar_fixtures();
+    for (at, file) in [
+        ("Rar/Rar v01.cbz", "rar5-stored.rar"),
+        ("Parts/Parts v01 part1.cbr", "rar4.rar"),
+        ("Parts/Parts v01 part2.cbr", "rar5-compressed.rar"),
+    ] {
+        let from = rar_fixtures.iter().find(|fixture| fixture.file == file);
+        let from = from.unwrap_or_else(|| panic!("no RAR fixture {file}"));
+        let to = tree.join(at);
+        std::fs::create_dir_all(to.parent().expect("a folder")).expect("mkdir");
+        std::fs::copy(&from.path, &to).expect("copies the fixture");
+    }
+    let zip_at = tree.join("Zip").join("Zip v01.cbr");
+    std::fs::create_dir_all(zip_at.parent().expect("a folder")).expect("mkdir");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_at).expect("creates the zip"));
+    for page in 0..2_u8 {
+        zip.start_file(
+            format!("{page:03}.png"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .expect("starts an entry");
+        let colour = image::Rgb([20 + 80 * page, 20, 128]);
+        zip.write_all(&png(image::RgbImage::from_pixel(16, 16, colour)))
+            .expect("writes an entry");
+    }
+    zip.finish().expect("finishes the zip");
+    router_over_a_written_tree(fixture)
+}
+
+/// The slug and key of the edition in `state`'s library one of whose members
+/// is a file named `name`, if there is one.
+pub(crate) fn edition_holding(state: &ServeState, name: &str) -> Option<(String, String)> {
+    let named = |path: &str| std::path::Path::new(path).file_name() == Some(name.as_ref());
+    let works = crate::works::from_library(&state.library).expect("projects the works");
+    works.into_iter().find_map(|work| {
+        let sidecar = work.sidecar();
+        sidecar
+            .editions
+            .iter()
+            .find(|(_, edition)| edition.members.iter().any(|member| named(&member.path)))
+            .map(|(key, _)| (work.id.clone(), key.clone()))
+    })
+}
+
 /// [`router_over_a_scanned_cbz`], its archive holding `entries` (name, bytes).
 pub(crate) fn router_over_a_scanned_cbz_holding(
     prefix: &str,
@@ -3416,7 +3474,7 @@ pub(crate) fn router_over_an_edition_merged_from_two_libraries() -> EditionMerge
 /// [`router_over_an_edition_merged_from_two_libraries`] with part2's file
 /// named `part2`: a zip whatever its name, which the scan reads by its bytes,
 /// so a name with another extension gives Kids alone one member whose
-/// passthrough is typed by that extension.
+/// passthrough is typed and named by its bytes, not by that extension.
 ///
 /// # Panics
 ///

@@ -51,6 +51,7 @@ describe('Licence’s texts', () => {
       ['Shippori Mincho B1', 0],
       ['Zen Kaku Gothic New', 0],
       ['taiyaku marks', 0],
+      ['libarchive', 0],
     ])
     expect(overflow(host.querySelector('main'))).toBe(0)
     expect(overflow(document.documentElement)).toBe(0)
@@ -89,6 +90,7 @@ describe('Licence’s texts', () => {
       ['Shippori Mincho B1', width, 0],
       ['Zen Kaku Gothic New', width, 0],
       ['taiyaku marks', width, 0],
+      ['libarchive', width, 0],
     ])
     expect(overflow(host.querySelector('main'))).toBe(0)
     expect(overflow(document.documentElement)).toBe(0)
@@ -101,6 +103,7 @@ const CONTENTS = [
   ['#shippori-mincho-b1', 'Shippori Mincho B1'],
   ['#zen-kaku-gothic-new', 'Zen Kaku Gothic New'],
   ['#taiyaku-marks', 'taiyaku marks'],
+  ['#libarchive', 'libarchive'],
 ] as const
 
 /** How many page modules of their own this file has imported. */
@@ -268,6 +271,7 @@ describe('Licence’s contents', () => {
         ['Shippori Mincho B1 (OFL-1.1)', true],
         ['Zen Kaku Gothic New (OFL-1.1)', true],
         ['taiyaku marks (OFL-1.1)', true],
+        ['libarchive (BSD-2-Clause)', true],
       ])
       expect(overflow(host.querySelector('nav[aria-label="Contents"]'))).toBe(0)
       expect(overflow(main)).toBe(0)
@@ -358,7 +362,7 @@ describe('Licence’s Back to top', () => {
   ] as const)(
     'at the %s, pressed by %s at 1280 px, puts the page’s top in view and focus on its title, with a contents link’s landing ring and no fragment',
     async (place, way) => {
-      const host = await loadedAt(1280, '#taiyaku-marks')
+      const host = await loadedAt(1280, '#libarchive')
       const main = host.querySelector('main')
       const title = host.querySelector('h1')
       if (!main || !title) throw new Error('no main or no title')
@@ -377,7 +381,7 @@ describe('Licence’s Back to top', () => {
       // The case's premise: the load landed far down the page, so `<main>`,
       // which scrolls at this width, is scrolled when the link is pressed.
       expect(main.scrollTop).toBeGreaterThan(0)
-      await press(toTop(host, 'taiyaku marks', place))
+      await press(toTop(host, 'libarchive', place))
       const landed = {
         focus: document.activeElement === title,
         scrolled: [main.scrollTop, Math.round(scrollY)],
@@ -411,7 +415,7 @@ describe('Licence’s Back to top', () => {
     await page.viewport(1280, 844)
     await settle(inShell(<Licence />))
     const links = page.getByRole('link', { name: 'Back to top', exact: true })
-    expect(links.elements()).toHaveLength(8)
+    expect(links.elements()).toHaveLength(10)
     for (const link of links.elements()) {
       await expect.element(link).toHaveAccessibleName('Back to top')
     }
@@ -617,6 +621,7 @@ describe('Licence’s links', () => {
       'Shippori Mincho B1 (OFL-1.1)',
       'Zen Kaku Gothic New (OFL-1.1)',
       'taiyaku marks (OFL-1.1)',
+      'libarchive (BSD-2-Clause)',
     ])
     if (pointer === 'fine') {
       for (const link of links) {

@@ -18,9 +18,11 @@
 //! download". The consequence worth knowing is
 //! that a generated CBZ is slightly **larger** than the archive it came from.
 //!
-//! No data descriptors: every crc is known before its local header, because an
-//! archive member's comes free from its central directory and a directory
-//! member's is hashed in `taiyaku_read::member_page_entries`. Spec §4 records
+//! No data descriptors: every crc is known before its local header, because a
+//! zip member's comes free from its central directory and a RAR member's from
+//! its entry headers, and a directory member's, or a RAR entry's that declares
+//! a BLAKE2 hash and no CRC32, is hashed in
+//! `taiyaku_read::member_page_entries`. Spec §4 records
 //! why that beat the streaming bit — this is the one artefact taiyaku produces
 //! that leaves the server, and it fails on a device where nothing reports back.
 //!

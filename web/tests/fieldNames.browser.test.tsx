@@ -1070,6 +1070,7 @@ describe('the headings of /account, About and the licence page, in Chromium’s 
         ['Shippori Mincho B1', 2],
         ['Zen Kaku Gothic New', 2],
         ['taiyaku marks', 2],
+        ['libarchive', 2],
       ],
     ],
   ] as const)(
