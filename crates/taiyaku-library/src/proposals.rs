@@ -1880,8 +1880,8 @@ pub struct FirstVolume {
     /// an offset within it. `0` for a hub edition holding no members.
     pub page_count: i64,
     /// Every distinct format across that edition's members — `zip`, `dir`,
-    /// … — ascending, and empty where none of its members was walked from a
-    /// root this library still holds.
+    /// … — ascending, and empty where no member has one: none was walked from
+    /// a root this library still holds, or each that was now names no format.
     ///
     /// **Edition-wide, like [`Self::page_count`] above it.** Nothing
     /// constrains an edition's members to share a format — one volume held
@@ -1890,9 +1890,9 @@ pub struct FirstVolume {
     /// format printed beside a page count summed over all of them would be
     /// two adjacent fields answering different questions.
     ///
-    /// **Read from `scan_entry`, never from `member.format`.** See
-    /// [`edition_formats`]'s own comment: nothing in this repository writes
-    /// that column.
+    /// **Read from `scan_entry`, or from the file where it has moved since
+    /// its scan, never from `member.format`.** See [`edition_formats`]'s own
+    /// comment: nothing in this repository writes that column.
     pub formats: Vec<String>,
     /// Two interior page indices into [`Self::page_count`], or fewer where
     /// the edition is too short to have two distinct ones.
@@ -2011,6 +2011,14 @@ pub struct Evidence {
 }
 
 /// The expanded evidence for proposal `id`.
+///
+/// **This reads files as well as the store.** Each side's first volume has
+/// each member of its hub edition that joins a `scan_entry` row stat'ed (a
+/// member with no root joins none), and one that moved since its scan
+/// sniffed (`edition_formats`), each a wait on the share a library sits on.
+/// A caller that serves other requests gives it a connection of its own
+/// ([`crate::Library::working`]), not the shared one, and holds
+/// [`crate::one_snapshot`] over it where another connection writes.
 ///
 /// # Errors
 ///
@@ -2279,7 +2287,7 @@ fn first_volume(conn: &Connection, series_id: i64) -> Result<Option<FirstVolume>
     }))
 }
 
-/// Every distinct format `edition_id`'s members were walked as, ascending.
+/// The distinct formats of `edition_id`'s members, ascending ([`format_as_it_is`]).
 ///
 /// **`member.format` is not the source, because nothing writes it.** The only
 /// `INSERT INTO member` in this repository — `import.rs`'s — lists
@@ -2294,28 +2302,70 @@ fn first_volume(conn: &Connection, series_id: i64) -> Result<Option<FirstVolume>
 /// the root against every member. `rtrim` is for a root that is a single
 /// `/`, whose join adds no separator of its own.
 ///
-/// **A member with no root contributes nothing**, which is why this can be
-/// empty for an edition that has members: an imported work's rows carry
-/// `root_id` NULL by design (`schema/006_member_root.sql`), and so does any
-/// member whose root has since been removed. Nothing was walked, so there is
-/// no format to report, and inventing one from the path's extension would be
-/// a guess where the scanner has a measurement.
+/// **A member with no root contributes nothing**, one way this can be empty
+/// for an edition that has members ([`format_as_it_is`] holds the other): an
+/// imported work's rows carry `root_id` NULL by design
+/// (`schema/006_member_root.sql`), and so does any member whose root has
+/// since been removed. Nothing was walked, so there is no format to report,
+/// and one made from the path's extension would be a guess, not a measurement.
 fn edition_formats(conn: &Connection, edition_id: i64) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT DISTINCT scan_entry.format FROM member \
+            "SELECT member.path, scan_entry.format, scan_entry.size, scan_entry.mtime \
+             FROM member \
              JOIN root ON root.id = member.root_id \
              JOIN scan_entry ON scan_entry.root_id = member.root_id \
               AND scan_entry.rel_path = substr(member.path, length(rtrim(root.path, '/')) + 2) \
-             WHERE member.edition_id = ?1 AND scan_entry.format IS NOT NULL \
-             ORDER BY 1",
+             WHERE member.edition_id = ?1",
         )
         .map_err(|e| format!("reading the formats of edition {edition_id}: {e}"))?;
     let rows = stmt
-        .query_map([edition_id], |r| r.get(0))
+        .query_map([edition_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, (r.get(2)?, r.get(3)?)))
+        })
         .map_err(|e| format!("reading the formats of edition {edition_id}: {e}"))?;
-    rows.collect::<Result<Vec<String>, _>>()
-        .map_err(|e| format!("reading the formats of edition {edition_id}: {e}"))
+    let walked = rows
+        .collect::<Result<Vec<(String, Option<String>, (i64, i64))>, _>>()
+        .map_err(|e| format!("reading the formats of edition {edition_id}: {e}"))?;
+    let formats: std::collections::BTreeSet<String> = walked
+        .into_iter()
+        .filter_map(|(path, stored, seen)| {
+            format_as_it_is(std::path::Path::new(&path), stored, seen)
+        })
+        .collect();
+    Ok(formats.into_iter().collect())
+}
+
+/// The format of the file at `path`: `stored`, a scan's token for it, while
+/// the file has the size and mtime that scan `seen`, and a sniff once it has
+/// moved, since the row then describes another file (a RAR repacked as a zip
+/// under its name). A moved path contributes nothing where its bytes name no
+/// format, cannot be read, or are neither a regular file's nor a folder's. A
+/// file that cannot be stat'ed keeps `stored`: nothing says it changed.
+///
+/// `download::sent_as` in `taiyaku-serve` compares the same stamp for a
+/// download, and asks no row of a file it cannot stat, where this keeps one.
+fn format_as_it_is(
+    path: &std::path::Path,
+    stored: Option<String>,
+    seen: (i64, i64),
+) -> Option<String> {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return stored;
+    };
+    if crate::fingerprints::stamp_in(&meta) == seen {
+        return stored;
+    }
+    // **Regular files and folders only**, the two things a walk records
+    // (`scan::measure_file`), and for its reason: `stat` succeeds on a FIFO,
+    // and `sniff`'s `File::open` of one waits until a writer appears.
+    if !(meta.is_file() || meta.is_dir()) {
+        return None;
+    }
+    taiyaku_read::sniff(path)
+        .ok()
+        .and_then(taiyaku_read::Format::token)
+        .map(str::to_owned)
 }
 
 /// Two interior indices inside an edition of `page_count` pages.

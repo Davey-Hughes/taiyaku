@@ -410,24 +410,18 @@ pub(crate) async fn detail(
         return refusal;
     }
 
-    // A sweep of every `scan_entry` row in the library, plus the reads either
-    // side of it — `list`'s reasoning about the async worker, on the heavier
-    // of the two read routes.
+    // A sweep of every `scan_entry` row in the library, the reads either side
+    // of it, and a stat of each scanned member of both sides' first volume —
+    // `list`'s reasoning about the async worker, on the heavier of the two
+    // read routes.
     let built = tokio::task::spawn_blocking(move || {
-        let conn = state.library.conn();
-        present(&conn, id)?;
-        let evidence = proposals::evidence(&conn, id).map_err(NoAnswer::Failed)?;
-        Ok::<_, NoAnswer>(serde_json::json!({
-            "proposal": proposal_json(&evidence.proposal),
-            "subject": side_json(&evidence.subject),
-            "target": evidence.target.as_ref().map(side_json),
-            "reasons": evidence
-                .reasons
-                .iter()
-                .map(|r| serde_json::json!({ "text": r.text, "sign": r.sign }))
-                .collect::<Vec<_>>(),
-            "rule": evidence.rule.as_ref().map(rule_json),
-        }))
+        // **`working()`, not `conn()`.** The evidence stats the scanned
+        // members of each side's first volume and sniffs one that moved since
+        // its scan, a wait apiece on the NAS this runs on. Holding the shared
+        // `Mutex<Connection>` across that stalls every other request, key
+        // and session authentication among them: `stamp::plan`'s reasoning.
+        let conn = state.library.working().map_err(NoAnswer::Failed)?;
+        expanded(&conn, id)
     })
     .await;
 
@@ -436,6 +430,37 @@ pub(crate) async fn detail(
         Ok(Err(no_answer)) => no_answer.into_response(),
         Err(why) => panicked("reading a proposal", &why),
     }
+}
+
+/// [`detail`]'s body for proposal `id`, read on `conn`.
+///
+/// **One snapshot for the whole answer** ([`taiyaku_library::one_snapshot`]).
+/// `conn` is the route's own, so no write is kept out while this reads,
+/// whichever connection it takes: [`accept`] the shared one, [`split_match`]'s
+/// derive a working one. One committing between two of its statements would
+/// pair halves of two states: a proposal read as open beside the sweep after
+/// its accept, which offers no rule, or a row [`present`] found and
+/// [`proposals::evidence`] did not, a 500 for a 404.
+fn expanded(conn: &rusqlite::Connection, id: i64) -> Result<serde_json::Value, NoAnswer> {
+    // A read transaction, held across the evidence's waits on the share. It
+    // keeps no writer out, but the WAL cannot be checkpointed past the
+    // snapshot until the answer is built, so it grows by what commits
+    // meanwhile.
+    let _snapshot = taiyaku_library::one_snapshot(conn)
+        .map_err(|e| NoAnswer::Failed(format!("starting a read of proposal {id}: {e}")))?;
+    present(conn, id)?;
+    let evidence = proposals::evidence(conn, id).map_err(NoAnswer::Failed)?;
+    Ok(serde_json::json!({
+        "proposal": proposal_json(&evidence.proposal),
+        "subject": side_json(&evidence.subject),
+        "target": evidence.target.as_ref().map(side_json),
+        "reasons": evidence
+            .reasons
+            .iter()
+            .map(|r| serde_json::json!({ "text": r.text, "sign": r.sign }))
+            .collect::<Vec<_>>(),
+        "rule": evidence.rule.as_ref().map(rule_json),
+    }))
 }
 
 /// `POST /api/library/proposals/{id}/resolution` — what a candidate rule

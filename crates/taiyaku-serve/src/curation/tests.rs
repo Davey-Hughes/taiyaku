@@ -1375,13 +1375,323 @@ fn an_administrator() -> crate::auth::Principal {
     }
 }
 
+/// The two suffixed series in a library on a file, scanned and derived, with
+/// the fixture that holds them and the database's path.
+///
+/// **File-backed, unlike every other fixture in this module**: over an
+/// in-memory library `working()` is the guard `conn()` would be, and there is
+/// no second connection to open.
+fn a_file_backed_library(
+    label: &str,
+) -> (
+    test_support::Fixture,
+    taiyaku_library::Library,
+    std::path::PathBuf,
+) {
+    let fixture = test_support::Fixture::new(label);
+    for (pages, title) in (2_usize..).zip([
+        "Go-Toubun no Hanayome",
+        "Go-Toubun no Hanayome - Full Color Edition",
+    ]) {
+        test_support::write_pages(
+            &fixture
+                .join("tree")
+                .join(title)
+                .join(format!("{title} - v01")),
+            pages,
+        );
+    }
+    std::fs::create_dir_all(fixture.join("db")).expect("creates the database directory");
+    let db = fixture.join("db").join("library.db");
+    let library = taiyaku_library::Library::open(&db).expect("opens a file-backed library");
+    {
+        let conn = library.conn();
+        let root =
+            taiyaku_library::scan::add_root(&conn, &fixture.join("tree")).expect("adds the root");
+        taiyaku_library::scan::scan_root(&conn, &root).expect("scans the tree");
+        taiyaku_library::derive::derive(&conn).expect("derives the library");
+    }
+    (fixture, library, db)
+}
+
+/// `GET /{id}` stats each scanned member of both sides' first volume and
+/// sniffs one that moved, so it must not hold `Library::conn`, a mutex every
+/// authenticated request takes, across them: it reads on `Library::working`.
+///
+/// The holder lets go only when told, so a route on `conn()` cannot answer
+/// inside the timeout. A route on a connection of its own has the same 20 s
+/// to answer in.
+#[tokio::test]
+async fn the_expanded_row_does_not_wait_on_the_shared_connections_mutex() {
+    use axum::extract::{Extension, Path as AxPath, State};
+    use std::sync::Arc;
+
+    let (fixture, library, _db) = a_file_backed_library("detail-second-connection");
+    let state = Arc::new(crate::ServeState {
+        library: Arc::new(library),
+        works: crate::Works::fixed(Vec::new()),
+        source: Arc::new(crate::LocalLibrary),
+        cache_dir: fixture.join("covers"),
+        dictionaries: None,
+        log: None,
+        auth: crate::session::AuthConfig::default(),
+        scans: Default::default(),
+        jobs_ended: Default::default(),
+        library_job: Default::default(),
+        fingerprints: Default::default(),
+        matches: Default::default(),
+        dirs: Vec::new(),
+    });
+    let id = the_one_open_proposal(&state);
+
+    let holder_library = Arc::clone(&state.library);
+    let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let guard = holder_library.conn();
+        held_tx.send(()).expect("the test is still waiting");
+        // Until the test says so, or has gone.
+        let _ = release_rx.recv();
+        drop(guard);
+    });
+    held_rx.recv().expect("the holder thread took the mutex");
+
+    let answered = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        crate::curation::detail(
+            State(Arc::clone(&state)),
+            Extension(an_administrator()),
+            test_support::from_a_browser(),
+            AxPath(id),
+        ),
+    )
+    .await;
+
+    // Before any assertion: a route still waiting on the mutex is on the
+    // blocking pool, and the runtime waits for that pool as the test ends.
+    release_tx.send(()).ok();
+    holder.join().expect("the holder thread did not panic");
+
+    let response = answered.expect(
+        "GET /api/library/proposals/{id} did not answer in 20 s while another thread held \
+         `Library::conn`: it stats and sniffs files, so it must read on `Library::working`'s \
+         own connection",
+    );
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_str(&test_support::body_string(response).await).expect("a JSON body");
+    for side in ["subject", "target"] {
+        assert_eq!(
+            body[side]["first_volume"]["formats"],
+            serde_json::json!(["dir"]),
+            "the second connection reads what the first wrote: {body}"
+        );
+    }
+}
+
+/// What [`at_a_row_of`] is to do, and what it has seen done.
+struct WriteBeside {
+    /// Text of the statement the write runs beside.
+    at: &'static str,
+    /// Text of a statement the route begins after that row, one whose rows
+    /// the write changes.
+    then: &'static str,
+    /// The write, until it runs.
+    write: Option<Box<dyn FnOnce()>>,
+    /// The write returned. rusqlite catches a panic in a trace callback and
+    /// drops it, so a write that ran is not thereby one that committed.
+    committed: bool,
+    /// A statement holding `then` began after the write ran.
+    read_after: bool,
+}
+
+thread_local! {
+    /// [`at_a_row_of`]'s state: a trace callback is a `fn`, which captures
+    /// nothing.
+    static WRITE_BESIDE: std::cell::RefCell<Option<WriteBeside>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A trace callback that runs [`WRITE_BESIDE`]'s write at the first row the
+/// traced connection reads from a statement holding its `at`: after that
+/// read's snapshot is taken, and before any later statement takes its own.
+/// From then on it notes a statement holding `then` as it begins, since one
+/// the write emptied reads no row: a write the route reads nothing of
+/// afterwards tests no snapshot.
+fn at_a_row_of(event: rusqlite::trace::TraceEvent<'_>) {
+    let write = WRITE_BESIDE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        let beside = cell.as_mut()?;
+        match event {
+            rusqlite::trace::TraceEvent::Stmt(_, sql) if beside.write.is_none() => {
+                beside.read_after |= sql.contains(beside.then);
+                None
+            }
+            rusqlite::trace::TraceEvent::Row(read) if read.sql().contains(beside.at) => {
+                beside.write.take()
+            }
+            _ => None,
+        }
+    });
+    // Run outside the borrow, and marked only once it has returned.
+    if let Some(write) = write {
+        write();
+        WRITE_BESIDE.with(|cell| {
+            if let Some(beside) = cell.borrow_mut().as_mut() {
+                beside.committed = true;
+            }
+        });
+    }
+}
+
+/// The expanded row of `id` read on `library`'s connection, with `write` run
+/// at the first row that connection reads from a statement holding `at`
+/// ([`at_a_row_of`]). `write` returns once it has committed on a connection
+/// of its own. `then` is text of a read it changes, which the route must make
+/// after it: a write that lands after the last such read leaves the test
+/// passing whether or not the route holds a snapshot.
+fn expanded_with_a_write_beside(
+    library: &taiyaku_library::Library,
+    id: i64,
+    at: &'static str,
+    then: &'static str,
+    write: impl FnOnce() + 'static,
+) -> Result<serde_json::Value, super::NoAnswer> {
+    WRITE_BESIDE.with(|cell| {
+        *cell.borrow_mut() = Some(WriteBeside {
+            at,
+            then,
+            write: Some(Box::new(write)),
+            committed: false,
+            read_after: false,
+        });
+    });
+    let mut conn = library.conn();
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT
+            | rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW,
+        Some(at_a_row_of),
+    )
+    .expect("installs the trace");
+    let answer = super::expanded(&conn, id);
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::empty(),
+        None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+    )
+    .expect("clears the trace");
+    let beside = WRITE_BESIDE
+        .with(|cell| cell.borrow_mut().take())
+        .expect("set above, and taken only here");
+    assert!(
+        beside.write.is_none(),
+        "the fixture: the route read no row from a statement holding `{at}`, so the write never ran"
+    );
+    assert!(
+        beside.committed,
+        "the fixture: the write did not commit while the route read `{at}`"
+    );
+    assert!(
+        beside.read_after,
+        "the fixture: after the write, at its first row from `{at}`, the route began no read of \
+         `{then}`, the read the write changes, so its answer would be the same without a snapshot"
+    );
+    answer
+}
+
+/// The file-backed library's one open proposal.
+fn its_one_open_proposal(library: &taiyaku_library::Library) -> i64 {
+    let conn = library.conn();
+    taiyaku_library::proposals::raise(&conn).expect("raise");
+    let open = taiyaku_library::proposals::open(&conn, 0.0).expect("open");
+    assert_eq!(open.len(), 1, "the fixture raises exactly one: {open:?}");
+    open[0].id
+}
+
+/// The expanded row is one committed state of the store. An accept commits on
+/// a second connection once the route has read the proposal, at its next
+/// read, of `series`, and the answer is the state before it: the proposal
+/// open, its rule offered. Read a statement at a time, the open proposal would
+/// be paired with the sweep after the accept, which offers no rule, and no
+/// committed state holds that pair.
+#[test]
+fn the_expanded_row_reads_one_snapshot_of_the_store() {
+    use taiyaku_library::proposals;
+
+    let (_fixture, library, db) = a_file_backed_library("detail-one-snapshot");
+    let id = its_one_open_proposal(&library);
+    let rule =
+        proposals::preview(&library.conn(), id).expect("the fixture's proposal is offered a rule");
+    let other = taiyaku_library::Library::open(&db).expect("a second connection on the same file");
+
+    let during =
+        expanded_with_a_write_beside(&library, id, "FROM series", "FROM rule", move || {
+            let accepted = proposals::accept_with(&other.conn(), id, &rule)
+                .expect("the other connection's accept reads and writes");
+            assert!(
+                matches!(accepted, proposals::Offer::Made(_)),
+                "the fixture: the accept is not refused"
+            );
+        })
+        .expect("the route answers");
+
+    assert_eq!(
+        during["proposal"]["state"], "open",
+        "the state before the accept: {during}"
+    );
+    assert!(
+        during["rule"].is_object(),
+        "an open proposal is offered its rule, as it was before the accept: {during}"
+    );
+    let after = super::expanded(&library.conn(), id).expect("the route answers");
+    assert_eq!(
+        after["proposal"]["state"], "accepted",
+        "and the accept is there to read after it: {after}"
+    );
+    assert!(
+        after["rule"].is_null(),
+        "an accepted proposal is offered none: {after}"
+    );
+}
+
+/// The snapshot starts before the route asks whether the proposal is there.
+/// The row is deleted on a second connection at that first read, and the
+/// answer is still the state before: found, and read whole. A snapshot taken
+/// after that read would find the row and then not find it, a 500 for a
+/// proposal that is a 404 from then on.
+#[test]
+fn the_expanded_row_reads_a_proposal_it_found_from_the_snapshot_it_found_it_in() {
+    let (_fixture, library, db) = a_file_backed_library("detail-snapshot-from-the-first-read");
+    let id = its_one_open_proposal(&library);
+    let other = taiyaku_library::Library::open(&db).expect("a second connection on the same file");
+
+    let during =
+        expanded_with_a_write_beside(&library, id, "FROM proposal", "FROM proposal", move || {
+            let deleted = other
+                .conn()
+                .execute("DELETE FROM proposal WHERE id = ?1", [id])
+                .expect("the other connection deletes the proposal");
+            assert_eq!(deleted, 1, "the fixture: the proposal was there to delete");
+        });
+
+    let during = during.expect("the proposal was there when the route started, so it answers");
+    assert_eq!(
+        during["proposal"]["state"], "open",
+        "the state before the delete: {during}"
+    );
+    let after = super::expanded(&library.conn(), id);
+    assert!(
+        matches!(after, Err(super::NoAnswer::Missing(gone)) if gone == id),
+        "and the proposal is gone after it: {after:?}"
+    );
+}
+
 /// **No curation route does its SQLite work on the async worker.**
 ///
-/// Every handler here holds `state.library.conn()` — a `MutexGuard` — across
-/// the whole of its work, and three of them sweep every `scan_entry` row in the
-/// library: `POST /{id}/resolution`, which C3's rule-editing form calls on
-/// every keystroke, `GET /{id}`, and `POST /{id}/accept`. Run on the async
-/// worker, a handler stalls the runtime for as long as it runs.
+/// Every handler here holds the library's `MutexGuard` across the whole of its
+/// work — `GET /{id}`, Split and Undo through `working()`, over this fixture
+/// the guard `conn()` hands out — and several sweep every `scan_entry` row,
+/// `POST /{id}/resolution` on every keystroke of C3's rule form among them.
+/// On the async worker, a handler stalls the runtime.
 ///
 /// **The milliseconds are deliberately not quoted here, and `docs/notes.md`
 /// says why** ("What a swept row actually costs"): the cost is per byte of

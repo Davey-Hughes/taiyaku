@@ -28,6 +28,81 @@ fn a_source_serves_one_member_at_an_offset_within_it() {
     );
 }
 
+/// The member at `path` under its root, counted at `pages`.
+fn member(path: &str, pages: u32) -> Member {
+    Member {
+        path: path.to_owned(),
+        sha256: String::new(),
+        pages,
+    }
+}
+
+/// A page past the end of a member that is read names the count the sidecar
+/// holds and says the file may have been replaced: the count and the file
+/// disagree, and the file is the one that can have moved.
+#[test]
+fn a_page_past_the_end_of_a_zip_says_the_member_may_have_been_replaced() {
+    let tmp = crate::test_support::Fixture::new("source-past-end");
+    crate::test_support::work(&tmp);
+
+    let past_end = LocalLibrary
+        .page(&tmp, &member("c1.cbz", 7), 7)
+        .expect_err("the zip holds two pages");
+
+    assert!(
+        past_end.contains("the sidecar records 7 pages for this member"),
+        "names the count the sidecar holds: {past_end}"
+    );
+    assert!(
+        past_end.contains("it may have been replaced"),
+        "a count the file does not bear out points at the file: {past_end}"
+    );
+}
+
+/// A RAR counted by a build that reads RAR and asked of one that does not is
+/// refused for the build, and the refusal is handed on as it is: the file is
+/// as it was counted, so saying it may have been replaced points an operator
+/// at the wrong cause. In a build that reads RAR a page past the end is a
+/// count the file does not bear out, as it is for a zip.
+#[test]
+fn a_rar_page_error_blames_a_replaced_file_only_in_a_build_that_reads_rar() {
+    let tmp = crate::test_support::Fixture::new("source-rar-refused");
+    let fixture = taiyaku_read::test_support::rar_fixtures()
+        .into_iter()
+        .find(|fixture| fixture.file == "rar5-compressed.rar")
+        .expect("the fixture");
+    std::fs::copy(&fixture.path, tmp.join("volume.cbr")).expect("copies the fixture");
+    let pages = u32::try_from(fixture.pages.len()).expect("a page count");
+    let volume = member("volume.cbr", pages);
+
+    if !taiyaku_read::Format::Rar.is_readable() {
+        let refused = LocalLibrary
+            .page(&tmp, &volume, 0)
+            .expect_err("this build reads no RAR");
+        assert!(
+            refused.contains("built without the rar-libarchive feature"),
+            "names the build as the cause: {refused}"
+        );
+        assert!(
+            !refused.contains("replaced") && !refused.contains("sidecar"),
+            "and nothing about the file or its count: {refused}"
+        );
+        return;
+    }
+    LocalLibrary
+        .page(&tmp, &volume, 0)
+        .expect("this build reads the RAR's first page");
+    let past_end = LocalLibrary
+        .page(&tmp, &volume, pages)
+        .expect_err("past the RAR's last page");
+    assert!(
+        past_end.contains(&format!(
+            "the sidecar records {pages} pages for this member"
+        )) && past_end.contains("it may have been replaced"),
+        "a count the file does not bear out points at the file: {past_end}"
+    );
+}
+
 /// The arithmetic the source does not do has to happen elsewhere: page 2 of
 /// this two-member edition is the second member's first page.
 #[test]

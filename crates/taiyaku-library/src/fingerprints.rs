@@ -299,11 +299,17 @@ pub fn still_due(
 /// and after a read, so a file that moved meanwhile is not stored.
 #[must_use]
 pub fn stamp_of(path: &Path) -> Option<(i64, i64)> {
-    let meta = std::fs::metadata(path).ok()?;
-    Some((
+    std::fs::metadata(path).ok().map(|meta| stamp_in(&meta))
+}
+
+/// [`stamp_of`] from a stat already taken, for a caller that asks the same
+/// stat what kind of thing is there: one stat, so the stamp and the kind
+/// describe one moment.
+pub(crate) fn stamp_in(meta: &std::fs::Metadata) -> (i64, i64) {
+    (
         i64::try_from(meta.len()).unwrap_or(i64::MAX),
-        scan::mtime_secs(&meta),
-    ))
+        scan::mtime_secs(meta),
+    )
 }
 
 /// Write `sha256` onto `unit`'s entry, as a derive writes a digest it took,

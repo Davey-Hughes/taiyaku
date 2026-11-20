@@ -4486,8 +4486,8 @@ fn interior_indices_land_inside_every_length_they_are_asked_for() {
 ///
 /// The base's volume 1 is walked from *two* roots — root A's copy and root
 /// B's copy each become their own `member` row on the same edition, both
-/// `dir`. That is the shape `edition_formats`'s `SELECT DISTINCT` exists for:
-/// without it, this edition's `formats` would answer `["dir", "dir"]`.
+/// `dir`. That is the shape `edition_formats` answers a set for: as a list
+/// of each member's format, this edition's `formats` would be `["dir", "dir"]`.
 ///
 /// Returns both `TempDir`s: each must outlive every use of `library`.
 fn library_whose_only_volume_is_walked_as_a_directory_from_two_roots()
@@ -4530,8 +4530,8 @@ fn library_whose_only_volume_is_walked_as_a_directory_from_two_roots()
 fn edition_formats_are_distinct_even_when_two_members_share_one() {
     // On this two-root shape the base's volume 1 gets a `dir` member from
     // root A and a second `dir` member from root B, one edition with two
-    // members of the same format. Without `edition_formats`'s
-    // `SELECT DISTINCT` this side's `formats` would answer `["dir", "dir"]`.
+    // members of the same format. As a list of each member's format, this
+    // side's `formats` would answer `["dir", "dir"]`.
     let (_a, _b, library) = library_whose_only_volume_is_walked_as_a_directory_from_two_roots();
     let conn = library.conn();
     proposals::raise(&conn).expect("raise");
@@ -4550,6 +4550,422 @@ fn edition_formats_are_distinct_even_when_two_members_share_one() {
         vec!["dir".to_string()],
         "two `dir` members on one edition still answer one distinct format",
     );
+}
+
+/// One series of one volume, scanned and derived. The volume is whatever
+/// `write` puts at the path it is given, a file or a folder; that path is
+/// answered with the library.
+///
+/// Returns the `TempDir`: it must outlive every use of `library`.
+fn library_with_one_volume(
+    label: &str,
+    name: &str,
+    write: impl FnOnce(&std::path::Path),
+) -> (crate::tests::TempDir, Library, std::path::PathBuf) {
+    let dir = crate::tests::tempdir(label);
+    let volume = dir.path().join("Series").join(name);
+    write(&volume);
+    let library = Library::open_in_memory().expect("open");
+    {
+        let conn = library.conn();
+        let root = scan::add_root(&conn, dir.path()).expect("add root");
+        scan::scan_root(&conn, &root).expect("scan");
+        derive::derive(&conn).expect("derive");
+    }
+    (dir, library, volume)
+}
+
+/// The edition of the library's one member, or `None` where derive made no
+/// member at all.
+fn the_one_members_edition(conn: &rusqlite::Connection) -> Option<i64> {
+    let editions: Vec<i64> = conn
+        .prepare("SELECT edition_id FROM member")
+        .expect("prepare")
+        .query_map([], |r| r.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("reads the members");
+    assert!(editions.len() <= 1, "the fixture: one volume: {editions:?}");
+    editions.first().copied()
+}
+
+/// Store `token` as the format of the entry at `rel_path`, its size and mtime
+/// left as the scan wrote them: a row that disagrees with the bytes it
+/// describes, so an answer of `token` came from the row and not from the file.
+fn store_format(conn: &rusqlite::Connection, rel_path: &str, token: &str) {
+    let changed = conn
+        .execute(
+            "UPDATE scan_entry SET format = ?1 WHERE rel_path = ?2",
+            [token, rel_path],
+        )
+        .expect("stores the token");
+    assert_eq!(changed, 1, "the fixture: one entry at {rel_path}");
+}
+
+/// A RAR to `taiyaku_read::sniff` in any build, whether or not it reads one.
+const RAR_BYTES: &[u8] = b"Rar!\x1a\x07\x00padding to make a plausible file";
+
+/// A file changed under its name since the scan is not what its row describes,
+/// so the formats are what its bytes say now: another format's token, or none
+/// where the bytes name no format.
+#[test]
+fn a_volume_converted_in_place_since_the_scan_reports_the_format_it_is_now() {
+    let (_tree, library, volume) =
+        library_with_one_volume("proposals-formats-converted", "Series v01.cbz", |at| {
+            crate::scan::tests::write_archive(at, 3);
+        });
+    let conn = library.conn();
+    let edition = the_one_members_edition(&conn).expect("the archive is a member");
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["zip"],
+        "the fixture: scanned as a zip",
+    );
+
+    std::fs::write(&volume, RAR_BYTES).expect("replaces the zip with a RAR");
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["rar"],
+        "the row still says zip, of a file that is no longer the one it describes",
+    );
+
+    std::fs::write(&volume, b"bytes that name no format").expect("replaces it again");
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        Vec::<String>::new(),
+        "bytes that name nothing leave no format to report, the row's least of all",
+    );
+}
+
+/// The case the rule is for: a RAR repacked as a zip under the same name. Only
+/// a build that reads RAR makes a member of one.
+#[test]
+fn a_rar_repacked_as_a_zip_under_its_name_reports_zip_before_the_next_scan() {
+    let fixture = crate::scan::tests::rar_fixture(crate::scan::tests::READABLE_RAR);
+    let (tree, library, volume) =
+        library_with_one_volume("proposals-formats-repacked", "Series v01.cbr", |at| {
+            std::fs::create_dir_all(at.parent().expect("a folder")).expect("mkdir");
+            std::fs::copy(&fixture.path, at).expect("copies the fixture");
+        });
+    let conn = library.conn();
+    let Some(edition) = the_one_members_edition(&conn) else {
+        assert!(
+            !taiyaku_read::Format::Rar.is_readable(),
+            "a build with a RAR backend makes a member of a RAR"
+        );
+        return;
+    };
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["rar"],
+        "the fixture: scanned as a RAR",
+    );
+
+    let repacked = tree.path().join("repacked.zip");
+    crate::scan::tests::write_archive(&repacked, 3);
+    std::fs::rename(&repacked, &volume).expect("puts the zip where the RAR was");
+
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["zip"],
+    );
+}
+
+/// A file with the size and mtime the scan saw is answered from its row and
+/// not opened: the row here says `pdf` of bytes that are a zip, and `pdf` is
+/// the answer.
+#[test]
+fn a_volume_as_the_scan_saw_it_reports_the_stored_format_without_being_read() {
+    let (_tree, library, _volume) =
+        library_with_one_volume("proposals-formats-untouched", "Series v01.cbz", |at| {
+            crate::scan::tests::write_archive(at, 3);
+        });
+    let conn = library.conn();
+    let edition = the_one_members_edition(&conn).expect("the archive is a member");
+    store_format(&conn, "Series/Series v01.cbz", "pdf");
+
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["pdf"],
+        "a sniff would have said zip",
+    );
+}
+
+/// A file that cannot be stat'ed, gone or on a share that is down, keeps the
+/// format the scan stored: nothing says it changed.
+#[test]
+fn a_volume_gone_from_disk_reports_the_format_the_scan_stored() {
+    let (_tree, library, volume) =
+        library_with_one_volume("proposals-formats-gone", "Series v01.cbz", |at| {
+            crate::scan::tests::write_archive(at, 3);
+        });
+    let conn = library.conn();
+    let edition = the_one_members_edition(&conn).expect("the archive is a member");
+    std::fs::remove_file(&volume).expect("removes the volume");
+
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["zip"],
+    );
+}
+
+/// A folder is compared by the size and mtime the scan wrote for a folder, so
+/// one that has not moved is answered from its row, here made to say `pdf`,
+/// and one whose mtime has moved is a `dir` by what it is now.
+///
+/// The mtime is moved by hand and nothing is added to the folder: a folder's
+/// size follows its entries on one filesystem and not on another, so a page
+/// added would leave it to the filesystem which half of the stamp moved.
+#[test]
+fn a_folder_reports_the_stored_format_until_it_moves_and_dir_after() {
+    let (_tree, library, volume) =
+        library_with_one_volume("proposals-formats-folder", "Series v01", |at| {
+            write_pages(at, 3);
+        });
+    let conn = library.conn();
+    let edition = the_one_members_edition(&conn).expect("the folder is a member");
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["dir"],
+        "the fixture: scanned as a folder of pages",
+    );
+    store_format(&conn, "Series/Series v01", "pdf");
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["pdf"],
+        "a folder as the scan saw it is answered from its row",
+    );
+
+    let seen = std::fs::metadata(&volume)
+        .and_then(|meta| meta.modified())
+        .expect("the folder's mtime");
+    set_mtime(&volume, seen + std::time::Duration::from_secs(60));
+
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["dir"],
+        "a folder that moved since the scan is what it is now",
+    );
+}
+
+/// Set the mtime of the file or folder at `path`, which a test does by hand
+/// wherever the mtime is what it is about: what a rewrite does to one is the
+/// filesystem's and the clock's to say.
+fn set_mtime(path: &std::path::Path, to: std::time::SystemTime) {
+    std::fs::File::open(path)
+        .and_then(|file| file.set_modified(to))
+        .expect("sets the mtime");
+}
+
+/// The stamp is a size and an mtime, and either alone says a file moved. Here
+/// the size stays: the zip is replaced by a RAR of its own length, and the
+/// mtime is first put back to the one the scan saw, where the row answers for
+/// bytes it does not describe, and then moved a minute on.
+#[test]
+fn a_volume_rewritten_at_its_own_length_is_sniffed_once_its_mtime_moves() {
+    let (_tree, library, volume) =
+        library_with_one_volume("proposals-formats-same-length", "Series v01.cbz", |at| {
+            crate::scan::tests::write_archive(at, 3);
+        });
+    let conn = library.conn();
+    let edition = the_one_members_edition(&conn).expect("the archive is a member");
+    let scanned = std::fs::metadata(&volume).expect("the volume as the scan saw it");
+    let seen = scanned.modified().expect("the mtime the scan saw");
+    let length = usize::try_from(scanned.len()).expect("a fixture archive is a few hundred bytes");
+    assert!(
+        RAR_BYTES.len() <= length,
+        "the fixture: the zip is no shorter than a RAR's header"
+    );
+    let mut rar = RAR_BYTES.to_vec();
+    rar.resize(length, 0);
+    std::fs::write(&volume, &rar).expect("replaces the zip with a RAR of its length");
+
+    set_mtime(&volume, seen);
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["zip"],
+        "the size and the mtime the scan saw, so the row answers",
+    );
+
+    set_mtime(&volume, seen + std::time::Duration::from_secs(60));
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["rar"],
+        "the mtime alone moved, and that is a file the row does not describe",
+    );
+}
+
+/// The other half of the stamp. Here the mtime stays: the zip is replaced by a
+/// RAR of another length and its mtime put back to the one the scan saw, so
+/// the size alone says the file moved, whichever second the rewrite fell in.
+#[test]
+fn a_volume_rewritten_at_another_length_is_sniffed_though_its_mtime_is_the_scans() {
+    let (_tree, library, volume) =
+        library_with_one_volume("proposals-formats-same-mtime", "Series v01.cbz", |at| {
+            crate::scan::tests::write_archive(at, 3);
+        });
+    let conn = library.conn();
+    let edition = the_one_members_edition(&conn).expect("the archive is a member");
+    let scanned = std::fs::metadata(&volume).expect("the volume as the scan saw it");
+    let seen = scanned.modified().expect("the mtime the scan saw");
+    assert_ne!(
+        usize::try_from(scanned.len()).expect("a fixture archive is a few hundred bytes"),
+        RAR_BYTES.len(),
+        "the fixture: the RAR is not the zip's length"
+    );
+    std::fs::write(&volume, RAR_BYTES).expect("replaces the zip with a RAR of another length");
+    set_mtime(&volume, seen);
+    assert_eq!(
+        std::fs::metadata(&volume)
+            .and_then(|meta| meta.modified())
+            .expect("the volume's mtime now"),
+        seen,
+        "the fixture: the mtime is the one the scan saw"
+    );
+
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["rar"],
+        "the size alone moved, and that is a file the row does not describe",
+    );
+}
+
+/// A row that holds no format says nothing while its file is as the scan saw
+/// it, and is no reason to pass over the file once it has moved: the bytes
+/// there now may name one.
+#[test]
+fn a_volume_whose_row_holds_no_format_is_sniffed_once_it_moves() {
+    let (_tree, library, volume) =
+        library_with_one_volume("proposals-formats-no-token", "Series v01.cbz", |at| {
+            crate::scan::tests::write_archive(at, 3);
+        });
+    let conn = library.conn();
+    let edition = the_one_members_edition(&conn).expect("the archive is a member");
+    let changed = conn
+        .execute(
+            "UPDATE scan_entry SET format = NULL WHERE rel_path = 'Series/Series v01.cbz'",
+            [],
+        )
+        .expect("empties the token");
+    assert_eq!(changed, 1, "the fixture: one entry for the volume");
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        Vec::<String>::new(),
+        "the file is as the scan saw it, and the scan's row names no format",
+    );
+
+    std::fs::write(&volume, RAR_BYTES).expect("replaces the zip with a RAR");
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        ["rar"],
+        "a moved file is sniffed whether or not its row held a format",
+    );
+}
+
+/// A moved file that cannot be read contributes nothing: its row describes
+/// another file, and no bytes say what this one is.
+///
+/// The file is a link to `/proc/self/mem`: a regular file to `stat`, and one
+/// whose read fails for every user. Mode bits would not do it, since they do
+/// not stop root, which CI runs as.
+#[test]
+fn a_moved_volume_that_cannot_be_read_reports_no_format() {
+    let (_tree, library, volume) =
+        library_with_one_volume("proposals-formats-unreadable", "Series v01.cbz", |at| {
+            crate::scan::tests::write_archive(at, 3);
+        });
+    let conn = library.conn();
+    let edition = the_one_members_edition(&conn).expect("the archive is a member");
+
+    std::fs::remove_file(&volume).expect("removes the volume");
+    std::os::unix::fs::symlink("/proc/self/mem", &volume).expect("links the unreadable file");
+    assert!(
+        std::fs::metadata(&volume).is_ok_and(|meta| meta.is_file()),
+        "the fixture: a regular file to stat"
+    );
+    assert!(
+        taiyaku_read::sniff(&volume).is_err(),
+        "the fixture: a file whose read fails"
+    );
+
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        Vec::<String>::new(),
+        "the row's zip is of a file that is no longer there",
+    );
+}
+
+/// Only a regular file or a folder is sniffed. `stat` succeeds on a FIFO, and
+/// an open of one waits for a writer, so a moved path that is one contributes
+/// nothing and is not opened.
+///
+/// The test holds the FIFO open itself with a RAR's header in it, so an open
+/// here returns at once and reads `rar`, where with no writer it would wait
+/// for one.
+#[test]
+fn a_fifo_where_a_volume_was_is_not_opened() {
+    use std::io::Write as _;
+
+    let (_tree, library, volume) =
+        library_with_one_volume("proposals-formats-fifo", "Series v01.cbz", |at| {
+            crate::scan::tests::write_archive(at, 3);
+        });
+    let conn = library.conn();
+    let edition = the_one_members_edition(&conn).expect("the archive is a member");
+
+    std::fs::remove_file(&volume).expect("removes the volume");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&volume)
+        .status()
+        .expect("runs mkfifo");
+    assert!(made.success(), "the fixture: mkfifo makes the FIFO");
+    // Opened for both, which waits for nobody; opened for one, it would wait
+    // for the other.
+    let mut held = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&volume)
+        .expect("opens the FIFO");
+    let mut header = RAR_BYTES.to_vec();
+    header.resize(1024, 0);
+    held.write_all(&header)
+        .expect("writes what a sniff would read");
+
+    assert_eq!(
+        proposals::edition_formats(&conn, edition).expect("formats"),
+        Vec::<String>::new(),
+        "a FIFO at the member's path was opened and read",
+    );
+}
+
+/// The formats are ascending whichever member holds which: the two members'
+/// rows are made to say each other's format, and the answer does not move.
+#[test]
+fn edition_formats_are_ascending_whichever_member_holds_which_format() {
+    let (_tree, library) = library_whose_volume_one_is_a_directory_and_an_archive();
+    let conn = library.conn();
+    let edition: i64 = conn
+        .query_row(
+            "SELECT edition_id FROM member WHERE path LIKE '%v01.cbz'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the archive's edition");
+    let formats = || proposals::edition_formats(&conn, edition).expect("formats");
+    assert_eq!(formats(), ["dir", "zip"], "the fixture: a folder and a zip");
+
+    store_format(
+        &conn,
+        "Go-Toubun no Hanayome/Go-Toubun no Hanayome - v01",
+        "zip",
+    );
+    store_format(
+        &conn,
+        "Go-Toubun no Hanayome/Go-Toubun no Hanayome - v01.cbz",
+        "dir",
+    );
+
+    assert_eq!(formats(), ["dir", "zip"]);
 }
 
 #[test]

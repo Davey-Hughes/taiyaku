@@ -52,14 +52,14 @@ pub struct Planned {
 ///
 /// `edition_formats` answers it by joining `scan_entry` on
 /// `(root_id, rel_path)`, and **this deliberately does not**, because the two
-/// are answering different questions. That function reports a historical
-/// fact — what these members were *walked* as — and says so; a member with no
-/// root contributes nothing to it, which is right for a report. This function
-/// is deciding whether to **rewrite the file it is looking at**, so what the
-/// bytes are *now* is the only answer that can be trusted, a cached token
-/// from an earlier walk is exactly the staleness hazard, and an imported work
-/// (`root_id` NULL by design, per `schema/006_member_root.sql`) must not be
-/// silently unstampable. [`taiyaku_read::sniff`] is the same measurement the
+/// are answering different questions. That function reports to a panel: a
+/// walk's token while the file has the size and mtime that walk saw, and
+/// nothing for a member with no root, which is right for a report. This
+/// function is deciding whether to **rewrite the file it is looking at**, so
+/// what the bytes are *now* is the only answer that can be trusted: an
+/// unmoved size and mtime are no proof, and an imported work (`root_id` NULL
+/// by design, per `schema/006_member_root.sql`) must not be silently
+/// unstampable. [`taiyaku_read::sniff`] is the same measurement the
 /// scanner makes, made at the moment it matters. It is not the suffix guess
 /// `edition_formats` rejects: `format.rs`'s own opening line is that
 /// `scan_entry.format` is sniffed, never derived from a suffix.

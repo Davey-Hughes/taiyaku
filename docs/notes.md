@@ -31022,12 +31022,13 @@ base, keeps every package's copyright file and no other doc file, and
   `Libarchive::visit` keeps a target's bytes from its own position to its
   last reference's, so a crafted archive can hold several pages in memory
   during it.
-- **A refused page carries main's sidecar hint.** `source::LocalLibrary`
-  appends "the sidecar records N pages for this member; it may have been
-  replaced" to every `member_page` error, so the log line for a RAR page
-  refused by a build without the feature carries it too (F2 in
-  `real/report.md`). It is main's wording, reaches the log only, and is left
-  for the owner.
+- **A refused page carried main's sidecar hint, until 2026-11-20.**
+  `source::LocalLibrary` appended "the sidecar records N pages for this
+  member; it may have been replaced" to every `member_page` error, so the log
+  line for a RAR page refused by a build without the feature carried it too
+  (F2 in `real/report.md`). That refusal is now handed on without the hint;
+  see "RAR follow-ups: the page refusal's hint and the panel's formats
+  (2026-11-20)" below.
 
 ### The owner's RARs
 
@@ -31106,8 +31107,9 @@ entry by name (`Backend::read`) stops at it, as
 through `read_listed` before it reads, so serving one page of a solid RAR5 still
 decodes the whole archive.
 
-In a library that cost multiplies; this is read from the code, not measured.
-The fingerprint pass lists a counted RAR twice (`member_page_names`,
+In a library that cost multiplies. What follows was read from the code, and
+has been measured since ("O380: what a solid RAR5 costs to read (2026-11-20)",
+below). The fingerprint pass lists a counted RAR twice (`member_page_names`,
 `member_unread_entries`), reads a sample of its pages
 (`fingerprint::border_sample`) through `member_page`, which lists before each
 read, and lists it once more to walk it (`fingerprint_pass/read.rs`). Where a
@@ -31325,3 +31327,115 @@ run left a `missed.txt` with nothing in it, so the script handed
 `mutants-baseline.mjs` an empty survivor list. That script prints its last
 line above just before it exits 0, and as the last command of `mutants.sh`
 its status is the sweep's. O414 records it.
+
+## RAR follow-ups: the page refusal's hint and the panel's formats (2026-11-20)
+
+Two defects that were on main when RAR PR 2 merged, neither with an
+O-number.
+
+- **A page refused for the build is not blamed on the file.**
+  `source::LocalLibrary` appends "the sidecar records N pages for this
+  member; it may have been replaced" to a `member_page` error. A build without
+  the `rar-libarchive` feature refuses every page of a RAR that a feature
+  build counted, and that refusal names the build, so the hint pointed the
+  log's reader at the file. Where this build has no RAR reader and the file
+  sniffs as a RAR, the refusal is handed on as it is. Every other error keeps
+  the hint, a RAR's page past its end in a feature build among them
+  (`source::tests::a_rar_page_error_blames_a_replaced_file_only_in_a_build_that_reads_rar`).
+  The sniff is on the error path only. A zip the sidecar counted and a RAR
+  has since replaced loses the hint in such a build too: the refusal names
+  the build, which is the cause the operator can act on either way.
+- **The proposals panel's formats follow a file converted in place.**
+  `proposals::edition_formats` joined `member` to `scan_entry` by path alone,
+  so a RAR repacked as a zip under its name was shown as a RAR until the next
+  scan, while D6's download of the same file already said zip. The panel now
+  compares the stamp `download::sent_as` compares: the stored format answers
+  while the file has the size and mtime the scan saw, built by
+  `fingerprints::stamp_in` as the walk writes them, for a folder as for a
+  file; a file that moved is sniffed, and bytes that name no format, or cannot
+  be read, contribute nothing. A file that cannot be stat'ed keeps the stored
+  format, where a download asks no row of one. A member with no root still
+  contributes nothing. The rule is `proposals::format_as_it_is`, in one
+  place.
+
+What a reader of the code might not expect: the panel stats each member of
+the hub edition of each side's volume 1 that joins a `scan_entry` row, which
+a member with no root does not, and sniffs one that moved, so its route,
+`curation::detail`, reads on `Library::working()`, a connection of its own,
+as `stamp::plan`'s route does. The shared connection, which every
+authenticated request takes, is not held across a wait on the share
+(`curation::tests::the_expanded_row_does_not_wait_on_the_shared_connections_mutex`).
+On a connection of its own the panel is not kept apart from any writer,
+whichever connection that writer takes (`curation::accept` the shared one,
+`curation::split_match`'s derive a working one), so it reads one snapshot
+(`taiyaku_library::one_snapshot`), begun before it asks whether the proposal
+is there: an accept or a delete that commits while it reads leaves its answer
+the state before
+(`curation::tests::the_expanded_row_reads_one_snapshot_of_the_store`,
+`curation::tests::the_expanded_row_reads_a_proposal_it_found_from_the_snapshot_it_found_it_in`).
+The snapshot is held across the stats and the sniffs, so the WAL is not
+checkpointed past it until the answer is built; no writer waits on it.
+Only a regular file or a folder is sniffed, the two things a walk records: a
+FIFO stats like either, and an open of one waits for a writer, so a moved
+path that is anything else contributes nothing. The kind is the stat's: a
+path that becomes a FIFO between that stat and the sniff's open is still
+opened, as it is under a scan's walk, and the wait is then that request's,
+on its own connection. And the mtime is in whole seconds, so a file rewritten
+at the same length within the second it was scanned still reads as the scan
+saw it, as it does to the scan's own walk.
+
+## O380: what a solid RAR5 costs to read (2026-11-20)
+
+What a solid RAR5 costs taiyaku to read, which "What describing a solid RAR
+costs" above read from the code, measured. Nothing was built. The owner ruled
+on 2026-11-20 that O380 stays open on the trigger it has, a solid RAR in a
+library, that unpacking one once is not built now, and that the figures are
+recorded.
+
+Two zips of the test library, a 207-page manga volume (Dandadan v01) and a
+27-page comic issue (Invincible 001), were each repacked with `rar` three
+ways: as a solid RAR5 with its pages in reading order (`rar a -ma5 -s -ds`
+over a list of the names in that order, since without `-ds` RAR sorts a solid
+archive's files itself), as a RAR5 that is not solid (`-s-`), which is the
+control, and as a solid RAR5 from the same list reversed. `unrar t` passed
+each. The code was main as RAR PR 2 left it, in a release build with the
+`rar-libarchive` feature on libarchive 3.8.11, on the development machine
+while it carried other load, and not on the NAS, whose image links 3.7.4.
+Each figure is the user CPU seconds of one process, the median of three runs,
+with the archive in the page cache. The process is a throwaway example, not
+committed, that makes one public `taiyaku_read` call, or one `member_page`
+call per page for the read-through; for `read_unit` it is a throwaway ignored
+test that drives the fingerprint pass's own `fingerprint_pass::read::read_unit`
+over the one file, image decoding included.
+
+The 207-page volume, in user CPU seconds:
+
+| Call | Solid | Control | Unpacked directory |
+|---|---|---|---|
+| `member_page`, first page | 0.964 | 0.024 | 0.003 |
+| `member_page`, middle page | 1.481 | 0.002 | 0.005 |
+| `member_page`, last page | 2.104 | 0.004 | 0.003 |
+| `member_page_names`, one listing | 1.039 | 0.004 | |
+| `member_page` for every page in turn | 288.0 | 0.311 | |
+| `for_each_member_page` | 2.029 | 0.114 | |
+| `for_each_member_page`, archive in reverse order | 93.27 | | |
+| `read_unit` | 26.95 | 5.162 | |
+| `read_unit`, archive in reverse order | 119.8 | | |
+| The whole archive decoded once to a directory, through `for_each_member_page` | 1.828 | | |
+| The same by `bsdtar -xf` | 0.920 | | |
+
+The control was packed in reading order only, the last two rows are the solid
+archive's, and of the directory that decode writes only the page read is given
+here. `rar` at its default stored nearly all of the volume's pages
+uncompressed when the archive was not solid, so the volume's control is mostly
+reads of stored entries; the issue's control is compressed throughout. On the
+issue one `member_page` of the solid archive cost 0.123 s for the first page
+and 0.273 s for the last, against 0.006 s and 0.007 s for the control.
+
+Nothing measured contradicts "What describing a solid RAR costs". That section
+counts the listing a walk begins with, but not what follows from it: the walk
+in reading order decodes a solid archive twice. `pages::rar_for_each_page`
+lists the archive (`rar_pages`) and then visits it (`Backend::visit`), and
+each is a whole decode, so the walk costs about what one listing and
+`bsdtar`'s single pass cost together, and unpacking through it costs more than
+`bsdtar` does (the table's last two rows).

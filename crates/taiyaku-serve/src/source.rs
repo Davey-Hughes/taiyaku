@@ -140,6 +140,20 @@ fn content_type(name: &str, bytes: &[u8]) -> &'static str {
     sniffed_type(bytes).unwrap_or_else(|| type_from_extension(name))
 }
 
+/// Whether `path` is a RAR and this build has no reader for one.
+///
+/// This build refuses every page of such a member, whatever the file holds
+/// and whether or not it is the file the sidecar counted, and the reader's
+/// refusal names the build: the cause an operator can act on either way.
+/// Asked only of a page that failed to read, so the sniff costs a page that
+/// is served nothing.
+fn is_a_rar_this_build_cannot_read(path: &Path) -> bool {
+    let reader = taiyaku_read::Format::Rar
+        .token()
+        .and_then(taiyaku_read::reader_signature);
+    reader.is_none() && matches!(taiyaku_read::sniff(path), Ok(taiyaku_read::Format::Rar))
+}
+
 /// Pages read from the filesystem, relative to the sidecar.
 #[derive(Debug, Clone, Copy)]
 pub struct LocalLibrary;
@@ -148,6 +162,11 @@ impl PageSource for LocalLibrary {
     fn page(&self, root: &Path, member: &Member, within: u32) -> Result<ServedPage, String> {
         let path = root.join(&member.path);
         let page = taiyaku_read::member_page(&path, within).map_err(|e| {
+            // The hint blames the file, so a refusal the build causes is handed
+            // on without it.
+            if is_a_rar_this_build_cannot_read(&path) {
+                return e;
+            }
             format!(
                 "{e} — the sidecar records {} pages for this member; it may have been replaced",
                 member.pages
