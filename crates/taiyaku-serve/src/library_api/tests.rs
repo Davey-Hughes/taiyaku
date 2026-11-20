@@ -1424,6 +1424,7 @@ async fn no_browse_route_stalls_the_runtime() {
                 Box::pin(crate::library_api::work(
                     State(Arc::clone(&state)),
                     who(),
+                    axum::http::Extensions::new(),
                     AxPath(slug.clone()),
                 )),
             ),
@@ -2141,5 +2142,395 @@ mod narrowing {
                 );
             }
         }
+    }
+}
+
+/// What an administrator is sent of a work's content matches and a reader is
+/// not: spec §6 of
+/// `docs/superpowers/specs/2026-11-19-content-matching-volume-joins-design.md`.
+mod content_matches {
+    use std::collections::BTreeMap;
+    use std::io::Write as _;
+    use std::path::Path;
+
+    use taiyaku_library::matches::{self, NewPair, State};
+    use taiyaku_library::scan::{self, InLibrary, Root};
+
+    use crate::test_support::{self, Fixture, get_json};
+
+    /// The official English volumes: key, edition kind and language.
+    const VOLUMES: (&str, &str, &str) = ("en", "official", "en");
+    /// The Japanese raws.
+    const RAW: (&str, &str, &str) = ("ja", "raw", "ja");
+    /// A Korean edition, under a key the English work lacks.
+    const KOREAN: (&str, &str, &str) = ("ko", "official", "ko");
+
+    /// A cbz at `path` of three pages, each naming `path`, so no two files
+    /// share bytes.
+    fn archive(path: &Path) {
+        std::fs::create_dir_all(path.parent().expect("a file under a directory"))
+            .expect("makes its directory");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).expect("creates the cbz"));
+        for page in 0..3 {
+            zip.start_file(
+                format!("{page:03}.jpg"),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .expect("starts a page");
+            write!(zip, "{} page {page}", path.display()).expect("writes a page");
+        }
+        zip.finish().expect("finishes the cbz");
+    }
+
+    /// Directories of one library, `Manga`, which matches by content (its
+    /// default), laid out as `taiyaku-library`'s join tests lay theirs out:
+    /// `Series/vNN/Series vNN.cbz`.
+    struct Shelf {
+        fixture: Fixture,
+        library: std::sync::Arc<taiyaku_library::Library>,
+    }
+
+    impl Shelf {
+        fn new(label: &str) -> Self {
+            Self {
+                fixture: Fixture::new(label),
+                library: test_support::library(),
+            }
+        }
+
+        /// Directory `name` of `Manga`, its files falling back to the
+        /// edition key, kind and language given, holding `files`, added and
+        /// scanned.
+        fn directory(
+            &self,
+            name: &str,
+            (key, kind, language): (&str, &str, &str),
+            files: &[&str],
+        ) -> Root {
+            let at = self.fixture.join(name);
+            for file in files {
+                archive(&at.join(file));
+            }
+            let conn = self.library.conn();
+            let root = scan::add_root_in(&conn, &at, InLibrary::Named("Manga")).expect("adds it");
+            conn.execute(
+                "UPDATE root SET edition_key = ?2, default_kind = ?3, default_language = ?4
+                  WHERE id = ?1",
+                rusqlite::params![root.id, key, kind, language],
+            )
+            .expect("labels it");
+            scan::scan_root(&conn, &root).expect("scans it");
+            root
+        }
+
+        fn derive(&self) {
+            taiyaku_library::derive::derive(&self.library.conn()).expect("derives");
+        }
+
+        /// The digest of `file` under `root`, which a derive wrote back.
+        fn digest(&self, root: &Root, file: &str) -> String {
+            self.library
+                .conn()
+                .query_row(
+                    "SELECT sha256 FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+                    rusqlite::params![root.id, file],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|e| panic!("{file}'s digest: {e}"))
+        }
+
+        /// `one` and `two` read whole and stored as a pair at `v`, as the
+        /// match pass stores one: the pair's id.
+        fn pair(&self, one: &str, two: &str, v: f64) -> i64 {
+            let conn = self.library.conn();
+            for digest in [one, two] {
+                conn.execute(
+                    "INSERT OR IGNORE INTO fingerprint (sha256, version, outcome, pages, prints)
+                     VALUES (?1, 1, 'whole', 3, x'00')",
+                    [digest],
+                )
+                .unwrap_or_else(|e| panic!("reads {digest}: {e}"));
+            }
+            let scored = NewPair {
+                sha_a: one.to_owned(),
+                sha_b: two.to_owned(),
+                v,
+                long_paired: 3,
+                a_slots: 3,
+                b_slots: 3,
+                a_pages: 3,
+                b_pages: 3,
+                floor: None,
+                runs: Vec::new(),
+            };
+            matches::store(&conn, &[scored], one, 1, 1).expect("stores the pair");
+            conn.query_row(
+                "SELECT id FROM content_match WHERE ?1 IN (sha_a, sha_b) AND ?2 IN (sha_a, sha_b)",
+                [one, two],
+                |r| r.get(0),
+            )
+            .expect("the pair's id")
+        }
+
+        /// The slug of the one work holding `digest`.
+        fn slug(&self, digest: &str) -> String {
+            let conn = self.library.conn();
+            let slugs: Vec<String> = conn
+                .prepare(
+                    "SELECT DISTINCT w.slug FROM member m
+                       JOIN edition e ON e.id = m.edition_id
+                       JOIN work w ON w.id = e.work_id
+                      WHERE m.sha256 = ?1",
+                )
+                .and_then(|mut stmt| stmt.query_map([digest], |r| r.get(0))?.collect())
+                .unwrap_or_else(|e| panic!("the works holding {digest}: {e}"));
+            assert_eq!(slugs.len(), 1, "one work holds {digest}: {slugs:?}");
+            slugs[0].clone()
+        }
+
+        /// A router as the fixture account, an administrator in a browser.
+        fn serve(&self) -> axum::Router {
+            let works = crate::works::from_library(&self.library).expect("projects the works");
+            let (router, _state) = test_support::router_over(
+                std::sync::Arc::clone(&self.library),
+                crate::Works::fixed(works),
+                &self.fixture,
+            );
+            router
+        }
+
+        /// The fixture account made a reader of every library, as
+        /// `test_support::router_over_a_scanned_work_as_a_reader` makes one.
+        fn demote(&self) {
+            let demoted = self
+                .library
+                .conn()
+                .execute("UPDATE user SET role = 'user' WHERE id = 1", [])
+                .expect("demotes the fixture account");
+            assert_eq!(
+                demoted, 1,
+                "the fixture account stops being an administrator"
+            );
+        }
+    }
+
+    /// Each edition's `matched` by key, `None` where the edition carries no
+    /// such key.
+    fn matched(work: &serde_json::Value) -> BTreeMap<String, Option<serde_json::Value>> {
+        work["editions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("editions: {work}"))
+            .iter()
+            .map(|edition| {
+                (
+                    edition["key"].as_str().expect("a key").to_owned(),
+                    edition.get("matched").cloned(),
+                )
+            })
+            .collect()
+    }
+
+    /// A volume joined by content: its English digest, the pair that joined
+    /// the raw, and the pair's V.
+    struct Joined {
+        en: String,
+        ja: String,
+        pair: i64,
+        v: f64,
+    }
+
+    /// Volumes 1 and 2 of the English Oshi and of the raw Oshinoko, each raw
+    /// paired with its English volume and joined, at a V of its own: two works
+    /// each holding a joined `ja`, so a mark read from the other work shows
+    /// on one of them.
+    fn joined(label: &str) -> (Shelf, [Joined; 2]) {
+        let shelf = Shelf::new(label);
+        let english = ["Oshi/v01/Oshi v01.cbz", "Oshi/v02/Oshi v02.cbz"];
+        let raws = [
+            "Oshinoko/v01/Oshinoko v01.cbz",
+            "Oshinoko/v02/Oshinoko v02.cbz",
+        ];
+        let volumes = shelf.directory("Volumes", VOLUMES, &english);
+        let raw = shelf.directory("Raw", RAW, &raws);
+        shelf.derive();
+        let joined = [(0, 0.93), (1, 0.97)].map(|(n, v)| {
+            let en = shelf.digest(&volumes, english[n]);
+            let ja = shelf.digest(&raw, raws[n]);
+            let pair = shelf.pair(&en, &ja, v);
+            Joined { en, ja, pair, v }
+        });
+        shelf.derive();
+        (shelf, joined)
+    }
+
+    /// Each raw joined its English volume's work: an administrator is sent,
+    /// on each work, the mark of that work's own pair on the raw, `null` on
+    /// the English, and an empty kept-apart list; the same account as a
+    /// reader, who still sees both editions, is sent neither key.
+    #[tokio::test]
+    async fn an_admin_sees_the_mark_and_a_reader_sees_neither_key() {
+        let (shelf, joined) = joined("marks-admin-reader");
+        let slugs = joined.each_ref().map(|volume| {
+            let slug = shelf.slug(&volume.en);
+            assert_eq!(
+                shelf.slug(&volume.ja),
+                slug,
+                "the fixture: the raw joined its English volume's work"
+            );
+            slug
+        });
+        assert_ne!(slugs[0], slugs[1], "the fixture: two works");
+        let router = shelf.serve();
+
+        for (slug, volume) in slugs.iter().zip(&joined) {
+            let administered = get_json(&router, &format!("/api/library/works/{slug}")).await;
+            assert_eq!(
+                matched(&administered),
+                BTreeMap::from([
+                    ("en".to_owned(), Some(serde_json::Value::Null)),
+                    (
+                        "ja".to_owned(),
+                        Some(serde_json::json!({"id": volume.pair, "score": volume.v}))
+                    ),
+                ]),
+                "{slug}'s raw carries its own pair and V, the English null: {administered}"
+            );
+            assert_eq!(
+                administered.get("kept_apart"),
+                Some(&serde_json::json!([])),
+                "no pair is split: {administered}"
+            );
+        }
+
+        shelf.demote();
+        for slug in &slugs {
+            let read = get_json(&router, &format!("/api/library/works/{slug}")).await;
+            assert_eq!(
+                matched(&read),
+                BTreeMap::from([("en".to_owned(), None), ("ja".to_owned(), None)]),
+                "a reader sees both editions and no `matched` on either: {read}"
+            );
+            assert_eq!(read.get("kept_apart"), None, "nor `kept_apart`: {read}");
+        }
+    }
+
+    /// Volume 1 of Oshi and volume 2 of Oshinoko, paired and split, so every
+    /// field of each side's work differs from the other's.
+    #[tokio::test]
+    async fn kept_apart_names_the_other_volume_on_both_panels() {
+        let shelf = Shelf::new("marks-kept-apart");
+        let volumes = shelf.directory("Volumes", VOLUMES, &["Oshi/v01/Oshi v01.cbz"]);
+        let raw = shelf.directory("Raw", RAW, &["Oshinoko/v02/Oshinoko v02.cbz"]);
+        shelf.derive();
+        let en = shelf.digest(&volumes, "Oshi/v01/Oshi v01.cbz");
+        let ja = shelf.digest(&raw, "Oshinoko/v02/Oshinoko v02.cbz");
+        let id = shelf.pair(&en, &ja, 0.95);
+        let split = matches::set_state(&shelf.library.conn(), &[id], State::Split, Some(1))
+            .expect("splits the pair");
+        assert_eq!(split, 1, "the fixture: the pair is split");
+        shelf.derive();
+        let (english, raw) = (shelf.slug(&en), shelf.slug(&ja));
+        assert_ne!(english, raw, "the fixture: each stays on its own work");
+        let router = shelf.serve();
+
+        for (panel, other) in [
+            (
+                &english,
+                serde_json::json!({"id": id, "split": id, "series": "Oshinoko", "volume": 2.0, "slug": raw}),
+            ),
+            (
+                &raw,
+                serde_json::json!({"id": id, "split": id, "series": "Oshi", "volume": 1.0, "slug": english}),
+            ),
+        ] {
+            let work = get_json(&router, &format!("/api/library/works/{panel}")).await;
+            assert_eq!(
+                work.get("kept_apart"),
+                Some(&serde_json::json!([other])),
+                "{panel}'s panel names the other volume: {work}"
+            );
+        }
+    }
+
+    /// Names put the raw in the English volume's work, and the pair at the bar
+    /// joined nothing: neither edition carries a mark.
+    #[tokio::test]
+    async fn a_name_joined_edition_has_no_mark() {
+        let shelf = Shelf::new("marks-name-joined");
+        let volumes = shelf.directory("Volumes", VOLUMES, &["Oshi/v01/Oshi v01.cbz"]);
+        let raw = shelf.directory("Raw", RAW, &["Oshi/v01/Oshi v01.cbz"]);
+        shelf.derive();
+        let en = shelf.digest(&volumes, "Oshi/v01/Oshi v01.cbz");
+        let ja = shelf.digest(&raw, "Oshi/v01/Oshi v01.cbz");
+        let slug = shelf.slug(&en);
+        assert_eq!(
+            shelf.slug(&ja),
+            slug,
+            "the fixture: names put both in one work"
+        );
+        shelf.pair(&en, &ja, 0.95);
+        shelf.derive();
+        assert_eq!(shelf.slug(&ja), slug, "the fixture: and there they stay");
+
+        let work = get_json(&shelf.serve(), &format!("/api/library/works/{slug}")).await;
+
+        assert_eq!(
+            matched(&work),
+            BTreeMap::from([
+                ("en".to_owned(), Some(serde_json::Value::Null)),
+                ("ja".to_owned(), Some(serde_json::Value::Null)),
+            ]),
+            "no edition joined by content: {work}"
+        );
+    }
+
+    /// `derive::joins`'s `an_untouched_edition_with_a_new_key_moves_with_its_work`:
+    /// the raw's work also holds a Korean edition no pair names, which moves
+    /// with the raw's group and carries the pair that moved it, a pair naming
+    /// the raw's file and not its own.
+    #[tokio::test]
+    async fn an_edition_moved_with_its_group_has_no_mark() {
+        let shelf = Shelf::new("marks-moved-with-its-group");
+        let volumes = shelf.directory("Volumes", VOLUMES, &["Oshi/v01/Oshi v01.cbz"]);
+        let raw = shelf.directory("Raw", RAW, &["Oshinoko/v01/Oshinoko v01.cbz"]);
+        let korean = shelf.directory("Korean", KOREAN, &["Oshinoko/v01/Oshinoko v01.cbz"]);
+        shelf.derive();
+        let en = shelf.digest(&volumes, "Oshi/v01/Oshi v01.cbz");
+        let ja = shelf.digest(&raw, "Oshinoko/v01/Oshinoko v01.cbz");
+        let ko = shelf.digest(&korean, "Oshinoko/v01/Oshinoko v01.cbz");
+        let id = shelf.pair(&en, &ja, 0.95);
+        shelf.derive();
+        let slug = shelf.slug(&en);
+        let korean_joined_by: Option<i64> = shelf
+            .library
+            .conn()
+            .query_row(
+                "SELECT e.joined_by FROM member m JOIN edition e ON e.id = m.edition_id
+                  WHERE m.sha256 = ?1",
+                [&ko],
+                |r| r.get(0),
+            )
+            .expect("the Korean edition");
+        assert_eq!(
+            (shelf.slug(&ja), shelf.slug(&ko), korean_joined_by),
+            (slug.clone(), slug.clone(), Some(id)),
+            "the fixture: the raw and the Korean joined the English work, the Korean marked \
+             with the raw's pair"
+        );
+
+        let work = get_json(&shelf.serve(), &format!("/api/library/works/{slug}")).await;
+
+        assert_eq!(
+            matched(&work),
+            BTreeMap::from([
+                ("en".to_owned(), Some(serde_json::Value::Null)),
+                (
+                    "ja".to_owned(),
+                    Some(serde_json::json!({"id": id, "score": 0.95}))
+                ),
+                ("ko".to_owned(), Some(serde_json::Value::Null)),
+            ]),
+            "the raw carries the mark, the Korean beside it none: {work}"
+        );
     }
 }

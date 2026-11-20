@@ -11,13 +11,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 
 /// [`crate::ServeState::library_job`]'s lock, which these jobs take one at a
-/// time across the whole store. A scan of any library (`scan_jobs::run`)
-/// waits for it. A rule save (`config_api::save_rules`), a stamp
-/// (`stamp::perform`), a move (`libraries_api::move_dir`) and a removal from a
-/// library (`libraries_api::unlink_dir`) try it once and refuse in
-/// `waits_for_the_job`'s words. A library's scan status reads
-/// [`LibraryJob::is_held`] without taking the lock, so a directory's page
-/// holds Move… and Remove from this library for as long as it is held.
+/// time across the whole store. A scan of any library (`scan_jobs::run`) and
+/// the match pass's derive wait for it. A rule save (`config_api::save_rules`),
+/// a stamp (`stamp::perform`), a move (`libraries_api::move_dir`), a removal
+/// from a library (`libraries_api::unlink_dir`), and a Split and its Undo
+/// (`curation::split_match`, `undo_split`) try it once and refuse in
+/// `waits_for_the_job`'s words. A directory's page holds Move… and Remove from
+/// this library while [`LibraryJob::is_held`] says the lock is held.
 #[derive(Debug, Default)]
 pub struct LibraryJob {
     lock: Mutex<()>,

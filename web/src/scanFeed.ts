@@ -7,9 +7,10 @@
  * and the last to go stops it, so the pages a tab draws from it at once, a
  * library's page and a directory's open beside it say, send one request,
  * not one each. It asks every `SCAN_POLL_MS` while any job holds a library
- * or the fingerprint pass runs, which holds none but whose count moves as it
- * reads; every `FEED_IDLE_MS` otherwise, as for a reader while only a pass
- * runs, since a reader is sent no jobs; and never while the tab is hidden.
+ * or a pass runs, the fingerprint pass or the match pass, which hold none but
+ * whose counts move as they read; every `FEED_IDLE_MS` otherwise, as for a
+ * reader while only a pass runs, since a reader is sent no jobs; and never
+ * while the tab is hidden.
  * Shown again, it asks at once.
  *
  * **The feed says when to read again.** When a scan leaves it, or `ended`
@@ -34,7 +35,7 @@ import { invalidatePrefix } from './reads'
 
 /**
  * The step a job is in: a scan's, in the order a scan passes through them,
- * then a fingerprint pass's one.
+ * then the fingerprint pass's one, then the match pass's one.
  */
 export type ScanStep =
   | 'waiting'
@@ -44,16 +45,17 @@ export type ScanStep =
   | 'writing'
   | 'finishing'
   | 'fingerprinting'
+  | 'matching'
 
 /** One running job, as an administrator is sent it. */
 export interface FeedJob {
   id: number
   /**
-   * A scan, or the fingerprint pass, which holds no directory, is never in
-   * the feed's `libraries` and does not move `ended`: nothing a scan holds
-   * back waits on it.
+   * A scan, or a pass: the fingerprint pass or the match pass, which hold no
+   * directory, are never in the feed's `libraries`, and do not move `ended`
+   * by ending: nothing a scan holds back waits on them.
    */
-  kind: 'scan' | 'fingerprint'
+  kind: 'scan' | 'fingerprint' | 'match'
   step: ScanStep
   /** The step's count so far: `null` while waiting and finishing. */
   done: number | null
@@ -76,8 +78,9 @@ export interface FeedJob {
 /** What the feed answers. */
 export interface ScanFeed {
   /**
-   * Moves each time a scan job ends; its value means nothing else. A pass's
-   * end leaves it, since a pass changes nothing the pages read.
+   * Moves each time a scan job ends, and each time the match pass derives,
+   * which joins volumes; its value means nothing else. A pass's end leaves
+   * it, since ending changes nothing the pages read.
    */
   ended: number
   /**
@@ -157,7 +160,9 @@ function ask(): void {
       settle(answer)
       timer = setTimeout(
         ask,
-        answer.libraries.length > 0 || fingerprintJob(answer) !== undefined
+        answer.libraries.length > 0 ||
+          fingerprintJob(answer) !== undefined ||
+          matchJob(answer) !== undefined
           ? SCAN_POLL_MS
           : FEED_IDLE_MS,
       )
@@ -265,9 +270,26 @@ export function onScanEnd(listener: () => void): () => void {
   }
 }
 
-/** Every running scan job: every job but the fingerprint pass. */
+/** Every running scan job: every job but the two passes. */
 export function scanJobs(feed: ScanFeed | undefined): FeedJob[] {
   return (feed?.jobs ?? []).filter((job) => job.kind === 'scan')
+}
+
+/**
+ * The pass of `kind`, if one runs; given `libraryId`, only while the pass
+ * covers that library.
+ */
+function passJob(
+  feed: ScanFeed | undefined,
+  kind: 'fingerprint' | 'match',
+  libraryId: number | undefined,
+): FeedJob | undefined {
+  return feed?.jobs?.find(
+    (job) =>
+      job.kind === kind &&
+      (libraryId === undefined ||
+        job.libraries.some((library) => library.id === libraryId)),
+  )
 }
 
 /**
@@ -278,12 +300,18 @@ export function fingerprintJob(
   feed: ScanFeed | undefined,
   libraryId?: number,
 ): FeedJob | undefined {
-  return feed?.jobs?.find(
-    (job) =>
-      job.kind === 'fingerprint' &&
-      (libraryId === undefined ||
-        job.libraries.some((library) => library.id === libraryId)),
-  )
+  return passJob(feed, 'fingerprint', libraryId)
+}
+
+/**
+ * The match pass, if one runs; given `libraryId`, only while the pass covers
+ * that library.
+ */
+export function matchJob(
+  feed: ScanFeed | undefined,
+  libraryId?: number,
+): FeedJob | undefined {
+  return passJob(feed, 'match', libraryId)
 }
 
 /**
@@ -340,6 +368,7 @@ const STEP_WORDS: Record<ScanStep, string> = {
   writing: 'Writing works',
   finishing: 'Finishing',
   fingerprinting: 'Fingerprinting pages',
+  matching: 'Matching volumes',
 }
 
 /** A step by its word alone, as a reader is shown it and `stepLine` opens. */
@@ -378,6 +407,8 @@ export function stepLine(job: FeedJob): string {
         ? `${word} · sizing files`
         : `${word} · ${outOf(done, job.of, humanBytes)}`
     case 'writing':
+    // The step's word names what its figures count.
+    case 'matching':
       return `${word} · ${outOf(done, job.of, figure)}`
     case 'fingerprinting': {
       // The step's word names pages and its figures count files, so the noun

@@ -447,6 +447,7 @@ async fn a_scan_cut_while_queued_reads_interrupted_until_the_next_startup_scan()
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     super::interrupt_cut_derives(&next.library);

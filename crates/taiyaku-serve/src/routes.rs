@@ -2515,6 +2515,13 @@ pub(crate) fn guarded_routes() -> Vec<(&'static str, axum::routing::MethodRouter
             "/api/library/proposals/{id}/dismiss",
             axum::routing::post(crate::curation::dismiss).delete(crate::curation::reopen),
         ),
+        // Content matching's Split and its Undo, admin-only as the inbox is:
+        // `curation::tests::every_curation_route_refuses_a_reader` drives both
+        // methods for a 403.
+        (
+            "/api/library/matches/{id}/split",
+            axum::routing::post(crate::curation::split_match).delete(crate::curation::undo_split),
+        ),
         // **Spec C3 §5's metadata-editing routes, closing O44.** Merged onto
         // the same two paths `library_api::work`/`one_series` already
         // registered above (a `GET` and a `PATCH` on one path merge into one
@@ -2926,6 +2933,16 @@ pub(crate) fn grant_postures() -> Vec<(&'static str, GrantPosture)> {
                           the same way",
             },
         ),
+        (
+            "/api/library/matches/{id}/split",
+            GrantIndependent {
+                reason: "keeps two files apart and derives the whole store: \
+                          which work a file joins is the library's structure \
+                          for every account, so no grant could scope it. The \
+                          DELETE half lets the pair join again, for the whole \
+                          library the same way",
+            },
+        ),
         // **Spec C3 §5's metadata-editing routes (I8) — `GrantIndependent`,
         // not `Refuses`.** `Principal::from_account` drops an administrator's
         // grant outright (O86), so every caller these routes admit holds
@@ -3329,6 +3346,7 @@ pub(crate) fn narrowing_postures() -> Vec<(&'static str, NarrowingPosture)> {
         ("/api/library/proposals/{id}/resolution", ADMIN),
         ("/api/library/proposals/{id}/accept", ADMIN),
         ("/api/library/proposals/{id}/dismiss", ADMIN),
+        ("/api/library/matches/{id}/split", ADMIN),
         ("/api/library/works/{slug}", ADMIN),
         ("/api/library/series/{id}", ADMIN),
         ("/api/library/editions/{id}", ADMIN),

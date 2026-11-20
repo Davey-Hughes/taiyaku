@@ -36,7 +36,12 @@ import { changesIn } from './support/liveRegion'
 import { dir, idle, scanningIn } from './support/libraries'
 import { mount, rerender } from './support/mount'
 import { keptGrid } from './support/reads'
-import { feedJob, fingerprintPass, serveFeed } from './support/scanFeed'
+import {
+  feedJob,
+  fingerprintPass,
+  matchPass,
+  serveFeed,
+} from './support/scanFeed'
 import { expectRowsWired, helpOf, row, section } from './support/settingsRows'
 import { cellValue } from './support/table'
 import {
@@ -703,6 +708,53 @@ describe('Libraries, the table', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('draws the match pass over the table and on the page of the library it covers, not on another’s, and its Cancel cancels it once', async () => {
+    vi.mocked(api.listLibraries).mockResolvedValue({ libraries: twoAndOne() })
+    // Covers Manga, 1, and not Comics, 2.
+    const feed = serveFeed({ ended: 0, libraries: [], jobs: [matchPass()] })
+    const host = await at()
+    await feedLanded()
+    const line = (screen: string) => {
+      const drawn = host.querySelector(`${screen} > .pass-line`)
+      return drawn === null
+        ? undefined
+        : [
+            drawn.querySelector(':scope > .scanning')?.textContent,
+            drawn.querySelector(':scope > button[name="cancel-pass"]')
+              ?.textContent,
+          ]
+    }
+    expect(line('.library-table')).toEqual([
+      'Matching volumes · 3 of 12',
+      'Cancel',
+    ])
+
+    await follow(host, 'Manga')
+    await feedLanded()
+    expect(here()).toBe('/config/libraries/Manga')
+    expect(line('.library-page')).toEqual([
+      'Matching volumes · 3 of 12',
+      'Cancel',
+    ])
+
+    await go('/config/libraries/Comics')
+    await feedLanded()
+    expect(host.querySelector('.library-page .page-title')?.textContent).toBe(
+      'Comics',
+    )
+    expect(line('.library-page')).toBeUndefined()
+
+    await go(TABLE)
+    await feedLanded()
+    const cancel = host.querySelector(
+      '.library-table > .pass-line > button[name="cancel-pass"]',
+    ) as HTMLButtonElement
+    await press(cancel)
+    await feedLanded()
+    expect(feed.cancels).toEqual([12])
+    expect(line('.library-table')?.[0]).toBe('Cancelling…')
   })
 
   it('draws a fingerprint pass over the table with a Cancel that cancels it once, and leaves each row’s Last scan its last scan', async () => {

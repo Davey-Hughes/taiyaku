@@ -236,7 +236,7 @@ export interface Unreadable {
 /**
  * `derive::DeriveReport` — what derivation made of the walk.
  *
- * **All thirty-three fields, because the server sends all thirty-three.** The
+ * **All thirty-eight fields, because the server sends all thirty-eight.** The
  * route destructures both reports with no `..` precisely so a field cannot go
  * missing on the way out; a client type that omitted one would undo that at
  * the last step. C4 §3's discipline is that a scan names what it did not do.
@@ -275,6 +275,29 @@ export interface Derived {
   root_removed_mid_derive: number
   marked_missing: number
   found_again: number
+  /**
+   * Files that joined another group's work as an edition because their pages
+   * matched one of its volumes. Counted on every derive: a join is a standing
+   * fact of the files and the match rows.
+   */
+  joined: number
+  /**
+   * Works that joined nothing and moved into the series their directory's
+   * joined files went to. Counted on every derive, as `joined` is.
+   */
+  followed: number
+  /**
+   * Pairs joined by content whose alignment the derive did not write, so a
+   * join without its ⇄ says why. Counted on every derive.
+   */
+  unwritten_alignments: number
+  /** Editions a join, an unjoin or a Split moved onto the work holding their file. */
+  moved_editions: number
+  /**
+   * Editions whose move was refused, left standing on both works, each named
+   * in `unfoldable`. Counted on every derive, which tries the move again.
+   */
+  unmoved_editions: number
 }
 
 /** A scan that ran to the end. */

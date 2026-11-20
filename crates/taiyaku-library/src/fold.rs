@@ -1,4 +1,5 @@
-//! Absorbing a superseded work into the work its material moved to.
+//! Absorbing a superseded work into the work its material moved to, and
+//! moving one edition's reader state onto another work ([`move_edition`]).
 //!
 //! **It deletes a `work` row**, which is why it is a module rather than a
 //! function inside `derive`. The safety argument is an ordering argument and it
@@ -112,6 +113,9 @@ pub struct Moved {
     /// question the count is for. `truth_pages` above is the same unit, so
     /// the two are comparable.
     pub collisions: usize,
+    /// Stamp aliases written onto `into_work`. A source row for an old digest
+    /// and occurrence the target already forwards is dropped, the target's kept.
+    pub aliases: usize,
     /// Reading positions that existed before this fold and do not exist
     /// after it — the source's, the target's, or both.
     ///
@@ -195,8 +199,8 @@ pub enum Outcome {
 }
 
 /// Every class of row that hangs off a superseded work, that [`absorb`] does
-/// not move, and that the final `DELETE` therefore takes — as the table and
-/// the predicate that finds it, with `?1` bound to the superseded work.
+/// not move, and that the final `DELETE` takes — as the table and a predicate,
+/// `?1` the work and `?2` NULL, or the edition key [`move_edition`] deletes.
 ///
 /// **`alignment`, `run` and a `spread` page flag are not in it (O76).** They
 /// are carried — see [`plan_slots`] — because the fold is between editions
@@ -241,15 +245,18 @@ const DISCARDED: [(&str, &str); 6] = [
     // under-reports.
     (
         "credit",
-        "work_id = ?1 OR edition_id IN (SELECT id FROM edition WHERE work_id = ?1)",
+        "(?2 IS NULL AND work_id = ?1)
+           OR edition_id IN (SELECT id FROM edition
+                              WHERE work_id = ?1 AND (?2 IS NULL OR key = ?2))",
     ),
-    ("work_tag", "work_id = ?1"),
-    ("collection_item", "work_id = ?1"),
+    ("work_tag", "?2 IS NULL AND work_id = ?1"),
+    ("collection_item", "?2 IS NULL AND work_id = ?1"),
     // A credit flag only: a spread flag is a measurement of the bytes, and
     // [`plan_slots`] carries it — see this list's own doc.
     (
         "page_flag",
-        "kind = 'credit' AND edition_id IN (SELECT id FROM edition WHERE work_id = ?1)",
+        "kind = 'credit' AND edition_id IN (SELECT id FROM edition
+                                              WHERE work_id = ?1 AND (?2 IS NULL OR key = ?2))",
     ),
     // A chapter number the scanner derived is re-derived onto the target by
     // `derive::write_chapters` from the same filename; one a person entered is
@@ -259,7 +266,8 @@ const DISCARDED: [(&str, &str); 6] = [
     (
         "member",
         "chapter_declared IS NOT NULL AND chapter_source IS NOT 'filename'
-           AND edition_id IN (SELECT id FROM edition WHERE work_id = ?1)",
+           AND edition_id IN (SELECT id FROM edition
+                               WHERE work_id = ?1 AND (?2 IS NULL OR key = ?2))",
     ),
     // `derive::write_work` puts `key.clone()` in the label of every edition a
     // scan builds and `import::replace_editions` restores whatever was there
@@ -268,7 +276,8 @@ const DISCARDED: [(&str, &str); 6] = [
     // unless a rule or a `<stem>.library.json` set them.
     (
         "edition",
-        "work_id = ?1 AND (label IS NOT key OR language IS NOT NULL OR kind IS NOT NULL)",
+        "work_id = ?1 AND (?2 IS NULL OR key = ?2)
+           AND (label IS NOT key OR language IS NOT NULL OR kind IS NOT NULL)",
     ),
 ];
 
@@ -581,10 +590,9 @@ struct SharedNotes {
 /// at all, so a copy is only ever compared with the same reader's copy, and
 /// the drop names the reader whose copy it is.
 ///
-/// The whole work rather than the mapped edition, and that is exact rather
-/// than approximate: [`stranded`] has already refused any note on a key the
-/// map does not hold, so every note still on `from_work` at this point is one
-/// [`move_notes`] is about to carry across.
+/// Only notes on a mapped key, the ones [`move_notes`] carries: [`absorb`]
+/// has refused any other ([`stranded`]), and [`move_edition`] leaves the
+/// rest of `from_work` standing, where a shared id collides with nothing.
 fn shared_note_ids(
     conn: &Connection,
     from_work: i64,
@@ -629,6 +637,9 @@ fn shared_note_ids(
             source: (mut source, source_at),
             target: (mut target, target_at),
         } = copies;
+        if !map.contains_key(&from_key) {
+            continue;
+        }
         let source_at = anchor(source_at, Table::Note, from_work, &from_key)?;
         let target_at = anchor(target_at, Table::Note, into_work, &into_key)?;
         let placed = plan
@@ -1911,6 +1922,7 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
         let (pages, collisions) = move_truth(&tx, from_work, into_work, from_key, into_key)?;
         moved.truth_pages += pages;
         moved.collisions += collisions;
+        moved.aliases += move_aliases(&tx, from_work, into_work, from_key, into_key)?;
     }
 
     // `saturating_sub` rather than a bare `-`, and it can only ever be a
@@ -1923,7 +1935,7 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
 
     // Counted while the rows are still there, which is the only moment they
     // can be counted at all.
-    moved.discarded = discarded(&tx, from_work)?;
+    moved.discarded = discarded(&tx, from_work, None)?;
 
     // **Before the delete, which cascades to `from_work`'s marker.** A value
     // carried out of a work whose document held it must reach the target's
@@ -1949,6 +1961,142 @@ pub fn absorb(conn: &Connection, from_work: i64, into_work: i64) -> Result<Outco
         .map_err(|e| format!("deleting the superseded work {from_work}: {e}"))?;
     tx.commit()
         .map_err(|e| format!("committing the fold of work {from_work}: {e}"))?;
+    Ok(Outcome::Folded(moved))
+}
+
+/// Move edition `key`'s reader state off `from_work` onto the edition under
+/// the same key on `into_work`, then delete it from `from_work`: a join or a
+/// Split whose old work keeps other editions, which [`absorb`] cannot take.
+/// Refused, nothing written, when the works are one, when the edition holds a
+/// spread flag (a slot past it names another page on derive's twin, which has
+/// none) or a `book_pin` (it names blocks of the old hub), and as [`absorb`]
+/// refuses differing note copies and clashing truth. A solver's alignment
+/// naming `key` goes; a person's, or one holding a hand run, stays, counted.
+///
+/// # Errors
+///
+/// As [`absorb`].
+pub(crate) fn move_edition(
+    conn: &Connection,
+    from_work: i64,
+    into_work: i64,
+    key: &str,
+) -> Result<Outcome, String> {
+    // Handed one work twice, every row would be copied onto itself, then deleted.
+    if from_work == into_work {
+        return Ok(Outcome::Refused(format!(
+            "edition `{key}` of work {from_work} cannot be moved onto its own work; nothing \
+             was moved and nothing was deleted",
+        )));
+    }
+    let tx = crate::Nested::open(conn, "fold_move_edition")
+        .map_err(|e| format!("starting the move of edition `{key}` off work {from_work}: {e}"))?;
+
+    let (spread, pinned): (bool, bool) = tx
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM page_flag JOIN edition ON edition.id = page_flag.edition_id
+                             WHERE edition.work_id = ?1 AND edition.key = ?2
+                               AND page_flag.kind = 'spread'),
+                    EXISTS (SELECT 1 FROM book_pin WHERE work_id = ?1 AND edition = ?2)",
+            rusqlite::params![from_work, key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("reading what edition `{key}` of work {from_work} holds: {e}"))?;
+    let refusal = if spread {
+        Some("a spread flag, so a slot past it would name another page on work")
+    } else if pinned {
+        Some("a book pin naming blocks of its own work's hub, which cannot follow it to work")
+    } else {
+        None
+    };
+    if let Some(holds) = refusal {
+        return Ok(Outcome::Refused(format!(
+            "edition `{key}` of work {from_work} holds {holds} {into_work}; nothing was moved \
+             and nothing was deleted",
+        )));
+    }
+
+    // The plan only places the note copies `shared_note_ids` compares: with no
+    // spread flag on the source, nothing it plans is written.
+    let map = BTreeMap::from([(key.to_string(), key.to_string())]);
+    let plan = plan_slots(&tx, from_work, into_work, &map)?;
+    let shared = shared_note_ids(&tx, from_work, into_work, &map, &plan)?;
+    if let Some(id) = shared.conflicting.first() {
+        return Ok(Outcome::Refused(format!(
+            "one reader holds {} note id(s) on both work {from_work} and work {into_work} \
+             whose two copies differ, `{id}` first; nothing was moved and nothing was deleted",
+            shared.conflicting.len(),
+        )));
+    }
+    if let Some((_, why)) = truth_provenance_clashes(&tx, from_work, into_work, &map)?.first() {
+        return Ok(Outcome::Refused(format!(
+            "the ground truth meeting on edition `{key}` ({why}) of work {into_work} cannot \
+             be given one provenance; nothing was moved and nothing was deleted",
+        )));
+    }
+
+    let mut moved = Moved {
+        dropped_notes: drop_identical_notes(&tx, from_work, &shared.identical)?,
+        ..Moved::default()
+    };
+    let offered: usize = tx
+        .query_row(
+            "SELECT count(*) FROM progress WHERE work_id = ?1 AND edition = ?2",
+            rusqlite::params![from_work, key],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| format!("counting the positions on edition `{key}`: {e}"))
+        .and_then(|count| usize::try_from(count).map_err(|e| format!("counting: {e}")))?;
+    let held = positions_on(&tx, into_work)?;
+    moved.positions = move_positions(&tx, from_work, into_work, key, key)?;
+    moved.notes = move_notes(&tx, from_work, into_work, key, key)?;
+    (moved.truth_pages, moved.collisions) = move_truth(&tx, from_work, into_work, key, key)?;
+    moved.aliases = move_aliases(&tx, from_work, into_work, key, key)?;
+    moved.lost_positions = (offered + held).saturating_sub(positions_on(&tx, into_work)?);
+
+    // These name the work and the key, not the edition, so the edition's delete
+    // below takes none of them.
+    for table in [
+        "progress",
+        "truth_box",
+        "truth_page",
+        "truth_member",
+        "stamp_alias",
+    ] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE work_id = ?1 AND edition = ?2"),
+            rusqlite::params![from_work, key],
+        )
+        .map_err(|e| format!("deleting the moved `{table}` rows off work {from_work}: {e}"))?;
+    }
+    let naming: usize = tx
+        .query_row(
+            "SELECT count(*) FROM alignment WHERE work_id = ?1 AND ?2 IN (from_key, to_key)",
+            rusqlite::params![from_work, key],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| format!("counting the alignments naming `{key}`: {e}"))
+        .and_then(|count| usize::try_from(count).map_err(|e| format!("counting: {e}")))?;
+    let deleted = tx
+        .execute(
+            "DELETE FROM alignment
+              WHERE work_id = ?1 AND ?2 IN (from_key, to_key) AND by = 'solver'
+                AND NOT EXISTS (SELECT 1 FROM run
+                                 WHERE run.alignment_id = alignment.id AND run.by = 'hand')",
+            rusqlite::params![from_work, key],
+        )
+        .map_err(|e| format!("deleting the solver's alignments naming `{key}`: {e}"))?;
+    moved.uncarried_alignments = naming.saturating_sub(deleted);
+    // What the edition's delete takes that nothing moved, counted while it stands.
+    moved.discarded = discarded(&tx, from_work, Some(key))?;
+
+    tx.execute(
+        "DELETE FROM edition WHERE work_id = ?1 AND key = ?2",
+        rusqlite::params![from_work, key],
+    )
+    .map_err(|e| format!("deleting edition `{key}` off work {from_work}: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("committing the move of edition `{key}` off work {from_work}: {e}"))?;
     Ok(Outcome::Folded(moved))
 }
 
@@ -2172,6 +2320,26 @@ fn move_truth(
     Ok((moved, collisions))
 }
 
+/// Stamp aliases (O240): a save from a tab opened before a stamp names a digest
+/// no member holds any more, and the alias forwards it. The member moves with
+/// its edition, so its aliases do; `OR IGNORE` keeps a row the target holds.
+fn move_aliases(
+    conn: &Connection,
+    from_work: i64,
+    into_work: i64,
+    from_key: &str,
+    into_key: &str,
+) -> Result<usize, String> {
+    conn.execute(
+        "INSERT OR IGNORE INTO stamp_alias
+           (work_id, edition, was_sha256, was_nth, now_sha256, now_nth)
+         SELECT ?2, ?4, was_sha256, was_nth, now_sha256, now_nth
+           FROM stamp_alias WHERE work_id = ?1 AND edition = ?3",
+        rusqlite::params![from_work, into_work, from_key, into_key],
+    )
+    .map_err(|e| format!("moving stamp aliases off work {from_work}: {e}"))
+}
+
 /// Every page somebody has looked at on one work's edition, in page order.
 fn pages_of(conn: &Connection, work_id: i64, edition: &str) -> Result<BTreeSet<i64>, String> {
     conn.prepare("SELECT page FROM truth_page WHERE work_id = ?1 AND edition = ?2")
@@ -2185,18 +2353,19 @@ fn pages_of(conn: &Connection, work_id: i64, edition: &str) -> Result<BTreeSet<i
         .map_err(|e| format!("reading truth pages of work {work_id}, edition `{edition}`: {e}"))
 }
 
-/// How many rows the final `DELETE` will take that this fold has not moved.
+/// How many rows the final `DELETE` will take that this fold has not moved:
+/// all of `from_work`'s, or only edition `key`'s.
 ///
 /// See [`DISCARDED`] for what is in that list and why each entry is counted
 /// rather than migrated. The predicates are compile-time constants from that
 /// table, not anything a caller supplies.
-fn discarded(conn: &Connection, from_work: i64) -> Result<usize, String> {
+fn discarded(conn: &Connection, from_work: i64, key: Option<&str>) -> Result<usize, String> {
     let mut total: i64 = 0;
     for (table, predicate) in DISCARDED {
         total += conn
             .query_row(
                 &format!("SELECT count(*) FROM {table} WHERE {predicate}"),
-                [from_work],
+                rusqlite::params![from_work, key],
                 |row| row.get::<_, i64>(0),
             )
             .map_err(|e| format!("counting what the fold discards from `{table}`: {e}"))?;

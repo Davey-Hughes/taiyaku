@@ -8,7 +8,8 @@
  * **Last scan is the latest of its directories'**, since a library is scanned
  * through its directories and each keeps its own, and while a scan holds any
  * of them it is that scan's step and count, from the feed (O312). The
- * fingerprint pass holds none, so it is one line over the table, not a row's.
+ * passes, the fingerprint pass and the match pass, hold none, so each is a
+ * line over the table, not a row's.
  */
 import { type ReactNode, useEffect, useRef } from 'react'
 import { Link } from 'react-router'
@@ -18,7 +19,13 @@ import { JOINING_DOT } from './joiningDot'
 import type { Library } from './libraries'
 import { ROW_CELLS, useLineEnds } from './lineEnds'
 import { PassLine } from './PassLine'
-import { fingerprintJob, jobsHolding, stepLine, useScanFeed } from './scanFeed'
+import {
+  fingerprintJob,
+  jobsHolding,
+  matchJob,
+  stepLine,
+  useScanFeed,
+} from './scanFeed'
 import { PageHeader, PageLoading, Section } from './settingsLayout'
 
 export interface LibraryTableProps {
@@ -62,6 +69,7 @@ export function LibraryTable({
   const cellEnds = useLineEnds<HTMLTableElement>(ROW_CELLS)
   const feed = useScanFeed()
   const pass = fingerprintJob(feed)
+  const matching = matchJob(feed)
   useEffect(() => {
     if (arrived) heading.current?.focus()
   }, [arrived])
@@ -79,6 +87,7 @@ export function LibraryTable({
       />
       {notices}
       {pass !== undefined && <PassLine key={pass.id} job={pass} />}
+      {matching !== undefined && <PassLine key={matching.id} job={matching} />}
       {libraries === undefined && <PageLoading drawn={loadingDrawn} />}
       {libraries !== undefined && (
         <Section>

@@ -19,6 +19,7 @@ import {
   jobHoldingDir,
   jobsHolding,
   libraryStep,
+  matchJob,
   onScanEnd,
   type ScanFeed,
   type ScanStep,
@@ -30,7 +31,12 @@ import {
 import { usePage } from '../src/usePage'
 import { mount, rerender } from './support/mount'
 import { address } from './support/reads'
-import { feedJob, fingerprintPass, serveFeed } from './support/scanFeed'
+import {
+  feedJob,
+  fingerprintPass,
+  matchPass,
+  serveFeed,
+} from './support/scanFeed'
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -154,6 +160,25 @@ describe('the scan feed', () => {
       libraries: [],
       jobs: [fingerprintPass()],
     })
+    mount(<Ended />)
+    const polls: number[] = []
+    await wait(0)
+    polls.push(feed.polls())
+    await wait(SCAN_POLL_MS)
+    polls.push(feed.polls())
+    feed.answer(idle(1))
+    // The idle answer lands at this poll, and the next waits `FEED_IDLE_MS`.
+    await wait(SCAN_POLL_MS)
+    polls.push(feed.polls())
+    await wait(FEED_IDLE_MS - SCAN_POLL_MS)
+    polls.push(feed.polls())
+    await wait(SCAN_POLL_MS)
+    polls.push(feed.polls())
+    expect(polls).toEqual([1, 2, 3, 3, 4])
+  })
+
+  it('asks every second while only the match pass runs, though it holds no library, so its count moves as it matches', async () => {
+    const feed = serveFeed({ ended: 1, libraries: [], jobs: [matchPass()] })
     mount(<Ended />)
     const polls: number[] = []
     await wait(0)
@@ -589,6 +614,34 @@ describe('the jobs a page shows', () => {
     ]).toEqual([[7], [7], 12, 12, undefined, undefined])
   })
 
+  it('tells the match pass from the scans and the fingerprint pass, and finds it for a library only while the pass covers it', () => {
+    // The fingerprint pass comes first and covers library 2 as well, so
+    // neither the kind alone nor the library alone finds the match pass.
+    const scan = feedJob({ id: 7, libraries: [{ id: 1, name: 'Manga' }] })
+    const fingerprinting = fingerprintPass({
+      id: 13,
+      libraries: [
+        { id: 1, name: 'Manga' },
+        { id: 2, name: 'Comics' },
+      ],
+    })
+    const all: ScanFeed = {
+      ended: 0,
+      libraries: [{ id: 1, step: 'resolving' }],
+      jobs: [scan, fingerprinting, matchPass()],
+    }
+    expect([
+      scanJobs(all).map((job) => job.id),
+      jobsHolding(all, 1).map((job) => job.id),
+      matchJob(all)?.id,
+      matchJob(all, 1)?.id,
+      matchJob(all, 2),
+      fingerprintJob(all, 2)?.id,
+      matchJob({ ...all, jobs: [scan, fingerprinting] }),
+      matchJob(undefined),
+    ]).toEqual([[7], [7], 12, 12, undefined, 13, undefined, undefined])
+  })
+
   it('finds nothing before the first answer', () => {
     expect([
       jobsHolding(undefined, 7),
@@ -662,6 +715,13 @@ describe('stepLine', () => {
     ])
   })
 
+  it('words the match pass’s count as it stands, with no noun after it', () => {
+    expect([matchPass(), matchPass({ of: null })].map(stepLine)).toEqual([
+      'Matching volumes · 3 of 12',
+      'Matching volumes · 3',
+    ])
+  })
+
   it('names each step by its word alone', () => {
     const steps: ScanStep[] = [
       'waiting',
@@ -671,6 +731,7 @@ describe('stepLine', () => {
       'writing',
       'finishing',
       'fingerprinting',
+      'matching',
     ]
     expect(steps.map(stepWord)).toEqual([
       'Waiting for another job',
@@ -680,6 +741,7 @@ describe('stepLine', () => {
       'Writing works',
       'Finishing',
       'Fingerprinting pages',
+      'Matching volumes',
     ])
   })
 })

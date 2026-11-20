@@ -35,6 +35,34 @@ export interface EditionCard {
    * edition has no page.
    */
   cover: string | null
+  /**
+   * The pair that joined this edition by content, and its V; `null` where
+   * no join brought it in by its own file. Sent to an administrator by
+   * `work()` alone, and absent everywhere else.
+   */
+  matched?: ContentMatch | null
+}
+
+/** A pair of files matched by content: its id, which Split names, and its V. */
+export interface ContentMatch {
+  id: number
+  score: number
+}
+
+/**
+ * A pair split by an administrator, as one of its works shows it: the pair,
+ * which Undo names, and the work the other file is in now.
+ */
+export interface KeptApart {
+  id: number
+  /**
+   * The Split that set it apart, as the pair that Split named: the panel
+   * draws one line and one Undo per Split, and Undo restores the whole Split.
+   */
+  split: number
+  series: string
+  volume: number | null
+  slug: string
 }
 
 /** One edition pair's alignment — only `work()` carries these. */
@@ -67,6 +95,8 @@ export interface WorkCard {
 
 export interface WorkDetail extends WorkCard {
   alignments: AlignmentCard[]
+  /** Each split pair one of this work's files is in; an administrator's only. */
+  kept_apart?: KeptApart[]
 }
 
 export interface SeriesCard {

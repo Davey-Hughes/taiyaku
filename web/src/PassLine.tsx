@@ -1,6 +1,7 @@
 /**
- * The fingerprint pass's line and its Cancel, drawn on the Libraries list
- * and on the page of each library the pass covers.
+ * A pass's line and its Cancel, the fingerprint pass's or the match pass's,
+ * drawn on the Libraries list and on the page of each library the pass
+ * covers.
  *
  * **Apart from the scan lines.** A pass holds no directory and nothing a
  * scan holds back waits on it, so it never reads Scan library as Cancel nor

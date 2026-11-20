@@ -95,6 +95,8 @@ async fn every_route_refuses_an_anonymous_request() {
         "/api/library/proposals/{id}/resolution",
         "/api/library/proposals/{id}/accept",
         "/api/library/proposals/{id}/dismiss",
+        // Content matching's Split and its Undo, admin-gated the same way.
+        "/api/library/matches/{id}/split",
         // Spec C3 §5's metadata-editing routes, admin-gated the same way — and
         // it matters doubly here too, since the guard is what stands between an
         // anonymous request and a `Principal`-less `administering_or_forbidden`
@@ -1270,6 +1272,7 @@ fn router_with_material_under_a_withheld_root(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     (build_router(state.clone()), state)
@@ -1372,6 +1375,7 @@ fn two_works_one_withheld(dir: &std::path::Path) -> (axum::Router, Arc<ServeStat
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     (build_router(state.clone()), state)
@@ -1505,6 +1509,7 @@ fn one_work_two_editions_split_across_roots(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     (build_router(state.clone()), state)
@@ -1587,6 +1592,7 @@ fn one_book_two_editions_split_across_roots(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     (build_router(state.clone()), state)
@@ -1689,7 +1695,7 @@ async fn every_route_declares_its_grant_posture() {
     );
     assert_eq!(
         table.len() - driven,
-        45,
+        46,
         "the remaining guarded routes must be GrantIndependent — \
          see the `driven` assertion just above, which this one is the other \
          half of. A new admin-only route is GrantIndependent: it changes who \
@@ -3003,7 +3009,7 @@ async fn every_route_declares_what_it_does_with_a_narrowed_edition() {
     );
     assert_eq!(
         counted(|p| matches!(p, NarrowingPosture::NoPages { .. })),
-        48,
+        49,
         "the NoPages routes, declared and not driven: a route moved here from a driven posture \
          moves this count and one above, and a new route that reads no pages moves this alone"
     );
@@ -3647,6 +3653,7 @@ const REFUSE_A_DEVICE_CREDENTIAL: &[&str] = &[
     "/api/library/proposals/{id}/resolution",
     "/api/library/proposals/{id}/accept",
     "/api/library/proposals/{id}/dismiss",
+    "/api/library/matches/{id}/split",
     "/api/library/works/{slug}",
     "/api/library/series/{id}",
     "/api/library/editions/{id}",

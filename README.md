@@ -346,9 +346,8 @@ field (a walk's **Taken over** only when it is not zero), with what it
 rather than left out — so "nothing was unreadable this time" cannot be
 mistaken for "this version does not say".
 
-**Each library with matching on also fingerprints its pages**, for the
-matching of editions by what their pages show that a later version will do;
-this one matches nothing. A library's page has a **Match editions by page
+**Each library with matching on also matches editions by what their pages
+show.** A library's page has a **Match editions by page
 content** box, under Matching, ticked unless someone unticks it. When a scan
 the server runs ends without a Cancel, when the server starts, and when the
 box is ticked, a background pass reads the pages of each file in a directory
@@ -366,6 +365,53 @@ next scan that ends without a Cancel, scheduled or pressed, starts a pass
 that carries on from there. Unticking the box is the lasting stop: the pass
 starts no new file that only that library holds, and the fingerprints
 already stored are kept.
+
+**Volumes whose pages match become editions of one work.** When the
+fingerprint pass ends without a Cancel, a second pass looks up each file it
+has not looked up before among the files a library with matching on reaches
+with it, scores it page by page against its three likeliest partners, and
+keeps each pair scoring 0.6 or more. While it runs, the same pages show a line
+such as "Matching volumes · 30 of 363" with a **Cancel**, which keeps what the
+pass has scored for the next pass to carry on from. Where a pair scores 0.87
+or more, the derive that follows puts the two volumes in one work, each file
+keeping its own edition key, so a raw volume and its English release become
+two editions of one volume that ⇄ swaps between, and the reading positions
+and notes kept on the edition that moves go with it. A file takes part only
+when it is the only file of its edition, in a work with a volume number, with
+every page read; a pair joins only where its two edition keys differ and one
+library with matching on reaches both files. A file is not moved where a
+rule's literal `set_series` set its series, or an administrator set its
+title, volume or series by hand. Unticking the box undoes that library's joins
+at the next derive and keeps the scores.
+
+**An administrator can take a join apart.** On a volume's `i` panel in its
+series, each edition joined by content shows its key and "matched by content
+· 0.93" with **Split…**. Confirming it splits every pair at the bar between
+that file and the work's other files, derives at once, and puts the file back
+where its own name puts it, unless another of its pairs at the bar joins it
+to a volume on another work. Both volumes' panels then show "kept apart from
+RuriDragon v03", say, with **Undo**, which takes back the whole Split, every
+pair it set apart, and derives once; where one Split kept a volume apart from
+several, one line names them all, with one Undo. Readers see neither the mark
+nor Split. Two editions that names already put in one work join nothing, so
+they carry no mark and no Split.
+
+A volume with two or more editions shows "No alignment recorded." in its
+panel until an alignment is recorded between them. A scan aligns two editions
+of a volume itself when the match pass scored their files at or above the bar
+(0.87), whether the editions joined by content or by name. Each file must be
+the only file of its edition and read whole, the two editions' keys must
+differ, a library with matching on must reach both, and an administrator must
+not have split them. A scan writes no alignment where a person has corrected
+the pair by hand, and replaces one `taiyaku align --write` stored for the
+same pair. Where an edition's page count is no longer the one the pass
+compared, the scan writes no alignment and counts the pair under "Alignments
+not written for volumes joined by content", a row that counts pairs joined by
+name too. Any other pair, such as one scored below the bar, a volume split
+across chapter files, or one in a library where matching is off, is aligned
+with `taiyaku align`. A scan's alignment is in whole pages: where one
+edition holds a spread as one image and the other as two pages, that stretch
+is left unpaired, so a raw made of spreads is aligned only in fragments.
 
 **The rule editor is built too**, at `/config/rules` — the screen the whole
 preview mechanism exists for. An ordered

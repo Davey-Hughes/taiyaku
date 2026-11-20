@@ -42,6 +42,8 @@ pub(crate) enum JobKind {
     /// The fingerprint pass ([`crate::fingerprint_pass`]), which reserves no
     /// directory.
     Fingerprint,
+    /// The match pass ([`crate::match_pass`]), which reserves no directory.
+    Match,
 }
 
 impl JobKind {
@@ -50,18 +52,19 @@ impl JobKind {
         match self {
             Self::Scan => "scan",
             Self::Fingerprint => "fingerprint",
+            Self::Match => "match",
         }
     }
 }
 
-/// One job: a scan, what [`reserve`] reserved, or the fingerprint pass; and
-/// where it is as it runs. Every directory's slot in
+/// One job: a scan, what [`reserve`] reserved, or a pass, fingerprint or match;
+/// and where it is as it runs. Every directory's slot in
 /// [`crate::ServeState::scans`] holds the same scan job.
 #[derive(Debug)]
 pub(crate) struct Job {
     /// Unique in this process, for a page to name the job it cancels.
     pub(crate) id: u64,
-    /// A scan or the fingerprint pass.
+    /// A scan, the fingerprint pass or the match pass.
     pub(crate) kind: JobKind,
     /// The instant that names the job's reservations ([`finish_reservation`]).
     pub(crate) started: Instant,
@@ -142,11 +145,27 @@ impl Job {
         }
     }
 
-    /// A fingerprint pass's count: `done` units finished with, whatever came of
-    /// each, of the `of` queued so far.
-    pub(crate) fn set_count(&self, done: u64, of: u64) {
+    /// A match pass's job started at `started`, with the next id: no directory,
+    /// counting files from none. Its ended count is its own, as a fingerprint
+    /// pass's is.
+    pub(crate) fn matching(started: Instant) -> Self {
+        Self {
+            kind: JobKind::Match,
+            snapshot: Mutex::new(Snapshot {
+                step: Step::Matching,
+                done: Some(0),
+                of: None,
+                dir: None,
+            }),
+            ..Self::new(started, Vec::new(), Arc::default())
+        }
+    }
+
+    /// A pass's count in its one `step`: `done` units finished with, whatever
+    /// came of each, of the `of` queued so far.
+    pub(crate) fn set_count(&self, step: Step, done: u64, of: u64) {
         *locked(&self.snapshot) = Snapshot {
-            step: Step::Fingerprinting,
+            step,
             done: Some(done),
             of: Some(of),
             dir: None,
@@ -259,7 +278,8 @@ impl Watch for Running<'_> {
             | Step::Hashing
             | Step::Writing
             | Step::Finishing
-            | Step::Fingerprinting => None,
+            | Step::Fingerprinting
+            | Step::Matching => None,
         };
         *snapshot = Snapshot {
             step,

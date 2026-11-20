@@ -61,6 +61,11 @@ const derived = (over: Partial<Derived> = {}): Derived => ({
   root_removed_mid_derive: 0,
   marked_missing: 0,
   found_again: 0,
+  joined: 0,
+  followed: 0,
+  unwritten_alignments: 0,
+  moved_editions: 0,
+  unmoved_editions: 0,
   ...over,
 })
 
@@ -89,13 +94,13 @@ describe('ScanReport', () => {
   })
 
   it('draws every field of both reports', () => {
-    // Forty-nine: twelve from the walk, thirty-three from the derive, and the
+    // Fifty-four: twelve from the walk, thirty-eight from the derive, and the
     // four causes O90 draws inside `unreadable`. The walk's thirteenth,
     // `taken_over`, is drawn only when it is not zero, which it is not here.
     // Counted rather than spot-checked, because the failure this guards is a
     // field quietly dropped on the way out.
     const host = mount(<ScanReport outcome={finished()} />)
-    expect(host.querySelectorAll('[data-field]')).toHaveLength(49)
+    expect(host.querySelectorAll('[data-field]')).toHaveLength(54)
   })
 
   it('draws Taken over beside Gone when the walk took rows over, and not at all when it took none', () => {
@@ -109,7 +114,7 @@ describe('ScanReport', () => {
     const row = took.querySelector('[data-field="taken_over"]')
     expect(row?.querySelector('dt')?.textContent).toBe('Taken over')
     expect(row?.querySelector('dd')?.textContent).toBe('4')
-    expect(took.querySelectorAll('[data-field]')).toHaveLength(50)
+    expect(took.querySelectorAll('[data-field]')).toHaveLength(55)
 
     const none = mount(<ScanReport outcome={finished()} />)
     expect(none.querySelector('[data-field="taken_over"]')).toBeNull()
@@ -506,6 +511,65 @@ describe('ScanReport', () => {
     expect(fields.indexOf('found_again')).toBeGreaterThan(
       fields.indexOf('series'),
     )
+  })
+
+  it('draws each count of a derive that joins volumes by content under its own label, on its own side', () => {
+    // Each field its own number, so a row drawing another's count, or a
+    // label paired with another's row, fails. The sides are read against a
+    // row inside each group, as above, since the DOM marks no boundary.
+    const host = mount(
+      <ScanReport
+        outcome={finished({
+          derive: derived({
+            unwritten_alignments: 3,
+            unmoved_editions: 5,
+            joined: 7,
+            followed: 11,
+            moved_editions: 13,
+          }),
+        })}
+      />,
+    )
+    const rows = [
+      'unwritten_alignments',
+      'unmoved_editions',
+      'joined',
+      'followed',
+      'moved_editions',
+    ].map((field) => {
+      const row = host.querySelector(`[data-field="${field}"]`)
+      return [
+        field,
+        row?.querySelector('dt')?.textContent,
+        row?.querySelector('dd')?.textContent,
+      ]
+    })
+    expect(rows).toEqual([
+      [
+        'unwritten_alignments',
+        'Alignments not written for volumes joined by content',
+        '3',
+      ],
+      ['unmoved_editions', 'Editions whose move was refused', '5'],
+      ['joined', 'Volumes joined by content', '7'],
+      ['followed', 'Works moved with their directory', '11'],
+      ['moved_editions', 'Editions moved to the work holding their file', '13'],
+    ])
+    const fields = [...host.querySelectorAll('.derived [data-field]')].map(
+      (el) => el.getAttribute('data-field'),
+    )
+    const notDone = fields.indexOf('declined_documents')
+    const done = fields.indexOf('series')
+    expect(
+      ['unwritten_alignments', 'unmoved_editions'].map(
+        (field) => fields.indexOf(field) < notDone,
+      ),
+    ).toEqual([true, true])
+    expect(
+      ['joined', 'followed', 'moved_editions'].map(
+        (field) => fields.indexOf(field) > done,
+      ),
+    ).toEqual([true, true, true])
   })
 
   it('marks a zero count and leaves a non-zero count unmarked', () => {

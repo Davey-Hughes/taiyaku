@@ -30,6 +30,7 @@ pub mod import;
 pub mod lease;
 pub mod libraries;
 pub mod librarydoc;
+pub mod matches;
 pub mod migrate;
 /// What a proposed rule list would do to the whole library, without doing it.
 /// See `docs/superpowers/specs/2026-09-02-library-configuration-build-design.md`,

@@ -764,6 +764,14 @@ fn the_frozen_bar_is_its_own_arithmetic() {
         .unwrap_or_else(|why| panic!("{why}"));
 }
 
+/// The server joins at the bar this test froze: `matches::BAR` and
+/// `bar.json` state one figure, so neither moves alone.
+#[test]
+fn the_server_bar_is_the_frozen_bar() {
+    let frozen = read_frozen(include_str!("bar.json")).unwrap_or_else(|why| panic!("{why}"));
+    assert_eq!(taiyaku_library::matches::BAR, frozen.bar);
+}
+
 /// `bar.json` does not exist until the freeze, so the check above is shown
 /// to catch each broken sum here.
 #[test]

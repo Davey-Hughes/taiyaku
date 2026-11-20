@@ -88,7 +88,7 @@ describe('base.css', () => {
       /(?:^|;)\s*outline:\s*none\s*(?:;|$)/.test(body),
     )
     expect(none.map(({ prelude }) => prelude)).toEqual([
-      ':where(.library, .login) :where( .page-title:not(.licence *), .missing, .gone-line, .removal-report, .dir-browser .where ):where(:focus)',
+      ':where(.library, .login) :where( .page-title:not(.licence *), .missing, .gone-line, .removal-report, .tile-panel, .dir-browser .where ):where(:focus)',
     ])
     expect(ring).toBeGreaterThanOrEqual(0)
     expect(all.indexOf(none[0])).toBeGreaterThan(ring)

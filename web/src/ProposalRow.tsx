@@ -27,8 +27,8 @@
  * decision. Every signal in the reason list is about names and counts, while
  * this project already owns `duplicates --against`, which answers the same
  * question from the pages themselves — and it is not wired in, because
- * comparing pages comes with matching editions by content, which is not
- * built yet. So the `Compare v01` control ships present, disabled and
+ * matching editions by content joins volumes on its own and does not show its
+ * scores here. So the `Compare v01` control ships present, disabled and
  * honest: an absent number that looked like a low score would be worse than
  * a control admitting it has not run.
  *
@@ -268,8 +268,8 @@ function Evidence({
           Compare v01
         </button>
         <p className="not-yet">
-          Not wired up yet: comparing pages comes with matching editions by
-          content, which is not built yet.
+          Not wired up yet: matching editions by content does not show its
+          scores here.
         </p>
       </div>
       {detail.proposal.state === 'open' && detail.rule === null && (

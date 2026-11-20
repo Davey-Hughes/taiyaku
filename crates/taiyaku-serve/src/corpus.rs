@@ -115,6 +115,7 @@ fn every_page_the_server_serves_is_the_page_the_aligner_sequenced() {
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     };
     let held = state.works.snapshot();
@@ -412,6 +413,7 @@ fn a_corpus_edition_with_members(
                 jobs_ended: Default::default(),
                 library_job: Default::default(),
                 fingerprints: Default::default(),
+                matches: Default::default(),
                 dirs: Vec::new(),
             });
             let router = crate::test_support::authenticating(
@@ -468,6 +470,7 @@ fn a_corpus_edition_of_one_file(root: &Path) -> (axum::Router, String, String, P
                 jobs_ended: Default::default(),
                 library_job: Default::default(),
                 fingerprints: Default::default(),
+                matches: Default::default(),
                 dirs: Vec::new(),
             });
             let router = crate::test_support::authenticating(

@@ -1,19 +1,20 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 use axum::extract::{Extension, Path as AxPath, State};
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode};
 use serde_json::json;
 use taiyaku_library::account::Access;
 use taiyaku_library::fingerprints::{self, Unit};
 use taiyaku_library::progress::{Step, Watch};
 use taiyaku_library::scan::{self, InLibrary, add_root_checked_in};
-use taiyaku_library::{derive, libraries};
+use taiyaku_library::{derive, libraries, matches};
 use taiyaku_read::test_support::cbz_pages;
 
 use crate::fingerprint;
 use crate::fingerprint_pass;
+use crate::match_pass;
 use crate::scan_jobs::{self, Job, JobEnded, Reread, Running};
 use crate::test_support::{self, HeldPass, SETTLE, one_worker};
 
@@ -898,4 +899,102 @@ async fn an_ended_pass_leaves_the_feed() {
         )
     );
     assert!(!pass.cancelling(), "an ended pass is not asked to stop");
+}
+
+/// Plan, "Feed job": the match pass is a job of its own kind, sent as the
+/// plan's shape has it, and holds no library, so the held list is what it was
+/// before the pass. Its Cancel, pressed through the route after a kick, stops
+/// the pass it lands on: no pass of its own starts, and the volume the pass had
+/// not reached is not looked up.
+#[tokio::test]
+async fn the_feed_shows_the_match_pass_and_its_cancel_stops_it() {
+    let matched = matched("feed-match-pass");
+    let fingerprinting = matched.with_a_pass();
+    fingerprint_pass::kick(&fingerprinting);
+    settled(&fingerprinting);
+    let (hold, arrived, release) = test_support::gate();
+    let armed = AtomicBool::new(true);
+    let settings = match_pass::PassSettings {
+        workers: 1,
+        after_lookup: Some(Arc::new(move |_: &str| {
+            if armed.swap(false, Ordering::SeqCst) {
+                hold();
+            }
+        })),
+        ..match_pass::PassSettings::default()
+    };
+    let state = test_support::with_a_match_pass(
+        Arc::clone(&matched.store.library),
+        &matched.fixture,
+        settings,
+    );
+    let router =
+        test_support::authenticating(crate::build_router(Arc::clone(&state)), &state.library);
+    let before = fed(&state, as_admin()).await;
+
+    match_pass::kick(&state);
+    arrived
+        .recv_timeout(SETTLE)
+        .expect("the pass has looked up its first volume");
+    let job = state.matches.job().expect("the pass shows a job");
+    let body = fed(&state, as_admin()).await;
+    match_pass::kick(&state);
+    let pressed = test_support::send_json(
+        &router,
+        Method::POST,
+        &format!("/api/library/scans/{}/cancel", job.id),
+        &json!({}),
+    )
+    .await
+    .status();
+    release.send(()).expect("the worker waits for the word");
+    assert!(state.matches.settle(SETTLE), "the pass ends");
+    let answered = cancelled(&state, an_administrator(), crate::auth::By::Cookie, job.id).await;
+    let looked_up = matches::looked_up(&state.library.conn()).expect("reads the lookups");
+
+    assert_eq!(
+        before["libraries"],
+        json!([]),
+        "the fixture: nothing holds a library"
+    );
+    assert_eq!(body["libraries"], before["libraries"], "{body}");
+    let jobs = body["jobs"].as_array().expect("a jobs array");
+    assert_eq!(jobs.len(), 1, "{body}");
+    let mut sent = jobs[0].clone();
+    assert!(sent["elapsed_secs"].is_f64(), "{body}");
+    sent.as_object_mut()
+        .expect("an object")
+        .remove("elapsed_secs");
+    assert_eq!(
+        sent,
+        json!({
+            "id": job.id,
+            "kind": "match",
+            "step": "matching",
+            "done": 0,
+            "of": 2,
+            "dir": null,
+            "dirs": [],
+            "libraries": [
+                { "id": matched.comics, "name": "Comics" },
+                { "id": matched.manga, "name": "Manga" },
+            ],
+            "cancelling": false,
+        }),
+    );
+    assert_eq!(pressed, StatusCode::ACCEPTED);
+    assert_eq!(job.ended(), Some(JobEnded::Cancelled(Step::Matching)));
+    assert_eq!(
+        answered,
+        (
+            StatusCode::OK,
+            json!({ "job": job.id, "ended": "cancelled", "step": "matching" })
+        )
+    );
+    assert_eq!(
+        state.matches.job().map(|job| job.id),
+        Some(job.id),
+        "no pass of its own"
+    );
+    assert_eq!(looked_up.len(), 1, "one volume looked up: {looked_up:?}");
 }

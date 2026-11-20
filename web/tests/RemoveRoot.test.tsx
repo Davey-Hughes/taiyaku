@@ -81,6 +81,11 @@ const derived = (over: Partial<config.Derived> = {}): config.Derived => ({
   root_removed_mid_derive: 0,
   marked_missing: 0,
   found_again: 0,
+  joined: 0,
+  followed: 0,
+  unwritten_alignments: 0,
+  moved_editions: 0,
+  unmoved_editions: 0,
   ...over,
 })
 

@@ -1466,8 +1466,8 @@ fn migration_20_adds_missing_since_leaving_existing_works_present() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_twenty_nine() {
-    assert_eq!(SCHEMA_VERSION, 29);
+fn the_schema_version_is_thirty() {
+    assert_eq!(SCHEMA_VERSION, 30);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -3357,6 +3357,103 @@ fn the_migration_gives_every_entry_a_counted_by_of_null() {
         ),
         [[r#"Text("")"#, "Null"], [r#"Text("a.cbz")"#, "Null"]],
         "no entry was counted under a signature"
+    );
+}
+
+/// Every edition the store holds was placed by its name, so none starts with a
+/// pair that brought it in; a pair that goes leaves its edition standing.
+#[test]
+fn migration_30_adds_the_match_tables_and_joined_by() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..29]).expect("migrates to 29");
+    conn.execute_batch(
+        "INSERT INTO work (id, content_key, slug, title, reading, hub)
+         VALUES (7, 'k7', 'alpha-1', 'Alpha 1', 'rtl', 'en');
+         INSERT INTO edition (id, work_id, key, label, language, kind)
+         VALUES (70, 7, 'en', 'English', 'en', 'official');",
+    )
+    .expect("seeds a schema-29 work and its edition");
+
+    migrate_with(&conn, &MIGRATIONS[..30]).expect("migrates to 30");
+
+    assert_eq!(version(&conn).expect("reads the version"), 30);
+    let edition = "SELECT id, work_id, key, label, language, kind, joined_by FROM edition";
+    assert_eq!(
+        rows_of(&conn, edition),
+        [[
+            "Integer(70)",
+            "Integer(7)",
+            r#"Text("en")"#,
+            r#"Text("English")"#,
+            r#"Text("en")"#,
+            r#"Text("official")"#,
+            "Null"
+        ]],
+        "the edition stands, brought in by no pair"
+    );
+    assert_eq!(
+        columns_of(&conn, "content_match"),
+        [
+            "id",
+            "sha_a",
+            "sha_b",
+            "v",
+            "long_paired",
+            "a_slots",
+            "b_slots",
+            "a_pages",
+            "b_pages",
+            "floor",
+            "runs",
+            "state",
+            "split_by",
+            "split_at",
+            "split_group",
+            "scored_at"
+        ]
+    );
+    assert_eq!(
+        columns_of(&conn, "match_lookup"),
+        [
+            "sha256",
+            "fingerprint_version",
+            "scorer_version",
+            "looked_at"
+        ]
+    );
+
+    let pair = "INSERT INTO content_match
+                  (sha_a, sha_b, v, long_paired, a_slots, b_slots, a_pages, b_pages, runs, state)
+                VALUES (?1, ?2, 0.9, 1, 1, 1, 1, 1, '[]', ?3)";
+    assert_eq!(
+        conn.execute(pair, rusqlite::params!["d-a", "d-b", "scored"]),
+        Ok(1),
+        "a pair, the smaller digest first"
+    );
+    for (a, b, state, why) in [
+        ("d-b", "d-c", "split", "a split pair"),
+        ("d-c", "d-a", "scored", "the larger digest first"),
+        ("d-a", "d-a", "scored", "a digest paired with itself"),
+        ("d-a", "d-b", "scored", "a pair stored twice"),
+        ("d-a", "d-c", "other", "a state neither scored nor split"),
+    ] {
+        let wrote = conn.execute(pair, rusqlite::params![a, b, state]);
+        assert_eq!(wrote.is_ok(), state == "split", "{why}: {wrote:?}");
+    }
+    conn.execute(
+        "UPDATE edition SET joined_by = (SELECT id FROM content_match WHERE sha_a = 'd-a')
+          WHERE id = 70",
+        [],
+    )
+    .expect("marks the edition as brought in by d-a's pair");
+    conn.execute("DELETE FROM content_match WHERE sha_a = 'd-a'", [])
+        .expect("the pair goes");
+    assert_eq!(
+        rows_of(&conn, "SELECT id, joined_by FROM edition"),
+        [["Integer(70)", "Null"]],
+        "the edition stands, brought in by no pair"
     );
 }
 

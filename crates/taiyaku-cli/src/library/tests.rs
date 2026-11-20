@@ -1660,6 +1660,99 @@ fn derive_summary_names_a_work_left_standing_and_a_series_holding_no_work() {
     assert!(!quiet.contains("holding no work"), "{quiet}");
 }
 
+/// Editions a join or a Split left behind, moved with what they carried, on a
+/// derive that folded no work: the counts print beside the moves and are not
+/// called a fold's. Eight distinct numbers, for the fold test's reason.
+#[test]
+fn derive_summary_says_what_a_move_carried_when_no_work_was_folded() {
+    let mut report = derive_report();
+    report.moved_editions = 2;
+    report.moved_positions = 3;
+    report.moved_notes = 5;
+    report.moved_truth_pages = 8;
+    report.lost_positions = 13;
+    report.moved_truth_collisions = 21;
+    report.discarded_rows = 34;
+    report.dropped_notes = 55;
+    report.uncarried_alignments = 89;
+    let line = derive_summary(&report, 0);
+    assert!(
+        line.contains(
+            "2 edition(s) moved to the work holding their file (3 position(s) written, \
+             13 position(s) lost, 5 note(s) and 8 truth page(s) moved, \
+             55 identical note(s) dropped, 21 truth page(s) already held, \
+             34 row(s) discarded, 89 alignment(s) not carried)"
+        ),
+        "{line}"
+    );
+    assert!(!line.contains("folded"), "{line}");
+    let quiet = derive_summary(&derive_report(), 0);
+    assert!(!quiet.contains("moved to the work"), "{quiet}");
+}
+
+/// Works folded away and editions moved on one derive: one clause names both,
+/// as their counts are summed.
+#[test]
+fn derive_summary_names_folds_and_moves_together() {
+    let mut report = derive_report();
+    report.emptied_works = 2;
+    report.moved_editions = 1;
+    report.moved_positions = 3;
+    let line = derive_summary(&report, 0);
+    assert!(
+        line.contains(
+            "2 work(s) folded away and 1 edition(s) moved to the work holding their file \
+             (3 position(s) written,"
+        ),
+        "{line}"
+    );
+}
+
+/// A refused move, on a derive that left no superseded work standing: the
+/// count and the reason print, and nothing calls it a superseded work.
+#[test]
+fn derive_summary_names_a_refused_move_and_why() {
+    let mut report = derive_report();
+    report.unmoved_editions = 1;
+    report.unfoldable = vec![
+        "edition `ja` of work 1 holds a spread flag, so a slot past it would name another \
+         page on work 2; nothing was moved and nothing was deleted"
+            .to_string(),
+    ];
+    let line = derive_summary(&report, 0);
+    assert!(
+        line.contains(
+            "1 edition(s) whose move was refused left standing: edition `ja` of work 1 \
+             holds a spread flag"
+        ),
+        "{line}"
+    );
+    assert!(!line.contains("superseded"), "{line}");
+    let quiet = derive_summary(&derive_report(), 0);
+    assert!(!quiet.contains("move was refused"), "{quiet}");
+}
+
+/// Refused folds and refused moves on one derive: one clause counts both, and
+/// every reason follows.
+#[test]
+fn derive_summary_names_refused_folds_and_moves_together() {
+    let mut report = derive_report();
+    report.unfolded_works = 4;
+    report.unmoved_editions = 2;
+    report.unfoldable = vec![
+        "work 12 refused".to_string(),
+        "edition `ja` refused".to_string(),
+    ];
+    let line = derive_summary(&report, 0);
+    assert!(
+        line.contains(
+            "4 superseded work(s) and 2 edition(s) whose move was refused left standing: \
+             work 12 refused; edition `ja` refused"
+        ),
+        "{line}"
+    );
+}
+
 /// The hand-document read-back reports one it could not read, parse or apply
 /// through `DeriveReport::unreadable_hand` rather than aborting the derive —
 /// `scan_summary`'s treatment of `unreadable_dirs` is the same shape: no

@@ -38,6 +38,7 @@ import { LIBRARY_STATUS } from './pageReads'
 import { usePhoneBar } from './phoneBar'
 import { SIDEBAR_LAYOUT } from './phoneLayout'
 import { resetPrefs, savePrefs } from './prefs'
+import { landFocus } from './landFocus'
 import { InboxRefreshContext, STATUS_FAILED, StatusContext } from './shell'
 import { TO_TOP } from './scrollKeeper'
 import { useScrollerSwap } from './scrollerSwap'
@@ -276,15 +277,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                   event.preventDefault()
                   const main = mainRef.current
                   if (!main) return
-                  main.tabIndex = -1
-                  main.addEventListener(
-                    'blur',
-                    () => {
-                      main.removeAttribute('tabindex')
-                    },
-                    { once: true },
-                  )
-                  main.focus({ preventScroll: true })
+                  landFocus(main)
                 }}
               >
                 Skip to content

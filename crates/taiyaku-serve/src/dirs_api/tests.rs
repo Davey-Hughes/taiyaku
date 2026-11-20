@@ -483,6 +483,7 @@ fn a_router_browsing(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs,
     });
     let router = test_support::authenticating(crate::build_router(state.clone()), &state.library);

@@ -15,7 +15,12 @@ import { holdOf } from './support/held'
 import { changesIn } from './support/liveRegion'
 import { counted, dir, idle, manga, tick } from './support/libraries'
 import { mount, rerender } from './support/mount'
-import { feedJob, fingerprintPass, serveFeed } from './support/scanFeed'
+import {
+  feedJob,
+  fingerprintPass,
+  matchPass,
+  serveFeed,
+} from './support/scanFeed'
 import { expectRowsWired, helpOf, row, section } from './support/settingsRows'
 import { cellValue } from './support/table'
 import { watchDrawn } from './support/wait'
@@ -3403,6 +3408,59 @@ describe('LibraryPage, the fingerprint pass', () => {
   })
 })
 
+describe('LibraryPage, the match pass', () => {
+  /** Each pass's line under the header, in the order drawn. */
+  const passLines = (host: HTMLElement) =>
+    [...host.querySelectorAll('.library-page > .pass-line > .scanning')].map(
+      (p) => p.textContent,
+    )
+
+  it('draws the match pass’s line after the fingerprint pass’s, and its Cancel cancels the match pass alone', async () => {
+    feed.answer({
+      ended: 0,
+      libraries: [],
+      jobs: [
+        matchPass({ libraries: [{ id: 7, name: 'Manga' }] }),
+        fingerprintPass({ id: 9 }),
+      ],
+    })
+    const { host } = await shown()
+    await clock(0)
+    expect(passLines(host)).toEqual([
+      'Fingerprinting pages · 120 of 2,097 files',
+      'Matching volumes · 3 of 12',
+    ])
+    const cancels = () =>
+      [
+        ...host.querySelectorAll(
+          '.library-page > .pass-line > button[name="cancel-pass"]',
+        ),
+      ] as HTMLButtonElement[]
+    expect(cancels().map((b) => [b.textContent, holdOf(b)])).toEqual([
+      ['Cancel', 'free'],
+      ['Cancel', 'free'],
+    ])
+
+    await press(cancels()[1])
+    await clock(0)
+    expect(feed.cancels).toEqual([12])
+    expect(passLines(host)).toEqual([
+      'Fingerprinting pages · 120 of 2,097 files',
+      'Cancelling…',
+    ])
+    expect(cancels().map(holdOf)).toEqual(['free', 'held'])
+  })
+
+  it('draws no match pass line on the page of a library the pass does not cover', async () => {
+    // The pass covers library 1 alone; this page is Manga's, 7.
+    feed.answer({ ended: 0, libraries: [], jobs: [matchPass()] })
+    const { host } = await shown()
+    await clock(0)
+    expect(passLines(host)).toEqual([])
+    expect(button(host, 'cancel-pass')).toBeNull()
+  })
+})
+
 describe('LibraryPage, Match editions by page content', () => {
   it('ticks the box as the list says, under its own heading, with its line under it', async () => {
     const on = await shown(manga({ match_by_content: true }))
@@ -3412,7 +3470,7 @@ describe('LibraryPage, Match editions by page content', () => {
         row(section(on.host, 'Matching'), 'Match editions by page content'),
       )?.textContent,
     ).toBe(
-      "Fingerprints this library's pages in the background, so later versions can match editions by what their pages show.",
+      "Fingerprints this library's pages in the background, and joins volumes whose pages match as editions of one work.",
     )
 
     act(() => rerender(<div />))

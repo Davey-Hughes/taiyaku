@@ -358,6 +358,8 @@ async fn every_curation_route_refuses_a_reader() {
         (Method::DELETE, "/api/library/proposals/1/accept"),
         (Method::POST, "/api/library/proposals/1/dismiss"),
         (Method::DELETE, "/api/library/proposals/1/dismiss"),
+        (Method::POST, "/api/library/matches/1/split"),
+        (Method::DELETE, "/api/library/matches/1/split"),
     ] {
         let response = send_json(&router, method.clone(), path, &body).await;
         assert_eq!(
@@ -1536,4 +1538,1056 @@ async fn no_curation_route_stalls_the_runtime() {
     );
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(proposal_state(&state, id), "open", "and the reopen landed");
+
+    // Split and Undo name a pair this store does not hold, which they read on
+    // the library's connection: their 404 waited for the mutex.
+    let (stalled, response) = test_support::the_runtime_stalls_on(
+        &library,
+        crate::curation::split_match(
+            State(Arc::clone(&state)),
+            Extension(an_administrator()),
+            crate::test_support::from_a_browser(),
+            AxPath(9999),
+            axum::Json(serde_json::json!({ "work": "any", "edition": "en" })),
+        ),
+    )
+    .await;
+    assert!(
+        !stalled,
+        "POST /api/library/matches/{{id}}/split ran on the async worker"
+    );
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let (stalled, response) = test_support::the_runtime_stalls_on(
+        &library,
+        crate::curation::undo_split(
+            State(Arc::clone(&state)),
+            Extension(an_administrator()),
+            crate::test_support::from_a_browser(),
+            AxPath(9999),
+        ),
+    )
+    .await;
+    assert!(
+        !stalled,
+        "DELETE /api/library/matches/{{id}}/split ran on the async worker"
+    );
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+// --- Split and Undo ---------------------------------------------------------
+
+/// The English volumes: edition key, kind and language.
+const VOLUMES: (&str, &str, &str) = ("en", "official", "en");
+/// An English fan translation.
+const FAN: (&str, &str, &str) = ("fan", "fan", "en");
+/// The Japanese raws.
+const RAW: (&str, &str, &str) = ("ja", "raw", "ja");
+/// A Korean scanlation.
+const KOREAN_SCANS: (&str, &str, &str) = ("ko", "fan", "ko");
+
+const OSHI: &str = "Oshi/v01/Oshi v01.cbz";
+const OSHI_SCANS: &str = "Oshi Scans/v01/Oshi Scans v01.cbz";
+const OSHINOKO: &str = "Oshinoko/v01/Oshinoko v01.cbz";
+
+/// A directory of the fixture: its name, what its files fall back to as
+/// edition key, kind and language, and its volume archives.
+type Directory<'a> = (&'a str, (&'a str, &'a str, &'a str), &'a [&'a str]);
+
+/// A router over `directories`, each in library `Manga`, which matches by
+/// content from its start (migration 28), every file a three-page archive
+/// of bytes its own, scanned, derived and read whole: each file takes part
+/// once a pair names it. Answers each file's digest by [`at`] its directory
+/// and path, as two directories can hold one path.
+fn shelved(
+    label: &str,
+    directories: &[Directory<'_>],
+) -> (
+    axum::Router,
+    std::sync::Arc<crate::ServeState>,
+    test_support::Fixture,
+    std::collections::BTreeMap<String, String>,
+) {
+    use taiyaku_library::scan::{self, InLibrary};
+
+    let fixture = test_support::Fixture::new(label);
+    let library = test_support::library();
+    let mut digests = std::collections::BTreeMap::new();
+    {
+        let conn = library.conn();
+        let mut seed = 0;
+        let mut roots = Vec::new();
+        for (name, (key, kind, language), files) in directories {
+            let at = fixture.path().join(name);
+            for file in *files {
+                let path = at.join(file);
+                let dir = path.parent().expect("a file sits in a directory");
+                std::fs::create_dir_all(dir).expect("makes the volume's directory");
+                seed += 10;
+                taiyaku_read::test_support::cbz_pages(
+                    dir,
+                    &path.file_name().expect("a file name").to_string_lossy(),
+                    3,
+                    seed,
+                );
+            }
+            let root = scan::add_root_in(&conn, &at, InLibrary::Named("Manga")).expect("adds it");
+            conn.execute(
+                "UPDATE root SET edition_key = ?2, default_kind = ?3, default_language = ?4
+                  WHERE id = ?1",
+                rusqlite::params![root.id, key, kind, language],
+            )
+            .expect("labels it");
+            scan::scan_root(&conn, &root).expect("scans it");
+            roots.push((root.id, *name, *files));
+        }
+        taiyaku_library::derive::derive(&conn).expect("derives");
+        for (root, name, files) in roots {
+            for file in files {
+                let digest: String = conn
+                    .query_row(
+                        "SELECT sha256 FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
+                        rusqlite::params![root, file],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or_else(|e| panic!("{file}'s digest: {e}"));
+                conn.execute(
+                    "INSERT INTO fingerprint (sha256, version, outcome, pages, prints)
+                     VALUES (?1, ?2, 'whole', 3, x'00')",
+                    rusqlite::params![digest, crate::fingerprint::VERSION],
+                )
+                .unwrap_or_else(|e| panic!("reads {file} whole: {e}"));
+                digests.insert(at(name, file), digest);
+            }
+        }
+    }
+    let works = crate::Works::fixed(
+        crate::works::from_library(&library).expect("projects the derived works"),
+    );
+    let (router, state) = test_support::router_over(library, works, &fixture);
+    (router, state, fixture, digests)
+}
+
+/// The key [`shelved`] answers `file` of directory `dir` under.
+fn at(dir: &str, file: &str) -> String {
+    format!("{dir}/{file}")
+}
+
+/// `one` and `two` stored as a pair at `v`, as the match pass stores one,
+/// and the pair's id.
+fn pair(state: &crate::ServeState, one: &str, two: &str, v: f64) -> i64 {
+    use taiyaku_library::matches::{self, NewPair};
+
+    let conn = state.library.conn();
+    let scored = NewPair {
+        sha_a: one.to_owned(),
+        sha_b: two.to_owned(),
+        v,
+        long_paired: 3,
+        a_slots: 3,
+        b_slots: 3,
+        a_pages: 3,
+        b_pages: 3,
+        floor: None,
+        runs: Vec::new(),
+    };
+    matches::store(&conn, &[scored], one, 1, 1).expect("stores the pair");
+    conn.query_row(
+        "SELECT id FROM content_match WHERE ?1 IN (sha_a, sha_b) AND ?2 IN (sha_a, sha_b)",
+        [one, two],
+        |r| r.get(0),
+    )
+    .expect("the pair's id")
+}
+
+fn derived(state: &crate::ServeState) {
+    taiyaku_library::derive::derive(&state.library.conn()).expect("derives");
+}
+
+/// The one work holding `digest`.
+fn holder(state: &crate::ServeState, digest: &str) -> i64 {
+    let conn = state.library.conn();
+    let works: Vec<i64> = conn
+        .prepare(
+            "SELECT DISTINCT e.work_id FROM member m JOIN edition e ON e.id = m.edition_id
+              WHERE m.sha256 = ?1 ORDER BY e.work_id",
+        )
+        .and_then(|mut stmt| stmt.query_map([digest], |r| r.get(0))?.collect())
+        .expect("the works holding the file");
+    assert_eq!(works.len(), 1, "one work holds {digest}: {works:?}");
+    works[0]
+}
+
+fn slug(state: &crate::ServeState, work: i64) -> String {
+    let conn = state.library.conn();
+    conn.query_row("SELECT slug FROM work WHERE id = ?1", [work], |r| r.get(0))
+        .expect("the work's slug")
+}
+
+/// A work's series and volume.
+fn placed(state: &crate::ServeState, work: i64) -> (String, Option<f64>) {
+    let conn = state.library.conn();
+    conn.query_row(
+        "SELECT s.sort_title, w.volume FROM work w JOIN series s ON s.id = w.series_id
+          WHERE w.id = ?1",
+        [work],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .expect("the work's series and volume")
+}
+
+/// A work's editions by key, each with the pair that joined it.
+fn joined_editions(state: &crate::ServeState, work: i64) -> Vec<(String, Option<i64>)> {
+    let conn = state.library.conn();
+    conn.prepare("SELECT key, joined_by FROM edition WHERE work_id = ?1 ORDER BY key")
+        .and_then(|mut stmt| {
+            stmt.query_map([work], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })
+        .expect("the work's editions")
+}
+
+/// The edition keyed `key`, joined by `by`.
+fn keyed(key: &str, by: Option<i64>) -> (String, Option<i64>) {
+    (key.to_owned(), by)
+}
+
+/// Every pair's state and the admin who split it, by id.
+fn pair_states(state: &crate::ServeState) -> Vec<(i64, String, Option<i64>)> {
+    let conn = state.library.conn();
+    conn.prepare("SELECT id, state, split_by FROM content_match ORDER BY id")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect()
+        })
+        .expect("the pairs' states")
+}
+
+/// The fixture account, the administrator every request here is made as.
+const ADMIN: Option<i64> = Some(1);
+
+fn scored(id: i64) -> (i64, String, Option<i64>) {
+    (id, "scored".to_owned(), None)
+}
+
+fn split_by_the_admin(id: i64) -> (i64, String, Option<i64>) {
+    (id, "split".to_owned(), ADMIN)
+}
+
+/// A Split of pair `id` naming edition `key` of work `work`: its status and
+/// body.
+async fn split(
+    router: &axum::Router,
+    state: &crate::ServeState,
+    id: i64,
+    work: i64,
+    key: &str,
+) -> (StatusCode, String) {
+    let body = serde_json::json!({ "work": slug(state, work), "edition": key });
+    let response = send_json(
+        router,
+        Method::POST,
+        &format!("/api/library/matches/{id}/split"),
+        &body,
+    )
+    .await;
+    let status = response.status();
+    (status, test_support::body_string(response).await)
+}
+
+/// An Undo of pair `id`'s Split: its status and body.
+async fn undo(router: &axum::Router, id: i64) -> (StatusCode, String) {
+    let response = send_json(
+        router,
+        Method::DELETE,
+        &format!("/api/library/matches/{id}/split"),
+        &serde_json::Value::Null,
+    )
+    .await;
+    let status = response.status();
+    (status, test_support::body_string(response).await)
+}
+
+fn json_of(body: &str) -> serde_json::Value {
+    serde_json::from_str(body).unwrap_or_else(|e| panic!("a JSON body: {e}: {body}"))
+}
+
+/// One English volume and its raw, each in a series of its own, paired at
+/// 0.95 and joined: the router, the store, the two digests and the pair.
+fn english_and_raw(
+    label: &str,
+) -> (
+    axum::Router,
+    std::sync::Arc<crate::ServeState>,
+    test_support::Fixture,
+    (String, String, i64),
+) {
+    let (router, state, fixture, digests) = shelved(
+        label,
+        &[("Volumes", VOLUMES, &[OSHI]), ("Raw", RAW, &[OSHINOKO])],
+    );
+    let (en, ja) = (
+        digests[&at("Volumes", OSHI)].clone(),
+        digests[&at("Raw", OSHINOKO)].clone(),
+    );
+    let id = pair(&state, &en, &ja, 0.95);
+    derived(&state);
+    assert_eq!(
+        holder(&state, &ja),
+        holder(&state, &en),
+        "the fixture: the raw joined the English volume's work"
+    );
+    (router, state, fixture, (en, ja, id))
+}
+
+/// The Split answers with the library it leaves: the raw is back where its
+/// name puts it before the next derive, and a further derive keeps it there.
+#[tokio::test]
+async fn split_sends_the_file_back_at_once_and_a_rescan_keeps_it_apart() {
+    let (router, state, _fixture, (en, ja, id)) = english_and_raw("split-at-once");
+    let host = holder(&state, &en);
+
+    let (status, body) = split(&router, &state, id, host, "ja").await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let answer = json_of(&body);
+    assert_eq!(answer["split"], serde_json::json!([id]), "{body}");
+    assert_eq!(answer["derive"]["joined"], 0, "the derive's report: {body}");
+    let freed = holder(&state, &ja);
+    assert_ne!(freed, host, "the raw left the English volume's work");
+    assert_eq!(
+        (placed(&state, freed), joined_editions(&state, freed)),
+        (("Oshinoko".to_owned(), Some(1.0)), vec![keyed("ja", None)]),
+        "the raw's own work, where its name puts it"
+    );
+    assert_eq!(
+        joined_editions(&state, host),
+        [keyed("en", None)],
+        "the host keeps no copy of it"
+    );
+    assert_eq!(pair_states(&state), [split_by_the_admin(id)]);
+
+    derived(&state);
+
+    assert_eq!(holder(&state, &ja), freed, "a later derive keeps it apart");
+    assert_eq!(joined_editions(&state, host), [keyed("en", None)]);
+    assert_eq!(pair_states(&state), [split_by_the_admin(id)]);
+}
+
+/// Official, fan and raw volumes, each with a work of its own until `pairs`
+/// are stored and derived: the router, the store, and the three digests.
+struct Triangle {
+    router: axum::Router,
+    state: std::sync::Arc<crate::ServeState>,
+    _fixture: test_support::Fixture,
+    official: String,
+    fan: String,
+    raw: String,
+}
+
+impl Triangle {
+    fn new(label: &str) -> Self {
+        let (router, state, fixture, digests) = shelved(
+            label,
+            &[
+                ("Volumes", VOLUMES, &[OSHI]),
+                ("Fan", FAN, &[OSHI_SCANS]),
+                ("Raw", RAW, &[OSHINOKO]),
+            ],
+        );
+        Self {
+            router,
+            state,
+            _fixture: fixture,
+            official: digests[&at("Volumes", OSHI)].clone(),
+            fan: digests[&at("Fan", OSHI_SCANS)].clone(),
+            raw: digests[&at("Raw", OSHINOKO)].clone(),
+        }
+    }
+}
+
+/// Review Focus 1: the raw pairs best with the official volume, then with
+/// the fan's. A Split of the first naming the raw splits the second too, or
+/// the raw would join the same work again through the fan; the fan stays,
+/// joined by the pair it is in with the official volume.
+#[tokio::test]
+async fn split_on_a_triangle_splits_every_pair_tying_the_file_to_its_work() {
+    let t = Triangle::new("split-triangle");
+    let official_raw = pair(&t.state, &t.official, &t.raw, 0.93);
+    let fan_raw = pair(&t.state, &t.fan, &t.raw, 0.91);
+    let official_fan = pair(&t.state, &t.official, &t.fan, 0.89);
+    derived(&t.state);
+    let host = holder(&t.state, &t.official);
+    assert_eq!(
+        joined_editions(&t.state, host),
+        [
+            keyed("en", None),
+            keyed("fan", Some(fan_raw)),
+            keyed("ja", Some(official_raw)),
+        ],
+        "the fixture: one work, the raw joined by the official volume"
+    );
+
+    let (status, body) = split(&t.router, &t.state, official_raw, host, "ja").await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        json_of(&body)["split"],
+        serde_json::json!([official_raw, fan_raw]),
+        "{body}"
+    );
+    let freed = holder(&t.state, &t.raw);
+    assert_ne!(freed, host, "the raw left");
+    assert_eq!(placed(&t.state, freed), ("Oshinoko".to_owned(), Some(1.0)));
+    assert_eq!(holder(&t.state, &t.fan), host, "the fan stays");
+    assert_eq!(
+        joined_editions(&t.state, host),
+        [keyed("en", None), keyed("fan", Some(official_fan))],
+        "joined now by the pair it is in with the official volume"
+    );
+    assert_eq!(
+        pair_states(&t.state),
+        [
+            split_by_the_admin(official_raw),
+            split_by_the_admin(fan_raw),
+            scored(official_fan),
+        ]
+    );
+
+    let (hosts, raws) = (slug(&t.state, host), slug(&t.state, freed));
+    let kept = |id: i64, series: &str, slug: &str| serde_json::json!({ "id": id, "split": official_raw, "series": series, "volume": 1.0, "slug": slug });
+    let raw_panel = get_json(&t.router, &format!("/api/library/works/{raws}")).await;
+    assert_eq!(
+        raw_panel["kept_apart"],
+        serde_json::json!([
+            kept(official_raw, "Oshi", &hosts),
+            kept(fan_raw, "Oshi", &hosts)
+        ]),
+        "the raw's panel lists both pairs kept apart: {raw_panel}"
+    );
+    let host_panel = get_json(&t.router, &format!("/api/library/works/{hosts}")).await;
+    assert_eq!(
+        host_panel["kept_apart"],
+        serde_json::json!([
+            kept(official_raw, "Oshinoko", &raws),
+            kept(fan_raw, "Oshinoko", &raws)
+        ]),
+        "{host_panel}"
+    );
+    assert_eq!(
+        marked(&host_panel),
+        [
+            ("en".to_owned(), serde_json::Value::Null),
+            (
+                "fan".to_owned(),
+                serde_json::json!({ "id": official_fan, "score": 0.89 })
+            ),
+        ],
+        "the host's panel marks no raw: {host_panel}"
+    );
+}
+
+/// Each edition of a work as the work API sends it, with its mark, by key.
+fn marked(work: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
+    let mut marks: Vec<(String, serde_json::Value)> = work["editions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("editions: {work}"))
+        .iter()
+        .map(|edition| {
+            (
+                edition["key"].as_str().expect("a key").to_owned(),
+                edition["matched"].clone(),
+            )
+        })
+        .collect();
+    marks.sort_by(|one, two| one.0.cmp(&two.0));
+    marks
+}
+
+/// V(fan, raw) > V(official, raw) > V(official, fan): the fan and the raw
+/// both carry (fan, raw) as the pair that joined them.
+fn the_fan_and_raw_score_highest(t: &Triangle) -> (i64, i64, i64, i64) {
+    let fan_raw = pair(&t.state, &t.fan, &t.raw, 0.95);
+    let official_raw = pair(&t.state, &t.official, &t.raw, 0.92);
+    let official_fan = pair(&t.state, &t.official, &t.fan, 0.89);
+    derived(&t.state);
+    let host = holder(&t.state, &t.official);
+    assert_eq!(
+        joined_editions(&t.state, host),
+        [
+            keyed("en", None),
+            keyed("fan", Some(fan_raw)),
+            keyed("ja", Some(fan_raw)),
+        ],
+        "the fixture: one work, the fan and the raw both joined by their own pair"
+    );
+    (host, fan_raw, official_raw, official_fan)
+}
+
+/// A Split of (fan, raw) naming the fan's edition splits the fan's ties to
+/// its work and no other: the fan leaves, and the raw stays on the official
+/// volume's work through (official, raw).
+#[tokio::test]
+async fn split_on_the_fan_of_a_triangle_leaves_the_raw_joined() {
+    let t = Triangle::new("split-triangle-fan");
+    let (host, fan_raw, official_raw, official_fan) = the_fan_and_raw_score_highest(&t);
+
+    let (status, body) = split(&t.router, &t.state, fan_raw, host, "fan").await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        json_of(&body)["split"],
+        serde_json::json!([fan_raw, official_fan]),
+        "{body}"
+    );
+    let freed = holder(&t.state, &t.fan);
+    assert_ne!(freed, host, "the fan left");
+    assert_eq!(
+        placed(&t.state, freed),
+        ("Oshi Scans".to_owned(), Some(1.0))
+    );
+    assert_eq!(holder(&t.state, &t.raw), host, "the raw stays");
+    assert_eq!(
+        joined_editions(&t.state, host),
+        [keyed("en", None), keyed("ja", Some(official_raw))]
+    );
+    assert_eq!(
+        pair_states(&t.state),
+        [
+            split_by_the_admin(fan_raw),
+            scored(official_raw),
+            split_by_the_admin(official_fan),
+        ]
+    );
+}
+
+/// The same pair naming the raw's edition: the raw leaves, and the fan stays
+/// through (official, fan).
+#[tokio::test]
+async fn split_on_the_raw_of_that_triangle_leaves_the_fan_joined() {
+    let t = Triangle::new("split-triangle-raw");
+    let (host, fan_raw, official_raw, official_fan) = the_fan_and_raw_score_highest(&t);
+
+    let (status, body) = split(&t.router, &t.state, fan_raw, host, "ja").await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        json_of(&body)["split"],
+        serde_json::json!([fan_raw, official_raw]),
+        "{body}"
+    );
+    let freed = holder(&t.state, &t.raw);
+    assert_ne!(freed, host, "the raw left");
+    assert_eq!(placed(&t.state, freed), ("Oshinoko".to_owned(), Some(1.0)));
+    assert_eq!(holder(&t.state, &t.fan), host, "the fan stays");
+    assert_eq!(
+        joined_editions(&t.state, host),
+        [keyed("en", None), keyed("fan", Some(official_fan))]
+    );
+    assert_eq!(
+        pair_states(&t.state),
+        [
+            split_by_the_admin(fan_raw),
+            split_by_the_admin(official_raw),
+            scored(official_fan),
+        ]
+    );
+}
+
+/// In the triangle where (fan, raw) scores highest, the raw's mark is (fan,
+/// raw), though the official volume pairs with it on the same work: a Split of
+/// (official, raw) naming the raw is a 404 that splits nothing, as the panel
+/// offers no such Split.
+#[tokio::test]
+async fn a_split_naming_an_edition_another_pair_joined_is_a_404() {
+    let t = Triangle::new("split-other-mark");
+    let (host, fan_raw, official_raw, official_fan) = the_fan_and_raw_score_highest(&t);
+
+    let (status, body) = split(&t.router, &t.state, official_raw, host, "ja").await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(
+        pair_states(&t.state),
+        [scored(fan_raw), scored(official_raw), scored(official_fan)],
+        "nothing split"
+    );
+    assert_eq!(
+        joined_editions(&t.state, host),
+        [
+            keyed("en", None),
+            keyed("fan", Some(fan_raw)),
+            keyed("ja", Some(fan_raw)),
+        ],
+        "the fan and the raw stay, each marked as before"
+    );
+}
+
+/// Review Focus 1's triangle with the raw split off through the route, which
+/// sets both its pairs apart: the host, the raw's own work, and the pairs
+/// (official, raw), (fan, raw) and (official, fan).
+async fn the_raw_split_off_a_triangle(t: &Triangle) -> (i64, i64, [i64; 3]) {
+    let official_raw = pair(&t.state, &t.official, &t.raw, 0.93);
+    let fan_raw = pair(&t.state, &t.fan, &t.raw, 0.91);
+    let official_fan = pair(&t.state, &t.official, &t.fan, 0.89);
+    derived(&t.state);
+    let host = holder(&t.state, &t.official);
+    let (status, body) = split(&t.router, &t.state, official_raw, host, "ja").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the fixture: the Split lands: {body}"
+    );
+    assert_eq!(
+        json_of(&body)["split"],
+        serde_json::json!([official_raw, fan_raw]),
+        "the fixture: both the raw's pairs are split: {body}"
+    );
+    let freed = holder(&t.state, &t.raw);
+    assert_eq!(
+        (
+            holder(&t.state, &t.fan),
+            joined_editions(&t.state, host),
+            joined_editions(&t.state, freed)
+        ),
+        (
+            host,
+            vec![keyed("en", None), keyed("fan", Some(official_fan))],
+            vec![keyed("ja", None)]
+        ),
+        "the fixture: the raw is on a work of its own, and the fan stays, marked by (official, fan)"
+    );
+    (host, freed, [official_raw, fan_raw, official_fan])
+}
+
+/// The panel of work `work`, through the work API.
+async fn panel(t: &Triangle, work: i64) -> serde_json::Value {
+    get_json(
+        &t.router,
+        &format!("/api/library/works/{}", slug(&t.state, work)),
+    )
+    .await
+}
+
+/// The triangle as it was before the Split: the raw and the fan both on the
+/// host, each marked by the pair that joined it there, and every pair scored.
+fn the_triangle_as_before_the_split(
+    t: &Triangle,
+    host: i64,
+    [official_raw, fan_raw, official_fan]: [i64; 3],
+) {
+    assert_eq!(
+        (holder(&t.state, &t.raw), holder(&t.state, &t.fan)),
+        (host, host),
+        "the raw and the fan are both back on the official volume's work"
+    );
+    assert_eq!(
+        joined_editions(&t.state, host),
+        [
+            keyed("en", None),
+            keyed("fan", Some(fan_raw)),
+            keyed("ja", Some(official_raw)),
+        ],
+        "each marked as before the Split"
+    );
+    assert_eq!(
+        pair_states(&t.state),
+        [scored(official_raw), scored(fan_raw), scored(official_fan)],
+        "every pair the Split set apart is scored again"
+    );
+}
+
+/// The library's rows, so a derive that changes none shows.
+fn changes(state: &crate::ServeState) -> u64 {
+    state.library.conn().total_changes()
+}
+
+/// Undo restores the whole Split: naming (official, raw), the Split's own
+/// pair, puts the triangle back as it was, the host's panel marks as before,
+/// and the next derive changes nothing.
+#[tokio::test]
+async fn undoing_official_and_raw_after_a_triangle_split_restores_the_whole_split() {
+    let t = Triangle::new("undo-triangle-official");
+    let (host, _, pairs) = the_raw_split_off_a_triangle(&t).await;
+    let [official_raw, fan_raw, _] = pairs;
+
+    let (status, body) = undo(&t.router, official_raw).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    the_triangle_as_before_the_split(&t, host, pairs);
+    let hosts = panel(&t, host).await;
+    assert_eq!(
+        (marked(&hosts), &hosts["kept_apart"]),
+        (
+            vec![
+                ("en".to_owned(), serde_json::Value::Null),
+                (
+                    "fan".to_owned(),
+                    serde_json::json!({ "id": fan_raw, "score": 0.91 })
+                ),
+                (
+                    "ja".to_owned(),
+                    serde_json::json!({ "id": official_raw, "score": 0.93 })
+                ),
+            ],
+            &serde_json::json!([])
+        ),
+        "{hosts}"
+    );
+    let before = changes(&t.state);
+    derived(&t.state);
+    assert_eq!(changes(&t.state), before, "the next derive changes nothing");
+}
+
+/// Naming (fan, raw), the other pair the same Split set apart, undoes the
+/// same whole Split.
+#[tokio::test]
+async fn undoing_fan_and_raw_after_a_triangle_split_restores_the_whole_split_too() {
+    let t = Triangle::new("undo-triangle-fan");
+    let (host, _, pairs) = the_raw_split_off_a_triangle(&t).await;
+
+    let (status, body) = undo(&t.router, pairs[1]).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    the_triangle_as_before_the_split(&t, host, pairs);
+    let before = changes(&t.state);
+    derived(&t.state);
+    assert_eq!(changes(&t.state), before, "the next derive changes nothing");
+}
+
+/// Two Splits: the raw off the triangle, then the fan off the host, which
+/// sets (official, fan) apart alone. Undoing the first leaves the second's
+/// pair split: the raw is back, and the fan stays on a work of its own.
+#[tokio::test]
+async fn undoing_one_split_leaves_another_splits_pairs_split() {
+    let t = Triangle::new("undo-one-of-two");
+    let (host, _, [official_raw, fan_raw, official_fan]) = the_raw_split_off_a_triangle(&t).await;
+    let (status, body) = split(&t.router, &t.state, official_fan, host, "fan").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the fixture: the second Split lands: {body}"
+    );
+    assert_eq!(
+        json_of(&body)["split"],
+        serde_json::json!([official_fan]),
+        "the fixture: the second Split sets (official, fan) apart alone: {body}"
+    );
+
+    let (status, body) = undo(&t.router, official_raw).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        pair_states(&t.state),
+        [
+            scored(official_raw),
+            scored(fan_raw),
+            split_by_the_admin(official_fan),
+        ],
+        "the first Split's pairs are scored, the second's split"
+    );
+    assert_eq!(holder(&t.state, &t.raw), host, "the raw is back");
+    let fans = holder(&t.state, &t.fan);
+    assert_ne!(fans, host, "the fan stays apart from the official volume");
+    assert_eq!(
+        joined_editions(&t.state, host),
+        [keyed("en", None), keyed("ja", Some(official_raw))]
+    );
+}
+
+/// Undo answers with the library it leaves: the pair joins again at once.
+#[tokio::test]
+async fn undo_rejoins_at_once() {
+    let (router, state, _fixture, (en, ja, id)) = english_and_raw("undo-at-once");
+    let host = holder(&state, &en);
+    let (status, body) = split(&router, &state, id, host, "ja").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the fixture: the Split lands: {body}"
+    );
+    assert_ne!(holder(&state, &ja), host, "the fixture: the raw left");
+
+    let (status, body) = undo(&router, id).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(json_of(&body)["derive"]["joined"], 1, "{body}");
+    assert_eq!(holder(&state, &ja), host, "the raw is back");
+    assert_eq!(
+        joined_editions(&state, host),
+        [keyed("en", None), keyed("ja", Some(id))]
+    );
+    assert_eq!(pair_states(&state), [scored(id)]);
+}
+
+/// Split and Undo derive the whole store, so each tries the job lock once and
+/// refuses while a scan or another library job holds it, as a rule save does;
+/// with the lock free, the same Split lands.
+#[tokio::test]
+async fn split_answers_409_while_the_job_lock_is_held() {
+    let (router, state, _fixture, (en, ja, id)) = english_and_raw("split-busy");
+    let host = holder(&state, &en);
+    let held = test_support::holding_the_job(&state);
+
+    let refused = [
+        split(&router, &state, id, host, "ja").await,
+        undo(&router, id).await,
+    ];
+
+    assert_eq!(
+        refused,
+        [
+            (
+                StatusCode::CONFLICT,
+                "a scan or another library job is running; split again once it has finished"
+                    .to_owned()
+            ),
+            (
+                StatusCode::CONFLICT,
+                "a scan or another library job is running; undo again once it has finished"
+                    .to_owned()
+            ),
+        ]
+    );
+    assert_eq!(pair_states(&state), [scored(id)], "nothing split");
+    assert_eq!(holder(&state, &ja), host, "the raw stays joined");
+
+    drop(held);
+    let (status, body) = split(&router, &state, id, host, "ja").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// The derive lease covers a derive another process runs (O51): Split and
+/// Undo refuse while it is held, as they refuse beside the job lock.
+#[tokio::test]
+async fn split_answers_409_while_another_derive_holds_the_lease() {
+    let (router, state, _fixture, (en, ja, id)) = english_and_raw("split-leased");
+    let host = holder(&state, &en);
+    let held = test_support::holding_the_lease(&state.library);
+
+    let refused = [
+        split(&router, &state, id, host, "ja").await.0,
+        undo(&router, id).await.0,
+    ];
+
+    assert_eq!(refused, [StatusCode::CONFLICT, StatusCode::CONFLICT]);
+    assert_eq!(pair_states(&state), [scored(id)], "nothing split");
+    assert_eq!(holder(&state, &ja), host, "the raw stays joined");
+
+    drop(held);
+    let (status, body) = split(&router, &state, id, host, "ja").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// Each request names what the store does not hold as a Split needs it, and
+/// is a 404 that splits nothing: pair 9999, on both routes; the raw's edition
+/// under Oshi v02, whose work holds no `ja` edition (by key alone, Oshi v01's
+/// would be found); the fan's edition of two files, which no derive marks, so
+/// it is marked here with the pair naming one of them and only its count
+/// refuses it; Oshi v02's English edition, which no pair joined; and the
+/// Korean scanlation, which moved with the raw's group and carries the pair
+/// that names the raw, not it.
+#[tokio::test]
+async fn a_split_naming_what_the_store_does_not_hold_is_a_404_and_splits_nothing() {
+    const OSHI_2: &str = "Oshi/v02/Oshi v02.cbz";
+    const SCANS_A: &str = "Oshi Scans/v01/Oshi Scans v01 a.cbz";
+    const SCANS_B: &str = "Oshi Scans/v01/Oshi Scans v01 b.cbz";
+    let (router, state, _fixture, digests) = shelved(
+        "split-not-found",
+        &[
+            ("Volumes", VOLUMES, &[OSHI, OSHI_2]),
+            ("Fan", FAN, &[SCANS_A, SCANS_B]),
+            ("Raw", RAW, &[OSHINOKO]),
+            ("Scans", KOREAN_SCANS, &[OSHINOKO]),
+        ],
+    );
+    let (en, ja) = (
+        &digests[&at("Volumes", OSHI)],
+        &digests[&at("Raw", OSHINOKO)],
+    );
+    let joins = pair(&state, en, ja, 0.95);
+    let shared = digests[&at("Fan", SCANS_A)]
+        .clone()
+        .min(digests[&at("Fan", SCANS_B)].clone());
+    let sharing = pair(&state, en, &shared, 0.95);
+    derived(&state);
+    let host = holder(&state, en);
+    let (second, scans) = (
+        holder(&state, &digests[&at("Volumes", OSHI_2)]),
+        holder(&state, &shared),
+    );
+    assert_eq!(
+        (
+            joined_editions(&state, host),
+            joined_editions(&state, second)
+        ),
+        (
+            vec![
+                keyed("en", None),
+                keyed("ja", Some(joins)),
+                keyed("ko", Some(joins))
+            ],
+            vec![keyed("en", None)]
+        ),
+        "the fixture: the raw's group joined Oshi v01's work, and Oshi v02's holds only English"
+    );
+    state
+        .library
+        .conn()
+        .execute(
+            "UPDATE edition SET joined_by = ?1 WHERE work_id = ?2 AND key = 'fan'",
+            [sharing, scans],
+        )
+        .expect("marks the fan's edition of two files");
+    let named =
+        |work: i64, key: &str| serde_json::json!({ "work": slug(&state, work), "edition": key });
+
+    for (method, path, body) in [
+        (
+            Method::POST,
+            "/api/library/matches/9999/split".to_owned(),
+            named(host, "ja"),
+        ),
+        (
+            Method::DELETE,
+            "/api/library/matches/9999/split".to_owned(),
+            serde_json::Value::Null,
+        ),
+        (
+            Method::POST,
+            format!("/api/library/matches/{joins}/split"),
+            named(second, "ja"),
+        ),
+        (
+            Method::POST,
+            format!("/api/library/matches/{sharing}/split"),
+            named(scans, "fan"),
+        ),
+        (
+            Method::POST,
+            format!("/api/library/matches/{joins}/split"),
+            named(second, "en"),
+        ),
+        (
+            Method::POST,
+            format!("/api/library/matches/{joins}/split"),
+            named(host, "ko"),
+        ),
+    ] {
+        let response = send_json(&router, method.clone(), &path, &body).await;
+        let status = response.status();
+        let text = test_support::body_string(response).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "{method} {path} {body}: {text}"
+        );
+        assert_eq!(
+            pair_states(&state),
+            [scored(joins), scored(sharing)],
+            "{method} {path} {body} split nothing"
+        );
+        assert_eq!(
+            holder(&state, ja),
+            host,
+            "{method} {path} {body}: the raw stays"
+        );
+    }
+}
+
+/// Names put the raw on the English volume's work, so the pair between them
+/// at the bar joined nothing and marks neither edition: a Split naming either
+/// is a 404, as the mark the panel shows is the pair it names.
+#[tokio::test]
+async fn a_split_naming_an_edition_its_pair_did_not_join_is_a_404() {
+    let (router, state, _fixture, digests) = shelved(
+        "split-not-joined",
+        &[("Volumes", VOLUMES, &[OSHI]), ("Raw", RAW, &[OSHI])],
+    );
+    let (en, ja) = (&digests[&at("Volumes", OSHI)], &digests[&at("Raw", OSHI)]);
+    let id = pair(&state, en, ja, 0.95);
+    derived(&state);
+    let work = holder(&state, en);
+    assert_eq!(
+        (holder(&state, ja), joined_editions(&state, work)),
+        (work, vec![keyed("en", None), keyed("ja", None)]),
+        "the fixture: names put both on one work, and no join marks either"
+    );
+
+    for key in ["ja", "en"] {
+        let (status, body) = split(&router, &state, id, work, key).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND, "{key}: {body}");
+        assert_eq!(pair_states(&state), [scored(id)], "{key}: nothing split");
+        assert_eq!(holder(&state, ja), work, "{key}: the raw stays");
+    }
+}
+
+/// A Split splits only what would join the file to its work again. The raw
+/// joins Oshi v01 at 0.95, pairs at 0.7 with the fan edition names put on that
+/// work, and at 0.9 with Other v01, which the English key Oshi v01 holds kept
+/// it from joining. Both stay scored, and the raw then joins Other v01.
+#[tokio::test]
+async fn a_split_leaves_a_pair_under_the_bar_and_a_pair_with_another_work_scored() {
+    const OTHER: &str = "Other/v01/Other v01.cbz";
+    let (router, state, _fixture, digests) = shelved(
+        "split-scope",
+        &[
+            ("Volumes", VOLUMES, &[OSHI, OTHER]),
+            ("Fan", FAN, &[OSHI]),
+            ("Raw", RAW, &[OSHINOKO]),
+        ],
+    );
+    let (en, fan, other, ja) = (
+        &digests[&at("Volumes", OSHI)],
+        &digests[&at("Fan", OSHI)],
+        &digests[&at("Volumes", OTHER)],
+        &digests[&at("Raw", OSHINOKO)],
+    );
+    let joins = pair(&state, en, ja, 0.95);
+    let under = pair(&state, fan, ja, 0.7);
+    let elsewhere = pair(&state, other, ja, 0.9);
+    derived(&state);
+    let (host, second) = (holder(&state, en), holder(&state, other));
+    assert_eq!(
+        (
+            holder(&state, fan),
+            holder(&state, ja),
+            joined_editions(&state, host),
+            joined_editions(&state, second),
+        ),
+        (
+            host,
+            host,
+            vec![
+                keyed("en", None),
+                keyed("fan", None),
+                keyed("ja", Some(joins))
+            ],
+            vec![keyed("en", None)],
+        ),
+        "the fixture: the raw joined Oshi v01, where names put the fan edition, \
+         and Other v01 holds only its own"
+    );
+
+    let (status, body) = split(&router, &state, joins, host, "ja").await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        json_of(&body)["split"],
+        serde_json::json!([joins]),
+        "{body}"
+    );
+    assert_eq!(
+        pair_states(&state),
+        [split_by_the_admin(joins), scored(under), scored(elsewhere)]
+    );
+    assert_eq!(
+        joined_editions(&state, host),
+        [keyed("en", None), keyed("fan", None)]
+    );
+    assert_eq!(holder(&state, ja), second, "the raw joins Other v01");
+    assert_eq!(
+        joined_editions(&state, second),
+        [keyed("en", None), keyed("ja", Some(elsewhere))]
+    );
 }

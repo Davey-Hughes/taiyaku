@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
@@ -5,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use taiyaku_library::fingerprints::{self, Outcome, Row};
 use taiyaku_library::progress::Step;
-use taiyaku_library::{Library, derive, libraries, scan};
+use taiyaku_library::{Library, derive, libraries, matches, scan};
 use taiyaku_read::test_support::cbz_pages;
 
 use axum::http::{Method, StatusCode};
@@ -3255,5 +3256,139 @@ fn no_row_a_pass_stores_is_due_for_the_next() {
     assert!(
         next.fingerprints.job().is_none(),
         "the next pass reads nothing"
+    );
+}
+
+/// A state over `library` whose fingerprint pass runs as `settings` say and
+/// whose match pass runs too, so a pass that goes idle has one to start.
+fn chained(library: Arc<Library>, fixture: &Fixture, settings: PassSettings) -> Arc<ServeState> {
+    Arc::new(ServeState {
+        library,
+        fingerprints: Arc::new(Pass::with(settings)),
+        matches: Arc::new(crate::match_pass::Pass::with(
+            crate::match_pass::PassSettings {
+                poll: POLL,
+                ..crate::match_pass::PassSettings::default()
+            },
+        )),
+        ..test_support::state(fixture)
+    })
+}
+
+/// Every digest the match pass has looked up.
+fn looked_up(library: &Library) -> HashSet<String> {
+    matches::looked_up(&library.conn()).expect("reads the lookups")
+}
+
+/// The digests of `rel_paths` in `root`.
+fn digests_of(library: &Library, root: &scan::Root, rel_paths: &[&str]) -> HashSet<String> {
+    rel_paths
+        .iter()
+        .map(|rel_path| {
+            digest_at(library, root.id, rel_path).unwrap_or_else(|| panic!("{rel_path}'s digest"))
+        })
+        .collect()
+}
+
+/// Spec §2, "When": the match pass follows a fingerprint pass that ends
+/// uncancelled, and a cancel stops the chain with the pass it lands on. The
+/// first pass reads two volumes, which the match pass after it looks up. A
+/// third volume is then due and both lookups are forgotten, so a match pass
+/// started after the cancelled second pass would look both up again.
+#[test]
+fn a_finished_fingerprint_pass_starts_a_match_pass_and_a_cancelled_one_does_not() {
+    let (fixture, library, root) = scanned("pass-chain", &VOLUMES[..2]);
+    let (hold, arrived, release) = gate();
+    let listings = AtomicUsize::new(0);
+    let settings = PassSettings {
+        after_listing: Some(Arc::new(move || {
+            if listings.fetch_add(1, SeqCst) == 1 {
+                hold();
+            }
+        })),
+        ..polling()
+    };
+    let state = chained(Arc::clone(&library), &fixture, settings);
+    let read = digests_of(&library, &root, &VOLUMES[..2]);
+
+    kicked(&state);
+    assert!(state.matches.settle(SETTLE), "the match pass ends");
+    let finished = the_job(&state);
+    let first = state.matches.job();
+    let first_looked_up = looked_up(&library);
+
+    write_volumes(&root.path, &VOLUMES[2..], 2);
+    {
+        let conn = library.conn();
+        scan::scan_root(&conn, &root).expect("walks it again");
+        derive::derive(&conn).expect("derives");
+        conn.execute("DELETE FROM match_lookup", [])
+            .expect("forgets the lookups");
+    }
+    kick(&state);
+    arrived
+        .recv_timeout(SETTLE)
+        .expect("the second pass has listed");
+    let cancelled = the_job(&state);
+    state.fingerprints.cancel(&cancelled);
+    release
+        .send(())
+        .expect("the coordinator waits for the word");
+    assert!(state.fingerprints.settle(SETTLE), "the pass ends");
+    assert!(state.matches.settle(SETTLE), "the match pass is idle");
+
+    assert_eq!(
+        finished.ended(),
+        Some(JobEnded::Finished),
+        "the fixture: the first pass ran to its end"
+    );
+    let first = first.expect("a finished pass starts a match pass");
+    assert_eq!(
+        first.ended(),
+        Some(JobEnded::Finished),
+        "which ran to its end"
+    );
+    assert_eq!(first_looked_up, read, "and looked up both volumes");
+    assert_eq!(
+        cancelled.ended(),
+        Some(JobEnded::Cancelled(Step::Fingerprinting)),
+        "the fixture: the second pass was cancelled"
+    );
+    assert_eq!(
+        state.matches.job().map(|job| job.id),
+        Some(first.id),
+        "a cancelled pass starts no match pass"
+    );
+    assert_eq!(looked_up(&library), HashSet::new(), "nothing is looked up");
+}
+
+/// Spec §2, "When", at startup: with nothing due a fingerprint, the pass
+/// started at startup lists nothing and goes idle, and the match pass it starts
+/// looks up the two volumes an earlier pass read and no match pass looked up.
+#[test]
+fn startup_resumes_matching_after_fingerprinting() {
+    let (fixture, library, root) = scanned("pass-startup-matching", &VOLUMES[..2]);
+    kicked(&state_of(Arc::clone(&library), &fixture, polling()));
+    let due = fingerprints::due(&library.conn(), fingerprint::VERSION, None).expect("lists");
+    assert!(due.is_empty(), "the fixture: nothing is due a fingerprint");
+    assert_eq!(
+        looked_up(&library),
+        HashSet::new(),
+        "the fixture: nothing is looked up"
+    );
+    let state = chained(Arc::clone(&library), &fixture, polling());
+
+    at_startup(&state);
+    assert!(state.fingerprints.settle(SETTLE), "the pass ends");
+    assert!(state.matches.settle(SETTLE), "the match pass ends");
+
+    assert!(
+        state.fingerprints.job().is_none(),
+        "the fixture: the pass had nothing to read"
+    );
+    assert_eq!(
+        looked_up(&library),
+        digests_of(&library, &root, &VOLUMES[..2]),
+        "both volumes are looked up"
     );
 }

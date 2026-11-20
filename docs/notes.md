@@ -31115,3 +31115,213 @@ solid RAR5's archive order is not its reading order, that walk and a generated
 download's both read each page by name (`pages::rar_for_each_page`), and each
 read decodes every entry before its page, so their cost grows with the square
 of the page count.
+
+## Content matching PR 3: volume joins (2026-11-19)
+
+The spec is
+`docs/superpowers/specs/2026-11-19-content-matching-volume-joins-design.md`
+and the plan
+`docs/superpowers/plans/2026-11-19-content-matching-volume-joins.md`.
+PR 3 joins the editions of a volume whose pages match at or above O340's
+frozen bar of 0.87 automatically, and an admin can Split a join and Undo the
+Split. It narrows O338 and O340 and opens O392 to O407 and O414.
+
+**The server's scorer gives every O340 pair its score.** The `#[ignore]`d
+test `the_server_scorer_gives_every_o340_pair_its_score` reads the 157
+members of the volume test from the local test library through the server's
+own fingerprint (decode, describe, encode and decode again, the blob the pass
+reads), slots each right to left as O340 read every member, and scores every
+pair keyed by path, as O340 keyed them, through `volume_match::score`. All
+12,246 rows of O340's `scores.tsv` came back equal in every cell
+(`equal: 12246 of 12246`), in 403.08 s of a release build's test time. The
+control, `LONG_RUN` set to 3 in the server's copy, left 10,588 of 12,246
+equal and failed the test. The server keys a pair by digest, not path, so a
+pair of equal slot counts can be scored the other way round: of 298 such
+pairs, the digests put the other side first for 167, and V differs for 10.
+None of the 10 reaches the floor of 0.6 either way, so none crosses the bar:
+the largest by path is 0.598039 (Yu Yu Hakusho v14 against v15), the largest
+by digest 0.557604 (Hunter × Hunter, the official colour edition, v29
+against v31). The ten rows and their digests are in the evidence's
+`summary.txt`, under `.superpowers/sdd/content-volume-joins-evidence/`.
+
+**On real material, 432 of 446 predictions held.** A release build of the
+branch before the final review and its fixes ran a new store over a copy of
+part of the test library (445 members) after a prediction of every file's
+outcome was written. The fingerprint pass stored 444 `whole` rows and 1
+`partial` (Monster v02, whose cbz holds a zip the reader does not read), so
+363 files were looked up, against 364 predicted. The match pass stored 223
+pairs, 179 of them at the bar, and its derive joined 58 files by content.
+
+| | predicted | observed |
+| --- | --- | --- |
+| join by content (files) | 62 | 58 |
+| host (files) | 56 | 52 |
+| together by name | 170 | 170 |
+| follow | 3 | 3 |
+| apart | 154 | 162 |
+| no work (a chapter directory) | 1 | 1 |
+
+Every difference is a wrong prediction, and all fourteen sit in the two
+series the prediction rated low confidence. Raw Kaguya-sama v02 and v03
+joined the English full-colour volumes, not the black-and-white ones,
+scoring higher against colour (v02 0.977376 against 0.950450, v03 0.995238
+against 0.980952), which is the design's "two possible hosts" rule (§4). Raw
+Kaguya-sama v01, a folder of two-page spreads, scored 0.706422 against the
+English v01, under the bar. Kobayashi-san Chi no Meidoragon v03, v05 and
+v11 stayed apart from their raws: all six files were looked up and read
+whole, and no pair naming any of them reached the floor among each lookup's
+three leaders. The store does not say whether a partner was offered and
+scored under 0.6 or not offered at all; O392 records the case. The by-hand
+checks passed: ⇄ landed where the stored runs say, a raw volume's reading
+position survived its join, a Split and the rescan after it, Undo brought
+the position back, and the match pass's line and Cancel worked, on a
+second pass over 77 files added to the copy, 54 of them due, which Cancel
+stopped after four lookups: 367 in all. A restart then looked up only the
+50 left due, and left those 367 lookups as they were.
+
+**The server's memory across the match pass, on about 450 volumes.** That
+build used the system allocator, before jemalloc (#276) was merged in. The
+resident set's peak (`VmHWM`) was reset when the match job first showed in the
+scan feed, with `VmRSS` then 97,044 kB. The pass looked up 363 files in under
+four seconds. `VmHWM` read 155,096 kB at 18:13:16 UTC, a second after the job
+had gone, and 155,108 kB from 18:13:30, and `VmRSS` 30 s after the pass ended
+was 155,108 kB. The pass holds the slots of every file taking part (the
+design's §2, "Cost"), so this reading does not speak for a library of
+thousands of volumes.
+
+**A defect in the branch's own derive that the drawn stores found.**
+`drawn_stores_keep_every_rule_of_a_join`, the generator Split's fix rounds
+added, was run against the derive as it stood when the derive tasks first
+merged, before Split had a route, and failed its first rule (every file on
+exactly one work) on two seeds of 2,000. A work whose group's files went to
+two works was written by no group, and `superseded` folds a work into one
+target only, so the old work kept copies of files that stood on other works.
+On seed 131 Aoi's work held Chiyo's `ko` as a guest; once a pair was split,
+Aoi's own editions joined Bara and Chiyo's `ko` went home, and Aoi's old
+work stood with copies of both. The leave-behind rules of Split's fix rounds
+made the shape common: it was most of the 129 seeds of 2,000 that failed
+that rule before the fix. `move_left_behind` now
+moves each edition of such a work that is bound elsewhere
+(`fold::move_edition`) before `superseded` folds the rest into the hub's
+target; with that step removed the generator failed the rule on 91 seeds
+of 2,000.
+
+**The drawn stores, at 2,000.** The generator draws 160 seeds and the four
+that once caught a defect by default, a CI test's budget, and
+`TAIYAKU_JOIN_CASES` names another count; a value that is not a count
+panics. Run with 2,000 on 2026-11-20, it drew 2,000 stores and passed in
+33.52 s on eight threads.
+
+**A volume arriving where a work was placed by hand.** A row at a series'
+address that another group's files hash to is that group's, since the import
+finds it by their content (`derive::held_work`, `Placed::claims`), so where
+derive put such a row there, a volume arriving at the address takes a work of
+its own. A work an admin moved there by hand from another series
+(`series_id_hand`, with or without `volume_hand`) was the address's
+instead: the arriving volume was written onto it, the file the work held then
+stood on two works, and the reader's place stayed with the stale copy. `main`
+did this before this branch (the fix wave's review reproduced it there, on a
+raw an admin moved into the English series), and the branch reached it by a
+new route: a raw volume that had followed its directory, whose work an admin
+then gave a hand volume or series. Now the arriving volume takes a work of its
+own there too. A work placed from another series keeps its file and the
+reader's place, beside the new work at the same series and volume
+(`a_volume_appearing_where_a_work_was_placed_from_another_series_takes_a_work_of_its_own`,
+`a_volume_appearing_where_a_work_was_placed_with_its_volume_takes_a_work_of_its_own`).
+A follower given a hand volume goes back to its own series at that volume, as
+one given only a hand title already did, and one given a hand series stays
+beside the arriving volume on a work of its own
+(`a_follower_with_a_hand_volume_goes_back_when_the_volume_it_filled_arrives`,
+`a_follower_with_a_hand_title_goes_back_when_the_volume_it_filled_arrives`,
+`a_follower_with_a_hand_series_stays_beside_the_volume_it_filled_when_that_arrives`).
+In each, every file is on one work, the reader's place stays with its file,
+and the next derive commits nothing. A hand row stays the address's where the
+claiming group stands in that series, or where the row holds a file of the
+arriving group, so a work placed for files yet to arrive still takes them
+(`a_work_placed_at_an_address_takes_the_volume_that_appears_there`).
+
+**What the plan settled that the design does not, and why.**
+
+- **The scorer is a copy.** `taiyaku-serve::volume_match` copies O340's
+  scorer, and its Hamming distance and informative-slot rule, rather than
+  calling `match_experiment`, because editing the CLI's module would change
+  the code the bar was frozen with, which `volume_test::run`'s
+  `no_code_since_the_freeze` refuses. CLI tests hold the copies equal on
+  fixtures, `the_server_bar_is_the_frozen_bar` holds `matches::BAR` to
+  `bar.json`, and the reproduction above holds the server's scorer to every
+  O340 row.
+- **Only a literal `set_series` holds a file.** The rule table has no
+  `set_volume` or `set_title`, so a rule's series is the only name it can
+  state outright; a rule that captures from a path, seeded or written by
+  hand, reads names, which content exists to overrule. No column records a
+  rule's origin and nothing detects a seed, so editing a seed or importing
+  rules again changes nothing about what holds a file.
+- **The mark is `edition.joined_by`.** The pair that brought an edition in
+  is stored on the edition because it is both the Series panel's mark and
+  how a later derive finds an edition a Split or an unjoin leaves on the
+  host. A mark stands only where its pair's other file is on the same work.
+- **A whole-work join reuses `superseded` and `fold::absorb`.** The host's
+  new edition holds the guest's digests, so `fold::edition_map` maps it and
+  absorb carries reader state as for any fold. `fold::move_edition` is new
+  for what absorb refuses: a work that keeps another edition, a Split, an
+  unjoin.
+- **An alignment's figures come from its runs.** A match row holds
+  whole-page runs from `sha_a`'s pages to `sha_b`'s, the two page counts and
+  the solver's floor. Derive turns them host to guest, fills the gaps and
+  computes the verdict, slots, paired count and average run from them, so an
+  alignment row agrees with its own runs.
+- **An alignment's direction.** From the pair's edition that is the work's
+  hub, else the higher kind (official, fan, raw), else the smaller key: a
+  pair names already put in one work has no host and guest to go by.
+- **Split splits every pair tying the file to its work.** In a triangle of
+  official, fan and raw volumes pairwise at the bar, splitting one pair
+  would leave another joining the file again, and Split would seem to do
+  nothing. The route names the edition it splits, because where the fan and
+  raw pair is the highest both files carry it as `joined_by`, and the pair
+  alone cannot say which file leaves. Undo takes back the whole Split, every
+  pair it set apart, with one derive (the owner's ruling of 2026-11-19, which
+  replaced the plan's one pair: one Undo per pair grows unwieldy as more
+  editions match together); each pair records the Split that set it apart.
+- **A split pair keeps its files apart** (not always: O405). A group that
+  would merge into a component holding a file one of its files is split from
+  leaves that file's edition behind, as an edition whose key the component
+  already holds stays behind. A Split no later derive reverses is the design's
+  anti-goal, and a split pair treated only as a missing edge let a file's name
+  group pull it back. Files left behind form components of their own, divided
+  by the edges already applied among them and by names, with a host by the
+  usual rule, and later edges treat them as any component: frozen, they would
+  lose an unsplit pair at every derive. A file that a join leaves no longer
+  linked to the host by applied edges is left behind too, since a missed join
+  is the safer way to fail than a join to a file kept apart.
+- **The pass's derive waits as a scan's does.** It takes the job lock and
+  the derive lease first, because a derive beside another's, or beside a
+  rules save, would write works from a store the other is rewriting. A
+  Cancel during it is honoured once it ends.
+- **The chain.** The fingerprint pass starts the match pass as it goes idle,
+  and not when its own job was cancelled, so a Cancel there stops both.
+
+**The first fingerprint pass hashed the copy twice.** On the run above,
+the start-up scan's derive hashed all 445 files, and the fingerprint pass,
+which had listed them before it, hashed them all again and stored nothing
+from it before listing them afresh. It is on `main` too; O396 records it.
+
+**A sweep that tested nothing read as clean.** One run of the sweep of the
+fix for a volume arriving where a work was placed by hand, on 2026-11-19 with
+no sccache server running after a reboot, built nothing. These are five of
+its log's lines, in order:
+
+```text
+FAILED   Unmutated baseline in 0s build
+sccache: error: path must be shorter than SUN_LEN
+ERROR cargo build failed in an unmutated tree, so no mutants were tested
+mutants-baseline: 0 survivor(s) this run; docs/mutants-baseline.md holds 38 accepted and 90 untriaged
+mutants-baseline: no survivor outside the baseline
+```
+
+`scripts/mutants.sh` reads `cargo mutants`' exit status only where
+`missed.txt` is absent ("cargo mutants failed before it could report"), and
+its "Absent is not empty" check stops a run only on that same absence. This
+run left a `missed.txt` with nothing in it, so the script handed
+`mutants-baseline.mjs` an empty survivor list. That script prints its last
+line above just before it exits 0, and as the last command of `mutants.sh`
+its status is the sweep's. O414 records it.

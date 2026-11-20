@@ -23,6 +23,9 @@ pub enum Step {
     /// The fingerprint pass's one step, which no scan reaches: reading each
     /// file due; counts files.
     Fingerprinting,
+    /// The match pass's one step, which no scan reaches: looking up each file
+    /// due; counts files.
+    Matching,
 }
 
 impl Step {
@@ -37,6 +40,7 @@ impl Step {
             Self::Writing => "writing",
             Self::Finishing => "finishing",
             Self::Fingerprinting => "fingerprinting",
+            Self::Matching => "matching",
         }
     }
 }

@@ -12,6 +12,7 @@ fn each_step_is_sent_by_its_own_word() {
         Step::Writing,
         Step::Finishing,
         Step::Fingerprinting,
+        Step::Matching,
     ]
     .into_iter()
     .map(Step::as_str)
@@ -25,7 +26,8 @@ fn each_step_is_sent_by_its_own_word() {
             "hashing",
             "writing",
             "finishing",
-            "fingerprinting"
+            "fingerprinting",
+            "matching"
         ]
     );
 }

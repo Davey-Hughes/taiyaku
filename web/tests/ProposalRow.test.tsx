@@ -630,8 +630,8 @@ describe('ProposalRow', () => {
     // inverted to "Already wired up" it would contradict the disabled
     // control beside it.
     expect(measured?.querySelector('.not-yet')?.textContent).toBe(
-      'Not wired up yet: comparing pages comes with matching editions by ' +
-        'content, which is not built yet.',
+      'Not wired up yet: matching editions by content does not show its ' +
+        'scores here.',
     )
   })
 

@@ -15,6 +15,7 @@ use super::{Log, git, material, refuse_unusable, stamp};
 mod bar;
 mod control;
 mod members;
+mod reproduce;
 mod run;
 mod tests;
 mod unread;

@@ -1,4 +1,6 @@
-//! The `/api/library/proposals/*` handlers. Spec C3 §7.
+//! The `/api/library/proposals/*` handlers (spec C3 §7), and content
+//! matching's Split and Undo on `/api/library/matches/{id}/split` (spec
+//! 2026-11-19-content-matching-volume-joins §5).
 //!
 //! Thin by design, like `library_api`: parse, call
 //! [`taiyaku_library::proposals`], serialise. Every decision about what an
@@ -50,6 +52,16 @@
 //! them here would be a store-side sentence the client had to parse back
 //! apart, which is what `proposals::Reason`'s own doc comment refuses to make
 //! anyone do.
+//!
+//! # Split and Undo
+//!
+//! Each writes every pair of one Split and derives the whole store in one
+//! transaction, so the answer is the library the next page load shows: a Split
+//! that waited for the next scan would look like it did nothing. A derive
+//! beside another would write works from a store the other is rewriting, so
+//! each tries the job lock and the derive lease once and answers **409** while
+//! either is held, as `config_api::save_rules` does. A pair, work or edition
+//! the request names that the store does not hold that way is **404**.
 
 use std::sync::Arc;
 
@@ -59,7 +71,9 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use taiyaku_library::derive::{self, DeriveReport};
 use taiyaku_library::proposals::{self, Filter, Offer, ProposedRule};
+use taiyaku_library::{lease, matches};
 
 use crate::{ServeState, auth::Principal};
 
@@ -79,7 +93,8 @@ const DEFAULT_COUNTED_STATE: &str = "open";
 /// `Response` already built cannot be asked which of them it was.
 #[derive(Debug)]
 enum NoAnswer {
-    /// **`id` names no proposal — 404, on every route here that takes one.**
+    /// **`id` names no proposal — 404, on every proposal route that takes
+    /// one.**
     ///
     /// See [`present`] for how the condition is told apart from a read that
     /// failed, and `an_unknown_id_is_a_404_on_every_route_that_takes_one` for
@@ -100,18 +115,24 @@ enum NoAnswer {
     /// every error with what it was doing — `listing proposals: …` — so a
     /// second phrase of this module's would say it twice.
     Failed(String),
-    /// The caller's own text: a body this module could not read as a rule at
-    /// all, or a rule the engine could not evaluate.
+    /// The caller's own text: a body this module could not read as a rule or
+    /// a Split, or a rule the engine could not evaluate.
     ///
-    /// **Both halves are decided before any store call**, which is what makes
-    /// that sentence true. [`taiyaku_library::proposals::resolves`] folds a
-    /// rule it cannot evaluate together with a read that failed underneath it
-    /// into one `Err(String)`, and mapping that `Err` here would answer 400 for
-    /// a broken database — see this module's own doc comment. The rule half is
-    /// asked by [`taiyaku_library::proposals::evaluable`], which takes no
-    /// connection, so the only things that reach this variant are
-    /// [`rule_from_json`] and that call.
+    /// **All are decided before any store call**, which is what makes that
+    /// sentence true. [`taiyaku_library::proposals::resolves`] folds a rule it
+    /// cannot evaluate together with a read that failed underneath it into one
+    /// `Err(String)`, and mapping that `Err` here would answer 400 for a broken
+    /// database — see this module's own doc comment. The rule half is asked by
+    /// [`taiyaku_library::proposals::evaluable`], which takes no connection, so
+    /// only it, [`rule_from_json`] and [`split_from_json`] reach this variant.
     Unusable(String),
+    /// A pair, or the work and edition a Split names, that the store does not
+    /// hold as the request names it — 404. The sentence says which.
+    Absent(String),
+    /// The job lock or the derive lease is held, so a Split or an Undo would
+    /// derive beside another job — 409, in
+    /// [`crate::library_job::waits_for_the_job`]'s words.
+    Busy(String),
 }
 
 impl IntoResponse for NoAnswer {
@@ -123,6 +144,8 @@ impl IntoResponse for NoAnswer {
             Self::Refused(why) => (StatusCode::CONFLICT, why).into_response(),
             Self::Failed(why) => (StatusCode::INTERNAL_SERVER_ERROR, why).into_response(),
             Self::Unusable(why) => (StatusCode::BAD_REQUEST, why).into_response(),
+            Self::Absent(why) => (StatusCode::NOT_FOUND, why).into_response(),
+            Self::Busy(why) => (StatusCode::CONFLICT, why).into_response(),
         }
     }
 }
@@ -606,6 +629,190 @@ pub(crate) async fn reopen(
         Ok(Err(no_answer)) => no_answer.into_response(),
         Err(why) => panicked("reopening a proposal", &why),
     }
+}
+
+/// `POST /api/library/matches/{id}/split` — keep a file joined by content
+/// apart from the work pair `id` joined it to, and derive.
+///
+/// The body names the file, `{"work": <slug>, "edition": <key>}`: an edition
+/// of one file that pair `id` names and joined, the pair its mark shows, as
+/// both the pair's files sit in the work it joined. 200 `{"split": [ids],
+/// "derive": <report>}`, `ids` being each pair [`matches::splits_for`] sets
+/// apart.
+pub(crate) async fn split_match(
+    State(state): State<Arc<ServeState>>,
+    Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
+    AxPath(id): AxPath<i64>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
+        return refusal;
+    }
+    let (work, edition) = match split_from_json(&body) {
+        Ok(named) => named,
+        Err(why) => return NoAnswer::Unusable(why).into_response(),
+    };
+    let by = principal.user_id;
+
+    // `list`'s reasoning about the async worker, and a whole derive besides.
+    let split = tokio::task::spawn_blocking(move || {
+        deriving(&state, "split again", |conn| {
+            matched(conn, id)?;
+            let file = joined_file(conn, &work, &edition, id)?;
+            let ids = match file {
+                Some(file) => matches::splits_for(conn, id, &file).map_err(NoAnswer::Failed)?,
+                None => None,
+            }
+            .ok_or_else(|| {
+                NoAnswer::Absent(format!(
+                    "match {id} did not join edition {edition} of work {work} by its one file"
+                ))
+            })?;
+            matches::set_state(conn, &ids, matches::State::Split, Some(by))
+                .map_err(NoAnswer::Failed)?;
+            Ok(ids)
+        })
+    })
+    .await;
+
+    match split {
+        Ok(Ok((ids, report))) => Json(serde_json::json!({
+            "split": ids,
+            "derive": crate::config_api::derive_report_json(&report),
+        }))
+        .into_response(),
+        Ok(Err(no_answer)) => no_answer.into_response(),
+        Err(why) => panicked("splitting a match", &why),
+    }
+}
+
+/// `DELETE /api/library/matches/{id}/split` — undo the Split that set pair
+/// `id` apart, and derive: its pairs join again where they still apply.
+///
+/// Restores every pair that Split set apart, with one derive
+/// ([`matches::split_together`]); a pair not split is restored alone, which
+/// changes nothing. 200 `{"derive": <report>}`.
+pub(crate) async fn undo_split(
+    State(state): State<Arc<ServeState>>,
+    Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
+    AxPath(id): AxPath<i64>,
+) -> Response {
+    if let Some(refusal) = crate::session::administering_or_forbidden(&principal, &extensions) {
+        return refusal;
+    }
+    // `split_match`'s reasoning.
+    let undone = tokio::task::spawn_blocking(move || {
+        deriving(&state, "undo again", |conn| {
+            matched(conn, id)?;
+            let together = matches::split_together(conn, id).map_err(NoAnswer::Failed)?;
+            matches::set_state(conn, &together, matches::State::Scored, None)
+                .map_err(NoAnswer::Failed)?;
+            Ok(())
+        })
+    })
+    .await;
+
+    match undone {
+        Ok(Ok(((), report))) => Json(serde_json::json!({
+            "derive": crate::config_api::derive_report_json(&report),
+        }))
+        .into_response(),
+        Ok(Err(no_answer)) => no_answer.into_response(),
+        Err(why) => panicked("undoing a split", &why),
+    }
+}
+
+/// A Split body's work slug and edition key.
+fn split_from_json(body: &serde_json::Value) -> Result<(String, String), String> {
+    let named = |field: &str| {
+        body.get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                format!(
+                    "a Split names the work by its slug and the edition by its key: \
+                     `{field}` is missing or not a string"
+                )
+            })
+    };
+    Ok((named("work")?, named("edition")?))
+}
+
+/// `Ok` where pair `id` is stored.
+fn matched(conn: &rusqlite::Connection, id: i64) -> Result<(), NoAnswer> {
+    let stored: bool = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM content_match WHERE id = ?1)",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(|e| NoAnswer::Failed(format!("reading match {id}: {e}")))?;
+    if stored {
+        Ok(())
+    } else {
+        Err(NoAnswer::Absent(format!("there is no match {id}")))
+    }
+}
+
+/// The digest of the one file of edition `key` of work `slug`, where pair `id`
+/// joined that edition; `None` where the work holds no such edition, another
+/// pair or none joined it, or it holds more files than one. A Split answers the
+/// mark the panel shows, which is the edition's `joined_by`, and a pair names
+/// one file.
+fn joined_file(
+    conn: &rusqlite::Connection,
+    slug: &str,
+    key: &str,
+    id: i64,
+) -> Result<Option<String>, NoAnswer> {
+    conn.query_row(
+        "SELECT min(m.sha256), count(*)
+           FROM work w
+           JOIN edition e ON e.work_id = w.id
+           JOIN member m ON m.edition_id = e.id
+          WHERE w.slug = ?1 AND e.key = ?2 AND e.joined_by = ?3",
+        rusqlite::params![slug, key, id],
+        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)),
+    )
+    .map(|(file, files)| file.filter(|_| files == 1))
+    .map_err(|e| NoAnswer::Failed(format!("reading edition {key} of work {slug}: {e}")))
+}
+
+/// `write`, then a derive of the whole store, in one transaction under the
+/// job lock and the derive lease, each tried once (this module's own doc
+/// says why); `again` is what the refusal tells the caller to do.
+fn deriving<T>(
+    state: &ServeState,
+    again: &str,
+    write: impl FnOnce(&rusqlite::Connection) -> Result<T, NoAnswer>,
+) -> Result<(T, DeriveReport), NoAnswer> {
+    let busy = || NoAnswer::Busy(crate::library_job::waits_for_the_job(again));
+    let _job = match state.library_job.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::WouldBlock) => return Err(busy()),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+    };
+    let working = state.library.working().map_err(NoAnswer::Failed)?;
+    let Some(lease) = state
+        .library
+        .derive_lease(lease::Wait::No)
+        .map_err(NoAnswer::Failed)?
+    else {
+        return Err(busy());
+    };
+    lease.holding(|| {
+        let tx = working
+            .unchecked_transaction()
+            .map_err(|e| NoAnswer::Failed(format!("starting the transaction: {e}")))?;
+        let written = write(&tx)?;
+        let report =
+            derive::derive_with(&tx, derive::Documents::Reconcile).map_err(NoAnswer::Failed)?;
+        tx.commit()
+            .map_err(|e| NoAnswer::Failed(format!("committing the derive: {e}")))?;
+        Ok((written, report))
+    })
 }
 
 #[cfg(test)]

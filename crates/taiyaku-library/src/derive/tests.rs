@@ -1416,7 +1416,10 @@ fn wal_commits_during<T>(
 /// The write transactions `conn` commits while `pass` runs, counted by the
 /// commit hook, so one whose statements changed nothing counts too: it still
 /// held the write lock a save waits for (O272).
-fn commits_during<T>(conn: &mut Connection, pass: impl FnOnce(&Connection) -> T) -> (usize, T) {
+pub(super) fn commits_during<T>(
+    conn: &mut Connection,
+    pass: impl FnOnce(&Connection) -> T,
+) -> (usize, T) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -3734,6 +3737,72 @@ fn a_volume_whose_files_change_stays_the_same_work_and_keeps_its_progress() {
         })
         .expect("progress survived");
     assert_eq!(slot, 7);
+}
+
+/// `Series - v01` renamed `Series - v02`, a reader's position on it, while a
+/// new `Series - v01` takes its old number. The work at volume 1 is the
+/// renamed files' by content, so it moves to volume 2 with them and the
+/// position, and the new volume 1 takes a work of its own; each file is on
+/// one work, and the next derive commits nothing.
+#[test]
+fn a_volume_renumbered_by_its_name_keeps_its_work_from_the_volume_taking_its_number() {
+    let dir = crate::tests::tempdir("derive-renumbered");
+    let series = dir.path().join("Series");
+    write_pages(&series.join("Series - v01"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let mut conn = library.conn();
+    let root = scanned_root(&conn, dir.path(), None);
+    derive::derive(&conn).expect("derives");
+    let renamed = work_under(&conn, &root).0;
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'raw', 2)",
+        [renamed],
+    )
+    .expect("a position");
+    std::fs::rename(series.join("Series - v01"), series.join("Series - v02"))
+        .expect("renames volume 1 to volume 2");
+    write_pages(&series.join("Series - v01"), 2);
+    // A directory's mtime has a second's resolution, and `scan::due` reads
+    // an unchanged one as unchanged bytes.
+    std::fs::File::open(series.join("Series - v01"))
+        .expect("opens the new volume 1")
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(10)),
+        )
+        .expect("stamps it as changed");
+    scan::scan_root(&conn, &root).expect("rescans");
+
+    derive::derive(&conn).expect("re-derives");
+
+    let arrived = holders_of(&conn, "Series - v01");
+    assert_eq!(
+        (holders_of(&conn, "Series - v02"), arrived.len()),
+        (vec![renamed], 1),
+        "each file is on one work, the renamed one on the work it had"
+    );
+    assert_ne!(
+        arrived[0], renamed,
+        "the new volume 1 is on a work of its own"
+    );
+    let volume = |work: i64| {
+        scalar(
+            &conn,
+            &format!("SELECT CAST(volume AS INTEGER) FROM work WHERE id = {work}"),
+        )
+    };
+    assert_eq!(
+        (volume(renamed), volume(arrived[0])),
+        (2, 1),
+        "the renamed files' work is volume 2"
+    );
+    assert_eq!(
+        scalar(&conn, "SELECT work_id FROM progress WHERE slot = 2"),
+        renamed,
+        "the position stays with the renamed files"
+    );
+    let (commits, _) = commits_during(&mut conn, |conn| derive::derive(conn).expect("derives"));
+    assert_eq!(commits, 0, "the next derive commits nothing");
 }
 
 #[test]
@@ -6062,6 +6131,7 @@ fn write_roots_survives_a_root_deleted_after_its_own_group_was_built() {
         series: "Series".to_string(),
         volume: Some(1.0),
         editions: std::collections::BTreeMap::new(),
+        hub_hint: None,
     };
     group.editions.insert(
         edition_key,
@@ -6083,6 +6153,8 @@ fn write_roots_survives_a_root_deleted_after_its_own_group_was_built() {
             language: None,
             copies: Vec::new(),
             frozen: false,
+            held_by_rule: false,
+            joined_by: None,
         }],
     );
     let mut report = derive::DeriveReport::default();
@@ -6164,6 +6236,7 @@ fn write_roots_propagates_a_non_foreign_key_error_rather_than_treating_it_as_a_v
         series: "Series".to_string(),
         volume: Some(1.0),
         editions: std::collections::BTreeMap::new(),
+        hub_hint: None,
     };
     group.editions.insert(
         edition_key,
@@ -6185,6 +6258,8 @@ fn write_roots_propagates_a_non_foreign_key_error_rather_than_treating_it_as_a_v
             language: None,
             copies: Vec::new(),
             frozen: false,
+            held_by_rule: false,
+            joined_by: None,
         }],
     );
     let mut report = derive::DeriveReport::default();
@@ -7319,6 +7394,93 @@ fn a_volume_less_work_placed_at_a_path_takes_the_files_that_appear_there() {
         "Zeta Oneshot",
         "Some Oneshot",
         None,
+    );
+}
+
+/// `Zeta/Zeta - v01` in one library and `Series/Series - v02` in another,
+/// each directory its own edition. A person places Zeta's work in `Series`
+/// by hand (`hand`), a position on it, and then `Series/Series - v01`
+/// appears. The placed work names none of the files that appeared, and
+/// Zeta's own files find it by content, so those files take a work of their
+/// own beside it: each file is on one work in `Series` at volume 1, the
+/// position stays with Zeta's, and the next derive commits nothing.
+fn a_work_placed_from_another_series_leaves_the_files_that_appear_at_its_address(
+    label: &str,
+    hand: &str,
+) {
+    let held_dir = crate::tests::tempdir(&format!("{label}-held"));
+    write_pages(&held_dir.path().join("Zeta").join("Zeta - v01"), 3);
+    let own = crate::tests::tempdir(&format!("{label}-own"));
+    write_pages(&own.path().join("Series").join("Series - v02"), 2);
+    let library = Library::open_in_memory().expect("open");
+    let mut conn = library.conn();
+    let h = scanned_root(&conn, held_dir.path(), Some("ja"));
+    let o = scanned_root(&conn, own.path(), Some("en"));
+    derive::derive(&conn).expect("derives");
+    let placed = work_under(&conn, &h).0;
+    let series = work_under(&conn, &o).2;
+    conn.execute(
+        "INSERT INTO progress (user_id, work_id, edition, slot) VALUES (1, ?1, 'ja', 2)",
+        [placed],
+    )
+    .expect("a position");
+    conn.execute(
+        &format!("UPDATE work SET series_id = ?1, {hand} WHERE id = ?2"),
+        [series, placed],
+    )
+    .expect("a person places Zeta's work in Series");
+    derive::derive(&conn).expect("derives the placed work");
+    write_pages(&own.path().join("Series").join("Series - v01"), 2);
+    scan::scan_root(&conn, &o).expect("rescans");
+
+    derive::derive(&conn).expect("re-derives");
+
+    let appeared = holders_of(&conn, "Series - v01");
+    assert_eq!(
+        (holders_of(&conn, "Zeta - v01"), appeared.len()),
+        (vec![placed], 1),
+        "each file is on one work, Zeta's on the placed work"
+    );
+    assert_ne!(
+        appeared[0], placed,
+        "the files that appeared are on a work of their own"
+    );
+    let stands = |work: i64| -> i64 {
+        scalar(
+            &conn,
+            &format!("SELECT series_id = {series} AND volume = 1 FROM work WHERE id = {work}"),
+        )
+    };
+    assert_eq!(
+        (stands(placed), stands(appeared[0])),
+        (1, 1),
+        "both stand in Series at volume 1"
+    );
+    assert_eq!(
+        scalar(&conn, "SELECT work_id FROM progress WHERE slot = 2"),
+        placed,
+        "the position stays with Zeta's files"
+    );
+    let (commits, _) = commits_during(&mut conn, |conn| derive::derive(conn).expect("derives"));
+    assert_eq!(commits, 0, "the next derive commits nothing");
+}
+
+/// Where the placed work names the files that appear, it takes them
+/// (`a_work_placed_at_an_address_takes_the_volume_that_appears_there`).
+#[test]
+fn a_volume_appearing_where_a_work_was_placed_from_another_series_takes_a_work_of_its_own() {
+    a_work_placed_from_another_series_leaves_the_files_that_appear_at_its_address(
+        "derive-placed-series",
+        "series_id_hand = ?1",
+    );
+}
+
+/// The same with the placed work's volume set by hand too.
+#[test]
+fn a_volume_appearing_where_a_work_was_placed_with_its_volume_takes_a_work_of_its_own() {
+    a_work_placed_from_another_series_leaves_the_files_that_appear_at_its_address(
+        "derive-placed-series-volume",
+        "series_id_hand = ?1, volume_hand = 1",
     );
 }
 
@@ -8836,6 +8998,7 @@ fn copied_group(conn: &Connection, primary: (i64, &str), copy: (i64, &str)) -> s
         series: "Foo".to_string(),
         volume: Some(1.0),
         editions: BTreeMap::new(),
+        hub_hint: None,
     };
     let (sha256, pages): (String, u32) = conn
         .query_row("SELECT sha256, pages FROM member", [], |r| {
@@ -8861,6 +9024,8 @@ fn copied_group(conn: &Connection, primary: (i64, &str), copy: (i64, &str)) -> s
                 frozen: false,
             }],
             frozen: false,
+            held_by_rule: false,
+            joined_by: None,
         }],
     );
     group
@@ -11254,7 +11419,10 @@ fn a_reading_migration_27_held_is_dropped_by_the_derive_that_writes_its_work() {
     let a2 = digest_at(&conn, r.id, C002);
     write_archive(&tree.path().join(C002), 4);
     conn.execute_batch(&format!(
-        "DROP TABLE fingerprint;
+        "ALTER TABLE edition DROP COLUMN joined_by;
+         DROP TABLE match_lookup;
+         DROP TABLE content_match;
+         DROP TABLE fingerprint;
          ALTER TABLE library DROP COLUMN match_by_content;
          ALTER TABLE scan_entry DROP COLUMN held_sha256;
          ALTER TABLE scan_entry DROP COLUMN held_format;

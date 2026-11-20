@@ -264,6 +264,12 @@ pub struct Resolved {
     pub chapter: Option<f64>,
     pub title: Option<String>,
     pub provenance: BTreeMap<Field, i64>,
+    /// Whether a rule's named capture decided `series` rather than a rule's
+    /// literal `set_series`: provenance names the rule either way, and a
+    /// `Regex` rule may carry both, the capture winning. Only a literal holds
+    /// a file where its name puts it against a match by content (spec §4 of
+    /// `2026-11-19-content-matching-volume-joins-design.md`).
+    pub series_was_captured: bool,
 }
 
 impl Resolved {
@@ -277,6 +283,7 @@ impl Resolved {
             chapter: None,
             title: None,
             provenance: BTreeMap::new(),
+            series_was_captured: false,
         }
     }
 
@@ -444,10 +451,11 @@ impl Engine {
     pub fn resolve(&self, root: &Root, rel_path: &str) -> Resolved {
         let mut resolved = Resolved::empty();
         // O89: the last series a directory-reading rule set, with that rule's
-        // id, and whether the rule now holding the series set it by capture.
-        // `Resolved::set` overwrites, so a value a later rule discards has to
-        // be kept here to be restorable after the loop.
-        let mut from_directory: Option<(String, i64)> = None;
+        // id and whether it captured the series, and whether the rule now
+        // holding the series set it by capture. `Resolved::set` overwrites, so
+        // a value a later rule discards has to be kept here to be restorable
+        // after the loop.
+        let mut from_directory: Option<(String, i64, bool)> = None;
         let mut series_was_captured = false;
         for compiled in &self.rules {
             let rule = &compiled.rule;
@@ -509,7 +517,10 @@ impl Engine {
             if resolved.provenance.get(&Field::Series) == Some(&rule.id) {
                 series_was_captured = series_from_capture;
                 if matches!(rule.match_on, MatchOn::Path | MatchOn::Parent) {
-                    from_directory = resolved.series.clone().map(|series| (series, rule.id));
+                    from_directory = resolved
+                        .series
+                        .clone()
+                        .map(|series| (series, rule.id, series_from_capture));
                 }
             }
         }
@@ -524,13 +535,15 @@ impl Engine {
         // that read the directory: that rule decided the value, and this step
         // is not a rule.
         if series_was_captured
-            && let (Some(current), Some((directory, directory_rule))) =
+            && let (Some(current), Some((directory, directory_rule, directory_captured))) =
                 (resolved.series.as_deref(), from_directory.as_ref())
             && qualifies(directory, current)
         {
             let (directory, directory_rule) = (directory.clone(), *directory_rule);
+            series_was_captured = *directory_captured;
             resolved.set(Field::Series, directory_rule, directory);
         }
+        resolved.series_was_captured = series_was_captured;
         apply_root_fallback(root, &mut resolved);
         resolved
     }

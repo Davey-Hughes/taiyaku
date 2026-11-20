@@ -1875,3 +1875,20 @@ fn a_pass_job_starts_fingerprinting_with_no_file_done() {
         }
     );
 }
+
+/// A match pass's job opens matching with nothing done, as a fingerprint
+/// pass's opens fingerprinting, never waiting.
+#[test]
+fn a_match_job_starts_matching_with_no_file_done() {
+    let job = super::Job::matching(std::time::Instant::now());
+    assert_eq!(job.kind, super::JobKind::Match);
+    assert_eq!(
+        job.snapshot(),
+        super::Snapshot {
+            step: Step::Matching,
+            done: Some(0),
+            of: None,
+            dir: None,
+        }
+    );
+}

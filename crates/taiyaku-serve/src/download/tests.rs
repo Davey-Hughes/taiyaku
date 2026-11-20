@@ -415,6 +415,7 @@ async fn a_single_member_edition_is_served_byte_for_byte() {
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router =
@@ -722,6 +723,7 @@ async fn a_directory_member_is_refused_not_streamed() {
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router =
@@ -1001,6 +1003,7 @@ async fn download_lying_edition(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router =
@@ -1227,6 +1230,7 @@ async fn a_single_member_directory_edition_is_generated_not_passed_through() {
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router =
@@ -2165,6 +2169,7 @@ mod rar_members {
             jobs_ended: std::sync::Arc::default(),
             library_job: std::sync::Arc::default(),
             fingerprints: std::sync::Arc::default(),
+            matches: std::sync::Arc::default(),
             dirs: Vec::new(),
         });
         let router =

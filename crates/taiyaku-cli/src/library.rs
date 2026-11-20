@@ -875,10 +875,10 @@ fn unreadable_causes(unreadable: &taiyaku_library::derive::Unreadable) -> String
 /// other. `unattached_chapter_dirs` and `unreadable` print only when
 /// non-zero (`unreadable` with its causes — see [`unreadable_causes`]), and
 /// so do `suppressed`, `rekeyed`, `kept_editions`, `merged`,
-/// `unrecognised_kinds`, `emptied_works` (with the counts of what its fold
-/// wrote, what stopped existing, what it dropped as a copy the target already
-/// held identically, and what it discarded), `unfolded_works`,
-/// `unreadable_hand`, `marked_missing`, `found_again`,
+/// `unrecognised_kinds`, `emptied_works` and `moved_editions` (with what their
+/// folds and moves wrote, what stopped existing, what they dropped as a copy
+/// the target held identically, and what they discarded), `unfolded_works`
+/// and `unmoved_editions`, `unreadable_hand`, `marked_missing`, `found_again`,
 /// `series_holding_no_work`, `repaired_documents`, `unwritable_documents`,
 /// `orphan_documents`, `declined_documents` and `stale_documents`:
 /// [`taiyaku_library::derive::DeriveReport`]'s own doc comment is explicit
@@ -901,7 +901,7 @@ fn unreadable_causes(unreadable: &taiyaku_library::derive::Unreadable) -> String
 /// clauses about labelling. Grouping is the only thing a single line of prose
 /// has instead of columns.
 ///
-/// **`unfolded_works` prints its reasons beside its count**, the way
+/// **`unfolded_works` and `unmoved_editions` print their reasons**, the way
 /// [`scan_summary`] prints `unreadable_dirs`: the refusal messages name the
 /// work and the edition keys, and a bare "1 superseded work left standing"
 /// over a library of thousands tells a person something happened and gives
@@ -958,14 +958,26 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
             report.unrecognised_kinds
         );
     }
-    if report.emptied_works > 0 {
+    // A move carries what a fold does, into the same counts, so they print
+    // after whichever of the two happened.
+    let carried = match (report.emptied_works, report.moved_editions) {
+        (0, 0) => None,
+        (folded, 0) => Some(format!("{folded} work(s) folded away")),
+        (0, moved) => Some(format!(
+            "{moved} edition(s) moved to the work holding their file"
+        )),
+        (folded, moved) => Some(format!(
+            "{folded} work(s) folded away and {moved} edition(s) moved to the work holding \
+             their file"
+        )),
+    };
+    if let Some(carried) = carried {
         let _ = write!(
             line,
-            ", {} work(s) folded away ({} position(s) written, {} position(s) lost, \
+            ", {carried} ({} position(s) written, {} position(s) lost, \
              {} note(s) and {} truth page(s) moved, {} identical note(s) dropped, \
              {} truth page(s) already held, {} row(s) discarded, \
              {} alignment(s) not carried)",
-            report.emptied_works,
             report.moved_positions,
             report.lost_positions,
             report.moved_notes,
@@ -976,11 +988,18 @@ fn derive_summary(report: &taiyaku_library::derive::DeriveReport, raised: usize)
             report.uncarried_alignments,
         );
     }
-    if report.unfolded_works > 0 {
+    let standing = match (report.unfolded_works, report.unmoved_editions) {
+        (0, 0) => None,
+        (works, 0) => Some(format!("{works} superseded work(s)")),
+        (0, editions) => Some(format!("{editions} edition(s) whose move was refused")),
+        (works, editions) => Some(format!(
+            "{works} superseded work(s) and {editions} edition(s) whose move was refused"
+        )),
+    };
+    if let Some(standing) = standing {
         let _ = write!(
             line,
-            ", {} superseded work(s) left standing: {}",
-            report.unfolded_works,
+            ", {standing} left standing: {}",
             report.unfoldable.join("; ")
         );
     }

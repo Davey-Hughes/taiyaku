@@ -31,6 +31,7 @@ use axum::{
 };
 use std::sync::Arc;
 use taiyaku_library::browse::{self, CoverTarget};
+use taiyaku_library::matches;
 
 /// A `browse` failure, or a read that panicked, which is a 500 rather than
 /// anything a caller can fix.
@@ -295,11 +296,17 @@ pub(crate) async fn one_series(
 }
 
 /// `GET /api/library/works/{slug}` — one work.
+///
+/// An administrator in a browser ([`crate::session::administers`]) is also
+/// sent the content matches of spec §6 ([`with_marks`]); any other caller
+/// neither key, since Split and Undo are an administrator's.
 pub(crate) async fn work(
     State(state): State<Arc<ServeState>>,
     Extension(principal): Extension<Principal>,
+    extensions: axum::http::Extensions,
     AxPath(slug): AxPath<String>,
 ) -> Response {
+    let administers = crate::session::administers(&extensions);
     on_the_library(state, "the work", move |conn| {
         match browse::work(conn, &principal.access, principal.user_id, &slug) {
             Ok(Some(detail)) => {
@@ -317,6 +324,12 @@ pub(crate) async fn work(
                         }))
                         .collect::<Vec<_>>()
                 );
+                if administers {
+                    match matches::marks(conn, detail.card.id) {
+                        Ok(marks) => with_marks(&mut body, &marks),
+                        Err(why) => return failed("the work's content matches", &why),
+                    }
+                }
                 Json(body).into_response()
             }
             Ok(None) => (StatusCode::NOT_FOUND, format!("no work `{slug}`")).into_response(),
@@ -324,6 +337,36 @@ pub(crate) async fn work(
         }
     })
     .await
+}
+
+/// `marks` written into `body`, a work as [`work_json`] renders it: on each
+/// edition `matched`, `{id, score}` or `null`, and on the work `kept_apart`,
+/// each `{id, split, series, volume, slug}`.
+fn with_marks(body: &mut serde_json::Value, marks: &matches::Marks) {
+    if let Some(editions) = body["editions"].as_array_mut() {
+        for edition in editions {
+            let matched = edition["key"]
+                .as_str()
+                .and_then(|key| marks.matched.get(key));
+            edition["matched"] = matched.map_or(
+                serde_json::Value::Null,
+                |&(id, score)| serde_json::json!({"id": id, "score": score}),
+            );
+        }
+    }
+    body["kept_apart"] = serde_json::json!(
+        marks
+            .kept_apart
+            .iter()
+            .map(|kept| serde_json::json!({
+                "id": kept.id,
+                "split": kept.split,
+                "series": kept.series,
+                "volume": kept.volume,
+                "slug": kept.slug,
+            }))
+            .collect::<Vec<_>>()
+    );
 }
 
 /// The `?q=` a search carries, and its optional `?library=`.

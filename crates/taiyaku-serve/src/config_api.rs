@@ -1520,6 +1520,11 @@ pub(crate) fn derive_report_json(report: &derive::DeriveReport) -> serde_json::V
         root_removed_mid_derive,
         marked_missing,
         found_again,
+        joined,
+        followed,
+        unwritten_alignments,
+        moved_editions,
+        unmoved_editions,
     } = report;
     serde_json::json!({
         "series": series,
@@ -1555,6 +1560,11 @@ pub(crate) fn derive_report_json(report: &derive::DeriveReport) -> serde_json::V
         "root_removed_mid_derive": root_removed_mid_derive,
         "marked_missing": marked_missing,
         "found_again": found_again,
+        "joined": joined,
+        "followed": followed,
+        "unwritten_alignments": unwritten_alignments,
+        "moved_editions": moved_editions,
+        "unmoved_editions": unmoved_editions,
     })
 }
 

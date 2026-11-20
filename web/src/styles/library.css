@@ -765,6 +765,65 @@
   opacity: 0.9;
 }
 
+/* How a volume's editions relate, an administrator's section of the panel:
+ * the alignment detail, then the content match marks, 8 px apart as the
+ * Title form's parts are. A hairline rule above and below sets the section
+ * off, the one a settings group draws between its rows, each the panel's gap
+ * from what it parts; none below where nothing follows in the panel. */
+.edition-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+
+.edition-group:not(:last-child) {
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+
+/* A volume's content match marks, an administrator's only: drawn as the
+ * alignment detail is, each mark a line with its button at its end. */
+.match-marks {
+  color: var(--text);
+  font-size: var(--text-meta);
+}
+
+.match-marks ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.match-marks .pair {
+  font-weight: 600;
+}
+
+/* A mark's line with its button at its end, spaced as the pass line and its
+ * Cancel are (`settings.css`'s `.pass-line`). */
+.match-marks .mark {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.match-marks .split-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.match-marks .split-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 /* Why Write ComicInfo.xml's confirm is held (O51), muted as the directory
  * page's why-line is: it goes as the hold ends, and is no fault to act on. */
 .stamp-waits {
@@ -776,6 +835,7 @@
  * error, may hold no space to break at (O274). On the parts' own roots,
  * not the tile, whose title has its own rule. */
 .alignment-panel,
+.match-marks,
 .metadata-editor,
 .stamp-comicinfo {
   overflow-wrap: anywhere;
@@ -785,7 +845,7 @@
  * margin in the panel, which would add to the gap the panel sets between
  * its parts. `:where()` holds the first arm at the specificity of the `p`
  * rules after it. */
-.tile-panel :where(.alignment-panel) p,
+.tile-panel :where(.alignment-panel, .match-marks) p,
 .tile-panel .stamp-comicinfo > h3 {
   margin: 0;
 }

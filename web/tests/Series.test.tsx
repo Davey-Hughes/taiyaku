@@ -25,6 +25,7 @@ import {
 } from '../src/browseModule'
 import { GateContext } from '../src/gate'
 import * as library from '../src/library'
+import * as matches from '../src/matches'
 import * as metadata from '../src/metadata'
 import {
   gridRead,
@@ -35,8 +36,10 @@ import {
 import { entryOf, type Read, readSet } from '../src/reads'
 import { Series } from '../src/Series'
 import * as tilePanel from '../src/tilePanel'
-import { deferred, flush } from './support/async'
+import { deferred, flush, land } from './support/async'
+import { emptyDerive } from './support/derive'
 import { FirstCommit } from './support/firstCommit'
+import { holdOf } from './support/held'
 import { press, submit, typeInto } from './support/input'
 import { mount, rerender } from './support/mount'
 import {
@@ -55,6 +58,11 @@ vi.mock('../src/library', async (importOriginal) => ({
   grid: vi.fn(),
   home: vi.fn(),
   search: vi.fn(),
+}))
+
+vi.mock('../src/matches', () => ({
+  splitMatch: vi.fn(),
+  undoSplit: vi.fn(),
 }))
 
 vi.mock('../src/metadata', async (importOriginal) => ({
@@ -1868,12 +1876,12 @@ describe('Series, the alignment panel', () => {
   })
 
   /**
-   * `derive` never writes an alignment itself, so `alignments.length === 0`
-   * is the state of *every* volume in a freshly scanned library, however many
-   * editions it holds. The panel must tell "truly nothing to pair" (fewer
-   * than two editions) apart from "has something to pair and simply has not
-   * been aligned yet" (two or more). This test is the first case, where the
-   * existing sentence is correct.
+   * `derive` aligns only editions whose files the match pass scored at or
+   * above its bar, so `alignments.length === 0` is the state of many volumes
+   * however many editions they hold. The panel must tell "truly nothing to
+   * pair" (fewer than two editions) apart from "has something to pair and
+   * simply has not been aligned yet" (two or more). This test is the first
+   * case, where the existing sentence is correct.
    */
   it('says a single-edition volume has nothing to pair, when that is true', async () => {
     vi.mocked(library.oneSeries).mockResolvedValue({
@@ -1911,7 +1919,494 @@ describe('Series, the alignment panel', () => {
     await open(host)
     const text = host.querySelector('.alignment-panel')?.textContent
     expect(text).not.toContain('one edition')
-    expect(text).toContain('taiyaku align')
+    expect(text).toContain('No alignment recorded.')
+  })
+})
+
+/**
+ * **A volume's content matches, an administrator's (spec §6).** The marks
+ * come from the volume's own read, which carries them; the series' cards
+ * carry none, so these fixtures give the card editions no mark.
+ */
+describe('Series, a volume’s content matches', () => {
+  /** Go-Toubun v01's editions as its series card has them. */
+  const cardEditions = () => [
+    edition(),
+    edition({ key: 'en', label: 'English' }),
+    edition({ key: 'en-fan', label: 'English (fan)' }),
+  ]
+  /** The same as the volume's own read has them: two joined by content. */
+  const markedEditions = () => [
+    edition({ matched: null }),
+    edition({ key: 'en', label: 'English', matched: { id: 5, score: 0.93 } }),
+    edition({
+      key: 'en-fan',
+      label: 'English (fan)',
+      matched: { id: 7, score: 0.88 },
+    }),
+  ]
+  const third = work({
+    id: 2,
+    slug: 'gotoubun-v03',
+    title: 'Go-Toubun no Hanayome v03',
+    volume: 3,
+  })
+  /** Volume 1's own read, its editions marked unless `over` says otherwise. */
+  const detail = (
+    over: Partial<library.WorkDetail> = {},
+  ): library.WorkDetail => ({
+    ...work({ editions: markedEditions() }),
+    alignments: [],
+    kept_apart: [],
+    ...over,
+  })
+  /**
+   * A pair a Split keeps apart, its other file in volume `volume`, set apart
+   * by Split `split`, else by a Split of its own.
+   */
+  const keptFrom = (
+    id: number,
+    series: string,
+    volume: number | null,
+    split = id,
+    slug = `other-${id}`,
+  ): library.KeptApart => ({ id, split, series, volume, slug })
+  const REFUSED =
+    'a scan or another library job is running; split again once it has finished'
+
+  /** Volume 1 answers `first` while `answer` is unset, volume 3 its own. */
+  let answer: (() => Promise<library.WorkDetail>) | undefined
+  const serveDetail = (first: library.WorkDetail) => {
+    answer = undefined
+    vi.mocked(library.work).mockImplementation((slug) =>
+      slug === 'gotoubun-v01'
+        ? (answer?.() ?? Promise.resolve(first))
+        : Promise.resolve({ ...third, alignments: [] }),
+    )
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(library.oneSeries).mockResolvedValue({
+      series: card(),
+      works: [work({ editions: cardEditions() }), third],
+    })
+    serveDetail(detail())
+  })
+
+  const admin = () => settleWith({ panel: 'button' }, who({ admin: true }))
+
+  /** Each line of the marks, its words and its button's, in the order drawn. */
+  const marksIn = (tile: Element) =>
+    [...tile.querySelectorAll('.match-marks li > .mark')].map((mark) => [
+      mark.querySelector(':scope > p')?.textContent,
+      mark.querySelector(':scope > button')?.textContent,
+    ])
+  /** The `index`th button named `name` in the marks. */
+  const buttonIn = (tile: Element, name: string, index = 0) => {
+    const found = tile.querySelectorAll<HTMLButtonElement>(
+      `.match-marks button[name="${name}"]`,
+    )[index]
+    if (found === undefined) throw new Error(`no ${name} button ${index}`)
+    return found
+  }
+  const asking = (tile: Element) =>
+    tile.querySelector('.match-marks [role="group"]')
+  const splitHolds = (tile: Element) =>
+    [...tile.querySelectorAll('.match-marks button[name="split"]')].map(holdOf)
+
+  it('shows an administrator one mark per edition joined by content, each its own key beside its own score, under the alignment detail and over the pairs kept apart', async () => {
+    serveDetail(
+      detail({ kept_apart: [keptFrom(9, 'Go-Toubun no Hanayome', 5)] }),
+    )
+    const tile = await openTile(await admin())
+    expect(marksIn(tile)).toEqual([
+      ['en matched by content · 0.93', 'Split…'],
+      ['en-fan matched by content · 0.88', 'Split…'],
+      ['kept apart from Go-Toubun no Hanayome v05', 'Undo'],
+    ])
+    expect(
+      [...tile.querySelectorAll('.match-marks .pair')].map(
+        (k) => k.textContent,
+      ),
+    ).toEqual(['en', 'en-fan'])
+    expect(
+      [
+        ...(tile.querySelector('.tile-panel > .edition-group')?.children ?? []),
+      ].map((part) => part.className),
+    ).toEqual(['alignment-panel', 'match-marks'])
+  })
+
+  it('shows a reader no mark, no Undo and no group, though the volume’s read carried them', async () => {
+    serveDetail(
+      detail({ kept_apart: [keptFrom(9, 'Go-Toubun no Hanayome', 5)] }),
+    )
+    const tile = await openTile(
+      await settleWith({ panel: 'button' }, who({ admin: false })),
+    )
+    // Read and drawn, so nothing below is missing for want of a read.
+    expect(vi.mocked(library.work).mock.calls).toEqual([['gotoubun-v01']])
+    expect(tile.querySelector('.alignment-panel')?.textContent).toBe(
+      'No alignment recorded.',
+    )
+    expect(tile.querySelector('.match-marks')).toBeNull()
+    expect(tile.querySelector('.edition-group')).toBeNull()
+    expect(tile.querySelector('.tile-panel button[name="split"]')).toBeNull()
+    expect(
+      tile.querySelector('.tile-panel button[name="undo-split"]'),
+    ).toBeNull()
+  })
+
+  it('names the volume on the other side of each pair a Split keeps apart, beside its Undo', async () => {
+    serveDetail(
+      detail({
+        editions: [edition()],
+        kept_apart: [
+          keptFrom(9, 'Go-Toubun no Hanayome', 5),
+          keptFrom(10, 'Go-Toubun no Hanayome', 5.5),
+          keptFrom(11, 'The Quintessential Quintuplets', null),
+        ],
+      }),
+    )
+    const tile = await openTile(await admin())
+    expect(marksIn(tile)).toEqual([
+      ['kept apart from Go-Toubun no Hanayome v05', 'Undo'],
+      ['kept apart from Go-Toubun no Hanayome v05.5', 'Undo'],
+      ['kept apart from The Quintessential Quintuplets', 'Undo'],
+    ])
+  })
+
+  it('draws one line per Split, naming each volume it keeps this one apart from once, each line with one Undo naming the Split’s first pair', async () => {
+    serveDetail(
+      detail({
+        editions: [edition()],
+        kept_apart: [
+          keptFrom(9, 'Go-Toubun no Hanayome', 5, 9, 'gotoubun-v05'),
+          keptFrom(10, 'Go-Toubun no Hanayome (fan)', 5, 9, 'fan-v05'),
+          keptFrom(11, 'Go-Toubun no Hanayome', 5, 9, 'gotoubun-v05'),
+          keptFrom(12, 'The Quintessential Quintuplets', null),
+          keptFrom(13, 'Go-Toubun no Hanayome', 6, 15, 'gotoubun-v06'),
+          keptFrom(14, 'Go-Toubun no Hanayome (fan)', 6, 15, 'fan-v06'),
+          keptFrom(15, 'Go-Toubun no Hanayome (raw)', 6, 15, 'raw-v06'),
+        ],
+      }),
+    )
+    const tile = await openTile(await admin())
+    expect(marksIn(tile)).toEqual([
+      [
+        'kept apart from Go-Toubun no Hanayome v05 and Go-Toubun no Hanayome (fan) v05',
+        'Undo',
+      ],
+      ['kept apart from The Quintessential Quintuplets', 'Undo'],
+      [
+        'kept apart from Go-Toubun no Hanayome v06, Go-Toubun no Hanayome (fan) v06 and Go-Toubun no Hanayome (raw) v06',
+        'Undo',
+      ],
+    ])
+    expect(
+      [
+        ...tile.querySelectorAll<HTMLButtonElement>(
+          '.match-marks button[name="undo-split"]',
+        ),
+      ].map((b) => b.dataset.pair),
+    ).toEqual(['9', '12', '13'])
+  })
+
+  it('undoes a whole Split with one press of its one Undo, then gives focus to the Split… of an edition rejoined by any of its pairs', async () => {
+    serveDetail(
+      detail({
+        editions: [edition()],
+        kept_apart: [
+          keptFrom(9, 'Go-Toubun no Hanayome', 5, 10, 'gotoubun-v05'),
+          keptFrom(10, 'Go-Toubun no Hanayome (fan)', 5, 10, 'fan-v05'),
+        ],
+      }),
+    )
+    vi.mocked(matches.undoSplit).mockResolvedValue({ derive: emptyDerive })
+    const tile = await openTile(await admin())
+    expect(marksIn(tile)).toHaveLength(1)
+    // The Split's other pair, not the one Undo names, rejoined en.
+    serveDetail(
+      detail({
+        editions: [
+          edition(),
+          edition({
+            key: 'en',
+            label: 'English',
+            matched: { id: 10, score: 0.9 },
+          }),
+        ],
+      }),
+    )
+    await press(buttonIn(tile, 'undo-split'))
+    await land()
+    expect(vi.mocked(matches.undoSplit).mock.calls).toEqual([[9]])
+    expect(marksIn(tile)).toEqual([['en matched by content · 0.90', 'Split…']])
+    expect(document.activeElement).toBe(buttonIn(tile, 'split'))
+  })
+
+  it('asks before a Split, under the mark pressed, holding that Split… meanwhile, and its Cancel sends nothing and gives focus back to that Split…', async () => {
+    const tile = await openTile(await admin())
+    await press(buttonIn(tile, 'split', 1))
+    const question = asking(tile)
+    expect(question?.getAttribute('aria-label')).toBe(
+      'Split en-fan off this volume',
+    )
+    expect(question?.closest('li')?.querySelector('.pair')?.textContent).toBe(
+      'en-fan',
+    )
+    expect(question?.querySelector('p')?.textContent).toBe(
+      'Split en-fan off this volume? Its file goes back to where its own name puts it, unless it matches another volume.',
+    )
+    expect(
+      [...(question?.querySelectorAll('button') ?? [])].map((b) => [
+        b.textContent,
+        holdOf(b),
+      ]),
+    ).toEqual([
+      ['Split en-fan', 'free'],
+      ['Cancel', 'free'],
+    ])
+    expect(splitHolds(tile)).toEqual(['free', 'held'])
+
+    await press(buttonIn(tile, 'cancel-split'))
+    expect(asking(tile)).toBeNull()
+    expect(splitHolds(tile)).toEqual(['free', 'free'])
+    expect(vi.mocked(matches.splitMatch)).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(buttonIn(tile, 'split', 1))
+  })
+
+  it('splits the edition pressed, saying Splitting… and holding every button while it is out, then reads the series and the volume again and gives focus to the Undo of the pair split', async () => {
+    const split = deferred<matches.SplitAnswer>()
+    vi.mocked(matches.splitMatch).mockReturnValue(split.promise)
+    const tile = await openTile(await admin())
+    await press(buttonIn(tile, 'split', 1))
+    await press(buttonIn(tile, 'confirm-split'))
+    expect(vi.mocked(matches.splitMatch).mock.calls).toEqual([
+      [7, 'gotoubun-v01', 'en-fan'],
+    ])
+    expect(buttonIn(tile, 'confirm-split').textContent).toBe('Splitting…')
+    expect(
+      [...tile.querySelectorAll('.match-marks button')].map((b) => [
+        b.getAttribute('name'),
+        holdOf(b),
+      ]),
+    ).toEqual([
+      ['split', 'held'],
+      ['split', 'held'],
+      ['confirm-split', 'held'],
+      ['cancel-split', 'held'],
+    ])
+
+    // The derive took en-fan off the volume, and keeps the two apart.
+    vi.mocked(library.oneSeries).mockClear()
+    vi.mocked(library.work).mockClear()
+    serveDetail(
+      detail({
+        editions: markedEditions().slice(0, 2),
+        kept_apart: [keptFrom(7, 'Go-Toubun no Hanayome (fan)', 1)],
+      }),
+    )
+    split.resolve({ split: [7], derive: emptyDerive })
+    await land()
+    expect(vi.mocked(library.oneSeries).mock.calls).toEqual([[7, undefined]])
+    expect(vi.mocked(library.work).mock.calls).toEqual([['gotoubun-v01']])
+    expect(marksIn(tile)).toEqual([
+      ['en matched by content · 0.93', 'Split…'],
+      ['kept apart from Go-Toubun no Hanayome (fan) v01', 'Undo'],
+    ])
+    expect(asking(tile)).toBeNull()
+    expect(splitHolds(tile)).toEqual(['free'])
+    expect(document.activeElement).toBe(buttonIn(tile, 'undo-split'))
+  })
+
+  it('takes the question away once the Split answers, focus to the panel, and holds the marks until the volume’s read after it lands', async () => {
+    vi.mocked(matches.splitMatch).mockResolvedValue({
+      split: [7],
+      derive: emptyDerive,
+    })
+    const tile = await openTile(await admin())
+    const again = deferred<library.WorkDetail>()
+    await press(buttonIn(tile, 'split', 1))
+    answer = () => again.promise
+    const confirm = buttonIn(tile, 'confirm-split')
+    act(() => confirm.focus())
+    await press(confirm)
+    await land()
+    // The Split has answered, so its question has gone, and the button that
+    // had focus with it; the read is out, and the panel holds focus.
+    expect(asking(tile)).toBeNull()
+    expect(document.activeElement).toBe(tile.querySelector('.tile-panel'))
+    expect(marksIn(tile)).toEqual([
+      ['en matched by content · 0.93', 'Split…'],
+      ['en-fan matched by content · 0.88', 'Split…'],
+    ])
+    expect(splitHolds(tile)).toEqual(['held', 'held'])
+
+    // No Undo of the pair is drawn, so the panel keeps focus.
+    again.resolve(detail({ editions: markedEditions().slice(0, 2) }))
+    await land()
+    expect(marksIn(tile)).toEqual([['en matched by content · 0.93', 'Split…']])
+    expect(splitHolds(tile)).toEqual(['free'])
+    expect(document.activeElement).toBe(tile.querySelector('.tile-panel'))
+  })
+
+  it('leaves focus where the person moved it while the read after a Split was out', async () => {
+    vi.mocked(matches.splitMatch).mockResolvedValue({
+      split: [7],
+      derive: emptyDerive,
+    })
+    const tile = await openTile(await admin())
+    const again = deferred<library.WorkDetail>()
+    await press(buttonIn(tile, 'split', 1))
+    answer = () => again.promise
+    await press(buttonIn(tile, 'confirm-split'))
+    await land()
+    // Back to the volume's i, in its tile and out of its panel.
+    const i = tile.querySelector('.panel-open') as HTMLButtonElement
+    act(() => i.focus())
+    again.resolve(
+      detail({
+        editions: markedEditions().slice(0, 2),
+        kept_apart: [keptFrom(7, 'Go-Toubun no Hanayome (fan)', 1)],
+      }),
+    )
+    await land()
+    expect(marksIn(tile)).toHaveLength(2)
+    expect(document.activeElement).toBe(i)
+  })
+
+  it('reads another volume’s detail again as its panel next opens, after a Split in this one', async () => {
+    vi.mocked(matches.splitMatch).mockResolvedValue({
+      split: [7],
+      derive: emptyDerive,
+    })
+    const host = await admin()
+    await openTile(host, 1)
+    const tile = await openTile(host, 0)
+    expect(vi.mocked(library.work).mock.calls).toEqual([
+      ['gotoubun-v03'],
+      ['gotoubun-v01'],
+    ])
+    await press(buttonIn(tile, 'split', 1))
+    await press(buttonIn(tile, 'confirm-split'))
+    await land()
+    await openTile(host, 1)
+    expect(vi.mocked(library.work).mock.calls).toEqual([
+      ['gotoubun-v03'],
+      ['gotoubun-v01'],
+      ['gotoubun-v01'],
+      ['gotoubun-v03'],
+    ])
+  })
+
+  it('undoes a pair kept apart by its own id, saying Undoing… while it is out, then reads the volume again and gives focus to the Split… of the edition that rejoined', async () => {
+    const undo = deferred<matches.UndoAnswer>()
+    vi.mocked(matches.undoSplit).mockReturnValue(undo.promise)
+    serveDetail(
+      detail({
+        editions: [edition()],
+        kept_apart: [
+          keptFrom(9, 'Go-Toubun no Hanayome', 5),
+          keptFrom(10, 'Go-Toubun no Hanayome', 6),
+        ],
+      }),
+    )
+    const tile = await openTile(await admin())
+    await press(buttonIn(tile, 'undo-split', 1))
+    expect(vi.mocked(matches.undoSplit).mock.calls).toEqual([[10]])
+    expect(
+      [...tile.querySelectorAll('.match-marks button')].map((b) => [
+        b.textContent,
+        holdOf(b),
+      ]),
+    ).toEqual([
+      ['Undo', 'held'],
+      ['Undoing…', 'held'],
+    ])
+
+    // The pair joined en to the volume again.
+    vi.mocked(library.work).mockClear()
+    serveDetail(
+      detail({
+        editions: [
+          edition(),
+          edition({
+            key: 'en',
+            label: 'English',
+            matched: { id: 10, score: 0.9 },
+          }),
+        ],
+        kept_apart: [keptFrom(9, 'Go-Toubun no Hanayome', 5)],
+      }),
+    )
+    undo.resolve({ derive: emptyDerive })
+    await land()
+    expect(vi.mocked(library.work).mock.calls).toEqual([['gotoubun-v01']])
+    expect(marksIn(tile)).toEqual([
+      ['en matched by content · 0.90', 'Split…'],
+      ['kept apart from Go-Toubun no Hanayome v05', 'Undo'],
+    ])
+    expect(holdOf(buttonIn(tile, 'undo-split'))).toBe('free')
+    expect(document.activeElement).toBe(buttonIn(tile, 'split'))
+  })
+
+  it('draws a refused Split as the server’s sentence, keeps the question open with its buttons free and sending again, and reads nothing again', async () => {
+    vi.mocked(matches.splitMatch).mockRejectedValue(
+      new Error(
+        `/api/library/matches/7/split: 409 ${JSON.stringify({ error: REFUSED })}`,
+      ),
+    )
+    const tile = await openTile(await admin())
+    await press(buttonIn(tile, 'split', 1))
+    await press(buttonIn(tile, 'confirm-split'))
+    await land()
+    expect(
+      tile.querySelector('.match-marks > [role="alert"]')?.textContent,
+    ).toBe(REFUSED)
+    expect(
+      [...(asking(tile)?.querySelectorAll('button') ?? [])].map((b) => [
+        b.textContent,
+        holdOf(b),
+      ]),
+    ).toEqual([
+      ['Split en-fan', 'free'],
+      ['Cancel', 'free'],
+    ])
+    expect(vi.mocked(library.work).mock.calls).toEqual([['gotoubun-v01']])
+
+    // Pressed again, it sends again, and is refused again.
+    await press(buttonIn(tile, 'confirm-split'))
+    await land()
+    expect(vi.mocked(matches.splitMatch).mock.calls).toEqual([
+      [7, 'gotoubun-v01', 'en-fan'],
+      [7, 'gotoubun-v01', 'en-fan'],
+    ])
+    expect(
+      tile.querySelector('.match-marks > [role="alert"]')?.textContent,
+    ).toBe(REFUSED)
+
+    // Another Split… asked for takes the refusal away.
+    await press(buttonIn(tile, 'split', 0))
+    expect(tile.querySelector('.match-marks [role="alert"]')).toBeNull()
+    expect(asking(tile)?.getAttribute('aria-label')).toBe(
+      'Split en off this volume',
+    )
+  })
+
+  it('says why where the detail is drawn, and draws no mark, when the read after a Split fails', async () => {
+    vi.mocked(matches.splitMatch).mockResolvedValue({
+      split: [7],
+      derive: emptyDerive,
+    })
+    const tile = await openTile(await admin())
+    await press(buttonIn(tile, 'split', 1))
+    answer = () =>
+      Promise.reject(new Error('/api/library/works/gotoubun-v01: 500 boom'))
+    await press(buttonIn(tile, 'confirm-split'))
+    await land()
+    expect(tile.querySelector('.alignment-panel')?.textContent).toContain('500')
+    expect(tile.querySelector('.match-marks')).toBeNull()
   })
 })
 
@@ -3120,5 +3615,51 @@ describe('Series, closing a volume’s panel (O283)', () => {
       second: panelIn(second) !== null,
       calls: calls().length,
     }).toEqual({ first: false, second: true, calls: 1 })
+  })
+  it('gives focus to the page’s main when an Undo pressed on a volume empties it, so its tile and panel leave the grid', async () => {
+    // The volume holds only the file a Split sent back from volume 1. The
+    // Undo joins it to volume 1 again, and the derive empties the volume and
+    // deletes its work: the series read after has no volume 3, and volume
+    // 3's read is refused.
+    let undone = false
+    vi.mocked(library.work).mockImplementation(async (slug) => {
+      if (slug !== 'gotoubun-v03') return { ...work(), alignments: [] }
+      if (undone)
+        throw new Error(
+          '/api/library/works/gotoubun-v03: 404 {"error":"there is no work gotoubun-v03"}',
+        )
+      return {
+        ...third,
+        alignments: [],
+        kept_apart: [
+          {
+            id: 9,
+            split: 9,
+            series: 'Go-Toubun no Hanayome',
+            volume: 1,
+            slug: 'gotoubun-v01',
+          },
+        ],
+      }
+    })
+    vi.mocked(matches.undoSplit).mockImplementation(async () => {
+      undone = true
+      vi.mocked(library.oneSeries).mockResolvedValue({
+        series: card(),
+        works: [work()],
+      })
+      return { derive: emptyDerive }
+    })
+    const host = await page('button')
+    const tile = await openTile(host, 1)
+    const undo = need(
+      tile.querySelector<HTMLButtonElement>('button[name="undo-split"]'),
+      'Undo',
+    )
+    await focusOn(undo)
+    await press(undo)
+    await land()
+    expect(tilesOf(host)).toHaveLength(1)
+    expect(document.activeElement).toBe(host.querySelector('.library > main'))
   })
 })

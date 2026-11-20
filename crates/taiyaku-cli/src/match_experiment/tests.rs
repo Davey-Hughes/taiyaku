@@ -4755,3 +4755,253 @@ fn the_kernel_lines_count_queries_times_stored() {
     );
     assert_eq!(lines.len(), 5, "{text}");
 }
+
+/// One side of an agreement pair: its key and its pages as the pass prints them.
+type Side = (String, Vec<taiyaku_serve::fingerprint::PagePrint>);
+
+fn portrait_print(hash: PageHash) -> taiyaku_serve::fingerprint::PagePrint {
+    taiyaku_serve::fingerprint::PagePrint {
+        width: 1200,
+        height: 1800,
+        hash,
+        halves: None,
+    }
+}
+
+fn landscape_print(
+    hash: PageHash,
+    halves: Option<(PageHash, PageHash)>,
+) -> taiyaku_serve::fingerprint::PagePrint {
+    taiyaku_serve::fingerprint::PagePrint {
+        width: 2400,
+        height: 1700,
+        hash,
+        halves,
+    }
+}
+
+fn portrait_side(key: &str, hashes: &[PageHash]) -> Side {
+    (
+        key.to_owned(),
+        hashes.iter().copied().map(portrait_print).collect(),
+    )
+}
+
+/// `pool[start..start + len]`, each page kept, dropped, replaced or nudged by
+/// `rng`: two such sides over one pool share runs of every length.
+fn drawn(pool: &[PageHash], rng: &mut Rng, start: usize, len: usize) -> Vec<PageHash> {
+    let mut pages = Vec::new();
+    for &page in &pool[start..start + len] {
+        match rng.next() % 10 {
+            0 => {}
+            1 => pages.push(rng.hash()),
+            2 => pages.push(flip(page, &[0, 77, 154, 231])),
+            _ => pages.push(page),
+        }
+    }
+    pages
+}
+
+/// The serve tests' fixtures, 20 pairs drawn from one pool (every fifth cut to
+/// equal lengths and named both ways round), and a side holding spreads against
+/// the pool's pages one a slot.
+fn agreement_pairs() -> Vec<(Side, Side, taiyaku_core::Direction)> {
+    use taiyaku_core::Direction;
+
+    let rtl = Direction::RightToLeft;
+    let mut pairs = Vec::new();
+
+    let h = hashes(7, 9);
+    let jacket = taiyaku_serve::fingerprint::PagePrint {
+        width: 4200,
+        ..landscape_print(h[6], Some((h[7], h[8])))
+    };
+    let mixed = vec![
+        portrait_print(h[0]),
+        landscape_print(h[1], Some((h[2], h[3]))),
+        portrait_print(h[4]),
+        landscape_print(h[5], None),
+        jacket,
+    ];
+    for direction in [rtl, Direction::LeftToRight] {
+        pairs.push((
+            ("mixed".to_owned(), mixed.clone()),
+            portrait_side("read", &[h[0], h[3], h[2], h[4], h[5], h[6]]),
+            direction,
+        ));
+    }
+
+    let shared = hashes(1, 7);
+    let noise = hashes(2, 10);
+    let (three, four) = (&shared[..3], &shared[3..]);
+    let short = [&noise[..1], three, &noise[1..2], four, &noise[2..3]].concat();
+    let long = [&noise[3..5], three, &noise[5..7], four, &noise[7..]].concat();
+    pairs.push((portrait_side("a", &long), portrait_side("b", &short), rtl));
+
+    let (x, y) = (hashes(5, 6), hashes(6, 6));
+    pairs.push((portrait_side("a", &x), portrait_side("b", &y), rtl));
+    pairs.push((portrait_side("b", &x), portrait_side("a", &y), rtl));
+
+    let (x, y) = (hashes(8, 6), hashes(9, 6));
+    pairs.push((portrait_side("a", &x), portrait_side("b", &y), rtl));
+
+    let pool = hashes(40, 90);
+    for k in 0..20u64 {
+        let mut rng = Rng(1000 + k);
+        let span = |rng: &mut Rng| 12 + usize::try_from(rng.next() % 40).expect("under 40");
+        let (x_len, y_len) = (span(&mut rng), span(&mut rng));
+        let start = |rng: &mut Rng, len: usize| {
+            usize::try_from(rng.next() % u64::try_from(pool.len() - len).expect("fits u64"))
+                .expect("fits usize")
+        };
+        let x_start = start(&mut rng, x_len);
+        let y_start =
+            (x_start + usize::try_from(rng.next() % 10).expect("under 10")).min(pool.len() - y_len);
+        let x = drawn(&pool, &mut rng, x_start, x_len);
+        let mut y = drawn(&pool, &mut rng, y_start, y_len);
+        if k % 5 == 0 {
+            y.resize(x.len(), pool[0]);
+        }
+        let (kx, ky) = (format!("{k:02}-x"), format!("{k:02}-y"));
+        pairs.push((portrait_side(&kx, &x), portrait_side(&ky, &y), rtl));
+        if k % 5 == 0 {
+            pairs.push((portrait_side(&ky, &x), portrait_side(&kx, &y), rtl));
+        }
+    }
+
+    let joined: Vec<_> = (0..12)
+        .map(|i| {
+            let (right, left) = (pool[10 + 2 * i], pool[11 + 2 * i]);
+            match i % 4 {
+                1 => landscape_print(flip(right, &[5]), Some((left, right))),
+                _ => portrait_print(right),
+            }
+        })
+        .collect();
+    let pages: Vec<PageHash> = (0..12)
+        .flat_map(|i| match i % 4 {
+            1 => vec![pool[10 + 2 * i], pool[11 + 2 * i]],
+            _ => vec![pool[10 + 2 * i]],
+        })
+        .collect();
+    pairs.push((
+        ("spreads".to_owned(), joined),
+        portrait_side("pages", &pages),
+        rtl,
+    ));
+    pairs
+}
+
+/// The server's scorer is a copy, so the bar frozen on this module's scorer
+/// holds for it only while the two agree: on the slots a file's prints make,
+/// and on every figure a pair's row keeps.
+#[test]
+fn the_server_scorer_agrees_with_the_frozen_one() {
+    use taiyaku_serve::volume_match;
+
+    let pairs = agreement_pairs();
+    let (mut with_long_runs, mut at_long_run, mut equal_swapped, mut with_halves) = (0, 0, 0, 0);
+    for (x, y, direction) in &pairs {
+        let name = format!("{} against {} ({direction:?})", x.0, y.0);
+        let mut frozen = Vec::new();
+        let mut serve = Vec::new();
+        for (key, prints) in [x, y] {
+            let described: Vec<crate::cache::CachedPage> = (prints.iter().copied())
+                .map(crate::cache::CachedPage::from)
+                .collect();
+            let (hashes, wide) = crate::slot_hashes(&described, *direction);
+            let slots = volume_match::slots(prints, *direction);
+            assert_eq!(slots.hashes.len(), hashes.len(), "{name}: {key}");
+            for (i, (got, want)) in slots.hashes.iter().zip(&hashes).enumerate() {
+                assert_eq!(got, want, "{name}: {key} slot {i}");
+            }
+            assert_eq!(
+                slots.table,
+                taiyaku_core::expand(&wide, *direction),
+                "{name}: {key}"
+            );
+            with_halves += usize::from(slots.table.iter().any(|slot| slot.half.is_some()));
+            frozen.push(hashes);
+            serve.push(slots);
+        }
+
+        let scored = volume_match::score((x.0.as_str(), &serve[0]), (y.0.as_str(), &serve[1]));
+        let [first, second] = oriented(
+            (x.0.as_str(), frozen[0].as_slice()),
+            (y.0.as_str(), frozen[1].as_slice()),
+        );
+        let (features, runs) = super::features::aligned(first.1, second.1);
+        assert_eq!(scored.swapped, first.0 == y.0.as_str(), "{name}");
+        assert_eq!(scored.a_slots, features.a_slots, "{name}");
+        assert_eq!(scored.b_slots, features.b_slots, "{name}");
+        assert_eq!(scored.long_paired, features.long_paired, "{name}");
+        assert_eq!(scored.v.to_bits(), features.volume.to_bits(), "{name}");
+        assert_eq!(scored.runs, runs, "{name}");
+        let floor = taiyaku_core::calibrate(first.1, second.1)
+            .filter(taiyaku_core::Calibration::accepted)
+            .map(|cal| cal.floor.to_bits());
+        assert_eq!(scored.floor.map(f32::to_bits), floor, "{name}");
+
+        with_long_runs += usize::from(features.long_paired > 0);
+        at_long_run += runs
+            .iter()
+            .filter(|run| run.b.is_some() && run.a.len() == LONG_RUN)
+            .count();
+        equal_swapped += usize::from(scored.swapped && scored.a_slots == scored.b_slots);
+    }
+    let total = pairs.len();
+    assert!(
+        (total / 2..total).contains(&with_long_runs),
+        "{with_long_runs} of {total} pairs with long runs: both kinds are compared"
+    );
+    assert!(
+        at_long_run > 0,
+        "no run of exactly LONG_RUN, where the filter decides"
+    );
+    assert!(
+        equal_swapped > 0,
+        "no equal-length pair named larger key first"
+    );
+    assert!(with_halves >= 3, "{with_halves} sides with halves");
+}
+
+/// The lookup's rules are copies too: the server's `hamming` against the CLI's,
+/// and its `informative` against `lookup.rs`'s, either side of 8 and 248 bits.
+#[test]
+fn the_server_hamming_and_informative_agree_with_the_frozen_ones() {
+    use taiyaku_serve::volume_match;
+
+    let ones = |n: usize| {
+        let mut words = [0u64; 4];
+        for bit in 0..n {
+            words[bit / 64] |= 1 << (bit % 64);
+        }
+        PageHash(words)
+    };
+    let counts = [0, 1, 7, 8, 9, 64, 128, 247, 248, 249, 255, 256];
+    let mut values: Vec<(String, PageHash)> = (counts.iter())
+        .map(|&n| (format!("{n} low bits"), ones(n)))
+        .collect();
+    values.extend((counts.iter()).map(|&n| {
+        (
+            format!("{n} high bits"),
+            PageHash(ones(256 - n).0.map(|w| !w)),
+        )
+    }));
+    values.extend((hashes(11, 6).into_iter().enumerate()).map(|(i, h)| (format!("random {i}"), h)));
+
+    for (name, value) in &values {
+        assert_eq!(
+            volume_match::informative(*value),
+            super::lookup::informative(*value),
+            "{name}"
+        );
+        for (other, against) in &values {
+            assert_eq!(
+                volume_match::hamming(*value, *against),
+                crate::fingerprint::hamming(*value, *against),
+                "{name} against {other}"
+            );
+        }
+    }
+}

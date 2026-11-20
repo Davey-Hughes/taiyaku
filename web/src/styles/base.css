@@ -288,9 +288,9 @@ body {
 
 /* Where focus only lands, and nothing is pressed: a settings page's title,
    the line saying the page asked for is not there, the line saying an
-   account was removed, a removal's report, and the directory browser's line
-   saying where it is. Each takes focus so that the keyboard starts there
-   and a screen reader reads it, and a ring would mark it as a control. The
+   account was removed, a removal's report, a volume's panel, and the line
+   saying where the directory browser is. Each takes focus so the keyboard
+   starts there and a screen reader reads it; a ring would mark a control. The
    skip link's landing is drawn the same way (`shell.css`). The licence
    page's title is left out: Back to top lands on it as a contents link
    lands on a licence's heading, so it takes the ring that heading takes.
@@ -302,6 +302,7 @@ body {
   .missing,
   .gone-line,
   .removal-report,
+  .tile-panel,
   .dir-browser .where
 ):where(:focus) {
   outline: none;

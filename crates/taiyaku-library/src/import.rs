@@ -99,12 +99,12 @@ enum Scope {
 /// See [`update_work`] and [`replace_editions`] for two of the rules that hold
 /// a scan to that, and `DeriveReport::kept_editions` for what the second costs.
 ///
-/// Derivation owns what the facts and the rules decide: which files are members
-/// of which edition of which work. It has no opinion about what a work is
-/// called, which direction it reads, which pages are credits, which are
-/// spreads, or how two editions correspond — those come from `align`, from
-/// `credits`, or from a person, and a module that walks a filesystem must not
-/// be the thing that deletes them.
+/// Derivation owns what the facts, the rules and the match table decide: which
+/// files are members of which edition of which work, and `by = solver`
+/// alignments for pairs matched by content ([`put_solver_alignment`]). Any
+/// other alignment, a work's name and direction, its credits and its spreads
+/// come from `align`, `credits` or a person, and a module that walks a
+/// filesystem must not be the thing that deletes them.
 ///
 /// This extends a principle the store already had: [`replace_editions`] carries
 /// `chapter_declared` across its own wholesale replace, keyed on `sha256`.
@@ -519,8 +519,8 @@ fn clear_stale_path_claim(conn: &Connection, work_id: i64, path: &Path) -> Resul
 /// different edition than the one `work.hub` names. Nothing reads the two
 /// together: the projection takes its hub from the row, and that edition is
 /// still there, because [`replace_editions`] does not delete what a scan did
-/// not name. It is the same case `DeriveReport::kept_editions` counts, so it is
-/// reported rather than silent.
+/// not name, and is counted in `DeriveReport::kept_editions`; a join moving it
+/// off the row has `derive` give the row the hub the key was computed over.
 ///
 /// **Two statements rather than one `COALESCE` per column**, which is the
 /// shape the settled wording ("`COALESCE`-style") suggests and the schema
@@ -1483,71 +1483,131 @@ pub(crate) fn replace_alignments(
 ) -> Result<(), String> {
     conn.execute("DELETE FROM alignment WHERE work_id = ?1", [work_id])
         .map_err(|e| format!("clearing alignments of work {work_id}: {e}"))?;
-
     for alignment in &doc.alignments {
+        insert_alignment(conn, work_id, alignment)?;
+    }
+    Ok(())
+}
+
+/// Store `alignment`, the solver's for a pair matched by content, under
+/// `work_id`, replacing the `by = solver` rows for its two editions either
+/// way round: true when it wrote.
+///
+/// **Nothing is written where a person answers for the pair**: an alignment
+/// `by = hand` either way round, or a solver's holding a hand-corrected run,
+/// since a correction on a solver's edge leaves it `solver` (`fold.rs`'s
+/// `holds_hand`) and a re-solve must not undo it. Nor where the solver's row
+/// already equals it, so a derive over nothing changed writes nothing.
+///
+/// # Errors
+///
+/// If the work does not project ([`crate::project::sidecar`]) or the store
+/// refuses a write; then nothing is kept.
+pub(crate) fn put_solver_alignment(
+    conn: &Connection,
+    work_id: i64,
+    alignment: &Alignment,
+) -> Result<bool, String> {
+    let naming: Vec<Alignment> = crate::project::sidecar(conn, work_id)?
+        .alignments
+        .into_iter()
+        .filter(|stored| {
+            (stored.from == alignment.from && stored.to == alignment.to)
+                || (stored.from == alignment.to && stored.to == alignment.from)
+        })
+        .collect();
+    let answered = naming.iter().any(|stored| {
+        stored.by == Source::Hand || stored.runs.iter().any(|run| run.by == Some(Source::Hand))
+    });
+    if answered || naming.as_slice() == std::slice::from_ref(alignment) {
+        return Ok(false);
+    }
+    let failed = |e: rusqlite::Error| {
+        format!(
+            "writing the solver's alignment `{}`->`{}` of work {work_id}: {e}",
+            alignment.from, alignment.to
+        )
+    };
+    let tx = crate::Nested::open(conn, "import_solver_alignment").map_err(failed)?;
+    tx.execute(
+        "DELETE FROM alignment
+          WHERE work_id = ?1 AND by = 'solver'
+            AND ((from_key = ?2 AND to_key = ?3) OR (from_key = ?3 AND to_key = ?2))",
+        rusqlite::params![work_id, alignment.from, alignment.to],
+    )
+    .map_err(failed)?;
+    insert_alignment(&tx, work_id, alignment)?;
+    tx.commit().map_err(failed)?;
+    Ok(true)
+}
+
+/// One alignment and its runs under `work_id`: [`replace_alignments`] and
+/// [`put_solver_alignment`] both write through it, so neither's column list
+/// can drift from `project.rs`'s reader. No transaction of its own, as
+/// [`replace_alignments`].
+fn insert_alignment(conn: &Connection, work_id: i64, alignment: &Alignment) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO alignment
+             (work_id, from_key, to_key, by, solver_hash, solver_floor,
+              verdict, slots, paired, avg_run)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            work_id,
+            alignment.from,
+            alignment.to,
+            source_text(alignment.by),
+            alignment.solver.as_ref().map(|s| s.hash.clone()),
+            alignment.solver.as_ref().map(|s| f64::from(s.floor)),
+            alignment.quality.as_ref().map(|q| verdict_text(q.verdict)),
+            alignment.quality.as_ref().map(|q| q.slots),
+            alignment.quality.as_ref().map(|q| q.paired),
+            alignment.quality.as_ref().map(|q| q.avg_run),
+        ],
+    )
+    .map_err(|e| {
+        format!(
+            "inserting alignment `{}`->`{}`: {e}",
+            alignment.from, alignment.to
+        )
+    })?;
+    let alignment_id = conn.last_insert_rowid();
+
+    // `ordinal` is the position in the document, counting from 0.
+    // `project.rs` reads runs back `ORDER BY ordinal`.
+    for (ordinal, run) in alignment.runs.iter().enumerate() {
+        let (b_start_page, b_start_half, b_end_page, b_end_half) = match &run.b {
+            // `None` becomes NULL in `b_start_page`, which is how
+            // `project.rs` tells an unpaired run from a zero-length span.
+            Some(span) => (
+                Some(span.start.page),
+                half_text(span.start.half),
+                Some(span.end.page),
+                half_text(span.end.half),
+            ),
+            None => (None, None, None, None),
+        };
         conn.execute(
-            "INSERT INTO alignment
-                 (work_id, from_key, to_key, by, solver_hash, solver_floor,
-                  verdict, slots, paired, avg_run)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO run
+                 (alignment_id, ordinal, a_start_page, a_start_half, a_end_page, a_end_half,
+                  b_start_page, b_start_half, b_end_page, b_end_half, margin, by, note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             rusqlite::params![
-                work_id,
-                alignment.from,
-                alignment.to,
-                source_text(alignment.by),
-                alignment.solver.as_ref().map(|s| s.hash.clone()),
-                alignment.solver.as_ref().map(|s| f64::from(s.floor)),
-                alignment.quality.as_ref().map(|q| verdict_text(q.verdict)),
-                alignment.quality.as_ref().map(|q| q.slots),
-                alignment.quality.as_ref().map(|q| q.paired),
-                alignment.quality.as_ref().map(|q| q.avg_run),
+                alignment_id,
+                ordinal as i64,
+                run.a.start.page,
+                half_text(run.a.start.half),
+                run.a.end.page,
+                half_text(run.a.end.half),
+                b_start_page,
+                b_start_half,
+                b_end_page,
+                b_end_half,
+                run.margin.map(f64::from),
+                run.by.map(source_text),
+                run.note,
             ],
         )
-        .map_err(|e| {
-            format!(
-                "inserting alignment `{}`->`{}`: {e}",
-                alignment.from, alignment.to
-            )
-        })?;
-        let alignment_id = conn.last_insert_rowid();
-
-        // `ordinal` is the position in the document, counting from 0.
-        // `project.rs` reads runs back `ORDER BY ordinal`.
-        for (ordinal, run) in alignment.runs.iter().enumerate() {
-            let (b_start_page, b_start_half, b_end_page, b_end_half) = match &run.b {
-                // `None` becomes NULL in `b_start_page`, which is how
-                // `project.rs` tells an unpaired run from a zero-length span.
-                Some(span) => (
-                    Some(span.start.page),
-                    half_text(span.start.half),
-                    Some(span.end.page),
-                    half_text(span.end.half),
-                ),
-                None => (None, None, None, None),
-            };
-            conn.execute(
-                "INSERT INTO run
-                     (alignment_id, ordinal, a_start_page, a_start_half, a_end_page, a_end_half,
-                      b_start_page, b_start_half, b_end_page, b_end_half, margin, by, note)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                rusqlite::params![
-                    alignment_id,
-                    ordinal as i64,
-                    run.a.start.page,
-                    half_text(run.a.start.half),
-                    run.a.end.page,
-                    half_text(run.a.end.half),
-                    b_start_page,
-                    b_start_half,
-                    b_end_page,
-                    b_end_half,
-                    run.margin.map(f64::from),
-                    run.by.map(source_text),
-                    run.note,
-                ],
-            )
-            .map_err(|e| format!("inserting a run: {e}"))?;
-        }
+        .map_err(|e| format!("inserting a run: {e}"))?;
     }
     Ok(())
 }

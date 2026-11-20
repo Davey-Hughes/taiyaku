@@ -39,6 +39,7 @@ mod libraries_api;
 pub mod library_api;
 mod library_job;
 mod limit;
+mod match_pass;
 mod metadata;
 /// A work's notes, beside its sidecar.
 ///
@@ -62,6 +63,9 @@ mod stump;
 mod truth;
 mod users_api;
 mod view;
+/// O340's volume scorer, public so the CLI's test can hold it equal to the
+/// copy the bar was frozen with.
+pub mod volume_match;
 mod web;
 mod works;
 
@@ -148,9 +152,10 @@ pub struct ServeState {
     /// nothing from a lock-free map for that shape of access.
     pub scans: Arc<std::sync::Mutex<std::collections::HashMap<i64, ScanProgress>>>,
     /// How many scan jobs have ended in this server, raised as each is marked
-    /// ended: the scan feed's `ended` marker, so a page that polls between two
-    /// readings learns that one ended although it never saw it run. One per
-    /// server, as [`Self::scans`] is, so the count is this server's alone.
+    /// ended, and as each match pass's derive ends: the scan feed's `ended`
+    /// marker, so a page that polls between two readings learns that one ended
+    /// although it never saw it run. One per server, as [`Self::scans`] is, so
+    /// the count is this server's alone.
     pub jobs_ended: Arc<std::sync::atomic::AtomicU64>,
     /// The store's job lock: [`LibraryJob`] names the jobs that take it, a
     /// scan's derive and a save's `preview::apply` among them.
@@ -195,6 +200,11 @@ pub struct ServeState {
     /// Inert unless `serve` builds it live: every other state is a test's,
     /// and a pass started by a scan a test runs would write rows beside it.
     pub fingerprints: Arc<fingerprint_pass::Pass>,
+    /// The match pass ([`match_pass::Pass`]), one at a time across the store,
+    /// started when a fingerprint pass goes idle uncancelled. Inert unless
+    /// `serve` builds it live, as the fingerprint pass is, and for its reason:
+    /// a pass a test's kick started would write match rows beside the test.
+    pub matches: Arc<match_pass::Pass>,
     /// The directories `GET /api/library/dirs` may list beneath:
     /// `--dirs`, or `TAIYAKU_DIRS`. Empty lists nothing.
     pub dirs: Vec<std::path::PathBuf>,
@@ -420,6 +430,10 @@ pub struct ServeOptions {
     /// its store goes; `None` runs one of the server's own.
     #[cfg(test)]
     pub(crate) pass: Option<Arc<fingerprint_pass::Pass>>,
+    /// The match pass to run, which a test hands in as it does `pass`; `None`
+    /// runs one of the server's own.
+    #[cfg(test)]
+    pub(crate) matches: Option<Arc<match_pass::Pass>>,
 }
 
 /// Says, line by line to `say`, why each directory the server was started with
@@ -480,11 +494,17 @@ pub async fn serve(
         dictionaries,
         #[cfg(test)]
         pass,
+        #[cfg(test)]
+        matches,
     } = options;
     #[cfg(test)]
     let fingerprints = pass.unwrap_or_else(|| Arc::new(fingerprint_pass::Pass::live()));
     #[cfg(not(test))]
     let fingerprints = Arc::new(fingerprint_pass::Pass::live());
+    #[cfg(test)]
+    let matches = matches.unwrap_or_else(|| Arc::new(match_pass::Pass::live()));
+    #[cfg(not(test))]
+    let matches = Arc::new(match_pass::Pass::live());
     let addr = addr.as_str();
     // Opened before anything else so a bad `--log-requests` path is a
     // startup failure that can be acted on, rather than an hour of reading
@@ -577,6 +597,7 @@ pub async fn serve(
         jobs_ended: Arc::default(),
         library_job: Arc::default(),
         fingerprints,
+        matches,
         dirs,
     });
 

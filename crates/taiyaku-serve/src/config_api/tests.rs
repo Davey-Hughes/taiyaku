@@ -353,6 +353,7 @@ async fn the_import_route_reports_the_proposals_it_reopens() {
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
 
@@ -1333,6 +1334,7 @@ fn state_with_many_scan_entries(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     (state, fixture)
@@ -1422,6 +1424,7 @@ async fn the_preview_route_does_not_wait_on_the_shared_connections_mutex() {
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
 
@@ -2494,6 +2497,7 @@ fn state_with_a_root_that_cannot_write_its_document(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     (state, fixture)
@@ -2582,6 +2586,7 @@ fn state_with_a_root_that_folds_a_hand_documented_work(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     (state, fixture)
@@ -2709,6 +2714,100 @@ fn the_derive_report_renders_the_works_marked_missing_and_found_again() {
     assert_eq!(
         (&json["marked_missing"], &json["found_again"]),
         (&serde_json::json!(3), &serde_json::json!(5)),
+        "{json}"
+    );
+}
+
+/// The files a derive joined by content, under their own key and a number no
+/// other count holds, so a key misspelt or given another count's value fails.
+#[test]
+fn the_derive_report_renders_joined_under_its_own_key() {
+    let report = taiyaku_library::derive::DeriveReport {
+        joined: 7,
+        series: 1,
+        works: 2,
+        editions: 3,
+        members: 4,
+        emptied_works: 5,
+        series_holding_no_work: 6,
+        ..Default::default()
+    };
+
+    let json = crate::config_api::derive_report_json(&report);
+
+    assert_eq!(json["joined"], serde_json::json!(7), "{json}");
+}
+
+/// The works that followed their directory into a series, under their own
+/// key and a number no other count holds, so a key misspelt or given another
+/// count's value fails.
+#[test]
+fn the_derive_report_renders_followed_under_its_own_key() {
+    let report = taiyaku_library::derive::DeriveReport {
+        followed: 8,
+        joined: 7,
+        series: 1,
+        works: 2,
+        editions: 3,
+        members: 4,
+        emptied_works: 5,
+        series_holding_no_work: 6,
+        ..Default::default()
+    };
+
+    let json = crate::config_api::derive_report_json(&report);
+
+    assert_eq!(json["followed"], serde_json::json!(8), "{json}");
+}
+
+/// The alignments a derive left unwritten for a page count, under their own
+/// key and a number no other count holds, so a key misspelt or given another
+/// count's value fails.
+#[test]
+fn the_derive_report_renders_unwritten_alignments_under_its_own_key() {
+    let report = taiyaku_library::derive::DeriveReport {
+        unwritten_alignments: 9,
+        joined: 7,
+        uncarried_alignments: 8,
+        series: 1,
+        works: 2,
+        editions: 3,
+        members: 4,
+        emptied_works: 5,
+        series_holding_no_work: 6,
+        ..Default::default()
+    };
+
+    let json = crate::config_api::derive_report_json(&report);
+
+    assert_eq!(json["unwritten_alignments"], serde_json::json!(9), "{json}");
+}
+
+/// The editions a derive moved with their readers' state and the ones whose
+/// move was refused, each under its own key and a number no other count
+/// holds, so a key misspelt or given the other's value fails.
+#[test]
+fn the_derive_report_renders_moved_and_unmoved_editions_under_their_own_keys() {
+    let report = taiyaku_library::derive::DeriveReport {
+        moved_editions: 10,
+        unmoved_editions: 11,
+        joined: 7,
+        uncarried_alignments: 8,
+        unwritten_alignments: 9,
+        series: 1,
+        works: 2,
+        editions: 3,
+        members: 4,
+        emptied_works: 5,
+        series_holding_no_work: 6,
+        ..Default::default()
+    };
+
+    let json = crate::config_api::derive_report_json(&report);
+
+    assert_eq!(
+        (&json["moved_editions"], &json["unmoved_editions"]),
+        (&serde_json::json!(10), &serde_json::json!(11)),
         "{json}"
     );
 }
@@ -2974,6 +3073,7 @@ fn state_with_a_root_scanned_once_then_given_real_exclusions(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     (state, fixture)

@@ -11,6 +11,7 @@ import { PHONE_LAYOUT, SIDEBAR_LAYOUT } from '../src/phoneLayout'
 import * as stamp from '../src/stamp'
 import { deferred, settleUntil } from './support/async'
 import { columnsOf } from './support/columns'
+import { emptyDerive } from './support/derive'
 import { holdOf } from './support/held'
 import { lineCount, lineOf, oneLineIn, pastTheEdgeOf } from './support/lines'
 import {
@@ -666,7 +667,7 @@ describe('a volume’s panel over the rows below (O283)', () => {
     expect(parts.map((el) => el.className)).toEqual([
       'metadata-editor',
       'stamp-comicinfo',
-      'alignment-panel',
+      'edition-group',
       'get',
     ])
     expect(
@@ -705,7 +706,9 @@ describe('a volume’s panel over the rows below (O283)', () => {
       left: expect.closeTo(0, 0),
       right: expect.closeTo(0, 0),
       textLeft: expect.closeTo(0, 0),
-      textTop: expect.closeTo(0, 0),
+      // An administrator's alignment detail sits under the editions
+      // section's 1 px rule and the panel's 12 px gap.
+      textTop: expect.closeTo(13, 0),
     })
     // The stamp section's heading starts at its part's top.
     expect(rect(parts[1].querySelector(':scope > h3')).top).toBeCloseTo(
@@ -1037,6 +1040,519 @@ describe('closing a volume’s panel (O283)', () => {
       drawn: drawnIn(tiles).slice(0, 2),
       calls: calls().length,
     }).toEqual({ drawn: [false, true], calls: 1 })
+  })
+})
+
+describe('a volume’s content matches, pressed with a real mouse', () => {
+  const edition = (
+    key: string,
+    matched: library.ContentMatch | null,
+  ): library.EditionCard => ({
+    key,
+    label: key,
+    members: 1,
+    pages: 180,
+    missing: 0,
+    cover: null,
+    matched,
+  })
+  const REFUSED =
+    'a scan or another library job is running; split again once it has finished'
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    })
+
+  /**
+   * Volume 1 of three editions, the raw hub and two joined to it by content:
+   * its read carries both marks and pair 9, kept apart from volume 5. Once a
+   * Split has answered, en-fan has no mark and, with `lands`, pair 7 is kept
+   * apart; once an Undo has, pair 9 is not, and with `lands` it joins fr.
+   * A read after an answer waits for `held`. `fetch` answers the match
+   * routes with `answer` and keeps what each sent; every other request goes
+   * to the `fetch` before. Every other volume as `serve` answers it.
+   */
+  function serveMatches(
+    answer: () => Promise<Response>,
+    {
+      lands = true,
+      held,
+      // The Split that kept pair 9 apart kept pair 10 apart too, from the
+      // fan's volume 5, and pair 10 joins fr again.
+      together = false,
+    }: { lands?: boolean; held?: Promise<void>; together?: boolean } = {},
+  ) {
+    const works = volumes({
+      0: {
+        editions: [
+          edition('raw', null),
+          edition('en', null),
+          edition('en-fan', null),
+        ],
+      },
+    })
+    serve(works)
+    let split = false
+    let undone = false
+    vi.mocked(library.work).mockImplementation(async (slug) => {
+      const card = works.find((w) => w.slug === slug) as library.WorkCard
+      if (slug !== 'kagami-v01') return { ...card, alignments: [] }
+      if ((split || undone) && held !== undefined) await held
+      return {
+        ...card,
+        editions: [
+          edition('raw', null),
+          edition('en', { id: 5, score: 0.93 }),
+          edition('en-fan', split ? null : { id: 7, score: 0.88 }),
+          ...(undone && lands
+            ? [edition('fr', { id: together ? 10 : 9, score: 0.91 })]
+            : []),
+        ],
+        alignments: [],
+        kept_apart: [
+          ...(undone
+            ? []
+            : [
+                {
+                  id: 9,
+                  split: 9,
+                  series: 'Kagami no Kuni no Harisugawa',
+                  volume: 5,
+                  slug: 'kagami-v05',
+                },
+                ...(together
+                  ? [
+                      {
+                        id: 10,
+                        split: 9,
+                        series: 'Kagami no Kuni no Harisugawa (fan)',
+                        volume: 5,
+                        slug: 'kagami-fan-v05',
+                      },
+                    ]
+                  : []),
+              ]),
+          ...(split && lands
+            ? [
+                {
+                  id: 7,
+                  split: 7,
+                  series: 'Kagami no Kuni no Harisugawa (fan)',
+                  volume: 1,
+                  slug: 'kagami-fan-v01',
+                },
+              ]
+            : []),
+        ],
+      }
+    })
+    const sent: { method?: string; url: string; body?: unknown }[] = []
+    const before = globalThis.fetch
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (!/^\/api\/library\/matches\/\d+\/split$/.test(url))
+          return before(input, init)
+        sent.push({
+          method: init?.method,
+          url,
+          ...(init?.body === undefined
+            ? {}
+            : { body: JSON.parse(String(init.body)) as unknown }),
+        })
+        return answer().then((res) => {
+          if (res.ok && init?.method === 'POST') split = true
+          if (res.ok && init?.method === 'DELETE') undone = true
+          return res
+        })
+      }),
+    )
+    return sent
+  }
+
+  /** Volume 1's panel opened with a real mouse, its marks drawn. */
+  async function marksOpen() {
+    const { tiles } = await drawn({ width: 1280 })
+    const panel = await open(tiles[0])
+    await settleUntil(
+      'the marks',
+      () => panel.querySelector('.match-marks') !== null,
+      1000,
+    )
+    return panel
+  }
+
+  /** The `index`th button named `name` in `panel`'s marks. */
+  const named = (panel: Element, name: string, index = 0) => {
+    const found = panel.querySelectorAll<HTMLButtonElement>(
+      `.match-marks button[name="${name}"]`,
+    )[index]
+    if (found === undefined) throw new Error(`no ${name} button ${index}`)
+    return found
+  }
+  const question = (panel: Element) =>
+    panel.querySelector('.match-marks [role="group"]')
+  const marks = (panel: Element) =>
+    [...panel.querySelectorAll('.match-marks li > .mark > p')].map(
+      (p) => p.textContent,
+    )
+  const reads = () =>
+    vi.mocked(library.work).mock.calls.filter(([slug]) => slug === 'kagami-v01')
+      .length
+
+  it('opens the question on Split…, and its Cancel sends nothing', async () => {
+    const sent = serveMatches(async () =>
+      json({ split: [7], derive: emptyDerive }),
+    )
+    const panel = await marksOpen()
+    await real(() => userEvent.click(named(panel, 'split', 1)))
+    expect(question(panel)?.getAttribute('aria-label')).toBe(
+      'Split en-fan off this volume',
+    )
+    expect(sent).toEqual([])
+
+    await real(() => userEvent.click(named(panel, 'cancel-split')))
+    expect(question(panel)).toBeNull()
+    expect(sent).toEqual([])
+    expect(reads()).toBe(1)
+  })
+
+  it('sends one Split, naming the volume and the second marked edition pressed, and reads the volume again', async () => {
+    const sent = serveMatches(async () =>
+      json({ split: [7], derive: emptyDerive }),
+    )
+    const panel = await marksOpen()
+    await real(() => userEvent.click(named(panel, 'split', 1)))
+    await real(() => userEvent.click(named(panel, 'confirm-split')))
+    await settleUntil('the read after the Split', () => reads() === 2, 1000)
+    await settleUntil(
+      'the marks read again',
+      () => !marks(panel).some((line) => line?.startsWith('en-fan')),
+      1000,
+    )
+    expect(sent).toEqual([
+      {
+        method: 'POST',
+        url: '/api/library/matches/7/split',
+        body: { work: 'kagami-v01', edition: 'en-fan' },
+      },
+    ])
+    expect(marks(panel)).toEqual([
+      'en matched by content · 0.93',
+      'kept apart from Kagami no Kuni no Harisugawa v05',
+      'kept apart from Kagami no Kuni no Harisugawa (fan) v01',
+    ])
+  })
+
+  it('sends one Undo, a DELETE of the pair kept apart', async () => {
+    const sent = serveMatches(async () => json({ derive: emptyDerive }))
+    const panel = await marksOpen()
+    await real(() => userEvent.click(named(panel, 'undo-split')))
+    await settleUntil('the read after the Undo', () => reads() === 2, 1000)
+    expect(sent).toEqual([
+      { method: 'DELETE', url: '/api/library/matches/9/split' },
+    ])
+  })
+
+  it('draws a Split that kept the volume apart from two volumes as one line with one Undo, which sends one DELETE and gives focus to the Split… of the edition it rejoined', async () => {
+    const sent = serveMatches(async () => json({ derive: emptyDerive }), {
+      together: true,
+    })
+    const panel = await marksOpen()
+    expect(marks(panel)).toEqual([
+      'en matched by content · 0.93',
+      'en-fan matched by content · 0.88',
+      'kept apart from Kagami no Kuni no Harisugawa v05 and Kagami no Kuni no Harisugawa (fan) v05',
+    ])
+    expect(
+      panel.querySelectorAll('.match-marks button[name="undo-split"]'),
+    ).toHaveLength(1)
+
+    await real(() => userEvent.click(named(panel, 'undo-split')))
+    await settleUntil('the read after the Undo', () => reads() === 2, 1000)
+    await settleUntil(
+      'the rejoined edition’s Split…',
+      () =>
+        document.activeElement ===
+        panel.querySelector(
+          '.match-marks button[name="split"][data-pair="10"]',
+        ),
+      1000,
+    )
+    expect(sent).toEqual([
+      { method: 'DELETE', url: '/api/library/matches/9/split' },
+    ])
+    expect(marks(panel)).toEqual([
+      'en matched by content · 0.93',
+      'en-fan matched by content · 0.88',
+      'fr matched by content · 0.91',
+    ])
+  })
+
+  it('shows a refused Split in the server’s words, and its button sends again when pressed again', async () => {
+    const sent = serveMatches(async () => json({ error: REFUSED }, 409))
+    const panel = await marksOpen()
+    await real(() => userEvent.click(named(panel, 'split', 1)))
+    await real(() => userEvent.click(named(panel, 'confirm-split')))
+    await settleUntil(
+      'the refusal',
+      () => panel.querySelector('.match-marks [role="alert"]') !== null,
+      1000,
+    )
+    expect(
+      panel.querySelector('.match-marks [role="alert"]')?.textContent,
+    ).toBe(REFUSED)
+    const confirm = named(panel, 'confirm-split')
+    expect([confirm.textContent, holdOf(confirm)]).toEqual([
+      'Split en-fan',
+      'free',
+    ])
+
+    await real(() => userEvent.click(confirm))
+    await settleUntil('the second send', () => sent.length === 2, 1000)
+    expect(sent.map(({ method, url }) => [method, url])).toEqual([
+      ['POST', '/api/library/matches/7/split'],
+      ['POST', '/api/library/matches/7/split'],
+    ])
+    expect(reads()).toBe(1)
+  })
+
+  it('sends once for two presses inside one act, before the hold is drawn', async () => {
+    const answer = deferred<Response>()
+    const sent = serveMatches(() => answer.promise)
+    const panel = await marksOpen()
+    await real(() => userEvent.click(named(panel, 'split', 1)))
+    const confirm = named(panel, 'confirm-split')
+    // Dispatched, not real: React draws the hold after each real click, so
+    // a second real click lands on a held button, which turns it down
+    // whether or not the ref does. Two presses in one task, before a
+    // render, are what only the ref turns down.
+    await act(async () => {
+      confirm.click()
+      confirm.click()
+      await Promise.resolve()
+    })
+    expect(sent).toHaveLength(1)
+
+    answer.resolve(json({ split: [7], derive: emptyDerive }))
+    await settleUntil('the read after the Split', () => reads() === 2, 1000)
+    expect(sent).toHaveLength(1)
+  })
+
+  describe('where focus goes as a press takes away the control that had it', () => {
+    /** Volume 1's panel opened by a real click, which put focus on its i. */
+    async function focusedOpen() {
+      const panel = await marksOpen()
+      expect(document.activeElement).toBe(
+        iOf(panel.closest('li') as HTMLElement),
+      )
+      return panel
+    }
+    const undoOf = (panel: Element, pair: number) =>
+      panel.querySelector<HTMLElement>(
+        `.match-marks button[name="undo-split"][data-pair="${pair}"]`,
+      )
+    const splitOf = (panel: Element, pair: number) =>
+      panel.querySelector<HTMLElement>(
+        `.match-marks button[name="split"][data-pair="${pair}"]`,
+      )
+
+    /**
+     * Volume 2 holding only the file a Split sent back from volume 1, kept
+     * apart from it by pair 9. The Undo joins that file to volume 1 again and
+     * the derive empties volume 2 and deletes its work, as the server's does
+     * (`fold::absorb`): the series read after it has no volume 2, and volume
+     * 2's read is refused. Those two reads wait for `series` and `work`.
+     */
+    function emptiedByUndo(series: Promise<void>, work: Promise<void>) {
+      const works = volumes()
+      const page = (list: library.WorkCard[]) => ({
+        series: {
+          id: 7,
+          title: 'Kagami no Kuni no Harisugawa',
+          works: list.length,
+          editions: list.length,
+          aligned: 0,
+          added: 1,
+          unread: list.length,
+          cover: null,
+          titles: [],
+        },
+        works: list,
+      })
+      let undone = false
+      vi.mocked(library.oneSeries).mockImplementation(async () => {
+        if (!undone) return page(works)
+        await series
+        return page(works.filter((w) => w.slug !== 'kagami-v02'))
+      })
+      vi.mocked(library.work).mockImplementation(async (slug) => {
+        const card = works.find((w) => w.slug === slug) as library.WorkCard
+        if (slug !== 'kagami-v02') return { ...card, alignments: [] }
+        if (undone) {
+          await work
+          throw new Error(
+            '/api/library/works/kagami-v02: 404 {"error":"there is no work kagami-v02"}',
+          )
+        }
+        return {
+          ...card,
+          alignments: [],
+          kept_apart: [
+            {
+              id: 9,
+              split: 9,
+              series: 'Kagami no Kuni no Harisugawa',
+              volume: 1,
+              slug: 'kagami-v01',
+            },
+          ],
+        }
+      })
+      const before = globalThis.fetch
+      onTestFinished(() => {
+        vi.unstubAllGlobals()
+      })
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+          if (
+            String(input) !== '/api/library/matches/9/split' ||
+            init?.method !== 'DELETE'
+          )
+            return before(input, init)
+          undone = true
+          return Promise.resolve(json({ derive: emptyDerive }))
+        }),
+      )
+    }
+
+    /** Volume 2's panel opened by a real click, and its Undo pressed. */
+    async function undoOnVolumeTwo() {
+      const { host, tiles, main } = await drawn({ width: 1280 })
+      const panel = await open(tiles[1])
+      const undo = () =>
+        panel.querySelector<HTMLElement>('button[name="undo-split"]')
+      await settleUntil('volume 2’s Undo', () => undo() !== null, 1000)
+      expect(document.activeElement).toBe(iOf(tiles[1]))
+      await real(() => userEvent.click(undo() as Element))
+      return { host, tiles, main, panel }
+    }
+
+    it('goes to the page’s main when an Undo empties the volume pressed on, its read refused first', async () => {
+      const series = deferred<void>()
+      emptiedByUndo(series.promise, Promise.resolve())
+      const { tiles, main, panel } = await undoOnVolumeTwo()
+      await settleUntil(
+        'volume 2’s read refused',
+        () => panel.querySelector('.alignment-panel [role="alert"]') !== null,
+        1000,
+      )
+      expect(document.activeElement).toBe(panel)
+
+      series.resolve()
+      await settleUntil('volume 2 gone', () => !tiles[1].isConnected, 1000)
+      expect(document.activeElement).toBe(main)
+    })
+
+    it('goes to the page’s main when an Undo empties the volume pressed on, the series read first', async () => {
+      const work = deferred<void>()
+      emptiedByUndo(Promise.resolve(), work.promise)
+      const { tiles, main } = await undoOnVolumeTwo()
+      await settleUntil('volume 2 gone', () => !tiles[1].isConnected, 1000)
+      expect(document.activeElement).toBe(main)
+
+      work.resolve()
+      await real(() => new Promise((resolve) => setTimeout(resolve, 50)))
+      expect(document.activeElement).toBe(main)
+    })
+
+    it('stays where the person moved it when an Undo empties the volume pressed on', async () => {
+      const series = deferred<void>()
+      emptiedByUndo(series.promise, Promise.resolve())
+      const { tiles } = await undoOnVolumeTwo()
+      const elsewhere = iOf(tiles[2])
+      await real(async () => elsewhere.focus())
+      series.resolve()
+      await settleUntil('volume 2 gone', () => !tiles[1].isConnected, 1000)
+      expect(document.activeElement).toBe(elsewhere)
+    })
+
+    it('goes back to the Split… that asked, when the question’s Cancel is pressed', async () => {
+      serveMatches(async () => json({ split: [7], derive: emptyDerive }))
+      const panel = await focusedOpen()
+      const split = named(panel, 'split', 1)
+      await real(() => userEvent.click(split))
+      expect(document.activeElement).toBe(split)
+      await real(() => userEvent.click(named(panel, 'cancel-split')))
+      expect(question(panel)).toBeNull()
+      expect(document.activeElement).toBe(split)
+    })
+
+    it('rests on the panel while a confirmed Split is read again, then goes to the Undo of the pair it split', async () => {
+      const read = deferred<void>()
+      serveMatches(async () => json({ split: [7], derive: emptyDerive }), {
+        held: read.promise,
+      })
+      const panel = await focusedOpen()
+      await real(() => userEvent.click(named(panel, 'split', 1)))
+      await real(() => userEvent.click(named(panel, 'confirm-split')))
+      await settleUntil(
+        'the question gone',
+        () => question(panel) === null,
+        1000,
+      )
+      expect(document.activeElement).toBe(panel)
+
+      read.resolve()
+      await settleUntil(
+        'the Undo of pair 7',
+        () => undoOf(panel, 7) !== null,
+        1000,
+      )
+      expect(document.activeElement).toBe(undoOf(panel, 7))
+    })
+
+    it('goes to the panel when the read after a Split draws no Undo of the pair it split', async () => {
+      serveMatches(async () => json({ split: [7], derive: emptyDerive }), {
+        lands: false,
+      })
+      const panel = await focusedOpen()
+      await real(() => userEvent.click(named(panel, 'split', 1)))
+      await real(() => userEvent.click(named(panel, 'confirm-split')))
+      await settleUntil(
+        'the marks read again',
+        () => splitOf(panel, 7) === null && reads() === 2,
+        1000,
+      )
+      expect(document.activeElement).toBe(panel)
+    })
+
+    it('goes to the Split… of the edition an Undo joined again', async () => {
+      serveMatches(async () => json({ derive: emptyDerive }))
+      const panel = await focusedOpen()
+      await real(() => userEvent.click(named(panel, 'undo-split')))
+      await settleUntil('fr’s Split…', () => splitOf(panel, 9) !== null, 1000)
+      expect(document.activeElement).toBe(splitOf(panel, 9))
+    })
+
+    it('goes to the panel when the read after an Undo draws no Split… of that pair', async () => {
+      serveMatches(async () => json({ derive: emptyDerive }), { lands: false })
+      const panel = await focusedOpen()
+      await real(() => userEvent.click(named(panel, 'undo-split')))
+      await settleUntil('the Undo gone', () => undoOf(panel, 9) === null, 1000)
+      expect(document.activeElement).toBe(panel)
+      // Focusable only while it holds that focus.
+      await real(() => userEvent.click(named(panel, 'split')))
+      expect(document.activeElement).toBe(named(panel, 'split'))
+      expect(panel.hasAttribute('tabindex')).toBe(false)
+    })
   })
 })
 

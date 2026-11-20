@@ -164,7 +164,7 @@ pub(crate) fn scanned_file_backed_library(
     std::sync::Arc::new(library)
 }
 
-fn router_over(
+pub(crate) fn router_over(
     library: std::sync::Arc<taiyaku_library::Library>,
     works: crate::Works,
     fixture: &Fixture,
@@ -181,6 +181,7 @@ fn router_over(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -488,6 +489,7 @@ pub(crate) fn state(root: &std::path::Path) -> ServeState {
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     }
 }
@@ -816,6 +818,7 @@ fn state_over(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     })
 }
@@ -1115,6 +1118,7 @@ pub(crate) async fn router_over_a_library() -> (axum::Router, std::sync::Arc<Ser
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -1203,6 +1207,7 @@ fn two_editions_in_a_library(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     (state, work_id)
@@ -1388,6 +1393,7 @@ pub(crate) fn router_over_a_scanned_work() -> (axum::Router, std::sync::Arc<Serv
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     // `authenticating`, because `library()` seeds a claimed account and every
@@ -1577,6 +1583,7 @@ fn router_over_a_written_tree_with(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -1777,6 +1784,7 @@ pub(crate) fn router_over_a_scanned_cbz_holding(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -2000,6 +2008,7 @@ fn two_scanned_roots_over(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -2124,6 +2133,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series()
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -2305,6 +2315,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots() -
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -2412,6 +2423,7 @@ pub(crate) fn router_over_two_scanned_volumes_of_one_series_across_two_roots_and
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -2501,6 +2513,7 @@ pub(crate) fn router_over_a_series_in_two_libraries() -> (
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -2627,6 +2640,7 @@ fn nested_libraries(inner_first: bool) -> NestedLibraries {
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = crate::build_router(state.clone());
@@ -3232,6 +3246,7 @@ pub(crate) fn router_over_a_granted_two_dir_library(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -3364,6 +3379,7 @@ fn work_whose_editions_sit_in_two_libraries(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -3669,6 +3685,7 @@ fn an_edition_merged_from_two_libraries(
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = crate::build_router(state.clone());
@@ -3776,6 +3793,7 @@ pub(crate) fn router_over_a_copy_granted_through_its_second_directory()
         jobs_ended: Default::default(),
         library_job: Default::default(),
         fingerprints: Default::default(),
+        matches: Default::default(),
         dirs: Vec::new(),
     });
     let router = authenticating(crate::build_router(state.clone()), &state.library);
@@ -3863,9 +3881,23 @@ pub(crate) fn with_a_pass(
     (router, state)
 }
 
-/// Long enough for any fingerprint pass in a test to end on a loaded machine,
-/// and short of nextest's kill in `.config/nextest.toml`, so a wait that runs
-/// out fails with its own message rather than as a bare `TIMEOUT`.
+/// A state over `library` whose match pass runs as `settings` say: the
+/// fixtures above serve an inert one, which no kick starts.
+pub(crate) fn with_a_match_pass(
+    library: std::sync::Arc<taiyaku_library::Library>,
+    fixture: &Fixture,
+    settings: crate::match_pass::PassSettings,
+) -> std::sync::Arc<ServeState> {
+    std::sync::Arc::new(ServeState {
+        library,
+        matches: std::sync::Arc::new(crate::match_pass::Pass::with(settings)),
+        ..state(fixture)
+    })
+}
+
+/// Long enough for any fingerprint or match pass in a test to end on a loaded
+/// machine, and short of nextest's kill in `.config/nextest.toml`, so a wait
+/// that runs out fails with its own message rather than as a bare `TIMEOUT`.
 pub(crate) const SETTLE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How often a waiting pass worker looks again in a test that watches it wait.

@@ -359,6 +359,11 @@ export function DeriveSection({
           n={derive.uncarried_alignments}
         />
         <Count
+          field="unwritten_alignments"
+          label="Alignments not written for volumes joined by content"
+          n={derive.unwritten_alignments}
+        />
+        <Count
           field="series_holding_no_work"
           label="Series holding no work"
           n={derive.series_holding_no_work}
@@ -377,6 +382,11 @@ export function DeriveSection({
           field="moved_truth_collisions"
           label="Truth-page collisions"
           n={derive.moved_truth_collisions}
+        />
+        <Count
+          field="unmoved_editions"
+          label="Editions whose move was refused"
+          n={derive.unmoved_editions}
         />
         <Paths
           field="unfoldable"
@@ -407,6 +417,16 @@ export function DeriveSection({
         <Count field="editions" label="Editions" n={derive.editions} />
         <Count field="members" label="Members" n={derive.members} />
         <Count field="merged" label="Merged" n={derive.merged} />
+        <Count
+          field="joined"
+          label="Volumes joined by content"
+          n={derive.joined}
+        />
+        <Count
+          field="followed"
+          label="Works moved with their directory"
+          n={derive.followed}
+        />
         <Count field="rekeyed" label="Rekeyed" n={derive.rekeyed} />
         <Count
           field="kept_editions"
@@ -417,6 +437,11 @@ export function DeriveSection({
           field="emptied_works"
           label="Works emptied"
           n={derive.emptied_works}
+        />
+        <Count
+          field="moved_editions"
+          label="Editions moved to the work holding their file"
+          n={derive.moved_editions}
         />
         <Count
           field="unfolded_works"

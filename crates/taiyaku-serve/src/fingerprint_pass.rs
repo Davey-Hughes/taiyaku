@@ -6,7 +6,9 @@
 //! lists the units due, again at each kick, and a few workers read them. It
 //! takes no job lock and reserves no directory, so nothing a scan or a library
 //! route does waits on it. A row is stored as each file is read, so a pass
-//! stopped partway, by a cancel or a restart, resumes at the next file.
+//! stopped partway, by a cancel or a restart, resumes at the next file. A pass
+//! that goes idle uncancelled starts the match pass ([`crate::match_pass`]),
+//! which looks up what it read.
 
 pub(crate) mod priority;
 mod read;
@@ -346,7 +348,7 @@ pub(crate) fn at_startup(state: &Arc<ServeState>) {
 
 /// The coordinator: list what is due, read it, list again at each kick, and
 /// end the job once a listing that no kick has outdated is done.
-fn coordinate(state: &ServeState) {
+fn coordinate(state: &Arc<ServeState>) {
     let pass = &state.fingerprints;
     let mut ending = Ending {
         pass,
@@ -391,7 +393,7 @@ fn coordinate(state: &ServeState) {
             }
         }
         drop_unclaimed_once_free(state, settings.poll, ending.job.as_deref());
-        match ending.what_next() {
+        match ending.what_next(state) {
             Next::Idle => return,
             Next::Again => {}
             Next::Fresh => {
@@ -520,9 +522,10 @@ enum Next {
 impl Ending<'_> {
     /// What comes next, decided under the one lock, so a kick either finds the
     /// pass busy and is read here, or finds it idle and starts another. With
-    /// no kick since the last listing the job ends and the pass goes idle;
-    /// with one it lists again, after ending a cancelling job.
-    fn what_next(&mut self) -> Next {
+    /// no kick since the last listing the job ends and the pass goes idle,
+    /// starting `state`'s match pass unless the job was cancelled; with one it
+    /// lists again, after ending a cancelling job.
+    fn what_next(&mut self, state: &Arc<ServeState>) -> Next {
         let mut held = locked(&self.pass.state);
         // Under the lock [`Pass::cancel`] takes, so a cancel lands wholly
         // before this decision, and the job ends cancelled, or finds it ended.
@@ -543,6 +546,13 @@ impl Ending<'_> {
             } else {
                 JobEnded::Finished
             });
+        }
+        // A cancel stops the chain with the pass it lands on. Started before
+        // the pass reads idle, so whoever finds it idle finds the match pass
+        // already started. The match pass never takes this pass's lock, so
+        // taking its own inside it cannot deadlock.
+        if !cancelling {
+            crate::match_pass::kick(state);
         }
         held.busy = false;
         self.armed = false;
@@ -633,7 +643,8 @@ impl Reading<'_> {
         {
             let mut counts = locked(self.counts);
             counts.of += units.len() as u64;
-            self.job.set_count(counts.done, counts.of);
+            self.job
+                .set_count(Step::Fingerprinting, counts.done, counts.of);
         }
         for unit in units.into_iter().rev() {
             queue.units.push_front(unit);
@@ -734,7 +745,8 @@ impl Reading<'_> {
             // Counted under the lock, so no count lands after a later one.
             let mut counts = locked(self.counts);
             counts.done += 1;
-            self.job.set_count(counts.done, counts.of);
+            self.job
+                .set_count(Step::Fingerprinting, counts.done, counts.of);
         }
     }
 

@@ -55,11 +55,12 @@
  * links while it is open: a directory's page offers Scan directory, Move…
  * and Remove… on a directory the removal is taking.
  *
- * **The fingerprint pass is drawn apart from the scans**, a line and a
- * Cancel of its own after theirs while it covers the library (`PassLine`):
- * it holds nothing a scan or a removal waits on. Match editions by page
- * content says whether it covers the library, and is drawn from the
- * server's answer, never the press, so a refused switch leaves it as it was.
+ * **The passes are drawn apart from the scans**, the fingerprint pass's and
+ * the match pass's, each a line and a Cancel of its own after theirs while
+ * it covers the library (`PassLine`): neither holds anything a scan or a
+ * removal waits on. Match editions by page content says whether they cover
+ * the library, and is drawn from the server's answer, never the press, so a
+ * refused switch leaves it as it was.
  */
 import {
   Fragment,
@@ -119,6 +120,7 @@ import {
   coversToo,
   fingerprintJob,
   jobsHolding,
+  matchJob,
   scanJobs,
   stepLine,
   useScanFeed,
@@ -877,6 +879,7 @@ export function LibraryPage({
       ? switched.to
       : library.match_by_content
   const pass = fingerprintJob(feed, library.id)
+  const matching = matchJob(feed, library.id)
   /**
    * The room a link was said in, once it is known and while the picker is
    * shut: kept after a press takes the line away, so that its going moves
@@ -1258,6 +1261,7 @@ export function LibraryPage({
         )
       })}
       {pass !== undefined && <PassLine key={pass.id} job={pass} />}
+      {matching !== undefined && <PassLine key={matching.id} job={matching} />}
       {!running && pausedSince !== undefined && (
         <p className="paused">
           Paused until Scan is pressed, since {inUtc(pausedSince)}
@@ -1459,7 +1463,7 @@ export function LibraryPage({
         <Row
           check
           label={MATCH_WORDS}
-          help="Fingerprints this library's pages in the background, so later versions can match editions by what their pages show."
+          help="Fingerprints this library's pages in the background, and joins volumes whose pages match as editions of one work."
         >
           {(ids) => (
             // Its send holds it by `aria-disabled`, as an account's boxes

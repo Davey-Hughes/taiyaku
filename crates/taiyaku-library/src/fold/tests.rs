@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use rusqlite::{Connection, params};
 use taiyaku_core::{Kind, RegionMember, TruthDoc, TruthEdition, TruthRegion};
 
-use super::{Moved, Outcome, absorb};
+use super::{Moved, Outcome, absorb, move_edition};
 use crate::state::{progress, put_notes, put_progress, put_truth};
 use crate::{Note, Notes, Progress, Region};
 
@@ -829,6 +829,7 @@ fn folding_a_work_that_carries_nothing_by_hand_discards_nothing() {
             dropped_notes: 0,
             truth_pages: 0,
             collisions: 0,
+            aliases: 0,
             lost_positions: 0,
             discarded: 0,
             uncarried_alignments: 0,
@@ -4012,4 +4013,658 @@ fn the_targets_marker_is_left_alone_unless_a_value_carried_from_an_armed_work() 
         None,
         "carried from an unarmed work, so the target's marker is untouched"
     );
+}
+
+/// A join's shape for [`move_edition`]: work 2 holds `raw` and `en`, and its
+/// `en` file has joined work 1, where derive placed it beside the `fan` hub
+/// under the same key. Work 2 keeps `raw`, which [`absorb`] cannot leave.
+fn joined_pair() -> (Connection, i64, i64) {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "host",
+        "rtl",
+        &[("fan", "fff", 8, &[]), ("en", "eee", 8, &[])],
+    );
+    seed_paged_work(
+        &conn,
+        2,
+        "guest",
+        "rtl",
+        &[("raw", "rrr", 8, &[]), ("en", "eee", 8, &[])],
+    );
+    (conn, 2, 1)
+}
+
+fn moved_edition(conn: &Connection, from: i64, into: i64) -> Moved {
+    match move_edition(conn, from, into, "en").expect("moving the edition") {
+        Outcome::Folded(moved) => moved,
+        Outcome::Refused(why) => panic!("the move was refused: {why}"),
+    }
+}
+
+/// [`move_edition`] of `en`, expected to refuse, with every table it writes
+/// made to raise first, so a write before the refusal is an `Err` rather than
+/// a rollback no comparison could see.
+fn move_refused(conn: &Connection, from: i64, into: i64) -> String {
+    let before = store_dump(conn);
+    forbid_writes(
+        conn,
+        &[
+            "progress",
+            "note",
+            "truth_page",
+            "truth_box",
+            "truth_member",
+            "stamp_alias",
+            "alignment",
+            "run",
+            "edition",
+        ],
+    );
+    let why = match move_edition(conn, from, into, "en")
+        .expect("a refusal writes nothing, so no trigger fires; an `Err` here is a write")
+    {
+        Outcome::Refused(why) => why,
+        Outcome::Folded(moved) => panic!("the move went ahead: {moved:?}"),
+    };
+    assert_eq!(store_dump(conn), before, "every row is as it was");
+    why
+}
+
+fn place_at(conn: &Connection, work_id: i64, user_id: i64, edition: &str, slot: u32, at: &str) {
+    conn.execute(
+        "INSERT OR IGNORE INTO user (id, name, password_hash, role)
+         VALUES (?1, 'reader ' || ?1, '!', 'user')",
+        [user_id],
+    )
+    .expect("the reader");
+    crate::state::put_progress_at(
+        conn,
+        work_id,
+        user_id,
+        &Progress {
+            edition: edition.to_string(),
+            slot,
+        },
+        Some(at),
+        crate::state::Numbering::Store,
+    )
+    .expect("a reading position at a known time");
+}
+
+/// `(reader, slot, updated)` of each position on `work_id`'s `edition`.
+fn positions_of(conn: &Connection, work_id: i64, edition: &str) -> Vec<(i64, i64, String)> {
+    conn.prepare(
+        "SELECT user_id, slot, updated FROM progress
+          WHERE work_id = ?1 AND edition = ?2 ORDER BY user_id",
+    )
+    .and_then(|mut statement| {
+        statement
+            .query_map(params![work_id, edition], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    })
+    .expect("the positions")
+}
+
+/// Reader 1 is further on the guest and reader 2 on the host: each keeps the
+/// newer place, so a move that lets either side win every time fails one of
+/// them. Reader 1's carried place keeps its four `at_` columns.
+#[test]
+fn a_moved_position_keeps_its_anchor_and_the_newer_wins() {
+    let (conn, from, into) = joined_pair();
+    place_at(&conn, into, 1, "en", 2, "2026-01-01 00:00:00");
+    place_at(&conn, from, 1, "en", 5, "2026-02-01 00:00:00");
+    place_at(&conn, from, 2, "en", 3, "2026-01-01 00:00:00");
+    place_at(&conn, into, 2, "en", 6, "2026-03-01 00:00:00");
+    place_at(&conn, from, 1, "raw", 4, "2026-01-01 00:00:00");
+    let carried = position_anchor(&conn, from, "en");
+    assert_eq!(
+        carried,
+        (Some("eee".to_string()), Some(0), Some(5), None),
+        "the fixture: reader 1's place on the guest names page 5"
+    );
+
+    let moved = moved_edition(&conn, from, into);
+
+    assert_eq!(
+        positions_of(&conn, into, "en"),
+        vec![
+            (1, 5, "2026-02-01 00:00:00".to_string()),
+            (2, 6, "2026-03-01 00:00:00".to_string()),
+        ],
+        "reader 1's newer place came across; reader 2's newer place on the host stayed"
+    );
+    assert_eq!(position_anchor(&conn, into, "en"), carried);
+    assert_eq!(
+        positions_of(&conn, from, "en"),
+        vec![],
+        "none is left behind"
+    );
+    assert_eq!(
+        positions_of(&conn, from, "raw"),
+        vec![(1, 4, "2026-01-01 00:00:00".to_string())],
+        "the edition the guest keeps keeps its place"
+    );
+    assert_eq!(
+        (moved.positions, moved.lost_positions),
+        (1, 2),
+        "one write; the host's older place and the guest's older place are gone"
+    );
+}
+
+/// One reader's older place on the guest meets a newer one on the host: the
+/// host's stays and the guest's is counted lost. One place a side separates
+/// the count's sum from a product, which says none was lost.
+#[test]
+fn an_older_place_the_host_outdates_is_counted_lost() {
+    let (conn, from, into) = joined_pair();
+    place_at(&conn, from, 1, "en", 5, "2026-01-01 00:00:00");
+    place_at(&conn, into, 1, "en", 2, "2026-02-01 00:00:00");
+
+    let moved = moved_edition(&conn, from, into);
+
+    assert_eq!(
+        positions_of(&conn, into, "en"),
+        vec![(1, 2, "2026-02-01 00:00:00".to_string())],
+        "the host's newer place stayed"
+    );
+    assert_eq!(
+        (moved.positions, moved.lost_positions),
+        (0, 1),
+        "nothing written; the guest's older place is gone"
+    );
+}
+
+/// One reader holds three notes on the guest: one on `en` alone, one on `en`
+/// the host holds identically, and one on `raw` whose id a host note on `fan`
+/// shares. The first moves, the second's guest copy is dropped, and the third
+/// neither moves nor stops the move.
+#[test]
+fn a_moved_note_names_its_new_work_and_its_key() {
+    const MOVED: &str = "01JMOVED000000000000000000";
+    const COPIED: &str = "01JCOPIED00000000000000000";
+    let (conn, from, into) = joined_pair();
+    let note = |id: &str, edition: &str| Note {
+        id: id.to_string(),
+        ..shared_note(edition)
+    };
+    write_notes(
+        &conn,
+        from,
+        1,
+        vec![note(MOVED, "en"), note(COPIED, "en"), shared_note("raw")],
+    );
+    write_notes(&conn, into, 1, vec![note(COPIED, "en"), shared_note("fan")]);
+    let before = every_note(&conn);
+    let row = |id: &str, work_id: i64| {
+        before
+            .iter()
+            .find(|row| row.id == id && row.work_id == work_id)
+            .cloned()
+            .expect("the fixture's note")
+    };
+
+    let moved = moved_edition(&conn, from, into);
+
+    let mut expected = vec![
+        NoteRow {
+            work_id: into,
+            ..row(MOVED, from)
+        },
+        row(SHARED, from),
+        row(COPIED, into),
+        row(SHARED, into),
+    ];
+    expected.sort_by_key(|row| row.rowid);
+    assert_eq!(
+        every_note(&conn),
+        expected,
+        "the `en` note is on the host under `en`, the same row; the guest's copy \
+         of the host's note is gone; the `raw` and `fan` notes are as they were"
+    );
+    assert_eq!((moved.notes, moved.dropped_notes), (1, 1));
+}
+
+/// The guest's `en` labelling moves with its boxes and digests, and a host
+/// labelling drawn against other archives on the same key refuses the move.
+#[test]
+fn truth_moves_and_a_clash_refuses_the_move() {
+    let truth_rows = |conn: &Connection| -> Vec<String> {
+        store_dump(conn)
+            .into_iter()
+            .filter(|row| row.starts_with("truth_"))
+            .collect()
+    };
+    let (conn, from, into) = joined_pair();
+    seed_truth(&conn, from, "en", 2, "ddd");
+    let labelled = |work_id: i64| {
+        crate::state::truth(&conn, work_id)
+            .expect("reads truth")
+            .and_then(|doc| doc.editions.get("en").cloned())
+            .map(|edition| serde_json::to_value(edition).expect("as JSON"))
+    };
+    let before = labelled(from);
+    assert!(
+        before.is_some(),
+        "the fixture: the guest's `en` is labelled"
+    );
+
+    let moved = moved_edition(&conn, from, into);
+
+    assert_eq!(
+        labelled(into),
+        before,
+        "pages, boxes and digests, as they were"
+    );
+    assert_eq!(
+        truth_rows(&conn)
+            .iter()
+            .filter(|row| row.contains(&format!(" {from} en ")))
+            .count(),
+        0,
+        "nothing of it is left on the guest: {:?}",
+        truth_rows(&conn)
+    );
+    assert_eq!((moved.truth_pages, moved.collisions), (1, 0));
+
+    let (conn, from, into) = joined_pair();
+    seed_truth(&conn, from, "en", 2, "ddd");
+    seed_truth(&conn, into, "en", 3, "ccc");
+    let why = move_refused(&conn, from, into);
+    assert!(
+        why.contains("`en` (drawn against different archives)"),
+        "the refusal names the key and the clash: {why}"
+    );
+}
+
+fn alias(conn: &Connection, work_id: i64, edition: &str, was: &str, now: &str) {
+    conn.execute(
+        "INSERT INTO stamp_alias (work_id, edition, was_sha256, was_nth, now_sha256, now_nth)
+         VALUES (?1, ?2, ?3, 0, ?4, 0)",
+        params![work_id, edition, was, now],
+    )
+    .expect("a stamp alias");
+}
+
+/// Every alias as `(work, edition, was, now)`.
+fn aliases(conn: &Connection) -> Vec<(i64, String, String, String)> {
+    conn.prepare(
+        "SELECT work_id, edition, was_sha256, now_sha256 FROM stamp_alias
+          ORDER BY work_id, edition, was_sha256",
+    )
+    .and_then(|mut statement| {
+        statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    })
+    .expect("the aliases")
+}
+
+/// `old2` is held by both works with different targets: the host's stands.
+#[test]
+fn a_stamp_alias_moves() {
+    let (conn, from, into) = joined_pair();
+    alias(&conn, from, "en", "old1", "eee");
+    alias(&conn, from, "en", "old2", "eee");
+    alias(&conn, into, "en", "old2", "hhh");
+    alias(&conn, from, "raw", "old3", "rrr");
+
+    let moved = moved_edition(&conn, from, into);
+
+    let row = |work_id: i64, edition: &str, was: &str, now: &str| {
+        (
+            work_id,
+            edition.to_string(),
+            was.to_string(),
+            now.to_string(),
+        )
+    };
+    assert_eq!(
+        aliases(&conn),
+        vec![
+            row(into, "en", "old1", "eee"),
+            row(into, "en", "old2", "hhh"),
+            row(from, "raw", "old3", "rrr"),
+        ]
+    );
+    assert_eq!(moved.aliases, 1);
+}
+
+/// [`absorb`] carries an alias onto the edition holding the same archive, a
+/// row the target holds kept: a whole-work join goes through it.
+#[test]
+fn absorb_carries_a_stamp_alias() {
+    let (conn, from, into) = folded_pair();
+    alias(&conn, from, "raw", "old1", "bbb");
+    alias(&conn, from, "raw", "old2", "bbb");
+    alias(&conn, into, "full-color", "old2", "hhh");
+
+    let moved = folded(&conn, from, into);
+
+    let row = |was: &str, now: &str| {
+        (
+            into,
+            "full-color".to_string(),
+            was.to_string(),
+            now.to_string(),
+        )
+    };
+    assert_eq!(aliases(&conn), vec![row("old1", "bbb"), row("old2", "hhh")]);
+    assert_eq!(moved.aliases, 1);
+}
+
+/// A pin on the moving edition refuses; one on an edition the guest keeps
+/// does not, and stays.
+#[test]
+fn an_edition_with_a_book_pin_is_refused_and_nothing_is_written() {
+    let pin = |conn: &Connection, edition: &str| {
+        conn.execute(
+            "INSERT INTO book_pin (work_id, edition, hub_block, block) VALUES (2, ?1, 0, 0)",
+            [edition],
+        )
+        .expect("a pin");
+    };
+    let (conn, from, into) = joined_pair();
+    place(&conn, from, 1, "en", 5);
+    pin(&conn, "en");
+    let why = move_refused(&conn, from, into);
+    assert!(why.contains("pin"), "the refusal names the pin: {why}");
+
+    let (conn, from, into) = joined_pair();
+    pin(&conn, "raw");
+    moved_edition(&conn, from, into);
+    let pins: Vec<String> = conn
+        .prepare("SELECT edition FROM book_pin WHERE work_id = 2")
+        .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+        .expect("the pins");
+    assert_eq!(pins, vec!["raw".to_string()]);
+}
+
+/// Every alignment on `work_id` as `(from, to, by, runs)`.
+fn alignment_rows(conn: &Connection, work_id: i64) -> Vec<(String, String, String, i64)> {
+    conn.prepare(
+        "SELECT from_key, to_key, by,
+                (SELECT count(*) FROM run WHERE run.alignment_id = alignment.id)
+           FROM alignment WHERE work_id = ?1 ORDER BY from_key, to_key",
+    )
+    .and_then(|mut statement| {
+        statement
+            .query_map([work_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    })
+    .expect("the alignments")
+}
+
+/// A solver's `raw`-`en` edge goes, runs and all. A person's `jp`-`en` edge
+/// and a solver's `en`-`jp` edge carrying a hand-corrected run stay, counted;
+/// `raw`-`jp` names another key and is neither touched nor counted.
+#[test]
+fn a_solver_alignment_naming_the_key_goes_and_a_hand_one_is_counted() {
+    let conn = open();
+    seed_paged_work(
+        &conn,
+        1,
+        "host",
+        "rtl",
+        &[("fan", "fff", 8, &[]), ("en", "eee", 8, &[])],
+    );
+    seed_paged_work(
+        &conn,
+        2,
+        "guest",
+        "rtl",
+        &[
+            ("raw", "rrr", 8, &[]),
+            ("en", "eee", 8, &[]),
+            ("jp", "jjj", 8, &[]),
+        ],
+    );
+    write_alignments(
+        &conn,
+        2,
+        &[
+            ("raw", "en", vec![run("0-7", Some("0-7"), false)]),
+            (
+                "en",
+                "jp",
+                vec![
+                    run("0-3", Some("0-3"), true),
+                    run("4-7", Some("4-7"), false),
+                ],
+            ),
+            ("raw", "jp", vec![run("0-7", Some("0-7"), false)]),
+        ],
+    );
+    conn.execute(
+        "INSERT INTO alignment (work_id, from_key, to_key, by) VALUES (2, 'jp', 'en', 'hand')",
+        [],
+    )
+    .expect("a person's alignment");
+    conn.execute(
+        "INSERT INTO run (alignment_id, ordinal, a_start_page, a_end_page, b_start_page, b_end_page)
+         VALUES (?1, 0, 0, 7, 0, 7)",
+        [conn.last_insert_rowid()],
+    )
+    .expect("its run");
+
+    let moved = moved_edition(&conn, 2, 1);
+
+    let edge = |from: &str, to: &str, by: &str, runs: i64| {
+        (from.to_string(), to.to_string(), by.to_string(), runs)
+    };
+    assert_eq!(
+        alignment_rows(&conn, 2),
+        vec![
+            edge("en", "jp", "solver", 2),
+            edge("jp", "en", "hand", 1),
+            edge("raw", "jp", "solver", 1),
+        ]
+    );
+    let runs: i64 = conn
+        .query_row("SELECT count(*) FROM run", [], |r| r.get(0))
+        .expect("counting runs");
+    assert_eq!(runs, 4, "the solver edge's run went with it");
+    assert_eq!(alignment_rows(&conn, 1), vec![], "the host's are untouched");
+    assert_eq!(moved.uncarried_alignments, 2);
+    assert_eq!(
+        editions(&conn),
+        vec![
+            (1, "en".to_string()),
+            (1, "fan".to_string()),
+            (2, "jp".to_string()),
+            (2, "raw".to_string()),
+        ]
+    );
+    assert_eq!(
+        alignments_on(&conn, 2).len(),
+        3,
+        "the guest still projects, two of its edges naming a key it no longer holds"
+    );
+}
+
+/// A spread flag on the moving edition refuses; one on an edition the guest
+/// keeps does not.
+#[test]
+fn an_edition_with_a_spread_flag_is_refused_and_nothing_is_written() {
+    let guest = |conn: &Connection, raw: &[u32], en: &[u32]| {
+        seed_paged_work(
+            conn,
+            1,
+            "host",
+            "rtl",
+            &[("fan", "fff", 8, &[]), ("en", "eee", 8, &[])],
+        );
+        seed_paged_work(
+            conn,
+            2,
+            "guest",
+            "rtl",
+            &[("raw", "rrr", 8, raw), ("en", "eee", 8, en)],
+        );
+        place(conn, 2, 1, "en", 5);
+    };
+    let conn = open();
+    guest(&conn, &[], &[2]);
+    let why = move_refused(&conn, 2, 1);
+    assert!(why.contains("spread"), "the refusal names the flag: {why}");
+
+    let conn = open();
+    guest(&conn, &[2], &[]);
+    moved_edition(&conn, 2, 1);
+    assert_eq!(position_slot(&conn, 1, 1, "en"), 5);
+}
+
+/// Handed one work twice, the move would copy each row onto itself and then
+/// delete the source's: it refuses instead.
+#[test]
+fn an_edition_cannot_be_moved_onto_its_own_work() {
+    let (conn, from, _) = joined_pair();
+    place(&conn, from, 1, "en", 5);
+    let why = move_refused(&conn, from, from);
+    assert!(why.contains("its own work"), "{why}");
+}
+
+/// Each work's editions as `(work, key)`.
+fn editions(conn: &Connection) -> Vec<(i64, String)> {
+    conn.prepare("SELECT work_id, key FROM edition ORDER BY work_id, key")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .expect("the editions")
+}
+
+/// One edition's members as `(ordinal, digest, pages)` and its flags as
+/// `(kind, page)`.
+type EditionRows = (Vec<(i64, String, i64)>, Vec<(String, i64)>);
+
+/// `work_id`'s edition `key`, as [`EditionRows`].
+fn edition_rows(conn: &Connection, work_id: i64, key: &str) -> EditionRows {
+    let members = conn
+        .prepare(
+            "SELECT member.ordinal, member.sha256, member.pages
+               FROM member JOIN edition ON edition.id = member.edition_id
+              WHERE edition.work_id = ?1 AND edition.key = ?2 ORDER BY member.ordinal",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![work_id, key], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .expect("the members");
+    let flags = conn
+        .prepare(
+            "SELECT page_flag.kind, page_flag.page
+               FROM page_flag JOIN edition ON edition.id = page_flag.edition_id
+              WHERE edition.work_id = ?1 AND edition.key = ?2
+              ORDER BY page_flag.kind, page_flag.page",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![work_id, key], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .expect("the flags");
+    (members, flags)
+}
+
+/// The moved edition leaves the guest and nothing else does: the guest keeps
+/// `raw` with its member and both its flags, and the host keeps both editions.
+#[test]
+fn only_the_moved_edition_leaves_the_old_work() {
+    let (conn, from, into) = joined_pair();
+    join_spread(&conn, from, "raw", 2);
+    conn.execute(
+        "INSERT INTO page_flag (edition_id, kind, page)
+         SELECT id, 'credit', 7 FROM edition WHERE work_id = ?1 AND key = 'raw'",
+        [from],
+    )
+    .expect("a credit flag on the edition the guest keeps");
+    place(&conn, from, 1, "en", 5);
+    let kept = edition_rows(&conn, from, "raw");
+    assert_eq!(
+        kept,
+        (
+            vec![(0, "rrr".to_string(), 8)],
+            vec![("credit".to_string(), 7), ("spread".to_string(), 2)],
+        ),
+        "the fixture"
+    );
+    let placed = edition_rows(&conn, into, "en");
+
+    moved_edition(&conn, from, into);
+
+    assert_eq!(
+        editions(&conn),
+        vec![
+            (into, "en".to_string()),
+            (into, "fan".to_string()),
+            (from, "raw".to_string()),
+        ]
+    );
+    assert_eq!(
+        edition_rows(&conn, from, "raw"),
+        kept,
+        "raw keeps its member and its spread and credit flags"
+    );
+    assert_eq!(
+        edition_rows(&conn, into, "en"),
+        placed,
+        "the host's `en` is as derive placed it"
+    );
+}
+
+/// What the edition's delete takes that a person put there is counted, one
+/// table at a time. Each row is seeded on the moving `en` and on the kept
+/// `raw`, beside a credit and a tag on the guest work itself, and only `en`'s
+/// counts: the work and `raw` stand.
+#[test]
+fn what_the_edition_delete_takes_by_hand_is_counted_per_table() {
+    let cases = [
+        (
+            "credit",
+            "INSERT INTO credit (person_id, role, edition_id)
+             SELECT 1, 'group', id FROM edition WHERE work_id = 2 AND key = ?1",
+        ),
+        (
+            "page_flag",
+            "INSERT INTO page_flag (edition_id, kind, page)
+             SELECT id, 'credit', 7 FROM edition WHERE work_id = 2 AND key = ?1",
+        ),
+        (
+            "member",
+            "UPDATE member SET chapter_declared = 3.0, chapter_source = 'hand'
+              WHERE edition_id IN (SELECT id FROM edition WHERE work_id = 2 AND key = ?1)",
+        ),
+        (
+            "edition",
+            "UPDATE edition SET label = 'By hand' WHERE work_id = 2 AND key = ?1",
+        ),
+    ];
+    for (table, seed) in cases {
+        let (conn, from, into) = joined_pair();
+        conn.execute_batch(
+            "INSERT INTO person (id, name) VALUES (1, 'A group');
+             INSERT INTO credit (person_id, role, work_id) VALUES (1, 'author', 2);
+             INSERT INTO tag (id, name) VALUES (1, 'a tag');
+             INSERT INTO work_tag (work_id, tag_id) VALUES (2, 1);",
+        )
+        .expect("a credit and a tag on the guest work");
+        for key in ["en", "raw"] {
+            conn.execute(seed, [key]).expect(table);
+        }
+
+        let moved = moved_edition(&conn, from, into);
+
+        assert_eq!(moved.discarded, 1, "{table}: `en`'s row alone");
+    }
 }

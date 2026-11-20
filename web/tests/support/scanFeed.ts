@@ -47,6 +47,26 @@ export const fingerprintPass = (over: Partial<FeedJob> = {}): FeedJob => ({
   ...over,
 })
 
+/**
+ * The match pass as an administrator is sent it: job 12, three of twelve
+ * counted, covering library 1 alone, unless `over` names otherwise. Like the
+ * fingerprint pass it holds no directory, and a feed never holds its
+ * libraries.
+ */
+export const matchPass = (over: Partial<FeedJob> = {}): FeedJob => ({
+  id: 12,
+  kind: 'match',
+  step: 'matching',
+  done: 3,
+  of: 12,
+  dir: null,
+  dirs: [],
+  libraries: [{ id: 1, name: 'Manga' }],
+  elapsed_secs: 1.5,
+  cancelling: false,
+  ...over,
+})
+
 /** What a poll is answered with: a feed, or a status to fail with. */
 export type FeedAnswer = ScanFeed | number
 

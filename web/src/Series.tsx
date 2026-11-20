@@ -29,21 +29,28 @@ import { type PatchResult, patchWork, type WorkEdit } from './metadata'
 import { type BrowsePrefs, useBrowsePrefs } from './browseModule'
 import { useGate } from './gate'
 import { Cover } from './Cover'
+import { HeldButton } from './HeldButton'
 import {
   type AlignmentCard,
+  type ContentMatch,
   type EditionCard,
+  type KeptApart,
   libraryParam,
   readerPath,
   type SeriesCard,
   unreadable,
   work as fetchWork,
   type WorkCard,
+  type WorkDetail,
   editionDownload,
 } from './library'
-import { messageOf } from './message'
+import { splitMatch, undoSplit } from './matches'
+import { messageOf, sentenceOf } from './message'
+import { landFocus } from './landFocus'
 import { invalidateLibraryViews, seriesRead } from './pageReads'
 import { useReseat } from './reseat'
 import { useKeptScroll } from './scrollKeeper'
+import { Refusal } from './Refusal'
 import { PageLoading } from './settingsLayout'
 import { layPanel } from './tilePanel'
 import { useDocumentTitle } from './title'
@@ -61,6 +68,28 @@ const SERIES_VIEW: readonly (keyof BrowsePrefs)[] = [
 interface Loaded {
   series: SeriesCard
   works: WorkCard[]
+}
+
+/**
+ * What a volume's panel draws from `/api/library/works/{slug}`, or why it
+ * could not be read. `editions` are the work's own, which carry the content
+ * match marks an administrator is sent; the series' cards carry none.
+ */
+type Detail =
+  | {
+      alignments: AlignmentCard[]
+      editions: EditionCard[]
+      kept_apart: KeptApart[]
+    }
+  | { error: string }
+
+/** The parts of work `w` its panel draws. */
+function detailOf(w: WorkDetail): Detail {
+  return {
+    alignments: w.alignments,
+    editions: w.editions,
+    kept_apart: w.kept_apart ?? [],
+  }
 }
 
 /**
@@ -263,28 +292,13 @@ function Table({
 }
 
 /**
- * One volume's alignment detail — §3's panel.
- *
- * **`verdict` and `paired` come from `/api/library/works/{slug}` and from
- * nowhere else.** `WorkCard.aligned` is a bool, deliberately: an
- * `alignments_of` per row would be an N+1. That is what makes the `button`
- * default cheap rather than merely tidy.
- *
- * A pair with no verdict is **stated as unaligned**, not left blank. The two
- * are different facts — "these editions have no alignment" against "the panel
- * has not loaded" — and a blank cell says the second while meaning the first.
- *
- * **An empty `alignments` is two different facts, told apart by `editionCount`.**
- * `derive` never writes an alignment itself — `taiyaku align` is a separate
- * step a reader runs later — so a freshly scanned library has zero alignments
- * on every volume regardless of how many editions it holds. "One edition, so
- * nothing to pair" is true only when `editionCount < 2`; a volume with two or
- * more editions and no alignments has something to pair and simply has not
- * been aligned yet, which is the common case here and is worded as a normal
- * state rather than a problem. `editionCount` comes from the caller's own
- * `WorkCard.editions.length` rather than a second fetch — the tile already
- * holds it, and widening the per-slug `detail` cache to carry it too would
- * duplicate data this component does not need cached.
+ * One volume's alignment detail (§3's panel), read from the work alone, since
+ * a verdict per row of a list would cost a read per row. A pair with no
+ * verdict says "not aligned": a blank would say "not loaded". With no
+ * alignment, `editionCount` (the tile's own) tells one edition, nothing to
+ * pair, from two or more not aligned yet, a normal state: a derive aligns only
+ * editions whose files the match pass scored at or above its bar, whether
+ * joined by content or by name, and `taiyaku align` aligns others.
  */
 function AlignmentPanel({
   editionCount,
@@ -311,7 +325,7 @@ function AlignmentPanel({
         <p>
           {editionCount < 2
             ? 'This volume has one edition, so there is nothing to pair it with.'
-            : 'No alignment has been recorded between this volume’s editions yet — run taiyaku align to add one.'}
+            : 'No alignment recorded.'}
         </p>
       </div>
     )
@@ -339,6 +353,229 @@ function AlignmentPanel({
           </li>
         ))}
       </ul>
+    </div>
+  )
+}
+
+/** A volume number as the series screens write it: `v05`, `v05.5`. */
+function volumeTag(volume: number): string {
+  const text = String(volume)
+  const dot = text.indexOf('.')
+  const whole = dot < 0 ? text : text.slice(0, dot)
+  return `v${whole.padStart(2, '0')}${dot < 0 ? '' : text.slice(dot)}`
+}
+
+/** A marked edition: one whose own file a pair joined to this work. */
+type Marked = EditionCard & { matched: ContentMatch }
+
+/** One Split as the panel draws it: its pairs, and each volume it keeps this one apart from, once. */
+interface KeptSplit {
+  split: number
+  pairs: number[]
+  slugs: string[]
+  from: string[]
+}
+
+/**
+ * `kept` by the Split that set each pair apart, in the order drawn: one line
+ * and one Undo per Split, as Undo restores a whole Split.
+ */
+function bySplit(kept: KeptApart[]): KeptSplit[] {
+  const splits: KeptSplit[] = []
+  for (const k of kept) {
+    let one = splits.find((s) => s.split === k.split)
+    if (one === undefined) {
+      one = { split: k.split, pairs: [], slugs: [], from: [] }
+      splits.push(one)
+    }
+    one.pairs.push(k.id)
+    if (!one.slugs.includes(k.slug)) {
+      one.slugs.push(k.slug)
+      one.from.push(
+        k.volume === null ? k.series : `${k.series} ${volumeTag(k.volume)}`,
+      )
+    }
+  }
+  return splits
+}
+
+/** `names` as a sentence lists them: "a", "a and b", "a, b and c". */
+function listed(names: string[]): string {
+  if (names.length < 2) return names.join('')
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/**
+ * Where focus goes once a press's answer has been read again: the button
+ * named `name` of the first of `pairs` drawn, else the panel.
+ */
+interface Landing {
+  name: 'split' | 'undo-split'
+  pairs: number[]
+}
+
+/**
+ * A volume's content matches, an administrator's (spec §6): each edition
+ * joined by content with its score and Split, and each Split that kept the
+ * volume apart with one Undo. Split asks first, since it moves an edition off
+ * the volume at once; Undo only lets the derive join every pair of that Split
+ * again. Each press derives the whole store, so `onAnswer` reads the series
+ * and the volume again. One press out at a time, held by a ref too: the hold
+ * is drawn only after a render, and two presses inside one would send twice.
+ */
+function MatchMarks({
+  slug,
+  editions,
+  kept,
+  onAnswer,
+  focusPanel,
+}: {
+  slug: string
+  editions: EditionCard[]
+  kept: KeptApart[]
+  onAnswer: (to: Landing) => Promise<void>
+  focusPanel: () => void
+}) {
+  /** The key of the edition whose Split is asking to be confirmed. */
+  const [asking, setAsking] = useState<string | undefined>()
+  /** The press out: `split:<key>` or `undo:<pair>`. */
+  const [out, setOut] = useState<string | undefined>()
+  const sending = useRef(false)
+  /** Why the last press was refused. */
+  const [failure, setFailure] = useState<string | undefined>()
+  const root = useRef<HTMLDivElement>(null)
+  /** Set as Cancel closes a question: that edition's Split… takes focus back. */
+  const backTo = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const key = backTo.current
+    if (asking !== undefined || key === undefined) return
+    backTo.current = undefined
+    const splits = root.current?.querySelectorAll<HTMLButtonElement>(
+      'button[name="split"]',
+    )
+    ;[...(splits ?? [])].find((b) => b.dataset.key === key)?.focus()
+  }, [asking])
+  const marked = editions.filter((e): e is Marked => e.matched != null)
+  if (marked.length === 0 && kept.length === 0) return null
+
+  const send = (what: string, press: () => Promise<Landing>) => {
+    if (sending.current) return
+    sending.current = true
+    setOut(what)
+    setFailure(undefined)
+    press()
+      .then(
+        (to) => {
+          // The question goes as the Split answers, and with it the button
+          // that had focus, which the panel holds until the read lands.
+          const question = root.current?.querySelector('.split-confirm')
+          if (question?.contains(document.activeElement)) focusPanel()
+          setAsking(undefined)
+          return onAnswer(to)
+        },
+        (err: unknown) => {
+          setFailure(sentenceOf(err))
+        },
+      )
+      .finally(() => {
+        sending.current = false
+        setOut(undefined)
+      })
+  }
+
+  return (
+    <div className="match-marks" ref={root}>
+      <ul>
+        {marked.map((e) => (
+          <li key={e.key}>
+            <div className="mark">
+              <p>
+                <span className="pair">{e.key}</span> matched by content ·{' '}
+                {e.matched.score.toFixed(2)}
+              </p>
+              <HeldButton
+                type="button"
+                name="split"
+                data-key={e.key}
+                data-pair={e.matched.id}
+                held={out !== undefined || asking === e.key}
+                onClick={() => {
+                  setFailure(undefined)
+                  setAsking(e.key)
+                }}
+              >
+                Split…
+              </HeldButton>
+            </div>
+            {asking === e.key && (
+              <div
+                className="split-confirm"
+                role="group"
+                aria-label={`Split ${e.key} off this volume`}
+              >
+                <p>
+                  Split {e.key} off this volume? Its file goes back to where its
+                  own name puts it, unless it matches another volume.
+                </p>
+                <div className="split-actions">
+                  <HeldButton
+                    type="button"
+                    className="confirm"
+                    name="confirm-split"
+                    held={out !== undefined}
+                    onClick={() => {
+                      send(`split:${e.key}`, () =>
+                        splitMatch(e.matched.id, slug, e.key).then(
+                          (answer): Landing => ({
+                            name: 'undo-split',
+                            pairs: answer.split,
+                          }),
+                        ),
+                      )
+                    }}
+                  >
+                    {out === `split:${e.key}` ? 'Splitting…' : `Split ${e.key}`}
+                  </HeldButton>
+                  <HeldButton
+                    type="button"
+                    name="cancel-split"
+                    held={out !== undefined}
+                    onClick={() => {
+                      backTo.current = e.key
+                      setAsking(undefined)
+                    }}
+                  >
+                    Cancel
+                  </HeldButton>
+                </div>
+              </div>
+            )}
+          </li>
+        ))}
+        {bySplit(kept).map((s) => (
+          <li key={`split-${s.split}`}>
+            <div className="mark">
+              <p>kept apart from {listed(s.from)}</p>
+              <HeldButton
+                type="button"
+                name="undo-split"
+                data-pair={s.pairs[0]}
+                held={out !== undefined}
+                onClick={() => {
+                  send(`undo:${s.split}`, () =>
+                    undoSplit(s.pairs[0]).then(
+                      (): Landing => ({ name: 'split', pairs: s.pairs }),
+                    ),
+                  )
+                }}
+              >
+                {out === `undo:${s.split}` ? 'Undoing…' : 'Undo'}
+              </HeldButton>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {failure !== undefined && <Refusal>{failure}</Refusal>}
     </div>
   )
 }
@@ -477,9 +714,7 @@ export function Series() {
   // should start in anyway. Clearing `detail` on top of that would only throw
   // away a cache entry that stays valid — and the whole point of keying it by
   // slug was to survive exactly this kind of navigation.
-  const [detail, setDetail] = useState<
-    Record<string, { alignments: AlignmentCard[] } | { error: string }>
-  >({})
+  const [detail, setDetail] = useState<Record<string, Detail>>({})
   // `detail[slug] !== undefined` only tells us a request has *settled* — a
   // second `reveal()` for the same slug while the first is still in flight
   // would sail past it and fire again. That is not hypothetical: in
@@ -697,7 +932,7 @@ export function Series() {
     fetchWork(slug)
       .then((w) => {
         pending.current.delete(slug)
-        setDetail((prev) => ({ ...prev, [slug]: { alignments: w.alignments } }))
+        setDetail((prev) => ({ ...prev, [slug]: detailOf(w) }))
       })
       .catch((err: unknown) => {
         pending.current.delete(slug)
@@ -707,6 +942,81 @@ export function Series() {
         }))
       })
   }
+
+  /**
+   * After a Split or an Undo of volume `slug`'s panel has answered: the
+   * series is read again, and the volume's detail with it, since the derive
+   * the press ran moves editions between works. Every other volume's detail
+   * is dropped, to be read again as its panel opens, since the derive can
+   * have moved its marks too. Resolves once the volume's read has landed, so
+   * the panel's press is held until it draws the new state.
+   */
+  const rereadAfterMatch = (slug: string, to: Landing): Promise<void> => {
+    if (loaded !== undefined) pressedOn.current = { slug, from: loaded }
+    invalidateLibraryViews()
+    setDetail((prev) => {
+      const kept = prev[slug]
+      return kept === undefined ? {} : { [slug]: kept }
+    })
+    return fetchWork(slug)
+      .then(detailOf, (err: unknown): Detail => ({ error: messageOf(err) }))
+      .then((next) => {
+        landing.current = { ...to, slug }
+        setDetail((prev) => ({ ...prev, [slug]: next }))
+      })
+  }
+
+  /**
+   * Focus onto the open panel itself, where a press of its marks takes away
+   * the control that had it.
+   */
+  const focusPanel = () => {
+    if (openPanel.current !== null) landFocus(openPanel.current)
+  }
+
+  /**
+   * The volume a press of its marks was made on, and the series as drawn
+   * then. A derive can empty that volume and delete its work, so the series
+   * read after the press draws no tile for it, and its panel goes with the
+   * control that had focus: focus then goes to the page's `main`, as the
+   * skip link's does.
+   */
+  const pressedOn = useRef<{ slug: string; from: Loaded } | undefined>(
+    undefined,
+  )
+  useEffect(() => {
+    const pressed = pressedOn.current
+    if (pressed === undefined || loaded === undefined) return
+    if (loaded === pressed.from) return
+    pressedOn.current = undefined
+    if (loaded.works.some((w) => w.slug === pressed.slug)) return
+    if (document.activeElement !== document.body) return
+    const main = document.querySelector<HTMLElement>('.library > main')
+    if (main !== null) landFocus(main)
+  }, [loaded])
+
+  /** Where focus goes once `rereadAfterMatch`'s read is drawn. */
+  const landing = useRef<(Landing & { slug: string }) | undefined>(undefined)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `detail` is the trigger; the body reads the refs.
+  useEffect(() => {
+    const to = landing.current
+    if (to === undefined) return
+    landing.current = undefined
+    const box = openPanel.current
+    if (box === null || opened.current !== to.slug) return
+    // Focus the person has put elsewhere meanwhile stays where they put it.
+    const now = document.activeElement
+    if (now !== null && now !== document.body && !box.contains(now)) return
+    const target = to.pairs
+      .map((pair) =>
+        box.querySelector<HTMLElement>(
+          `button[name="${to.name}"][data-pair="${pair}"]`,
+        ),
+      )
+      .find((button): button is HTMLElement => button !== null)
+    if (target === undefined) focusPanel()
+    else target.focus({ preventScroll: true })
+  }, [detail])
 
   return (
     <>
@@ -757,6 +1067,8 @@ export function Series() {
                   chosen === 'all'
                     ? w.editions[0]
                     : w.editions.find((e) => e.key === chosen)
+                /** The open panel's detail, once it has been read. */
+                const known = detail[w.slug]
                 // One download per tile (O283): at the foot of the open panel
                 // where the tile has `i`, and otherwise on the cover's corner
                 // in `i`'s place, so a reader with the panel off keeps one.
@@ -922,10 +1234,42 @@ export function Series() {
                             canStamp={mayStamp}
                           />
                         )}
-                        <AlignmentPanel
-                          editionCount={w.editions.length}
-                          state={detail[w.slug]}
-                        />
+                        {mayEdit ? (
+                          // One section for how the volume's editions relate:
+                          // the alignment lines, then the content match marks
+                          // under them, set off by a rule above and below. Not
+                          // one row per edition: an alignment is a stored pair
+                          // of any two keys (`browse::alignments_of`), not each
+                          // edition against the hub. A reader, sent no marks,
+                          // keeps the bare alignment detail.
+                          <section
+                            className="edition-group"
+                            aria-label="Editions"
+                          >
+                            <AlignmentPanel
+                              editionCount={w.editions.length}
+                              state={detail[w.slug]}
+                            />
+                            {known !== undefined && !('error' in known) && (
+                              // Keyed by volume, so a press's confirmation or
+                              // refusal never shows under another volume's
+                              // marks.
+                              <MatchMarks
+                                key={w.slug}
+                                slug={w.slug}
+                                editions={known.editions}
+                                kept={known.kept_apart}
+                                onAnswer={(to) => rereadAfterMatch(w.slug, to)}
+                                focusPanel={focusPanel}
+                              />
+                            )}
+                          </section>
+                        ) : (
+                          <AlignmentPanel
+                            editionCount={w.editions.length}
+                            state={detail[w.slug]}
+                          />
+                        )}
                         {panel === 'button' && download}
                       </div>
                     )}

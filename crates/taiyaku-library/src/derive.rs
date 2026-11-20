@@ -1,13 +1,18 @@
-//! `scan_entry` + `rule` → series, works, editions, members.
+//! `scan_entry` + `rule` + `content_match` → series, works, editions,
+//! members, and the alignments of volumes matched by content.
 //!
-//! **Exactly one input, which is what makes §2's claim true.** Structure comes
-//! from the facts and the rules and from nothing else — not from a manual
-//! accept, which §6.1 routes through a written `rule` for precisely this
-//! reason. Two inputs would mean a re-derive either discards the accepts or
-//! needs a merge rule to protect them, which is the problem the store spec
-//! already solved once with `by: "hand"` and `Sidecar::merge_spoke`; solving
-//! it a second time in a different shape is how two mechanisms come to
-//! disagree.
+//! **Two inputs, read on every derive, which is what keeps §2's claim true.**
+//! Structure comes from the facts and the rules, and from the pairs matched
+//! by content, which §6 of
+//! `docs/superpowers/specs/2026-11-15-edition-matching-by-content-design.md`
+//! adds as the second because a rule is a path pattern and cannot carry a
+//! page range, a score or a Split; a rule's literal series still wins over a
+//! match ([`joins`]). Nothing else — not a manual accept, which §6.1 routes
+//! through a written `rule` for precisely this reason. An input a derive did
+//! not read would mean a re-derive either discards the accepts or needs a
+//! merge rule to protect them, which is the problem the store spec already
+//! solved once with `by: "hand"` and `Sidecar::merge_spoke`; solving it a
+//! second time in a different shape is how two mechanisms come to disagree.
 //!
 //! **It never opens a file.** Page counts and digests are columns on
 //! `scan_entry`, written by the walk, so editing a rule re-derives at memory
@@ -37,7 +42,9 @@
 //! the last of those are already targeted updates in `librarydoc::apply`, so
 //! this is the established shape here rather than a new one; a member's root
 //! is the one column nothing but a walk can know. `series` and `series_title`
-//! have no importer at all and are written here outright.
+//! have no importer at all and are written here outright. And where a join
+//! moves the edition a work's hub names off it, `work.hub`, which a scan's
+//! import leaves as it stands ([`joins::move_left_behind`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
@@ -262,8 +269,8 @@ pub struct DeriveReport {
     /// index into one edition's spreads and reading direction, and the fold
     /// places it by page and half rather than carrying the number.
     pub unfolded_works: usize,
-    /// Why each of those works was left standing, one message per work,
-    /// naming the work and what could not be mapped or was stranded on it.
+    /// Why each of those works, and each of [`Self::unmoved_editions`], stands:
+    /// one message each, naming the work and what could not be mapped or moved.
     ///
     /// **A count says something was refused; it does not say what to look
     /// at.** The refusal message `fold::absorb` builds already names the work
@@ -525,6 +532,53 @@ pub struct DeriveReport {
     /// Counted beside [`Self::marked_missing`] for its reason: the remount
     /// that brings those works back says how many it brought.
     pub found_again: usize,
+    /// Files that joined another group's work as an edition because their
+    /// pages matched one of its volumes ([`joins::apply`]), an edition that
+    /// moved with its group's matched file included.
+    ///
+    /// **Counted on every derive, not only the one that moved them**, for
+    /// [`Self::kept_editions`]' reason: a join is a standing fact of the
+    /// files, the rules and the match rows, and a count that went quiet once
+    /// the rows were written would say the joins had gone.
+    pub joined: usize,
+    /// Works that joined nothing and moved, with their own volume numbers,
+    /// into the series their directory's joined files went to
+    /// ([`joins::apply`], spec §4 "Directories follow").
+    ///
+    /// Counted on every derive, for [`Self::joined`]'s reason.
+    pub followed: usize,
+    /// Pairs whose files share a work by content and whose alignment this pass
+    /// did not write: the match pass numbers a file's pages from its prints
+    /// and the edition from the scan, which can differ for good
+    /// (`fingerprints.rs`, `numbers_other_pages`), and runs on the pass's
+    /// numbers would name pages the edition lacks, or the wrong ones
+    /// ([`joins::write_alignments`]). Counted on every derive, for
+    /// [`Self::joined`]'s reason, so a join without its ⇄ says why.
+    pub unwritten_alignments: usize,
+    /// Editions a join, an unjoin or a Split left on a work that keeps
+    /// others, moved onto the work this derive placed their file on with
+    /// their readers' positions, notes and truth ([`joins::move_left_behind`]).
+    /// What each carried is in the fold's counts above, and an edition moved
+    /// is not one of [`Self::kept_editions`], as it no longer stands.
+    pub moved_editions: usize,
+    /// Editions such a move refused, left standing on both works, each named
+    /// in [`Self::unfoldable`]. Counted on every derive, for
+    /// [`Self::kept_editions`]' reason: each derive tries the move again.
+    pub unmoved_editions: usize,
+}
+
+impl DeriveReport {
+    /// Add what a fold, or one edition's move, carried and left behind.
+    fn count_moved(&mut self, moved: &crate::fold::Moved) {
+        self.moved_positions += moved.positions;
+        self.lost_positions += moved.lost_positions;
+        self.moved_notes += moved.notes;
+        self.dropped_notes += moved.dropped_notes;
+        self.moved_truth_pages += moved.truth_pages;
+        self.moved_truth_collisions += moved.collisions;
+        self.discarded_rows += moved.discarded;
+        self.uncarried_alignments += moved.uncarried_alignments;
+    }
 }
 
 /// Whether a derivation reconciles `<root>/.taiyaku/` or leaves the tree
@@ -664,105 +718,20 @@ pub fn derive_watched(
         .collect();
 
     let mut report = DeriveReport::default();
-    let mut staged: Vec<Staged> = Vec::new();
-    let mut chapter_dirs: BTreeSet<(i64, String)> = BTreeSet::new();
     let mut named_series: BTreeSet<String> = BTreeSet::new();
-
-    // Hashing is shown from here, with no total yet: sizing the folders below
-    // can take a while on a share, and the screen must not stay on the walk.
-    watch.at(Step::Hashing, 0, None);
-
-    // **Two passes over each root's entries, and the second is what stops a
-    // volume being counted twice.** The fact layer records the container
-    // directory *and* everything beneath it, so "each entry is one member"
-    // makes a volume split into chapter subdirectories produce a member for
-    // the volume and one per chapter. The first pass resolves every entry
-    // once and notes which of them speak for their subtrees; the second drops
-    // any whose ancestor does. See [`nested_in_claim`].
-    let mut to_classify = Vec::with_capacity(roots.len());
-    for root in &roots {
-        let read = if frozen.contains(&root.id) {
-            frozen_entries(conn, &engine, root)?
-        } else {
-            entries(conn, root.id)?
-        };
-        let mut seen = Vec::new();
-        for entry in read {
-            let Some(admitted) = admit(&engine, root, entry, &mut report) else {
-                continue;
-            };
-            seen.push(admitted);
-        }
-        let claims = claims_of(&seen);
-        let mut kept = Vec::new();
-        for admitted in seen {
-            // Counted, never merely skipped, and from both directions. See
-            // `DeriveReport::suppressed`: a rule set that made a series
-            // directory speak for its volumes would swallow every one of
-            // them, and a report with no number for that reads exactly like a
-            // library that holds nothing.
-            if nested_in_claim(&claims, &admitted.entry.rel_path)
-                || admitted.produces(&claims) == Produces::Deferred
-            {
-                report.suppressed += 1;
-                continue;
-            }
-            let bytes = if hashes(&admitted) {
-                // Sizing a folder lists it and stats each page, so the flag is
-                // read before each one; nothing is written yet, so a cancel
-                // here is a stop.
-                if is_folder(&admitted.entry) && watch.cancelled() {
-                    return Ok(Outcome::Cancelled(Step::Hashing));
-                }
-                Some(bytes_to_hash(root, &admitted.entry))
-            } else {
-                None
-            };
-            kept.push((admitted, bytes));
-        }
-        to_classify.push((root, kept));
-    }
-
-    // Every root is admitted and claimed before the first digest, so the
-    // bytes to hash are known before the first is read. Nothing a root's classify
-    // writes is read by another root's admit or claim: a digest lands on its
-    // own root's `scan_entry` row, and claims are per root.
-    let to_hash: u64 = to_classify
-        .iter()
-        .flat_map(|(_, kept)| kept)
-        .filter_map(|(_, bytes)| *bytes)
-        .sum();
-    let mut hashed: u64 = 0;
-    for (root, kept) in to_classify {
-        for (admitted, bytes) in kept {
-            if bytes.is_some() {
-                watch.at(Step::Hashing, hashed, Some(to_hash));
-            }
-            if watch.cancelled() {
-                return Ok(Outcome::Cancelled(Step::Hashing));
-            }
-            classify(
-                conn,
-                root,
-                admitted,
-                &mut Sorting {
-                    staged: &mut staged,
-                    chapter_dirs: &mut chapter_dirs,
-                    named_series: &mut named_series,
-                    report: &mut report,
-                    frozen: &frozen,
-                },
-            )?;
-            // After the digest, and for a file found gone too, the figure the
-            // total holds, so the count ends at the total.
-            if let Some(bytes) = bytes {
-                hashed += bytes;
-            }
-        }
-    }
-    watch.at(Step::Hashing, hashed, Some(to_hash));
-    report.unattached_chapter_dirs = chapter_dirs.len();
-    let groups = place(conn, staged, &mut named_series, &mut report)?;
+    let groups = match grouped(
+        conn,
+        &engine,
+        &roots,
+        &frozen,
+        watch,
+        &mut named_series,
+        &mut report,
+    )? {
+        Outcome::Done(groups) => groups,
+        Outcome::Cancelled(step) => return Ok(Outcome::Cancelled(step)),
+    };
+    let (groups, joined) = joins::apply(conn, groups, &mut report)?;
 
     // Every series that produced *anything* gets a row, including one holding
     // only unattached chapters: `proposal.subject_id` references `series(id)`,
@@ -787,12 +756,12 @@ pub fn derive_watched(
     // exactly what `import::scanned`'s `Scope::Scan` arm writes into `edition`
     // for a work `write_work` writes, and what `unchanged` found for one it left.
     let mut written_editions: BTreeSet<(i64, String)> = BTreeSet::new();
-    // Before any group is written, so every group's [`held_work`] reads the
-    // one answer: which files this derive holds at all.
-    let placed: HashSet<String> = groups.values().flat_map(Group::paths).cloned().collect();
+    let placed = Placed::of(&groups)?;
     let to_write = u64::try_from(groups.len()).unwrap_or(u64::MAX);
     let mut works_written: u64 = 0;
-    for group in groups.into_values() {
+    let mut work_ids: BTreeMap<GroupKey, i64> = BTreeMap::new();
+    let mut hubs: BTreeMap<i64, String> = BTreeMap::new();
+    for (key, group) in groups {
         watch.at(Step::Writing, works_written, Some(to_write));
         // Between works, each written in a transaction of its own, so a
         // cancel leaves none half-written.
@@ -802,7 +771,7 @@ pub fn derive_watched(
         let series_id = *series_ids
             .get(&group.series)
             .ok_or_else(|| format!("no series row was reconciled for `{}`", group.series))?;
-        let work_id = write_work(
+        let (work_id, hub) = write_work(
             conn,
             series_id,
             &group,
@@ -811,8 +780,10 @@ pub fn derive_watched(
             &mut unread,
             &mut report,
         )?;
+        hubs.insert(work_id, hub);
         written_editions.extend(group.editions.keys().cloned().map(|key| (work_id, key)));
         written.insert(work_id);
+        work_ids.insert(key, work_id);
         works_written += 1;
     }
     watch.at(Step::Writing, works_written, Some(to_write));
@@ -822,6 +793,19 @@ pub fn derive_watched(
         return Ok(Outcome::Cancelled(Step::Writing));
     }
     watch.at(Step::Finishing, 0, None);
+
+    // Once every work is written, as `fold::move_edition` carries rows onto
+    // an edition it does not check stands; past the cancel check, so a
+    // cancelled derive leaves the move to the next, which finds it the same way.
+    joins::move_left_behind(
+        conn,
+        &written,
+        &written_editions,
+        &hubs,
+        &joined.moved,
+        documents,
+        &mut report,
+    )?;
 
     // **The only place `derive` itself reaches a `DELETE FROM work`** — the
     // other is `scan::apply_removal`'s, which deletes the works a removed
@@ -899,14 +883,7 @@ pub fn derive_watched(
                     crate::hand::save(conn, into_work)?;
                 }
                 report.emptied_works += 1;
-                report.moved_positions += moved.positions;
-                report.lost_positions += moved.lost_positions;
-                report.moved_notes += moved.notes;
-                report.dropped_notes += moved.dropped_notes;
-                report.moved_truth_pages += moved.truth_pages;
-                report.moved_truth_collisions += moved.collisions;
-                report.discarded_rows += moved.discarded;
-                report.uncarried_alignments += moved.uncarried_alignments;
+                report.count_moved(&moved);
                 // Only a completed fold orphans anything — a refused one
                 // deletes nothing, per `Outcome::Refused`'s own doc. A path
                 // of `None` means `from_work` had no document to strand
@@ -924,6 +901,10 @@ pub fn derive_watched(
             }
         }
     }
+
+    // After the folds, so the host already holds whatever alignment a fold
+    // carried onto it, and a person's among them keeps the solver's out.
+    joins::write_alignments(conn, &joined.aligned, &work_ids, &mut report)?;
 
     // After the folds, so a work folded away this pass is gone rather than
     // marked or counted found again. Under both `Documents` modes: a
@@ -1010,6 +991,118 @@ pub fn derive_watched(
     }
 
     Ok(Outcome::Done(report))
+}
+
+/// Every root's entries resolved, hashed where they become members, and filed
+/// into groups by [`place`], with each series a group or an unattached chapter
+/// directory names added to `named_series`. Nothing is written but digests.
+fn grouped(
+    conn: &Connection,
+    engine: &Engine,
+    roots: &[Root],
+    frozen: &HashSet<i64>,
+    watch: &dyn Watch,
+    named_series: &mut BTreeSet<String>,
+    report: &mut DeriveReport,
+) -> Result<Outcome<BTreeMap<GroupKey, Group>>, String> {
+    let mut staged: Vec<Staged> = Vec::new();
+    let mut chapter_dirs: BTreeSet<(i64, String)> = BTreeSet::new();
+
+    // Hashing is shown from here, with no total yet: sizing the folders below
+    // can take a while on a share, and the screen must not stay on the walk.
+    watch.at(Step::Hashing, 0, None);
+
+    // **Two passes over each root's entries, and the second is what stops a
+    // volume being counted twice.** The fact layer records the container
+    // directory *and* everything beneath it, so "each entry is one member"
+    // makes a volume split into chapter subdirectories produce a member for
+    // the volume and one per chapter. The first pass resolves every entry
+    // once and notes which of them speak for their subtrees; the second drops
+    // any whose ancestor does. See [`nested_in_claim`].
+    let mut to_classify = Vec::with_capacity(roots.len());
+    for root in roots {
+        let read = if frozen.contains(&root.id) {
+            frozen_entries(conn, engine, root)?
+        } else {
+            entries(conn, root.id)?
+        };
+        let mut seen = Vec::new();
+        for entry in read {
+            let Some(admitted) = admit(engine, root, entry, report) else {
+                continue;
+            };
+            seen.push(admitted);
+        }
+        let claims = claims_of(&seen);
+        let mut kept = Vec::new();
+        for admitted in seen {
+            // Counted, never merely skipped, and from both directions. See
+            // `DeriveReport::suppressed`: a rule set that made a series
+            // directory speak for its volumes would swallow every one of
+            // them, and a report with no number for that reads exactly like a
+            // library that holds nothing.
+            if nested_in_claim(&claims, &admitted.entry.rel_path)
+                || admitted.produces(&claims) == Produces::Deferred
+            {
+                report.suppressed += 1;
+                continue;
+            }
+            let bytes = if hashes(&admitted) {
+                // Sizing a folder lists it and stats each page, so the flag is
+                // read before each one; nothing is written yet, so a cancel
+                // here is a stop.
+                if is_folder(&admitted.entry) && watch.cancelled() {
+                    return Ok(Outcome::Cancelled(Step::Hashing));
+                }
+                Some(bytes_to_hash(root, &admitted.entry))
+            } else {
+                None
+            };
+            kept.push((admitted, bytes));
+        }
+        to_classify.push((root, kept));
+    }
+
+    // Every root is admitted and claimed before the first digest, so the
+    // bytes to hash are known before the first is read. Nothing a root's classify
+    // writes is read by another root's admit or claim: a digest lands on its
+    // own root's `scan_entry` row, and claims are per root.
+    let to_hash: u64 = to_classify
+        .iter()
+        .flat_map(|(_, kept)| kept)
+        .filter_map(|(_, bytes)| *bytes)
+        .sum();
+    let mut hashed: u64 = 0;
+    for (root, kept) in to_classify {
+        for (admitted, bytes) in kept {
+            if bytes.is_some() {
+                watch.at(Step::Hashing, hashed, Some(to_hash));
+            }
+            if watch.cancelled() {
+                return Ok(Outcome::Cancelled(Step::Hashing));
+            }
+            classify(
+                conn,
+                root,
+                admitted,
+                &mut Sorting {
+                    staged: &mut staged,
+                    chapter_dirs: &mut chapter_dirs,
+                    named_series,
+                    report,
+                    frozen,
+                },
+            )?;
+            // After the digest, and for a file found gone too, the figure the
+            // total holds, so the count ends at the total.
+            if let Some(bytes) = bytes {
+                hashed += bytes;
+            }
+        }
+    }
+    watch.at(Step::Hashing, hashed, Some(to_hash));
+    report.unattached_chapter_dirs = chapter_dirs.len();
+    place(conn, staged, named_series, report).map(Outcome::Done)
 }
 
 /// A group's identity: the series title, the volume number as its bit
@@ -1119,6 +1212,14 @@ struct Candidate {
     /// Whether this derive reads the entry's directory frozen
     /// ([`frozen_entries`]), so [`drop_held`] keeps its held reading.
     frozen: bool,
+    /// Whether a rule's literal `set_series` named this entry's series, which
+    /// holds it where its name puts it against a match by content: a series
+    /// read from a name, by a seeded rule or one written by hand, is what
+    /// content overrules (spec §4 of the volume-joins design).
+    held_by_rule: bool,
+    /// The stored pair that brought this entry into another group's work
+    /// ([`joins::apply`]), which [`write_joined_by`] writes onto its edition.
+    joined_by: Option<i64>,
 }
 
 /// Where one more copy of a [`Candidate`]'s bytes sits. Named for its place
@@ -1141,6 +1242,11 @@ struct Group {
     series: String,
     volume: Option<f64>,
     editions: BTreeMap<String, Vec<Candidate>>,
+    /// The hub a host of a join takes where its work is new or its work's hub
+    /// is no edition of its own: its best edition, by kind then key, which a
+    /// joined edition's key sorting before it would otherwise take
+    /// ([`document`]).
+    hub_hint: Option<String>,
 }
 
 impl Group {
@@ -1152,6 +1258,37 @@ impl Group {
             .values()
             .flatten()
             .flat_map(|c| std::iter::once(&c.path).chain(c.copies.iter().map(|k| &k.path)))
+    }
+}
+
+/// What this derive's groups hold, read before any group is written, so
+/// every group's [`held_work`] reads the one answer.
+struct Placed {
+    /// Every path a group holds.
+    paths: HashSet<String>,
+    /// The `content_key` each edition of a group would hash to as its hub,
+    /// with the group: the import finds the row holding that key by content
+    /// for that group, so no other group takes the row by its address. Not a
+    /// guest's edition: a host's work is never keyed by it, and the row its
+    /// file left stays with whatever its own group left behind.
+    claims: HashMap<String, GroupKey>,
+}
+
+impl Placed {
+    fn of(groups: &BTreeMap<GroupKey, Group>) -> Result<Self, String> {
+        let mut claims = HashMap::new();
+        for (key, group) in groups {
+            for (edition, candidates) in &group.editions {
+                if candidates.iter().all(|c| c.joined_by.is_none()) {
+                    let doc = document(group, Some(edition));
+                    claims.insert(crate::identity::content_key(&doc)?, key.clone());
+                }
+            }
+        }
+        Ok(Self {
+            paths: groups.values().flat_map(Group::paths).cloned().collect(),
+            claims,
+        })
     }
 }
 
@@ -1616,6 +1753,10 @@ fn classify(
             language: resolved.language,
             copies: Vec::new(),
             frozen: into.frozen.contains(&root.id),
+            // `admit` passed only an entry a rule gave a series, so a series
+            // no capture decided came from a rule's literal `set_series`.
+            held_by_rule: !resolved.series_was_captured,
+            joined_by: None,
         },
         series,
         volume: resolved.volume,
@@ -1731,6 +1872,7 @@ fn place(
             series,
             volume,
             editions: BTreeMap::new(),
+            hub_hint: None,
         });
         let edition = group.editions.entry(edition_key).or_default();
         // Counted here rather than from the finished group, because "how many
@@ -1916,7 +2058,7 @@ fn document(group: &Group, held_hub: Option<&str>) -> Sidecar {
     }
 
     // Only a genuinely new work chooses one, and then the choice is arbitrary
-    // but permanent: whichever key sorts first among the editions it has
+    // but permanent: its [`Group::hub_hint`], else whichever key sorts first
     // today. **The hub is fixed when the work is created** — `identity.rs`'s
     // own doc says so, and it is load-bearing: `content_key` is a hash over
     // the hub edition's members, so a work whose hub changed would get a
@@ -1924,12 +2066,20 @@ fn document(group: &Group, held_hub: Option<&str>) -> Sidecar {
     // progress and notes would be orphaned on the first.
     //
     // "The key that sorts first" is stable only while the set does not change,
-    // which is exactly why it is consulted once. The `.filter` arm is the
-    // remaining case: once the hub edition's files are gone its key cannot be
-    // reproduced, so the first key left is hashed instead, every derive alike,
-    // as a scan leaves `work.hub` as it was. The row [`held_work`] found takes
-    // that key; a work is minted only where it found none.
+    // so it is consulted once. Once the hub's files are gone, or a guest holds
+    // its key, the host's [`Group::hub_hint`], else the first key left, is
+    // hashed instead, every derive alike; never a guest's, whose files hash to
+    // its own work's key. A scan leaves `work.hub` as it was. The row
+    // [`held_work`] found takes that key; a work is minted only where it found none.
+    let own = |key: &str| {
+        group
+            .editions
+            .get(key)
+            .is_some_and(|candidates| candidates.iter().all(|c| c.joined_by.is_none()))
+    };
     let hub_key = held_hub
+        .filter(|held| own(held))
+        .or(group.hub_hint.as_deref())
         .filter(|held| editions.contains_key(*held))
         .map_or_else(
             || {
@@ -1971,6 +2121,8 @@ fn document(group: &Group, held_hub: Option<&str>) -> Sidecar {
 /// A held work [`write_work`] would leave as it stands.
 struct Unchanged {
     work_id: i64,
+    /// The hub its `content_key` is hashed over.
+    hub: String,
     /// Its editions this derive does not name ([`DeriveReport::kept_editions`]).
     kept: usize,
 }
@@ -1986,7 +2138,7 @@ fn unchanged(
     conn: &Connection,
     series_id: i64,
     group: &Group,
-    placed: &HashSet<String>,
+    placed: &Placed,
 ) -> Result<Option<Unchanged>, String> {
     // One read snapshot, so a save committing between two of these reads
     // cannot pair halves of two states. `None` inside a caller's transaction
@@ -2055,6 +2207,7 @@ fn unchanged(
         if edition.label != *edition.label_hand.as_ref().unwrap_or(label_derived)
             || edition.kind != edition.kind_hand.clone().or(metadata.kind)
             || edition.language != edition.language_hand.clone().or(metadata.language)
+            || edition.joined_by != joined_by(candidates)
         {
             return Ok(None);
         }
@@ -2088,7 +2241,11 @@ fn unchanged(
     if named != group.editions.len() {
         return Ok(None);
     }
-    Ok(Some(Unchanged { work_id, kept }))
+    Ok(Some(Unchanged {
+        work_id,
+        hub: doc.hub,
+        kept,
+    }))
 }
 
 /// One `edition` row of a work, as [`unchanged`] compares it.
@@ -2102,13 +2259,14 @@ struct EditionRow {
     kind_hand: Option<String>,
     language: Option<String>,
     language_hand: Option<String>,
+    joined_by: Option<i64>,
 }
 
 fn held_editions_of(conn: &Connection, work_id: i64) -> Result<Vec<EditionRow>, String> {
     let failed = |e: rusqlite::Error| format!("reading the editions of work {work_id}: {e}");
     conn.prepare_cached(
         "SELECT id, key, label, label_hand, label_derived, kind, kind_hand,
-                language, language_hand
+                language, language_hand, joined_by
            FROM edition WHERE work_id = ?1",
     )
     .map_err(failed)?
@@ -2123,6 +2281,7 @@ fn held_editions_of(conn: &Connection, work_id: i64) -> Result<Vec<EditionRow>, 
             kind_hand: r.get(6)?,
             language: r.get(7)?,
             language_hand: r.get(8)?,
+            joined_by: r.get(9)?,
         })
     })
     .map_err(failed)?
@@ -2202,17 +2361,17 @@ fn held_members_of(conn: &Connection, work_id: i64) -> Result<Vec<MemberRow>, St
 /// hand document at this work's address that nothing has absorbed.
 /// A held work [`unchanged`] finds already written is left as it stands.
 ///
-/// Returns the `work_id` it resolved, written or left, so [`derive`] can hand
-/// the works this pass derived to [`superseded`].
+/// Returns the `work_id` it resolved, written or left, for [`superseded`], and
+/// the hub its `content_key` is hashed over, for [`joins::move_left_behind`].
 fn write_work(
     conn: &Connection,
     series_id: i64,
     group: &Group,
-    placed: &HashSet<String>,
+    placed: &Placed,
     documents: Documents,
     unread: &mut BTreeMap<i64, String>,
     report: &mut DeriveReport,
-) -> Result<i64, String> {
+) -> Result<(i64, String), String> {
     report.editions += group.editions.len();
     report.members += group.editions.values().map(Vec::len).sum::<usize>();
     // **A work with nothing to write takes no write lock — O272.** Every pass
@@ -2231,7 +2390,7 @@ fn write_work(
             .filter(|candidates| resolved_metadata(candidates).refused)
             .count();
         report.works += 1;
-        return Ok(held.work_id);
+        return Ok((held.work_id, held.hub));
     }
     // **One commit for the work, not one per statement — O210.** Every commit
     // waits for the disk. Everything below runs on `conn` inside this scope —
@@ -2463,11 +2622,12 @@ fn write_work(
         crate::import::mint_slug(conn, work_id)?;
     }
     write_edition_metadata(conn, work_id, group, report)?;
+    write_joined_by(conn, work_id, group)?;
     write_chapters(conn, work_id, group)?;
     tx.commit()
         .map_err(|e| format!("committing work {work_id}: {e}"))?;
     report.works += 1;
-    Ok(work_id)
+    Ok((work_id, doc.hub))
 }
 
 /// One member as [`superseded`] reads it.
@@ -2738,7 +2898,7 @@ const HELD_FIRST: &str = "NOT EXISTS (SELECT 1 FROM edition held_e
 /// migration 1 already carries. `volume IS ?2` rather than `=` is kept for
 /// the NULL case below rather than needed here.
 ///
-/// `ORDER BY … id LIMIT 1` because two rows really can sit at one address, and
+/// `ORDER BY … id`, first wins, because two rows really can sit at one address, and
 /// reading the hub off whichever one SQLite happened to return would make the
 /// answer depend on the page order of a b-tree. **A row some directory holds
 /// wins over one none does** (an imported work placed here by hand), then the
@@ -2783,23 +2943,49 @@ fn held_work(
     conn: &Connection,
     series_id: i64,
     group: &Group,
-    placed: &HashSet<String>,
+    placed: &Placed,
 ) -> Result<Option<(i64, String, String)>, String> {
     // Every statement orders by `HELD_FIRST`, so none can differ on which of
     // two rows at one address is this group's.
     if group.volume.is_some() {
-        return conn
-            .query_row(
-                &format!(
-                    "SELECT id, hub, content_key FROM work
-                      WHERE series_id = ?1 AND volume IS ?2
-                      ORDER BY {HELD_FIRST}, id LIMIT 1"
-                ),
-                rusqlite::params![series_id, group.volume],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()
-            .map_err(|e| format!("looking up an existing work at this volume: {e}"));
+        // Not a row another group's edition hashes to ([`Placed::claims`]):
+        // the import finds it by content for that group, and taking it here
+        // would rekey it from under those files, leaving them on two works. A
+        // follower's work is one once the volume it filled arrives.
+        let mine: GroupKey = (group.series.clone(), group.volume.map(f64::to_bits), None);
+        let rows: Vec<((i64, String, String), bool)> = conn
+            .prepare_cached(&format!(
+                "SELECT id, hub, content_key, series_id_hand IS NULL AND volume_hand IS NULL
+                   FROM work
+                  WHERE series_id = ?1 AND volume IS ?2
+                  ORDER BY {HELD_FIRST}, id"
+            ))
+            .and_then(|mut stmt| {
+                stmt.query_map(rusqlite::params![series_id, group.volume], |r| {
+                    Ok(((r.get(0)?, r.get(1)?, r.get(2)?), r.get(3)?))
+                })?
+                .collect()
+            })
+            .map_err(|e| format!("looking up an existing work at this volume: {e}"))?;
+        for (row, derived) in rows {
+            let takes = match placed.claims.get(&row.2) {
+                None => true,
+                Some(by) if *by == mine => true,
+                Some(_) if derived => false,
+                // A hand series or volume says where a row belongs, so it stays
+                // the address's where that group stands in this series (a hand
+                // volume renumbered the work within it) or where it names a
+                // file of this group's (a work placed for files yet to arrive).
+                // One moved by hand from another series is that group's: the
+                // volume arriving here takes a work of its own.
+                Some(by) if by.0 == group.series => true,
+                Some(_) => holds_a_file_of(conn, row.0, group)?,
+            };
+            if takes {
+                return Ok(Some(row));
+            }
+        }
+        return Ok(None);
     }
     // A path in the row's hub edition, whose files its `content_key` hashes:
     // a rule titling part of a work apart splits one group into two that both
@@ -2871,7 +3057,7 @@ fn held_work(
                 .map_err(failed)?;
             if !held
                 .iter()
-                .all(|file| own.contains(file) || !placed.contains(file))
+                .all(|file| own.contains(file) || !placed.paths.contains(file))
             {
                 continue;
             }
@@ -2887,6 +3073,18 @@ fn held_work(
         }
     }
     Ok(None)
+}
+
+/// Whether work `id` holds a member at one of `group`'s paths.
+fn holds_a_file_of(conn: &Connection, id: i64, group: &Group) -> Result<bool, String> {
+    let held: HashSet<String> = conn
+        .prepare_cached(
+            "SELECT member.path FROM member JOIN edition ON edition.id = member.edition_id
+              WHERE edition.work_id = ?1",
+        )
+        .and_then(|mut stmt| stmt.query_map([id], |r| r.get(0))?.collect())
+        .map_err(|e| format!("reading the files of work {id}: {e}"))?;
+    Ok(group.paths().any(|path| held.contains(path)))
 }
 
 /// Put first, among one digest's staged entries in walk order, those whose
@@ -3478,6 +3676,28 @@ fn write_edition_metadata(
     Ok(())
 }
 
+/// Write the pair that joined each edition ([`joins::apply`]) onto the
+/// `edition` rows the import just wrote, and none onto an edition no join
+/// brought in, so an edition a Split sends home loses its mark.
+fn write_joined_by(conn: &Connection, work_id: i64, group: &Group) -> Result<(), String> {
+    for (key, candidates) in &group.editions {
+        conn.execute(
+            "UPDATE edition SET joined_by = ?1 WHERE work_id = ?2 AND key = ?3",
+            rusqlite::params![joined_by(candidates), work_id, key],
+        )
+        .map_err(|e| format!("recording what joined `{key}` on work {work_id}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// The pair that joined an edition: every file of one moves together, so the
+/// first in page order speaks for it.
+fn joined_by(candidates: &[Candidate]) -> Option<i64> {
+    in_page_order(candidates)
+        .first()
+        .and_then(|candidate| candidate.joined_by)
+}
+
 /// The kind and language the rules resolved for one edition, settled as
 /// [`write_edition_metadata`]'s doc says: the first entry in page order that
 /// resolved each field decides it.
@@ -3738,6 +3958,8 @@ pub(crate) fn rel_paths_by_series(
     }
     Ok(found)
 }
+
+mod joins;
 
 #[cfg(test)]
 mod tests;
