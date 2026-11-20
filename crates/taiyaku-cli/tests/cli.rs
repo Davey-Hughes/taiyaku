@@ -127,6 +127,39 @@ fn no_arguments_prints_the_usage_to_stdout_and_succeeds() {
     );
 }
 
+/// The binary allocates through jemalloc, whose background threads give memory
+/// freed after a burst back to the system on a timer, where glibc's malloc
+/// keeps it (O349). `stats_print` makes jemalloc print its statistics on
+/// stderr as the process exits, so the header is there only when jemalloc is
+/// the allocator the binary runs on, and the options among them say whether
+/// it was built with background threads on: an idle server may make no
+/// allocator call that would purge in their place.
+#[test]
+fn the_binary_allocates_through_jemalloc_with_background_threads() {
+    let run = taiyaku()
+        .env("_RJEM_MALLOC_CONF", "stats_print:true")
+        .output()
+        .expect("the binary runs");
+
+    assert_eq!(run.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line == "___ Begin jemalloc statistics ___"),
+        "jemalloc prints its statistics: {stderr}"
+    );
+    let background_thread = stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("opt.background_thread:"));
+    assert_eq!(
+        background_thread,
+        Some("opt.background_thread: true (background_thread: true)"),
+        "background threads are on: {stderr}"
+    );
+}
+
 /// `--cache` with nothing after it is a refusal rather than a silent fall
 /// back to the default. The same contract every other value-taking flag in
 /// this binary holds, and the reason `option_value` returns a `Result`.

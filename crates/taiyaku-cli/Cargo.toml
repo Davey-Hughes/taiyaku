@@ -31,6 +31,9 @@ taiyaku-core = { path = "../taiyaku-core" }
 taiyaku-library = { path = "../taiyaku-library" }
 taiyaku-read = { path = "../taiyaku-read" }
 taiyaku-serve = { path = "../taiyaku-serve" }
+# The `taiyaku` binary's allocator, whose background threads give memory freed
+# after a burst back to the system (O349).
+tikv-jemallocator = { version = "0.7.0", features = ["background_threads"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 # `tract-onnx` is here for `model_experiment.rs` alone, and a dev-dependency is

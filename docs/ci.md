@@ -2110,7 +2110,8 @@ compiles SQLite into the binary, so a SQLite security fix ships by updating
 is outside the range `rusqlite` accepts, and `cargo deny` reports an advisory
 against the copy the lockfile holds. The image's weekly refresh does not bring
 one: it reruns `apt-get upgrade`, and the image installs no SQLite package for
-that to update.
+that to update. jemalloc's C, which `tikv-jemalloc-sys` bundles, is likewise
+compiled into the binary, so its fixes too arrive only through the lockfile.
 
 ## Why the variables say Forgejo and not GitHub
 

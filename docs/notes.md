@@ -30437,6 +30437,9 @@ size, four at a time (`t1d-summary.txt`, read from `/proc`):
 The read took 26.10 s, and two decodes run at once
 (`MAX_CONCURRENT_GENERATIONS`). Measured on this desktop, not on the NAS.
 
+*O349 has since closed: see "jemalloc as the allocator: memory after a
+burst (2026-11-19)" below.*
+
 **The ICC profile (O350).** Read in the source, not measured. jxl-color
 0.11.0's `read_icc` (`src/icc/decode.rs`) refuses an encoded size or a
 profile size above `1 << 28`, and resizes a buffer to the encoded size
@@ -30786,3 +30789,92 @@ and the branch's first rebase onto main (`f5fa08df`), caught all 26 mutants
 it made, none of them unviable (`docs/mutants-baseline.md`, 2026-11-19). The
 later rebase onto main changed no code the sweep mutated. cargo-mutants
 makes no mutant of the parts M6, M7, M10 and M11 put wrong by hand.
+
+## jemalloc as the allocator: memory after a burst (2026-11-19)
+
+O349, closed by the jemalloc PR: the `taiyaku` binary allocates through
+`tikv-jemallocator` 0.7.0 with its `background_threads` feature, so
+jemalloc's background threads give memory freed after a burst back to the
+system on a timer, whether or not the server makes another allocator call.
+It sits on `tikv-jemalloc-sys` 0.7.1, which bundles jemalloc 5.3.1 and builds
+it with jemalloc's own `configure` and `make`. The design is
+`docs/superpowers/specs/2026-11-19-mimalloc-design.md`. The evidence is in
+`.superpowers/sdd/mimalloc-evidence/`, not committed; each figure below
+names its file there.
+
+**The route.** Each attempt was measured by the same `fetch.sh` and
+`sampler.sh` against the same three criteria: the branch's reading 30 s after
+the last response within 102,400 kB (100 MiB) of its own reading at rest, its
+mean peak at most 1.10 times main's, and its mean wall time at most 1.10
+times main's.
+
+- mimalloc, the design's first choice, with its defaults (`T2/verdict.md`),
+  failed the first. It gives freed memory back only when a later allocator
+  call finds its purge delay passed, and a server sent nothing after the
+  burst may make no such call.
+- mimalloc with `MIMALLOC_PURGE_DELAY=0` (`T2b/verdict.md`) passed the first
+  two and failed the third: its mean wall time was 2.78 times main's.
+- jemalloc's first run (`T2c/verdict.md`) passed the first two and failed
+  the third, with main-1's fetch at a one-minute load of 4.90 to 7.66 and the
+  other three's at 26.83 to 40.60, from work outside the measurement. The
+  owner ruled to measure again with each run starting only under a load of 8.
+- That run (`T2d/`) passed all three; the rest of this section reports it.
+
+**The run** (`T2d/run.sh`, `T2d/verdict.md`). Two release builds on this
+desktop: main, the build of fc484285, which was the branch's merge base with
+main when the runs were made, and the branch, the build of this branch's
+code on fc484285 (`T2d/binaries.txt`). Main's commits after fc484285, up to
+44e27960, onto which the branch was then rebased, change no Rust file but
+tests. The branch was later rebased onto a main that holds #274 (O350),
+which checks the encoded colour-profile size a page's header declares before
+jxl-oxide decodes the page; the run did not measure that check. The Bisque
+Doll original was copied afresh to a scratch library (`T2d/library.txt`),
+and each run started a server on it with a new database and an empty cache
+and read all 185 pages at full size, four at a time, with Chrome 154's
+`Accept`, through the 2026-11-17 run's `fetch.sh` and `sampler.sh`
+unchanged. Resident memory was read from `/proc` at rest, through the read,
+30 s after the last response and 5 minutes after it. The runs went main,
+branch, branch, main.
+
+It differs from the 2026-11-17 run in ways that are the same for both
+builds. Its scratch library held the Bisque Doll original alone
+(`T2d/library.txt`), where the 2026-11-17 one held four Bocchi the Rock!
+volumes beside it ("The real archive" in the 2026-11-17 section above). Each
+run started with an empty cache, so it made every page. Nothing reached the
+server between the last response and the 5-minute reading. Content matching
+was switched off on each run's scratch database before `serve`: the
+2026-11-17 build predates the fingerprint pass, which would otherwise have
+decoded the same pages during the readings. And no run started its server
+until the one-minute load was under 8, which it reached once the machine's
+other sessions had been asked, at the owner's request, to pause heavy work
+(`T2d/driver.log`, `T2d/verdict.md`).
+
+| Mean of two runs (`T2d/runs.tsv`) | Main | Branch |
+|---|---|---|
+| At rest | 20,166 kB | 33,306 kB |
+| Peak | 979,096 kB | 623,162 kB |
+| 30 s after the last response | 784,452 kB | 51,806 kB |
+| 5 minutes after | 784,380 kB | 46,898 kB |
+| Wall time of the read | 16.89 s | 18.075 s |
+
+Each memory figure is VmRSS but the peak, which is the largest VmHWM read
+from the start of the read to the 30 s reading. Every fetch began at a
+one-minute load of 1.08 to 6.45 and ended at 4.02 to 8.36, on 32 CPUs.
+
+- **Validity.** Each of main's runs held more than 102,400 kB above its rest
+  reading at 30 s, so main still kept the memory and the run could show a
+  fix.
+- **1.** The branch's runs held 16,872 and 20,128 kB above their rest
+  readings at 30 s, within 102,400 kB.
+- **2.** The branch's mean peak was 0.636 times main's.
+- **3.** The branch's mean wall time was 1.070 times main's, within 1.10: at
+  a settled load the burst took longer under jemalloc than under glibc's
+  malloc.
+
+Only Rust's allocations go to jemalloc. `tikv-jemalloc-sys`'s `build.rs`
+gives jemalloc's symbols the prefix `_rjem_` unless its
+`unprefixed_malloc_on_supported_platforms` feature is on, and the branch
+turns on only `background_threads` and the default
+`background_threads_runtime_support`, so C code, the bundled SQLite and the
+image's libarchive among it, still calls glibc's `malloc`. Not measured on
+the NAS.

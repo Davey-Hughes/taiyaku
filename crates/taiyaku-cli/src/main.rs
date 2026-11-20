@@ -135,6 +135,17 @@ use taiyaku_core::{
     Source, Verdict, Via, Work, compose, confidence, counterpart, entries_from_runs, solve,
 };
 
+// glibc's malloc keeps memory freed after a burst resident in its per-thread
+// arenas; jemalloc's background threads give it back on a timer, even in a
+// server that makes no further allocator call (O349). They are on through the
+// `background_threads` feature: an exported `malloc_conf` needs the unsafe
+// code the workspace forbids. Only Rust's allocations come here: jemalloc's
+// symbols are prefixed, so SQLite, libarchive and the other C libraries keep
+// the C allocator, and no dependency may free memory allocated on the other
+// side of an FFI call.
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 fn main() {
     // Every image decode in this binary guesses its format, and JPEG XL is
     // recognised only once the hooks are installed.
