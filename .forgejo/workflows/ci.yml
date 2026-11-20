@@ -44,7 +44,7 @@ env:
 # Every job but `docker` carries `timeout-minutes: 10` (that one builds an
 # image, takes 60, and says why where it sets it), and it is the outer half of a bound
 # that has two halves. `.config/nextest.toml` bounds a *test* — precisely, by
-# name, at 60 s. This bounds a *job*, which is the only thing that can catch a
+# name, at 90 s. This bounds a *job*, which is the only thing that can catch a
 # hang outside a test: a stalled `curl` in one of the six tool-install steps
 # below, or a `cargo build` that never finishes. Neither subsumes the other.
 #
@@ -56,7 +56,7 @@ env:
 # **This key is untriggered rather than untested**, and deliberately so:
 # deliberately hanging a job for ten minutes to watch it die costs a
 # ten-minute CI run to verify one documented key, where the per-test bound
-# beside it can be triggered in sixty seconds. See docs/status.md, O39.
+# beside it can be triggered in ninety seconds. See docs/status.md, O39.
 
 jobs:
   lint:

@@ -11,13 +11,16 @@
 # runs nineteen logins on purpose — and making those cheap would mean not
 # testing the thing.
 #
-# So: **the slowest test is `succeeding_forgets_the_failures_before_it` at
-# roughly 5 s, and it moves by a few hundred milliseconds between runs because
-# argon2 is what it is timing. 30 s is about 6x it and 60 s about 12x.** That is
-# stated rather than left to be discovered by a shared runner killing a job at
-# `terminate-after`. The slack is for a shared docker runner, which is slower
-# than the machine that measured this by a factor nobody has measured — the one
-# guess here, and it says so.
+# So some tests are slow on purpose, and the 30 s `SLOW` mark is meant to clear
+# them on a shared docker runner, which is slower than a developer's machine by
+# a factor nobody has measured — the one guess here, and it says so.
+#
+# **The kill sits past `SETTLE`.** Many of `taiyaku-serve`'s tests wait on a
+# fingerprint pass for at most `test_support::SETTLE`, and a wait that runs out
+# fails naming what it waited for. A kill at or before `SETTLE` ends the test
+# first, so the run shows a bare `TIMEOUT` with nothing to say which wait hung.
+# Three periods put the kill at 90 s, past it; lowering `terminate-after`, or
+# raising `SETTLE` to meet it, loses the message.
 #
 # `report_the_argon2_cost` is `#[ignore]`d: it is a measurement tool that
 # asserts nothing, and it has no business spending the budget a timeout is
@@ -35,7 +38,7 @@
 # those artifacts. The robustness is recovered instead by refusing to compare
 # when the report shows a failure; see that script's header.
 junit = { path = "junit.xml" }
-slow-timeout = { period = "30s", terminate-after = 2 }
+slow-timeout = { period = "30s", terminate-after = 3 }
 
 # The exempt set matches the regex both coverage steps of ci.yml and
 # check-all.sh carry —
@@ -51,10 +54,9 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # kill would destroy a deliberate measurement: `geometry_experiment` in the
 # debug profile with `TAIYAKU_CORPUS` set runs 40+ minutes. Omitting
 # `terminate-after` is what makes a slow-timeout advisory, not a separate key.
-# Under the default `slow-timeout = { period = "30s", terminate-after = 2 }` a
-# test that passes on a fast machine dies on a slower one — the default would
-# kill `the_model_candidate_scored`, which runs 42.2 s on 32 cores, at 60 s —
-# which is exactly the failure this override exists to prevent.
+# Under the default `slow-timeout = { period = "30s", terminate-after = 3 }` a
+# test that passes on a fast machine dies on a slower one, which is exactly the
+# failure this override exists to prevent.
 #
 # `test(corpus::)` selects the standing checks against real archives, the
 # `corpus::tests::` helpers that only assert how `TAIYAKU_CORPUS` is validated,

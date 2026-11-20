@@ -240,11 +240,17 @@ terminating would have hung the forge until the runner's own limit rather than
 failed it.
 
 `.config/nextest.toml` bounds a **test**, precisely and by name:
-`slow-timeout = { period = "30s", terminate-after = 2 }` marks a test `SLOW`
-at 30 s and kills it at 60 s, both sized off a bisection of the whole
-workspace rather than guessed — nothing in 639 tests exceeds 0.75 s, so 30 s
-is 40x that and 60 s is 80x. An override exempts the tests in every file
-`--ignore-filename-regex` exempts from both coverage steps above except
+`slow-timeout = { period = "30s", terminate-after = 3 }` marks a test `SLOW`
+at 30 s and kills it at 90 s. The mark was sized off a bisection of the whole
+workspace rather than guessed, when nothing in 639 tests exceeded 0.75 s.
+**The kill is sized off `SETTLE`, not off the slowest test.** Many of
+`taiyaku-serve`'s tests wait on a fingerprint pass for at most
+`test_support::SETTLE`, 60 s, and a wait that runs out fails naming what it
+waited for. A kill at or before 60 s ends the test first, and the run shows a
+bare `TIMEOUT` with nothing to say which wait hung; at 90 s the wait's own
+message prints first. A test that hangs outside such a wait pays for that: the
+run waits 90 s for its kill rather than 60. An override exempts the tests in
+every file `--ignore-filename-regex` exempts from both coverage steps above except
 `borrow_frequency.rs` and the four `test_support.rs`: its filter names tests,
 not files (read from the filter against the files on 2026-11-16; this said
 nine of fourteen on 2026-11-06, and twelve, the regex's whole count, on
@@ -253,7 +259,7 @@ only assert how `TAIYAKU_CORPUS` is validated and touch no material, and the
 one-off experiment modules — at a 60 s `SLOW` mark with no `terminate-after`,
 which is what makes a `slow-timeout` advisory rather than a kill:
 `geometry_experiment` in the debug profile against a real corpus runs 40+
-minutes, and a global 60 s kill would destroy that measurement every time
+minutes, and a global kill would destroy that measurement every time
 someone ran one.
 
 `timeout-minutes: 10` on all five jobs bounds a **job** — the only thing that
@@ -1395,17 +1401,19 @@ the coverage tools are installed. In CI it is the `test` job's last step, so
 a step that fails before it skips it.
 
 **It lexes before it judges.** Each source file (`.rs`, `.ts`, `.tsx`, `.mjs`,
-`.js`, `.css`, `.sh`, the YAML under `.forgejo/`, and the `Dockerfile`) is
-split into comment, string and code, so a `//` inside a string or a URL is
-not a comment (JSX text aside: see "What it does not see"). It handles
-Rust's nested block comments, raw strings and lifetimes, and TypeScript's
-template literals, regex literals and JSX `{/* */}`. A line is a comment
-line when everything on it that is not whitespace is comment. In shell,
-YAML and the `Dockerfile` only a whole-line
-`#` is a comment: a trailing one may sit inside a string or a `${#var}`, and
-reading it as code errs to the safe side (Docker itself reads a `#` as a
-comment only at a line's start). Python, SQL, TOML, JSON, Markdown and other
-YAML are not read.
+`.js`, `.css`, `.sh`, `.toml`, the YAML under `.forgejo/`, and the
+`Dockerfile`) is split into comment, string and code, so a `//` inside a
+string or a URL is not a comment (JSX text aside: see "What it does not
+see"). It handles Rust's nested block comments, raw strings and lifetimes,
+TypeScript's template literals, regex literals and JSX `{/* */}`, and TOML's
+multi-line strings. A line is a comment line when everything on it that is
+not whitespace is comment. In shell, YAML and the `Dockerfile` only a
+whole-line `#` is a comment: a trailing one may sit inside a string or a
+`${#var}`, and reading it as code errs to the safe side (Docker itself reads
+a `#` as a comment only at a line's start). TOML is read the same way, a
+trailing `#` as code, except that a line inside a multi-line string (one
+opened by `"""` or `'''`) is string even when it opens with `#`. Python, SQL,
+JSON, Markdown and other YAML are not read.
 
 ### The three rules
 
@@ -1474,9 +1482,9 @@ YAML are not read.
   blank line or an import (`import`, `export {` or `export *`, `use` or `mod`
   with or without `pub`, `extern crate`, an inner attribute) must come after
   it, since a block that runs straight into an item is that item's doc, and
-  counts. In shell, workflow YAML, a Dockerfile and CSS the first block is the
-  header whatever follows it. A block made only of these passes at any length.
-  A fence that never closes exempts nothing.
+  counts. In shell, workflow YAML, TOML, a Dockerfile and CSS the first block
+  is the header whatever follows it. A block made only of these passes at any
+  length. A fence that never closes exempts nothing.
 - **Strings.** A marker in a string is code, which is how the gate's own
   self-test can spell out every marker it checks.
 
@@ -1534,8 +1542,8 @@ base or a readable budget.
   every comment line between reads as string, unseen by rules 1 and 2. A
   `/*` likewise runs to the next `*/`, reading the code between as comment.
   Write either as an expression in braces (`` {'`'} ``) instead.
-- A trailing `#` comment in shell or YAML (`true # see #212`) is read as code,
-  so rules 1 and 2 never judge it.
+- A trailing `#` comment in shell, YAML or TOML (`true # see #212`) is read as
+  code, so rules 1 and 2 never judge it.
 - A whole-line `#` inside a shell heredoc reads as a comment.
 - Two old blocks joined by deleting the code between them make one longer
   block, but no added comment line grew it, so it passes. So does a block
@@ -2160,9 +2168,10 @@ It does not prove more than that:
 
 ## Mutation testing
 
-`env -u TAIYAKU_CORPUS cargo mutants --gitignore=true --test-tool=nextest
---output <dir>` is the invocation, and every flag on it earned its place by
-something breaking first.
+`env -u TAIYAKU_CORPUS cargo mutants --gitignore=true --output <dir>` is the
+core of what `scripts/mutants.sh` runs. It runs each mutant's tests under
+`cargo test`, not nextest: `.cargo/mutants.toml` sets `test_tool = "cargo"` and
+says why, and `scripts/mutants.sh` passes no `--test-tool` to override it.
 
 **`--gitignore=true` is not optional on this repository.** `cargo-mutants`
 copies the whole source tree into a scratch directory before mutating it, and
@@ -2191,12 +2200,18 @@ the standing corpus checks and the one-off measurement modules gated on it —
 `geometry_experiment` among them — on every mutant a run tries, rather than
 once. The baseline in `docs/notes.md` was taken with the variable stripped.
 
-**Always pass `--output`, pointed outside the working tree.** `mutants.out/`
-is gitignored as a second line of defence, not the first — the flag is what
-actually keeps a run from writing its scratch copy beside the source it was
-copied from.
+**`--output target` puts the results in `target/mutants.out`, inside the
+working tree, and that is safe.** cargo-mutants never copies a directory named
+`mutants.out` into a build directory, nor the top-level `target/` unless
+`--copy-target=true` or a `copy_target = true` key in `.cargo/mutants.toml`
+asks it to, so the results stay out of every copy.
+`--output` does not move the build directories: they go under `TMPDIR`, which
+the script sets to `target/mutants-scratch` by default, inside the same
+`target/`. A bare `cargo mutants` writes `mutants.out/` at the top of the tree
+instead, and `.gitignore` lists it.
 
-**This is not a CI job and not a gate.** The numbers needed to size a
+**A sweep is not a gate.** `.forgejo/workflows/mutants.yml` runs one when
+dispatched by hand, and nothing waits on it. The numbers needed to size a
 threshold — how many survivors are genuine gaps against how many are
 equivalent mutants that cannot be killed by construction — did not exist
 before the baseline in `docs/notes.md` was measured, and a threshold picked
@@ -2395,10 +2410,10 @@ first:
 **A time bound is not a memory bound.** A mutant that removes an allocation
 guard does not spin — it allocates. Measured 2026-08-19: two sweeps were killed
 by the kernel's OOM killer, one test binary at **36.6 GB** anon-rss and another
-at **43.8 GB**, on a 60 GB machine. Neither came near the 60-second per-test
-timeout, because forty gigabytes takes seconds. Worse, the kernel picks a victim
-by score rather than by culprit — the first kill was *invoked by* `kwin_wayland`,
-which was simply the next process to ask for memory.
+at **43.8 GB**, on a 60 GB machine. Neither came near a time bound, because
+forty gigabytes takes seconds. Worse, the kernel picks a victim by score rather
+than by culprit — the first kill was *invoked by* `kwin_wayland`, which was
+simply the next process to ask for memory.
 
 `scripts/mutants.sh` sets `ulimit -v` (16 GB, overridable with
 `TAIYAKU_MUTANTS_VM_KB`) before running. It is per-process and inherited, so a
@@ -2414,9 +2429,9 @@ concurrent mutants with it, reporting them as caught when nothing tested them.
 **False *caught* is the same failure as false green.**
 
 So there are three bounds, for three different runaways: `timeout-minutes` on
-the job, `.config/nextest.toml`'s 60 s on a test, and `ulimit -v` on a test's
-memory. None subsumes another, and the third was missing until it cost two
-sweeps and a desktop session.
+the job, cargo-mutants' own per-mutant timeout on a mutant's test run, and
+`ulimit -v` on a test's memory. None subsumes another, and the third was
+missing until it cost two sweeps and a desktop session.
 
 ### The baseline is what makes the output readable
 
@@ -2496,9 +2511,10 @@ it both before and after the fix. A file with no survivors is not a verified
 file; it is a file with no *known* survivors.
 
 **A non-terminating mutant is reported TIMEOUT, not MISSED.** `left += 1`
-becoming `left *= 1` never finishes. `.config/nextest.toml` bounds a single test
-at 60 s, which is what keeps that a timeout rather than a hung job — the two
-bounds are the same pair CI already reasons about above.
+becoming `left *= 1` never finishes. cargo-mutants' own per-mutant timeout is
+what keeps that a timeout rather than a hung job. `.config/nextest.toml`'s
+bound plays no part: `.cargo/mutants.toml` runs a sweep under `cargo test`,
+which never reads it, and says why.
 
 **`const { assert!(...) }` makes a mutant unviable rather than caught**, so
 clippy's suggested fix for `assertions_on_constants` silently improves the score

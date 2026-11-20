@@ -244,10 +244,8 @@ jobs:
           apt-get install -y -qq --no-install-recommends strace libarchive-dev
           strace -V
           pkg-config --modversion libarchive
-      # One crate. `--gitignore=true` is inside the script and is not optional:
-      # without it every mutant build copies the gitignored corpus. There is no
-      # corpus on the runner, but the flag also decides whether `target/` is
-      # copied, and the failure it prevents is silent either way.
+      # One crate. `--gitignore=true` is inside the script; its header says why
+      # it is not optional.
       - name: Sweep
         run: scripts/mutants.sh --crate ${{ matrix.crate }} --shard ${{ matrix.shard }}
       # The survivor list again, whatever the step above exited with — it is the

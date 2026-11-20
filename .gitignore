@@ -47,9 +47,12 @@ taiyaku.json
 hashes/
 thumbs/
 
-# cargo-mutants scratch output. Always pass --output to keep it out of the
-# tree anyway; this is the second line of defence, not the first.
+# cargo-mutants' results, where a run without --output writes them. A run
+# moves the last run's results to mutants.out.old before writing its own.
+# scripts/mutants.sh passes --output target, so its results land in
+# target/mutants.out, which the target/ rule below covers.
 mutants.out/
+mutants.out.old/
 
 # Model weights fetched by the L2 phase-3 spike. The weights come from a GPL-3.0
 # project whose author states he has no right to redistribute the training

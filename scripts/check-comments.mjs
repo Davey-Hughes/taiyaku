@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 
 // --- languages ---------------------------------------------------------------
 
-const LANGS = { rs: 'rust', ts: 'ts', mjs: 'ts', js: 'ts', tsx: 'tsx', css: 'css', sh: 'hash' }
+const LANGS = { rs: 'rust', ts: 'ts', mjs: 'ts', js: 'ts', tsx: 'tsx', css: 'css', sh: 'hash', toml: 'toml' }
 
 function langOf(path) {
   const ext = /\.([^./]+)$/.exec(path)?.[1]
@@ -297,7 +297,55 @@ function lexHash(t) {
   return out.list
 }
 
-const LEXERS = { rust: lexRust, ts: lexTs, tsx: lexTs, css: lexCss, hash: lexHash }
+// TOML reads as lexHash does, but a multi-line string can hold a line that
+// opens with `#`, and that line is string. So strings are found in the code
+// around comments, and a quote in a trailing comment opens none; the trailing
+// comment itself stays code, on lexHash's safe side.
+function lexToml(t) {
+  const out = new Spans()
+  const n = t.length
+  let i = 0
+  let cs = 0
+  const take = (kind, j) => {
+    out.push('code', cs, i)
+    out.push(kind, i, j)
+    i = cs = j
+  }
+  while (i < n) {
+    const c = t[i]
+    if (c === '#') {
+      const end = lineEnd(t, i)
+      if (t.slice(t.lastIndexOf('\n', i - 1) + 1, i).trim() === '') take('comment', end)
+      else i = end
+    } else if (t.startsWith('"""', i) || t.startsWith("'''", i)) {
+      take('string', tomlMultilineEnd(t, i))
+    } else if (c === '"') {
+      take('string', quotedEnd(t, i, '"', true))
+    } else if (c === "'") {
+      const k = t.indexOf("'", i + 1)
+      const end = lineEnd(t, i)
+      take('string', k < 0 || k > end ? end : k + 1)
+    } else {
+      i += 1
+    }
+  }
+  out.push('code', cs, n)
+  return out.list
+}
+
+// Only the basic form, `"""`, has escapes. A closing delimiter may carry one or
+// two more quotes, the string's last characters; read as a string of their own,
+// they would take the first quote of a `"""` later on the line.
+function tomlMultilineEnd(t, i) {
+  const q = t.slice(i, i + 3)
+  let j = i + 3
+  while (j < t.length && !t.startsWith(q, j)) j += q === '"""' && t[j] === '\\' ? 2 : 1
+  j = Math.min(j + 3, t.length)
+  for (let more = 0; more < 2 && t[j] === q[0]; more += 1) j += 1
+  return j
+}
+
+const LEXERS = { rust: lexRust, ts: lexTs, tsx: lexTs, css: lexCss, hash: lexHash, toml: lexToml }
 
 function segments(text, lang) {
   return LEXERS[lang](text)
@@ -524,13 +572,13 @@ const bodyOf = (comment) => comment.replace(/\*\/\}?$/, '').replace(MARKER, '').
 // The leading header is the file's first block, when only a shebang and blank
 // lines come before it. In Rust and TS a block that runs straight into code is
 // that item's doc, which the cap counts, so there a blank line or an import must
-// follow the header. Shell, YAML, a Dockerfile and CSS have no item doc.
+// follow the header. Shell, YAML, TOML, a Dockerfile and CSS have no item doc.
 function headerOf(info, lang, shebang) {
   let k = shebang ? 1 : 0
   while (k < info.length && info[k].kind === 'blank') k += 1
   const start = k
   while (k < info.length && (info[k].kind === 'comment' || info[k].inComment)) k += 1
-  if (lang === 'hash' || lang === 'css') return [start, k]
+  if (lang === 'hash' || lang === 'toml' || lang === 'css') return [start, k]
   const next = info[k]
   return next !== undefined && (next.kind === 'blank' || IMPORT.test(next.line)) ? [start, k] : [0, 0]
 }
@@ -1072,6 +1120,41 @@ const LEXER_CASES = [
       ['comment', '    # an indented comment'],
     ],
   },
+  {
+    name: 'toml: whole-line comments, strings holding `#` and `"""`, a trailing `#`',
+    lang: 'toml',
+    lines: [
+      ['comment', '# a comment'],
+      ['code', '[table]'],
+      ['comment', '  # an indented comment'],
+      ['code', 'a = "# not a comment"'],
+      ['code', `b = '"""' # trailing '''`],
+      ['comment', '# a comment'],
+      ['code', 'c = [ # trailing """'],
+      ['comment', '  # a comment inside an array'],
+      ['code', ']'],
+    ],
+  },
+  {
+    name: 'toml: a line opening with `#` inside either multi-line string',
+    lang: 'toml',
+    lines: [
+      ['code', 'a = """'],
+      ['code', '# string'],
+      ['code', '\\""" # an escaped quote, so still string'],
+      ['code', '# string'],
+      ['code', '"""'],
+      ['comment', '# a comment'],
+      ['code', "b = '''"],
+      ['code', '# string'],
+      ['code', "C:\\''' # a literal string has no escapes"],
+      ['comment', '# a comment'],
+      ['code', 'c = [ """x"""", """'],
+      ['code', '# string'],
+      ['code', '""" ]'],
+      ['comment', '# a comment'],
+    ],
+  },
 ]
 
 const LANG_CASES = [
@@ -1084,6 +1167,9 @@ const LANG_CASES = [
   ['.forgejo/workflows/ci.yml', 'hash'],
   ['Dockerfile', 'hash'],
   ['deploy/Dockerfile', 'hash'],
+  ['Cargo.toml', 'toml'],
+  ['crates/taiyaku-core/Cargo.toml', 'toml'],
+  ['.config/nextest.toml', 'toml'],
   ['docs/Dockerfile.md', undefined],
   ['deploy/compose.yml', undefined],
   ['scripts/permit-wait.py', undefined],
@@ -1552,6 +1638,20 @@ const CHANGE_CASES = [
     fails: [],
   },
   {
+    name: "a TOML file's header that runs straight into its first table",
+    lang: 'toml',
+    before: [],
+    after: [...lines(12, '# header'), '[table]'],
+    fails: [],
+  },
+  {
+    name: 'a marker in a trailing TOML comment, which is read as code',
+    lang: 'toml',
+    before: ['a = 1'],
+    after: ['a = 1', 'b = 1 # set on 2026-11-20'],
+    fails: [],
+  },
+  {
     name: "a CSS file's header that runs straight into its first rule",
     lang: 'css',
     before: [],
@@ -1679,8 +1779,10 @@ const BASE_CASES = [
 // branchChanges over a real repository: a rename with an edit, a deletion not
 // yet staged, an edit to a file with no final newline, an untracked file, and
 // files of no language it reads. Then judgeCheckout there, with a rule-1 hit
-// and a comment line removed in a commit after the base, so the base, HEAD and
-// the working tree each measure differently. Returns the failures.
+// in TS and one in TOML above a TOML multi-line string whose `#` line holds the
+// same marker as string, and a comment line removed in a commit after the base,
+// so the base, HEAD and the working tree each measure differently. Returns the
+// failures.
 function branchCase() {
   // A GIT_DIR or GIT_INDEX_FILE inherited from a hook would point every git
   // call below at the repository running the self-test.
@@ -1694,10 +1796,12 @@ function branchCase() {
       execFileSync('git', [...config, ...args], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
     const put = (path, text) => writeFileSync(join(dir, path), text)
     const moved = '// a\nfn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\n'
+    const toml = 'a = 1\n# set on 2026-11-20\nb = """\n# 2026-11-20\n"""\n'
     git('init', '-q')
     put('moved.rs', moved)
     put('gone.css', '/* b */\na {}\n')
     put('tail.ts', 'x()')
+    put('config.toml', 'a = 1\n')
     put('notes.md', '# notes\n')
     mkdirSync(join(dir, 'scripts'))
     put('scripts/trim.mjs', '// one\n// two\nx()\n')
@@ -1708,12 +1812,14 @@ function branchCase() {
     put('renamed.rs', '// a\nfn a() {}\nfn b() {}\n// c\nfn c() {}\nfn d() {}\n')
     rmSync(join(dir, 'gone.css'))
     put('tail.ts', 'x()\n// d')
+    put('config.toml', toml)
     put('new.ts', '// e, from #12\n')
     put('new.md', '# e\n')
     put('scripts/trim.mjs', '// one\nx()\n')
     git('commit', '-q', '-m', 'trim', '--', 'scripts/trim.mjs')
     put('scripts/trim.mjs', '// one\nx()\ny()\n')
     const want = [
+      { path: 'config.toml', oldLang: 'toml', oldText: 'a = 1\n', newText: toml, hunks: [[1, 0, 2, 4]] },
       { path: 'gone.css', oldLang: 'css', oldText: '/* b */\na {}\n', newText: '', hunks: [[1, 2, 0, 0]] },
       { path: 'renamed.rs', oldLang: 'rust', oldText: moved, newText: readFileSync(join(dir, 'renamed.rs'), 'utf8'), hunks: [[3, 0, 4, 1]] },
       { path: 'scripts/trim.mjs', oldLang: 'ts', oldText: '// one\n// two\nx()\n', newText: '// one\nx()\ny()\n', hunks: [[2, 1, 1, 0], [3, 0, 3, 1]] },
@@ -1728,6 +1834,7 @@ function branchCase() {
     const starts = [
       'scripts: comment share 0.3333 is more than 0.0050 below its budget of 0.9000, ' +
         'and this branch removed comment lines (2 at the base; now 1 comment lines, 2 code lines)',
+      'config.toml:2: a date, "2026-11-20", in a new comment',
       'new.ts:1: a pull request number, "#12", in a new comment',
     ]
     const judged = judgeCheckout(dir, base, { scripts: 0.9 }).failures

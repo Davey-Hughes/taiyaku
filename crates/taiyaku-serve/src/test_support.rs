@@ -3805,7 +3805,9 @@ pub(crate) fn with_a_pass(
     (router, state)
 }
 
-/// Long enough for any fingerprint pass in a test to end on a loaded machine.
+/// Long enough for any fingerprint pass in a test to end on a loaded machine,
+/// and short of nextest's kill in `.config/nextest.toml`, so a wait that runs
+/// out fails with its own message rather than as a bare `TIMEOUT`.
 pub(crate) const SETTLE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How often a waiting pass worker looks again in a test that watches it wait.

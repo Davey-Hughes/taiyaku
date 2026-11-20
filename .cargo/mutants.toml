@@ -1,6 +1,7 @@
-# cargo-mutants configuration. `scripts/mutants.sh` is the entry point; this
-# file holds only what every invocation needs, so that a bare `cargo mutants`
-# run by hand behaves the same as the script's.
+# cargo-mutants configuration. `scripts/mutants.sh` is the entry point. A bare
+# `cargo mutants` run by hand reads this file but not what the script adds:
+# `--gitignore=true`, which this tree cannot do without (see below), `--jobs`,
+# `--output`, and the environment the script sets.
 #
 # **It must live at `.cargo/mutants.toml`**, where cargo-mutants looks. A config
 # file that is not read fails exactly like a config file whose settings happen
@@ -37,9 +38,9 @@ all_features = true
 # /tmp for every build directory and dies with `No space left on device` — an
 # error naming neither the corpus nor the ignore file.
 #
-# A CLI flag rather than a config key in cargo-mutants 27.1, so it lives in the
-# script; this comment is here because this is where somebody will look for it.
-# See `scripts/mutants.sh`.
+# The script passes it as `--gitignore=true`; this file does not set the
+# `gitignore` key cargo-mutants also reads, and this comment is here because
+# this is where somebody will look for it. See `scripts/mutants.sh`.
 
 # **`detect.rs` and `regions.rs` are excluded.** They cost about ten minutes of
 # wall clock on the forge every time `taiyaku-cli` comes up, and that buys

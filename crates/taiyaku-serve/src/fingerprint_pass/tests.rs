@@ -990,6 +990,28 @@ fn listed_order(library: &Library) -> Vec<String> {
         .collect()
 }
 
+/// Date `files`' entries a second apart, the first newest, and check that the
+/// pass lists them in that order. The listing takes the newest `first_seen`
+/// first, and a scan dates each entry to the second it is written, so a scan
+/// that crosses a second would list a later file first.
+fn listed_in_order(library: &Library, root: &scan::Root, files: &[&str]) {
+    {
+        let conn = library.conn();
+        for (rel_path, second) in files.iter().zip((1..=files.len()).rev()) {
+            conn.execute(
+                "UPDATE scan_entry SET first_seen = ?3 WHERE root_id = ?1 AND rel_path = ?2",
+                rusqlite::params![root.id, rel_path, format!("2026-11-17 10:00:{second:02}")],
+            )
+            .expect("dates the entry");
+        }
+    }
+    assert_eq!(
+        listed_order(library),
+        files,
+        "the fixture: the listing's order"
+    );
+}
+
 /// `path` one byte longer, as a file still being copied in grows.
 fn grow(path: &Path) {
     std::fs::OpenOptions::new()
@@ -1181,6 +1203,7 @@ fn the_third_volume_is_read_once_covered_again(
     on: fn(&Library, &scan::Root),
 ) {
     let (fixture, library, root) = scanned(tag, &VOLUMES);
+    listed_in_order(&library, &root, &VOLUMES);
     let (hold_first, first_held, release_first) = gate();
     let (hold_second, second_held, release_second) = gate();
     let started = AtomicUsize::new(0);
@@ -1379,6 +1402,7 @@ fn behind_a_kicks_listing_with(
     passed_again: fn(&Library),
 ) -> BehindAListing {
     let (fixture, library, root) = scanned(tag, &VOLUMES);
+    listed_in_order(&library, &root, &VOLUMES);
     let (hold_first, first_held, release_first) = gate();
     let (hold_second, second_held, release_second) = gate();
     let (hold_over, over_held, release_over) = gate();
@@ -1655,8 +1679,9 @@ fn a_file_whose_row_is_refused_is_queued_once_however_often_the_pass_is_kicked()
 /// attempt at the kicks that follow.
 #[test]
 fn a_file_passed_over_then_attempted_is_queued_no_more() {
-    let (fixture, library, root) =
-        scanned("pass-over-then-tried", &[VOLUMES[0], VOLUMES[1], CHAPTER]);
+    let files = [VOLUMES[0], VOLUMES[1], CHAPTER];
+    let (fixture, library, root) = scanned("pass-over-then-tried", &files);
+    listed_in_order(&library, &root, &files);
     grow(&root.path.join(CHAPTER));
     let (hold_first, first_held, release_first) = gate();
     let (hold_second, second_held, release_second) = gate();
