@@ -1258,7 +1258,12 @@ fn a_file_passed_over_while_its_directory_is_paused_is_read_once_it_is_unpaused(
 
 /// A chapter has no digest until the pass takes one, so `off` can land after
 /// its check and before its digest is written. One worker is held at the
-/// volume, which keeps the pass running while `on` and a kick arrive.
+/// volume, which keeps the pass running while `on` and a kick arrive. The
+/// other is held once it has hashed the chapter, so `off` lands with both
+/// held, whichever unit is listed first and whichever worker starts first.
+/// Were `off` to land before the volume's worker had checked the volume, that
+/// worker would pass the volume over and never reach its hold. A worker held
+/// in its first unit takes no second, so the two workers take one each.
 fn a_chapter_losing_coverage_as_it_is_hashed_is_read_once_covered_again(
     tag: &str,
     off: fn(&Library, &scan::Root),
@@ -1266,15 +1271,13 @@ fn a_chapter_losing_coverage_as_it_is_hashed_is_read_once_covered_again(
 ) {
     let (fixture, library, root) = scanned(tag, &[VOLUMES[0], CHAPTER]);
     let (hold, held, release) = gate();
+    let (hold_hashed, hashed, release_hashed) = gate();
     let volume = root.path.join(VOLUMES[0]);
     let armed = AtomicBool::new(true);
     let settings = PassSettings {
-        after_hashing: Some(Arc::new({
-            let (library, root) = (Arc::clone(&library), root.clone());
-            move |_| {
-                if armed.swap(false, SeqCst) {
-                    off(&library, &root);
-                }
+        after_hashing: Some(Arc::new(move |_| {
+            if armed.swap(false, SeqCst) {
+                hold_hashed();
             }
         })),
         ..hooked(
@@ -1294,7 +1297,14 @@ fn a_chapter_losing_coverage_as_it_is_hashed_is_read_once_covered_again(
     kick(&state);
     held.recv_timeout(SETTLE)
         .expect("a worker holds the volume");
+    hashed
+        .recv_timeout(SETTLE)
+        .expect("the other worker has hashed the chapter");
     let job = the_job(&state);
+    off(&library, &root);
+    release_hashed
+        .send(())
+        .expect("the chapter's worker goes on");
     until("the chapter is passed over", || counts(&job).0 == Some(1));
     assert_eq!(
         outcome_of(&library, &root, CHAPTER),
