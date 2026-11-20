@@ -81,6 +81,15 @@ cjpeg -quality 85 -outfile "$tmp/trailing-bare.jpg" "$tmp/trailing.ppm"
 { cat "$tmp/trailing-bare.jpg"; printf 'bytes after the end marker'; } >"$out/trailing.jpg"
 enc --lossless_jpeg=1 "$out/trailing.jpg" "$out/trailing.jxl"
 
+# A page carrying libjxl's own Display P3 profile, embedded in its PNG (so not
+# "${png[@]}", whose -strip would drop it). Lossless: cjxl keeps a profile
+# whole on a lossless page and turns it into an enum encoding on a lossy one.
+page 8 "$tmp/icc-page.png"
+enc -d 0 -x color_space=RGB_D65_DCI_Rel_SRG "$tmp/icc-page.png" "$tmp/p3.jxl"
+djxl --quiet "$tmp/p3.jxl" "$tmp/p3.png" --icc_out="$tmp/p3.icc"
+magick "$tmp/icc-page.png" -profile "$tmp/p3.icc" -define png:exclude-chunk=date,time PNG24:"$tmp/icc.png"
+enc -d 0 "$tmp/icc.png" "$out/icc.jxl"
+
 # A metadata bomb: recompressed.jxl with a brob box of Exif after ftyp, whose
 # short brotli stream inflates to 64 MiB of zeros, far past the decoder's cap.
 # Small enough that a test watched without the cap still runs.
@@ -118,7 +127,7 @@ zeros_box Exif 16777216 | on_lossy >"$out/metadata-at-cap.jxl"
 zeros_box Exif 16777217 | on_lossy >"$out/metadata-past-cap.jxl"
 { zeros_box Exif 9437184; zeros_box 'xml ' 9437184; } | on_lossy >"$out/metadata-two-9mib.jxl"
 
-for f in lossy lossless grey alpha large recompressed; do ref "$f"; done
+for f in lossy lossless grey alpha large recompressed icc; do ref "$f"; done
 # djxl writes every frame of an animation to a PNG; a PPM takes the first.
 djxl --quiet --num_threads=0 "$out/animated.jxl" "$tmp/animated.ppm"
 magick "$tmp/animated.ppm" "${png[@]}" PNG24:"$out/animated.djxl.png"
@@ -130,6 +139,8 @@ oxipng --quiet --nx --opt max --strip safe "$out"/*.png
 [ "$(brotli -dc "$tmp/bomb.br" | wc -c)" -eq 67108864 ] || fail "bomb.jxl's box does not inflate to 64 MiB"
 [ "$(head -c 2 "$out/lossy.jxl" | od -An -tx1 | tr -d ' \n')" = ff0a ] ||
   fail "lossy.jxl is not a bare codestream"
+[ "$(head -c 2 "$out/icc.jxl" | od -An -tx1 | tr -d ' \n')" = ff0a ] ||
+  fail "icc.jxl is not a bare codestream"
 [ "$(head -c 12 "$out/recompressed.jxl" | od -An -tx1 | tr -d ' \n')" = 0000000c4a584c200d0a870a ] ||
   fail "recompressed.jxl is not a container"
 djxl --quiet "$out/recompressed.jxl" "$tmp/rebuilt.jpg"
@@ -139,10 +150,12 @@ cmp -s "$tmp/rebuilt.jpg" "$out/recompressed.jpg" || fail "recompressed.jxl does
 djxl --quiet "$out/trailing.jxl" "$tmp/trailing-rebuilt.jpg"
 cmp -s "$tmp/trailing-rebuilt.jpg" "$out/trailing.jpg" || fail "trailing.jxl does not rebuild trailing.jpg, tail and all"
 jxlinfo "$out/grey.jxl" | grep -q Grayscale || fail "grey.jxl is not one channel"
+jxlinfo "$out/icc.jxl" | grep -q 'ICC profile' || fail "icc.jxl carries no ICC profile"
 same "$out/lossless.djxl.png" "$out/lossless.png" || fail "lossless.jxl is not lossless"
 same "$out/grey.djxl.png" "$tmp/grey.png" || fail "grey.jxl is not lossless"
 same "$out/alpha.djxl.png" "$tmp/alpha.png" || fail "alpha.jxl is not lossless"
 same "$out/large.djxl.png" "$tmp/large.png" || fail "large.jxl is not lossless"
+same "$out/icc.djxl.png" "$tmp/icc.png" || fail "icc.jxl is not lossless"
 [ "$(magick "$out/alpha.djxl.png" -crop 48x64+0+0 +repage -channel RGBA -separate -format '%[max] ' info:)" = "0 0 0 0 " ] ||
   fail "alpha.djxl.png's transparent quarter is not black at alpha 0"
 djxl --quiet --num_threads=0 --output_frames "$out/animated.jxl" "$tmp/frame.ppm"

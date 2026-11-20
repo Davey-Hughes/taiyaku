@@ -30602,3 +30602,187 @@ runtime package is `libarchive13t64`, and the Dockerfile names it.
 6.13+ds-1, its `nodejs` 20.19.2+dfsg-1+deb13u3, and its glibc 2.41.
 `rust:1-trixie` carries no node, sets `RUST_VERSION`, and ships `pkgconf`
 1.8.1-4, so `pkg-config` is there.
+
+## JPEG XL pages: a cap on the embedded colour profile (O350, 2026-11-19)
+
+Design: `docs/superpowers/specs/2026-11-19-jxl-icc-cap-design.md`. The logs
+named are under `.superpowers/sdd/jxl-icc-cap-evidence/`.
+
+**The hand-built page.** `jxl/icc_pages.rs` builds, for the tests, a bare
+codestream of 23 bytes whose header wants an ICC profile and declares its
+encoded size as 2^28, the largest jxl-color's `read_icc` accepts. After the
+size comes the start of the profile's stream: an entropy code, then symbols
+that read as a decoded size of 2^28 and an empty command stream. They pass
+each check `read_icc` makes before it fills its buffer: the encoded size is
+at most 2^28, the command stream fits inside it, and the decoded size is at
+most 2^28 and not far smaller than the encoded one. So jxl-oxide, with
+nothing ahead of it, zero-fills a buffer of the declared size and then runs
+out of bits. `the_hand_built_pages_declare_what_they_say` pins the bytes and
+reads the header and the size back through jxl-oxide's own parser, and a
+container made by `in_jxlc` or `in_jxlp` back through jxl-oxide's own
+container reader. `every_shape` gives each page bare, whole in one `jxlc`
+box, and split across `jxlp` boxes so that the header and the size each run
+across a box boundary.
+
+**The reproduction.** Written before the check, the two process tests in
+`jxl/process_tests.rs`, each run in a process of its own, failed at their
+memory assertion (`reproduction.log`): decoding the 2^28 page through the
+hook raised the process's peak resident memory (`VmHWM`) by 275,378,176
+bytes, and `jxl::rebuilt_jpeg` on the same page split across `jxlp` boxes
+raised it by 273,653,760 bytes. With the check both pass. Each asserts a
+rise below 128 MiB, then, as a control measured afresh, that jxl-oxide
+reading the page with no check ahead of it raises the peak by at least that
+much. The reproduction measures what O350 had only read in the source.
+
+**The cap.** `jxl::icc_fits` takes the page's codestream through
+`jxl::codestream` (the bare page, a `jxlc` box's payload, or the `jxlp`
+payloads joined without their index), parses jxl-oxide's `ImageHeader` from
+it and, where the colour encoding wants a profile, reads the encoded size
+the header declares; above `ICC_CAP`, 64 KiB, the page is refused. A size of
+exactly 65,536 bytes passes and one byte more is refused. The hook checks it
+beside `metadata_fits`, before jxl-oxide sees the page, and refuses the page
+as it refuses a metadata bomb (`ImageError::Limits`); `rebuilt_jpeg` checks
+it beside `metadata_fits` too and makes no JPEG. `cover::fits_within`,
+`cover::decode_limited`, `fingerprint::decode_page` and the cut-short check
+reach jxl-oxide only through the hook. A page sent as stored is never
+parsed, so the cap does not reach it. A page whose size goes unread passes,
+since jxl-oxide fills nothing for it either: it stops where the check does
+at a header that does not parse or that ends before the size, and a header
+that wants no profile has none to fill.
+
+**The shapes.** A page declaring 2^28, or one byte over the cap, is refused
+in every shape by the check
+(`a_colour_profile_declared_over_the_cap_is_refused_in_every_shape`) and
+through the hook
+(`a_page_declaring_a_colour_profile_over_the_cap_is_refused`), and the size
+asked before a decode is refused too
+(`the_size_of_a_page_declaring_a_colour_profile_over_the_cap_is_refused`).
+At the cap the page passes in every shape and reaches jxl-oxide, which
+refuses it as a broken page, `ImageError::Decoding` and not the cap's
+`Limits` (`a_page_declaring_a_colour_profile_at_the_cap_reaches_jxl_oxide`).
+The page cut inside its header or inside its size passes the check and is
+refused through the hook as a broken page
+(`a_header_that_ends_before_its_profile_size_passes`). A page that wants no
+profile, followed by bits that would read as a size of 2^28, passes in every
+shape (`a_page_that_wants_no_colour_profile_is_not_read_for_one`).
+
+**A real profile.** `fixtures/jxl/icc.jxl`, made by `make.sh`, is a lossless
+page carrying libjxl's own Display P3 profile, which `cjxl` kept whole from
+a PNG; jxlinfo and `djxl --icc_out` each read the profile as 516 bytes
+(`icc-facts.log`). `a_page_with_a_real_colour_profile_passes_the_check`
+first reads through jxl-oxide that `icc.jxl` carries a profile of its own
+and `lossless.jxl` none, then that the check passes it; its row in
+`every_fixture_decodes_through_image_reader_as_djxl_does` decodes it through
+the hook exactly as djxl does.
+
+**What the cap leaves, and why it is 64 KiB.** A profile the cap passes is
+still read whole, decoded and parsed outside every limit: jxl-oxide's
+`try_init` reads it with `read_icc` and decodes it with `decode_icc`, and
+building the render context parses the result with
+`ColorEncodingWithProfile::with_icc`, which keeps a copy of a profile it
+cannot turn into an enum encoding. These notes first said `decode_icc`
+writes only what the stream carries; the whole-branch review found that
+wrong, and jxl-color 0.11.0's source bears it out: a tag command writes up
+to 36 bytes and most read no data, and the tag loop returns at the end of
+the commands without comparing what it wrote against the decoded size the
+stream declares. So the decoded profile grows with the encoded one, and the
+cap was 1 MiB until the owner's ruling of 2026-11-19 lowered it to 64 KiB,
+so that the worst a page's profile costs, decoded and parsed once, stays
+within what its metadata boxes may inflate to; the cost is a genuine profile
+that encodes above 64 KiB, refused with its page. A lossless CMYK JPEG XL
+page carrying Ghostscript's `default_cmyk.icc` (187,484 bytes) declares an
+encoded profile of 187,433 bytes and is refused (`cmyk-profile.log`; `cjxl`
+0.12.0 would not transcode a CMYK JPEG, so the page was made from a CMYK
+PAM image).
+
+`icc_pages::expanding_profile` builds, after the review's probe, the
+encoded profile that decodes to the most from a given length: the decoded
+size 2^28, a tag count of three per command, every command tag code 2
+(rTRC, which `decode_icc` writes with gTRC and bTRC), then 128 header
+bytes that give the decoded profile's size field its real length, so the
+parse reads every entry; bytes left over are data no command reads.
+`the_worst_profile_the_cap_passes_is_decoded_and_parsed_within_the_metadata_cap`,
+in a process of its own, decodes and parses it at `ICC_CAP` bytes and
+asserts the rise in peak resident memory is below `METADATA_CAP`, 16 MiB,
+after checking that the profile decoded to at least 35 times its length and
+that the parse kept a copy of it. It calls jxl-color, a dev-dependency at
+the version jxl-oxide resolves to, rather than decoding a page: `read_icc`
+hands `decode_icc` such a stream, and a page carrying it would have to be
+entropy-coded by hand. In a debug test build under the system allocator
+(`worst-case.log`): at 65,536 bytes the profile decoded to 2,354,424 bytes
+and the decode and parse raised the peak by 11,743,232 and 11,214,848 bytes
+in two runs; at 1,048,576, the first cap, it decoded to 37,743,828 bytes and
+raised the peak by 153,677,824 and 154,030,080, and the test failed.
+
+Not measured: a page through the hook. A decode there builds two images,
+jxl-oxide's decoder and then the first-frame check's while the first is
+held, and each decodes and parses the profile once and keeps the decoded
+profile and, on a page not stored in XYB, the parse's copy. Changed for two
+runs to decode and parse the stream, keep both results and do it again, the
+test read rises of 15,642,624 and 15,405,056 bytes at 65,536
+(`worst-case.log`), under 16 MiB by little. A page with a frame to render
+has its profile parsed again when the colour transform is built, more than
+once for a page not stored in XYB (jxl-render's `cache_color_transform`
+parses it in `with_icc`, then in `icc_tf` through `suggested_hdr_tf`), also
+not measured. Below the cap, too, jxl-oxide still reads a declared profile
+again after every 4 KiB of input until the header is whole; that cost is
+bounded by the cap and was not measured. The decoded profile's declared size
+is not checked: it is the first value inside the entropy-coded stream, so
+reading it means entropy-decoding, and it would not bound what `decode_icc`
+writes (the spec's approach 4).
+
+**Watched failing.** Every defect below was put in by hand and the test
+watched failing; `mutations.md` has the command, the failing tests and
+the first message of each, with a log per mutation.
+
+- M1, the cap as `64 + 1024`, and M2, `<=` as `<`:
+  `a_colour_profile_declared_at_the_cap_passes_in_every_shape` and
+  `a_page_declaring_a_colour_profile_at_the_cap_reaches_jxl_oxide`; M1
+  also the worst-profile test, at its check that the profile decoded to 35
+  times its length, which 1,088 bytes is too short to reach. (Before the
+  cap was lowered, the same two at 1 MiB, as `1024 + 1024`.)
+- M14, the cap put back to `1024 * 1024`, and M15, the cap one byte higher:
+  `a_colour_profile_declared_over_the_cap_is_refused_in_every_shape` and
+  `a_page_declaring_a_colour_profile_over_the_cap_is_refused`, at
+  65,537 bytes; M14 also
+  `the_worst_profile_the_cap_passes_is_decoded_and_parsed_within_the_metadata_cap`,
+  at its memory assertion.
+- M3, `icc_fits` passing every page: the over-the-cap tests, by the check
+  and through the hook, the size test and the two process tests on the
+  2^28 page.
+- M4, the hook's check taken out:
+  `a_page_declaring_a_huge_colour_profile_is_refused_before_jxl_oxide_fills_it`,
+  `a_page_declaring_a_colour_profile_over_the_cap_is_refused` and the size
+  test. M5, `rebuilt_jpeg`'s taken out:
+  `a_page_declaring_a_huge_colour_profile_is_not_rebuilt_and_never_filled`
+  alone.
+- M6, a `jxlp` payload read with its index; M7, the codestream ending after
+  the first box; M8, a container read as a bare page:
+  `a_colour_profile_declared_over_the_cap_is_refused_in_every_shape`,
+  `a_page_declaring_a_colour_profile_over_the_cap_is_refused` and
+  `a_page_declaring_a_huge_colour_profile_is_not_rebuilt_and_never_filled`.
+- M9, `want_icc()` inverted: the tests M3 fails and
+  `a_page_that_wants_no_colour_profile_is_not_read_for_one`.
+- M10, a size that cannot be read refused, and M11, a header that does not
+  parse refused: `a_header_that_ends_before_its_profile_size_passes`, by its
+  check assertion and, with that taken out for a run, by its decode through
+  the hook, which gave `Limits`.
+- M12, the cap as 16 bytes, and M13, every page that wants a profile
+  refused: `a_page_with_a_real_colour_profile_passes_the_check`, the
+  `icc.jxl` row of `every_fixture_decodes_through_image_reader_as_djxl_does`
+  and the two at-the-cap tests; M13 also
+  `a_header_that_ends_before_its_profile_size_passes`.
+- `icc.jxl` swapped for a lossy encode, which `cjxl` gives an enum colour
+  encoding and no profile:
+  `a_page_with_a_real_colour_profile_passes_the_check`, at its fixture
+  check.
+- `expanding_profile` made to write tag code 4, one 12-byte entry a
+  command: the worst-profile test, at its fixture check. Its check that the
+  parse kept a copy was not watched failing; no profile was built that
+  jxl-color parses as an enum encoding.
+
+A cargo-mutants sweep over the branch's diff, run after the review's fixes
+and the branch's first rebase onto main (`f5fa08df`), caught all 26 mutants
+it made, none of them unviable (`docs/mutants-baseline.md`, 2026-11-19). The
+later rebase onto main changed no code the sweep mutated. cargo-mutants
+makes no mutant of the parts M6, M7, M10 and M11 put wrong by hand.

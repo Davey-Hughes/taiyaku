@@ -2696,6 +2696,7 @@ dependencies = [
  "futures-core",
  "image",
  "jxl-bitstream",
+ "jxl-color",
  "jxl-grid",
  "jxl-oxide",
  "jxl-oxide-common",

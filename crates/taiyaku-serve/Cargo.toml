@@ -31,8 +31,10 @@ futures-core = "0.3.33"
 image = "0.25.9"
 # Already in the dependency tree via jxl-oxide — named directly here only so
 # `jxl.rs` can read a `jbrd` box's header and find the compressed stream after
-# it, which jxl-oxide inflates with no limit. Same version jxl-oxide resolves
-# to, so the resolver unifies one copy rather than two.
+# it, which jxl-oxide inflates with no limit, and so `icc_fits` can read the
+# encoded colour profile size a page's header declares, which jxl-oxide fills
+# with no limit. Same version jxl-oxide resolves to, so the resolver unifies
+# one copy rather than two.
 jxl-bitstream = "1.1.0"
 # Already in the dependency tree via jxl-oxide — named directly here only so
 # `jxl.rs` can name `jxl_grid::OutOfMemory`, which jxl-oxide does not
@@ -43,11 +45,13 @@ jxl-grid = "0.6.2"
 # JPEG XL pages, decoded wherever `image` decodes, through the hook `jxl.rs`
 # registers. Chosen because it counts the grids it decodes into against
 # `Limits::max_alloc`, not only the output buffer `image` reserves first. It
-# does not count the metadata boxes it inflates; `jxl.rs` caps those.
+# does not count the metadata boxes it inflates or the colour profile it
+# reads; `jxl.rs` caps those.
 jxl-oxide = { version = "0.12.6", features = ["image"] }
 # Already in the dependency tree via jxl-oxide — named directly here only for
-# `Bundle`, the trait that parses that `jbrd` header. Same version jxl-oxide
-# resolves to, so the resolver unifies one copy rather than two.
+# `Bundle`, the trait that parses that `jbrd` header and, in `icc_fits`, a
+# page's image header. Same version jxl-oxide resolves to, so the resolver
+# unifies one copy rather than two.
 jxl-oxide-common = "1.0.0"
 # Already in the dependency tree via taiyaku-library — named directly here
 # only so `works.rs`'s bridge from a slug-keyed `Work` to the library's
@@ -89,6 +93,12 @@ rusqlite = { version = "0.43", features = ["hooks", "trace"] }
 # priority. The version `taiyaku-cli` names, so the resolver unifies one copy
 # rather than two.
 rayon = "1.12.0"
+# Already in the dependency tree via jxl-oxide — named directly here only so
+# `jxl/process_tests.rs` can decode and parse an encoded colour profile as
+# jxl-oxide does once it has read one, and measure what that costs at
+# `ICC_CAP`. Same version jxl-oxide resolves to, so the resolver unifies one
+# copy rather than two.
+jxl-color = "0.11.0"
 # `test-util` for the cache sweep's schedule test: a paused clock runs through
 # a day's wait without taking it.
 tokio = { version = "1", features = ["test-util"] }

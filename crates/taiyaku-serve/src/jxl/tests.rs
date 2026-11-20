@@ -92,6 +92,7 @@ fn every_fixture_decodes_through_image_reader_as_djxl_does() {
         ("large", 0),
         ("alpha", 0),
         ("animated", 0),
+        ("icc", 0),
         ("lossy", T),
         ("recompressed", T),
     ] {
@@ -591,4 +592,214 @@ fn an_empty_box_ahead_of_a_bomb_does_not_hide_it() {
         "bomb.jxl behind an empty box: {}",
         outcome(&decoded)
     );
+}
+
+/// The pages as jxl-oxide's own readers take them, apart from the code under
+/// test: each header asks for what its builder says, and each container holds
+/// the bare codestream.
+#[test]
+fn the_hand_built_pages_declare_what_they_say() {
+    assert_eq!(
+        icc_pages::declaring(1 << 28),
+        [
+            0xff, 0x0a, 0x41, 0x40, 0x08, 0x07, 0x80, 0x00, 0x01, 0x06, 0x90, 0xff, 0x00, 0x0d,
+            0x10, 0x20, 0x00, 0xe8, 0x5f, 0x00, 0x00, 0x00, 0x00
+        ],
+        "the bytes of the page declaring 2^28"
+    );
+    assert_eq!(
+        icc_pages::wanting_no_profile(),
+        [
+            0xff, 0x0a, 0x41, 0x40, 0xe4, 0x00, 0x10, 0x20, 0xc0, 0x00, 0xf2, 0x1f, 0xa0, 0x01,
+            0x02, 0x04, 0x00, 0xfd, 0x0b, 0x00, 0x00, 0x00
+        ],
+        "the bytes of the page wanting no profile"
+    );
+
+    for enc_size in [1 << 28, 1 << 16, (1 << 16) + 1] {
+        let page = icc_pages::declaring(enc_size);
+        let mut bits = jxl_bitstream::Bitstream::new(&page);
+        let header = jxl_oxide::ImageHeader::parse(&mut bits, ())
+            .unwrap_or_else(|e| panic!("the header of the page declaring {enc_size}: {e}"));
+        assert!(
+            header.metadata.colour_encoding.want_icc(),
+            "the page declaring {enc_size} wants a profile"
+        );
+        assert_eq!(
+            bits.read_u64().ok(),
+            Some(enc_size),
+            "the page declaring {enc_size} declares it"
+        );
+    }
+    let page = icc_pages::wanting_no_profile();
+    let mut bits = jxl_bitstream::Bitstream::new(&page);
+    let header = jxl_oxide::ImageHeader::parse(&mut bits, ())
+        .unwrap_or_else(|e| panic!("the header of the page wanting no profile: {e}"));
+    assert!(
+        !header.metadata.colour_encoding.want_icc(),
+        "the page wanting no profile wants none"
+    );
+    assert_eq!(
+        bits.read_u64().ok(),
+        Some(1 << 28),
+        "the page wanting no profile reads as a huge size where a profile's would be"
+    );
+
+    let codestream = icc_pages::declaring(1 << 28);
+    for (shape, page) in icc_pages::every_shape(&codestream) {
+        let mut parser = jxl_bitstream::ContainerParser::new();
+        let mut joined = Vec::new();
+        for event in parser.feed_bytes(&page) {
+            let event = event.unwrap_or_else(|e| panic!("jxl-oxide reads the {shape} page: {e}"));
+            if let jxl_bitstream::ParseEvent::Codestream(part) = event {
+                joined.extend_from_slice(part);
+            }
+        }
+        assert_eq!(
+            joined, codestream,
+            "jxl-oxide reads the {shape} page as the bare codestream"
+        );
+    }
+    let jxlp = icc_pages::in_jxlp(&codestream);
+    let mut kinds = Vec::new();
+    let mut rest = &jxlp[JXL_CONTAINER.len()..];
+    while let Some(size) = rest.get(..4) {
+        let size = usize::try_from(u32::from_be_bytes(size.try_into().unwrap())).unwrap();
+        kinds.push(rest[4..8].to_vec());
+        rest = &rest[size..];
+    }
+    assert_eq!(
+        kinds, [b"jxlp"; 3],
+        "the jxlp page is its signature and three jxlp boxes"
+    );
+}
+
+#[test]
+fn a_colour_profile_declared_over_the_cap_is_refused_in_every_shape() {
+    for enc_size in [1 << 28, (1 << 16) + 1] {
+        for (shape, page) in icc_pages::every_shape(&icc_pages::declaring(enc_size)) {
+            assert!(
+                !icc_fits(&page),
+                "the {shape} page declaring a profile of {enc_size} bytes passed"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_colour_profile_declared_at_the_cap_passes_in_every_shape() {
+    let enc_size = 1 << 16;
+    for (shape, page) in icc_pages::every_shape(&icc_pages::declaring(enc_size)) {
+        assert!(
+            icc_fits(&page),
+            "the {shape} page declaring a profile of {enc_size} bytes was refused"
+        );
+    }
+}
+
+/// Read for one, the bits after this page's header would declare a profile
+/// far over the cap.
+#[test]
+fn a_page_that_wants_no_colour_profile_is_not_read_for_one() {
+    for (shape, page) in icc_pages::every_shape(&icc_pages::wanting_no_profile()) {
+        assert!(
+            icc_fits(&page),
+            "the {shape} page wanting no profile was refused"
+        );
+    }
+}
+
+/// jxl-oxide stops on such a page where the check does, before it fills
+/// anything, and the page is refused as a broken one, not as one over budget.
+#[test]
+fn a_header_that_ends_before_its_profile_size_passes() {
+    register();
+    let page = icc_pages::declaring(1 << 28);
+    for (length, cut) in [(5, "in the header"), (8, "in the profile's size")] {
+        assert!(
+            icc_fits(&page[..length]),
+            "the bare page cut to {length} bytes, {cut}, was refused by the check"
+        );
+        let decoded = decode(&page[..length]);
+        assert!(
+            matches!(decoded, Err(ImageError::Decoding(_))),
+            "the bare page cut to {length} bytes, {cut}: {}",
+            outcome(&decoded)
+        );
+    }
+}
+
+#[test]
+fn a_page_declaring_a_colour_profile_over_the_cap_is_refused() {
+    register();
+    for enc_size in [1 << 28, (1 << 16) + 1] {
+        for (shape, page) in icc_pages::every_shape(&icc_pages::declaring(enc_size)) {
+            let decoded = decode(&page);
+            assert!(
+                refused_over_the_cap(&decoded),
+                "the {shape} page declaring a profile of {enc_size} bytes: {}",
+                outcome(&decoded)
+            );
+        }
+    }
+}
+
+/// Refused, not read: `into_dimensions` builds the decoder, and jxl-oxide
+/// reads the profile with the header.
+#[test]
+fn the_size_of_a_page_declaring_a_colour_profile_over_the_cap_is_refused() {
+    register();
+    let enc_size = 1 << 28;
+    let dimensions = ImageReader::new(Cursor::new(icc_pages::declaring(enc_size)))
+        .with_guessed_format()
+        .expect("guessing reads from memory")
+        .into_dimensions();
+    assert!(
+        refused_over_the_cap(&dimensions),
+        "the dimensions of the bare page declaring a profile of {enc_size} bytes: {dimensions:?}"
+    );
+}
+
+/// Passed on: the page ends inside its profile's stream, so jxl-oxide refuses
+/// it as broken, a refusal of its own and not the cap's.
+#[test]
+fn a_page_declaring_a_colour_profile_at_the_cap_reaches_jxl_oxide() {
+    register();
+    let enc_size = 1 << 16;
+    for (shape, page) in icc_pages::every_shape(&icc_pages::declaring(enc_size)) {
+        let decoded = decode(&page);
+        assert!(
+            matches!(decoded, Err(ImageError::Decoding(_))),
+            "the {shape} page declaring a profile of {enc_size} bytes: {}",
+            outcome(&decoded)
+        );
+    }
+}
+
+/// A page cjxl made with a profile of its own, Display P3 and not sRGB, is read
+/// for the profile's size and passes.
+#[test]
+fn a_page_with_a_real_colour_profile_passes_the_check() {
+    let page = jxl_fixture("icc.jxl");
+    assert!(
+        page.starts_with(JXL_CODESTREAM),
+        "the fixture: icc.jxl is a bare codestream"
+    );
+    let embedded = |name: &str| {
+        read_page(jxl_fixture(name), usize::MAX)
+            .unwrap_or_else(|e| panic!("jxl-oxide reads {name}: {e}"))
+            .original_icc()
+            .map(<[u8]>::len)
+    };
+    assert!(
+        embedded("icc.jxl").is_some_and(|len| len > 0),
+        "the fixture: icc.jxl carries a colour profile of its own"
+    );
+    assert_eq!(
+        embedded("lossless.jxl"),
+        None,
+        "the control: lossless.jxl carries none"
+    );
+
+    assert!(icc_fits(page), "the check refused icc.jxl's real profile");
 }

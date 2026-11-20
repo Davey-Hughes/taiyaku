@@ -5,8 +5,11 @@
 //! `ImageReader::with_guessed_format` in the process decodes JPEG XL. The
 //! grids a decode renders into count against the caller's `max_alloc`; the
 //! metadata boxes jxl-oxide inflates do not, so a page whose boxes would
-//! inflate past `METADATA_CAP` is refused before jxl-oxide reads it.
+//! inflate past `METADATA_CAP` is refused before jxl-oxide reads it. Nor does
+//! the colour profile a header declares, so a page declaring one over
+//! `ICC_CAP` is refused there too.
 
+use std::borrow::Cow;
 use std::io::{Cursor, Read as _};
 use std::sync::{Arc, Once};
 
@@ -28,6 +31,15 @@ use crate::source::{JXL_CODESTREAM, JXL_CONTAINER};
 /// rebuild puts back; a JPEG keeps each segment under 64 KiB, so 16 MiB is
 /// room for far more than a page carries.
 const METADATA_CAP: usize = 16 * 1024 * 1024;
+
+/// The largest encoded ICC profile a page's header may declare. Outside every
+/// limit a caller sets, jxl-oxide fills a buffer of the declared size once it
+/// has read the profile's first 18 bytes, and fills it again after every
+/// 4 KiB of input until the header is whole; it then decodes the profile,
+/// which can be many times the encoded size, and parses it. The cap keeps the
+/// worst of one decode and parse within `METADATA_CAP` (O350). A genuine
+/// profile that encodes larger is refused with its page.
+const ICC_CAP: u64 = 64 * 1024;
 
 /// What a decode on this thread renders on. jxl-oxide's default is rayon's
 /// shared pool, whose threads keep the priority of the thread that first used
@@ -59,8 +71,9 @@ pub fn register() {
                 let mut page = Vec::new();
                 reader.read_to_end(&mut page)?;
                 // Before jxl-oxide sees the page: it inflates the boxes ahead
-                // of the codestream while it reads the header.
-                if !metadata_fits(&page) {
+                // of the codestream while it reads the header, and reads the
+                // colour profile the header declares there too.
+                if !metadata_fits(&page) || !icc_fits(&page) {
                     return Err(ImageError::Limits(LimitError::from_kind(
                         LimitErrorKind::InsufficientMemory,
                     )));
@@ -189,7 +202,7 @@ fn out_of_memory_as_limits(error: ImageError) -> ImageError {
 /// re-encode and adds no second generation of loss. Its allocations count
 /// against `MAX_DECODE_ALLOC`, the ceiling every decode here keeps.
 pub(crate) fn rebuilt_jpeg(page: &[u8]) -> Option<Vec<u8>> {
-    if !metadata_fits(page) {
+    if !metadata_fits(page) || !icc_fits(page) {
         return None;
     }
     let ceiling = usize::try_from(MAX_DECODE_ALLOC).unwrap_or(usize::MAX);
@@ -223,6 +236,45 @@ fn metadata_fits(page: &[u8]) -> bool {
     }
     reconstruction_stream(&reconstruction)
         .is_none_or(|stream| inflated_length(stream, left) <= left)
+}
+
+/// Whether the encoded colour profile the page's header declares, where it
+/// wants one, stays within `ICC_CAP`. A page whose size goes unread passes,
+/// since jxl-oxide fills nothing for it either: it stops where the check does
+/// at a header that does not parse or that ends before the profile's size,
+/// and a header that wants no profile has none to fill.
+fn icc_fits(page: &[u8]) -> bool {
+    let codestream = codestream(page);
+    let mut bits = jxl_bitstream::Bitstream::new(&codestream);
+    let Ok(header) = jxl_oxide::ImageHeader::parse(&mut bits, ()) else {
+        return true;
+    };
+    if !header.metadata.colour_encoding.want_icc() {
+        return true;
+    }
+    match bits.read_u64() {
+        Ok(size) => size <= ICC_CAP,
+        Err(_) => true,
+    }
+}
+
+/// The codestream jxl-oxide reads from a page: a container's `jxlc` payload
+/// and `jxlp` payloads, each `jxlp` without its index, joined in box order.
+/// Any other page is read as it is, a bare codestream or bytes jxl-oxide
+/// refuses at the signature.
+fn codestream(page: &[u8]) -> Cow<'_, [u8]> {
+    if !page.starts_with(JXL_CONTAINER) {
+        return Cow::Borrowed(page);
+    }
+    let mut joined = Vec::new();
+    for (kind, payload) in boxes(page) {
+        if kind == *b"jxlc" {
+            joined.extend_from_slice(payload);
+        } else if kind == *b"jxlp" {
+            joined.extend_from_slice(payload.get(4..).unwrap_or_default());
+        }
+    }
+    Cow::Owned(joined)
 }
 
 /// A container's boxes as (type, payload), in order, the last cut where the
@@ -277,6 +329,8 @@ fn inflated_length(compressed: &[u8], limit: usize) -> usize {
     total
 }
 
+#[cfg(test)]
+mod icc_pages;
 #[cfg(test)]
 mod process_tests;
 #[cfg(test)]

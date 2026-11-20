@@ -4029,6 +4029,8 @@ pub(crate) fn jxl_fixture(name: &str) -> &'static [u8] {
         "bomb.jxl",
         "grey.djxl.png",
         "grey.jxl",
+        "icc.djxl.png",
+        "icc.jxl",
         "large.djxl.png",
         "large.jxl",
         "lossless.djxl.png",

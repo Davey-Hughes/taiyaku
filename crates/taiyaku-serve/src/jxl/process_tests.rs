@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use image::{DynamicImage, ImageReader, ImageResult};
 
-use super::{rebuilt_jpeg, register};
+use super::{ICC_CAP, METADATA_CAP, icc_pages, rebuilt_jpeg, register};
 use crate::fingerprint_pass::priority;
 use crate::test_support::{self, jxl_fixture};
 
@@ -405,4 +405,141 @@ fn serve_registers_the_jpeg_xl_decoder() {
         }
         runtime.shutdown_background();
     });
+}
+
+/// The size the hand-built pages declare, the most jxl-oxide fills: far above
+/// what the rest of a process of its own holds at its peak, so half of it
+/// tells a fill from everything else.
+const ZERO_FILL: u64 = 1 << 28;
+
+/// The process's peak resident memory so far.
+fn peak_resident_bytes() -> u64 {
+    let status = std::fs::read_to_string("/proc/self/status").expect("reads this process's status");
+    let line = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .expect("the status has a VmHWM line");
+    let kib: u64 = line
+        .trim()
+        .strip_suffix("kB")
+        .expect("VmHWM is in kB")
+        .trim()
+        .parse()
+        .expect("VmHWM is a number");
+    kib * 1024
+}
+
+/// What `work` gave, and how far it raised the process's peak resident memory.
+fn rise_in_peak<T>(work: impl FnOnce() -> T) -> (T, u64) {
+    let before = peak_resident_bytes();
+    let given = work();
+    (given, peak_resident_bytes() - before)
+}
+
+/// The control, after the check's own measurement since a peak never falls:
+/// jxl-oxide reading the page with nothing of taiyaku's ahead of it fills the
+/// declared profile, so a smaller rise before it was the check's doing.
+fn jxl_oxide_alone_fills_the_profile(page: &[u8]) {
+    let (read, rise) = rise_in_peak(|| super::read_page(page, usize::MAX));
+    assert!(
+        read.is_err(),
+        "the control: jxl-oxide read the hand-built page"
+    );
+    assert!(
+        rise >= ZERO_FILL / 2,
+        "the control: jxl-oxide alone raised peak resident memory by only {rise} bytes"
+    );
+}
+
+#[test]
+fn a_page_declaring_a_huge_colour_profile_is_refused_before_jxl_oxide_fills_it() {
+    alone(
+        "a_page_declaring_a_huge_colour_profile_is_refused_before_jxl_oxide_fills_it",
+        || {
+            register();
+            let page = icc_pages::declaring(ZERO_FILL);
+
+            let (decoded, rise) = rise_in_peak(|| {
+                ImageReader::new(Cursor::new(&page))
+                    .with_guessed_format()
+                    .expect("reads from memory")
+                    .decode()
+            });
+            assert!(
+                decoded.is_err(),
+                "the page declaring a huge profile decoded"
+            );
+            assert!(
+                rise < ZERO_FILL / 2,
+                "the hook let jxl-oxide fill the declared profile: peak resident memory rose by {rise} bytes"
+            );
+
+            jxl_oxide_alone_fills_the_profile(&page);
+        },
+    );
+}
+
+#[test]
+fn a_page_declaring_a_huge_colour_profile_is_not_rebuilt_and_never_filled() {
+    alone(
+        "a_page_declaring_a_huge_colour_profile_is_not_rebuilt_and_never_filled",
+        || {
+            register();
+            let page = icc_pages::in_jxlp(&icc_pages::declaring(ZERO_FILL));
+
+            let (rebuilt, rise) = rise_in_peak(|| rebuilt_jpeg(&page));
+            assert!(
+                rebuilt.is_none(),
+                "the page declaring a huge profile was rebuilt to {:?} bytes",
+                rebuilt.as_ref().map(Vec::len)
+            );
+            assert!(
+                rise < ZERO_FILL / 2,
+                "rebuilt_jpeg let jxl-oxide fill the declared profile: peak resident memory rose by {rise} bytes"
+            );
+
+            jxl_oxide_alone_fills_the_profile(&page);
+        },
+    );
+}
+
+/// Within the cap, a page's profile still costs what jxl-oxide spends on it
+/// once read, outside every limit a caller sets: it decodes the profile from
+/// the encoded one and parses what it decoded. The cap keeps the worst of one
+/// decode and parse within what the metadata boxes may inflate to.
+#[test]
+fn the_worst_profile_the_cap_passes_is_decoded_and_parsed_within_the_metadata_cap() {
+    alone(
+        "the_worst_profile_the_cap_passes_is_decoded_and_parsed_within_the_metadata_cap",
+        || {
+            let len = usize::try_from(ICC_CAP).expect("the cap fits in memory");
+            let encoded = icc_pages::expanding_profile(len);
+            assert_eq!(
+                encoded.len(),
+                len,
+                "the fixture: the profile is as long as the cap"
+            );
+
+            let ((decoded, kept), rise) = rise_in_peak(|| {
+                let profile = jxl_color::icc::decode_icc(&encoded).expect("jxl-color decodes it");
+                let parsed = jxl_color::ColorEncodingWithProfile::with_icc(&profile)
+                    .expect("jxl-color parses what it decoded");
+                (profile.len(), parsed.icc_profile().len())
+            });
+            // Each tag command writes 36 bytes, and all but a few of the
+            // encoded bytes are tag commands.
+            assert!(
+                decoded / len >= 35,
+                "the fixture: {len} encoded bytes decoded to only {decoded}"
+            );
+            assert_eq!(
+                kept, decoded,
+                "the fixture: the parse kept a copy of the profile, as for one it cannot name"
+            );
+            assert!(
+                rise < METADATA_CAP as u64,
+                "a profile of {len} encoded bytes, decoded to {decoded} and parsed, raised peak resident memory by {rise} bytes"
+            );
+        },
+    );
 }

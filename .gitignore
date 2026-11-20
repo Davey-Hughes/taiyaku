@@ -242,6 +242,8 @@ web/.vitest-attachments/
 !crates/taiyaku-serve/fixtures/jxl/bomb.jxl
 !crates/taiyaku-serve/fixtures/jxl/grey.djxl.png
 !crates/taiyaku-serve/fixtures/jxl/grey.jxl
+!crates/taiyaku-serve/fixtures/jxl/icc.djxl.png
+!crates/taiyaku-serve/fixtures/jxl/icc.jxl
 !crates/taiyaku-serve/fixtures/jxl/large.djxl.png
 !crates/taiyaku-serve/fixtures/jxl/large.jxl
 !crates/taiyaku-serve/fixtures/jxl/lossless.djxl.png
