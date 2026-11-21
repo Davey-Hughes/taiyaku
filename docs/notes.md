@@ -31619,3 +31619,74 @@ exited 1.
 The script takes 0, 2 (survivors) and 3 (timeouts) as a verdict from
 cargo-mutants' documentation of its exit codes. These runs saw 0, 2 and 4
 from 27.1.0, and not 3.
+
+## O399: the serve tests' first answer in one crowded process (2026-11-21)
+
+`scripts/mutants.sh` runs its unmutated baseline as plain `cargo test` at
+niceness 19, so one process runs a crate's tests on thirty-two threads here.
+Three `taiyaku-serve` tests that wait for `serve`'s first answer failed
+there: nextest, which CI's test job and `check-all.sh` use, gives each test
+a process of its own. The failing configuration below is
+`nice -n 19 cargo test -p taiyaku-serve --lib --all-features` with no thread
+count set. The logs named are kept locally under
+`.superpowers/sdd/2026-11-21-o399/evidence/`.
+
+- **The red, on `main` at `edbc19b4`** (`red-1-main-edbc19b4.log`, at a
+  load of 72): 1500 passed, and `serve_binds_the_address_and_answers_on_it`,
+  `serve_serves_the_web_app_it_is_given` and
+  `serve_caches_covers_and_tiles_under_the_resolved_root` failed.
+- **The cause.** Each of the three builds its fixture library,
+  `test_support::library()`, inside the task it spawns, before that task
+  calls `serve`, so the build fell inside the poll's window: 100 polls 20 ms
+  apart, about two seconds. A patch that timed each step, reverted before the
+  fix (`measure-instrumentation.patch`), ran four times in the failing
+  configuration, at loads between 27 and 71 (`measure-failing-1.txt` to
+  `measure-failing-4.txt`). The build took 2.0 to 3.1 s, of which 1.28 to
+  1.84 s was spent runnable and waiting for a CPU, as
+  `/proc/thread-self/schedstat` counts it, and the three answered after 89 to
+  146 polls, at least one of them past 100 in each run. `serve` took at most
+  2.6 ms from its entry to its bind. Run on their own and not niced, at a load
+  of about 40, the same builds took 0.41 s with under 10 ms of waiting
+  (`measure-idle-alone.txt`).
+  `serve_marks_a_scan_cut_during_its_derive_interrupted_before_it_listens`
+  polls the same way but builds its library before the spawn, and answered
+  at the second poll in every run, which is why it never failed.
+- **The fix**, in `crates/taiyaku-serve/src/tests.rs` alone. The four tests
+  that wait for a first answer poll through one helper, `first_answer`, until
+  `SERVE_ANSWERS_WITHIN`, 30 s, and still stop at the first answer. The
+  helper gives up at once when `serve` has ended or answers with an error
+  status, and each request is bounded by the time left.
+  `serve_caches_covers_and_tiles_under_the_resolved_root` gives up before its
+  cover and tile requests, which carry no deadline.
+- **Green.** The failing configuration passed all 1503 tests seven times
+  (`green-*.log`): six before the change that makes an error status fail at
+  once, at loads from 21 to 72, and once after it, on the code as it merges,
+  from a load of 17.
+- **Watched failing**, each put in by hand and run alone under nextest. After
+  that change (`mut-r1-*.log`): a `serve` that never binds and never
+  ends, and one that binds and never answers, failed all four tests at the
+  30 s deadline, each with its own message; one that ends before its bind,
+  and one whose every route answers 500, failed all four within 0.1 s, the
+  second with `serve answered, but not with a success: http status: 500`.
+  Before it (`mut-a*.log`, `mut-b-*.log`, `mut-c-*.log`,
+  `mut-m6-*.log`), each answer assertion inverted failed its test, and
+  `get_thumb` caching in `cache_dir` rather than `thumbs` failed
+  `serve_caches_covers_and_tiles_under_the_resolved_root` and none of the
+  other three. With a `serve` that binds and never answers and the
+  per-request bound taken out of
+  `serve_binds_the_address_and_answers_on_it`, that test hung until nextest
+  killed it at 100 s, which is what the bound is for.
+- **The sweep.** `scripts/mutants.sh --since main` made no mutant, the
+  branch having changed test code alone, so it ran no baseline
+  (`mutants-since-main.log`). `scripts/mutants.sh --file
+  crates/taiyaku-serve/src/web.rs`, the file whose code
+  `serve_serves_the_web_app_it_is_given` drives, run with no
+  `RUST_TEST_THREADS` set, passed its unmutated baseline, one `cargo test`
+  of `taiyaku-serve` at niceness 19 on thirty-two threads: 1503 passed, at
+  loads of 55 to 67 over the last minute and a half of its test run
+  (`mutants-web.log`, `mutants-web-out/log/baseline.log`,
+  `mutants-web-load.txt`). It caught all six mutants. In those six runs, up
+  to four at once at loads up to 131, the four first-answer tests failed only
+  where the mutant broke the web app: `serve_serves_the_web_app_it_is_given`
+  failed on a 404 with `is_api` as `true`, and on an empty body with
+  `Web::answer` as `Default::default()`.

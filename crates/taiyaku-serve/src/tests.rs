@@ -370,6 +370,52 @@ fn the_skipping_notice_counts_only_the_works_actually_left() {
     assert!(one_left.contains("remaining 1 work(s)"), "{one_left}");
 }
 
+/// How long a socket test waits for `serve` to answer before it fails.
+///
+/// A bound on a starved run: a test that builds its fixture library inside
+/// the spawned task, before it calls `serve`, waits for that build as well as
+/// for the answer, and with every test thread busy, as in `scripts/mutants.sh`'s
+/// baseline, the build waits behind the rest for a CPU. A passing test returns
+/// at the first answer and never waits this out. It stays short of nextest's
+/// kill in `.config/nextest.toml`, so a wait that runs out fails with the
+/// test's own message rather than a bare `TIMEOUT`.
+const SERVE_ANSWERS_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Polls until `ask` succeeds, `serving` ends, or [`SERVE_ANSWERS_WITHIN`]
+/// has passed, and gives back the first answer, or `None` on the other two.
+///
+/// Only an I/O error, a failed connection or a timeout means "not yet". Any
+/// other error, an error status above all, is `serve`'s answer, so the test
+/// fails at once and names it rather than waiting out the deadline and blaming
+/// the bind.
+///
+/// `ask` is handed the time left and must bound its request by it, or a server
+/// that binds but never answers holds the blocking `ureq` call for good.
+async fn first_answer<T>(
+    serving: &tokio::task::JoinHandle<Result<(), String>>,
+    mut ask: impl FnMut(std::time::Duration) -> Result<T, ureq::Error>,
+) -> Option<T> {
+    let deadline = std::time::Instant::now() + SERVE_ANSWERS_WITHIN;
+    loop {
+        if serving.is_finished() {
+            return None;
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        match ask(left) {
+            Ok(answer) => return Some(answer),
+            Err(ureq::Error::Io(_) | ureq::Error::ConnectionFailed | ureq::Error::Timeout(_)) => {}
+            Err(answered) => {
+                serving.abort();
+                panic!("serve answered, but not with a success: {answered}");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 /// `serve` actually binds and answers.
 ///
 /// The one thing in this crate that opens a socket, and so — by the design
@@ -420,23 +466,19 @@ async fn serve_binds_the_address_and_answers_on_it() {
     // Poll rather than sleep a fixed time: the bind is the thing under
     // test, so waiting for it is the assertion.
     let url = format!("http://{addr}/api/works");
-    let mut answered = None;
-    for _ in 0..100 {
-        if serving.is_finished() {
-            break;
-        }
-        if let Ok(mut r) = ureq::get(&url)
+    let answered = first_answer(&serving, |left| {
+        ureq::get(&url)
             .header(
                 "authorization",
                 crate::test_support::fixture_authorization(),
             )
+            .config()
+            .timeout_global(Some(left))
+            .build()
             .call()
-        {
-            answered = Some(r.body_mut().read_to_string().unwrap_or_default());
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+            .map(|mut r| r.body_mut().read_to_string().unwrap_or_default())
+    })
+    .await;
 
     serving.abort();
 
@@ -497,24 +539,19 @@ async fn serve_marks_a_scan_cut_during_its_derive_interrupted_before_it_listens(
     });
 
     let url = format!("http://{addr}/api/works");
-    let mut answered = false;
-    for _ in 0..100 {
-        if serving.is_finished() {
-            break;
-        }
-        if ureq::get(&url)
+    let answered = first_answer(&serving, |left| {
+        ureq::get(&url)
             .header(
                 "authorization",
                 crate::test_support::fixture_authorization(),
             )
+            .config()
+            .timeout_global(Some(left))
+            .build()
             .call()
-            .is_ok()
-        {
-            answered = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    })
+    .await
+    .is_some();
     serving.abort();
     assert!(answered, "serve must bind the address and answer on it");
 
@@ -647,17 +684,15 @@ async fn serve_serves_the_web_app_it_is_given() {
     });
 
     let url = format!("http://{addr}/read/x");
-    let mut answered = None;
-    for _ in 0..100 {
-        if serving.is_finished() {
-            break;
-        }
-        if let Ok(mut r) = ureq::get(&url).call() {
-            answered = Some(r.body_mut().read_to_string().unwrap_or_default());
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    let answered = first_answer(&serving, |left| {
+        ureq::get(&url)
+            .config()
+            .timeout_global(Some(left))
+            .build()
+            .call()
+            .map(|mut r| r.body_mut().read_to_string().unwrap_or_default())
+    })
+    .await;
     serving.abort();
 
     let body = answered.expect("serve must answer a deep link when it is given an app");
@@ -725,23 +760,25 @@ async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
         }
     });
 
-    let mut bound = false;
-    for _ in 0..100 {
-        if serving.is_finished() {
-            break;
-        }
-        if ureq::get(&format!("http://{addr}/api/works"))
+    let bound = first_answer(&serving, |left| {
+        ureq::get(&format!("http://{addr}/api/works"))
             .header(
                 "authorization",
                 crate::test_support::fixture_authorization(),
             )
+            .config()
+            .timeout_global(Some(left))
+            .build()
             .call()
-            .is_ok()
-        {
-            bound = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    })
+    .await
+    .is_some();
+    // Here rather than with the assertions below: the requests between carry
+    // no deadline, and against a server that never answered the first of
+    // them would wait for good.
+    if !bound {
+        serving.abort();
+        panic!("serve must bind before anything else is asserted");
     }
 
     // Read *before* any request that would create it lazily, which is what
@@ -786,7 +823,6 @@ async fn serve_caches_covers_and_tiles_under_the_resolved_root() {
 
     serving.abort();
 
-    assert!(bound, "serve must bind before anything else is asserted");
     assert!(
         created_at_startup,
         "Important 5: the cache root is created at startup, not by whichever request \
