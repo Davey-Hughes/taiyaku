@@ -598,6 +598,112 @@ fn no_file_starts_while_the_job_lock_is_held() {
     }
 }
 
+/// A store walked and not derived, as `scan --add --no-derive` leaves it: the
+/// pass lists every volume with no digest while a scan holds the job lock, the
+/// scan's derive takes each volume's digest, and the scan ends with a kick.
+/// No volume is hashed again, and each is counted once (O396).
+#[test]
+fn a_digest_the_derive_takes_while_the_pass_waits_is_not_taken_again() {
+    let fixture = Fixture::new("pass-digest-taken-behind-it");
+    let top = fixture.join("lib");
+    write_volumes(&top, &VOLUMES, 0);
+    let library = test_support::library();
+    let root = {
+        let conn = library.conn();
+        let root = scan::add_root(&conn, &top).expect("adds the directory");
+        scan::scan_root(&conn, &root).expect("walks it");
+        root
+    };
+    let due =
+        fingerprints::due(&library.conn(), fingerprint::VERSION, None).expect("lists what is due");
+    assert_eq!(
+        due.iter().filter(|unit| unit.sha256.is_none()).count(),
+        VOLUMES.len(),
+        "the fixture: every volume due, none hashed"
+    );
+    let hashed: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+    let settings = PassSettings {
+        before_hashing: Some(Arc::new({
+            let hashed = Arc::clone(&hashed);
+            move |path: &Path| hashed.lock().expect("one recorder").push(path.to_owned())
+        })),
+        ..polling()
+    };
+    let state = state_of(Arc::clone(&library), &fixture, settings);
+    let held = state.library_job.lock().expect("the job lock");
+
+    kick(&state);
+    let job = shown(&state);
+    derive::derive(&library.conn()).expect("derives, taking each volume's digest");
+    for rel_path in VOLUMES {
+        assert!(
+            digest_at(&library, root.id, rel_path).is_some(),
+            "the derive hashed {rel_path}"
+        );
+    }
+    drop(held);
+    kick(&state);
+    assert!(state.fingerprints.settle(SETTLE), "the pass ends");
+
+    for rel_path in VOLUMES {
+        assert_eq!(
+            outcome_of(&library, &root, rel_path),
+            Some(Outcome::Whole),
+            "{rel_path}"
+        );
+    }
+    assert_eq!(
+        *hashed.lock().expect("one recorder"),
+        Vec::<PathBuf>::new(),
+        "no volume the derive hashed is hashed again"
+    );
+    assert_eq!(counts(&job), (Some(3), Some(3)), "each volume counted once");
+}
+
+/// The same store derived before the pass lists it, so the listing carries each
+/// digest: the control for the test above, which differs from it only in when
+/// the derive runs.
+#[test]
+fn a_digest_the_derive_took_before_the_listing_is_not_taken_again() {
+    let fixture = Fixture::new("pass-digest-taken-before-it");
+    let top = fixture.join("lib");
+    write_volumes(&top, &VOLUMES, 0);
+    let library = test_support::library();
+    let root = {
+        let conn = library.conn();
+        let root = scan::add_root(&conn, &top).expect("adds the directory");
+        scan::scan_root(&conn, &root).expect("walks it");
+        root
+    };
+    let hashed: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+    let settings = PassSettings {
+        before_hashing: Some(Arc::new({
+            let hashed = Arc::clone(&hashed);
+            move |path: &Path| hashed.lock().expect("one recorder").push(path.to_owned())
+        })),
+        ..polling()
+    };
+    let state = state_of(Arc::clone(&library), &fixture, settings);
+    let held = state.library_job.lock().expect("the job lock");
+    derive::derive(&library.conn()).expect("derives, taking each volume's digest");
+
+    kick(&state);
+    let job = shown(&state);
+    drop(held);
+    kick(&state);
+    assert!(state.fingerprints.settle(SETTLE), "the pass ends");
+
+    for rel_path in VOLUMES {
+        assert_eq!(
+            outcome_of(&library, &root, rel_path),
+            Some(Outcome::Whole),
+            "{rel_path}"
+        );
+    }
+    assert_eq!(*hashed.lock().expect("one recorder"), Vec::<PathBuf>::new());
+    assert_eq!(counts(&job), (Some(3), Some(3)));
+}
+
 /// Each walked page's instant is kept, so a page read inside the quiet shows
 /// however late the test looks.
 #[test]

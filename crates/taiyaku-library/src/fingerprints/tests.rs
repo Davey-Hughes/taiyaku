@@ -460,6 +460,113 @@ fn a_digest_is_written_back_only_where_empty_and_unchanged() {
     }
 }
 
+/// Four chapter archives, which no derive hashes, so each digest is set by
+/// hand. An entry moved since holds a digest too, or a test that ignored the
+/// stamp would still find none there; and one entry is given a stamp no other
+/// has, so a lookup that ignored the path or the directory would find it.
+#[test]
+fn a_recorded_digest_is_answered_only_while_the_entry_is_unchanged() {
+    let tree = crate::tests::tempdir("fingerprints-recorded");
+    for n in 1..=4 {
+        write_archive(
+            &tree
+                .path()
+                .join("Kaguya")
+                .join(format!("Kaguya - c00{n}.cbz")),
+            2,
+        );
+    }
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let root = scanned(&conn, tree.path());
+    derive::derive(&conn).expect("derives");
+    let due = due_by_path(&conn, None);
+    let units: Vec<&Unit> = (1..=4)
+        .map(|n| {
+            due.get(&format!("Kaguya/Kaguya - c00{n}.cbz"))
+                .expect("due")
+        })
+        .collect();
+    for unit in &units {
+        assert_eq!(
+            unit.sha256, None,
+            "the fixture: {} has no digest",
+            unit.rel_path
+        );
+    }
+
+    assert_eq!(
+        recorded_digest(&conn, units[0]).expect("reads"),
+        None,
+        "an entry holding none"
+    );
+
+    set_entry(
+        &conn,
+        root.id,
+        &units[0].rel_path,
+        "sha256 = 'held here', size = 7, mtime = 7",
+    );
+    let here = Unit {
+        size: 7,
+        mtime: 7,
+        ..units[0].clone()
+    };
+    assert_eq!(
+        recorded_digest(&conn, &here).expect("reads").as_deref(),
+        Some("held here"),
+        "the fixture: the one entry of that stamp"
+    );
+    for (elsewhere, what) in [
+        (
+            Unit {
+                rel_path: "Kaguya/Kaguya - c009.cbz".to_owned(),
+                ..here.clone()
+            },
+            "another path",
+        ),
+        (
+            Unit {
+                root_id: root.id + 1,
+                ..here.clone()
+            },
+            "another directory",
+        ),
+    ] {
+        assert_eq!(
+            recorded_digest(&conn, &elsewhere).expect("reads"),
+            None,
+            "{what}"
+        );
+    }
+
+    let taken = units[1];
+    set_entry(&conn, root.id, &taken.rel_path, "sha256 = 'taken since'");
+    assert_eq!(
+        recorded_digest(&conn, taken).expect("reads").as_deref(),
+        Some("taken since"),
+        "a digest taken since the unit was listed"
+    );
+
+    for (unit, moved) in [
+        (units[2], "size = size + 1"),
+        (units[3], "mtime = mtime + 1"),
+    ] {
+        set_entry(
+            &conn,
+            root.id,
+            &unit.rel_path,
+            &format!("sha256 = 'other bytes', {moved}"),
+        );
+        assert_eq!(
+            recorded_digest(&conn, unit).expect("reads"),
+            None,
+            "{}: {moved}",
+            unit.rel_path
+        );
+    }
+}
+
 /// A paused directory's derive passes an entry whose digest its works hold,
 /// so a digest written there could add a copy the pause holds back.
 #[test]

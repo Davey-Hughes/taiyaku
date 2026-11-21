@@ -761,22 +761,33 @@ impl Reading<'_> {
             // Read as each file's own check reads it, so a library switched off
             // mid-pass leaves the job's list as its files leave the pass.
             *locked(&self.job.libraries) = fingerprints::coverage(&conn)?.libraries;
-            fingerprints::still_due(&conn, unit, fingerprint::VERSION, self.build)
+            // A derive that held the job lock while this worker waited may have
+            // taken the digest of a unit listed with none: hashing it again
+            // would only have the digest refused (O396).
+            let unit = match &unit.sha256 {
+                Some(_) => unit.clone(),
+                None => Unit {
+                    sha256: fingerprints::recorded_digest(&conn, unit)?,
+                    ..unit.clone()
+                },
+            };
+            let due = fingerprints::still_due(&conn, &unit, fingerprint::VERSION, self.build)?;
+            Ok((unit, due))
         });
-        match due {
-            Ok(true) => {}
-            Ok(false) => {
-                self.pass_over(unit);
+        let unit = match due {
+            Ok((unit, true)) => unit,
+            Ok((unit, false)) => {
+                self.pass_over(&unit);
                 return;
             }
             Err(why) => {
                 say(&why);
                 return;
             }
-        }
+        };
         let digest = match &unit.sha256 {
             Some(digest) => digest.clone(),
-            None => match self.digest_of(unit) {
+            None => match self.digest_of(&unit) {
                 Some(digest) => digest,
                 None => return,
             },
@@ -790,7 +801,7 @@ impl Reading<'_> {
         // A decoder bug, or a page crafted to find one, ends this file, never
         // the pass: it is stored unreadable for this build.
         let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            read::read_unit(unit, &digest, self.build, self.large, &mut between)
+            read::read_unit(&unit, &digest, self.build, self.large, &mut between)
         }));
         let row = match read {
             Ok(Read::Stored(row)) => row,

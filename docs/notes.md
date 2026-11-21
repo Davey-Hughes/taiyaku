@@ -31483,3 +31483,29 @@ printed nothing after the last scan. The copied files were deleted; the
 stores and logs are kept locally under
 `.superpowers/sdd/2026-11-20-o69-drop/evidence/real/`.
 
+## O396: a digest taken behind the listing (2026-11-20)
+
+`Reading::one` now asks `fingerprints::recorded_digest` for the digest a
+unit's entry holds before it decides to hash a unit listed with none. The
+pass and store tests were each watched failing against their own defect:
+
+- `a_digest_the_derive_takes_while_the_pass_waits_is_not_taken_again`, on
+  `main`'s code: the pass hashed all three volumes again, and with the count
+  asserted first the job counted `(6, 6)`. With the fix in place and the read
+  replaced by `None`, it hashed all three again.
+- `a_recorded_digest_is_answered_only_while_the_entry_is_unchanged`, with
+  `size = ?3` made `(size = ?3 OR 1)`: the entry whose size moved answered
+  `Some("other bytes")`; with the same done to `mtime = ?4`, the entry whose
+  mtime moved did. The bindings were kept, so each failure is the
+  assertion's and not a parameter count's.
+- The same test, with `rel_path = ?2` made `(rel_path = ?2 OR 1)`: its
+  first version failed only because the entries' order put one holding no
+  digest first, and with `root_id = ?1` made `(root_id = ?1 OR 1)` it
+  passed, the store holding one directory. One entry is now given a stamp
+  no other has, and a unit naming another path, then another directory,
+  with that stamp must answer none. With each condition broken, that unit
+  answered `Some("held here")`.
+
+The control, `a_digest_the_derive_took_before_the_listing_is_not_taken_again`,
+passes on `main` and with the fix. It is kept because no other pass test
+asserts that a unit listed with its digest is not hashed.

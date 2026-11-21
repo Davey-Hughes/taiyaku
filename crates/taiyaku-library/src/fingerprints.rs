@@ -294,6 +294,28 @@ pub fn still_due(
     Ok(!settled)
 }
 
+/// The digest `unit`'s entry holds now, where its size and mtime are still
+/// the unit's. A pass asks this of a unit listed with no digest before hashing
+/// it, since a derive may have taken the digest meanwhile, and
+/// [`record_digest`] would refuse a second one. `None` where the entry holds
+/// none, or a walk has recorded other bytes since: a digest of those does not
+/// name the bytes the unit's read is checked against.
+///
+/// # Errors
+///
+/// If the store refuses the read.
+pub fn recorded_digest(conn: &Connection, unit: &Unit) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT sha256 FROM scan_entry
+          WHERE root_id = ?1 AND rel_path = ?2 AND size = ?3 AND mtime = ?4",
+        rusqlite::params![unit.root_id, unit.rel_path, unit.size, unit.mtime],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(Option::flatten)
+    .map_err(|e| format!("reading the digest recorded for {}: {e}", unit.rel_path))
+}
+
 /// `path`'s `(size, mtime)` as a walk records them in `scan_entry`, or
 /// `None` if it cannot be read. A pass compares it with its unit's before
 /// and after a read, so a file that moved meanwhile is not stored.
