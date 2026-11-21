@@ -417,7 +417,8 @@ be a lie told twice, in the header and in the filename. The passthrough type
 comes from the member's own extension by the same table `source.rs::type_from_extension`
 already uses for pages, and the constructed name in §7 keeps the member's real
 extension rather than `.cbz`. The name is still `Series - v01 (raw)`; only the
-suffix is the file's own.
+suffix is the file's own. *Since 2026-11-20 `member` has no `format` column
+(O69, migration 031); the tokens named here are `scan_entry.format`'s.*
 
 ## 8. The UI, and what the UI is not
 

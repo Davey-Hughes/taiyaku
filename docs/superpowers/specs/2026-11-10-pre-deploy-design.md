@@ -1295,7 +1295,8 @@ regeneration, and nothing else.
 - **The migration squash**, dropped (told to the owner). A forward migration is
   not a breaking change, so a squash buys nothing for a database that does not
   exist yet, and it costs the tests that pin the chain. Dead columns, such as
-  `member.format` (O69), go in an ordinary migration later.
+  `member.format` (O69), go in an ordinary migration later. *Since 2026-11-20
+  `member.format` has gone that way: migration 031 drops it (O69).*
 - **The web half of O244**: anchors on the wire, O240, and `stale` drawn. A
   follow-up PR after lane 2. *Done in go-public lane 4
   (`2026-11-12-go-public-design.md`, §6), which closed O240 and O244.*

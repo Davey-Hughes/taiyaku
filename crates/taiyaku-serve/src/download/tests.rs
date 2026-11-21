@@ -116,8 +116,8 @@ fn a_leading_dot_cannot_make_it_a_hidden_file() {
 
 #[test]
 fn the_extension_follows_the_bytes_not_the_route() {
-    // A single-member edition may not be a comic archive at all: `member.format`
-    // admits `pdf` and the two epub kinds. Spec §7.
+    // A single-member edition may not be a comic archive at all:
+    // `scan_entry.format` admits `pdf` and the two epub kinds. Spec §7.
     assert_eq!(
         download_name(Some("S"), Some(1.0), "t", "raw", "pdf"),
         "S - v01 (raw).pdf"

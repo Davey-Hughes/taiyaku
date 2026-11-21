@@ -789,7 +789,9 @@ for the branch shape.
   including formats nothing can open yet — because the alternative is a scanner
   that silently drops them, and *"a candidate that reached the page threshold
   and then vanished from the output is the silence this whole project is written
-  against"* (`docs/status.md`, of `inventory`).
+  against"* (`docs/status.md`, of `inventory`). *Since 2026-11-20 `member`
+  has no `format` column (O69, migration 031): what a scanner detected is
+  `scan_entry.format`.*
 - **No reflowable-ebook position model.** `progress` keys on `(edition, slot)`.
   A spine index and a CFI is `ALTER TABLE progress ADD COLUMN locator TEXT`,
   which SQLite does without rewriting the table, so building it now is cost with

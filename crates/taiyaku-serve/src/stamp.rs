@@ -68,8 +68,8 @@ pub(crate) struct Confirmation {
 /// **Distinct from the plan simply being short.** "4 archives" reads as "all
 /// of them" unless the screen can also say the rar was left alone, which is
 /// what C3 §6's *absent, not disabled* asks for at the level of a whole work.
-/// Sniffed rather than read from `member.format`, for the reason
-/// [`taiyaku_library::stamp::plan`] gives: nothing writes that column (O69).
+/// Sniffed, for the reason [`taiyaku_library::stamp::plan`] gives: a stamp
+/// needs what the bytes are now, not what a walk recorded.
 fn skipped_formats(paths: &[std::path::PathBuf]) -> Vec<String> {
     let mut formats: Vec<String> = paths
         .iter()

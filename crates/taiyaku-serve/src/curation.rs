@@ -542,8 +542,8 @@ pub(crate) async fn accept(
         Err(why) => return NoAnswer::Unusable(why).into_response(),
     };
 
-    // A sweep, then a transaction — `list`'s reasoning about the async
-    // worker, and the one route here that holds a write lock while it runs.
+    // `list`'s reasoning about the async worker: a sweep of what the rule
+    // would decide, then a transaction that writes it.
     let written = tokio::task::spawn_blocking(move || {
         let conn = state.library.conn();
         present(&conn, id)?;

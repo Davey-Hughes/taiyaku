@@ -1891,8 +1891,7 @@ pub struct FirstVolume {
     /// two adjacent fields answering different questions.
     ///
     /// **Read from `scan_entry`, or from the file where it has moved since
-    /// its scan, never from `member.format`.** See [`edition_formats`]'s own
-    /// comment: nothing in this repository writes that column.
+    /// its scan**, since a member row holds no format; see [`edition_formats`].
     pub formats: Vec<String>,
     /// Two interior page indices into [`Self::page_count`], or fewer where
     /// the edition is too short to have two distinct ones.
@@ -2289,10 +2288,9 @@ fn first_volume(conn: &Connection, series_id: i64) -> Result<Option<FirstVolume>
 
 /// The distinct formats of `edition_id`'s members, ascending ([`format_as_it_is`]).
 ///
-/// **`member.format` is not the source, because nothing writes it.** The only
-/// `INSERT INTO member` in this repository — `import.rs`'s — lists
-/// `(edition_id, ordinal, path, sha256, pages)` and no format, and no `UPDATE`
-/// that reaches these rows sets `format`.
+/// **The walk's token while the file is as it was walked, else a sniff of
+/// it**, since a member row holds no format (O69): `scan_entry` keeps what
+/// each file sniffed as when it was walked.
 ///
 /// **Joined on `(root_id, rel_path)`, which is the pair a member and the
 /// entry it came from share.** `derive`'s `Candidate` builds `member.path`

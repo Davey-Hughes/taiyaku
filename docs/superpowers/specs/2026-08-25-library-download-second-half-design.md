@@ -75,7 +75,9 @@ maps the member's extension to `application/pdf`, `application/epub+zip`,
 reason plainly: serving a PDF as `comicbook+zip` under a `.cbz` name "would be a
 lie told twice". A feed that advertises the same lie in a third place is the
 same defect, and an OPDS client matches its acquisition link's `type` to decide
-whether it can open the entry at all.
+whether it can open the entry at all. *Since 2026-11-20 `member` has no
+`format` column (O69, migration 031); the tokens named here are
+`scan_entry.format`'s.*
 
 **The feed asks the route's own decision rather than restating it.** A helper in
 `download.rs` — the module that owns `type_for`, `CBZ_TYPE` and the

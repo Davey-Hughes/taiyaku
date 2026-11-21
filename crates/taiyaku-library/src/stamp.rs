@@ -41,28 +41,21 @@ pub struct Planned {
 /// feature is absent rather than disabled for the rest. The test is what a
 /// member *is*, not which two names it is not.
 ///
-/// **The format is sniffed here rather than read from `member.format`, and
-/// rather than joined back to `scan_entry`.** Two reasons, in that order.
-/// `member.format` is never written by anything: the repository's only
-/// `INSERT INTO member` — `import.rs`'s — lists
-/// `(edition_id, ordinal, path, sha256, pages)` and no format, and no
-/// `UPDATE` reaching those rows sets `format`. `proposals.rs`'s
-/// `edition_formats` records the same finding. A filter on that column would
-/// make this feature fire on nothing, in every library.
-///
-/// `edition_formats` answers it by joining `scan_entry` on
-/// `(root_id, rel_path)`, and **this deliberately does not**, because the two
-/// are answering different questions. That function reports to a panel: a
-/// walk's token while the file has the size and mtime that walk saw, and
-/// nothing for a member with no root, which is right for a report. This
-/// function is deciding whether to **rewrite the file it is looking at**, so
-/// what the bytes are *now* is the only answer that can be trusted: an
-/// unmoved size and mtime are no proof, and an imported work (`root_id` NULL
-/// by design, per `schema/006_member_root.sql`) must not be silently
-/// unstampable. [`taiyaku_read::sniff`] is the same measurement the
-/// scanner makes, made at the moment it matters. It is not the suffix guess
-/// `edition_formats` rejects: `format.rs`'s own opening line is that
-/// `scan_entry.format` is sniffed, never derived from a suffix.
+/// **The format is sniffed here rather than joined back to `scan_entry`**;
+/// a member row holds none (O69). `proposals.rs`'s `edition_formats`
+/// answers it by joining `scan_entry` on `(root_id, rel_path)`, and **this
+/// deliberately does not**, because the two are answering different
+/// questions. That function reports to a panel: a walk's token while the
+/// file has the size and mtime that walk saw, and nothing for a member with
+/// no root, which is right for a report. This function is deciding whether
+/// to **rewrite the file it is looking at**, so what the bytes are *now* is
+/// the only answer that can be trusted: an unmoved size and mtime are no
+/// proof, and an imported work (`root_id` NULL by design, per
+/// `schema/006_member_root.sql`) must not be silently unstampable.
+/// [`taiyaku_read::sniff`] is the same measurement the scanner makes, made at
+/// the moment it matters. It is not the suffix guess `edition_formats`
+/// rejects: `format.rs`'s own opening line is that `scan_entry.format` is
+/// sniffed, never derived from a suffix.
 ///
 /// The cost is one open per member, which this function was already paying to
 /// read the existing document.

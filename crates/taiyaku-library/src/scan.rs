@@ -1702,21 +1702,19 @@ fn carry_reading(
     )
 }
 
-/// A member: its id, its path, its work and its format.
-type MemberRow = (i64, String, i64, Option<String>);
+/// A member: its id, its path and its work.
+type MemberRow = (i64, String, i64);
 
 /// Each member directory `root_id` holds.
 fn members_of(tx: &Connection, root_id: i64) -> rusqlite::Result<Vec<MemberRow>> {
     tx.prepare(
-        "SELECT m.id, m.path, e.work_id, m.format FROM member m
+        "SELECT m.id, m.path, e.work_id FROM member m
            JOIN edition e ON e.id = m.edition_id
           WHERE m.root_id = ?1",
     )
     .and_then(|mut stmt| {
-        stmt.query_map([root_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })?
-        .collect()
+        stmt.query_map([root_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect()
     })
 }
 
@@ -1738,7 +1736,7 @@ fn move_members(
         members
             .iter()
             .filter(|(_, path, ..)| went_to.contains_key(path))
-            .map(|(_, _, work, _)| *work),
+            .map(|(_, _, work)| *work),
         carried,
     )?;
     for (member, path, ..) in members {
@@ -2408,8 +2406,8 @@ impl Excluder {
         self.keeps_out(rel, is_dir).is_none()
     }
 
-    /// Whether this root's walk reaches a member at `rel`. `member.format` is
-    /// never written, so its path is asked as a file and as a directory: a
+    /// Whether this root's walk reaches a member at `rel`. A member row holds
+    /// no format, so its path is asked as a file and as a directory: a
     /// pattern of either kind may have kept a walk out. A removal's hand-back
     /// and the grant (`browse::member_under`) both ask it, so they agree on
     /// which walk could have recorded a member.
@@ -4041,15 +4039,13 @@ fn take_over(
         bound.extend(inside_paths.iter().map(|path| path as &dyn rusqlite::ToSql));
         let members: Vec<MemberRow> = conn
             .prepare(&format!(
-                "SELECT m.id, m.path, e.work_id, m.format FROM member m
+                "SELECT m.id, m.path, e.work_id FROM member m
                    JOIN edition e ON e.id = m.edition_id
                   WHERE m.root_id = ?1 AND {under}"
             ))
             .and_then(|mut stmt| {
-                stmt.query_map(bound.as_slice(), |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                })?
-                .collect()
+                stmt.query_map(bound.as_slice(), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect()
             })
             .map_err(|e| failed("its members", e))?;
         // Only the members of files this walk recorded move to `root`, a stale

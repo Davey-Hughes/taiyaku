@@ -1466,8 +1466,8 @@ fn migration_20_adds_missing_since_leaving_existing_works_present() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_thirty() {
-    assert_eq!(SCHEMA_VERSION, 30);
+fn the_schema_version_is_thirty_one() {
+    assert_eq!(SCHEMA_VERSION, 31);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -3454,6 +3454,145 @@ fn migration_30_adds_the_match_tables_and_joined_by() {
         rows_of(&conn, "SELECT id, joined_by FROM edition"),
         [["Integer(70)", "Null"]],
         "the edition stands, brought in by no pair"
+    );
+}
+
+/// A store at version 30 holding three members, `format` on two of them, so a
+/// value or a row the migration lost would show. Two sit under a directory,
+/// which gives each a `member_root` row; the third came in by import and has
+/// neither. The directory's library, its walk's entries and state, the series
+/// and a reader's position are there too, so a row another table lost would
+/// show as well.
+const SCHEMA_30_MEMBERS: &str = "
+    INSERT INTO library (id, name) VALUES (70, 'Shelf');
+    INSERT INTO root (id, path) VALUES (7, '/srv/manga');
+    INSERT INTO library_root (library_id, root_id) VALUES (70, 7);
+    INSERT INTO series (id, sort_title) VALUES (1, 'T');
+    INSERT INTO work (id, content_key, slug, series_id, title, reading, hub)
+    VALUES (1, 'k', 's', 1, 'T', 'rtl', 'raw');
+    INSERT INTO edition (id, work_id, key, label) VALUES (10, 1, 'raw', 'Raw'), (11, 1, 'en', 'En');
+    INSERT INTO member (id, edition_id, ordinal, path, sha256, pages, format,
+                        chapter_declared, chapter_source, root_id) VALUES
+      (100, 10, 0, '/srv/manga/T/v01.cbz', 'a', 3, 'zip', 1.5, 'filename', 7),
+      (101, 10, 1, '/srv/manga/T/v02', 'b', 4, NULL, 2.0, 'comicinfo', 7),
+      (102, 11, 0, '/elsewhere/v01.cbz', 'c', 5, 'rar', 1.0, 'hand', NULL);
+    INSERT INTO scan_entry (root_id, rel_path, kind, format, size, mtime, pages, sha256) VALUES
+      (7, 'T/v01.cbz', 'file', 'zip', 10, 100, 3, 'a'),
+      (7, 'T/v02', 'dir', 'dir', 0, 100, 4, 'b');
+    INSERT INTO dir_state (root_id, rel_path, mtime, entry_count) VALUES (7, 'T', 100, 2);
+    INSERT INTO user (id, name, password_hash, every_library) VALUES (2, 'a', 'x', 1);
+    INSERT INTO progress (user_id, work_id, edition, slot) VALUES (2, 1, 'raw', 3);
+";
+
+/// Every table but `member`, by name, with its rows sorted: `meta` without
+/// the version row a migration writes.
+fn tables_but_member(conn: &Connection) -> Vec<(String, Vec<Vec<String>>)> {
+    let names: Vec<String> = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name <> 'member'
+              ORDER BY name",
+        )
+        .expect("prepares")
+        .query_map([], |r| r.get(0))
+        .expect("reads")
+        .collect::<rusqlite::Result<_>>()
+        .expect("reads");
+    names
+        .into_iter()
+        .map(|name| {
+            let sql = if name == "meta" {
+                "SELECT * FROM meta WHERE key <> 'schema_version'".to_string()
+            } else {
+                format!("SELECT * FROM \"{name}\"")
+            };
+            let mut rows = rows_of(conn, &sql);
+            rows.sort();
+            (name, rows)
+        })
+        .collect()
+}
+
+/// **Migration 31 drops `member.format` and nothing else** (O69): `member`'s
+/// definition loses that one line and no other, every member keeps every
+/// other value, and every other table, index and trigger keeps its
+/// definition, every other table its rows too.
+#[test]
+fn migration_31_drops_member_format_and_keeps_every_other_column_and_row() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..30]).expect("migrates to 30");
+    conn.execute_batch(SCHEMA_30_MEMBERS)
+        .expect("seeds a schema-30 work and its members");
+    let definition = |conn: &Connection| -> String {
+        conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'member'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("reads member's definition")
+    };
+    let is_format = |line: &&str| line.trim_start().starts_with("format ");
+    let kept = "SELECT id, edition_id, ordinal, path, sha256, pages, chapter_declared,
+                       chapter_source, root_id FROM member ORDER BY id";
+    let schema = "SELECT type, name, tbl_name, sql FROM sqlite_master
+                   WHERE NOT (type = 'table' AND name = 'member') ORDER BY type, name";
+    let member_before = definition(&conn);
+    assert_eq!(
+        member_before.lines().filter(is_format).count(),
+        1,
+        "the fixture: member defines format at 30: {member_before}"
+    );
+    let (members, others, tables) = (
+        rows_of(&conn, kept),
+        rows_of(&conn, schema),
+        tables_but_member(&conn),
+    );
+    assert_eq!(members.len(), 3, "the fixture: three members");
+    assert_eq!(
+        rows_of(&conn, "SELECT count(*) FROM member_root"),
+        [["Integer(2)"]],
+        "the fixture: two held under the directory"
+    );
+    for seeded in [
+        "library",
+        "library_root",
+        "series",
+        "scan_entry",
+        "dir_state",
+        "progress",
+    ] {
+        assert!(
+            tables
+                .iter()
+                .any(|(name, rows)| name == seeded && !rows.is_empty()),
+            "the fixture: {seeded} holds a row"
+        );
+    }
+
+    migrate_with(&conn, &MIGRATIONS[..31]).expect("migrates to 31");
+
+    assert_eq!(version(&conn).expect("reads the version"), 31);
+    let without_format: Vec<&str> = member_before.lines().filter(|l| !is_format(l)).collect();
+    assert_eq!(
+        definition(&conn),
+        without_format.join("\n"),
+        "member's definition loses the format line and nothing else"
+    );
+    assert_eq!(
+        rows_of(&conn, "SELECT * FROM member ORDER BY id"),
+        members,
+        "every member, with every other value as it was"
+    );
+    assert_eq!(
+        rows_of(&conn, schema),
+        others,
+        "every other table, index and trigger defined as it was"
+    );
+    assert_eq!(
+        tables_but_member(&conn),
+        tables,
+        "every other table's rows as they were"
     );
 }
 

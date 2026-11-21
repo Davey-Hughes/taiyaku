@@ -3953,9 +3953,8 @@ fn library_whose_volume_one_is_a_directory_and_an_archive() -> (crate::tests::Te
 
 #[test]
 fn evidence_names_the_formats_the_edition_was_walked_as_and_sums_its_pages() {
-    // `member.format` is written by nothing — the only `INSERT INTO member`
-    // in the repository does not list the column — so the formats come from
-    // `scan_entry`, where the tokens actually are.
+    // A member row holds no format, so the formats come from `scan_entry`,
+    // where the walk's tokens are.
     //
     // This side's edition holds two members, so a `page_count` read off the
     // first member (2) and one summed over both (5) are different numbers.

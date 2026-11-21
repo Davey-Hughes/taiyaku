@@ -1662,7 +1662,7 @@ fn work_rows(conn: &Connection) -> String {
                FROM edition e JOIN work w ON w.id = e.work_id ORDER BY 1, 2"
         ),
         rows(
-            "SELECT w.content_key, e.key, m.ordinal, m.path, m.sha256, m.pages, m.format,
+            "SELECT w.content_key, e.key, m.ordinal, m.path, m.sha256, m.pages,
                     m.chapter_declared, m.chapter_source, m.root_id
                FROM member m JOIN edition e ON e.id = m.edition_id
                JOIN work w ON w.id = e.work_id ORDER BY 1, 2, 3"
@@ -1744,10 +1744,6 @@ fn a_derive_writes_back_what_a_held_work_no_longer_holds() {
         (
             "a page count",
             format!("UPDATE member SET pages = pages + 1 WHERE id = {member}"),
-        ),
-        (
-            "a format",
-            format!("UPDATE member SET format = 'zip' WHERE id = {member}"),
         ),
         (
             "a directory",
@@ -11419,7 +11415,8 @@ fn a_reading_migration_27_held_is_dropped_by_the_derive_that_writes_its_work() {
     let a2 = digest_at(&conn, r.id, C002);
     write_archive(&tree.path().join(C002), 4);
     conn.execute_batch(&format!(
-        "ALTER TABLE edition DROP COLUMN joined_by;
+        "ALTER TABLE member ADD COLUMN format TEXT;
+         ALTER TABLE edition DROP COLUMN joined_by;
          DROP TABLE match_lookup;
          DROP TABLE content_match;
          DROP TABLE fingerprint;

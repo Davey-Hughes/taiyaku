@@ -843,7 +843,7 @@ fn editions_by_work(
 
 /// The editions among `edition_ids` whose members were walked as reflowable
 /// EPUBs, read back from `scan_entry` as [`missing_by_edition`] reads, since
-/// nothing writes `member.format`.
+/// a member row holds no format (O69).
 ///
 /// # Errors
 ///

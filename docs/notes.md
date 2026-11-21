@@ -31439,3 +31439,47 @@ lists the archive (`rar_pages`) and then visits it (`Backend::visit`), and
 each is a whole decode, so the walk costs about what one listing and
 `bsdtar`'s single pass cost together, and unpacking through it costs more than
 `bsdtar` does (the table's last two rows).
+
+## O69: `member.format` dropped (2026-11-20)
+
+The owner ruled on 2026-11-20 to drop the column rather than populate it.
+Migration 031 is `ALTER TABLE member DROP COLUMN format`; no trigger, view or
+index names the column, so SQLite drops it in place. The two reads left went
+with it: `scan.rs`'s `MemberRow` selected it in two queries and used
+nothing of it, and `derive::unchanged` required it NULL.
+
+**Checked on real files.** Three series were copied, not linked, from
+`/home/davey/temp/manga-test` into a scratch directory: `Bocchi the Rock! -
+Anthology Comic` (two `.cbz`), `RuriDragon` (four `.cbz`) and one
+`Kaguya-sama` colour volume held as a directory of images. Main's binary at
+4b7a4f4f scanned them as two directories into a store at version 30, and the
+branch's binary then opened it with `library libraries`, which migrates.
+
+| | At 30 | At 31 |
+|---|---|---|
+| members, editions, works | 7, 7, 7 | 7, 7, 7 |
+| `member_root` rows, series | 7, 5 | 7, 5 |
+| members holding a format | 0 of 7 | no column |
+| `PRAGMA integrity_check` | ok | ok |
+| `PRAGMA foreign_key_check` | empty | empty |
+| `structure_version.n` | 56 | 56 |
+
+Every member's other nine values, and every `edition`, `work` and
+`member_root` row, read back identical, and the open wrote a
+`-before-v31` backup. The walk's own tokens stood beside them: `scan_entry`
+held `zip` for the six archives and `dir` for the seven directories.
+
+**A rescan and derive after the migration rewrote no work.** The counter
+stayed at 56 and every row read back identical, as it had for a rescan with
+main's binary before the migration. A derive takes the write path for a work
+`derive::unchanged` does not hold, and the counter moves when it does: on a
+copy of the migrated store, one member's page count raised by one moved it to
+57, and the next scan rewrote that work, its page count back as the file
+has it, and left the counter at 68. So every work took the `unchanged`
+path that no longer reads the column.
+
+`find /home/davey/temp/manga-test -newer` a marker stamped before the copy
+printed nothing after the last scan. The copied files were deleted; the
+stores and logs are kept locally under
+`.superpowers/sdd/2026-11-20-o69-drop/evidence/real/`.
+

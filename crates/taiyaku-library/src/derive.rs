@@ -2224,7 +2224,6 @@ fn unchanged(
                 || member.path != candidate.path
                 || member.sha256 != candidate.sha256
                 || member.pages != i64::from(candidate.pages)
-                || !member.format_unset
                 || member.root_id != Some(candidate.root_id)
                 || member.directories != directories
                 || chapter_after(
@@ -2297,9 +2296,6 @@ struct MemberRow {
     path: String,
     sha256: String,
     pages: i64,
-    /// `member.format` is written by nothing, so the import's reinsert leaves
-    /// it NULL; a row holding one would be changed by the rewrite.
-    format_unset: bool,
     /// `(chapter_declared, chapter_source)`.
     chapter: (Option<f64>, Option<String>),
     root_id: Option<i64>,
@@ -2329,8 +2325,8 @@ fn held_members_of(conn: &Connection, work_id: i64) -> Result<Vec<MemberRow>, St
     }
     conn.prepare_cached(
         "SELECT member.id, member.edition_id, member.ordinal, member.path, member.sha256,
-                member.pages, member.format IS NULL, member.chapter_declared,
-                member.chapter_source, member.root_id
+                member.pages, member.chapter_declared, member.chapter_source,
+                member.root_id
            FROM member JOIN edition ON edition.id = member.edition_id
           WHERE edition.work_id = ?1
           ORDER BY member.edition_id, member.ordinal",
@@ -2344,9 +2340,8 @@ fn held_members_of(conn: &Connection, work_id: i64) -> Result<Vec<MemberRow>, St
             path: r.get(3)?,
             sha256: r.get(4)?,
             pages: r.get(5)?,
-            format_unset: r.get(6)?,
-            chapter: (r.get(7)?, r.get(8)?),
-            root_id: r.get(9)?,
+            chapter: (r.get(6)?, r.get(7)?),
+            root_id: r.get(8)?,
         })
     })
     .map_err(failed)?

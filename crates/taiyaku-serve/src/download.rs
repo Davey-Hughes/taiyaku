@@ -27,8 +27,8 @@
 ///
 /// **`extension` is the caller's, not this function's**, because a
 /// single-member edition served byte for byte may not be a comic archive at
-/// all: `member.format` admits `pdf` and both epub kinds, and a `.cbz` on a PDF
-/// would be a lie told in the filename as well as in the `Content-Type`.
+/// all: `scan_entry.format` admits `pdf` and both epub kinds, and a `.cbz` on
+/// a PDF would be a lie told in the filename as well as in the `Content-Type`.
 /// Spec §7.
 pub(crate) fn download_name(
     series: Option<&str>,

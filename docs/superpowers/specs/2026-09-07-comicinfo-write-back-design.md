@@ -264,7 +264,8 @@ does — the root joined to `member.path`, with the scanned-work case where
 those paths are already absolute — skips every member whose `format` is not
 `zip`, renders `comicinfo::xml` for that member's edition and page count,
 reads the archive's existing `ComicInfo.xml`, and keeps the member only if
-the two differ.
+the two differ. *Since 2026-11-20 `member` has no `format` column (O69,
+migration 031); `stamp::plan` sniffs each member's file for its format.*
 
 `apply` re-derives the plan and refuses if it does not match the one passed
 in, then performs §1.4's sequence. It returns what changed, which is what the

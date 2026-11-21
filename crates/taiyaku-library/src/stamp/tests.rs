@@ -109,11 +109,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Replace the fixture's archive with bytes of another format entirely.
 ///
-/// **Real bytes, not a column.** `member.format` is never written by anything
-/// in this repository (see [`super::plan`]'s doc comment), so setting it
-/// would exercise nothing; and `plan` sniffs the file rather than trusting a
-/// token, so the only way to test the refusal is to put a file of that format
-/// where the member says one is. These are the signatures
+/// **Real bytes, not a token.** [`super::plan`] sniffs the file rather than
+/// trusting a recorded format, so the only way to test the refusal is to put a
+/// file of that format where the member says one is. These are the signatures
 /// `taiyaku_read::sniff` matches on.
 fn write_as(fixture: &Fixture, name: &str, signature: &[u8]) {
     let path = fixture.archive(name);
