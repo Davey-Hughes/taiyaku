@@ -276,8 +276,11 @@ someone ran one.
 `timeout-minutes: 10` on all five jobs bounds a **job** — the only thing that
 can catch a hang outside a test, such as a stalled `curl` in one of the six
 tool-install steps across this file or a `cargo build` that never finishes.
-It is sized at 4.5x the worst honest job observed over the ten runs before
-this branch (134 s), applied uniformly rather than tuned per job. Neither
+It is 10 minutes by the owner's ruling of 2026-11-20 (O415), applied
+uniformly rather than tuned per job. The slowest job in the forge's runs that
+"Build volumes, and what a run keeps" times is `test` on the NAS runner: 8 min
+25 s with its build volume empty (run 1026) and 6 min 44 s with it kept (run
+1028). Neither
 bound subsumes the other: the per-test bound cannot see a hang outside a test,
 and a job timeout alone produces a red step naming nothing — the same defect
 this file already rejected once in `--fail-under-file-lines`'s own case, see
@@ -338,9 +341,7 @@ risk from the resulting few lines of run-to-run variance.
 The per-test bound was triggered on the forge itself, not only reasoned
 about: the branch's first push carried a deliberately non-terminating test,
 and the `test` job failed by name at 153 s, then passed at 117 s on the exact
-revert. The job-level bound stays untriggered, deliberately — proving it
-fires would cost a ten-minute CI run to verify one documented key.
-`docs/status.md` and `docs/notes.md`, both under O39, carry the full
+revert. `docs/status.md` and `docs/notes.md`, both under O39, carry the full
 measurement record.
 
 ### `NOT MEASURED:` is invisible without a nextest override
@@ -2193,9 +2194,9 @@ other. Every Rust job of both runs took `-a`. A second run taking the other
 directory has therefore been seen only on a development machine, in the local
 runs below.
 
-**The job bound.** `timeout-minutes: 10` and its reasoning under "Bounding a
-test's runtime" were sized before these figures, from a worst job of 134 s.
-What the bound should be now is O415's, in `docs/status.md`.
+**The job bound.** `timeout-minutes: 10` was sized before these figures, from a
+worst job of 134 s. It stays 10 minutes by the owner's ruling (O415), and
+"Bounding a test's runtime" gives that ruling as its reason.
 
 **What was checked locally.** The script was run case by case in
 `rust:1-trixie` on scratch volumes:
@@ -2832,6 +2833,40 @@ scripts/mutants.sh                 # everything — the three hours
 `--since` is the one to reach for before opening a pull request. It passes the
 merge-base diff to `cargo mutants --in-diff`, so it mutates what the branch
 changed rather than what `main` gained meanwhile.
+
+**A run that reaches no verdict exits non-zero rather than reading as
+clean.** `scripts/mutants.sh` goes on only when `cargo mutants` exits 0, 2
+(survivors) or 3 (timeouts). It exits 4, saying no mutant was tested, when the
+unmutated tree failed to build or pass its tests, and 2 on any other status or
+when one of its own commands fails first, keeping 1 for survivors outside the
+baseline and, with `--baseline`, for an entry written with the placeholder
+reason.
+
+It reads only output this run made. cargo-mutants moves an earlier
+`target/mutants.out` aside when it starts, but `--in-diff` stops with status 0
+before making one when the diff holds no mutant, which it says on its console
+(`Diff changes no Rust source files`, `No mutants to filter` or `Diff file is
+empty`). The script runs it with `NO_COLOR=1`, so no colour codes surround
+those words, and keeps its console in a file of the run's own,
+`target/mutants-console.XXXXXX`, whose name it prints as the run starts; the
+marker that shows an earlier directory is named for the run too. With one of
+those lines the run is reported as `no mutant in scope`, exit 0, and with none
+it exits 2. An earlier run's files are never read as this run's, nor written
+into the baseline by `--baseline`.
+
+`mutants-baseline.mjs` then reads `outcomes.json` and exits 2, saying why,
+when no mutant's tests ran because every mutant failed to build, or when the
+file is absent and the `debug.log` beside it does not say `No mutants found
+under the active filters`. Where it does, as for a `--file` matching nothing
+or a shard left empty, which `mutants.yml`'s matrix would produce only for a
+crate with very few mutants, the run is `no mutant in scope`, exit 0. Its
+check that the baseline outcome is `Success` is a second guard, since the
+script stops on 4 first. A failed baseline and those exit-2 runs leave an empty
+`missed.txt`, the file a clean run leaves, and a run that stops before making
+its output directory (a usage error, `--in-diff`'s 5 and 6, or its filter
+finding nothing) leaves an earlier run's or none (O414). A run that stopped
+partway yet exited 0, 2 or 3 would still be read as a verdict on the mutants
+it reached.
 
 ### What it cannot tell you
 

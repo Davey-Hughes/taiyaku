@@ -31509,3 +31509,113 @@ pass and store tests were each watched failing against their own defect:
 The control, `a_digest_the_derive_took_before_the_listing_is_not_taken_again`,
 passes on `main` and with the fix. It is kept because no other pass test
 asserts that a unit listed with its digest is not hashed.
+
+## O414: a sweep with no verdict exits non-zero (2026-11-20)
+
+`scripts/mutants.sh` read `cargo mutants`' exit status only where
+`missed.txt` was absent. Each case below but the last leaves one, empty,
+which the old scripts read as `mutants-baseline: no survivor outside the
+baseline` and exit 0. Measured with cargo-mutants 27.1.0; each case names
+what it swept, and says so where an output was made by hand:
+
+- **An unmutated baseline that fails.** Sweeping
+  `crates/taiyaku-core/src/route.rs` with `--file`, a `RUSTC_WRAPPER` that
+  passes rustc's probes through and refuses every compilation fails the
+  baseline's build, as O414's run with no sccache server did. `cargo
+  mutants` exits 4, and its `outcomes.json` holds the baseline alone,
+  `"summary": "Failure"`, with `total_mutants` 0. The script's last lines
+  included, in order,
+
+  ```text
+  ERROR cargo build failed in an unmutated tree, so no mutants were tested
+  mutants-baseline: 0 survivor(s) this run; docs/mutants-baseline.md holds 35 accepted and 90 untriaged
+  mutants-baseline: no survivor outside the baseline
+  ```
+
+  and it exited 0. Now its last lines are
+
+  ```text
+  ERROR cargo build failed in an unmutated tree, so no mutants were tested
+  error: the unmutated baseline failed, so no mutant was tested and this run has no verdict.
+         cargo mutants exited 4. Its log is target/mutants.out/log/baseline.log.
+  ```
+
+  and it exits 4.
+- **An unmutated baseline that fails in its tests**, which is how a flaky
+  test shows itself to a sweep. A sweep of O396's fix on 2026-11-20 failed
+  its baseline on
+  `lease::tests::a_waiting_lease_returns_only_once_the_holder_drops_and_says_it_waits`
+  and logged `ERROR cargo test failed in an unmutated tree, so no mutants were
+  tested`, then `no survivor outside the baseline`, which the old script
+  follows with exit 0 (`.superpowers/sdd/o396-double-hash-evidence/mutants-1.log`).
+  Put in on purpose on the `route.rs` sweep with `RUST_TEST_THREADS=0`,
+  which libtest refuses, the same failure reads
+  `FAILED   Unmutated baseline in 4s build + 0s test`, `cargo mutants` exits
+  4, and the script now prints the two lines above and
+  exits 4.
+- **A scope with no mutant in it**: a `--file` naming no file
+  (`crates/taiyaku-core/src/no-such-file.rs`), and a shard left empty
+  (`route.rs` with `--shard 29/30`), which `mutants.yml`'s matrix would
+  produce only for a crate with very few mutants. `cargo mutants` prints
+  `Found 0 mutants to test` and `No mutants found under the active filters`,
+  writes the second to
+  `mutants.out/debug.log` as a `WARN cargo_mutants::lab:` line, exits 0 and
+  writes no `outcomes.json`. That is an honest answer, so by the owner's
+  ruling of 2026-11-20 `mutants-baseline.mjs` reports `no mutant in scope`
+  and both sweeps exit 0. It takes that from cargo-mutants' own line alone:
+  handed the same output with `debug.log` removed, with that line replaced,
+  or with the phrase on a line that is not that `WARN`, each made by hand,
+  it exits 2.
+- **A run whose every mutant fails to build** was not produced by a sweep:
+  `mutants-baseline.mjs` was handed an `outcomes.json` written for it, a
+  passing baseline and two mutants, both unviable. It exits 2.
+- **A `--since` diff that holds no mutant**, as on a branch that changes
+  only docs, web code or tests. In 27.1.0's source (`main.rs`,
+  `in_diff.rs`) the `--in-diff` filter then logs `Diff changes no Rust
+  source files` or `No mutants to filter` and exits 0 before it makes an
+  output directory, so the old scripts read whatever an earlier run had left
+  in `target/mutants.out` as this run's. A review reproduced that with the
+  real binary on a scratch crate, the earlier run's output being a copy of a
+  `route.rs` sweep's: `no survivor outside the baseline` and exit 0, and with
+  `--baseline` a rewritten baseline file. The script now proves the
+  directory is this run's, by a marker left in an earlier one, which goes
+  with it when cargo-mutants moves it aside, and keeps cargo-mutants' console
+  in a file of the run's own under `target/`. With one of those lines the
+  run is `no mutant in scope` with exit 0, with neither it exits 2, and
+  `--baseline` writes nothing. On this branch, whose diff against `main`
+  changes only docs and scripts, `--since main` with the `route.rs` run of
+  2026-11-20 still in `target/mutants.out` logged ` INFO Diff changes no
+  Rust source files`. `main`'s scripts then printed
+  `mutants-baseline: 2 survivor(s) this run` and `no survivor outside the
+  baseline` and exited 0, and the new
+  one prints `no mutant in scope` and exits 0. In a clone whose only Rust
+  change is two lines added to `crates/taiyaku-core/src/route/tests.rs`,
+  with no earlier output, cargo-mutants logged ` INFO No mutants to filter`;
+  `main`'s script exited 1 on the missing `missed.txt`, and the new one
+  exits 0 with `no mutant in scope`. With `--baseline`, a copy of a
+  `route.rs` run's output and a baseline lacking one of that run's two
+  survivors, `main`'s scripts wrote the survivor back with the placeholder
+  reason and exited 1, and the new one leaves the file byte-identical and
+  exits 0. With `CARGO_TERM_COLOR=always` or `CLICOLOR_FORCE=1` set,
+  cargo-mutants wraps `INFO` in colour codes, so the script runs it with
+  `NO_COLOR=1`; the docs-only `--since` run then still reads `no mutant in
+  scope` and exits 0, in a clone of this branch. A run that makes no output
+  and prints none of those lines exits 2, which was checked against a
+  stand-in for `cargo` only.
+
+The old `mutants-baseline.mjs`, handed the outputs of the failed build, the
+empty scope and the hand-made unviable run, exits 0 with
+`no survivor outside the baseline` each time, and its `--write` on the failed
+baseline's output exits 0 having written the baseline file (a copy here).
+Now `--write` exits 2 before it writes.
+
+**A run with a verdict reads as it did.** The same file swept with a working
+compiler gave 21 mutants: 12 caught, 7 unviable and 2 missed, both already in
+the baseline. `cargo mutants` exited 2, and the script reported both as
+known and exited 0. With one of the two taken out of a copy of the baseline,
+`mutants-baseline.mjs` named it as the survivor outside the baseline and
+exited 1.
+
+The script takes 0, 2 (survivors) and 3 (timeouts) as a verdict from
+cargo-mutants' documentation of its exit codes. These runs saw 0, 2 and 4
+from 27.1.0, and not 3.

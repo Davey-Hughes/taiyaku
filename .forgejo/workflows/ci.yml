@@ -48,15 +48,9 @@ env:
 # hang outside a test: a stalled `curl` in one of the six tool-install steps
 # below, or a `cargo build` that never finishes. Neither subsumes the other.
 #
-# 10 minutes is 4.5x the worst honest job observed (134 s). Uniform across the
-# five jobs rather than tuned per job, because a per-job number has to be
-# re-tuned as jobs shift and the only property this number needs is to sit
-# between "any honest run" and "hours".
-#
-# **This key is untriggered rather than untested**, and deliberately so:
-# deliberately hanging a job for ten minutes to watch it die costs a
-# ten-minute CI run to verify one documented key, where the per-test bound
-# beside it can be triggered in ninety seconds. See docs/status.md, O39.
+# 10 minutes is the owner's ruling (O415); see docs/ci.md, "Build volumes, and
+# what a run keeps". Uniform across the five jobs rather than tuned per job,
+# because a per-job number has to be re-tuned as jobs shift.
 
 jobs:
   lint:

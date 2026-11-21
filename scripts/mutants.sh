@@ -90,6 +90,10 @@
 # all for some `match` arms (O38). "0 missed" on a file is not "this file is
 # verified", and this script cannot say otherwise.
 set -euo pipefail
+# Exit 1 is kept for survivors outside the baseline and, with --baseline, for
+# an entry written with the placeholder reason, so a command of this script's
+# own that fails exits 2, as every other run with no verdict does.
+trap 'exit 2' ERR
 cd "$(git rev-parse --show-toplevel)"
 
 BASELINE_FILE="docs/mutants-baseline.md"
@@ -252,17 +256,60 @@ fi
 # takes three jobs at a time this is already below what the host will schedule,
 # so it costs nothing there.
 
-# `set +e` because cargo-mutants exits non-zero when mutants survive, and a
-# survivor is the thing this script exists to report rather than an error in
-# running it. The exit status is decided below, against the baseline.
-set +e
-env -u TAIYAKU_CORPUS cargo mutants "${args[@]}"
-mutants_status=$?
-set -e
+# cargo-mutants starts a run by renaming any earlier mutants.out to
+# mutants.out.old, so a marker left in it now goes with it, and finding the
+# marker afterwards proves the directory is an earlier run's. A timestamp could
+# not prove that within one clock tick, and nothing has to be deleted. The
+# marker and the console log are named for this run alone, so a second run in
+# the same tree can neither leave its marker where this one looks nor write over
+# this one's console.
+stale_marker="$OUT_DIR/.taiyaku-earlier-run.$$"
+if [ -d "$OUT_DIR" ]; then : >"$stale_marker"; fi
+mkdir -p "$OUT_PARENT"
+console_log="$(mktemp "$OUT_PARENT/mutants-console.XXXXXX")"
+echo "==> console log: ${console_log}"
 
-if [ ! -f "$OUT_DIR/missed.txt" ] && [ "$mutants_status" -gt 1 ]; then
-  echo "error: cargo mutants failed before it could report (exit ${mutants_status})" >&2
-  exit "$mutants_status"
+# A survivor is what this script exists to report, so cargo-mutants exiting 2
+# is not an error in running it; `||` keeps its status out of `set -e` and the
+# ERR trap. Its console goes to console_log as well, for the check below, and
+# NO_COLOR, which cargo-mutants reads before CLICOLOR_FORCE and
+# CARGO_TERM_COLOR, keeps colour codes out of the lines that check matches.
+mutants_status=0
+env -u TAIYAKU_CORPUS NO_COLOR=1 cargo mutants "${args[@]}" 2>&1 | tee "$console_log" || mutants_status=${PIPESTATUS[0]}
+
+# cargo-mutants exits 0, 2 (survivors) or 3 (timeouts) on a run that reached a
+# verdict. 4 is an unmutated tree that failed to build or pass, so no mutant
+# was tested, and the rest are runs that stopped (O414).
+case "$mutants_status" in
+  0 | 2 | 3) ;;
+  4)
+    echo "error: the unmutated baseline failed, so no mutant was tested and this run has no verdict." >&2
+    echo "       cargo mutants exited 4. Its log is ${OUT_DIR}/log/baseline.log." >&2
+    exit 4
+    ;;
+  *)
+    echo "error: cargo mutants exited ${mutants_status}, so this run stopped without a verdict." >&2
+    echo "       Its console output is in ${console_log}." >&2
+    exit 2
+    ;;
+esac
+
+# cargo-mutants prints these lines only where `--in-diff` returns before making
+# an output directory, so this run made none, whatever another run has put at
+# OUT_DIR meanwhile.
+if [ "$mutants_status" = 0 ] &&
+  grep -aqxE ' INFO (Diff file is empty|Diff changes no Rust source files|No mutants to filter)' "$console_log"; then
+  echo
+  echo "no mutant in scope: cargo mutants found none to test in this diff, so there is nothing to report"
+  exit 0
+fi
+
+# With no output directory of its own, every file under OUT_DIR is an earlier
+# run's, and reading it would report that run as this one.
+if [ ! -d "$OUT_DIR" ] || [ -e "$stale_marker" ]; then
+  echo "error: cargo mutants wrote no output for this run, so it has no verdict." >&2
+  echo "       Its console output is in ${console_log}." >&2
+  exit 2
 fi
 
 # **Absent is not empty.** Reading a missing survivor list as "nothing
@@ -272,8 +319,13 @@ missed_file="$OUT_DIR/missed.txt"
 if [ ! -f "$missed_file" ]; then
   echo "error: ${missed_file} does not exist, so this run produced no survivor list." >&2
   echo "       cargo mutants exited ${mutants_status}. Its log is under ${OUT_DIR}/." >&2
-  exit 1
+  exit 2
 fi
+
+# From here the exit status is mutants-baseline.mjs's own, whose 1 means
+# survivors outside the baseline or, with --baseline, an entry written with the
+# placeholder reason.
+trap - ERR
 
 if [ "$write_baseline" = 1 ]; then
   echo

@@ -42,6 +42,14 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
+// Exit 1 means survivors outside the baseline or, under --write, an entry
+// written with the placeholder reason, so a crash, an outcomes.json that does
+// not parse among them, exits 2 as every other run this cannot judge does.
+process.on('uncaughtException', (err) => {
+  console.error(`mutants-baseline: ${err?.stack ?? err}`)
+  process.exit(2)
+})
+
 const PLACEHOLDER = 'TODO: why is this survivor accepted? An entry with no reason is a defect nobody finished reading.'
 
 // **A third state, between "accepted with a reason" and "new".** Writing a
@@ -95,6 +103,43 @@ const ran = new Set(
     readList(join(outDir, name)),
   ),
 )
+
+// **Whether the run reached a verdict at all**, from cargo-mutants' own record
+// of it. A run whose unmutated baseline failed, or whose every mutant failed to
+// build, leaves the same empty missed.txt as a clean run, and reading that as
+// "nothing survived" reports a sweep that tested nothing as clean (O414). Exit
+// 2, as the repository's other checks do when they cannot judge.
+const noVerdict = (why) => {
+  console.error(`mutants-baseline: ${why}\nmutants-baseline: so this run has no verdict, clean or otherwise`)
+  process.exit(2)
+}
+const outcomesPath = join(outDir, 'outcomes.json')
+// cargo-mutants writes no outcomes.json when, its output directory made, it
+// finds no mutant to test, as for a --file matching nothing or a shard left
+// empty, and that is an honest answer rather than a failure. Only cargo-mutants'
+// own words in its log say so; any other absence has no verdict.
+const NO_MUTANTS = /\bWARN cargo_mutants::lab: .*: No mutants found under the active filters$/m
+if (!existsSync(outcomesPath)) {
+  const debugLog = join(outDir, 'debug.log')
+  if (!(existsSync(debugLog) && NO_MUTANTS.test(readFileSync(debugLog, 'utf8')))) {
+    noVerdict(`${outcomesPath} does not exist, and cargo mutants did not say it found no mutant`)
+  }
+  console.log('mutants-baseline: no mutant in scope: cargo mutants found none to test, so there is nothing to report')
+  process.exit(0)
+}
+const lab = JSON.parse(readFileSync(outcomesPath, 'utf8'))
+// mutants.sh stops on cargo-mutants' exit 4 first, so through the script this
+// is a second guard, for output read some other way.
+const unmutated = lab.outcomes?.find((o) => o.scenario === 'Baseline')
+if (unmutated?.summary !== 'Success') {
+  noVerdict(
+    `the unmutated baseline did not pass (${unmutated?.summary ?? 'not run'}), so no mutant was tested; ` +
+      `its log is ${join(outDir, unmutated?.log_path ?? 'log')}`,
+  )
+}
+if ((lab.caught ?? 0) + (lab.missed ?? 0) + (lab.timeout ?? 0) === 0) {
+  noVerdict(`no mutant's tests ran: of ${lab.total_mutants} mutant(s), ${lab.unviable} failed to build`)
+}
 
 /**
  * Parse the baseline. An accepted survivor is a list item whose whole content
