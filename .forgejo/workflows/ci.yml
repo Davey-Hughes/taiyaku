@@ -64,11 +64,12 @@ jobs:
     timeout-minutes: 10
     container:
       image: rust:1-trixie
-      # The three names must match the runner's `container.valid_volumes` glob,
-      # `taiyaku-ci-*`. The `Build volumes` step needs the clone, which its
+      # The three names must match each runner's `container.valid_volumes`
+      # glob, `taiyaku-ci-*`. The `Build volumes` step needs the clone, which its
       # script comes from. Here it also follows `Formatting`, which compiles
       # nothing, so a formatting failure waits for no fetch; every cargo call
       # after the step builds in the kept directory, when the step took one.
+      # A runner that does not allow a name drops that volume; the job goes on.
       # See docs/ci.md, "Build volumes, and what a run keeps".
       volumes:
         - taiyaku-ci-cargo-registry:/usr/local/cargo/registry
@@ -645,9 +646,10 @@ jobs:
     # makes later runs far shorter. Re-size it from the first real runs.
     timeout-minutes: 60
     # No `container:`, unlike every job above. The runner's default image
-    # carries git and curl, and the runner automounts the host's Docker socket
-    # into it (`docker_host: automount`), which is all this job needs.
-    # redextape's image job runs this way on the same runner.
+    # carries git and curl, and the runner's `docker_host` gives the job's
+    # container a Docker socket, which is all this job needs: the NAS's own
+    # by automount, or on the desktop its rootless daemon's. Either runner
+    # can take the job. redextape's image job runs this way too.
     steps:
       - name: Checkout
         env:
@@ -673,14 +675,14 @@ jobs:
           docker version
           docker buildx version
       # An isolated docker-container builder, so nothing under the registry
-      # name lands in the host's image store (the smoke build's `--load` does
+      # name lands in the daemon's image store (the smoke build's `--load` does
       # tag `taiyaku-ci:$SHORT` there, under another name) — a local `:latest`
       # moving underneath WUD would look like no change at all. Its cache
       # volume outlives the container, which is why the stale container is
       # removed with `docker rm` and never `docker buildx rm`. The name is
       # this repository's alone: redextape's job removes its own builder by
       # name the same way. The CPU cap is here because BuildKit runs as its
-      # own container, outside the runner's `--cpus 4`.
+      # own container, outside the `--cpus` the runner gives the job.
       - name: Set up the isolated builder
         run: |
           docker rm -f buildx_buildkit_taiyaku-builder0 >/dev/null 2>&1 || true

@@ -1911,8 +1911,30 @@ A registered `forgejo-runner` with:
 
 - a label matching `runs-on: docker`
 - Docker support, since every job but `docker` specifies a `container:`
-- the host's Docker socket in the default job container (`docker_host:
-  automount` in the runner's config), which the `docker` job builds with
+- a Docker socket in the default job container, given by `docker_host` in
+  the runner's config, which the `docker` job builds with
+- `container.valid_volumes: ["taiyaku-ci-*"]` in the runner's config, for the
+  four Rust jobs' volumes (see "Build volumes, and what a run keeps").
+  forgejo-runner v12.13.2 drops a volume that list does not allow: it writes
+  `[<name>] is not a valid volume, will be ignored` to the job log, creates
+  the job's container without that volume and mounts the ones it allows. A
+  runner without the setting therefore runs every Rust job with no volume:
+  the job builds in `./target` from nothing and passes or fails as it would
+  with them. Nothing fails for the setting's absence; the job log and the
+  `no volume:` lines of the `Build volumes` step are where it shows.
+
+Two runners take this repository's jobs, both with the `docker` label and
+both allowing `taiyaku-ci-*`, so either takes any job. One runs in a container
+on the NAS and reads `/mnt/user/appdata/forgejo/runner/config.yml` there,
+whose `docker_host: automount` mounts the host's Docker socket into a job's
+container. The other runs on a desktop machine under the user `cirunner`, in
+that user's rootless Docker, and reads
+`/home/cirunner/.config/forgejo-runner/config.yml`, mounted read-only into its
+container as `/data/config.yml`: an edit to any other file named `config.yml`
+changes nothing. Its `docker_host` is that rootless daemon's socket,
+`unix:///run/user/1001/docker.sock`. A job log's first line names the runner
+that took the job by its id, `450440e2-…` for the NAS's and `4360ddec-…` for
+the desktop's.
 
 The label was `ubuntu-latest` until it was measured. git.daveynet.xyz's runner
 advertises `docker`, so every job asked for a label nothing provided and sat in
@@ -1969,7 +1991,7 @@ same verdict.
 
 The first two hold the crates cargo downloads and the git dependencies it
 checks out. The other four hold what cargo builds, one volume per job, so the
-jobs of one run never wait on each other's build. Every name must match the
+jobs of one run never wait on each other's build. Every name must match each
 runner's `container.valid_volumes` glob, `taiyaku-ci-*`. The mounts are two
 directories of cargo's home and not `/usr/local/cargo` itself, because an empty
 volume mounted over a directory the image fills is filled from the image once
@@ -2012,7 +2034,7 @@ with the reason. For a script that failed, that reason says only
 **Inside a target volume.** Cargo builds in a directory named for the toolchain
 `rust-toolchain.toml` pins, so moving the pin starts a new directory and
 deletes nothing another run may be building in. Each toolchain has two,
-`<channel>-a` and `<channel>-b`, because the runner's capacity is 2 and two
+`<channel>-a` and `<channel>-b`, because each runner's capacity is 2 and two
 runs of one job must not share a directory. Cargo's own build lock does not
 keep them apart. It ends with the build, while the tests and the coverage
 report go on reading the directory with no lock held, so a second run's
@@ -2091,9 +2113,13 @@ earlier run left:
 **Trust.** Any run, a pull request's included, writes the volumes that
 `main`'s gate jobs later read, and those jobs execute what the volumes hold:
 a kept build script's output is used and a kept proc-macro library is loaded
-by rustc, as root in the job's container, without being built again. That is
-no wider than what a job has already, since the runner mounts the host's
-Docker socket into every job container (see "Runner requirements"). The forge
+by rustc, as root in the job's container, without being built again. On the
+NAS that is no wider than what a job has already, since that runner mounts
+the host's Docker socket into every job container (see "Runner
+requirements"). On the desktop the volumes belong to the rootless Docker of
+the user `cirunner`, whose socket the `docker` job's default container
+reached in `main`'s run 1025; whether the desktop runner also gives that
+socket to a job that sets a `container:` has not been looked at. The forge
 is sign-in only, and the image the `docker` job ships never comes from the
 volumes: that job mounts none.
 
@@ -2105,13 +2131,71 @@ moved. The registry and git volumes are never pruned: cargo's own cache
 collection keeps its record of what was last used in cargo's home directory,
 outside the two volumes, so every container starts without one. A step that
 took a directory prints the sizes instead: each directory in its target
-volume, the registry and the git checkouts. To clear the volumes by hand, wait
-until the runner is idle and remove all six in one command:
+volume, the registry and the git checkouts. To clear the volumes by hand, do it
+on each runner's host (on the desktop, in the rootless Docker of the user
+`cirunner`): wait until that runner is idle and remove all six in one command:
 
     docker volume rm taiyaku-ci-cargo-registry taiyaku-ci-cargo-git taiyaku-ci-target-lint taiyaku-ci-target-test taiyaku-ci-target-default-features taiyaku-ci-target-wasm
 
-**One host.** The volumes belong to the Docker of the host the runner uses, so
-a job that lands on a runner on another host does not find these.
+**Two runners, a set of volumes each.** The volumes belong to the Docker each
+runner uses, and both runners (see "Runner requirements") take the `docker`
+label, so either takes any job and the workflow does not choose. Each host
+keeps its own six volumes. A job's first run on a host builds from nothing,
+whatever the other host's volume for that job holds, and a run whose jobs are
+split between the hosts reads and fills both sets.
+
+**Measured on the forge.** Runs of `ci.yml` on 2026-11-20, named by their
+number on the forge's Actions page, with the API's run id in brackets: 1026
+(3241), 1027 (3242), 1028 (3245), 1029 (3246), 1031 (3252) and 1032 (3253),
+which ran the workflow and script this section describes, and 1030 (3249),
+which ran among them: it was pull request #283's, with the same workflow and
+script and that pull request's code.
+Runs 1026 and 1027 also carried a probe in `wasm`: a volume outside the glob
+and a step after `Build volumes`. A time is the job's task in the forge's
+tasks API, from `run_started_at` to `updated_at`. A volume is empty in a run
+whose `Build volumes` step printed an empty build directory (`0` on the NAS,
+`4.0K` on the desktop); it is kept in the first of these runs, after any
+empty one, in which the job ran on that runner, and the size is what that
+run's step printed for its build directory, which earlier runs had left.
+
+| Job | Runner | Volume empty | Volume kept | Build directory, kept |
+| --- | --- | --- | --- | --- |
+| `lint` | NAS | 1026: 5 min 31 s | 1031: 1 min 43 s | 1.8G |
+| `test` | NAS | 1026: 8 min 25 s | 1028: 6 min 44 s | 8.6G |
+| `default-features` | NAS | none of these runs | 1027: 5 min 43 s | 5.7G |
+| `wasm` | NAS | none of these runs | 1027: 27 s | 358M |
+| `lint` | desktop | 1027: 2 min 24 s | 1028: 1 min 44 s | 1.8G |
+| `test` | desktop | 1027: 2 min 39 s | 1029: 2 min 25 s | 8.6G |
+| `default-features` | desktop | 1030: 2 min 38 s | 1032: 1 min 59 s | 5.7G |
+| `wasm` | desktop | 1028: 39 s | 1030: 25 s | 360M |
+
+The NAS's `default-features` and `wasm` volumes had been filled before run
+1026, so none of these runs found them empty. In every run on a kept build
+directory, each job's `Compiling` lines named the workspace's crates and no
+other. The registry and git volumes printed 470M and 1.3M on the NAS in each
+of these runs, and 485M and 1.4M on the desktop from 1027 on; in 1027 the
+`test` job's fetch filled the desktop's registry.
+
+Each time is a single run on a runner whose load swings: each runner takes two
+jobs at a time, from any repository on the forge. Beside 1031's `lint` and
+1027's `default-features` on the NAS, and beside 1027's `test`, 1028's `lint`
+and `wasm`, and 1030's and 1032's `default-features` on the desktop, a job of
+another repository's run was in flight for part of the time; beside each other
+job in the table, only a job of its own run was. The NAS gives each job
+`--cpus 4` and the desktop `--cpus 12`, so a row's two times can be set
+against each other, and one runner's times cannot be set against the other's.
+
+**Two runs at once.** Runs 1031 and 1032 were dispatched three seconds apart,
+for a second run of a job to take the `-b` directory. None did. `test` ran on
+the desktop both times, and 1032's started two seconds after 1031's had ended;
+each other Rust job ran on one runner in one run and on the other in the
+other. Every Rust job of both runs took `-a`. A second run taking the other
+directory has therefore been seen only on a development machine, in the local
+runs below.
+
+**The job bound.** `timeout-minutes: 10` and its reasoning under "Bounding a
+test's runtime" were sized before these figures, from a worst job of 134 s.
+What the bound should be now is O415's, in `docs/status.md`.
 
 **What was checked locally.** The script was run case by case in
 `rust:1-trixie` on scratch volumes:
@@ -2265,18 +2349,24 @@ those are unchanged. It is never a required status: branch protection on `main`
 names only `(pull_request)` contexts, and this job never runs on a pull
 request.
 
-**It sets no `container:`.** It needs a Docker CLI and the host's daemon, not
-a toolchain. The runner's default image has git and curl, and the runner
-automounts the host's socket into it. It installs a static Docker CLI matching
-the NAS's daemon (29.5.3) and buildx 0.34.0, both by checksum.
+**It sets no `container:`.** It needs a Docker CLI and a Docker daemon, not a
+toolchain. The runner's default image has git and curl. Either runner can take
+the job, and it builds with the daemon its runner's `docker_host` names (see
+"Runner requirements"): on the NAS the host's, whose socket the runner
+automounts into the job's container, and on the desktop the rootless Docker
+of the user `cirunner`. Either way it pushes to the forge's registry, as
+`main`'s run 1025 did from the desktop. It installs a static Docker CLI,
+29.5.3, and buildx 0.34.0, both by checksum. The daemon reported 29.8.2 on the
+NAS in `main`'s run 1021 and 29.10.0 on the desktop in run 1025.
 
 **It builds in an isolated builder named `taiyaku-builder`**, a
 `docker-container` driver, so nothing it builds is tagged under the registry
-name in the host's image store (the throwaway `taiyaku-ci:<sha7>` is loaded
+name in the daemon's image store (the throwaway `taiyaku-ci:<sha7>` is loaded
 there, and removed). A local `:latest` moving underneath WUD would look to WUD like no
 change at all. BuildKit then runs as a container of its own, outside the
-runner's `--cpus 4`, so the builder is capped at four CPUs with
-`cpu-quota=400000` and `cpu-period=100000`.
+`--cpus` the runner gives the job's container (4 on the NAS, 12 on the
+desktop), so the builder is capped at four CPUs with `cpu-quota=400000` and
+`cpu-period=100000`.
 
 **It runs the image before pushing it.** The image is loaded under a throwaway
 tag (`taiyaku-ci:<sha7>`) and started. The job waits for its health check to
@@ -2303,7 +2393,7 @@ taken from the layer cache.
 and never answers fails the job quickly instead of holding it until the job's
 own timeout.
 
-**`:latest` moves only for the commit that is still `main`'s tip.** The runner
+**`:latest` moves only for the commit that is still `main`'s tip.** Each runner
 takes two jobs at once and nothing serialises them, so an older merge's job can
 finish after a newer one's, and the order in which pushes finish is not the
 order of the merges. Before pushing, the job asks the forge for
@@ -2321,10 +2411,11 @@ a token with package write access. Without them the job fails at
 the `Log in to the forge's registry` step, which runs `docker login` after the
 build and the probe have passed; nothing is pushed.
 
-**Its timeout is 60 minutes**, unlike the others' 10. Nothing has timed a
-cold image build on the NAS, whose i7-9700K is slower per core than the
-workstation and carries other load. A first run also pulls three base images
-and installs the toolchain twice. Re-size the figure from the first real runs.
+**Its timeout is 60 minutes**, unlike the others' 10. Either runner can take
+the job, and nothing has timed a cold image build on the NAS, whose i7-9700K
+is slower per core than the workstation and carries other load. A first run
+also pulls three base images and installs the toolchain twice. Re-size the
+figure from the first real runs.
 
 ## The advisory check
 
