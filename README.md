@@ -10,6 +10,8 @@ you're back.
 The name is 対訳 (*taiyaku*), the Japanese term for a bilingual parallel-text edition
 where the original and its translation sit facing each other.
 
+![The library page in taiyaku, in the dark theme: a grid of manga covers, each with its series title and volume count](https://daveyhughes.com/readme/taiyaku/library-dark.webp)
+
 > **Status: the aligner works, and so does the reader.**
 > `taiyaku align` pairs two editions and writes a sidecar, measured against eleven
 > series; `taiyaku serve` hands an HTTP client that sidecar, its pages and a reading
