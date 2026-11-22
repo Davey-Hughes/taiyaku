@@ -32128,7 +32128,9 @@ in the same directory).
   was read while that mutant ran, and those either side of it were 85.85
   and 128.00. This branch changes nothing that test reaches; whether it
   fails on `main` under that load is not measured. On the owner's ruling it
-  is filed as O437, opened by this PR and not fixed. `FlagGuard`'s drop as
+  is filed as O437, opened by this PR and not fixed. *(O437 has since
+  closed: see "O437: the fresh-build race test, starved (2026-11-21)"
+  below.)* `FlagGuard`'s drop as
   `()` timed out at 918 s, where O429's run caught it, because the
   in-memory waiting-lease test, before its guard, waited for good.
 - **The third sweep** (`sweep-lease-3.log`, `sweep-lease-3-out/`), of the
@@ -32143,3 +32145,107 @@ in the same directory).
   `false`, as in O429's run; the four unviable are O429's four; and
   `FlagGuard`'s drop as `()` and O436's `181:26` were caught. Since it, of
   the code only `lease/tests.rs` has changed, in checks and comments.
+
+## O437: the fresh-build race test, starved (2026-11-21)
+
+`schema::tests::opens_arriving_while_another_builds_a_fresh_database_all_succeed_and_take_no_backup`
+failed in the second sweep of `lease.rs` by the PR that closes O348, O413
+and O429, three of its four opens answering "starting the transaction for
+schema version 1: database is locked" ("lease.rs's survivors triaged
+(2026-11-21)" above). The test held a builder, the open path itself, by an
+update hook at the second version row of a fresh build, started three opens,
+slept 500 ms and let the builder go. The timings below came from a
+temporary patch that timed each step (`probes.patch`, not committed); the
+logs are kept locally under `.superpowers/sdd/2026-11-22-o437/logs/`.
+"Starved" is the test binary pinned with `taskset` to four CPUs at
+`nice -n 19`, beside busy loops at niceness 0 pinned to the same four, with
+`TMPDIR` on the NVMe disk (`o437-run.sh`).
+
+- **How an open waits.** Each open's `BEGIN IMMEDIATE` waits for the write
+  lock until SQLite's busy handler, `sqliteDefaultBusyCallback` in the
+  SQLite 3.54.1 that `libsqlite3-sys` 0.40.0 bundles, has scheduled sleeps
+  adding up to `BUSY_TIMEOUT`, five seconds. It counts the sleeps it asks
+  for and reads no clock, so on a starved thread the wait runs longer on the
+  clock and still gives up at the same count. Read in the source, not timed.
+- **The cause, measured.** Held at its second version row, the builder had
+  the rest of the build to run after the release, inside that wait. With no
+  busy loops, the test neither pinned nor niced, on tmpfs and on disk, that
+  rest took 48.6 to 61.4 ms in twenty runs and every open succeeded
+  (`step1-*.log`). Starved, it took 6.7 to 14.2 s beside eight busy loops
+  and 12.1 to 15.8 s beside sixteen; every open gave up first, after 5.21 to
+  6.32 s on the clock, and the test failed seven runs of seven, each with
+  the sweep's message (`step3-test-nice19-hogs8.log` and `-hogs16.log`).
+  Beside four loops one batch failed four runs of four and another passed
+  three of three, the builder's rest taking 5.9 to 6.3 s in the first and
+  0.7 to 2.8 s in the second; beside six, one run of six lost one open,
+  which gave up 4.69 s after the release, 11 ms before the builder
+  committed. Across the 104 instrumented runs, every open that succeeded did
+  so after the builder's commit and every one that failed gave up before it,
+  each of the 34 with plain `SQLITE_BUSY`, extended code 5.
+- **Niceness, not load alone.** With the test at niceness 0 beside 4 to 64
+  busy loops on the same four CPUs, four runs at each, the builder's rest
+  took at most 1.3 s and no open failed (`step3-nice0-hogs*.log`); at
+  niceness 10, 12 and 15 to 18 beside four loops, none of 21 runs failed.
+  `scripts/mutants.sh` renices itself to 19, and with no
+  `RUST_TEST_THREADS`, as in that sweep, one `cargo test` process runs a
+  crate's tests on thirty-two threads here; the loads read from eight
+  minutes into the sweep to its end ran from 84 to 134. That its red had
+  this cause is inferred from its message and from which opens failed; its
+  log holds no timing of the test's steps.
+- **The fix, first part: the hold**, in
+  `crates/taiyaku-library/src/schema/tests.rs` alone, as is the second. The
+  builder is held at the last version row of its build. `apply_one` writes
+  each version row after its migration's own work, so at the last one only
+  the commit is left after the release. Every `meta` write the builder's
+  open makes is a version row, so the hook holds the builder at its
+  `SCHEMA_VERSION`-th, and after the scope the test asserts that the open
+  wrote `meta` exactly `SCHEMA_VERSION` times, which fails the test if the
+  open writes `meta` other than its version rows: a migration that wrote a
+  `meta` row of its own would move the hold off the last version row, and
+  the test then fails on that count rather than passing. A build made
+  migration by migration has committed every version but the last at that
+  row, so the opens still back up a part-built store.
+- **The second part: the release.** The 500 ms sleep did not make every open
+  read the version before the release. In one starved run beside sixteen
+  loops, the third, an open started `Library::open` 2.9 ms after the release
+  (`step3-test-nice19-hogs16.log`). Held at the second row, that open still
+  raced the build; with only the commit left, such an open can find the
+  build finished and pass however it was committed. Each open now runs
+  `Library::from_connection` through `open_telling_its_begin`, on a
+  connection whose statement trace (`trace_v2`) sends `true` when it first
+  starts a statement beginning `BEGIN`, and `false` if the open ends without
+  one. An open issues `BEGIN IMMEDIATE` only after reading a version below
+  the build's, so the test thread releases the builder once all three opens
+  have sent, and past a 10 s deadline releases it anyway and fails, naming
+  how many opens reached their `BEGIN`. The sleep is gone. After its checks
+  of the outcomes, the test asserts that every open reached its `BEGIN`.
+- **Green**, on the test as this PR leaves it. Starved beside eight busy
+  loops, the test as it stood before this PR failed three runs of three with
+  the sweep's message (`fix-control-hogs8.log`), and the new one passed ten
+  runs of ten, and ten of ten beside sixteen (`fixw1-load-hogs8.log`,
+  `fixw1-load-hogs16.log`). With no busy loops, the test neither pinned nor
+  niced, it passed twenty runs of twenty (`fixw1-unmutated.log`).
+- **Watched failing**, each defect put in by hand and the test run alone.
+  With the fresh build made migration by migration in
+  `schema::apply_pending`, its one-transaction branch never taken, the test
+  failed three runs of three with two opens whose backup of the part-built
+  store "could not be taken" (`fixw1-defect-i.log`), as the test before this
+  PR did (`fix-mut-a-original-test.log`). With the recheck of the version
+  under the write lock removed there, it failed three runs of three with all
+  three opens "applying schema version 1: table series already exists"
+  (`fixw1-defect-ii.log`). With one `meta` write more in the build, it
+  failed three runs of three on its count of them (`fixw1-meta-write.log`).
+- **The pass the release closes.** With each open delayed 700 ms and the
+  build made migration by migration, the test with the hold at the last row
+  and still the 500 ms sleep passed three runs of three, its opens finding
+  the build finished (`wait-vacuous-old-test.log`); the new test failed
+  three runs of three, with two opens whose backup "could not be taken"
+  (`fixw1-vacuous-700.log`). With its release moved ahead of the wait as
+  well, the new test failed three runs of three at its check that every open
+  reached its `BEGIN`, "only 0 of 3 opens reached their `BEGIN`", every open
+  having succeeded (`fixw1-vacuous-release-early.log`).
+- **What it no longer catches.** As this PR leaves it, this test no longer
+  fails when `BUSY_TIMEOUT` is cut to 50 ms, and
+  `tests::every_connection_carries_the_busy_timeout` and
+  `tests::several_first_opens_of_one_fresh_library_at_once_all_succeed`
+  still do (`final-busy50.log`).

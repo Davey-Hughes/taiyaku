@@ -431,56 +431,87 @@ fn a_fresh_database_and_an_up_to_date_one_take_no_backup() {
 
 /// **Opens that arrive while another builds a fresh database all succeed and
 /// take no backup** (O269). The builder is the open path itself, held by an
-/// update hook at its second version row. Built migration by migration,
-/// version 1 has committed there, so the other opens back up a part-built
-/// store and two in one second collide on its name; built in one transaction,
-/// they read version 0 and wait on the write lock. Holding the builder gives
-/// the opens half a second to read the version mid-build, not milliseconds.
+/// update hook at the last version row of its build. Built migration by
+/// migration, every version but the last has committed there, so the other
+/// opens back up a part-built store and two in one second collide on its
+/// name; built in one transaction, they read version 0 and wait on the write
+/// lock. The builder is held until each open has asked for that lock or
+/// ended, so none can find the build finished.
 #[test]
 fn opens_arriving_while_another_builds_a_fresh_database_all_succeed_and_take_no_backup() {
     const OPENS: usize = 3;
+    // Past this the wait for the opens' answers ends and the builder is
+    // released whatever they have done, so an open that never answers cannot
+    // keep it held. The scope still joins every open: this bounds the wait
+    // after the hold, not the run.
+    const OPENS_ASK_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
     let dir = crate::tests::tempdir("fresh-build-race");
     let db = dir.path().join("library.db");
 
     let mut builder = Connection::open(&db).expect("the builder opens the file");
     let (held, is_held) = std::sync::mpsc::channel::<()>();
     let (release, released) = std::sync::mpsc::channel::<()>();
-    let mut version_rows = 0;
+    let meta_writes = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counted = std::sync::Arc::clone(&meta_writes);
     builder
         .update_hook(Some(
             move |_: rusqlite::hooks::Action, _: &str, table: &str, _: i64| {
-                if table == "meta" {
-                    version_rows += 1;
-                    if version_rows == 2 {
-                        let _ = held.send(());
-                        // Ends early if the test thread has gone, so a failure
-                        // there cannot leave the scope waiting on this thread.
-                        let _ = released.recv();
-                    }
+                // Every `meta` write the builder's open makes is a version row
+                // today, and the count asserted after the scope fails the test
+                // if it makes any other. Each follows its migration's work, so
+                // at write `SCHEMA_VERSION` a build made migration by migration
+                // has every version but the last on disk, and after the release
+                // only the commit is left (O437). Held earlier, the rest of the
+                // build runs inside the opens' wait for the write lock, and a
+                // starved process can take longer than that wait to run it.
+                if table == "meta"
+                    && counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+                        == SCHEMA_VERSION
+                {
+                    let _ = held.send(());
+                    // Ends early if the test thread has gone, so a failure
+                    // there cannot leave the scope waiting on this thread.
+                    let _ = released.recv();
                 }
             },
         ))
         .expect("installing the hook");
 
     let barrier = std::sync::Barrier::new(OPENS);
-    let outcomes = std::thread::scope(|scope| {
+    let (tell, heard) = std::sync::mpsc::channel::<bool>();
+    let (outcomes, answers, at_begin) = std::thread::scope(|scope| {
         let release = release;
         let building =
             scope.spawn(|| crate::Library::from_connection(builder, Some(db.clone())).map(|_| ()));
         is_held
             .recv()
-            .expect("the builder reaches its second version row");
+            .expect("the builder reaches its last version row");
         let opens: Vec<_> = (0..OPENS)
             .map(|_| {
-                scope.spawn(|| {
+                let (barrier, db, tell) = (&barrier, &db, tell.clone());
+                scope.spawn(move || {
                     barrier.wait();
-                    crate::Library::open(&db).map(|_| ())
+                    open_telling_its_begin(db, &tell)
                 })
             })
             .collect();
-        // Long enough for every open to read the version, well inside the
-        // five seconds an open waits for the write lock.
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        drop(tell);
+        // An open starts its `BEGIN` only after reading a version below this
+        // build's, so the builder is released once each open has started one
+        // or ended. Released sooner, an open that had not read the version
+        // could find the build finished and pass however it was committed
+        // (O437). An open that ends first, on a failed backup say, is heard
+        // too, so the wait does not run out over it.
+        let deadline = std::time::Instant::now() + OPENS_ASK_WITHIN;
+        let (mut answers, mut at_begin) = (0, 0);
+        while answers < OPENS {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let Ok(began) = heard.recv_timeout(left) else {
+                break;
+            };
+            answers += 1;
+            at_begin += usize::from(began);
+        }
         release.send(()).expect("releasing the builder");
         let mut outcomes = vec![building.join().expect("the builder did not panic")];
         outcomes.extend(
@@ -488,21 +519,70 @@ fn opens_arriving_while_another_builds_a_fresh_database_all_succeed_and_take_no_
                 .into_iter()
                 .map(|o| o.join().expect("no open panicked")),
         );
-        outcomes
+        (outcomes, answers, at_begin)
     });
 
+    let meta_writes = meta_writes.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        meta_writes, SCHEMA_VERSION,
+        "the builder's open wrote `meta` {meta_writes} times over {SCHEMA_VERSION} versions, so \
+         something besides the version rows writes `meta` and the hold at write {SCHEMA_VERSION} \
+         may not be the last version row"
+    );
+    assert_eq!(
+        answers, OPENS,
+        "the builder was released at the deadline, {OPENS_ASK_WITHIN:?}, with {at_begin} of {OPENS} \
+         opens at their `BEGIN`, so the rest may not have met the build unfinished: {outcomes:?}"
+    );
     for outcome in &outcomes {
         assert!(
             outcome.is_ok(),
             "every open of a fresh database must succeed: {outcomes:?}"
         );
     }
+    assert_eq!(
+        at_begin, OPENS,
+        "only {at_begin} of {OPENS} opens reached their `BEGIN`: the rest met a finished build, \
+         so the test did not exercise the race for them"
+    );
     let backups = backups_beside(&db);
     assert!(
         backups.is_empty(),
         "a fresh database has nothing to back up, however many opens build it: {backups:?}"
     );
     assert_eq!(version_on_disk(&db), SCHEMA_VERSION);
+}
+
+/// One of the race test's opens: `Library::open` but for its canonicalize,
+/// the path the builder takes, on a connection that sends `true` down `tell`
+/// when it first starts a `BEGIN`. One that returns without starting one
+/// sends `false`, so each open that returns sends once; one that panics
+/// before its `BEGIN` sends nothing, and the race test's wait then ends at
+/// its deadline or once every open has ended.
+fn open_telling_its_begin(
+    db: &std::path::Path,
+    tell: &std::sync::mpsc::Sender<bool>,
+) -> Result<(), String> {
+    let mut conn = Connection::open(db).expect("an open's connection");
+    let told = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (told_at_begin, tell_at_begin) = (std::sync::Arc::clone(&told), tell.clone());
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+        Some(move |event: rusqlite::trace::TraceEvent<'_>| {
+            if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+                && sql.starts_with("BEGIN")
+                && !told_at_begin.swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                let _ = tell_at_begin.send(true);
+            }
+        }),
+    )
+    .expect("installing the trace");
+    let outcome = crate::Library::from_connection(conn, Some(db.to_path_buf())).map(|_| ());
+    if !told.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        let _ = tell.send(false);
+    }
+    outcome
 }
 
 /// The schema a fresh database gets in one transaction (O269) is the one it
