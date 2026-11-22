@@ -29112,7 +29112,11 @@ browser project, which CI does not run and the local gate does.
     swap reading a cover's drawn box.
   - "starts where drawn after a scroll between two changes" and "…after a
     scroll while the covers glide, then the next change": red with the
-    page's scroll listener removed. "reads where a list is drawn after a
+    page's scroll listener removed. *Since O348 closed, the second is also
+    red with a second change's start ignoring the glide it interrupts, and
+    with its second change made late in the glide; see "O348: the
+    glide-after-a-scroll case's second change, mid-glide (2026-11-21)"
+    below.* "reads where a list is drawn after a
     scroll, where its box alone changed size": red with that, and with the
     lists observed by their content box.
   - "a phone turn": "snaps the covers and the Continue row on a turn", red
@@ -31793,3 +31797,349 @@ is the later word, so More draws no badge at 0, while the Proposals entry
 inside keeps its 0 and its name "Proposals, 0 open": the two facts stay
 apart, one press away. Before the count is read, neither draws one, as
 before.
+
+## O348: the glide-after-a-scroll case's second change, mid-glide (2026-11-21)
+
+`reseat.browser.test.tsx`'s "starts where drawn after a scroll while the
+covers glide, then the next change" failed run alone with `-t` and passed
+with the rest of its file. Its premise is that the second change finds
+covers still gliding. Between its two changes came `frames(2)` and then
+`await userEvent.wheel(…)`. The readings below came from a temporary
+`console.error`, not committed; the logs are kept locally under
+`.superpowers/sdd/2026-11-21-timing-tests/o348/`.
+
+- **The cause: the wheel, not the frames.** The wheel is a round trip
+  through the Vitest server and Playwright, and in ten readings it took 84
+  to 296 ms against the glide's 180 ms (`RESEAT_MS`) (`instr*.log`). Run
+  alone it took 134 to 296 ms, and the case failed four times of four,
+  finding no cover gliding; with the rest of the file it took 84 to 118 ms,
+  and the case passed four times of four. In eight of the ten readings no
+  frame came late.
+- **The passing runs tested nothing mid-glide.** Where the case passed, its
+  second change came 150 to 183 ms into the glide, with the covers 0.08 to
+  1.05 px from rest in the three readings that recorded it. With a second
+  change's start made to ignore the glide it interrupts (`jumped`'s `moveOf`
+  given no running glide), the unfixed case still passed with the rest of
+  its file, while the DRIVES block's four interruption cases failed
+  (`mut-under-unfixed-file-1.log`).
+- **The fix**, in `web/tests/reseat.browser.test.tsx` alone. The case calls
+  `scrollerOf(host).scrollBy(0, 400)` two frames into the glide, which
+  reaches the same `scroll` listener in `reseat.ts` as the wheel did. Its
+  second change now comes 66.7 ms (four frames) into the glide, with the
+  farthest interrupted cover still 125.19 px from the end of its glide
+  (`add-N0-instr.log`). `startsOff` also returns `ahead`, what a cover's
+  running glide still had to go when the new one starts, and the case's
+  premise asks `underway`: some interrupted cover with more than 0.5 px to
+  go. The block's other two cases still turn the wheel, through `wheeledTo`.
+- **Watched failing.** `underway` failed while `interrupted` held, with the
+  second change made six or seven frames later (166.6 ms in, with at most
+  0.0845 px to go, and 183.3 ms in, with none) and with the old wheel put
+  back, twice (`add-L6-*`, `add-L7-*`, `add-W1-*` and `add-W2-*`); the case
+  before the check would have passed all four. With `jumped`'s `moveOf`
+  given no running glide, cover 5 started 125.25 px from where it was drawn,
+  and with the page's scroll listener removed, 400 px (`add-M1-*` and
+  `add-M2-*`).
+- **Green.** On the branches' first base, the case alone with `-t` passed
+  three runs of three and the whole file 32 of 32 (`add-final-*.log`). On
+  `main` after #288, which changed code the file imports, the whole file
+  passed 32 of 32 twice and the case alone with `-t` twice, at loads from
+  25 to 30; the rebase since, past #290 and #289, changed no code
+  (`reseat-*.log` and `reseat-loads.txt` in
+  `.superpowers/sdd/2026-11-21-timing-tests/logs/`).
+
+## O413: book search's bounds count processor time (2026-11-21)
+
+`bookSearch.test.ts`'s "searches a large book quickly" bounds the median of
+three searches at 100 ms, and "searches a large book quickly the first time,
+before any block is folded" bounds one search over blocks not yet folded at
+300 ms. Both timed the search with `performance.now()`. The readings below
+printed the processor time the search's thread spent
+(`process.threadCpuUsage`) beside the time on the clock; the logs are kept
+locally under `.superpowers/sdd/2026-11-21-timing-tests/o413/logs/`.
+
+- **The cause: waiting counted as work.** In a run of the web tests under
+  coverage, as the gate runs them, at a load of about 94, both bounds
+  failed, at 108.6 ms against 100 and 373.9 ms against 300, and the cold
+  search's thread had spent 207.2 ms of processor time
+  (`v3-base-fullcov-0.log`). Pinned to one CPU with 0, 3 and 7 busy loops
+  beside it, two runs each, the cold search took 261 to 408, 863 to 872 and
+  1766 to 1825 ms on the clock, and 207 to 220 ms of processor time
+  throughout (`pinned-prototype.log`).
+- **The fix**, in `web/tests/bookSearch.test.ts` alone, on the owner's
+  ruling of 2026-11-21. A helper, `onCpu`, returns what a call returns and
+  the processor time, user and system, its thread spent on it, and the two
+  tests bound that, with the same 100 ms and 300 ms. A thread's processor
+  time cannot exceed the time on the clock by more than the kernel's
+  accounting step, under 1 ms here (`cpuwall.log`), so outside that step of
+  a bound the change can only remove failures. Two runs of the web tests
+  under coverage passed 5766 of 5766, with the lock taken at loads of 25 and
+  34 (`v4-proto-fullcov-*.log`).
+- **What the bounds still catch**, each regression put in by hand and run
+  under coverage (`pm-*-cov.log`): the cache dropped fails the warm bound at
+  112.31 ms; `fold`'s ASCII path removed fails the cold at 872.076; the
+  cache kept in an array searched linearly fails both, at 305.277 and
+  1079.372; and `fold`'s offsets rebuilt per character fail the cold at
+  472.453. Without coverage only the second and the fourth fail a bound, at
+  468.067 and 312.222 (`pm-*-nocov.log`). The file's test that counts
+  `normalize` calls fails on the first two in both modes. Each block's index
+  found by `indexOf` passes every test with the change.
+- **Not free of the machine's state.** The same cold search under coverage
+  took 103.4 and 110.0 ms of processor time run alone at a load of about 9
+  (`q-proto-cov-*.log`), 177.5 and 197.2 ms alone at about 87
+  (`m-base-cov-*.log`), and 207 to 220 ms pinned. Pinned, the warm test's
+  first search, which no bound checks, makes the same first fold and search
+  of 9,000 blocks, and took up to 231.4 ms (`pinned-prototype.log`), which
+  leaves the 300 ms bound 1.30 times over it. What moves processor time with
+  the load was not isolated.
+
+## O429: the waiting-lease test, starved (2026-11-21)
+
+`lease::tests::a_waiting_lease_returns_only_once_the_holder_drops_and_says_it_waits`
+failed the unmutated baseline of O396's first sweep on 2026-11-20, at its
+assertion that a wait of over a second calls back at least once. The holder
+dropped the lease 1.5 s after spawning the waiter, by the test thread's
+clock. The readings below came from a temporary patch that timed each step
+(`measure-instrumentation.patch`, not committed); the logs are kept locally
+under `.superpowers/sdd/2026-11-21-timing-tests/o429/logs/`. "Starved" is
+the one test pinned to one CPU at niceness 19 beside three busy loops at
+niceness 0, which starves its threads without loading the rest of the
+machine.
+
+- **How `Wait::Yes` calls back.** `lease::take_file` gives the lock
+  connection a busy timeout of one `SLICE`, 1000 ms, and calls back on each
+  busy answer to `BEGIN IMMEDIATE`. SQLite's default busy handler,
+  `sqliteDefaultBusyCallback`, gives up once the sleeps it has asked for
+  add up to that timeout and reads no clock, so a thread that wakes late
+  from each sleep stretches the slice.
+- **The cause, measured starved.** In seven instrumented runs the waiter
+  reached its first `BEGIN IMMEDIATE` 0.38 to 0.66 s after the spawn, nearly
+  all of it runnable and waiting for the CPU, as
+  `/proc/thread-self/schedstat` counts it. In the four runs of the old test
+  the drop came 1.54 to 1.64 s after the spawn with no callback before it,
+  so each would have failed at the sweep's assertion
+  (`pinned-3hog-nice19.trace`). In the three of the fixed test the first
+  slice took 1.16 to 1.36 s, and the first callback came 1.64 to 1.80 s
+  after the spawn (`pinned-3hog-nice19-fixinstr.trace`). Uninstrumented, the
+  old test failed there three runs of three, at that assertion
+  (`pinned-3hog-nice19-old.log`). In the sweep's own configuration,
+  `nice -n 19` and all of the package's tests in one process on thirty-two
+  threads, the old test passed three runs of three at loads from 29 to 77
+  (`old-loaded-*.log`), so whether the sweep's red had the same two parts is
+  not measured.
+- **The fix**, in `crates/taiyaku-library/src/lease/tests.rs` alone. The
+  waiter's callback sends on a channel, and the holder lets go once it has
+  had two callbacks, under one deadline, `CALLS_BACK_WITHIN`, 30 s: a waiter
+  that never calls back fails at the deadline, and one whose thread ends
+  before its second callback fails with "the waiter returned before the
+  holder let go". It waits for the second callback, not the first, so that a
+  waiter returning right after its first callback ends the channel rather
+  than racing the drop. The waiter runs in a scoped thread and hands its
+  lease back, and once the holder has let go, a third connection asking with
+  `Wait::No` must be refused while that lease lives and given the lease once
+  it drops. The holder keeps the time waited that each callback carries, and
+  the test asks that the first be at least `SLICE` and the second at least a
+  `SLICE` more. These are lower bounds only: SQLite's busy handler gives up
+  only once its sleeps add up to the slice, and no sleep ends early, so a
+  slow machine can only raise them.
+- **Green**, on the branch's first base. Starved, three runs of three, each
+  taking 21.9 to 23.3 s (`v2-pinned-3hog-nice19-restored.log`). In the
+  sweep's configuration,
+  `nice -n 19 cargo test -p taiyaku-library --lib --all-features`, 1765
+  passed in 205.4 s (`v2-fix-cargo-2.log`). With the checks on the time
+  waited, on `main` after #288 (the rebase since, past #290 and #289,
+  changed no code), the test passed three runs of three alone and three
+  starved (`fix2-green-[123].log` and
+  `fix2-pinned-3hog-nice19.log`).
+- **Watched failing**, each put into `take_file` by hand and the test run
+  alone with `--exact` (`v2-mut-*.log`). A `Wait::Yes` that never calls back
+  failed at the 30 s deadline. One that returns a lease holding no lock
+  after its first callback, or at its first busy answer without calling
+  back, failed at 1.06 s with "the waiter returned before the holder let
+  go". One that does so right after its second callback returns as the
+  holder lets go, which the time check cannot see, and failed at 2.06 s with
+  "the lease a waiter is given holds the lock: a third asker is refused". On
+  `main` after #288, a waiter's lease that never lets the lock go, its
+  connection leaked with `std::mem::forget`, failed with "a third
+  asker is given the lease once the waiter's drops", and passed with
+  `lease.rs` restored (`mut-m3-*` in
+  `.superpowers/sdd/2026-11-21-timing-tests/logs/`). With the checks on the
+  time waited, on that base (`fix2-mut-*.log`), the five above still failed
+  with the same messages, and a `Wait::Yes` that calls back with no time
+  waited failed at 2.06 s, and one given `TRY` as its busy timeout, so that
+  it calls back after each 100 ms, at 0.26 s, both at the first callback's
+  check. No check bounds the time waited from above, by design, since a
+  starved waiter's slices have no bound, so a `Wait::Yes` that calls back
+  after slices longer than `SLICE` goes uncaught unless two of them outlast
+  the 30 s deadline.
+- **The sweep.** `scripts/mutants.sh --since main` makes no mutant of a
+  change to test code alone, so
+  `scripts/mutants.sh --file crates/taiyaku-library/src/lease.rs` was run
+  with no `RUST_TEST_THREADS`, on `main` after #288. Its
+  unmutated baseline, one `cargo test` of `taiyaku-library` at niceness 19
+  on thirty-two threads, passed, 1767 passed and 6 ignored, from a load of
+  31 when the sweep took its lock (`sweep-lease.log` and `sweep-lease.exit`
+  in `.superpowers/sdd/2026-11-21-timing-tests/logs/`). The waiting-lease
+  test failed only under the five mutants that break the file lease. Of the
+  33 mutants, 14 were missed, none of them in the baseline;
+  `mutants-baseline.md`'s row lists them, untriaged by that run. "lease.rs's
+  survivors triaged (2026-11-21)" below triages them.
+
+## O436: a lease on a lock file SQLite reads as read-only (2026-11-21)
+
+Found while triaging the survivors of O429's sweep of `lease.rs` (the next
+section). `take_file`'s busy guard forced to `true` had survived, and the
+search for an error other than busy that `BEGIN IMMEDIATE` could meet once
+`initialise` had read the lock file found a file it does not refuse at all.
+The readings are in `triage-mutants.log` in
+`.superpowers/sdd/2026-11-21-timing-tests/logs/`.
+
+- **The cause, read in the `sqlite3.c` of SQLite 3.54.1**, as
+  `libsqlite3-sys` 0.40.0 bundles it. `lockBtree`, which reads the header,
+  marks a database read-only when the header's write version, byte 18, is
+  above 2. `sqlite3_db_readonly`, which `take_file`'s `is_readonly` calls
+  straight after the open, reports that mark, which is not yet set, so it
+  answers writable. `initialise` then reads `user_version`, which reads the
+  header and sets the mark, and `sqlite3BeginTransaction` compiles
+  `BEGIN IMMEDIATE` on a database marked read-only as a read transaction
+  (`eTxnType = 0`), which takes a shared lock and answers OK. SQLite writes
+  1 at byte 18 (`newDatabase`), or 2 for WAL (`sqlite3BtreeSetVersion`), so
+  it takes a damaged file.
+- **Measured** with a temporary test, not committed, at a load of 15.62.
+  With byte 18 of an initialised lock file set to 3, this process was given
+  the lease, another process (`another_process_is_given`) was given it while
+  the first still held it, and `derive_running` from a second library read
+  `false`. With the header untouched, the other process was refused and
+  `derive_running` read `true`. With `user_version` 0 as well, the take
+  failed at `initialise`'s write: "attempt to write a readonly database".
+- **The fix.** Once `BEGIN IMMEDIATE` answers, `take_file` asks
+  `Connection::transaction_state(Some(MAIN_DB))`, rusqlite 0.43's wrapper of
+  `sqlite3_txn_state`, which no Cargo feature gates, and refuses with an
+  error naming the file unless the answer is `Write`. Chosen over asking
+  `is_readonly` again after `initialise` because it checks what the lease
+  needs, a write lock, whatever led to a read transaction, where asking again
+  would close only the route this one took. The check before `initialise`
+  stays, because its error names the usual cause, a file this process cannot
+  write, and its fix.
+- **Red, green and red again.**
+  `lease::tests::a_lock_file_whose_header_sqlite_reads_as_read_only_is_refused_naming_it`
+  sets byte 18 to 3 in an initialised lock file and asks for the error. On
+  the old `take_file` it failed, given the lease (`left: Ok(true)`), at a
+  load of 21.74; with the fix it passed, at 20.39; with `lease.rs` put back
+  by hand to the commit before the fix it failed again with `Ok(true)`, at
+  17.93, and with the fix restored `lease::tests` gave 12 passed and 2
+  ignored. The test also asks that `derive_running` read `false` after the
+  refusal: with `take_file`'s `flag.store` moved above the check, it failed
+  there, at a load of 25.02 (`fixw2-mut-B-*`, its load in
+  `fixw2-loads.txt`).
+
+## lease.rs's survivors triaged (2026-11-21)
+
+The 14 mutants O429's sweep missed (`mutants-baseline.md`, its row of
+2026-11-21; the list is kept as `sweep-lease-missed.txt` in
+`.superpowers/sdd/2026-11-21-timing-tests/logs/`), triaged against
+`lease.rs` with O436's fix, which moved three of them 16 lines down:
+`take_file`'s busy guard from 180:23 to 196:23, `initialise`'s from 214:19
+to 230:19, and `held_elsewhere`'s `|` from 229:43 to 245:43. Five new tests
+in `lease/tests.rs` kill nine, and five are baselined: three equivalent, two
+printed only for a person. Each test failed with its mutant put into
+`lease.rs` by hand and the test run alone with `--exact`, at loads from
+24.73 to 33.73, and passed with `lease.rs` restored (`triage-mutants.log`
+in the same directory).
+
+- **`take_flag`, the in-memory library's lease (six).** An in-memory library
+  stands in for a file-backed one in tests across the workspace, and nothing
+  tested how long its `Wait::No` tries, or its `Wait::Yes` at all.
+  `an_in_memory_lease_asked_not_to_wait_is_refused_only_after_its_try` times
+  a `Wait::No` against a held lease and asks for at least `TRY`: with
+  `Wait::No`'s guard forced `true` it was refused in 461 ns, and with `>=`
+  as `<` in 1.042 µs.
+  `an_in_memory_waiting_lease_returns_only_once_the_holder_drops_and_says_it_waits`
+  holds the lease until the waiter's second callback and asks that the first
+  say at least `SLICE` and the second at least two. Not "a slice more", as
+  the file-backed test asks: this waiter calls back on a schedule of slices
+  counted from its start, so a late first callback leaves less than a slice
+  before the second. With `Wait::Yes`'s guard forced `true` the first
+  callback said 401 ns, and with `>=` as `<` 882 ns, both failing the first
+  check; forced `false`, the waiter never called back and the test failed at
+  the 30 s deadline; with `+=` as `-=` the waiter panicked in `Duration`'s
+  subtraction after its second callback, and the test failed joining it.
+  Its waiter fails itself if it calls back a second time after the holder
+  has let go, so a flag that never clears fails the test rather than leaving
+  it waiting for good: with `FlagGuard`'s drop made `()` it failed in
+  4.10 s with "a waiter is given the lease once the holder lets go", and the
+  four above failed as before, at loads from 33.10 to 56.41. The second
+  sweep, below, ran without that guard. It also asks that the waiter return
+  no earlier than the holder let go, comparing the two instants and not the
+  time between them, and that a `Wait::No` be refused while the waiter's
+  lease lives. With `take_flag` handing out a lease that takes no flag
+  right after its second callback, which the review of this PR found the
+  test passing, it failed at the first of those twice, and with that check
+  taken out, at the second, each in 2.06 s at loads from 25.37 to 25.84
+  (`fixw2-mut-A-*`, the loads in `fixw2-loads.txt`, from the fixer's
+  transcript).
+- **`take_file`'s busy guard forced `true` (196:23).**
+  `a_lock_file_damaged_while_a_derive_waits_for_it_ends_the_wait_with_its_error`
+  waits with `Wait::Yes` on a held lease, zeroes the lock file's first 100
+  bytes at the first callback, and asks for the error the next
+  `BEGIN IMMEDIATE` meets, "file is not a database". Under the mutant that
+  error read as another holder's and the waiter called back a second time,
+  which the callback fails on; unchecked, it would call back for good.
+- **`initialise`'s guard forced `false` (230:19).**
+  `a_lock_file_held_before_an_asker_could_initialise_it_refuses_the_asker`
+  holds a new lock file with a plain connection's `BEGIN IMMEDIATE`, so an
+  asker reads it uninitialised and its write is answered busy, as when two
+  derives open a new lock file at once. Unmutated, the asker is refused and
+  then given the lease once the hold drops; in the probe the refusal took
+  205 ms. Under the mutant it failed with "initialising the derive lock file
+  …: database is locked".
+- **`initialise`'s guard forced `true` (230:19).**
+  `a_lock_file_sqlite_will_not_initialise_is_refused_with_sqlites_error`
+  gives an uninitialised lock file the header O436's test gives, so
+  `initialise`'s write fails with "attempt to write a readonly database".
+  Under the mutant that error was passed over and the hold refused the file
+  with O436's error instead. On this file O436's check leaves the mutant
+  giving no lease; on a new file whose first write failed for another
+  reason, the hold would begin on a file with no page, and a hold there
+  writes one: the probe's plain hold on a new lock file left a journal.
+- **Baselined (five).** `|` as `^` between open flags, twice in
+  `take_file` and once in `held_elsewhere`, is equivalent: the flags are
+  0x2, 0x4 and 0x8000 in `sqlite3.h`, and bitflags 2.13.1's `|` and `^`
+  are the or and the exclusive or of the bits (`public.rs`), which agree on
+  bits that do not overlap. The two `Debug` bodies print only for a person:
+  with both impls deleted, `cargo check --workspace --all-targets
+  --all-features` checked every target and warned only that the two types
+  lack `Debug`, so nothing in the workspace formats either.
+- **The second sweep** (`sweep-lease-2.log`, its lists and the log below
+  in `sweep-lease-2-out/`), of the tree with the five tests but not the
+  in-memory test's guard, was started at a load of 13.27, read just before
+  it started (`sweep-lease-loads.txt`, from the triage's transcript). Its
+  unmutated baseline passed. Of 34 mutants, one more than O429's run, the
+  new one
+  O436's check's `!=` as `==`, 24 were caught, 4 unviable, 4 missed and 2
+  timed out, and it ended "no survivor outside the baseline", exit 0. The
+  fifth entry, `142:13`'s `|` as `^`, was reported caught, which is false,
+  the mutant being equivalent: under it
+  `schema::tests::opens_arriving_while_another_builds_a_fresh_database_all_succeed_and_take_no_backup`
+  failed: its log has the builder's open `Ok(())` and the three others
+  "starting the transaction for schema version 1: database is locked", and
+  the package's other tests passing, 1772 with 6 ignored. The loads read
+  from eight minutes in to the sweep's end ran from 84 to 134, from another
+  lane's load script, sixteen `yes` at niceness 19, and other builds; none
+  was read while that mutant ran, and those either side of it were 85.85
+  and 128.00. This branch changes nothing that test reaches; whether it
+  fails on `main` under that load is not measured. On the owner's ruling it
+  is filed as O437, opened by this PR and not fixed. `FlagGuard`'s drop as
+  `()` timed out at 918 s, where O429's run caught it, because the
+  in-memory waiting-lease test, before its guard, waited for good.
+- **The third sweep** (`sweep-lease-3.log`, `sweep-lease-3-out/`), of the
+  same tree with the in-memory test's guard, was started at a load of
+  24.02, read just before it started; those read from seven minutes in to
+  just after its end ran from 104 to 130, from other builds
+  (`sweep-lease-loads.txt`). Its unmutated baseline
+  passed, in 20 s of build and 213 s of test. Of 34 mutants, 24 were
+  caught, 4 unviable, 5 missed and 1 timed out,
+  and it ended "no survivor outside the baseline", exit 0. The five missed
+  are the five entries; the timeout is `take_flag`'s `waited >= TRY` as
+  `false`, as in O429's run; the four unviable are O429's four; and
+  `FlagGuard`'s drop as `()` and O436's `181:26` were caught. Since it, of
+  the code only `lease/tests.rs` has changed, in checks and comments.

@@ -404,7 +404,8 @@ function drawnAt(
  * far it starts from where the frame before drew it, both taken at the
  * time its new reseat starts (spec O304, as the glide report measured it).
  * `glides` where it starts one, `late` by how much that one starts after
- * the frame's time; `gliding` where it ran one the frame before.
+ * the frame's time; `gliding` where it ran one the frame before, and
+ * `ahead`, how far that one still had to go at that time.
  */
 function startsOff({ frames, starts }: Recording, at: number) {
   const now = frames[at]
@@ -420,10 +421,12 @@ function startsOff({ frames, starts }: Recording, at: number) {
     if (time === undefined) throw new Error('a reseat that never started')
     const start =
       fresh === undefined ? cover.drawn : drawnAt(cover, time, starts)
+    const then = drawnAt(before, time, starts)
     return [
       {
         cover: index,
-        off: apart(start, drawnAt(before, time, starts)),
+        off: apart(start, then),
+        ahead: apart(then, before.box),
         late: time - now.time,
         glides: fresh !== undefined,
         gliding: before.reseat !== undefined,
@@ -1699,52 +1702,59 @@ describe("a glide the phone layout's edge interrupts", () => {
 })
 
 describe('a glide after a scroll', () => {
-  // [when the wheel turns, how far the page must have scrolled by the next
-  // change]: at rest, waited out; or two frames into the first glide, with
-  // the next change made at once, while the covers still glide and the
-  // page may still be scrolling.
+  // When the page scrolls before the next change: with the covers at rest,
+  // the glide waited out, by the wheel; or two frames into the first glide,
+  // with the next change made at once, by the page's own scroll. A wheel
+  // goes through the test runner, whose round trip can outlast the glide,
+  // and the next change would then find no cover still gliding.
   it.each([
-    ['between two changes', false, 300],
-    ['while the covers glide, then the next change', true, 100],
-  ] as const)(
-    'starts where drawn after a scroll %s',
-    async (_, gliding, least) => {
-      const [edge] = PAGES['the home grid'].edges
-      const host = await homePage({ width: edge - 2, coverSize: 144 })
-      const record = recorded(need(host, 'main .grid'))
+    ['between two changes', false],
+    ['while the covers glide, then the next change', true],
+  ] as const)('starts where drawn after a scroll %s', async (_, gliding) => {
+    const [edge] = PAGES['the home grid'].edges
+    const host = await homePage({ width: edge - 2, coverSize: 144 })
+    const record = recorded(need(host, 'main .grid'))
+    await frames(2)
+    await act(async () => {
+      await dragged([{ width: edge + 2 }])
+    })
+    if (gliding) {
       await frames(2)
-      await act(async () => {
-        await dragged([{ width: edge + 2 }])
-      })
-      if (gliding) {
-        await frames(2)
-        await userEvent.wheel(need(host, 'main'), { delta: { y: 400 } })
-      } else {
-        await afterMotion()
-        await wheeledTo(host, scrollerOf(host).scrollTop + 400)
-        await frames(2)
-      }
-      // On from where the window held: the drag's first frame is the
-      // change, so no frame between reads the list again.
-      await act(async () => {
-        await dragged([{ width: edge - 2 }])
-      })
-      await frames(1)
-      const changes = changesIn(record.frames)
-      expect({
-        changes: changes.length,
-        scrolled:
-          record.frames[changes[1] - 1].scroll -
-            record.frames[changes[0]].scroll >
-          least,
-        interrupted: startsOff(record, changes[1]).some(
-          (each) => each.gliding && each.glides,
-        ),
-      }).toEqual({ changes: 2, scrolled: true, interrupted: gliding })
-      expectStartsWhereDrawn(record, changes)
+      scrollerOf(host).scrollBy(0, 400)
+    } else {
       await afterMotion()
-    },
-  )
+      await wheeledTo(host, scrollerOf(host).scrollTop + 400)
+      await frames(2)
+    }
+    // On from where the window held: the drag's first frame is the
+    // change, so no frame between reads the list again.
+    await act(async () => {
+      await dragged([{ width: edge - 2 }])
+    })
+    await frames(1)
+    const changes = changesIn(record.frames)
+    const offs = startsOff(record, changes[1])
+    expect({
+      changes: changes.length,
+      scrolled:
+        record.frames[changes[1] - 1].scroll -
+          record.frames[changes[0]].scroll >
+        300,
+      interrupted: offs.some((each) => each.gliding && each.glides),
+      // A start that ignored the glide it interrupts is off by what that
+      // glide still had to go: under S1's 0.5 px the case cannot tell.
+      underway: offs.some(
+        (each) => each.gliding && each.glides && each.ahead > 0.5,
+      ),
+    }).toEqual({
+      changes: 2,
+      scrolled: true,
+      interrupted: gliding,
+      underway: gliding,
+    })
+    expectStartsWhereDrawn(record, changes)
+    await afterMotion()
+  })
 
   it('reads where a list is drawn after a scroll, where its box alone changed size', async () => {
     const [edge] = PAGES['the home grid'].edges

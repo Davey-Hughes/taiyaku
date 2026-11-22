@@ -1,5 +1,6 @@
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -47,39 +48,250 @@ fn a_second_lease_is_refused_while_the_first_lives_and_given_once_it_drops() {
     );
 }
 
+/// How long a waiting-lease test waits for the waiter's two callbacks before
+/// it fails.
+///
+/// Generous because a starved waiter, one whose thread waits for a processor,
+/// starts its wait late and wakes late from each sleep, so it calls back late.
+/// The file-backed waiter is later still: SQLite counts a busy wait in the
+/// sleeps it asks for, not in the time that passes, so each late wake stretches
+/// the slice. A passing test lets go at the second callback and never waits
+/// this out.
+const CALLS_BACK_WITHIN: Duration = Duration::from_secs(30);
+
 #[test]
 fn a_waiting_lease_returns_only_once_the_holder_drops_and_says_it_waits() {
     let (_dir, path) = store("waiting");
-    let holder = open(&path);
-    let held = holder
-        .derive_lease(Wait::No)
-        .expect("takes the lease")
-        .expect("the lease is free");
+    let (holder, waiter_library, third) = (open(&path), open(&path), open(&path));
+    let (called, calls) = std::sync::mpsc::channel();
 
-    let waiter_path = path.clone();
-    let waiter = std::thread::spawn(move || {
-        let library = open(&waiter_path);
-        let mut calls = Vec::new();
-        let mut call = |waited: Duration| calls.push(waited);
-        let got = library
-            .derive_lease(Wait::Yes(&mut call))
-            .expect("waits for the lease")
-            .is_some();
-        (got, Instant::now(), calls)
+    // A scoped thread, so the waiter's lease, which borrows its library, comes
+    // back here to be checked. The hold lives inside the scope: a failure
+    // there drops it before the scope joins the waiter, which would otherwise
+    // wait for it for good.
+    let (got, returned_at, dropped_at, waited) = std::thread::scope(|scope| {
+        let held = holder
+            .derive_lease(Wait::No)
+            .expect("takes the lease")
+            .expect("the lease is free");
+        let waiter_library = &waiter_library;
+        let waiter = scope.spawn(move || {
+            let mut call = |waited: Duration| {
+                let _ = called.send(waited);
+            };
+            let got = waiter_library
+                .derive_lease(Wait::Yes(&mut call))
+                .expect("waits for the lease");
+            (got, Instant::now())
+        });
+        // The hold ends on the waiter's own callbacks rather than a clock, so it
+        // covers the wait however late the waiter's thread runs. It ends at the
+        // second, not the first, so a waiter that returns right after its first
+        // callback ends the channel here instead of racing the drop.
+        let deadline = Instant::now() + CALLS_BACK_WITHIN;
+        let mut waited = [Duration::ZERO; 2];
+        for (nth, slot) in ["first", "second"].into_iter().zip(&mut waited) {
+            match calls.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(after) => *slot = after,
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!(
+                        "a waiter calls back after each slice the lease is still held: \
+                         no {nth} callback within {CALLS_BACK_WITHIN:?}"
+                    )
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    drop(waiter.join().expect("the waiter did not panic"));
+                    panic!("the waiter returned before the holder let go");
+                }
+            }
+        }
+        let dropped_at = Instant::now();
+        drop(held);
+        let (got, returned_at) = waiter.join().expect("the waiter did not panic");
+        (got, returned_at, dropped_at, waited)
     });
-    std::thread::sleep(Duration::from_millis(1500));
-    let dropped_at = Instant::now();
-    drop(held);
-    let (got, returned_at, calls) = waiter.join().expect("the waiter did not panic");
 
-    assert!(got, "a waiting lease is given, never refused");
+    assert!(got.is_some(), "a waiting lease is given, never refused");
     assert!(
         returned_at >= dropped_at,
         "the waiter returned before the holder let go"
     );
+    // Lower bounds only. `take_file` calls back once SQLite's busy handler has
+    // slept the whole slice it was given, and a sleep never ends early, so a
+    // slow machine can only make these values larger; a ceiling would fail a
+    // starved waiter, whose slices have no upper bound.
+    let [first, second] = waited;
     assert!(
-        !calls.is_empty(),
-        "a wait of over a second calls back at least once"
+        first >= SLICE,
+        "a waiter calls back with the time waited, at least a slice by its first callback: \
+         {first:?}"
+    );
+    assert!(
+        second >= first + SLICE,
+        "a waiter calls back once each slice the lease is still held: {first:?}, then {second:?}"
+    );
+    // Asked once the holder has let go, so only the waiter's own lease can
+    // refuse it: one handed out while the holder still held the lock holds none.
+    assert!(
+        third
+            .derive_lease(Wait::No)
+            .expect("asks for the lease")
+            .is_none(),
+        "the lease a waiter is given holds the lock: a third asker is refused"
+    );
+    drop(got);
+    assert!(
+        third
+            .derive_lease(Wait::No)
+            .expect("asks for the lease")
+            .is_some(),
+        "a third asker is given the lease once the waiter's drops"
+    );
+}
+
+/// An in-memory library stands in for a file-backed one in tests across the
+/// workspace, so its lease keeps [`Wait`]'s promises too.
+#[test]
+fn an_in_memory_lease_asked_not_to_wait_is_refused_only_after_its_try() {
+    let library = Library::open_in_memory().expect("an in-memory library");
+    let held = library
+        .derive_lease(Wait::No)
+        .expect("takes the lease")
+        .expect("the lease is free");
+
+    let asked = Instant::now();
+    let refused = library
+        .derive_lease(Wait::No)
+        .expect("asks for the lease")
+        .is_none();
+    let took = asked.elapsed();
+
+    assert!(refused, "sanity: the lease is held");
+    assert!(
+        took >= TRY,
+        "a lease asked not to wait is refused only once it has tried for TRY: {took:?}"
+    );
+    drop(held);
+}
+
+/// An in-memory waiter looks at the clock on a schedule of slices counted
+/// from its start, so its second callback comes two slices in however late
+/// its first came.
+#[test]
+fn an_in_memory_waiting_lease_returns_only_once_the_holder_drops_and_says_it_waits() {
+    let library = Library::open_in_memory().expect("an in-memory library");
+    let (called, calls) = std::sync::mpsc::channel();
+    let let_go = AtomicBool::new(false);
+
+    // The hold lives inside the scope, as in the file-backed test, so a
+    // failure there frees the waiter before the scope joins it.
+    let (got, returned_at, dropped_at, waited) = std::thread::scope(|scope| {
+        let held = library
+            .derive_lease(Wait::No)
+            .expect("takes the lease")
+            .expect("the lease is free");
+        let (library, let_go) = (&library, &let_go);
+        let waiter = scope.spawn(move || {
+            // A flag that never clears would keep the waiter, and the join
+            // below, waiting for good. One callback can be under way as the
+            // holder lets go; a second after it fails the waiter instead.
+            let mut after_let_go = 0;
+            let mut call = |waited: Duration| {
+                if let_go.load(Ordering::SeqCst) {
+                    after_let_go += 1;
+                    assert!(
+                        after_let_go < 2,
+                        "a waiter is given the lease once the holder lets go"
+                    );
+                }
+                let _ = called.send(waited);
+            };
+            let got = library
+                .derive_lease(Wait::Yes(&mut call))
+                .expect("waits for the lease");
+            (got, Instant::now())
+        });
+        let deadline = Instant::now() + CALLS_BACK_WITHIN;
+        let mut waited = [Duration::ZERO; 2];
+        for slot in &mut waited {
+            *slot = calls
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("a waiter calls back after each slice the lease is still held");
+        }
+        let dropped_at = Instant::now();
+        drop(held);
+        let_go.store(true, Ordering::SeqCst);
+        let (got, returned_at) = waiter.join().expect("the waiter did not panic");
+        (got, returned_at, dropped_at, waited)
+    });
+
+    assert!(
+        got.is_some(),
+        "a waiting lease is given once the holder drops"
+    );
+    assert!(
+        returned_at >= dropped_at,
+        "the waiter returned before the holder let go"
+    );
+    let [first, second] = waited;
+    assert!(
+        first >= SLICE,
+        "a waiter calls back with the time waited, at least a slice by its first callback: \
+         {first:?}"
+    );
+    assert!(
+        second >= SLICE * 2,
+        "a waiter calls back once each slice the lease is still held, two slices in by its \
+         second: {second:?}"
+    );
+    // Asked once the holder has let go, so only the waiter's own lease can
+    // refuse it: one handed out while the holder still held the flag holds none.
+    assert!(
+        library
+            .derive_lease(Wait::No)
+            .expect("asks for the lease")
+            .is_none(),
+        "the lease a waiter is given holds the flag: another asker is refused"
+    );
+    drop(got);
+}
+
+/// An error other than busy while a derive waits, as from a lock file damaged
+/// under it, ends the wait with that error: read as another holder's, it
+/// would keep the waiter calling back for good.
+#[test]
+fn a_lock_file_damaged_while_a_derive_waits_for_it_ends_the_wait_with_its_error() {
+    let (_dir, path) = store("damaged-while-waiting");
+    let (holder, waiter) = (open(&path), open(&path));
+    let held = holder
+        .derive_lease(Wait::No)
+        .expect("takes the lease")
+        .expect("the lease is free");
+    let lock = lock_path(&path);
+
+    let mut damaged = false;
+    let mut call = |_: Duration| {
+        assert!(
+            !damaged,
+            "a waiter called back again once the lock file was damaged: its error was read \
+             as another holder"
+        );
+        let mut header = std::fs::read(&lock).expect("reads the lock file");
+        header[..100].fill(0);
+        std::fs::write(&lock, header).expect("writes the lock file");
+        damaged = true;
+    };
+    let ended = waiter
+        .derive_lease(Wait::Yes(&mut call))
+        .map(|lease| lease.is_some());
+    drop(held);
+
+    assert_eq!(
+        ended,
+        Err(format!(
+            "holding the derive lock file {}: file is not a database",
+            lock.display()
+        ))
     );
 }
 
@@ -372,6 +584,99 @@ fn a_lock_file_this_process_cannot_write_is_refused_naming_it() {
             "the derive lock file {} cannot be written by this process, so no derive can \
              take its turn: chown it to the user taiyaku runs as, or make it writable \
              (chmod u+w)",
+            lock.display()
+        ))
+    );
+}
+
+/// Make the lock file of the store at `path`, then give its header a write
+/// version above 2, which SQLite reads as a read-only file, and the user
+/// version `user_version`. Returns the lock file's path.
+fn header_names_a_newer_write_format(path: &Path, user_version: u32) -> PathBuf {
+    drop(
+        open(path)
+            .derive_lease(Wait::No)
+            .expect("takes the lease")
+            .expect("the lease is free"),
+    );
+    let lock = lock_path(path);
+    let mut header = std::fs::read(&lock).expect("reads the lock file");
+    header[18] = 3;
+    header[60..64].copy_from_slice(&user_version.to_be_bytes());
+    std::fs::write(&lock, header).expect("writes the lock file");
+    lock
+}
+
+/// O436: SQLite learns that such a file is read-only only by reading its
+/// header, which `initialise` does after `take_file` has asked whether the
+/// file opened read-only, and there `BEGIN IMMEDIATE` begins a read
+/// transaction and answers OK: a lease taken on it would exclude nothing.
+#[test]
+fn a_lock_file_whose_header_sqlite_reads_as_read_only_is_refused_naming_it() {
+    let (_dir, path) = store("read-only-header");
+    let lock = header_names_a_newer_write_format(&path, 1);
+    let library = open(&path);
+
+    let refused = library.derive_lease(Wait::No).map(|lease| lease.is_some());
+
+    assert_eq!(
+        refused,
+        Err(format!(
+            "the derive lock file {} took no write lock, so no derive can \
+             take its turn: SQLite reads it as read-only, as it does a file whose header \
+             is damaged. It holds no data, so remove it: the next derive makes it afresh",
+            lock.display()
+        ))
+    );
+    assert!(
+        !library.derive_running(),
+        "a refused lease leaves no derive running"
+    );
+}
+
+/// Two derives can open a new lock file at once and both read it
+/// uninitialised; the one that gives it its page then holds it, and the
+/// other's write is answered busy, which means another holds the lease. A
+/// hold on a lock file nobody has initialised puts an asker in that place.
+#[test]
+fn a_lock_file_held_before_an_asker_could_initialise_it_refuses_the_asker() {
+    let (_dir, path) = store("held-uninitialised");
+    let hold = rusqlite::Connection::open(lock_path(&path)).expect("opens the lock file");
+    hold.execute_batch("BEGIN IMMEDIATE")
+        .expect("holds the lock file");
+    let library = open(&path);
+
+    let refused = library.derive_lease(Wait::No).map(|lease| lease.is_some());
+    assert_eq!(
+        refused,
+        Ok(false),
+        "an asker whose initialising write is answered busy is refused, not failed"
+    );
+
+    drop(hold);
+    let given = library.derive_lease(Wait::No).map(|lease| lease.is_some());
+    assert_eq!(
+        given,
+        Ok(true),
+        "sanity: the lease is given once it is free"
+    );
+}
+
+/// An error other than busy while giving a new lock file its page is that
+/// error, naming the step: passed over, a new file left with no page would be
+/// held as it is, and a hold there writes one.
+#[test]
+fn a_lock_file_sqlite_will_not_initialise_is_refused_with_sqlites_error() {
+    let (_dir, path) = store("read-only-header-uninitialised");
+    let lock = header_names_a_newer_write_format(&path, 0);
+    let library = open(&path);
+
+    let refused = library.derive_lease(Wait::No).map(|lease| lease.is_some());
+
+    assert_eq!(
+        refused,
+        Err(format!(
+            "initialising the derive lock file {}: attempt to write a readonly database",
             lock.display()
         ))
     );

@@ -38,6 +38,17 @@ describe('fold', () => {
   })
 })
 
+// Processor time this thread spent, not time on the clock: on a loaded
+// machine the scheduler takes the processor away mid-search, and a clock
+// goes on counting while the search waits for it. The bounds below are on
+// the work a search does, which waiting adds nothing to.
+const onCpu = <T>(run: () => T): [T, number] => {
+  const since = process.threadCpuUsage()
+  const answer = run()
+  const { user, system } = process.threadCpuUsage(since)
+  return [answer, (user + system) / 1000]
+}
+
 describe('searchBook', () => {
   const find = (text: string, query: string) =>
     searchBook(bookOf({ en: edition([text]) }), query, ['en'])
@@ -154,9 +165,8 @@ describe('searchBook', () => {
     const all = ['a', 'b', 'c']
     const times: number[] = []
     for (let i = 0; i < 3; i++) {
-      const t = performance.now()
-      const found = searchBook(b, 'th', all)
-      times.push(performance.now() - t)
+      const [found, ms] = onCpu(() => searchBook(b, 'th', all))
+      times.push(ms)
       expect(found.length).toBeGreaterThan(0)
     }
     times.sort((x, y) => x - y)
@@ -172,9 +182,8 @@ describe('searchBook', () => {
       b: edition(blocks()),
       c: edition(blocks()),
     })
-    const t = performance.now()
-    const found = searchBook(b, 'th', ['a', 'b', 'c'])
-    expect(performance.now() - t).toBeLessThan(300)
+    const [found, ms] = onCpu(() => searchBook(b, 'th', ['a', 'b', 'c']))
+    expect(ms).toBeLessThan(300)
     expect(found.length).toBeGreaterThan(0)
   })
 })

@@ -145,7 +145,8 @@ pub(crate) fn take_file<'a>(
     .map_err(|e| fail("opening", e))?;
     // SQLite opens a file it cannot write read-only without saying so, and a
     // read-only `BEGIN IMMEDIATE` takes no write lock: such a lease would
-    // exclude nothing.
+    // exclude nothing. The hold below refuses any lease without the write
+    // lock; this refusal comes first to name the usual cause and its fix.
     if conn
         .is_readonly(rusqlite::MAIN_DB)
         .map_err(|e| fail("opening", e))?
@@ -171,6 +172,21 @@ pub(crate) fn take_file<'a>(
     loop {
         match conn.execute_batch("BEGIN IMMEDIATE") {
             Ok(()) => {
+                // SQLite also reads a file as read-only from its header, which
+                // `initialise` reads after the check above, and there
+                // `BEGIN IMMEDIATE` begins a read transaction and answers OK.
+                let state = conn
+                    .transaction_state(Some(rusqlite::MAIN_DB))
+                    .map_err(|e| fail("holding", e))?;
+                if state != rusqlite::TransactionState::Write {
+                    return Err(format!(
+                        "the derive lock file {} took no write lock, so no derive can \
+                         take its turn: SQLite reads it as read-only, as it does a \
+                         file whose header is damaged. It holds no data, so remove \
+                         it: the next derive makes it afresh",
+                        path.display()
+                    ));
+                }
                 flag.store(true, Ordering::SeqCst);
                 return Ok(Some(DeriveLease {
                     _hold: Some(conn),
