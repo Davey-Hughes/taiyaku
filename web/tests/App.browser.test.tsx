@@ -1,16 +1,20 @@
 import { act } from 'react'
+import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
 import { WorkMissing, WorkNotFound } from '../src/api'
+import type { AppProps } from '../src/App'
 import { GateContext, type Gated } from '../src/gate'
 import { fakeResolver, whole } from './support/fixtures'
 import '../src/index.css'
 import { paintedBox } from '../src/notes'
 import { PHONE_LAYOUT } from '../src/phoneLayout'
+import { deferred } from './support/async'
 import { focused } from './support/focused'
 import { mount } from './support/mount'
 import { mouse } from './support/mouse'
 import { coarseRulesOn } from './support/pointer'
+import { ringOf } from './support/ring'
 
 /**
  * The reader's two bars and what docks between them, laid out in a real
@@ -91,6 +95,15 @@ const WORK = 'vol-01'
  */
 const PAGES = 6
 
+/**
+ * The series the work is filed in: its id is not the work's, and its title is
+ * long enough that a phone's top bar cannot hold it whole.
+ */
+const SERIES = {
+  id: 41,
+  title: 'Kaguya-sama wa Kokurasetai: Tensai-tachi no Ren’ai Zunōsen',
+}
+
 beforeEach(() => {
   localStorage.clear()
   vi.clearAllMocks()
@@ -145,6 +158,7 @@ beforeEach(() => {
     ],
     opens: 'raw',
     alignments: [],
+    series: SERIES,
   })
   const pairs: Record<string, number> = {}
   for (let i = 0; i < PAGES; i++) {
@@ -201,16 +215,24 @@ const administrator: Gated = {
 /**
  * The reader at `width`×`height`, loaded, the chrome hidden, as `administrator`.
  * The wrapper fills the viewport the way `#root` does under `index.css`, so
- * `App`'s `height: 100%` column lays out at the viewport's size.
+ * `App`'s `height: 100%` column lays out at the viewport's size. Under a
+ * router, as in the app, for the title block's link to the series.
  */
-async function reader(width: number, height: number) {
+async function reader(
+  width: number,
+  height: number,
+  leaveTo?: AppProps['leaveTo'],
+  onLeave: () => void = () => {},
+) {
   await page.viewport(width, height)
   mount(
-    <div style={{ position: 'fixed', inset: 0 }}>
-      <GateContext value={administrator}>
-        <App work={WORK} onLeave={() => {}} />
-      </GateContext>
-    </div>,
+    <MemoryRouter>
+      <div style={{ position: 'fixed', inset: 0 }}>
+        <GateContext value={administrator}>
+          <App work={WORK} onLeave={onLeave} leaveTo={leaveTo} />
+        </GateContext>
+      </div>
+    </MemoryRouter>,
   )
   await until(() => document.querySelector('.reader') !== null)
 }
@@ -367,6 +389,280 @@ describe('the reader’s two bars, in a browser', () => {
       // at 390 px this is what keeps its left edge clear of the opposite
       // edge rather than running the panel edge-to-edge.
       expect(help.left).toBeGreaterThanOrEqual(16)
+    },
+  )
+})
+
+/**
+ * The title block's second line leads with the series the work is filed in,
+ * linked to its page (O427). No link is drawn for a work in no series, which
+ * has no page (spec C1 §5.4), nor before the library has named the series.
+ */
+describe('the series link in the title block (O427)', () => {
+  /** Each element of the title block in document order: its tag, class, text, and where it links. */
+  const titleBlock = () =>
+    [...document.querySelectorAll('.reader-title *')].map((el) => [
+      el.tagName.toLowerCase(),
+      el.className,
+      el.textContent,
+      el.getAttribute('href'),
+    ])
+
+  const filedLine = [
+    ['span', 'reader-title-line', `${SERIES.title} · Vol. 1 · Raw`, null],
+    ['a', 'reader-title-series', SERIES.title, '/series/41'],
+    ['span', 'reader-title-series-name', SERIES.title, null],
+    ['span', 'reader-title-edition', ' · Vol. 1 · Raw', null],
+  ]
+
+  /** One edition, so the bar draws three layouts rather than five. */
+  function oneEdition() {
+    ports.getSidecarWithEtag.mockResolvedValue({
+      json: JSON.stringify({
+        work: { reading: 'ltr' },
+        editions: { raw: {} },
+        hub: 'raw',
+        alignments: [],
+      }),
+      etag: 's1',
+    })
+    ports.wasmResolver.mockImplementation(async () =>
+      fakeResolver({ raw: whole(PAGES) }, {}),
+    )
+  }
+
+  /** The reader with its bars up, the link drawn: its box, the title block's, the bar's, and what a press at a point reaches. */
+  async function linkPress(
+    width: number,
+    height: number,
+    leaveTo?: AppProps['leaveTo'],
+  ) {
+    await reader(width, height, leaveTo)
+    press('Tab')
+    await until(() => document.querySelector('.reader-title-series') !== null)
+    await document.fonts.ready
+    const link = document.querySelector('.reader-title-series') as HTMLElement
+    return {
+      link,
+      at: link.getBoundingClientRect(),
+      block: box('.reader-title'),
+      bar: box('.reader-top-bar'),
+      reached: (x: number, y: number) =>
+        document.elementFromPoint(x, y)?.closest('a, button') ?? null,
+    }
+  }
+
+  /** Whether each of the bar's other controls takes a click at its centre. */
+  const neighbours = () =>
+    [...document.querySelectorAll('.reader-top-bar button')].map(
+      (control) => hitAtCentreOf(control) === control,
+    )
+
+  it('leads the second line with the series, linked to its page', async () => {
+    await readerWithChrome(1440, 900)
+    await until(() => document.querySelector('.reader-title-work') !== null)
+    expect(titleBlock()).toEqual([
+      ['span', 'reader-title-work', 'Volume One', null],
+      ...filedLine,
+    ])
+  })
+
+  it('draws no link for a work filed in no series', async () => {
+    const filed = await ports.workDetail(WORK)
+    ports.workDetail.mockResolvedValue({ ...filed, series: null })
+    await readerWithChrome(1440, 900)
+    await until(() => document.querySelector('.reader-title-work') !== null)
+    expect(titleBlock()).toEqual([
+      ['span', 'reader-title-work', 'Volume One', null],
+      ['span', 'reader-title-line', 'Vol. 1 · Raw', null],
+      ['span', 'reader-title-edition', 'Vol. 1 · Raw', null],
+    ])
+  })
+
+  it('draws no link while the work answer is out, and none when it fails', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    onTestFinished(() => logged.mockRestore())
+    const answer = deferred<unknown>()
+    ports.workDetail.mockReturnValue(answer.promise)
+    await readerWithChrome(1440, 900)
+    const out = titleBlock()
+    const failure = new Error('/api/library/works/vol-01: 503')
+    await act(async () => answer.reject(failure))
+    const said = logged.mock.calls.filter(([first]) => first === failure)
+    expect([out, titleBlock(), said]).toEqual([
+      [
+        ['span', 'reader-title-line', 'raw', null],
+        ['span', 'reader-title-edition', 'raw', null],
+      ],
+      [
+        ['span', 'reader-title-line', 'raw', null],
+        ['span', 'reader-title-edition', 'raw', null],
+      ],
+      [[failure]],
+    ])
+  })
+
+  it('draws the link once the work answer names the series', async () => {
+    const filed = await ports.workDetail(WORK)
+    const answer = deferred<unknown>()
+    ports.workDetail.mockReturnValue(answer.promise)
+    await readerWithChrome(1440, 900)
+    const out = titleBlock()
+    await act(async () => answer.resolve(filed))
+    expect([out, titleBlock()]).toEqual([
+      [
+        ['span', 'reader-title-line', 'raw', null],
+        ['span', 'reader-title-edition', 'raw', null],
+      ],
+      [['span', 'reader-title-work', 'Volume One', null], ...filedLine],
+    ])
+  })
+
+  /**
+   * Under a finger the link's press (spec 2026-09-17 §8.3) is 44 px tall,
+   * inside the bar, and 44 px wide from the link's start or the link's width
+   * where that is wider. The work's title, drawn over it, keeps its own taps,
+   * and so do the bar's space beyond it and every other control. Under a
+   * mouse it is the link's words alone. One edition at 390 px, so the bar
+   * draws three layouts and leaves the title block room.
+   */
+  it.each([
+    ['coarse', 390, 844, 1, true],
+    ['fine', 390, 844, 1, false],
+    ['coarse', 390, 844, 2, true],
+    ['coarse', 768, 1024, 2, true],
+  ])(
+    'under a %s pointer at %i×%i with %i edition(s), the link’s press is 44 px from its start and no more',
+    async (pointer, width, height, editions, takes) => {
+      if (pointer === 'coarse') onTestFinished(coarseRulesOn())
+      if (editions === 1) oneEdition()
+      const { link, at, block, bar, reached } = await linkPress(width, height)
+      const reach = Math.max(at.width, 44)
+      const top = at.bottom + 4 - 44
+      const bottom = at.bottom + 4
+      const corners = [
+        [at.left + 1, top + 1],
+        [at.left + reach - 1, top + 1],
+        [at.left + 1, bottom - 1],
+        [at.left + reach - 1, bottom - 1],
+      ]
+      const words = document.createRange()
+      words.selectNodeContents(
+        document.querySelector('.reader-title-work') as HTMLElement,
+      )
+      const said = words.getBoundingClientRect()
+      expect({
+        inBar: [top >= bar.top, bottom <= bar.bottom],
+        corners: corners.map(([x, y]) => reached(x, y) === link),
+        title: reached(said.left + said.width / 2, said.top + said.height / 2),
+        blank: [
+          reached(at.left + reach + 4, (top + bottom) / 2),
+          reached(block.right - 2, (top + bottom) / 2),
+        ],
+        below: reached(at.left + 1, bar.bottom + 2) === link,
+        neighbours: neighbours(),
+      }).toEqual({
+        inBar: [true, true],
+        corners: [takes, takes, takes, takes],
+        title: null,
+        blank: [null, null],
+        below: false,
+        neighbours: neighbours().map(() => true),
+      })
+    },
+  )
+
+  /**
+   * Under a coarse pointer the title block clips the link's press to its
+   * width; the link's focus ring, reached by real keys, is drawn whole
+   * inside that clip.
+   */
+  it.each([
+    [390, 844],
+    [768, 1024],
+  ])(
+    'under a coarse pointer at %i×%i, the link’s focus ring is whole inside the title block’s clip',
+    async (width, height) => {
+      onTestFinished(coarseRulesOn())
+      await readerFocused(width, height)
+      await until(() => ports.workDetail.mock.calls.length > 0)
+      for (let i = 0; i < 4 && focused() !== SERIES.title; i++) {
+        await userEvent.tab()
+      }
+      const link = document.activeElement as HTMLElement
+      const block = document.querySelector('.reader-title') as HTMLElement
+      // The fixture tells: the link has focus, and the block clips sideways.
+      expect(link.matches('.reader-title-series')).toBe(true)
+      expect(getComputedStyle(block).overflowX).toBe('clip')
+      const ring = ringOf(link)
+      const edge = block.getBoundingClientRect().left + block.clientLeft
+      expect({
+        left: ring.left >= edge,
+        right: ring.right <= edge + block.clientWidth,
+      }).toEqual({ left: true, right: true })
+    },
+  )
+
+  /**
+   * Where the way back's word leaves the title block less than 44 px (a
+   * phone, four layouts, "Configuration"), the press is the block's width:
+   * it reaches neither the way back nor the layouts.
+   */
+  it('under a coarse pointer at 390×844 with a long way back, the press keeps to the title block', async () => {
+    onTestFinished(coarseRulesOn())
+    const { link, at, block, bar, reached } = await linkPress(390, 844, {
+      word: 'Configuration',
+      phrase: 'Configuration',
+    })
+    const middle = (bar.top + bar.bottom) / 2
+    expect({
+      narrow: block.width < 44,
+      inside: reached(block.left + block.width / 2, at.bottom + 2) === link,
+      beside: [block.left - 2, block.right + 2].map((x) => reached(x, middle)),
+      neighbours: neighbours(),
+    }).toEqual({
+      narrow: true,
+      inside: true,
+      beside: [null, null],
+      neighbours: neighbours().map(() => true),
+    })
+  })
+
+  /**
+   * Which of the two is cut short, where the line cannot hold both: the
+   * series gives way first (600 px), and the edition only once the series is
+   * down to its few letters (390 px).
+   */
+  it.each([
+    [390, 844, { link: true, edition: true }],
+    [600, 900, { link: true, edition: false }],
+    [1440, 900, { link: false, edition: false }],
+  ])(
+    'at %i×%i, the link and the edition line each keep a width, a click at the link’s centre reaches it, and the bar holds both',
+    async (width, height, clipped) => {
+      await readerWithChrome(width, height)
+      await until(() => document.querySelector('.reader-title-series') !== null)
+      await document.fonts.ready
+      const link = document.querySelector('.reader-title-series') as HTMLElement
+      const edition = document.querySelector(
+        '.reader-title-edition',
+      ) as HTMLElement
+      const bar = document.querySelector('.reader-top-bar') as HTMLElement
+      const at = link.getBoundingClientRect()
+      const reached = document
+        .elementFromPoint(at.left + at.width / 2, at.top + at.height / 2)
+        ?.closest('a')
+      const name = link.querySelector(
+        '.reader-title-series-name',
+      ) as HTMLElement
+      const cut = (el: HTMLElement) => el.scrollWidth > el.clientWidth
+      expect([
+        at.width > 0,
+        edition.getBoundingClientRect().width > 0,
+        reached === link,
+        bar.scrollWidth - bar.clientWidth,
+        { link: cut(name), edition: cut(edition) },
+      ]).toEqual([true, true, true, 0, clipped])
     },
   )
 })
@@ -768,8 +1064,12 @@ describe('O171: the note editor’s text box against the iOS zoom floor', () => 
  * the ring treats as the page too; `App.test.tsx`'s walks start from there;
  * `docs/notes.md`, §3, has a fresh load walked in a real browser.
  */
-async function readerFocused(width: number, height: number) {
-  await reader(width, height)
+async function readerFocused(
+  width: number,
+  height: number,
+  onLeave?: () => void,
+) {
+  await reader(width, height, undefined, onLeave)
   ;(document.querySelector('[data-reader-page]') as HTMLElement).focus()
 }
 
@@ -781,40 +1081,67 @@ describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
     async (width, height) => {
       await readerFocused(width, height)
       const walk: string[] = []
-      for (let i = 0; i < 16; i++) {
+      for (let i = 0; i < 20; i++) {
         await userEvent.tab()
         walk.push(`${focused()}${barsUp() ? ' +bars' : ''}`)
       }
       const lap = [
         'Library +bars',
+        `${SERIES.title} +bars`,
         'single +bars',
         'two +bars',
         'scroll +bars',
         'compare +bars',
         'Settings +bars',
         'page 3 +bars',
+        'Help +bars',
         'page',
       ]
       expect(walk).toEqual([...lap, ...lap])
     },
   )
 
+  /** A touch screen alone draws no Help (O425), and the ring keeps no stop for it. */
+  it('under a touch screen alone, Tab walks the bars without Help and stops only where something is drawn', async () => {
+    onTestFinished(coarseRulesOn())
+    await readerFocused(390, 844)
+    const walk: string[] = []
+    for (let i = 0; i < 18; i++) {
+      await userEvent.tab()
+      walk.push(`${focused()}${barsUp() ? ' +bars' : ''}`)
+    }
+    const lap = [
+      'Library +bars',
+      `${SERIES.title} +bars`,
+      'single +bars',
+      'two +bars',
+      'scroll +bars',
+      'compare +bars',
+      'Settings +bars',
+      'page 3 +bars',
+      'page',
+    ]
+    expect(walk).toEqual([...lap, ...lap])
+  })
+
   it.each(SIZES)(
     'at %i×%i, Shift+Tab walks it backwards',
     async (width, height) => {
       await readerFocused(width, height)
       const walk: string[] = []
-      for (let i = 0; i < 8; i++) {
+      for (let i = 0; i < 10; i++) {
         await userEvent.tab({ shift: true })
         walk.push(`${focused()}${barsUp() ? ' +bars' : ''}`)
       }
       expect(walk).toEqual([
+        'Help +bars',
         'page 3 +bars',
         'Settings +bars',
         'compare +bars',
         'scroll +bars',
         'two +bars',
         'single +bars',
+        `${SERIES.title} +bars`,
         'Library +bars',
         'page',
       ])
@@ -823,7 +1150,7 @@ describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
 
   it('Escape from ⚙ takes the bars away and leaves focus on the page', async () => {
     await readerFocused(1440, 900)
-    for (let i = 0; i < 6; i++) await userEvent.tab()
+    for (let i = 0; i < 7; i++) await userEvent.tab()
     expect(focused()).toBe('Settings')
     await userEvent.keyboard('{Escape}')
     expect(barsUp()).toBe(false)
@@ -832,7 +1159,7 @@ describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
 
   it('→ on the strip turns the page and focus follows it', async () => {
     await readerFocused(1440, 900)
-    for (let i = 0; i < 7; i++) await userEvent.tab()
+    for (let i = 0; i < 8; i++) await userEvent.tab()
     expect(focused()).toBe('page 3')
     await userEvent.keyboard('{ArrowRight}')
     await until(() => focused() === 'page 4')
@@ -863,12 +1190,14 @@ describe('the keyboard ring, with real keys: every stop and every region (spec 2
     await readerFocused(1440, 900)
     const stops = [
       'Library',
+      SERIES.title,
       'single',
       'two',
       'scroll',
       'compare',
       'Settings',
       'page 3',
+      'Help',
     ]
     for (const [i, name] of stops.entries()) {
       // Each Escape lands on the page, so the walk to the next stop restarts.
@@ -884,7 +1213,15 @@ describe('the keyboard ring, with real keys: every stop and every region (spec 2
     await readerFocused(1440, 900)
     // The browser fixture reads `ltr`, so `→` is a step forward. Stored
     // progress is slot 2, page 3.
-    const stops = ['Library', 'single', 'two', 'scroll', 'compare', 'Settings']
+    const stops = [
+      'Library',
+      SERIES.title,
+      'single',
+      'two',
+      'scroll',
+      'compare',
+      'Settings',
+    ]
     await tabs(1)
     await until(() => spokenPage() === 3)
     for (const name of stops) {
@@ -905,6 +1242,13 @@ describe('the keyboard ring, with real keys: every stop and every region (spec 2
     await until(() => spokenPage() === 4)
     expect(focused()).toBe('page 4')
     expect(barsUp()).toBe(true)
+    // Help, the bottom bar's last stop.
+    await tabs(1)
+    expect(focused()).toBe('Help')
+    await userEvent.keyboard('{ArrowRight}')
+    await until(() => spokenPage() === 5)
+    expect(focused(), 'Help keeps focus').toBe('Help')
+    expect(barsUp(), 'Help: bars').toBe(true)
   })
 
   /**
@@ -1055,6 +1399,299 @@ describe('the keyboard ring, with real keys: every stop and every region (spec 2
     expect(cancel).toBeGreaterThan(confirm)
     expect(first).toBeGreaterThan(cancel)
     expect(walk.at(-1)).toBe('page')
+  })
+})
+
+/**
+ * `Escape` closes what is open, then takes the bars away while the keyboard
+ * holds them (focus a key put in them, or bars a key brought up with no
+ * pointer pressed since), and otherwise leaves the reader by its way back
+ * (O419). Bars a tap or the mouse brought up are not the keyboard's until a
+ * key moves focus into them, so one `Escape` leaves through them. Each case
+ * counts the reader's way out; where it goes is `back.ts`'s, and
+ * `back.browser.test.tsx` follows `Escape` there.
+ */
+describe('Escape leaves the reader once nothing else takes it, with real keys (O419)', () => {
+  /** The reader at 1440×900, keyboard focus on its page, its way out counted. */
+  async function counted() {
+    const onLeave = vi.fn()
+    await readerFocused(1440, 900, onLeave)
+    return onLeave
+  }
+
+  /**
+   * A real key, press or click, inside `act` so what it sets is drawn before
+   * the next step reads it. Nothing here navigates: the way out is counted.
+   */
+  const real = async (input: () => Promise<unknown>) => {
+    await act(async () => {
+      await input()
+    })
+  }
+
+  const helpOpen = () =>
+    document.querySelector('[role="dialog"][aria-label="Keyboard help"]') !==
+    null
+
+  /** A tap in the middle of the page, which brings the bars up. */
+  async function tapPage() {
+    await real(() =>
+      userEvent.click(
+        document.querySelector('[data-reader-page]') as HTMLElement,
+      ),
+    )
+    await until(barsUp)
+  }
+
+  it('leaves at one Escape with nothing open and the bars down', async () => {
+    const onLeave = await counted()
+    await real(() => userEvent.keyboard('{Escape}'))
+    expect([onLeave.mock.calls.length, barsUp()]).toEqual([1, false])
+  })
+
+  it('closes Help at the first Escape, and leaves at the second', async () => {
+    const onLeave = await counted()
+    await real(() => userEvent.keyboard('?'))
+    await until(helpOpen)
+    await real(() => userEvent.keyboard('{Escape}'))
+    const first = [helpOpen(), onLeave.mock.calls.length]
+    await real(() => userEvent.keyboard('{Escape}'))
+    expect([first, [helpOpen(), onLeave.mock.calls.length]]).toEqual([
+      [false, 0],
+      [false, 1],
+    ])
+  })
+
+  it('leaves at one Escape through bars a tap brought up', async () => {
+    const onLeave = await counted()
+    await tapPage()
+    await real(() => userEvent.keyboard('{Escape}'))
+    expect([focused(), onLeave.mock.calls.length]).toEqual(['page', 1])
+  })
+
+  it('takes the bars away at the first Escape while keyboard focus is in them, and leaves at the second', async () => {
+    const onLeave = await counted()
+    await real(() => userEvent.tab())
+    const into = [focused(), barsUp()]
+    await real(() => userEvent.keyboard('{Escape}'))
+    const first = [focused(), barsUp(), onLeave.mock.calls.length]
+    await real(() => userEvent.keyboard('{Escape}'))
+    expect([into, first, onLeave.mock.calls.length]).toEqual([
+      ['Library', true],
+      ['page', false, 0],
+      1,
+    ])
+  })
+
+  /**
+   * A bar control the mouse pressed holds focus, and Chromium counts it as
+   * `:focus-visible` by the time `Escape` is heard; it is still not keyboard
+   * focus. A `Tab` on from it is.
+   */
+  it('leaves at one Escape from a bar control the mouse pressed, and takes the bars away first once Tab moves on from it', async () => {
+    const onLeave = await counted()
+    await tapPage()
+    await real(() => userEvent.click(button('single')))
+    const pressed = focused()
+    await real(() => userEvent.keyboard('{Escape}'))
+    const left = [barsUp(), onLeave.mock.calls.length]
+    await real(() => userEvent.tab())
+    const tabbed = focused()
+    await real(() => userEvent.keyboard('{Escape}'))
+    expect([
+      pressed,
+      left,
+      tabbed,
+      [focused(), barsUp(), onLeave.mock.calls.length],
+    ]).toEqual(['single', [true, 1], 'two', ['page', false, 1]])
+  })
+
+  /**
+   * `c` brings the bars up for the filmstrip without putting focus in them:
+   * the keyboard's bars, which outlast the correction an Escape cancels.
+   */
+  it('cancels a correction at the first Escape, takes away the bars c brought up at the second, and leaves at the third', async () => {
+    const onLeave = await counted()
+    const banner = () => document.querySelector('.reader-banner') !== null
+    await real(() => userEvent.keyboard('c'))
+    await until(banner)
+    await real(() => userEvent.keyboard('{Escape}'))
+    const cancelled = [banner(), barsUp(), onLeave.mock.calls.length]
+    await real(() => userEvent.keyboard('{Escape}'))
+    const hidden = [focused(), barsUp(), onLeave.mock.calls.length]
+    await real(() => userEvent.keyboard('{Escape}'))
+    expect([cancelled, hidden, onLeave.mock.calls.length]).toEqual([
+      [false, true, 0],
+      ['page', false, 0],
+      1,
+    ])
+  })
+
+  /**
+   * Help opened by a click on bars a tap brought up: closing it at an
+   * `Escape` hands focus back to Help, so the bars are then the keyboard's,
+   * and one `Escape` a step: Help, the bars, the reader.
+   */
+  it('closes Help a click opened at the first Escape with focus back on Help, takes the bars away at the second, and leaves at the third', async () => {
+    const onLeave = await counted()
+    await tapPage()
+    await real(() =>
+      userEvent.click(document.querySelector('.reader-help') as HTMLElement),
+    )
+    await until(helpOpen)
+    await real(() => userEvent.keyboard('{Escape}'))
+    const first = [helpOpen(), focused(), barsUp(), onLeave.mock.calls.length]
+    await real(() => userEvent.keyboard('{Escape}'))
+    const second = [focused(), barsUp(), onLeave.mock.calls.length]
+    await real(() => userEvent.keyboard('{Escape}'))
+    expect([first, second, onLeave.mock.calls.length]).toEqual([
+      [false, 'Help', true, 0],
+      ['page', false, 0],
+      1,
+    ])
+  })
+
+  it('closes the note editor at an Escape typed in its text box, and stays', async () => {
+    const onLeave = await counted()
+    const editor = () =>
+      document.querySelector('[role="dialog"][aria-label="Note"]')
+    await real(() => userEvent.keyboard('n'))
+    await until(() => document.activeElement?.tagName === 'TEXTAREA')
+    const typedIn = editor()?.contains(document.activeElement)
+    await real(() => userEvent.keyboard('{Escape}'))
+    await until(() => editor() === null)
+    expect([typedIn, onLeave.mock.calls.length]).toEqual([true, 0])
+  })
+})
+
+/**
+ * The bottom bar ends in Help while the help module is on (O425). A click
+ * opens it as `?` does, and Help gives focus back on closing (O161), as it
+ * does to whatever opened it. Clicks and keys are real and outside `act`,
+ * over three rounds, so the focus handed back is the one the browser keeps.
+ */
+describe('Help in the bottom bar, with real clicks (O425)', () => {
+  const helpOpen = () =>
+    document.querySelector('[role="dialog"][aria-label="Keyboard help"]') !==
+    null
+
+  /** Every button named Help, wherever it is. */
+  const helps = () =>
+    [...document.querySelectorAll('button')].filter(
+      (b) => b.getAttribute('aria-label') === 'Help',
+    )
+
+  /** Real time until `check` holds, with nothing in `act`, as the app runs. */
+  async function settles(check: () => boolean) {
+    const deadline = performance.now() + 2000
+    while (!check()) {
+      if (performance.now() > deadline) throw new Error('condition never held')
+      await new Promise((r) => setTimeout(r, 10))
+    }
+  }
+
+  /**
+   * Up to half a second for focus to come to `el`, with nothing in `act`:
+   * Help hands it back in an effect after the panel has gone. The caller
+   * asserts, so a miss says where focus went.
+   */
+  async function focusComesTo(el: Element) {
+    const deadline = performance.now() + 500
+    while (document.activeElement !== el && performance.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10))
+    }
+  }
+
+  it('draws one Help while the bars are up; a click opens Help, Escape closes it onto Help, and a second click closes it', async () => {
+    await readerFocused(1440, 900)
+    const down = helps().length
+    globalThis.IS_REACT_ACT_ENVIRONMENT = false
+    try {
+      await userEvent.click(
+        document.querySelector('[data-reader-page]') as HTMLElement,
+      )
+      await settles(barsUp)
+      expect([down, helps().length]).toEqual([0, 1])
+      const [help] = helps()
+      expect(help.closest('.reader-bottom-bar')).not.toBeNull()
+      expect(hitAtCentreOf(help)).toBe(help)
+      for (let round = 0; round < 3; round++) {
+        await userEvent.click(help)
+        await settles(helpOpen)
+        expect(help.getAttribute('aria-expanded'), `round ${round}: open`).toBe(
+          'true',
+        )
+        await userEvent.keyboard('{Escape}')
+        await settles(() => !helpOpen())
+        expect(help.getAttribute('aria-expanded'), `round ${round}: shut`).toBe(
+          'false',
+        )
+        await focusComesTo(help)
+        expect(focused(), `round ${round}`).toBe('Help')
+        expect(document.activeElement, `round ${round}`).toBe(help)
+        expect(barsUp(), `round ${round}: bars`).toBe(true)
+      }
+      await userEvent.click(help)
+      await settles(helpOpen)
+      await userEvent.click(help)
+      await settles(() => !helpOpen())
+      await focusComesTo(help)
+      expect(document.activeElement).toBe(help)
+    } finally {
+      globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    }
+  })
+
+  /** The bars sit on the window's bottom edge, which cuts anything drawn past it. */
+  it.each([
+    [1440, 900],
+    [390, 844],
+  ])(
+    'draws Help’s focus ring whole inside the window at %i×%i',
+    async (width, height) => {
+      await readerFocused(width, height)
+      for (let i = 0; i < 12 && focused() !== 'Help'; i++) {
+        await userEvent.tab()
+      }
+      const [help] = helps()
+      // The fixture tells: real keys brought focus to Help.
+      expect(document.activeElement).toBe(help)
+      const ring = ringOf(help)
+      expect({
+        left: ring.left >= 0,
+        top: ring.top >= 0,
+        right: ring.right <= innerWidth,
+        bottom: ring.bottom <= innerHeight,
+      }).toEqual({ left: true, top: true, right: true, bottom: true })
+    },
+  )
+
+  it('draws no Help once Keyboard help is switched off in Settings', async () => {
+    /** A real key or click, inside `act` so what it sets is drawn before the next step. */
+    const real = async (input: () => Promise<unknown>) => {
+      await act(async () => {
+        await input()
+      })
+    }
+    await readerFocused(1440, 900)
+    await real(() => userEvent.tab())
+    await until(barsUp)
+    const on = helps().length
+    await real(() => userEvent.click(button('Settings')))
+    const settings = () =>
+      document.querySelector('[role="dialog"][aria-label="Settings"]')
+    await until(() => settings() !== null)
+    const section = [
+      ...(settings() as Element).querySelectorAll('.reader-section'),
+    ].find((s) => s.querySelector('h3')?.textContent === 'Keyboard help')
+    const enabled = section?.querySelector(
+      'input[type="checkbox"]',
+    ) as HTMLInputElement
+    await real(() => userEvent.click(enabled))
+    await until(() => !enabled.checked)
+    await real(() => userEvent.keyboard('{Escape}'))
+    await until(() => settings() === null)
+    expect([on, barsUp(), helps().length]).toEqual([1, true, 0])
   })
 })
 

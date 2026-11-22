@@ -5,6 +5,7 @@ import * as api from '../src/api'
 import { GateContext } from '../src/gate'
 import * as library from '../src/library'
 import { AppRoutes } from '../src/Routes'
+import { RESTORE_SCROLL } from '../src/scrollKeeper'
 import { flush } from './support/async'
 import { licenceTextsLanded } from './support/licence'
 import { mount } from './support/mount'
@@ -499,7 +500,7 @@ describe('the routes', () => {
     await flush()
   })
 
-  it('opens a book in the book reader, and leaving it returns to the library', async () => {
+  it('opens a book in the book reader, and leaving it, with no entry before it, pushes the library', async () => {
     const host = at('/book/harry-potter-1')
     expect(host.querySelector('[data-testid="book"]')?.textContent).toContain(
       'harry-potter-1',
@@ -512,6 +513,7 @@ describe('the routes', () => {
       await Promise.resolve()
     })
     expect(host.querySelector('[data-testid="book"]')).toBeNull()
+    expect(host.querySelector('.library')).not.toBeNull()
     await flush()
   })
 
@@ -523,15 +525,37 @@ describe('the routes', () => {
     await flush()
   })
 
-  it('leaving the reader navigates back to the library', async () => {
-    const host = at('/read/gotoubun-v01')
+  /**
+   * `MemoryRouter` writes no entry index into the window's history, so every
+   * reader here has no entry before it: the way out is the push of the
+   * library, marked to land at its kept scroll. `back.browser.test.tsx`
+   * takes the step back under the router the app runs.
+   */
+  it('leaving a reader with no entry before it pushes the library, marked to land at its kept scroll', async () => {
+    let seen: ReturnType<typeof useLocation> | undefined
+    function Seen() {
+      seen = useLocation()
+      return null
+    }
+    const host = mount(
+      <MemoryRouter initialEntries={['/read/gotoubun-v01']}>
+        <AppRoutes />
+        <Seen />
+      </MemoryRouter>,
+    )
     expect(host.querySelector('[data-testid="reader"]')).not.toBeNull()
     // The mocked App exposes its `onLeave` as a button.
     await act(async () => {
       host.querySelector<HTMLButtonElement>('[data-testid="leave"]')?.click()
       await Promise.resolve()
     })
-    expect(host.querySelector('[data-testid="reader"]')).toBeNull()
+    expect([
+      host.querySelector('[data-testid="reader"]'),
+      host.querySelector('.library') !== null,
+      seen?.pathname,
+      seen?.state,
+    ]).toEqual([null, true, '/', { [RESTORE_SCROLL]: true }])
+    await flush()
   })
 
   /**

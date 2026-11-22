@@ -41,8 +41,8 @@ import { barRested, clickShown } from './support/phoneBar'
  * well as how far.
  *
  * The app's routes are the real ones; the reader is a stand-in whose one
- * button is the exit the top bar's Library button, its key and the failed
- * load's page share (`Routes.tsx`'s `onLeave`).
+ * button is the exit the top bar's button, its key and the failed load's page
+ * share (`Routes.tsx`'s `onLeave`, `back.ts`'s way back).
  */
 
 vi.mock('../src/App', () => ({
@@ -437,23 +437,42 @@ describe.each([1280, 390])('the scroll keeper at %i px', (width) => {
     expect([here(), scrolled(host)]).toEqual(['/series/1', at(1500)])
   })
 
-  it('returns the reader’s Library button to the last Library view, at its scroll', async () => {
-    const host = await app(width, '/')
+  /**
+   * A reader opened cold, left for the library, and come back to by Back,
+   * is again the tab's first entry: its way out pushes the last Library view
+   * drawn, marked to land at its kept scroll.
+   */
+  it('pushes the last Library view, at its scroll, from a reader with no entry before it', async () => {
+    const host = await app(width, '/read/work-1')
+    await act(async () => {
+      await userEvent.click(need(host, '[data-testid="reader"] button'))
+    })
+    await settle()
     await act(async () => {
       need<HTMLButtonElement>(host, 'button.sort').click()
     })
     await scroll(host, 1500)
     await open('/series/1')
     await scroll(host, 600)
-    await open('/read/work-1')
+    await traverse(-2)
+    const reader = [here(), (history.state as { idx: number }).idx]
     await act(async () => {
       await userEvent.click(need(host, '[data-testid="reader"] button'))
     })
     await settle()
-    expect([here(), scrolled(host)]).toEqual(['/?sort=added', at(1500)])
+    expect([reader, here(), scrolled(host)]).toEqual([
+      ['/read/work-1', 0],
+      '/?sort=added',
+      at(1500),
+    ])
   })
 
-  it('returns the reader’s Library button to the top of `/` where no Library view was drawn', async () => {
+  /**
+   * The reader goes Back to the series page it was opened from, at its
+   * scroll; that page, the tab's first entry, pushes the top of `/`, as no
+   * Library view was drawn.
+   */
+  it('pushes the top of `/` where no Library view was drawn, from a series page with no entry before it, after the reader goes Back to it', async () => {
     const host = await app(width, '/series/1')
     await scroll(host, 1500)
     await open('/read/work-1')
@@ -461,7 +480,16 @@ describe.each([1280, 390])('the scroll keeper at %i px', (width) => {
       await userEvent.click(need(host, '[data-testid="reader"] button'))
     })
     await settle()
-    expect([here(), scrolled(host)]).toEqual(['/', [0, 0]])
+    const series = [here(), scrolled(host)]
+    await act(async () => {
+      await userEvent.click(need(host, 'main .page-back'))
+    })
+    await settle()
+    expect([series, here(), scrolled(host)]).toEqual([
+      ['/series/1', at(1500)],
+      '/',
+      [0, 0],
+    ])
   })
 
   it('lands the sidebar’s heading at the top of a Library view kept from before', async () => {
@@ -630,7 +658,7 @@ describe.each([1280, 390])('the scroll keeper at %i px', (width) => {
     expect(landed).toEqual([at(2500), ['/', [0, 0]], '/series/1'])
   })
 
-  it('leaves a scroll alone when the sort is pressed after a restore, and the reader’s Library button returns to the sorted view', async () => {
+  it('leaves a scroll alone when the sort is pressed after a restore, and the reader’s way out goes Back to the sorted view at its scroll', async () => {
     const host = await app(width, '/')
     await scroll(host, 1500)
     await open('/series/1')
@@ -647,10 +675,14 @@ describe.each([1280, 390])('the scroll keeper at %i px', (width) => {
       await userEvent.click(need(host, '[data-testid="reader"] button'))
     })
     await settle()
-    expect([restored, pressed, [here(), scrolled(host)]]).toEqual([
+    expect([
+      restored,
+      pressed,
+      [here(), (history.state as { idx: number }).idx, scrolled(host)],
+    ]).toEqual([
       at(1500),
       ['/?sort=added', at(900)],
-      ['/?sort=added', at(900)],
+      ['/?sort=added', 0, at(900)],
     ])
   })
 

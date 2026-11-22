@@ -112,8 +112,8 @@ export function FieldControl({
     )
   }
   // `'object'` — a nested per-key record such as `direction`'s `override` or
-  // `regroup`'s `breaks`, keyed by edition rather than a single settable
-  // value. There is no safe primitive control to infer for it (see
+  // `regroup`'s `breaks`, keyed by edition or by volume rather than a single
+  // settable value. There is no safe primitive control to infer for it (see
   // `fieldKind`'s own doc), so this shows how many entries are set and
   // leaves clearing them to the section's own Reset button, which already
   // clears the whole slice back to `defaults` — a per-edition editor would

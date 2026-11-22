@@ -69,6 +69,7 @@ function serve(count: number) {
   })
   vi.mocked(library.work).mockImplementation(async (slug) => ({
     ...(works.find((w) => w.slug === slug) as library.WorkCard),
+    series: null,
     alignments: [],
   }))
 }
@@ -286,7 +287,7 @@ describe('a volume’s panel run past the end of the page (O283)', () => {
     },
   )
 
-  // A press on the scroller itself closes nothing (`Series.tsx`), so ↓
+  // A press on a scroller's scrollbar closes nothing (`Series.tsx`), so ↓
   // Download can be reached by the page area's scrollbar.
   it('keeps the panel open through a real press on main’s scrollbar', async () => {
     onTestFinished(pointerRulesAs('mouse'))
@@ -309,6 +310,102 @@ describe('a volume’s panel run past the end of the page (O283)', () => {
       await mouse.release()
     })
     await land()
+    expect(
+      tiles[0].querySelector('.tile-panel'),
+      'the panel after the press',
+    ).not.toBeNull()
+  })
+
+  // Off it, the page area's blank space closes the panel, as any press
+  // outside does: the scrollbar and the space beside it are both `main`'s.
+  it('closes on a real press on main’s blank space beside its scrollbar (O418)', async () => {
+    onTestFinished(pointerRulesAs('mouse'))
+    serve(1)
+    const { main, tiles } = await drawn({ width: 1280, height: 500 })
+    await open(tiles[0])
+    const box = rect(main)
+    const x = box.left + main.clientLeft + main.clientWidth - 2
+    const y = box.top + box.height * 0.9
+    // The fixture tells: the page area scrolls, its scrollbar takes width,
+    // and a press 2 px short of the scrollbar lands on the page area itself.
+    expect(main.scrollHeight).toBeGreaterThan(main.clientHeight)
+    expect(main.offsetWidth - main.clientWidth).toBeGreaterThan(0)
+    expect(document.elementFromPoint(x, y)).toBe(main)
+
+    await real(async () => {
+      await mouse.moveTo(x, y)
+      await mouse.press()
+      await mouse.release()
+    })
+    await land()
+    expect(
+      tiles[0].querySelector('.tile-panel'),
+      'the panel after the press',
+    ).toBeNull()
+  })
+
+  // Where the page area does not scroll, the strip its gutter keeps is
+  // blank space, and a press there closes the panel too.
+  it('closes on a real press in the gutter of a page area that does not scroll (O418)', async () => {
+    onTestFinished(pointerRulesAs('mouse'))
+    serve(1)
+    const { main, tiles } = await drawn({ width: 1280, height: 900 })
+    await open(tiles[0])
+    const box = rect(main)
+    const x = box.right - 7
+    const y = box.top + box.height * 0.9
+    // The fixture tells: the page area does not scroll with the panel open,
+    // its gutter takes width, and a press in it lands on the page area.
+    expect(main.scrollHeight).toBeLessThanOrEqual(main.clientHeight)
+    expect(main.scrollWidth).toBeLessThanOrEqual(main.clientWidth)
+    expect(x).toBeGreaterThan(box.left + main.clientLeft + main.clientWidth)
+    expect(document.elementFromPoint(x, y)).toBe(main)
+
+    await real(async () => {
+      await mouse.moveTo(x, y)
+      await mouse.press()
+      await mouse.release()
+    })
+    await land()
+    expect(
+      tiles[0].querySelector('.tile-panel'),
+      'the panel after the press',
+    ).toBeNull()
+  })
+
+  // In the phone layout the document scrolls, and a press on its scrollbar
+  // reaches the page as a press on the root.
+  it('keeps the panel open through a real press on the document’s scrollbar, at 390 px (O418)', async () => {
+    onTestFinished(pointerRulesAs('mouse'))
+    serve(6)
+    const { tiles } = await drawn({ width: 390, height: 600 })
+    await open(tiles[0])
+    const root = document.documentElement
+    const x = (root.clientWidth + window.innerWidth) / 2
+    const y = root.clientHeight / 2
+    const pressed: EventTarget[] = []
+    const seen = (event: Event) => {
+      if (event.target !== null) pressed.push(event.target)
+    }
+    document.addEventListener('pointerdown', seen, true)
+    onTestFinished(() =>
+      document.removeEventListener('pointerdown', seen, true),
+    )
+    // The fixture tells: the document scrolls and its scrollbar takes width.
+    expect(root.scrollHeight).toBeGreaterThan(root.clientHeight)
+    expect(window.innerWidth - root.clientWidth).toBeGreaterThan(0)
+
+    await real(async () => {
+      await mouse.moveTo(x, y)
+      await mouse.press()
+      await mouse.release()
+    })
+    await land()
+    // The fixture tells: the press reached the page, as one on the root.
+    expect(
+      pressed.map((target) => target === root),
+      'whether each press landed on the root',
+    ).toEqual([true])
     expect(
       tiles[0].querySelector('.tile-panel'),
       'the panel after the press',
@@ -399,7 +496,8 @@ describe('a volume’s panel run past the end of the page (O283)', () => {
   )
 
   // A press in the room lands on the scroller, `main` or the document's
-  // root, and a press on either closes nothing (`Series.tsx`).
+  // root, off its scrollbar: the page area's blank space, where a press
+  // closes the panel (`Series.tsx`).
   it.each([1280, 390] as const)(
     'lets a press in the room under the panel reach the scroller under it, at %i px',
     async (width) => {

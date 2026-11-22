@@ -15,8 +15,10 @@ export type LoadFailure =
 export interface ReaderFailedProps {
   /** What the load's `catch` recorded. */
   failure: LoadFailure
-  /** `App`'s own `onLeave`: the exit the top bar's `Library` button takes. */
+  /** `App`'s own `onLeave`: the exit the top bar's button takes. */
   onLeave: () => void
+  /** Where that exit goes, as a sentence ends with it; `''` where it is not known. */
+  leavePhrase?: string
 }
 
 /**
@@ -73,7 +75,11 @@ export interface ReaderFailedProps {
  * message is as long as the response it quotes: a box that may grow, not one
  * that centres what it cannot hold.
  */
-export function ReaderFailed({ failure, onLeave }: ReaderFailedProps) {
+export function ReaderFailed({
+  failure,
+  onLeave,
+  leavePhrase = 'the library',
+}: ReaderFailedProps) {
   return (
     <main
       className="reader"
@@ -109,7 +115,7 @@ export function ReaderFailed({ failure, onLeave }: ReaderFailedProps) {
         )}
       </p>
       <button type="button" className="reader-button" onClick={onLeave}>
-        Back to the library
+        {leavePhrase === '' ? 'Back' : `Back to ${leavePhrase}`}
       </button>
     </main>
   )

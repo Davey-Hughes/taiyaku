@@ -3,12 +3,15 @@
 // reading of where it landed either way, and by the licence page's tests,
 // which read which card's heading a link or a load focused.
 
-/** What has focus, by the name a person would read. */
+/** What has focus, by the name a person would read: its label where it has one. */
 export function focused(): string {
   const el = document.activeElement as HTMLElement | null
   if (!el || el === document.body) return 'body'
   if (el.matches('[data-reader-page]')) return 'page'
   return (
-    el.textContent || el.querySelector('img')?.getAttribute('alt') || el.tagName
+    el.getAttribute('aria-label') ||
+    el.textContent ||
+    el.querySelector('img')?.getAttribute('alt') ||
+    el.tagName
   )
 }

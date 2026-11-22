@@ -48,7 +48,6 @@ export const readoutStyle: CSSProperties = {
   height: 'var(--readout-height)',
   display: 'flex',
   alignItems: 'center',
-  justifyContent: 'center',
   gap: 4,
   padding: '0 12px',
 }

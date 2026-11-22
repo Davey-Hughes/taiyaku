@@ -28,7 +28,16 @@ import {
   useState,
 } from 'react'
 import { Account } from './Account'
-import { getProgress, lookUpAt, lookUpWord, putProgress } from './api'
+import {
+  getProgress,
+  lookUpAt,
+  lookUpWord,
+  OPENING_SAVE_WAIT_MS,
+  progressSavedWithin,
+  putProgress,
+  Unauthenticated,
+} from './api'
+import { type Destination, destination } from './back'
 import { useBackdropClose } from './backdropClose'
 import { bottomBarStyle, readoutStyle, readoutTextStyle } from './bars'
 import {
@@ -110,6 +119,7 @@ import { BookSearch } from './BookSearch'
 import { type Here, isJapanese, type Match, stepFrom } from './bookSearch'
 import { Contents } from './Contents'
 import { debounce } from './debounce'
+import { useKeyboardBars } from './focus'
 import { useGate } from './gate'
 import { TAP_HOLD, TAP_SLOP } from './gestures'
 import { Help } from './Help'
@@ -123,6 +133,7 @@ import {
   sliceReset,
 } from './module'
 import { BOOK_LAYOUTS } from './layouts'
+import { work as workDetail, type WorkDetail } from './library'
 import { bookLayoutModule } from './modules/bookLayout'
 import {
   bookNotesModule,
@@ -181,7 +192,9 @@ import { beginsWord, headAt, isKorean, wordAt } from './wordAt'
 
 interface Props {
   work: string
+  /** The way out (`back.ts`), and what it is called: the library where none is given. */
   onLeave: () => void
+  leaveTo?: Destination
 }
 
 interface Place {
@@ -425,13 +438,18 @@ const litRange = ({ range, word }: LookingUp): TextRange =>
     ? range
     : { start: range.start, end: range.start + word.length }
 
-export function BookReader({ work, onLeave }: Props) {
+export function BookReader({
+  work,
+  onLeave,
+  leaveTo = destination('/'),
+}: Props) {
   const gate = useGate()
   const [book, setBook] = useState<Book>()
   const [failed, setFailed] = useState<string>()
   const [place, setPlace] = useState<Place>()
   const [top, setTop] = useState(0)
   const [bars, setBars] = useState(false)
+  const keyboardBars = useKeyboardBars()
   const [panel, setPanel] = useState<Panel>()
   const docked = panel !== undefined && DOCKED.has(panel)
   const [peek, setPeek] = useState<Peeked>()
@@ -568,6 +586,7 @@ export function BookReader({ work, onLeave }: Props) {
   // Stored values are not checked on reading, and the button is drawn pressed
   // only for `true`: any other value would look up with the button off.
   const lookupOn = sliceFor(prefs, lookupModule).on === true
+  const helpOn = sliceFor(prefs, helpModule).enabled
   const typeset = sliceFor(prefs, bookTextModule)
   const {
     mode,
@@ -908,9 +927,29 @@ export function BookReader({ work, onLeave }: Props) {
     ))
   }, [book, place, comparing, columnKeys, paired, work, furigana, foundDrawn])
 
+  // The series the top bar links to, from the library's answer for the work,
+  // asked once beside the load and never waited on: until it answers, if it
+  // fails, and for a work filed in no series, the bar links to none. No
+  // stale-answer guard: `Routes.tsx` keys this component by `work`.
+  const [series, setSeries] = useState<WorkDetail['series']>(null)
+  useEffect(() => {
+    workDetail(work).then(
+      (detail) => setSeries(detail.series),
+      (err: unknown) => {
+        if (!(err instanceof Unauthenticated)) console.error(err)
+      },
+    )
+  }, [work])
+
   useEffect(() => {
     let live = true
-    Promise.all([getBook(work), getProgress(work).catch(() => undefined)])
+    // The place is read after every progress save still out, within the same
+    // bound, for the reason `App.tsx`'s `STARTUP_PORTS` gives: a book left
+    // and reopened at once flushed its place as it left.
+    const stored = progressSavedWithin(OPENING_SAVE_WAIT_MS).then(() =>
+      getProgress(work),
+    )
+    Promise.all([getBook(work), stored.catch(() => undefined)])
       .then(([loaded, saved]) => {
         if (!live) return
         const resumed = saved && saved.edition in loaded.editions
@@ -1438,11 +1477,15 @@ export function BookReader({ work, onLeave }: Props) {
         } else if (peek) setPeek(undefined)
         else if (paired) setPaired(undefined)
         else if (panel) setPanel(undefined)
-        else setBars(false)
+        // The bars only while the keyboard holds them (`useKeyboardBars`),
+        // else the reader itself, by its way back.
+        else if (keyboardBars.held()) setBars(false)
+        else onLeave()
         return
       }
       if (event.key === 'Tab' && !bars) {
         event.preventDefault()
+        keyboardBars.shown()
         setBars(true)
         return
       }
@@ -1519,6 +1562,7 @@ export function BookReader({ work, onLeave }: Props) {
     peek,
     paired,
     bars,
+    keyboardBars,
     onLeave,
     setPrefs,
     notes,
@@ -1541,7 +1585,7 @@ export function BookReader({ work, onLeave }: Props) {
 
   if (failed) {
     return (
-      <Message onLeave={onLeave}>
+      <Message onLeave={onLeave} phrase={leaveTo.phrase}>
         This book could not be opened: {failed}
       </Message>
     )
@@ -1551,7 +1595,7 @@ export function BookReader({ work, onLeave }: Props) {
   }
   if (!edition || !layout) {
     return (
-      <Message onLeave={onLeave}>
+      <Message onLeave={onLeave} phrase={leaveTo.phrase}>
         This work has no book edition to read.
       </Message>
     )
@@ -1659,6 +1703,7 @@ export function BookReader({ work, onLeave }: Props) {
   // seen.
   const jump = (to: string, block: number) => {
     setBack({ edition: place.edition, ...topOf(text.current) })
+    keyboardBars.shown()
     setBars(true)
     setPanel(undefined)
     go(counterpart(book, to, place.edition, block))
@@ -1837,6 +1882,7 @@ export function BookReader({ work, onLeave }: Props) {
       {bars && (
         <TopBar
           title={book.title}
+          series={series ?? undefined}
           editionLine={
             comparing
               ? columnKeys.map((k) => book.editions[k].label).join(' · ')
@@ -1852,6 +1898,7 @@ export function BookReader({ work, onLeave }: Props) {
           settingsOpen={panel === 'settings'}
           onSettings={() => toggle('settings')}
           onLeave={onLeave}
+          leaveWord={leaveTo.word}
           style={fade}
         />
       )}
@@ -2092,6 +2139,7 @@ export function BookReader({ work, onLeave }: Props) {
       {bars && (
         <div
           className="reader-bottom-bar"
+          data-ring="bottom"
           style={{ ...bottomBarStyle, ...fade }}
         >
           <BookProgress
@@ -2141,6 +2189,18 @@ export function BookReader({ work, onLeave }: Props) {
             <span style={readoutTextStyle}>
               {readoutRow({ position, time, chapter })}
             </span>
+            {/* Where help is, as `Chrome`'s readout row ends (O425). */}
+            {helpOn && (
+              <button
+                type="button"
+                className="reader-help"
+                aria-label="Help"
+                aria-expanded={panel === 'help'}
+                onClick={() => toggle('help')}
+              >
+                ?
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -2389,19 +2449,21 @@ function letGo(mine: Range | undefined) {
   }
 }
 
-/** A book that will not open, or a work with no book: why, and the way back. */
+/** A book that will not open, or a work with no book: why, and the way back, named by `phrase` (`''`: not known). */
 function Message({
   children,
   onLeave,
+  phrase,
 }: {
   children: ReactNode
   onLeave: () => void
+  phrase: string
 }) {
   return (
     <main className="reader book-reader" style={rootStyle}>
       <p className="book-failed">{children}</p>
       <button type="button" className="reader-button" onClick={onLeave}>
-        Library
+        {phrase === '' ? 'Back' : `Back to ${phrase}`}
       </button>
     </main>
   )

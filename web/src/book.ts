@@ -610,7 +610,7 @@ export const BOOK_KEYS: ReaderBinding[] = [
   },
   {
     keys: ['L'],
-    label: 'back to the library',
+    label: 'back where you came from, else the library',
     resolve: () => ({ kind: 'library' }),
   },
 ]

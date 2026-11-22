@@ -20,6 +20,7 @@ import {
   pageUrl,
   patchAlignment,
   progressSaved,
+  progressSavedWithin,
   progressSavesOut,
   revokeKey,
   revokeSession,
@@ -998,6 +999,28 @@ describe('progressSaved', () => {
 
     answers[1].resolve(saved())
     await after
+  })
+
+  it('progressSavedWithin settles at its bound though a save is still out', async () => {
+    heldFetch()
+    void save(1)
+    const waited = progressSavedWithin(40)
+    expect(await settledYet(waited)).toBe(false)
+
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(await settledYet(waited)).toBe(true)
+    expect(progressSavesOut()).toBe(1)
+  })
+
+  it('progressSavedWithin settles once the saves out have, well before its bound', async () => {
+    const answers = heldFetch()
+    const sent = save(1)
+    const waited = progressSavedWithin(60_000)
+    expect(await settledYet(waited)).toBe(false)
+
+    answers[0].resolve(saved())
+    await sent
+    expect(await settledYet(waited)).toBe(true)
   })
 
   it('lets go of each save once it has settled, answered or failed', async () => {

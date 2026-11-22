@@ -15,58 +15,52 @@
  * hand. The wasm module is a module-level ES import, so it initialises once per
  * *page* and a remount costs a sidecar fetch and a resolver construction.
  */
-import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router'
+import { Navigate, Route, Routes, useParams } from 'react-router'
 import { About } from './About'
 import { Account } from './Account'
 import App from './App'
+import { useBack, useBackTracker } from './back'
 import { BookReader } from './BookReader'
 import { Config } from './Config'
 import { useGate } from './gate'
 import { Library } from './Library'
 import { Licence } from './Licence'
 import { Proposals } from './Proposals'
-import { lastLibraryAddress, RESTORE_SCROLL } from './scrollKeeper'
 import { Search } from './Search'
 import { Series } from './Series'
 import { Shell } from './Shell'
 import { useDocumentTitle } from './title'
 
 /**
- * The reader, keyed by the slug in the URL. Its exits (the top bar's
- * Library button, its key, and the failed load's way back) return to the
- * last Library view drawn in this tab, at its scroll (spec
- * `2026-10-28-loading-library-design.md` §5.2), and to the top of `/` where
- * none was.
+ * The reader, keyed by the slug in the URL. Its exits (the top bar's button,
+ * its key, and the failed load's way back) are `back.ts`'s way back, and
+ * the button and the failed load name where it goes.
  */
 function Reader() {
-  const { work, leave } = useReaderRoute()
+  const { work, leave, leaveTo } = useReaderRoute()
   if (!work) return <Navigate to="/" replace />
   // `.reader-route` blacks out the page from the first frame (spec 2026-09-17
   // §8.2): `App` draws nothing until its load answers, so its own `.reader`
   // root is not there for `styles/reader.css`'s ground rule until then.
   return (
     <div className="reader-route">
-      <App key={work} work={work} onLeave={leave} />
+      <App key={work} work={work} onLeave={leave} leaveTo={leaveTo} />
     </div>
   )
 }
 
 /** A book, keyed by the slug in the URL, leaving as the reader leaves. */
 function BookRoute() {
-  const { work, leave } = useReaderRoute()
+  const { work, leave, leaveTo } = useReaderRoute()
   if (!work) return <Navigate to="/" replace />
-  return <BookReader key={work} work={work} onLeave={leave} />
+  return <BookReader key={work} work={work} onLeave={leave} leaveTo={leaveTo} />
 }
 
-/** A reader's slug from the URL, and its way back to the last Library view, at its scroll. */
+/** A reader's slug from the URL, its way back, and that way's name. */
 function useReaderRoute() {
   const { work } = useParams()
-  const navigate = useNavigate()
-  const leave = () =>
-    void navigate(lastLibraryAddress() ?? '/', {
-      state: { [RESTORE_SCROLL]: true },
-    })
-  return { work, leave }
+  const { word, phrase, go } = useBack()
+  return { work, leave: go, leaveTo: { word, phrase } }
 }
 
 /**
@@ -101,6 +95,7 @@ function LicenceScreen() {
 }
 
 export function AppRoutes() {
+  useBackTracker()
   return (
     <Routes>
       <Route

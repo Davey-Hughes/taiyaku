@@ -71,7 +71,9 @@ controls move to §2. The doubled "Library" heading goes with it.
 **More.** For an administrator it is a disclosure button that opens upward,
 holding Proposals (with the open count), Configuration and Account; the
 button carries the same count as a badge, and its accessible name carries
-the count in the words the Proposals link uses for it. For anyone else it is a plain link to
+the count in the words the Proposals link uses for it. *Since 2026-11-21
+(O424) the button carries no badge and its name no count at 0; the
+Proposals entry inside keeps its 0.* For anyone else it is a plain link to
 `/account`, still labelled More — a menu of one item is a detour. Either
 form is drawn in the accent while the screen is Proposals, Configuration or
 Account, standing in for the current mark those links used to carry.

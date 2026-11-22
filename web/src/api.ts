@@ -568,6 +568,26 @@ export async function progressSaved(): Promise<void> {
   await Promise.allSettled([...savesOut])
 }
 
+/**
+ * How long a reader opening waits for the progress saves still out before it
+ * reads its place anyway: a save the network holds open, as a half-open
+ * connection can, must not keep the reader from opening.
+ */
+export const OPENING_SAVE_WAIT_MS = 2000
+
+/** `progressSaved`, or `ms` after the call, whichever comes first; never rejects. */
+export async function progressSavedWithin(ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms)
+  })
+  try {
+    await Promise.race([progressSaved(), late])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** How many progress saves are out: exported for its tests. */
 export function progressSavesOut(): number {
   return savesOut.size

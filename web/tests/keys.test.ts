@@ -128,7 +128,7 @@ describe('intentOf', () => {
     expect(intentOf(press(' ', { ctrlKey: true }), editions)).toBeUndefined()
   })
 
-  it('L asks to go back to the library', () => {
+  it('L asks to leave by the way back', () => {
     expect(intentOf(press('L'), editions)).toEqual({ kind: 'library' })
   })
 })

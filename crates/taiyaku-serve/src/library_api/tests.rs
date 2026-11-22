@@ -89,6 +89,17 @@ async fn the_grid_carries_an_imported_work_in_the_unfiled_bucket() {
     );
 }
 
+/// An imported work is filed in no series, and the answer says so with
+/// `null` rather than by leaving the key out, which the client's type does not
+/// allow (spec C1 §5.4).
+#[tokio::test]
+async fn an_unfiled_work_is_served_with_a_null_series() {
+    let (router, state, _fixture) = test_support::router_over_a_library().await;
+    let slug = state.works.snapshot()[0].id.clone();
+    let body = get_json(&router, &format!("/api/library/works/{slug}")).await;
+    assert_eq!(body.get("series"), Some(&serde_json::Value::Null));
+}
+
 #[tokio::test]
 async fn one_work_is_served_by_slug_and_a_missing_one_is_a_404() {
     let (router, state, _fixture) = test_support::router_over_a_library().await;
@@ -106,9 +117,31 @@ async fn one_work_is_served_by_slug_and_a_missing_one_is_a_404() {
             .expect("files the member under it");
     }
 
+    {
+        // Numbered 41 and titled apart from its `sort_title`, so the work's id
+        // or the scanned name in the answer fails the assertion below.
+        let conn = state.library.conn();
+        conn.execute_batch(
+            "INSERT INTO series (id, sort_title) VALUES (41, 'Scanned Name');
+             INSERT INTO series_title (series_id, title, kind, is_primary)
+                  VALUES (41, 'Shown Title', 'english', 1);
+             UPDATE work SET series_id = 41;",
+        )
+        .expect("files the work under a series");
+    }
+
     let body = get_json(&router, &format!("/api/library/works/{slug}")).await;
     assert_eq!(body["slug"], slug);
     assert_eq!(body["title"], "W");
+    assert_ne!(
+        body["id"], 41,
+        "the series must be numbered apart from the work"
+    );
+    assert_eq!(
+        body["series"],
+        serde_json::json!({"id": 41, "title": "Shown Title"}),
+        "the series the reader links to"
+    );
     assert_eq!(
         body["editions"][0]["missing"], 1,
         "the count `browse` computes must reach the client — nothing else \

@@ -8,7 +8,7 @@
  * on the top bar and the correction banner, `data-ring="bottom"` on the
  * bottom bar, `data-ring="controls"` on the note list.
  */
-import { type RefObject, useEffect, useRef } from 'react'
+import { type RefObject, useEffect, useMemo, useRef } from 'react'
 import type { RingSizes, RingStop } from './ring'
 
 /** The page area — the ring's page stop, and where focus goes when nothing else will have it. */
@@ -36,13 +36,83 @@ export function tabbablesIn(
   selector = TABBABLE.join(', '),
 ): HTMLElement[] {
   return [...scope.querySelectorAll<HTMLElement>(selector)].filter(
-    (el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled,
+    (el) =>
+      el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && drawn(el),
   )
 }
+
+/**
+ * Whether a stylesheet draws `el`: one it does not, as Help on a touch-only
+ * screen, refuses focus, so a stop there would leave a `Tab` nowhere. Where
+ * the browser cannot say (jsdom), it counts as drawn.
+ */
+const drawn = (el: HTMLElement) => el.checkVisibility?.() ?? true
 
 /** Whether the bars are on the page. Read from the DOM so it is right straight after a `flushSync`. */
 export function barsMounted(root: ParentNode): boolean {
   return root.querySelector('[data-ring="bottom"]') !== null
+}
+
+/** Either reader's two bars. */
+const BARS = '[data-ring="top"], [data-ring="bottom"]'
+
+/**
+ * Whether the keyboard holds the bars, where `Escape` takes them away as the
+ * ring's way out (spec 2026-09-26 §3.1) rather than leaving the reader: `held`
+ * says so while keyboard focus is in them, or while the bars the keyboard
+ * brought up (`shown`, called as they come up) stay up with no pointer
+ * pressed since. A tap or the mouse never holds them.
+ */
+export function useKeyboardBars(): { held: () => boolean; shown: () => void } {
+  // Before any input, focus counts as the keyboard's, as `:focus-visible`
+  // counts it.
+  const input = useRef({
+    keyLast: true,
+    keyShown: false,
+    focus: null as Element | null,
+  })
+  useEffect(() => {
+    const now = input.current
+    // Which input moved focus is read when it moved: by the time a keydown is
+    // heard, Chromium counts any focused element as `:focus-visible`, a
+    // button the mouse pressed included. On the capture side, so a control
+    // that stops a press or a key from bubbling cannot hide it.
+    const onKey = () => {
+      now.keyLast = true
+    }
+    const onPress = () => {
+      now.keyLast = false
+      now.keyShown = false
+    }
+    const onFocus = (event: FocusEvent) => {
+      now.focus = now.keyLast ? (event.target as Element) : null
+    }
+    window.addEventListener('keydown', onKey, true)
+    window.addEventListener('pointerdown', onPress, true)
+    window.addEventListener('focusin', onFocus, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('pointerdown', onPress, true)
+      window.removeEventListener('focusin', onFocus, true)
+    }
+  }, [])
+  return useMemo(
+    () => ({
+      held: () => {
+        const { focus, keyShown } = input.current
+        if (keyShown && document.querySelector(BARS) !== null) return true
+        return (
+          focus !== null &&
+          focus === document.activeElement &&
+          focus.closest(BARS) !== null
+        )
+      },
+      shown: () => {
+        input.current.keyShown = input.current.keyLast
+      },
+    }),
+    [],
+  )
 }
 
 /** The bars' stops: the top edge's first, then the bottom bar's. */

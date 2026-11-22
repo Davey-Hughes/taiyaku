@@ -802,7 +802,9 @@ cost of floating the list above the strip — the band where O65 docked
   which opens Settings. 52 px tall plus the top safe area, on
   `--reader-panel`, a `--reader-hair` rule beneath it. Each control is at
   least 44 px square under `(pointer: coarse)`, as ② made the sidebar's
-  rows.
+  rows. *Since 2026-11-21 (O422) the button names where it goes and goes
+  back there: `‹ Library`, `‹ Series`, `‹ Search` and so on, or
+  `‹ Back` where the place is not known.*
 - **The title block**: the work's title in the title face and, under it in
   `--muted`, `Vol. N · <label>` for the edition on screen — the one Space
   moves to. Both come from `/api/library/works/{slug}`, fetched once beside
@@ -812,7 +814,10 @@ cost of floating the list above the strip — the band where O65 docked
   `editions.*.label` do not: those are the file on disk, and an edit is
   written to the database (`title_hand`, `label_hand`). The cost is one
   small request per open. Until it answers, or if it fails, the bar shows
-  the edition's key alone.
+  the edition's key alone. *Since 2026-11-21 (O427), where the work is in a
+  series, the second line leads with the series' title, a link to the
+  series page, before `Vol. N · <label>`, and it is cut short before the
+  edition label is; the answer carries the series for it.*
 - **Shown with the bottom bar, fading with it.** While correcting it is not
   drawn and `CorrectionBanner` takes its place at the top, which keeps O65's
   rule that `Library` stands down during a correction; `L` still leaves.
@@ -859,7 +864,10 @@ cost of floating the list above the strip — the band where O65 docked
   readout's percentage, so the two agree except where the slot count has gone
   backwards, which `progress` clamps at 1 and `positionLine` does not.
 - **The readout row** keeps `readoutRow`'s text, order and ellipsis;
-  centred, `--muted`, the 0.75rem step.
+  centred, `--muted`, the 0.75rem step. *Since 2026-11-21 (O425) the row
+  ends in a `?` named Help while the help module is on and a mouse or a
+  trackpad is there (`(any-pointer: fine)`), the rest centred in the room it
+  leaves, and under `(pointer: coarse)` the row is 44 px tall.*
 - **The strip's colours**: the current tile's ring from `#fff` to
   `--accent`; the correcting counterpart's dashed ring from `#f2b134` to
   `--warning` (Ink's `#e2b55c`); a split spread's R/L badge on

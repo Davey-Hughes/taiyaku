@@ -26,6 +26,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { MetadataEditor, type TitleFlush } from './MetadataEditor'
 import { type PatchResult, patchWork, type WorkEdit } from './metadata'
+import { useBack } from './back'
 import { type BrowsePrefs, useBrowsePrefs } from './browseModule'
 import { useGate } from './gate'
 import { Cover } from './Cover'
@@ -63,6 +64,7 @@ const SERIES_VIEW: readonly (keyof BrowsePrefs)[] = [
   'editionSelector',
   'panel',
   'coverSize',
+  'alwaysShowAligned',
 ]
 
 interface Loaded {
@@ -606,8 +608,36 @@ function VolumeCover({
   )
 }
 
+/**
+ * Whether a press at `event`'s point lands on `scroller`'s scrollbar: past the
+ * right or the foot of the box it shows its content in, while it overflows that
+ * way, where a classic scrollbar is drawn; the strip `scrollbar-gutter: stable`
+ * (`library.css`) keeps where nothing scrolls is blank space. A press on either
+ * reaches the page as one on the scroller, so only the point tells them apart.
+ * The root's own box scrolls with the document, so the window's is read for it.
+ */
+function onScrollbarOf(
+  scroller: Element,
+  { clientX, clientY }: PointerEvent,
+): boolean {
+  const right = scroller.scrollHeight > scroller.clientHeight
+  const foot = scroller.scrollWidth > scroller.clientWidth
+  if (scroller === document.documentElement) {
+    return (
+      (right && clientX >= scroller.clientWidth) ||
+      (foot && clientY >= scroller.clientHeight)
+    )
+  }
+  const box = scroller.getBoundingClientRect()
+  return (
+    (right &&
+      clientX >= box.left + scroller.clientLeft + scroller.clientWidth) ||
+    (foot && clientY >= box.top + scroller.clientTop + scroller.clientHeight)
+  )
+}
+
 export function Series() {
-  const { layout, editionSelector, panel } = useBrowsePrefs()
+  const { layout, editionSelector, panel, alwaysShowAligned } = useBrowsePrefs()
   // `undefined` where no gate sits above this screen, and `gate.ts`'s own
   // rule is that the safe reading of that is "no account known" rather than a
   // permissive one — so the control appears only on an explicit `true`.
@@ -682,6 +712,7 @@ export function Series() {
   const loaded = ready ? answer : undefined
   useDocumentTitle(loaded?.series.title)
   useKeptScroll(ready)
+  const back = useBack()
   const failure =
     body === undefined
       ? `${id ?? ''} is not a series`
@@ -882,9 +913,10 @@ export function Series() {
   // The open panel's closes, as `usePopover`'s are: an Escape, caught on
   // the way down and stopped so that it closes nothing below it, unless it
   // is the Title field's own or ends a composition; a press outside the
-  // tile, though not on the scroller itself, whose scrollbar may be the way
-  // to ↓ Download; and in `button` mode, focus arriving outside. In
-  // `on-select` mode, focus on another tile moves the panel instead.
+  // tile, though not on the scrollbar of what scrolls the page, `main` or
+  // the document's root, which may be the way to ↓ Download; and in
+  // `button` mode, focus arriving outside. In `on-select` mode, focus on
+  // another tile moves the panel instead.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `choosePanel` and `focusBack` read only refs, `setOpen` and `panel`, so those from the render that opened the panel serve until it closes or the mode changes.
   useEffect(() => {
     if (open === undefined) return
@@ -904,10 +936,15 @@ export function Series() {
       event.stopPropagation()
       choosePanel(undefined, focusBack(tile))
     }
-    const onPress = (event: Event) => {
+    const onPress = (event: PointerEvent) => {
       const { target } = event
-      if (inside(target) || target === document.documentElement) return
-      if (target instanceof Element && target.matches('.library > main')) {
+      if (inside(target)) return
+      if (
+        target instanceof Element &&
+        (target === document.documentElement ||
+          target.matches('.library > main')) &&
+        onScrollbarOf(target, event)
+      ) {
         return
       }
       choosePanel(undefined)
@@ -1020,6 +1057,15 @@ export function Series() {
 
   return (
     <>
+      {/* Drawn in every state, the first thing on the page, so it is where
+          it was when the series lands and when it never does. A button: a
+          step back is no address to link to. */}
+      <button type="button" className="page-back" onClick={back.go}>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M15 5l-7 7 7 7" />
+        </svg>
+        {back.word}
+      </button>
       {/* O163: one h1 on this screen in every state. Until the series has
           loaded, and when it never does, there is no title to show, so the
           heading is hidden and says what the screen is. */}
@@ -1053,7 +1099,11 @@ export function Series() {
           {layout === 'table' ? (
             <Table works={loaded.works} mayDownload={mayDownload} />
           ) : (
-            <ul ref={volumes} className="volumes">
+            <ul
+              ref={volumes}
+              className="volumes"
+              data-aligned={alwaysShowAligned ? 'always' : undefined}
+            >
               {loaded.works.map((w) => {
                 // `undefined` under `'all'` means "whatever this volume leads
                 // with", which is `editions[0]` — the hub, by `derive.rs`'s

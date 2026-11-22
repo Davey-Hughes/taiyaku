@@ -207,6 +207,11 @@ The reader's keyboard stops, in order:
    (`GapOffers`), the note tabs (`Annotations`), the note list (`NoteList`);
 5. the page again.
 
+*Since 2026-11-21 the top bar's stops are the way back, the series link where
+the work is in a series (O427), the layouts and ⚙, and the strip's stop is
+followed by Help while the help module is on and a mouse or a trackpad is
+there (O425).*
+
 **The bars are up while focus is on one of their stops**, and focus leaving
 them — for the page or for the page's own controls — hides them. `Shift+Tab`
 walks the same ring backwards. The
@@ -215,7 +220,11 @@ list while they are up and a `visibility: hidden` element takes no focus.
 
 **`Escape` anywhere in the bars hides them** and puts focus on the page,
 below every panel and a pending correction in precedence (§3.3) — and so does
-`Escape` pressed on the page while a tap has the bars up.
+`Escape` pressed on the page while a tap has the bars up. *Since 2026-11-21
+(O419): only while the keyboard holds the bars, its focus in them or a key
+having brought them up with no pointer pressed since. Bars a tap or the
+mouse brought up take no `Escape`, which then leaves the reader by its way
+back (§3.3).*
 
 **`isInteractivePress` has to leave the page area out.** It counts any
 `[tabindex]` ancestor as a control, so the page area's own `tabIndex` would
@@ -301,7 +310,10 @@ Settings and Credits lack, and the order is: Help, Account, Settings and
 Credits, the note panel, a pending correction, the bars. Settings and Credits
 go above the note panel for the reason Help already closes first — closing
 them discards nothing, where the note panel flushes a note and the
-correction abandons one. `Help.tsx`'s doc says Credits' missing `Escape` has a
+correction abandons one. *Since 2026-11-21 (O419) the order goes on: the
+bars only while the keyboard holds them (§3.1), then the reader itself,
+which `Escape` leaves by its way back; a text field keeps its own
+`Escape`.* `Help.tsx`'s doc says Credits' missing `Escape` has a
 reason in `App.tsx`'s listener; there is none — the commit that added Help
 (`3c7a4795`) recorded only that neither Settings nor Credits closed — and the
 sentence goes.

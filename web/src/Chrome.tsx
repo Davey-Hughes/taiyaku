@@ -280,6 +280,8 @@ export interface ChromeProps extends FilmstripProps {
   title?: string
   /** The top bar's second line: `Vol. N · <label>`, or the edition's key — `readerTitle.ts`. */
   editionLine: string
+  /** The series the work is filed in, which the top bar links to — `TopBar`'s `series`. */
+  series?: { id: number; title: string }
   /** The layouts the work offers, the one on screen, and the top bar's way to change it. */
   layouts: readonly Layout[]
   mode: Layout
@@ -287,19 +289,28 @@ export interface ChromeProps extends FilmstripProps {
   /** Whether the settings panel is open; ⚙ toggles it. */
   settingsOpen: boolean
   onSettings: () => void
-  /** Back to the library grid — spec C1 §6. */
+  /**
+   * Help's toggle, as `?` is, drawn at the readout row's end so a reader who
+   * has not found the key learns where help is (O425). Absent, no control:
+   * the help module is switched off.
+   */
+  onHelp?: () => void
+  /** Whether Help is open, for the toggle's `aria-expanded`. */
+  helpOpen?: boolean
+  /** The way out (`back.ts`), and the word the top bar's button names it by. */
   onLeave: () => void
+  leaveWord?: string
 }
 
 /**
  * The reader's two bars — the top bar (`TopBar.tsx`) and the bottom bar of
  * strip, progress line and readout row — shown and hidden together, never
  * separately (spec 2026-09-17 §8.1). The ring's `Tab` (spec 2026-09-26 §3.1)
- * and a tap in the middle third do both; `Escape` hides them; a correction
- * shows them, and they stay up after it ends. Returns `null`
- * while hidden, rather than e.g. `visibility: hidden`, so the hidden state
- * really is "no chrome at all" — edge-to-edge reading with nothing on screen
- * but the page — and not merely invisible chrome still doing layout work.
+ * and a tap in the middle third do both; `Escape` hides them while the keyboard
+ * holds them; a correction shows them, and they stay up after it ends. Returns
+ * `null` while hidden, not `visibility: hidden`, so the hidden state really is
+ * "no chrome at all" — edge-to-edge reading with nothing on screen but the page
+ * — and not merely invisible chrome still doing layout work.
  *
  * That unmount is also why only *showing* the chrome fades and hiding it
  * does not: an element that has already unmounted has nothing left on
@@ -314,9 +325,9 @@ export interface ChromeProps extends FilmstripProps {
  * the `Tab`-press burst against a mounted-with-`opacity: 0` prototype.
  *
  * **While correcting, the top bar is not drawn**: `CorrectionBanner` takes
- * the top edge (§8.3). That keeps O65's rule that the way back to the
- * library stands down during a correction — a transient, task-focused state
- * with nothing for "back to the library" to offer — while `L` (`keys.ts`)
+ * the top edge (§8.3). That keeps O65's rule that the way back stands down
+ * during a correction — a transient, task-focused state with nothing for a
+ * way back to offer — while `L` (`keys.ts`)
  * still leaves: a pending correction has not been written to anything, so
  * leaving loses nothing.
  *
@@ -336,12 +347,16 @@ export function Chrome({
   progress,
   title,
   editionLine,
+  series,
   layouts,
   mode,
   onMode,
   settingsOpen,
   onSettings,
+  onHelp,
+  helpOpen = false,
   onLeave,
+  leaveWord,
   ...filmstrip
 }: ChromeProps) {
   const animating = isAnimating(motion)
@@ -572,12 +587,14 @@ export function Chrome({
         <TopBar
           title={title}
           editionLine={editionLine}
+          series={series}
           layouts={layouts}
           mode={mode}
           onMode={onMode}
           settingsOpen={settingsOpen}
           onSettings={onSettings}
           onLeave={onLeave}
+          leaveWord={leaveWord}
           style={fade}
         />
       )}
@@ -646,6 +663,17 @@ export function Chrome({
             change to the reading-time readout. */}
         <div className="reader-readout" style={readoutStyle}>
           <span style={readoutTextStyle}>{row}</span>
+          {onHelp && (
+            <button
+              type="button"
+              className="reader-help"
+              aria-label="Help"
+              aria-expanded={helpOpen}
+              onClick={onHelp}
+            >
+              ?
+            </button>
+          )}
         </div>
       </div>
     </>

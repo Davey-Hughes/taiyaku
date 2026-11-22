@@ -68,6 +68,7 @@ beforeEach(() => {
   })
   vi.mocked(library.work).mockImplementation(async (slug) => ({
     ...(WORKS.find((w) => w.slug === slug) as library.WorkCard),
+    series: null,
     alignments: [],
   }))
   // Reset, not only cleared: a once-answer a case left unused would

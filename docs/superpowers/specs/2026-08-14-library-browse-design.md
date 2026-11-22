@@ -165,6 +165,11 @@ as one by `settingsFields.tsx`'s `FieldControl`, in the View panel and the
 reader's Settings alike, so this section holds whole: no control is drawn
 by name; see `2026-11-14-cover-size-and-continue-row-design.md`.*
 
+*Since 2026-11-21 (O416) the module also has `alwaysShowAligned`, a
+boolean, off by default and listed by the Series page's View alone. On, it
+keeps ⇄ shown on every volume's cover where it would otherwise wait for
+hover.*
+
 **A second registry, not an entry in the existing one.** `modules/registry.ts`
 is *"every reading behaviour this build ships"*, built at module scope so
 `buildRegistry`'s collision check fires on import. A browse module is not a

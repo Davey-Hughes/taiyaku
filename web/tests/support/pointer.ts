@@ -4,25 +4,46 @@ import { expect } from 'vitest'
 // would have it.
 
 /** A device by its pointers, as `pointerRulesAs` draws the page for it. */
-export type Device = 'phone' | 'mouse' | 'touch laptop'
+export type Device = 'phone' | 'mouse' | 'touch laptop' | 'tablet with trackpad'
 
 /**
  * Whether each pointer or hover condition the stylesheets ask holds on each
- * device, keyed on the condition as Chromium serialises it, its whitespace
- * removed. A phone's one pointer is coarse and cannot hover. A mouse is fine
- * and hovers. A touch laptop's primary pointer is fine and hovers, and its
- * screen adds a coarse one: `(pointer: coarse)` asks only the primary, while
- * the hiding rule over a volume tile's `i` (`library.css`) asks every one.
- * Beside it, the progress line's press band and its wake (`reader.css`) ask
- * whether any pointer is fine, which a touch laptop's trackpad is.
+ * device, keyed as Chromium serialises it, whitespace removed. A phone has one
+ * coarse pointer and no hover; a mouse is fine and hovers. A touch laptop's
+ * primary pointer is fine and hovers, its screen adding a coarse one; a tablet
+ * with a trackpad is the reverse. `(pointer: coarse)` asks only the primary;
+ * the hiding rule over a volume tile's `i` (`library.css`) asks every one, and
+ * the progress line's band and wake and Help (`reader.css`) ask for any fine
+ * one.
  */
 const HOLDS = new Map<string, Record<Device, boolean>>([
-  ['(pointer:coarse)', { phone: true, mouse: false, 'touch laptop': false }],
+  [
+    '(pointer:coarse)',
+    {
+      phone: true,
+      mouse: false,
+      'touch laptop': false,
+      'tablet with trackpad': true,
+    },
+  ],
   [
     '(hover:hover)and(not(any-pointer:coarse))',
-    { phone: false, mouse: true, 'touch laptop': false },
+    {
+      phone: false,
+      mouse: true,
+      'touch laptop': false,
+      'tablet with trackpad': false,
+    },
   ],
-  ['(any-pointer:fine)', { phone: false, mouse: true, 'touch laptop': true }],
+  [
+    '(any-pointer:fine)',
+    {
+      phone: false,
+      mouse: true,
+      'touch laptop': true,
+      'tablet with trackpad': true,
+    },
+  ],
 ])
 
 /**

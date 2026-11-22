@@ -95,6 +95,11 @@ export interface WorkCard {
 
 export interface WorkDetail extends WorkCard {
   alignments: AlignmentCard[]
+  /**
+   * The series this work is filed in; `null` for an unfiled work, which has
+   * no series page (spec C1 §5.4).
+   */
+  series: { id: number; title: string } | null
   /** Each split pair one of this work's files is in; an administrator's only. */
   kept_apart?: KeptApart[]
 }

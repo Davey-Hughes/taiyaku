@@ -12,7 +12,7 @@ export type Intent =
   | { kind: 'correct' }
   /** A module's own declared key fired. `intent` is the string it registered — see `ReaderModule.keys`. */
   | { kind: 'module'; intent: string }
-  /** Leave the reader for the library grid — spec C1 §6. */
+  /** Leave the reader by its way back: `back.ts`. */
   | { kind: 'library' }
 
 /**
@@ -101,7 +101,7 @@ export const READER_KEYS: ReaderBinding[] = [
   },
   {
     keys: ['L'],
-    label: 'back to the library',
+    label: 'back where you came from, else the library',
     resolve: () => ({ kind: 'library' }),
   },
   {

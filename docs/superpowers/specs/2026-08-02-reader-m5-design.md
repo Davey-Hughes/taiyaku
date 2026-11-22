@@ -314,7 +314,7 @@ than hand-built UI seven times.
 
 | Module | `defaults` | `keys` | `surface` | `transform` | `status` |
 | ------ | ---------- | ------ | --------- | ----------- | -------- |
-| `regroup` | breaks per edition | insert / remove | filmstrip layout | — | — |
+| `regroup` | breaks per volume, then per edition *(O428)* | insert / remove | filmstrip layout | — | — |
 | `direction` | override per edition | toggle | — | page order | — |
 | `motion` | animations on/off, duration, page-change speed | — | — | transition | — |
 | `prefetch` | depth ahead / behind, decode cap | — | — | — | — |
@@ -352,6 +352,15 @@ rather than to widen quietly.
 > reported by the implementer rather than slipped in, which is the behaviour
 > this paragraph asked for. `module.ts` carries the reasoning at the field
 > itself.
+
+> **Corrected 2026-11-21 (O426, O428).** `regroup`'s breaks are kept per
+> volume, then per edition, not per edition: a break in one volume no longer
+> moves the pairing of another with an edition of the same key. And in
+> two-page mode its key no longer inserts or removes a break at the page on
+> screen, which, after an arrow or the filmstrip, is a pair's first page,
+> where a new break changes nothing: it stands the pair's first page alone
+> and pairs from the next, or on a lone page takes that back, and it stores
+> nothing where it would change no pair.
 
 ### Where state lives
 

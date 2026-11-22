@@ -31690,3 +31690,106 @@ count set. The logs named are kept locally under
   where the mutant broke the web app: `serve_serves_the_web_app_it_is_given`
   failed on a 404 with `is_api` as `true`, and on an empty body with
   `Web::answer` as `Default::default()`.
+
+## O416 to O428: the UI fixes (2026-11-21)
+
+The owner's asks of 2026-11-19, the owner's rulings, the pre-flight against
+closed rulings and the plan are in `.superpowers/sdd/`
+(`2026-11-19-ui-fixes-followup-handoff.md` and `2026-11-20-ui-fixes/`),
+which is not committed. The rows in `docs/status.md` say what each fix
+does; this section holds what they point to.
+
+**How the way back knows an entry of this app comes before.** react-router
+8.3.0's `BrowserRouter` (`lib/dom/lib.js`) keeps its history with
+`createBrowserHistory`, whose `getUrlBasedHistory`
+(`lib/router/history.js`) writes `{ usr, key, idx }` into
+`window.history.state` (`getHistoryState`). `idx` is written as 0 by a
+`replaceState` when the app loads on an entry whose state holds none, as a
+fresh visit's does; a push writes the current index plus one, and a replace
+keeps it. The browser keeps `history.state` with its entry, through a
+reload too, so `idx` above 0 says this entry was pushed by this app in this
+tab, on top of one of its own, and that is what `back.ts`'s `useBack` reads
+to choose a step back over a push of the last Library view. The button's
+word comes from a record `back.ts` keeps in memory, the address each entry
+was pushed from, so a reload loses it and the button reads "Back" while it
+still steps back.
+
+**O418: where a press on blank space landed, before the change.** On the
+code as it was, in the browser project's two launches (scrollbars hidden,
+and scrollbars shown), with the panel opened by a real hover and a real
+click on `i`, one real mouse press each through CDP
+(`web/tests/support/mouse.ts`), the element at the point read first. Both
+launches gave the same outcome for every press.
+
+| Press | Window, volumes | Element at the point | Panel after the press |
+|---|---|---|---|
+| `main`'s blank area below a short grid | 1440×900, 3 | `main` | kept open |
+| beside the grid, right of the last tile, inside the list | 1440×900, 3 | `ul.volumes` | closed |
+| `main`'s right padding beside the grid | 1440×900, 3 | `main` | kept open |
+| `main`'s left padding beside the grid | 1440×900, 3 | `main` | kept open |
+| the page heading | 1440×900, 3 | `h1` | closed |
+| the sidebar column | 1440×900, 3 | `div.sidebar-column` | closed |
+| below a one-volume grid | 390×844, 1 | `div.library` | closed |
+| the window's foot, scrolled to the end | 390×844, 3 | `main` | kept open |
+| `main`'s left padding | 390×844, 3 | `main` | kept open |
+| the room under the last tile's panel, scrolled to the end | 390×844, 6 | `html` (the root) | kept open |
+| the room under the last tile's panel, scrolled to the end | 1280×600, 18 | `main` | kept open |
+
+With scrollbars shown, a press on the document's scrollbar at 390 px
+reached the page as a `pointerdown` whose target was the root, where
+`elementFromPoint` answers null, and a press on `main`'s scrollbar as a
+`pointerdown` on `main`. A scrollbar and the blank space beside it share a
+target, so only the point tells them apart, and the point is what
+`Series.tsx`'s `onScrollbarOf` reads.
+
+**O426: `b`'s cases before and after.** Before, from the investigation of
+2026-11-19 on main as it stood then, in a browser test since deleted: twelve
+pages, editions `raw` and `en` paired one to one, hub `raw`, two-page
+mode, 1440×900, the page focused before each real key. The spread is read
+left to right as its two cells' alt text, a hidden cell in parentheses.
+Slots count from 0 and pages from 1, so slot 4 is page 5.
+
+| Case | Before | After `b` | Stored breaks |
+| --- | --- | --- | --- |
+| LTR, on slot 4 (pair 4–5) | page 5 \| page 6 | page 5 \| page 6 (unchanged) | `[4]` |
+| LTR, slot 2 then → onto 4–5, then `b` | page 5 \| page 6 | page 5 \| page 6 (unchanged) | `[4]` |
+| LTR, a pair at an odd slot (7–8; stored break at 5) | page 8 \| page 9 | page 8 \| page 9 (unchanged) | `[5, 7]` |
+| RTL, on slot 4 (pair 4–5) | page 6 \| page 5 | page 6 \| page 5 (unchanged) | `[4]` |
+| LTR, on slot 5 (second slot of 4–5, restored progress) | page 5 \| page 6 | page 6 \| page 7; second `b`: page 5 \| page 6 | `[]` after both |
+| RTL, on slot 5 (second slot of 4–5) | page 6 \| page 5 | page 7 \| page 6 | `[5]` |
+| LTR, slot 0 | page 1 \| page 2 | page 1 \| page 2 | `[]` |
+| Single mode, → to slot 5, `b`, then the `two` button | page 6 (single) | two-page: page 6 \| page 7; ← gives page 5 \| (page 5) | `[5]` |
+
+After, `web/tests/regroup.browser.test.tsx` on the same shape of volume, in
+the same notation:
+
+| Case | On screen, key by key | Stored breaks |
+| --- | --- | --- |
+| LTR, slot 2, → onto 4–5 | page 5 \| page 6; `b`: page 5 \| (page 5); →: page 6 \| page 7; ←: page 5 \| (page 5); `b`: page 5 \| page 6; the four keys from `b` on run twice | `[5]`, then `[]`, each time |
+| RTL, slot 2, ← onto 4–5 | page 6 \| page 5; `b`: page 5 \| (page 5); ←: page 7 \| page 6; →: page 5 \| (page 5); `b`: page 6 \| page 5 | `[5]`, then `[]` |
+| LTR, a pair at an odd slot (7–8; stored break at 5) | page 8 \| page 9; `b`: page 8 \| (page 8) | `[5, 8]` |
+| LTR, the last page alone (slot 11; stored break at 5) | page 12 \| (page 12); `b`: unchanged | `[5]`, the stored slice unchanged |
+| LTR, restored on slot 5 (the second slot of 4–5) | page 5 \| page 6; `b`: page 5 \| (page 5); `b`: page 5 \| page 6 | `[5]`, then `[]` |
+
+The stored breaks are now kept under the volume (O428), as
+`{ <volume>: { raw: [5] } }`.
+
+**The ring's two new stops.** `focus.ts`'s `barStops` finds the bars'
+stops in their markup, so the series link (O427), in the title block, is the
+stop after the way back, and Help (O425), at the readout row's end, is the
+stop after the strip's tile where a mouse or a trackpad is; a touch screen
+alone draws no Help, and the ring then skips it. `App.browser.test.tsx`'s
+every-stop walk at 1440×900 reads, in order: the way back ("Library"
+there), the series' title, the four layouts, Settings, the strip's tile,
+Help.
+
+**More at 0 (O424).** C3's build drew the open count even at 0, on the
+sidebar's Proposals entry that More now opens onto, because "0 open" and
+"not read yet" are different facts a person can act on differently
+(`docs/superpowers/plans/2026-08-26-c3-proposals-inbox.md`, a finding of
+that branch's whole-branch review). More's badge has carried the same count
+since the sidebar and readability redesign. The owner's ask names the 0 and
+is the later word, so More draws no badge at 0, while the Proposals entry
+inside keeps its 0 and its name "Proposals, 0 open": the two facts stay
+apart, one press away. Before the count is read, neither draws one, as
+before.

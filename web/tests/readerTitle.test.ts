@@ -28,6 +28,7 @@ const detail = (over: Partial<WorkDetail> = {}): WorkDetail => ({
     },
   ],
   opens: 'raw',
+  series: null,
   alignments: [],
   ...over,
 })

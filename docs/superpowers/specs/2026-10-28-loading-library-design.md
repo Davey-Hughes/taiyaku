@@ -20,7 +20,9 @@ sort or the chosen edition. After this:
   behind. It then reads again quietly and updates in one step if anything
   changed, such as the Continue strip after reading.
 - **The reader's Library button** opens the last Library view seen in this
-  tab (its library, chip and sort) at the scroll it was left at.
+  tab (its library, chip and sort) at the scroll it was left at. *Since
+  2026-11-21 it goes back where the reader was opened from, and opens that
+  view only when no entry of this app precedes the reader's (ruling 4).*
 - **The sidebar's Libraries heading** opens the defaults at the top, as
   today. Its link for each library switches library and keeps the chip and
   the sort. A link to the view already shown, a library's own link or,
@@ -50,9 +52,16 @@ sort or the chosen edition. After this:
 3. **After reading, draw, then update** (§1): the return draws the kept rows
    and the quiet re-read moves them once, over marking them stale so the
    return waits. The re-read waits for the last progress save (§3.3).
-4. **The reader's Library button returns to where the reader was** (§5.2),
-   over going Back only when the reader was opened from the grid, and over
-   leaving it.
+4. **The reader's way out goes back where the reader was opened from**
+   (§5.2): a step back when an entry of this app precedes the reader's, and
+   the last Library view only when none does (the owner, 2026-11-20; O422 in
+   `docs/status.md`). *Until 2026-11-21:* **The reader's Library button
+   returns to where the reader was** (§5.2), over going Back only when the
+   reader was opened from the grid, and over leaving it. It was reversed
+   because the push left the reader behind the library in history, so the
+   browser's Back reopened the reader just closed, and the owner wants Back
+   to go where you came from, and to the library only when nothing in the
+   app precedes it.
 5. **The store and a scroll keeper**, over making the page scroll at every
    width for the browser to restore, and over keeping the Library view
    mounted but hidden.
@@ -203,7 +212,12 @@ of the page's body.
      would on Back. With none held, they open `/` at the top. The marker
      is a key of its own in that state, so the search box, which reads
      only its tag, takes the arrival as a change it did not make and draws
-     the `?q=` it opens (O223).
+     the `?q=` it opens (O223). *Since 2026-11-21 (ruling 4) these exits,
+     and `Escape` once nothing in the reader takes it, step back to the
+     entry the reader was opened from wherever an entry of this app precedes
+     it, by the `idx` react-router keeps in `history.state` (`back.ts`), and
+     open the held address only where none does; the top bar's button and the
+     failed load's name where they go.*
    - **Every other arrival lands at the top**: as today, the sidebar's
      heading, a link within the app and a library switch, and now a
      sidebar link or a wordmark to the view already shown, which kept the

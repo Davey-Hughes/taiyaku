@@ -253,15 +253,16 @@ describe('More, at the sidebar’s foot', () => {
     ).toBe('7')
   })
 
-  it('draws a zero rather than hiding an inbox somebody has emptied', () => {
-    // `0` and "not read yet" are different facts, and the falsy test that
-    // conflates them is the easy mistake: a badge that vanished at zero
-    // would read as a failed fetch.
+  it('draws no badge on More at zero, and keeps the 0 on the Proposals entry (O424)', () => {
+    // More asks for a visit only while the inbox holds something. `0` and
+    // "not read yet" are still different facts, so the entry inside says the
+    // 0, one press away.
     const host = at(<AccountMenu admin={true} openProposals={0} />)
-    expect(moreButton(host).querySelector('.count')?.textContent).toBe('0')
-    expect(
-      openMore(host).querySelector('a[href="/proposals"] .count')?.textContent,
-    ).toBe('0')
+    expect(moreButton(host).querySelector('.count')).toBeNull()
+    expect(moreButton(host).getAttribute('aria-label')).toBe('More')
+    const proposals = openMore(host).querySelector('a[href="/proposals"]')
+    expect(proposals?.querySelector('.count')?.textContent).toBe('0')
+    expect(proposals?.getAttribute('aria-label')).toBe('Proposals, 0 open')
   })
 
   it('draws no count at all until one has been read', () => {
@@ -275,14 +276,16 @@ describe('More, at the sidebar’s foot', () => {
   })
 
   it.each([
-    [17, 'Proposals, 17 open', 'More, 17 open proposals'],
-    [0, 'Proposals, 0 open', 'More, 0 open proposals'],
+    [17, 'Proposals, 17 open', 'More, 17 open proposals', '17'],
+    [5, 'Proposals, 5 open', 'More, 5 open proposals', '5'],
+    [0, 'Proposals, 0 open', 'More', undefined],
   ])(
-    'names the link and the button with what the count %i counts — O164',
-    (count, link, button) => {
+    'names the link, and the button while it has a badge, with what the count %i counts — O164, O424',
+    (count, link, button, badge) => {
       // Without a label the number runs into the word ("Proposals17"); the
       // labels say what it counts.
       const host = at(<AccountMenu admin={true} openProposals={count} />)
+      expect(moreButton(host).querySelector('.count')?.textContent).toBe(badge)
       expect(moreButton(host).getAttribute('aria-label')).toBe(button)
       expect(
         openMore(host)

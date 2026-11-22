@@ -17,6 +17,7 @@ describe('the browse module', () => {
       panel: 'button',
       coverSize: 144,
       continueStrip: true,
+      alwaysShowAligned: false,
     })
   })
 
@@ -32,6 +33,7 @@ describe('the browse module', () => {
       ['panel', 'select'],
       ['coverSize', 'slider'],
       ['continueStrip', 'boolean'],
+      ['alwaysShowAligned', 'boolean'],
     ])
   })
 

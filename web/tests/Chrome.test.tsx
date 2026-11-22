@@ -1,4 +1,5 @@
 import { act, Profiler } from 'react'
+import { MemoryRouter } from 'react-router'
 import {
   afterEach,
   beforeEach,
@@ -157,9 +158,18 @@ describe('Chrome', () => {
   })
 
   it('draws no top bar while correcting, when the banner has the top edge', () => {
-    const host = mount(<Chrome {...baseProps} correcting={{ to: 'ed2' }} />)
+    const host = mount(
+      <MemoryRouter>
+        <Chrome
+          {...baseProps}
+          series={{ id: 41, title: 'Dandadan' }}
+          correcting={{ to: 'ed2' }}
+        />
+      </MemoryRouter>,
+    )
     expect(host.querySelector('.reader-top-bar')).toBeNull()
     expect(buttonNamed(host, 'Library')).toBeUndefined()
+    expect(host.querySelector('.reader-title-series')).toBeNull()
     expect(bottomBar(host)).not.toBeNull()
   })
 
@@ -222,6 +232,43 @@ describe('Chrome', () => {
       />,
     )
     expect(host.querySelector('.reader-readout')?.textContent).toBe('')
+  })
+
+  describe('Help in the readout row (O425)', () => {
+    const helpIn = (host: HTMLElement) =>
+      [...host.querySelectorAll('button')].filter(
+        (b) => b.getAttribute('aria-label') === 'Help',
+      )
+
+    it('draws no Help without onHelp', () => {
+      const host = mount(<Chrome {...baseProps} />)
+      expect(helpIn(host)).toEqual([])
+    })
+
+    it('ends the readout row with one ? named Help, which toggles Help and says whether it is open', () => {
+      const onHelp = vi.fn()
+      const host = mount(
+        <Chrome {...baseProps} onHelp={onHelp} helpOpen={false} />,
+      )
+      const helps = helpIn(host)
+      expect(helps).toHaveLength(1)
+      const [help] = helps
+      expect(
+        (host.querySelector('.reader-readout') as HTMLElement).lastElementChild,
+      ).toBe(help)
+      expect(help.textContent).toBe('?')
+      expect(help.type).toBe('button')
+      expect(help.tabIndex).toBe(0)
+      expect(help.getAttribute('aria-expanded')).toBe('false')
+      // The readout keeps its own text, joined as before.
+      expect(host.querySelector('.reader-readout span')?.textContent).toBe(
+        'slot 1 / 3 · sound pair · 2m read · c001 · 3 notes',
+      )
+      help.click()
+      expect(onHelp).toHaveBeenCalledOnce()
+      rerender(<Chrome {...baseProps} onHelp={onHelp} helpOpen={true} />)
+      expect(helpIn(host)[0].getAttribute('aria-expanded')).toBe('true')
+    })
   })
 
   it('shows no hover preview before any tile is focused, even while correcting', () => {

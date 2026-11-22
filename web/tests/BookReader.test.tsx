@@ -109,6 +109,8 @@ function server(
       pinned.push(JSON.parse(String(init?.body)))
       return new Response(null, { status: 204 })
     }
+    // The library's answer for the work: filed in no series.
+    if (url === '/api/library/works/w') return Response.json({ series: null })
     if (url === '/api/works/w/notes') {
       if (init?.method === 'PUT') {
         const doc = JSON.parse(String(init.body))
@@ -599,12 +601,34 @@ describe('BookReader', () => {
     expect(host.querySelector('.reader-top-bar')).not.toBeNull()
   })
 
+  /** The keyboard brought the bars up, so they are its to take away, focus in them or not (O419). */
   it('shows the bars on Tab, and hides them on Escape', async () => {
-    const { host } = await opened()
+    const { host, onLeave } = await opened()
     press('Tab')
     expect(host.querySelector('.reader-top-bar')).not.toBeNull()
     press('Escape')
     expect(host.querySelector('.reader-top-bar')).toBeNull()
+    expect(onLeave).not.toHaveBeenCalled()
+  })
+
+  /** A tap takes the bars from the keyboard: hidden by one and brought back by another, they are the tap's. */
+  it('leaves the reader on Escape through bars a tap brought back after Tab showed them (O419)', async () => {
+    const { host, onLeave } = await opened()
+    press('Tab')
+    tap(host)
+    expect(host.querySelector('.reader-top-bar')).toBeNull()
+    tap(host)
+    expect(host.querySelector('.reader-top-bar')).not.toBeNull()
+    press('Escape')
+    expect(onLeave).toHaveBeenCalledOnce()
+  })
+
+  it('leaves the reader on Escape through bars a tap brought up (O419)', async () => {
+    const { host, onLeave } = await opened()
+    tap(host)
+    expect(host.querySelector('.reader-top-bar')).not.toBeNull()
+    press('Escape')
+    expect(onLeave).toHaveBeenCalledOnce()
   })
 
   it('opens settings on s and help on ?, and Escape closes the panel before the bars', async () => {
@@ -2986,12 +3010,11 @@ describe('BookReader', () => {
 
   it('says when the notes could not be read', async () => {
     const { fetch } = server()
-    fetch.mockImplementation(async (url: string) =>
+    const answer = fetch.getMockImplementation()
+    fetch.mockImplementation(async (url: string, init?: RequestInit) =>
       url === '/api/works/w/notes'
         ? new Response('down', { status: 500 })
-        : url === '/api/works/w/book'
-          ? Response.json(book)
-          : new Response(null, { status: 204 }),
+        : (answer?.(url, init) as Promise<Response>),
     )
     vi.stubGlobal('fetch', fetch)
     Element.prototype.scrollIntoView = vi.fn()
@@ -3741,6 +3764,42 @@ describe('BookReader', () => {
     const { onLeave } = await opened()
     press('L')
     expect(onLeave).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    [undefined, 'Back to the library'],
+    [{ word: 'Series', phrase: 'the series' }, 'Back to the series'],
+    [{ word: 'Back', phrase: '' }, 'Back'],
+  ])(
+    'names the way back from a book that would not load for where it goes: %o',
+    async (leaveTo, name) => {
+      vi.stubGlobal('fetch', server(undefined, null).fetch)
+      const onLeave = vi.fn()
+      const host = mount(
+        <BookReader work="w" onLeave={onLeave} leaveTo={leaveTo} />,
+      )
+      await land()
+      expect(
+        [...host.querySelectorAll('button')].map((b) => b.textContent),
+      ).toEqual([name])
+      host.querySelector('button')?.click()
+      expect(onLeave).toHaveBeenCalledOnce()
+    },
+  )
+
+  it('names the top bar’s way out by the word it is handed', async () => {
+    vi.stubGlobal('fetch', server().fetch)
+    Element.prototype.scrollIntoView = vi.fn()
+    const host = mount(
+      <BookReader
+        work="w"
+        onLeave={vi.fn()}
+        leaveTo={{ word: 'Series', phrase: 'the series' }}
+      />,
+    )
+    await land()
+    tap(host)
+    expect(host.querySelector('.reader-back')?.textContent).toBe('Series')
   })
 })
 

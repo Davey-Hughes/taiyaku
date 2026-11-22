@@ -56,8 +56,13 @@ export interface Guards {
   /// nothing saying either. The note editor already has exactly this guard
   /// (`panel === 'edit'`). */
   accountOpen: boolean
-  /** `Chrome`'s bars are up. `Escape` takes them away when nothing above them is open (spec 2026-09-26 §3.1). */
-  barsUp: boolean
+  /**
+   * The keyboard holds `Chrome`'s bars (`focus.ts`'s `useKeyboardBars`):
+   * keyboard focus is in them, or a key brought them up and no pointer has
+   * been pressed since. `Escape` takes them away then, when nothing above
+   * them is open (spec 2026-09-26 §3.1), and otherwise leaves the reader.
+   */
+  keyboardHoldsBars: boolean
   /** The settings panel is open. */
   settingsOpen: boolean
   /** The credits panel is open. */
@@ -94,7 +99,7 @@ export type KeyAction =
   | { kind: 'leave-bars' }
   | { kind: 'begin-correction' }
   | { kind: 'module'; intent: string }
-  /** Back to the library grid — spec C1 §6. */
+  /** Leave the reader by its way back (`back.ts`): `L`, and `Escape` when nothing else takes it. */
   | { kind: 'leave-reader' }
   /**
    * `ReadingIntent` is `session.ts`'s own `Exclude`, reused rather than
@@ -177,7 +182,7 @@ function moduleKeyLive(intent: string, guards: Guards): boolean {
  * intents and deliberately does *not* stand down for a focused control — the
  * tile a reader just clicked is itself a button, and gating `Escape` on the
  * focused control would make it fire everywhere except the one moment it
- * matters most.
+ * matters most. Only leaving the reader stands down, for a text field.
  *
  * `undefined` means the keypress belongs to something else and the browser
  * should have it: to a control that has focus, to the note editor (nothing
@@ -240,12 +245,17 @@ export function keyPlan(
       if (guards.submitting) return undefined
       return { action: { kind: 'cancel-correction' }, preventDefault: true }
     }
-    // Last: the bars themselves, from anywhere in them or from the page while
-    // a tap has them up (spec 2026-09-26 §3.1).
-    if (guards.barsUp) {
+    // Then the bars, while the keyboard holds them: the way out of the ring
+    // (spec 2026-09-26 §3.1). Bars a tap or the mouse brought up hold none
+    // until a key moves focus into them, so a reader who brought them up that
+    // way and pressed nothing since leaves at once.
+    if (guards.keyboardHoldsBars) {
       return { action: { kind: 'leave-bars' }, preventDefault: true }
     }
-    return undefined
+    // A text field keeps its own `Escape`: the reader is never left from one.
+    if (guards.control === 'text') return undefined
+    // Nothing else takes it: the reader itself, by its way back.
+    return { action: { kind: 'leave-reader' }, preventDefault: true }
   }
   // One dispatch path: every key, built-in or module-declared, has already
   // passed through `intentOf`, which applies the modifier guard once.

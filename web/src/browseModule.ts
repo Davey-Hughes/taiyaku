@@ -95,6 +95,12 @@ export interface BrowsePrefs {
   coverSize: number
   /** Whether the library screen opens on what you were reading. */
   continueStrip: boolean
+  /**
+   * Whether ⇄ stays shown on every volume's cover in the Series grid where
+   * every pointer can hover, rather than waiting for the volumes to be
+   * hovered or to hold keyboard focus (`library.css`).
+   */
+  alwaysShowAligned: boolean
 }
 
 export const browseModule: ReaderModule<BrowsePrefs> = {
@@ -106,6 +112,7 @@ export const browseModule: ReaderModule<BrowsePrefs> = {
     panel: 'button',
     coverSize: COVER_DEFAULT,
     continueStrip: true,
+    alwaysShowAligned: false,
   },
   options: {
     layout: ['grid', 'table'],

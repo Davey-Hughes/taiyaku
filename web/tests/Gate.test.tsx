@@ -11,6 +11,7 @@ import { act } from 'react'
 import { MemoryRouter } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getJson, type Me } from '../src/api'
+import { forgetBack } from '../src/back'
 import { Gate } from '../src/Gate'
 import { useGate } from '../src/gate'
 import { entryOf, read, readSet } from '../src/reads'
@@ -18,6 +19,13 @@ import { type ScanFeed, useScanFeed } from '../src/scanFeed'
 import { lastLibraryAddress, useKeptScroll } from '../src/scrollKeeper'
 import { mount, rerender } from './support/mount'
 import { feedJob, serveFeed } from './support/scanFeed'
+
+// Wrapped, not replaced: the gate's call is what these tests count, and the
+// record it empties is `back.ts`'s own.
+vi.mock('../src/back', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/back')>()
+  return { ...actual, forgetBack: vi.fn(actual.forgetBack) }
+})
 
 const ADMIN: Me = {
   user_id: 7,
@@ -333,6 +341,34 @@ describe('the sign-in gate', () => {
     await click(host, 'sign-out')
     expect(form(host), 'the sign-in form').not.toBeNull()
     expect(lastLibraryAddress()).toBeUndefined()
+  })
+
+  /** The Back record names addresses the account drew, as the scroll keeper's address does. */
+  it('forgets the Back record on signing out', async () => {
+    server(ADMIN)
+    const host = await show()
+    vi.mocked(forgetBack).mockClear()
+
+    await click(host, 'sign-out')
+    expect(form(host), 'the sign-in form').not.toBeNull()
+    expect(forgetBack).toHaveBeenCalledOnce()
+  })
+
+  it('forgets the Back record on signing in', async () => {
+    server(ADMIN)
+    const host = await show()
+    await click(host, 'sign-out')
+    vi.mocked(forgetBack).mockClear()
+
+    await act(async () => {
+      form(host)?.dispatchEvent(
+        new Event('submit', { bubbles: true, cancelable: true }),
+      )
+      await Promise.resolve()
+    })
+    await settle()
+    expect(guarded(host)).toBe('7/true')
+    expect(forgetBack).toHaveBeenCalledOnce()
   })
 
   it('forgets the last Library view on signing in', async () => {

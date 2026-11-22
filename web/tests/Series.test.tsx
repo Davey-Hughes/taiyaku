@@ -157,7 +157,7 @@ async function settleWith(
   props: Partial<
     Pick<
       React.ContextType<typeof BrowsePrefsContext>,
-      'layout' | 'editionSelector' | 'panel'
+      'layout' | 'editionSelector' | 'panel' | 'alwaysShowAligned'
     >
   > = {},
   me?: Me,
@@ -213,7 +213,11 @@ describe('Series, grid layout', () => {
     vi.clearAllMocks()
     // Opening a panel fetches the work's detail; a bare `vi.fn()` answers
     // `undefined`, and `reveal`'s `.then` throws on it.
-    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+    vi.mocked(library.work).mockResolvedValue({
+      ...work(),
+      alignments: [],
+      series: null,
+    })
     vi.mocked(library.oneSeries).mockResolvedValue({
       series: card(),
       works: [
@@ -578,7 +582,11 @@ describe('Series, grid layout — the reader link and download withheld', () => 
   it.each(['button', 'off'] as const)(
     'withholds the per-tile download for the edition it would show, when that edition has lost its files, even though the volume itself stays readable, in %s mode',
     async (panel) => {
-      vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+      vi.mocked(library.work).mockResolvedValue({
+        ...work(),
+        alignments: [],
+        series: null,
+      })
       vi.mocked(library.oneSeries).mockResolvedValue({
         series: card(),
         works: [
@@ -620,7 +628,11 @@ describe('Series, the work-level editor', () => {
     // answers `undefined` and `reveal`'s `.then` throws an uncaught
     // TypeError. Vitest still reports the test itself as passing and fails
     // the run.
-    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+    vi.mocked(library.work).mockResolvedValue({
+      ...work(),
+      alignments: [],
+      series: null,
+    })
     const host = await settleWith({ panel: 'button' }, who({ admin: true }))
     expect(host.querySelector('.metadata-editor')).toBeNull()
     const open = host.querySelector<HTMLButtonElement>('.panel-open')
@@ -641,7 +653,11 @@ describe('Series, the work-level editor', () => {
     // A control that answers 403 is worse than no control: it invites the
     // correction and then refuses it. The routes are admin-gated in
     // `routes.rs`, so the affordance has to be too.
-    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+    vi.mocked(library.work).mockResolvedValue({
+      ...work(),
+      alignments: [],
+      series: null,
+    })
     const host = await settleWith({ panel: 'button' }, who({ admin: false }))
     const open = host.querySelector<HTMLButtonElement>('.panel-open')
     await act(async () => {
@@ -661,7 +677,11 @@ describe('Series, the work-level editor', () => {
    * covers "no editor at all" without it) but not sufficient.
    */
   it('offers the ComicInfo stamp section to an administrator who holds can_stamp', async () => {
-    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+    vi.mocked(library.work).mockResolvedValue({
+      ...work(),
+      alignments: [],
+      series: null,
+    })
     const host = await settleWith(
       { panel: 'button' },
       who({ admin: true, can_stamp: true }),
@@ -677,7 +697,11 @@ describe('Series, the work-level editor', () => {
   })
 
   it('withholds the ComicInfo stamp section from an administrator who does not hold can_stamp', async () => {
-    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+    vi.mocked(library.work).mockResolvedValue({
+      ...work(),
+      alignments: [],
+      series: null,
+    })
     const host = await settleWith(
       { panel: 'button' },
       who({ admin: true, can_stamp: false }),
@@ -725,7 +749,11 @@ describe('Series, the work-level editor', () => {
 
     beforeEach(() => {
       vi.clearAllMocks()
-      vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+      vi.mocked(library.work).mockResolvedValue({
+        ...work(),
+        alignments: [],
+        series: null,
+      })
       vi.mocked(library.grid).mockResolvedValue({ series: [], unfiled: [] })
       vi.mocked(library.home).mockResolvedValue({
         continuing: [],
@@ -1657,6 +1685,7 @@ describe('Series, the alignment panel', () => {
     })
     vi.mocked(library.work).mockResolvedValue({
       ...work({ aligned: true }),
+      series: null,
       alignments: [
         {
           from: 'raw',
@@ -1864,6 +1893,7 @@ describe('Series, the alignment panel', () => {
     // still has no slot data.
     vi.mocked(library.work).mockResolvedValue({
       ...work({ aligned: true }),
+      series: null,
       alignments: [
         { from: 'raw', to: 'en', verdict: 'weak', slots: null, paired: null },
       ],
@@ -1890,6 +1920,7 @@ describe('Series, the alignment panel', () => {
     })
     vi.mocked(library.work).mockResolvedValue({
       ...work({ editions: [edition()] }),
+      series: null,
       alignments: [],
     })
     const host = await settleWith({ panel: 'button' })
@@ -1913,6 +1944,7 @@ describe('Series, the alignment panel', () => {
     })
     vi.mocked(library.work).mockResolvedValue({
       ...work({ editions }),
+      series: null,
       alignments: [],
     })
     const host = await settleWith({ panel: 'button' })
@@ -1956,6 +1988,7 @@ describe('Series, a volume’s content matches', () => {
     over: Partial<library.WorkDetail> = {},
   ): library.WorkDetail => ({
     ...work({ editions: markedEditions() }),
+    series: null,
     alignments: [],
     kept_apart: [],
     ...over,
@@ -1981,7 +2014,7 @@ describe('Series, a volume’s content matches', () => {
     vi.mocked(library.work).mockImplementation((slug) =>
       slug === 'gotoubun-v01'
         ? (answer?.() ?? Promise.resolve(first))
-        : Promise.resolve({ ...third, alignments: [] }),
+        : Promise.resolve({ ...third, alignments: [], series: null }),
     )
   }
 
@@ -2708,7 +2741,7 @@ describe('Series, its View panel — spec §2', () => {
       ]
     })
 
-  it('holds Layout, Edition selector, Panel, Cover size and Reset, in sentence case', async () => {
+  it('holds Layout, Edition selector, Panel, Cover size, Always show aligned and Reset, in sentence case', async () => {
     let host!: HTMLElement
     await act(async () => {
       host = mount(
@@ -2740,10 +2773,23 @@ describe('Series, its View panel — spec §2', () => {
       ['Edition selector', 'checkbox', []],
       ['Panel', 'SELECT', ['Off', 'Button', 'On-select']],
       ['Cover size', 'range', []],
+      ['Always show aligned', 'checkbox', []],
     ])
     expect(
       [...panel.querySelectorAll('button')].map((b) => b.textContent),
     ).toEqual(['Reset'])
+  })
+
+  // `library.css` keeps every ⇄ shown under this attribute; the browser
+  // project measures that, and CI runs only this project.
+  it('marks the volumes to keep ⇄ shown while Always show aligned is on, and only then', async () => {
+    const on = await settleWith({ alwaysShowAligned: true })
+    const off = await settleWith({ alwaysShowAligned: false })
+    expect(
+      [on, off].map((host) =>
+        host.querySelector('ul.volumes')?.getAttribute('data-aligned'),
+      ),
+    ).toEqual(['always', null])
   })
 })
 
@@ -2785,7 +2831,11 @@ describe('Series, the open panel’s observer (O283)', () => {
     vi.clearAllMocks()
     StubResizeObserver.made = []
     vi.stubGlobal('ResizeObserver', StubResizeObserver)
-    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+    vi.mocked(library.work).mockResolvedValue({
+      ...work(),
+      alignments: [],
+      series: null,
+    })
     vi.mocked(library.oneSeries).mockResolvedValue({
       series: card(),
       works: [
@@ -2868,7 +2918,11 @@ describe('Series, closing a volume’s panel (O283)', () => {
     // otherwise answer the next case's first call.
     vi.mocked(metadata.patchWork).mockReset()
     vi.mocked(library.oneSeries).mockReset()
-    vi.mocked(library.work).mockResolvedValue({ ...work(), alignments: [] })
+    vi.mocked(library.work).mockResolvedValue({
+      ...work(),
+      alignments: [],
+      series: null,
+    })
   })
 
   /**
@@ -2968,9 +3022,11 @@ describe('Series, closing a volume’s panel (O283)', () => {
     })
   const pressEscape = (init: KeyboardEventInit = {}) =>
     key({ key: 'Escape', ...init })
-  const pressOn = (target: Element) =>
+  const pressOn = (target: Element, at: MouseEventInit = {}) =>
     flush(() => {
-      target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      target.dispatchEvent(
+        new MouseEvent('pointerdown', { bubbles: true, ...at }),
+      )
     })
   /** React's `onMouseEnter` listens for `mouseover`. */
   const hoverOn = (target: Element) =>
@@ -3314,16 +3370,119 @@ describe('Series, closing a volume’s panel (O283)', () => {
     })
   })
 
-  it('keeps the panel through a press on the page area itself or the root, and closes on one on the page’s heading', async () => {
-    const host = await page('button')
-    const tile = await openTile(host, 0)
-    await pressOn(need(host.querySelector('.library > main'), 'page area'))
-    expect(panelIn(tile), 'a press on the page area').not.toBeNull()
-    await pressOn(document.documentElement)
-    expect(panelIn(tile), 'a press on the root').not.toBeNull()
-    await pressOn(headingOf(host))
-    expect(panelIn(tile), 'a press on the heading').toBeNull()
-  })
+  /**
+   * jsdom lays nothing out, so the boxes are given: the page area 1216 by
+   * 900 px at 224 px from the left of a window 1440 by 900, the document
+   * scrolled 300 px down, and a 15 px scrollbar down the right of each and
+   * across its foot, each scrolling down and across as `scrolls` says:
+   * a strip it does not scroll by is still there, as `scrollbar-gutter:
+   * stable` keeps it. Answers what the page's heading and its two
+   * scrollers are.
+   */
+  function laidOut(
+    host: HTMLElement,
+    scrolls: { down: boolean; across: boolean } = { down: true, across: true },
+  ) {
+    const main = need(
+      host.querySelector<HTMLElement>('.library > main'),
+      'page area',
+    )
+    const root = document.documentElement
+    vi.spyOn(main, 'getBoundingClientRect').mockReturnValue({
+      left: 224,
+      top: 0,
+      width: 1216,
+      height: 900,
+    } as DOMRect)
+    const scrolled = vi.spyOn(root, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: -300,
+      width: 1425,
+      height: 2000,
+    } as DOMRect)
+    for (const [el, width, height] of [
+      [main, 1201, 885],
+      [root, 1425, 885],
+    ] as const) {
+      for (const [name, value] of [
+        ['clientWidth', width],
+        ['clientHeight', height],
+        ['scrollWidth', scrolls.across ? width + 400 : width],
+        ['scrollHeight', scrolls.down ? height + 2000 : height],
+      ] as const) {
+        Object.defineProperty(el, name, { value, configurable: true })
+      }
+    }
+    onTestFinished(() => {
+      scrolled.mockRestore()
+      for (const name of [
+        'clientWidth',
+        'clientHeight',
+        'scrollWidth',
+        'scrollHeight',
+      ]) {
+        Reflect.deleteProperty(root, name)
+      }
+    })
+    return { main, root, heading: headingOf(host) }
+  }
+
+  // A press on a scroller's scrollbar reaches the page as a press on the
+  // scroller, and keeps the panel, so ↓ Download can be scrolled to.
+  it.each([
+    ['main’s scrollbar, down its right', 'main', 1432, 450],
+    ['main’s scrollbar, across its foot', 'main', 800, 893],
+    ['the root’s scrollbar, down its right', 'root', 1432, 450],
+    ['the root’s scrollbar, across its foot', 'root', 800, 893],
+  ] as const)(
+    'keeps the panel through a press on %s (O418)',
+    async (_, on, clientX, clientY) => {
+      const host = await page('button')
+      const pressed = laidOut(host)[on]
+      const tile = await openTile(host, 0)
+      await pressOn(pressed, { clientX, clientY })
+      expect(panelIn(tile)).not.toBeNull()
+    },
+  )
+
+  // The root's blank space is pressed 700 px down the window: inside the
+  // window less its scrollbars, and below 585 px, where the root's client
+  // height ends counted from its own box, which the scroll moved up.
+  it.each([
+    ['main’s blank space beside its scrollbar', 'main', 1420, 450],
+    ['the root’s blank space, the document scrolled', 'root', 800, 700],
+    ['the page’s heading', 'heading', 400, 40],
+  ] as const)(
+    'closes on a press on %s (O418)',
+    async (_, on, clientX, clientY) => {
+      const host = await page('button')
+      const pressed = laidOut(host)[on]
+      const tile = await openTile(host, 0)
+      await pressOn(pressed, { clientX, clientY })
+      expect(panelIn(tile)).toBeNull()
+    },
+  )
+
+  // A strip is blank space where its scroller does not scroll that way,
+  // though it scrolls the other.
+  it.each([
+    ['main’s right, scrolling only across', 'main', 1432, 450, 'across'],
+    ['main’s foot, scrolling only down', 'main', 800, 893, 'down'],
+    ['the root’s right, scrolling only across', 'root', 1432, 450, 'across'],
+    ['the root’s foot, scrolling only down', 'root', 800, 893, 'down'],
+  ] as const)(
+    'closes on a press on %s (O418)',
+    async (_, on, clientX, clientY, way) => {
+      const host = await page('button')
+      const pressed = laidOut(host, {
+        down: way === 'down',
+        across: way === 'across',
+      })[on]
+      const tile = await openTile(host, 0)
+      await pressOn(pressed, { clientX, clientY })
+      expect(panelIn(tile)).toBeNull()
+    },
+  )
 
   it('saves what is typed while a close’s save is out before it closes', async () => {
     const first = deferred<metadata.PatchResult>()
@@ -3623,13 +3782,15 @@ describe('Series, closing a volume’s panel (O283)', () => {
     // 3's read is refused.
     let undone = false
     vi.mocked(library.work).mockImplementation(async (slug) => {
-      if (slug !== 'gotoubun-v03') return { ...work(), alignments: [] }
+      if (slug !== 'gotoubun-v03')
+        return { ...work(), alignments: [], series: null }
       if (undone)
         throw new Error(
           '/api/library/works/gotoubun-v03: 404 {"error":"there is no work gotoubun-v03"}',
         )
       return {
         ...third,
+        series: null,
         alignments: [],
         kept_apart: [
           {

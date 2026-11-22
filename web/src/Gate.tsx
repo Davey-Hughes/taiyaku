@@ -39,6 +39,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Unauthenticated, me, whenSignedOut, type Me } from './api'
+import { forgetBack } from './back'
 import { GateContext } from './gate'
 import { Login } from './Login'
 import { emptyReads } from './reads'
@@ -68,12 +69,14 @@ export function Gate({ children }: GateProps) {
     me()
       .then((account) => {
         if (asked.current !== id) return
-        // The read store, the scan feed and the scroll keeper outlive the
-        // unmount below the gate, and what they keep was the account's that
-        // read it: the feed's may be an administrator's, naming paths.
+        // The read store, the scan feed, the scroll keeper and the Back
+        // record outlive the unmount below the gate, and what they keep was
+        // the account's that read it: the feed's may be an administrator's,
+        // naming paths.
         emptyReads()
         resetScanFeed()
         forgetScroll()
+        forgetBack()
         setWho(account)
       })
       .catch((why: unknown) => {
@@ -92,6 +95,7 @@ export function Gate({ children }: GateProps) {
     emptyReads()
     resetScanFeed()
     forgetScroll()
+    forgetBack()
     setWho(null)
   }, [])
 

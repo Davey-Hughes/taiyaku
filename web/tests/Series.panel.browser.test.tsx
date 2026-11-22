@@ -9,7 +9,7 @@ import * as library from '../src/library'
 import * as metadata from '../src/metadata'
 import { PHONE_LAYOUT, SIDEBAR_LAYOUT } from '../src/phoneLayout'
 import * as stamp from '../src/stamp'
-import { deferred, settleUntil } from './support/async'
+import { deferred, land, settleUntil } from './support/async'
 import { columnsOf } from './support/columns'
 import { emptyDerive } from './support/derive'
 import { holdOf } from './support/held'
@@ -21,6 +21,7 @@ import {
   reducedMotion,
   scriptedIn,
 } from './support/motion'
+import { mouse } from './support/mouse'
 import { areaOf, overlapOf, pointerRulesAs } from './support/pointer'
 import { seriesPage } from './support/seriesPage'
 
@@ -93,6 +94,7 @@ function serve(works: library.WorkCard[]) {
   })
   vi.mocked(library.work).mockImplementation(async (slug) => ({
     ...(works.find((w) => w.slug === slug) as library.WorkCard),
+    series: null,
     alignments: [],
   }))
 }
@@ -191,23 +193,31 @@ const heightOf = (field: HTMLTextAreaElement) => {
 }
 
 /**
- * The page drawn `width` px wide for `who`, its volumes in, and the face
- * the form is drawn in loaded for `text`: the Title field is fitted as the
- * panel mounts, and a face that landed later would change its lines and
+ * The page drawn `width` by `height` px for `who`, its volumes in, and the
+ * face the form is drawn in loaded for `text`: the Title field is fitted as
+ * the panel mounts, and a face that landed later would change its lines and
  * not its height.
  */
 async function drawn({
   width,
+  height,
   coverSize,
   who = ADMIN,
   text = 'Kagami no Kuni no Harisugawa v01',
 }: {
   width: number
+  height?: number
   coverSize?: number
   who?: Me
   text?: string
 }) {
-  const host = await seriesPage({ width, coverSize, panel: 'button', who })
+  const host = await seriesPage({
+    width,
+    height,
+    coverSize,
+    panel: 'button',
+    who,
+  })
   const all = () => [...host.querySelectorAll<HTMLElement>('.volumes > li')]
   await settleUntil('the volumes', () => all().length > 0, 1000)
   const face = getComputedStyle(host.querySelector('.volumes') as Element)
@@ -1041,6 +1051,90 @@ describe('closing a volume’s panel (O283)', () => {
       calls: calls().length,
     }).toEqual({ drawn: [false, true], calls: 1 })
   })
+
+  // The page area's blank space, where a press lands on what scrolls the
+  // page itself, off its scrollbar: `main` below a short grid and in its
+  // padding beside the grid, and in the phone layout, where the document
+  // scrolls, the root in the room under a last-row panel run past `main`'s
+  // end. The host is the window's height, as the shell's root is, so `main`
+  // reaches the window's foot.
+  it.each([
+    {
+      name: 'below a short grid, at 1440 px',
+      width: 1440,
+      height: 900,
+      count: 3,
+      last: false,
+      root: false,
+      at: (main: Element) => {
+        const box = rect(main)
+        return { x: box.left + box.width / 2, y: box.bottom - 40 }
+      },
+    },
+    {
+      name: 'in main’s padding beside the grid, at 1440 px',
+      width: 1440,
+      height: 900,
+      count: 3,
+      last: false,
+      root: false,
+      at: (main: Element, opened: Element) => ({
+        x: rect(main).left + main.clientLeft + 6,
+        y: rect(opened).top + rect(opened).height / 2,
+      }),
+    },
+    {
+      name: 'the document’s, under a last-row panel scrolled to the end, at 390 px',
+      width: 390,
+      height: 844,
+      count: 6,
+      last: true,
+      root: true,
+      at: (_: Element, opened: Element) => {
+        window.scrollTo(0, document.documentElement.scrollHeight)
+        const panel = rect(opened.querySelector('.tile-panel'))
+        const room = document.documentElement.clientHeight - panel.bottom
+        return { x: panel.left + 8, y: panel.bottom + room / 2 }
+      },
+    },
+  ])(
+    'closes on a real press on the page area’s blank space (O418): $name',
+    async ({ width, height, count, last, root, at }) => {
+      onTestFinished(pointerRulesAs('mouse'))
+      serve(volumes().slice(0, count))
+      const { host, main, tiles } = await drawn({ width, height })
+      host.style.height = '100%'
+      const opened = tiles[last ? count - 1 : 0]
+      await open(opened)
+      const { x, y } = at(main, opened)
+      const scroller = root ? document.documentElement : main
+      const shown = root
+        ? { left: 0, top: 0 }
+        : {
+            left: rect(main).left + main.clientLeft,
+            top: rect(main).top + main.clientTop,
+          }
+      // The fixture tells: the panel is open, and the press lands on what
+      // scrolls the page, inside the box it shows its content in.
+      expect({
+        open: opened.querySelector('.tile-panel') !== null,
+        on: document.elementFromPoint(x, y) === scroller,
+        across: x > shown.left && x < shown.left + scroller.clientWidth,
+        down: y > shown.top && y < shown.top + scroller.clientHeight,
+      }).toEqual({ open: true, on: true, across: true, down: true })
+
+      await real(async () => {
+        await mouse.moveTo(x, y)
+        await mouse.press()
+        await mouse.release()
+      })
+      await land()
+      expect(
+        opened.querySelector('.tile-panel'),
+        'the panel after the press',
+      ).toBeNull()
+    },
+  )
 })
 
 describe('a volume’s content matches, pressed with a real mouse', () => {
@@ -1098,7 +1192,8 @@ describe('a volume’s content matches, pressed with a real mouse', () => {
     let undone = false
     vi.mocked(library.work).mockImplementation(async (slug) => {
       const card = works.find((w) => w.slug === slug) as library.WorkCard
-      if (slug !== 'kagami-v01') return { ...card, alignments: [] }
+      if (slug !== 'kagami-v01')
+        return { ...card, alignments: [], series: null }
       if ((split || undone) && held !== undefined) await held
       return {
         ...card,
@@ -1110,6 +1205,7 @@ describe('a volume’s content matches, pressed with a real mouse', () => {
             ? [edition('fr', { id: together ? 10 : 9, score: 0.91 })]
             : []),
         ],
+        series: null,
         alignments: [],
         kept_apart: [
           ...(undone
@@ -1394,7 +1490,8 @@ describe('a volume’s content matches, pressed with a real mouse', () => {
       })
       vi.mocked(library.work).mockImplementation(async (slug) => {
         const card = works.find((w) => w.slug === slug) as library.WorkCard
-        if (slug !== 'kagami-v02') return { ...card, alignments: [] }
+        if (slug !== 'kagami-v02')
+          return { ...card, alignments: [], series: null }
         if (undone) {
           await work
           throw new Error(
@@ -1403,6 +1500,7 @@ describe('a volume’s content matches, pressed with a real mouse', () => {
         }
         return {
           ...card,
+          series: null,
           alignments: [],
           kept_apart: [
             {

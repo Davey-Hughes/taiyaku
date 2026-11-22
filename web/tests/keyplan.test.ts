@@ -36,7 +36,7 @@ const CALM: Guards = {
   notesBusy: false,
   control: 'none',
   accountOpen: false,
-  barsUp: false,
+  keyboardHoldsBars: false,
   settingsOpen: false,
   creditsOpen: false,
   inPanel: false,
@@ -81,8 +81,33 @@ describe('keyPlan, Escape', () => {
     })
   })
 
-  it('does nothing where there is nothing open to back out of', () => {
-    expect(keyPlan('Escape', undefined, guards())).toBeUndefined()
+  /**
+   * With nothing open and the keyboard not holding the bars, `Escape` leaves
+   * the reader by its way back. Bars a tap or the mouse brought up are not
+   * the keyboard's until a key moves focus into them, so they do not take it.
+   */
+  it('leaves the reader where there is nothing open to back out of', () => {
+    expect(keyPlan('Escape', undefined, guards())).toEqual({
+      action: { kind: 'leave-reader' },
+      preventDefault: true,
+    })
+  })
+
+  /** A text field keeps the key with nothing open: `Escape` never leaves from one. */
+  it('leaves a text field its own Escape with nothing open', () => {
+    expect(
+      keyPlan('Escape', undefined, guards({ control: 'text' })),
+    ).toBeUndefined()
+  })
+
+  /** What is open still closes from a text field, the panel the field is in. */
+  it('closes what is open from a text field', () => {
+    expect(
+      act('Escape', undefined, { panel: 'edit', control: 'text' }),
+    ).toEqual({ kind: 'close-editor' })
+    expect(
+      act('Escape', undefined, { settingsOpen: true, control: 'text' }),
+    ).toEqual({ kind: 'close-settings' })
   })
 
   /**
@@ -151,6 +176,8 @@ describe('keyPlan, Escape', () => {
       { helpOpen: true },
       { panel: 'edit' as const },
       { correcting: true },
+      { keyboardHoldsBars: true },
+      {},
     ]) {
       expect(keyPlan('Escape', undefined, guards(over))?.preventDefault).toBe(
         true,
@@ -199,17 +226,36 @@ describe('keyPlan, Escape closes every panel (spec 2026-09-26 §3.3)', () => {
   })
 })
 
-describe('keyPlan, Escape takes the bars away (spec 2026-09-26 §3.1)', () => {
-  it('hides the bars when nothing above them is open', () => {
-    expect(act('Escape', undefined, { barsUp: true })).toEqual({
+describe('keyPlan, Escape takes the bars away while the keyboard holds them (spec 2026-09-26 §3.1)', () => {
+  it('hides the bars while the keyboard holds them and nothing above them is open', () => {
+    expect(act('Escape', undefined, { keyboardHoldsBars: true })).toEqual({
       kind: 'leave-bars',
     })
   })
 
+  /** The ring's way out, not the reader's: a focused bar stop is a button. */
+  it('hides the bars from a focused stop', () => {
+    expect(
+      act('Escape', undefined, { keyboardHoldsBars: true, control: 'button' }),
+    ).toEqual({ kind: 'leave-bars' })
+  })
+
   it('spends itself on a correction first', () => {
     expect(
-      act('Escape', undefined, { barsUp: true, correcting: true }),
+      act('Escape', undefined, { keyboardHoldsBars: true, correcting: true }),
     ).toEqual({ kind: 'cancel-correction' })
+  })
+
+  it('spends itself on Help, Settings and the note panel first', () => {
+    expect(
+      act('Escape', undefined, { keyboardHoldsBars: true, helpOpen: true }),
+    ).toEqual({ kind: 'close-help' })
+    expect(
+      act('Escape', undefined, { keyboardHoldsBars: true, settingsOpen: true }),
+    ).toEqual({ kind: 'close-settings' })
+    expect(
+      act('Escape', undefined, { keyboardHoldsBars: true, panel: 'review' }),
+    ).toEqual({ kind: 'close-editor' })
   })
 
   /** A correction on the wire holds the key, and the bars with it. */
@@ -218,13 +264,9 @@ describe('keyPlan, Escape takes the bars away (spec 2026-09-26 §3.1)', () => {
       keyPlan(
         'Escape',
         undefined,
-        guards({ barsUp: true, correcting: true, submitting: true }),
+        guards({ keyboardHoldsBars: true, correcting: true, submitting: true }),
       ),
     ).toBeUndefined()
-  })
-
-  it('is left to the browser with the bars down and nothing open', () => {
-    expect(keyPlan('Escape', undefined, guards())).toBeUndefined()
   })
 })
 

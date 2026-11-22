@@ -890,11 +890,11 @@ describe('Shell', () => {
   })
 
   /**
-   * Spec §2: Reset restores all five preferences from either page. The
+   * Spec §2: Reset restores every browse preference from either page. The
    * library page's View shows two of them, so a Reset that restored only
-   * what its panel shows would leave the series page's three as they were.
+   * what its panel shows would leave the series page's four as they were.
    */
-  it('restores the series page’s three as well on a Reset from the library page', async () => {
+  it('restores the series page’s four as well on a Reset from the library page', async () => {
     const s = fakeStorage()
     s.setItem(
       'taiyaku.prefs.browse',
@@ -904,6 +904,7 @@ describe('Shell', () => {
         panel: 'off',
         coverSize: 104,
         continueStrip: false,
+        alwaysShowAligned: true,
       }),
     )
     vi.stubGlobal('localStorage', s)
@@ -931,12 +932,16 @@ describe('Shell', () => {
           controlLabelled(panel, 'Edition selector') as HTMLInputElement
         ).checked,
         panel: (controlLabelled(panel, 'Panel') as HTMLSelectElement).value,
+        alwaysShowAligned: (
+          controlLabelled(panel, 'Always show aligned') as HTMLInputElement
+        ).checked,
       }
     }
     expect(seriesView(host)).toEqual({
       layout: 'table',
       editionSelector: false,
       panel: 'off',
+      alwaysShowAligned: true,
     })
 
     /** The Cover size slider's position and the size its output says. */
@@ -967,6 +972,7 @@ describe('Shell', () => {
       layout: 'grid',
       editionSelector: true,
       panel: 'button',
+      alwaysShowAligned: false,
     })
   })
 

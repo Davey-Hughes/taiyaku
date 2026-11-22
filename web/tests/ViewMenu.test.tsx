@@ -103,7 +103,7 @@ function doubleClick(el: Element) {
 describe('ViewMenu', () => {
   it('renders one control per preference it is given, generated rather than named', () => {
     const panel = openView(at(EVERY))
-    expect(panel.querySelectorAll('label')).toHaveLength(5)
+    expect(panel.querySelectorAll('label')).toHaveLength(6)
     expect([...panel.querySelectorAll('select')]).toHaveLength(2)
     expect(panel.querySelectorAll('input[type="range"]')).toHaveLength(1)
   })
@@ -208,7 +208,7 @@ describe('ViewMenu', () => {
       )
       const panel = openView(host)
       const labels = [...panel.querySelectorAll('label')]
-      expect(labels).toHaveLength(6)
+      expect(labels).toHaveLength(7)
       // The added control is a numeric input — `pageSize`'s own type,
       // inferred rather than declared.
       expect(panel.querySelectorAll('input[type="number"]')).toHaveLength(1)

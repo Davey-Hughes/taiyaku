@@ -13,10 +13,11 @@
  *
  * **The count rides on the button as well as on the entry inside**, because
  * C3 §3's point is that somebody learns the inbox is non-empty without going
- * to look, and a count shut inside a closed panel says nothing. It counts at
- * `curation.ts`'s `INBOX_MIN_SCORE`, the threshold the inbox's own first
- * request uses, so the badge and the screen it leads to cannot disagree;
- * this file draws the number it is handed.
+ * to look, and a count shut inside a closed panel says nothing. On the button
+ * it shows only above zero: More asks for a visit only while there is
+ * something to see (O424). It counts at `curation.ts`'s `INBOX_MIN_SCORE`, the
+ * threshold the inbox's own first request uses, so the badge and the screen
+ * it leads to cannot disagree; this file draws the number it is handed.
  *
  * **A disclosure, not an ARIA menu or dialog**: the panel holds only links,
  * and a `menu` would promise arrow-key movement between its items that a list
@@ -42,7 +43,9 @@ export interface AccountMenuProps {
    *
    * `undefined` covers never fetched, still in flight and failed alike — the
    * same three-states-as-one `useLibraryStatus` uses — and draws no badge.
-   * Zero is *not* that: an inbox somebody has emptied is worth saying.
+   * Zero draws none on More either, but the Proposals entry inside says it:
+   * an inbox somebody has emptied and one not read yet are different facts,
+   * and the first stays one press away.
    */
   openProposals?: number
 }
@@ -57,6 +60,7 @@ export function AccountMenu({ admin, openProposals }: AccountMenuProps) {
   )
   const { open, toggle, wrap, button, panelId } = usePopover<HTMLElement>()
   const panel = useRef<HTMLDivElement>(null)
+  const waiting = openProposals !== undefined && openProposals > 0
 
   // The panel hangs from More's top edge, and the column clips it at its own
   // top, where no scroll reaches: in a window too short for the panel above
@@ -125,17 +129,11 @@ export function AccountMenu({ admin, openProposals }: AccountMenuProps) {
         data-here={here || undefined}
         aria-expanded={open}
         aria-controls={panelId}
-        aria-label={
-          openProposals === undefined
-            ? 'More'
-            : `More, ${openProposals} open proposals`
-        }
+        aria-label={waiting ? `More, ${openProposals} open proposals` : 'More'}
         onClick={toggle}
       >
         <span className="account-name">More</span>
-        {openProposals !== undefined && (
-          <span className="count">{openProposals}</span>
-        )}
+        {waiting && <span className="count">{openProposals}</span>}
         <svg viewBox="0 0 12 12" aria-hidden="true">
           <path d="M3 7.5l3-3 3 3" />
         </svg>

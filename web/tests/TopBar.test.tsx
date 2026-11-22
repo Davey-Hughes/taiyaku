@@ -1,3 +1,4 @@
+import { MemoryRouter } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 import { mount, rerender } from './support/mount'
 import { PAGE_LAYOUTS } from '../src/layouts'
@@ -29,6 +30,14 @@ describe('TopBar', () => {
     expect(onLeave).toHaveBeenCalledOnce()
   })
 
+  it('names the way out by the word it is handed', () => {
+    const onLeave = vi.fn()
+    const host = mount(<TopBar {...props({ onLeave, leaveWord: 'Search' })} />)
+    expect(host.querySelector('.reader-back')?.textContent).toBe('Search')
+    button(host, 'Search').click()
+    expect(onLeave).toHaveBeenCalledOnce()
+  })
+
   it('names the work and the edition on screen', () => {
     const host = mount(<TopBar {...props()} />)
     expect(host.querySelector('.reader-title-work')?.textContent).toBe(
@@ -37,6 +46,33 @@ describe('TopBar', () => {
     expect(host.querySelector('.reader-title-edition')?.textContent).toBe(
       'Vol. 1 · Raw, monochrome',
     )
+  })
+
+  it('leads the edition line with the series, linked to its page', () => {
+    const host = mount(
+      <MemoryRouter>
+        <TopBar {...props({ series: { id: 41, title: 'Dandadan' } })} />
+      </MemoryRouter>,
+    )
+    const line = host.querySelector('.reader-title-line') as HTMLElement
+    expect(
+      [...line.children].map((el) => [
+        el.className,
+        el.textContent,
+        el.getAttribute('href'),
+      ]),
+    ).toEqual([
+      ['reader-title-series', 'Dandadan', '/series/41'],
+      ['reader-title-edition', ' · Vol. 1 · Raw, monochrome', null],
+    ])
+  })
+
+  it('links to no series where it is handed none', () => {
+    const host = mount(<TopBar {...props()} />)
+    const line = host.querySelector('.reader-title-line') as HTMLElement
+    expect(
+      [...line.children].map((el) => [el.className, el.textContent]),
+    ).toEqual([['reader-title-edition', 'Vol. 1 · Raw, monochrome']])
   })
 
   it('shows the edition line alone until the title arrives', () => {

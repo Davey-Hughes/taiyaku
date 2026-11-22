@@ -472,6 +472,63 @@ fn a_work_entirely_outside_the_grant_is_none() {
     );
 }
 
+/// A filed work names its series as the grid shows it. The series is numbered
+/// 41, apart from the work, and holds a first-written alias before its primary
+/// title beside a `sort_title` that is neither, so the work's own id or a title
+/// read by any other rule answers something else.
+#[test]
+fn a_filed_work_carries_its_series_id_and_display_title() {
+    let (library, _en_id, _raw_id, _en, _raw) = two_root_library();
+    let conn = library.conn();
+    let (work_id, slug): (i64, String) = conn
+        .query_row("SELECT id, slug FROM work LIMIT 1", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("reads the work the scan derived");
+    assert_ne!(
+        work_id, 41,
+        "the series must be numbered apart from the work"
+    );
+    conn.execute_batch(
+        "INSERT INTO series (id, sort_title) VALUES (41, 'Scanned Name');
+         INSERT INTO series_title (series_id, title, kind, is_primary)
+              VALUES (41, 'First Written', 'alt', 0), (41, 'Shown Title', 'english', 1);",
+    )
+    .expect("a series titled three ways");
+    conn.execute("UPDATE work SET series_id = 41 WHERE id = ?1", [work_id])
+        .expect("files the work under it");
+
+    let detail = work(&conn, &Access::Every, 1, &slug)
+        .expect("reads")
+        .expect("the work is visible");
+    let series = detail.series.expect("a filed work names its series");
+    assert_eq!(series.id, 41, "the series' id, not the work's");
+    assert_eq!(
+        series.title, "Shown Title",
+        "the primary title the grid shows"
+    );
+}
+
+/// An imported work is filed in no series, so it has no series page to name
+/// (spec C1 §5.4). The library beside it holds a series, so a read that did
+/// not ask which series this work is in would find one.
+#[test]
+fn an_unfiled_work_carries_no_series() {
+    let (library, _en_id, _raw_id, _en, _raw) = two_root_library();
+    import_a_work(&library, "Imported", "/x/taiyaku.json");
+    let conn = library.conn();
+    let slug: String = conn
+        .query_row("SELECT slug FROM work WHERE series_id IS NULL", [], |row| {
+            row.get(0)
+        })
+        .expect("reads the imported slug");
+
+    let detail = work(&conn, &Access::Every, 1, &slug)
+        .expect("reads")
+        .expect("the work is visible");
+    assert_eq!(detail.series, None);
+}
+
 #[test]
 fn search_finds_a_series_by_its_title() {
     let (library, _, _, _en, _raw) = two_root_library();

@@ -117,6 +117,8 @@ const alternating = {
 function server(sent: unknown, slot?: number) {
   return vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/works/w/book') return Response.json(sent)
+    // The library's answer for the work: filed in no series.
+    if (url === '/api/library/works/w') return Response.json({ series: null })
     if (url === '/api/works/w/notes') {
       return Response.json(
         { work: 'w', notes: [] },

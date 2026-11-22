@@ -7,8 +7,10 @@ import {
   getNotes,
   getProgress,
   getSidecarWithEtag,
+  OPENING_SAVE_WAIT_MS,
   pageUrl,
   patchAlignment,
+  progressSavedWithin,
   putNotes,
   putProgress,
   type StoredProgress,
@@ -20,6 +22,7 @@ import {
   type DerivedBreaksCache,
 } from './alignedPairs'
 import { PageAnnotations } from './Annotations'
+import { type Destination, destination } from './back'
 import { pageBoxLongEdge, requestedLongEdge } from './pageSize'
 import { Borrowed } from './Borrowed'
 import { Chrome } from './Chrome'
@@ -36,7 +39,13 @@ import { CorrectionBanner } from './CorrectionBanner'
 import { createCohort, type Cohort } from './cohort'
 import { decodeTo } from './decode'
 import { debounce, type Debounced } from './debounce'
-import { barsMounted, focusStop, ringAt, ringSizes } from './focus'
+import {
+  barsMounted,
+  focusStop,
+  ringAt,
+  ringSizes,
+  useKeyboardBars,
+} from './focus'
 import {
   canRedo,
   canUndo,
@@ -73,7 +82,13 @@ import { PageView } from './PageView'
 import { controlKind, inPanel, intentOf, isInteractivePress } from './keys'
 import { keyPlan } from './keyplan'
 import { messageOf } from './message'
-import { changeSlice, fieldChanged, sliceFor, sliceReset } from './module'
+import {
+  changeSlice,
+  fieldChanged,
+  sliceFor,
+  sliceReset,
+  withSlice,
+} from './module'
 import {
   annotationsModule,
   NEW_INTENT,
@@ -112,9 +127,12 @@ import { readoutLines, readoutsModule } from './modules/readouts'
 import { layoutModule } from './modules/layout'
 import { registry } from './modules/registry'
 import {
+  breaksFor,
+  pairStartBefore,
+  realign,
   regroupModule,
-  toggleEditionBreak,
   TOGGLE_INTENT as REGROUP_TOGGLE_INTENT,
+  withBreaks,
 } from './modules/regroup'
 import { TOGGLE_INTENT as SETTINGS_TOGGLE_INTENT } from './modules/settings'
 import {
@@ -265,7 +283,14 @@ const CORRECTION_PORTS: CorrectionPorts = {
 const STARTUP_PORTS: StartupPorts = {
   sidecar: getSidecarWithEtag,
   resolve: wasmResolver,
-  progress: getProgress,
+  // After every progress save still out, for as long as `OPENING_SAVE_WAIT_MS`
+  // allows: a reader left and reopened at once (its series page, then Back)
+  // flushed its place as it left, and a read that overtook that save would
+  // reopen at the place before it.
+  progress: async (slug) => {
+    await progressSavedWithin(OPENING_SAVE_WAIT_MS)
+    return getProgress(slug)
+  },
   notes: getNotes,
 }
 
@@ -288,11 +313,13 @@ const STARTUP_PORTS: StartupPorts = {
 export interface AppProps {
   /** The slug in the URL. `<App key={work}>` is what makes a change remount. */
   work: string
-  /** Back to the library — spec C1 §6. */
+  /** The way out (`back.ts`): `L`, the top bar's button and the failed load's take it. */
   onLeave: () => void
+  /** What the way out is called; the library's name where none is given. */
+  leaveTo?: Destination
 }
 
-function App({ work, onLeave }: AppProps) {
+function App({ work, onLeave, leaveTo = destination('/') }: AppProps) {
   const [session, setSession] = useState<Session>()
   // O176: what the load threw, when it threw anything but a 401, as
   // `ReaderFailed.tsx`'s `LoadFailure` — the slug for a `WorkNotFound` or a
@@ -327,12 +354,13 @@ function App({ work, onLeave }: AppProps) {
   // carry one intent, so this is one flag and not two.
   const [helpVisible, setHelpVisible] = useState(false)
 
-  // The top bar's title and edition labels (spec 2026-09-17 §8.3): the
-  // library's, with metadata edits applied, which the sidecar's `work.title`
-  // and `editions.*.label` are not. Asked once beside the load and never
-  // waited on: until it answers, or if it fails, the bar names the edition by
-  // its key (`readerTitle.ts`). No stale-answer guard: `Routes.tsx` keys this
-  // component by `work`, so one instance only ever asks about one work.
+  // The top bar's title, edition labels and series link (spec 2026-09-17
+  // §8.3): the library's, with metadata edits applied, which the sidecar's
+  // `work.title` and `editions.*.label` are not. Asked once beside the load
+  // and never waited on: until it answers, or if it fails, the bar names the
+  // edition by its key (`readerTitle.ts`) and links to no series. No
+  // stale-answer guard: `Routes.tsx` keys this component by `work`, so one
+  // instance only ever asks about one work.
   const [detail, setDetail] = useState<WorkDetail>()
   // O173: until the work has loaded — and for good if it never does — the tab
   // says the app's name rather than the last screen's. `ReaderHeading` names
@@ -577,11 +605,10 @@ function App({ work, onLeave }: AppProps) {
   // nothing to recompute it back from.
   const helpVisibleRef = useLatest(helpVisible)
 
-  // Settings, Credits and the bars, for `Escape` — the same route and the same
-  // reason as `helpVisibleRef` above (spec 2026-09-26 §3.1, §3.3).
+  // Settings and Credits, for `Escape` — the same route and the same reason as
+  // `helpVisibleRef` above (spec 2026-09-26 §3.3).
   const settingsVisibleRef = useLatest(settingsVisible)
   const creditsVisibleRef = useLatest(creditsVisible)
-  const chromeVisibleRef = useLatest(chromeVisible)
 
   // The grouping the page area is drawing right now, for the keydown effect —
   // which subscribes once at load and so cannot see `grouped`, computed below
@@ -589,6 +616,16 @@ function App({ work, onLeave }: AppProps) {
   // breaks. An arrow steps by group rather than by slot (`pairing.ts`'s
   // `stepToGroup`), and only this component knows what the groups are.
   const groupedRef = useRef<Group[]>(undefined)
+
+  // What `b` weighs a press against, for the same handler and by the same
+  // route as `groupedRef`: the viewed edition's two-page grouping for a list
+  // of the reader's own breaks, and the mode on screen. `b` judges every
+  // press by the two-page grouping, whatever the mode, which `groupedRef`
+  // holds only in `two`.
+  const regroupRef = useRef<{
+    layout: (own: number[]) => Group[]
+    mode: Mode
+  }>(undefined)
 
   // The slots the `credits` module has set aside, for the same handler and by
   // the same route as `groupedRef` above — and it is not derivable from that
@@ -672,6 +709,11 @@ function App({ work, onLeave }: AppProps) {
   // The reader's root, which the ring reads its stops from (spec 2026-09-26
   // §3.1) — one reader on the page, but scoped anyway.
   const rootRef = useRef<HTMLDivElement>(null)
+
+  // Whether `Escape` is the ring's way out or the reader's: `keyPlan`'s
+  // `keyboardHoldsBars`. The ring puts focus in the bars as it brings them
+  // up; `c` brings them up without it, so it says `shown`.
+  const keyboardBars = useKeyboardBars()
 
   // A swap whose incoming page has not been measured yet. Set by the keydown
   // handler, which is the last moment the outgoing page is still on screen to
@@ -872,7 +914,7 @@ function App({ work, onLeave }: AppProps) {
           notesBusy: notesBusyRef.current,
           control: controlKind(event.target),
           accountOpen: accountOpenRef.current,
-          barsUp: chromeVisibleRef.current,
+          keyboardHoldsBars: keyboardBars.held(),
           settingsOpen: settingsVisibleRef.current,
           creditsOpen: creditsVisibleRef.current,
           inPanel: inPanel(event.target),
@@ -980,6 +1022,7 @@ function App({ work, onLeave }: AppProps) {
       const slots = allSlots(current.resolver, shown.edition)
       setPending({ from: shown.edition, to, a: slots[shown.slot] })
       setCorrectionNotice(undefined)
+      keyboardBars.shown()
       setChromeVisible(true) // the filmstrip is where a counterpart is picked
     }
     /** `d`: this edition the other way round. */
@@ -995,23 +1038,46 @@ function App({ work, onLeave }: AppProps) {
       )
     }
     /**
-     * `b`: break the pairing here.
-     *
-     * Breaks are slots within the *viewed* edition's own space — the same
-     * space `groups` indexes into — so this is `shown.slot`, not `state.slot`,
-     * which is authority-space and only equal to it when nothing has been
-     * swapped. A gap has no slot to break on, so the key is inert there.
+     * `b`: realign the two-page pairing from the pair on screen (`realign`).
+     * Breaks are slots of the *viewed* edition, the space `groups` indexes, so
+     * this is `shown.slot`, not authority-space `state.slot`; a gap has none,
+     * and a press that changes no pair saves nothing. A restore, a mode switch
+     * or a swap can leave the reader on a pair's second slot: the press puts
+     * them on its first (`pairStartBefore`), the page the break stands alone,
+     * or they would be drawn on the next pair and a second press would not undo
+     * the first.
      */
     function breakPairingHere() {
       const current = sessionRef.current
-      if (!current) return
+      const regroup = regroupRef.current
+      if (!current || !regroup) return
       const shown = display(current.state, current.resolver)
       if (shown.kind !== 'at') return
-      setPrefsMap((map) =>
-        changeSlice(map, regroupModule, (prefs) =>
-          toggleEditionBreak(prefs, shown.edition, shown.slot),
-        ),
-      )
+      const first =
+        regroup.mode === 'two'
+          ? pairStartBefore(groupedRef.current ?? [], shown.slot)
+          : undefined
+      if (first !== undefined) {
+        setSession((prev) =>
+          prev ? { ...prev, state: navigate(prev.state, first) } : prev,
+        )
+      }
+      setPrefsMap((map) => {
+        const prefs = sliceFor(map, regroupModule)
+        const next = realign(
+          regroup.layout,
+          breaksFor(prefs, current.work, shown.edition),
+          shown.slot,
+          regroup.mode,
+        )
+        return next === undefined
+          ? map
+          : withSlice(
+              map,
+              regroupModule,
+              withBreaks(prefs, current.work, shown.edition, next),
+            )
+      })
     }
     /**
      * `n`: always a brand-new note, however many the slot already holds.
@@ -1063,7 +1129,7 @@ function App({ work, onLeave }: AppProps) {
      *
      * A small explicit switch rather than a generic action table: each of
      * these does something different enough with its key (a per-edition flip,
-     * a per-edition break, a rect step, a plain visibility toggle) that a
+     * a per-volume break, a rect step, a plain visibility toggle) that a
      * table would need its own per-entry shape anyway. Every case is one call
      * — the guards are `keyPlan`'s and the rules are their modules'.
      */
@@ -1546,7 +1612,13 @@ function App({ work, onLeave }: AppProps) {
   // never what it holds: an `Error` may carry no message, and that one is
   // drawn with an empty alert.
   if (!session && failure !== undefined) {
-    return <ReaderFailed failure={failure} onLeave={onLeave} />
+    return (
+      <ReaderFailed
+        failure={failure}
+        onLeave={onLeave}
+        leavePhrase={leaveTo.phrase}
+      />
+    )
   }
   if (!session) return null
   // Not `work` — the prop already carries it, and `openWork(STARTUP_PORTS,
@@ -1759,7 +1831,7 @@ function App({ work, onLeave }: AppProps) {
   // `Settings.tsx`'s two callbacks, generic over every registered module
   // rather than a hand-written case per one — unlike the key-dispatch switch
   // above, which stays a small explicit switch because each key does
-  // something behaviourally different (a per-edition flip, a per-edition
+  // something behaviourally different (a per-edition flip, a per-volume
   // break, a plain visibility toggle). A settings-panel change is the same
   // shape for every module, always: look the id up in the registry, apply
   // the change to that id's own slice of the map. `registry.get(id)` is the
@@ -1862,8 +1934,8 @@ function App({ work, onLeave }: AppProps) {
       : undefined
   const readCell = effectiveReading === 'rtl' ? 'second' : 'first'
   // Same `shown.edition` reasoning as `effectiveReading` above: breaks are
-  // stored per edition, keyed by the edition whose slots `groups` is about
-  // to pair.
+  // stored per volume and edition, under the edition whose slots `groups` is
+  // about to pair.
   const creditsPrefs = sliceFor(prefsMap, creditsModule)
   const helpPrefs = sliceFor(prefsMap, helpModule)
   // Read once per render and shared by the skip filter below and the panel at
@@ -1903,13 +1975,15 @@ function App({ work, onLeave }: AppProps) {
   // result is what makes "out of the reading flow" mean all three *and* work
   // in `two` mode — see `groups`' own doc for the measurement that settled
   // that.
-  const grouped = groups(
-    slots,
-    mode,
-    effectiveReading,
-    pairingBreaks(regroupPrefs.breaks[shown.edition] ?? [], derivedBreaks),
-    skippedSlots,
-  )
+  const groupedAs = (as: Mode, own: number[]) =>
+    groups(
+      slots,
+      as,
+      effectiveReading,
+      pairingBreaks(own, derivedBreaks),
+      skippedSlots,
+    )
+  const grouped = groupedAs(mode, breaksFor(regroupPrefs, work, shown.edition))
   // Assigned during render rather than in an effect: the keydown handler must
   // never step against a grouping older than what is on screen, and an effect
   // would leave exactly one frame where it could. Writing a ref during render
@@ -1917,6 +1991,7 @@ function App({ work, onLeave }: AppProps) {
   // is recomputed from props and state every render, so a discarded render
   // simply writes the same thing the retained one will.
   groupedRef.current = grouped
+  regroupRef.current = { layout: (own) => groupedAs('two', own), mode }
   // Assigned beside the grouping it was just used to build, so the arrow keys
   // and the page area can never disagree about what is set aside.
   skippedRef.current = skippedSlots
@@ -2994,11 +3069,19 @@ function App({ work, onLeave }: AppProps) {
         progress={readouts.progress}
         title={heading.title}
         editionLine={heading.editionLine}
+        series={detail?.series ?? undefined}
         layouts={editions.length > 1 ? PAGE_LAYOUTS_COMPARED : PAGE_LAYOUTS}
         mode={layout}
         onMode={setMode}
         settingsOpen={settingsVisible}
         onSettings={() => setSettingsVisible((open) => !open)}
+        // Gated as `?` and `h` are (`keyplan.ts`'s `helpEnabled`).
+        onHelp={
+          helpPrefs.enabled
+            ? () => setHelpVisible((shown) => !shown)
+            : undefined
+        }
+        helpOpen={helpVisible}
         work={work}
         edition={pending ? pending.to : shown.edition}
         slots={correcting ? correcting.slots : slots}
@@ -3017,6 +3100,7 @@ function App({ work, onLeave }: AppProps) {
         }
         onPickCounterpart={pending ? pickCounterpart : undefined}
         onLeave={onLeave}
+        leaveWord={leaveTo.word}
       />
       {pending && (
         <CorrectionBanner

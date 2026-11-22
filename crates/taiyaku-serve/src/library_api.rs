@@ -324,6 +324,12 @@ pub(crate) async fn work(
                         }))
                         .collect::<Vec<_>>()
                 );
+                body["series"] = serde_json::json!(detail.series.as_ref().map(|s| {
+                    serde_json::json!({
+                        "id": s.id,
+                        "title": s.title,
+                    })
+                }));
                 if administers {
                     match matches::marks(conn, detail.card.id) {
                         Ok(marks) => with_marks(&mut body, &marks),

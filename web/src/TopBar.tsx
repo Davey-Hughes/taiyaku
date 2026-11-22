@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
+import { Link } from 'react-router'
 import type { AnyLayout } from './layouts'
 import type { Mode } from './pairing'
 
@@ -66,6 +67,12 @@ export interface TopBarProps<L extends AnyLayout = Mode> {
   /** `Vol. N · <label>` for the edition on screen, or its key alone — `readerTitle.ts`. */
   editionLine: string
   /**
+   * The series the work is filed in, linked ahead of the edition line; absent
+   * until the library answers, if it never does, and for a work filed in no
+   * series, which has no page to link to (spec C1 §5.4).
+   */
+  series?: { id: number; title: string }
+  /**
    * The layouts the reader offers, in the order drawn, the one shown, and its
    * switch; a reader with none draws no layout group.
    */
@@ -78,16 +85,19 @@ export interface TopBarProps<L extends AnyLayout = Mode> {
   /** Whether the settings panel is open, which ⚙ toggles. */
   settingsOpen: boolean
   onSettings: () => void
+  /** The way out (`back.ts`), and the word its button names it by. */
   onLeave: () => void
+  leaveWord?: string
   /** `Chrome`'s fade, applied to the bar as one piece. */
   style?: CSSProperties
 }
 
 /**
- * The reader's top bar (spec 2026-09-17 §8.3): the way back to the library,
- * what is being read, the layout, and settings. `Chrome` shows it with the
- * bottom bar and takes both away together, and draws neither while
- * correcting, when `CorrectionBanner` has the top edge.
+ * The reader's top bar (spec 2026-09-17 §8.3): the way back, named for where
+ * it goes, what is being read and the series it is in, the layout, and
+ * settings. `Chrome` shows it with the bottom bar and takes both away
+ * together, and draws neither while correcting, when `CorrectionBanner` has
+ * the top edge.
  *
  * It holds no state: the layout is `App.tsx`'s `layout` preference, the same
  * slice the settings panel's Layout section writes, and ⚙ flips the same flag
@@ -96,6 +106,7 @@ export interface TopBarProps<L extends AnyLayout = Mode> {
 export function TopBar<L extends AnyLayout = Mode>({
   title,
   editionLine,
+  series,
   layouts,
   mode,
   onMode,
@@ -104,6 +115,7 @@ export function TopBar<L extends AnyLayout = Mode>({
   settingsOpen,
   onSettings,
   onLeave,
+  leaveWord = 'Library',
   style,
 }: TopBarProps<L>) {
   const switchable = layouts && mode !== undefined && onMode
@@ -117,13 +129,23 @@ export function TopBar<L extends AnyLayout = Mode>({
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M15 5l-7 7 7 7" />
         </svg>
-        Library
+        {leaveWord}
       </button>
       <div className="reader-title">
         {title !== undefined && (
           <span className="reader-title-work">{title}</span>
         )}
-        <span className="reader-title-edition">{editionLine}</span>
+        <span className="reader-title-line">
+          {series !== undefined && (
+            <Link className="reader-title-series" to={`/series/${series.id}`}>
+              <span className="reader-title-series-name">{series.title}</span>
+            </Link>
+          )}
+          <span className="reader-title-edition">
+            {series !== undefined && ' · '}
+            {editionLine}
+          </span>
+        </span>
       </div>
       {(switchable || onPaged) && (
         <div className="reader-layout" role="group" aria-label="Layout">

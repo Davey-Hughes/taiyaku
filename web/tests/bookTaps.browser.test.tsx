@@ -1,12 +1,14 @@
 import { act } from 'react'
 import { afterAll, describe, expect, it, onTestFinished, vi } from 'vitest'
-import { userEvent } from 'vitest/browser'
+import { page, userEvent } from 'vitest/browser'
 import { BookReader } from '../src/BookReader'
 import { topOf } from '../src/bookPages'
 import '../src/index.css'
 import { CLICK_WAIT_MS } from '../src/tapClick'
 import { mount } from './support/mount'
 import { mouse } from './support/mouse'
+import { pointerRulesAs } from './support/pointer'
+import { ringOf } from './support/ring'
 import { tapAt } from './support/touch'
 
 vi.mock('../src/Account', () => ({ Account: () => null }))
@@ -436,4 +438,446 @@ describe('a finger’s tap on the book’s text', () => {
     expect(topOf(text).block).toBe(6)
     expect(reached).toEqual([host.querySelector('.book-figure img')])
   })
+})
+
+/** Real time, a frame at a time, until `check` holds; throws if it never does. */
+async function until(check: () => boolean, ms = 3000) {
+  const deadline = performance.now() + ms
+  while (!check()) {
+    if (performance.now() > deadline) throw new Error('condition never held')
+    await act(() => new Promise((done) => setTimeout(done, 20)))
+  }
+}
+
+/**
+ * `Escape` in the book closes what is open, a footnote first, then takes the
+ * bars away while the keyboard holds them (focus a key put in them, or bars a
+ * key brought up with no pointer pressed since), and otherwise leaves the
+ * reader by its way back (O419). Bars a tap or the mouse brought up are not
+ * the keyboard's until a key moves focus into them. Each case counts the
+ * reader's way out; `back.browser.test.tsx` follows it.
+ */
+describe('Escape in the book, with real keys (O419)', () => {
+  afterAll(() => vi.unstubAllGlobals())
+
+  /** A real key, press or click, inside `act`. Nothing here navigates: the way out is counted. */
+  const real = async (input: () => Promise<unknown>) => {
+    await act(async () => {
+      await input()
+    })
+  }
+
+  const barsUp = (host: HTMLElement) =>
+    host.querySelector('.reader-top-bar') !== null
+
+  /** Whether focus is in either bar. */
+  const focusInBars = () =>
+    document.activeElement?.closest('.reader-top-bar, .reader-bottom-bar') !=
+    null
+
+  /** The footnote reference in block 0; focused, it sends real keys to the frame. */
+  const reference = (host: HTMLElement) =>
+    host.querySelector('[data-block="0"] a') as HTMLElement
+
+  it('closes a footnote at the first Escape, and leaves at the second', async () => {
+    const onLeave = vi.fn()
+    const host = await reader(book, onLeave)
+    const note = () =>
+      host.querySelector<HTMLDialogElement>('dialog.book-footnote')
+    await real(() => userEvent.click(reference(host)))
+    await until(() => note()?.open === true)
+    await real(() => userEvent.keyboard('{Escape}'))
+    await settled()
+    const first = [note(), onLeave.mock.calls.length]
+    await real(() => userEvent.keyboard('{Escape}'))
+    await settled()
+    expect([first, onLeave.mock.calls.length]).toEqual([[null, 0], 1])
+  })
+
+  it('leaves at one Escape through bars a tap brought up', async () => {
+    const onLeave = vi.fn()
+    const host = await reader(book, onLeave)
+    await real(() =>
+      userEvent.click(
+        host.querySelector('[data-block="2"] [data-sentence]') as HTMLElement,
+      ),
+    )
+    await until(() => barsUp(host))
+    await real(() => userEvent.keyboard('{Escape}'))
+    await settled()
+    expect([focusInBars(), onLeave.mock.calls.length]).toEqual([false, 1])
+  })
+
+  /** Bars a tap brought up, which Tab then moves focus into from the text. */
+  it('takes the bars away at the first Escape while keyboard focus is in them, and leaves at the second', async () => {
+    const onLeave = vi.fn()
+    const host = await reader(book, onLeave)
+    await real(() =>
+      userEvent.click(
+        host.querySelector('[data-block="5"] [data-sentence]') as HTMLElement,
+      ),
+    )
+    await until(() => barsUp(host))
+    for (let i = 0; i < 12 && !focusInBars(); i++)
+      await real(() => userEvent.tab())
+    const into = [focusInBars(), barsUp(host)]
+    await real(() => userEvent.keyboard('{Escape}'))
+    await settled()
+    const first = [barsUp(host), onLeave.mock.calls.length]
+    await real(() => userEvent.keyboard('{Escape}'))
+    await settled()
+    expect([into, first, onLeave.mock.calls.length]).toEqual([
+      [true, true],
+      [false, 0],
+      1,
+    ])
+  })
+
+  /** The keyboard brought the bars up, so its Escape takes them away though focus is not in them yet. */
+  it('hides the bars at an Escape straight after the Tab that showed them, and leaves at the next', async () => {
+    const onLeave = vi.fn()
+    const host = await reader(book, onLeave)
+    reference(host).focus()
+    await real(() => userEvent.tab())
+    await until(() => barsUp(host))
+    const shown = [focusInBars(), document.activeElement === reference(host)]
+    await real(() => userEvent.keyboard('{Escape}'))
+    await settled()
+    const first = [barsUp(host), onLeave.mock.calls.length]
+    await real(() => userEvent.keyboard('{Escape}'))
+    await settled()
+    expect([shown, first, onLeave.mock.calls.length]).toEqual([
+      [false, true],
+      [false, 0],
+      1,
+    ])
+  })
+
+  /**
+   * Help opened by a click on bars a tap brought up: closing it at an
+   * `Escape` hands focus back to Help, so the bars are then the keyboard's,
+   * and one `Escape` a step: Help, the bars, the book.
+   */
+  it('closes Help a click opened at the first Escape with focus back on Help, takes the bars away at the second, and leaves at the third', async () => {
+    const onLeave = vi.fn()
+    const host = await reader(book, onLeave)
+    const helpOpen = () =>
+      host.querySelector('[role="dialog"][aria-label="Keyboard help"]') !== null
+    await real(() =>
+      userEvent.click(
+        host.querySelector('[data-block="2"] [data-sentence]') as HTMLElement,
+      ),
+    )
+    await until(() => barsUp(host))
+    const help = host.querySelector('.reader-help') as HTMLElement
+    await real(() => userEvent.click(help))
+    await until(helpOpen)
+    await real(() => userEvent.keyboard('{Escape}'))
+    await settled()
+    const first = [
+      helpOpen(),
+      document.activeElement === help,
+      barsUp(host),
+      onLeave.mock.calls.length,
+    ]
+    await real(() => userEvent.keyboard('{Escape}'))
+    await settled()
+    const second = [focusInBars(), barsUp(host), onLeave.mock.calls.length]
+    await real(() => userEvent.keyboard('{Escape}'))
+    await settled()
+    expect([first, second, onLeave.mock.calls.length]).toEqual([
+      [false, true, true, 0],
+      [false, false, 0],
+      1,
+    ])
+  })
+
+  /** A jump the mouse made brings the bars up with Back, and they are the mouse's. */
+  it('leaves at one Escape through bars a mouse click on a link brought up', async () => {
+    const onLeave = vi.fn()
+    const host = await reader(plated, onLeave)
+    const box = (
+      host.querySelector('.book-figure img') as Element
+    ).getBoundingClientRect()
+    await act(async () => {
+      await mouse.moveTo(
+        box.left + box.width / 2,
+        (box.top + window.innerHeight) / 2,
+      )
+      await mouse.press()
+      await mouse.release()
+    })
+    await until(() => barsUp(host) && backIn(host) !== undefined)
+    await real(() => userEvent.keyboard('{Escape}'))
+    await settled()
+    expect([barsUp(host), onLeave.mock.calls.length]).toEqual([true, 1])
+  })
+
+  it('closes the search at an Escape typed in its box, and stays', async () => {
+    const onLeave = vi.fn()
+    const host = await reader(book, onLeave)
+    const box = () =>
+      host.querySelector<HTMLInputElement>('.docked-panel input[type="search"]')
+    reference(host).focus()
+    await real(() => userEvent.keyboard('/'))
+    await until(() => box() !== null && document.activeElement === box())
+    await real(() => userEvent.keyboard('opens'))
+    await real(() => userEvent.keyboard('{Escape}'))
+    await settled()
+    expect([box(), onLeave.mock.calls.length]).toEqual([null, 0])
+  })
+})
+
+/**
+ * The book's bottom bar ends in Help while the help module is on (O425): a
+ * click opens it as `?` does, and Help gives focus back on closing (O161).
+ */
+describe('Help in the book’s bottom bar, with real clicks (O425)', () => {
+  afterAll(() => vi.unstubAllGlobals())
+
+  /** A real key, press or click, inside `act`. */
+  const real = async (input: () => Promise<unknown>) => {
+    await act(async () => {
+      await input()
+    })
+  }
+
+  const barsUp = (host: HTMLElement) =>
+    host.querySelector('.reader-bottom-bar') !== null
+
+  const helpOpen = (host: HTMLElement) =>
+    host.querySelector('[role="dialog"][aria-label="Keyboard help"]') !== null
+
+  /** Every button named Help, wherever it is. */
+  const helps = (host: HTMLElement) =>
+    [...host.querySelectorAll('button')].filter(
+      (b) => b.getAttribute('aria-label') === 'Help',
+    )
+
+  /** A tap on the text, which brings the bars up. */
+  async function tapForBars(host: HTMLElement) {
+    await real(() =>
+      userEvent.click(
+        host.querySelector('[data-block="2"] [data-sentence]') as HTMLElement,
+      ),
+    )
+    await until(() => barsUp(host))
+  }
+
+  it('draws one Help while the bars are up; a click opens Help, and Escape closes it onto Help', async () => {
+    const host = await reader(book)
+    const down = helps(host).length
+    await tapForBars(host)
+    expect([down, helps(host).length]).toEqual([0, 1])
+    const [help] = helps(host)
+    expect(help.closest('.reader-bottom-bar')).not.toBeNull()
+    await real(() => userEvent.click(help))
+    await until(() => helpOpen(host))
+    const opened = help.getAttribute('aria-expanded')
+    await real(() => userEvent.keyboard('{Escape}'))
+    await until(() => !helpOpen(host))
+    expect([
+      opened,
+      help.getAttribute('aria-expanded'),
+      document.activeElement === help,
+      barsUp(host),
+    ]).toEqual(['true', 'false', true, true])
+  })
+
+  /** The bars sit on the window's bottom edge, which cuts anything drawn past it. */
+  it('draws Help’s focus ring whole inside the window', async () => {
+    const host = await reader(book)
+    ;(host.querySelector('[data-block="0"] a') as HTMLElement).focus()
+    for (let i = 0; i < 30 && helps(host)[0] !== document.activeElement; i++) {
+      await real(() => userEvent.tab())
+    }
+    const [help] = helps(host)
+    // The fixture tells: real keys brought focus to Help.
+    expect(document.activeElement).toBe(help)
+    const ring = ringOf(help)
+    expect({
+      left: ring.left >= 0,
+      top: ring.top >= 0,
+      right: ring.right <= innerWidth,
+      bottom: ring.bottom <= innerHeight,
+    }).toEqual({ left: true, top: true, right: true, bottom: true })
+  })
+
+  it.each([
+    ['mouse', true],
+    ['touch laptop', true],
+    ['tablet with trackpad', true],
+    ['phone', false],
+  ] as const)('draws Help under a %s’s pointers: %s', async (device, drawn) => {
+    onTestFinished(pointerRulesAs(device))
+    const host = await reader(book)
+    await tapForBars(host)
+    expect(helps(host).map((help) => help.checkVisibility())).toEqual([drawn])
+  })
+
+  it('draws no Help once Keyboard help is switched off in Settings', async () => {
+    onTestFinished(() => localStorage.removeItem('taiyaku.prefs.help'))
+    const host = await reader(book)
+    await tapForBars(host)
+    const on = helps(host).length
+    const gear = [...host.querySelectorAll('.reader-top-bar button')].find(
+      (b) => b.textContent === 'Settings',
+    ) as HTMLElement
+    await real(() => userEvent.click(gear))
+    const settings = () =>
+      host.querySelector('[role="dialog"][aria-label="Settings"]')
+    await until(() => settings() !== null)
+    const section = [
+      ...(settings() as Element).querySelectorAll('.reader-section'),
+    ].find((s) => s.querySelector('h3')?.textContent === 'Keyboard help')
+    const enabled = section?.querySelector(
+      'input[type="checkbox"]',
+    ) as HTMLInputElement
+    await real(() => userEvent.click(enabled))
+    await until(() => !enabled.checked)
+    await real(() => userEvent.keyboard('{Escape}'))
+    await until(() => settings() === null)
+    expect([on, barsUp(host), helps(host).length]).toEqual([1, true, 0])
+  })
+})
+
+/**
+ * The book's readout row at a phone's width with Back drawn, its fullest
+ * (O425): each button keeps to one line inside the row, under a mouse's rules
+ * and a finger's, and the readout text alone gives way. The finger's fullest
+ * row is a tablet's with a trackpad, which draws Help as well; a touch screen
+ * alone draws none. Where the buttons are wider than the window even so, the
+ * row scrolls sideways: each, scrolled into view, is whole inside the window
+ * and takes a press at its middle.
+ */
+describe('the book’s readout row at a phone’s width, with Back drawn (O425)', () => {
+  afterAll(() => vi.unstubAllGlobals())
+
+  const NAMES = ['Contents', 'Search', 'Look up words', 'Back', 'Help']
+
+  /** The row's buttons a stylesheet draws: Help is not, under a touch screen alone. */
+  const buttonsOf = (row: HTMLElement) =>
+    [...row.querySelectorAll<HTMLElement>('button')].filter((button) =>
+      button.checkVisibility(),
+    )
+
+  /** The book at `width`×`height` with Back drawn by a jump from the keyboard; its readout row. */
+  async function rowWithBack(width: number, height: number) {
+    await page.viewport(width, height)
+    const host = await reader(plated)
+    const link = host.querySelector('.book-figure a') as HTMLElement
+    act(() => {
+      link.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      )
+    })
+    await settled()
+    await document.fonts.ready
+    return host.querySelector('.reader-readout') as HTMLElement
+  }
+
+  /**
+   * Each button's name, whether it lies within what the row shows top to
+   * bottom (its box, less any scrollbar), and whether it lies inside the
+   * window side to side.
+   */
+  function measured(row: HTMLElement, button: HTMLElement) {
+    const at = row.getBoundingClientRect()
+    const box = button.getBoundingClientRect()
+    const shownBottom = at.top + row.clientTop + row.clientHeight
+    return [
+      button.getAttribute('aria-label') ?? button.textContent,
+      box.top >= at.top && box.bottom <= shownBottom,
+      box.left >= 0 && box.right <= window.innerWidth,
+    ]
+  }
+
+  for (const device of ['mouse', 'tablet with trackpad', 'phone'] as const) {
+    it.each([
+      [390, 844],
+      [375, 667],
+    ])(
+      `keeps every button on one line inside the row at %i×%i, ${device}`,
+      async (width, height) => {
+        onTestFinished(pointerRulesAs(device))
+        const row = await rowWithBack(width, height)
+        const fits = buttonsOf(row).map((button) => measured(row, button))
+        expect(fits).toEqual(
+          NAMES.filter((name) => device !== 'phone' || name !== 'Help').map(
+            (name) => [name, true, true],
+          ),
+        )
+      },
+    )
+  }
+
+  for (const device of ['mouse', 'tablet with trackpad'] as const) {
+    it(`scrolls the row to each button, whole and inside the window, at 320×568, ${device}`, async () => {
+      onTestFinished(pointerRulesAs(device))
+      const row = await rowWithBack(320, 568)
+      const buttons = buttonsOf(row)
+      // THE STATE THIS TEST NAMES: the buttons alone are wider than the
+      // window, so they cannot all be in it at once.
+      const widths = buttons.reduce(
+        (sum, button) => sum + button.getBoundingClientRect().width,
+        0,
+      )
+      expect(widths).toBeGreaterThan(window.innerWidth)
+      const fits = buttons.map((button) => {
+        button.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+        const box = button.getBoundingClientRect()
+        const pressed = document.elementFromPoint(
+          box.left + box.width / 2,
+          box.top + box.height / 2,
+        )
+        return [...measured(row, button), pressed === button]
+      })
+      expect(fits).toEqual(NAMES.map((name) => [name, true, true, true]))
+    })
+  }
+
+  /**
+   * Where the row fits, from the first button's start to the readout's end,
+   * centred between the row's start and Help, less the row's 4 px gap, or
+   * the row's end where Help is switched off or not drawn.
+   */
+  it.each([
+    ['on', 'Help', 'mouse'],
+    ['off', undefined, 'mouse'],
+    ['on, undrawn under a touch screen alone', undefined, 'phone'],
+  ] as const)(
+    'centres its buttons and readout where they fit, at 1280×800, with Help %s',
+    async (help, last, device) => {
+      onTestFinished(pointerRulesAs(device))
+      if (help === 'off') {
+        localStorage.setItem(
+          'taiyaku.prefs.help',
+          JSON.stringify({ enabled: false }),
+        )
+        onTestFinished(() => localStorage.removeItem('taiyaku.prefs.help'))
+      }
+      const row = await rowWithBack(1280, 800)
+      const items = [...row.children].filter((item) => item.checkVisibility())
+      const end = items.at(-1) as HTMLElement
+      expect(end.getAttribute('aria-label') ?? undefined).toBe(last)
+      const group = items.filter((item) => !item.matches('.reader-help'))
+      const from = (group[0] as HTMLElement).getBoundingClientRect().left
+      const to = (group.at(-1) as HTMLElement).getBoundingClientRect().right
+      const at = row.getBoundingClientRect()
+      // Help, where it is on, stands at the row's end.
+      if (last) {
+        expect(
+          Math.abs(end.getBoundingClientRect().right - (at.right - 12)),
+        ).toBeLessThanOrEqual(1)
+      }
+      const roomEnd = last
+        ? end.getBoundingClientRect().left - 4
+        : at.right - 12
+      const room = (at.left + 12 + roomEnd) / 2
+      expect(Math.abs((from + to) / 2 - room)).toBeLessThanOrEqual(1)
+      // THE STATE THIS TEST NAMES: room to spare, so centring has something
+      // to do.
+      expect(from).toBeGreaterThan(at.left + 12 + 100)
+    },
+  )
 })

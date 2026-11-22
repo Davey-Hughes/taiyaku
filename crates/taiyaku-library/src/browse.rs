@@ -251,6 +251,17 @@ pub struct AlignmentCard {
 pub struct WorkDetail {
     pub card: WorkCard,
     pub alignments: Vec<AlignmentCard>,
+    /// The series this work is filed in, which the reader links to; `None`
+    /// for an unfiled work, which has no series page (spec C1 §5.4).
+    pub series: Option<SeriesRef>,
+}
+
+/// A series as a work names it: what a link to its page needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeriesRef {
+    pub id: i64,
+    /// The display title, as the grid shows it.
+    pub title: String,
 }
 
 /// A grid, or a search over one: series, and the works that belong to none.
@@ -633,6 +644,16 @@ fn page_zero_hash(alias: &str, account: &Access) -> String {
     )
 }
 
+/// A series' display title, the rule [`series`] documents, over `series s`
+/// left-joined to `series_title st` and grouped by `s.id`. The series cards
+/// ([`series_cards`]: the grid, a series page and search's hits) and the work
+/// answer ([`filed_in`]) read this one expression, so the reader's link to a
+/// series and the page it leads to cannot show two titles.
+const SERIES_TITLE: &str = "COALESCE(MAX(CASE WHEN st.is_primary = 1 THEN st.title END),
+                                    (SELECT title FROM series_title WHERE series_id = s.id
+                                      ORDER BY rowid LIMIT 1),
+                                    s.sort_title)";
+
 /// Every series this caller may see, with its counts, ordered by title.
 ///
 /// `is_primary` picks the display title; `series_title` holds several names per
@@ -704,10 +725,7 @@ fn series_cards(
         "SELECT g.id, g.title, g.works, g.editions, g.aligned, s.cover_work_id, g.added,
                 g.unread, cw.id, cw.slug, ce.key, {page}
            FROM (SELECT s.id AS id,
-                        COALESCE(MAX(CASE WHEN st.is_primary = 1 THEN st.title END),
-                                 (SELECT title FROM series_title WHERE series_id = s.id
-                                   ORDER BY rowid LIMIT 1),
-                                 s.sort_title) AS title,
+                        {SERIES_TITLE} AS title,
                         COUNT(DISTINCT w.id) AS works,
                         COUNT(DISTINCT e.id) AS editions,
                         COUNT(DISTINCT CASE WHEN {aligned} THEN w.id END) AS aligned,
@@ -1240,7 +1258,35 @@ pub fn work(
         return Ok(None);
     };
     let alignments = alignments_of(conn, access, card.id)?;
-    Ok(Some(WorkDetail { card, alignments }))
+    let series = filed_in(conn, card.id)?;
+    Ok(Some(WorkDetail {
+        card,
+        alignments,
+        series,
+    }))
+}
+
+/// The series `work_id` is filed in, or `None` for an unfiled work.
+///
+/// Read without the grant: a caller who may see the work sees an edition of
+/// it, and so the series that holds it.
+fn filed_in(conn: &Connection, work_id: i64) -> Result<Option<SeriesRef>, String> {
+    let sql = format!(
+        "SELECT s.id, {SERIES_TITLE}
+           FROM work w
+           JOIN series s ON s.id = w.series_id
+           LEFT JOIN series_title st ON st.series_id = s.id
+          WHERE w.id = ?1
+          GROUP BY s.id"
+    );
+    query_row(conn, &sql, [work_id], |row| {
+        Ok(SeriesRef {
+            id: row.get(0)?,
+            title: row.get(1)?,
+        })
+    })
+    .optional()
+    .map_err(|e| format!("reading the work's series: {e}"))
 }
 
 /// The works belonging to no series, which no series-joined query can reach.

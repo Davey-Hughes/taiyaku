@@ -418,8 +418,10 @@
 }
 
 /* On a volume's cover ⇄ takes the top-right, leaving the bottom-right to
- * `i`, or to ↓ in its place (O283). A series' tile in the library grid has
- * no control on its cover, and keeps its mark where it was. */
+ * `i`, or to ↓ in its place (O283), and waits for a pointer as they do
+ * (below, O416). A series' tile in the library grid has no control on its
+ * cover, and keeps its mark where it was and always shown, as the series
+ * table does. */
 .volumes .cover-box .aligned {
   top: 0.25rem;
   bottom: auto;
@@ -616,11 +618,13 @@
 }
 
 /* Where every pointer can hover, the corner control waits, transparent and
- * taking no pointer, until its tile is hovered or holds focus, or its panel
- * is open. Opacity, never `display` or `visibility`, so Tab still reaches
- * it. Any coarse pointer keeps it shown: a touch laptop's primary pointer
- * hovers, and its finger would tap a control it cannot see and land on the
- * cover's link. */
+ * taking no pointer, until its tile is hovered or holds keyboard focus, or
+ * its panel is open. Keyboard focus only: a mouse press leaves focus behind
+ * it, which would keep the control shown after the pointer has gone (O420).
+ * Opacity, never `display` or `visibility`, so Tab still reaches it. Any
+ * coarse pointer keeps it shown: a touch laptop's primary pointer hovers,
+ * and its finger would tap a control it cannot see and land on the cover's
+ * link. */
 @media (hover: hover) and (not (any-pointer: coarse)) {
   .volumes > li > .tile-body > :is(.panel-open, a.get) {
     opacity: 0;
@@ -629,8 +633,26 @@
   }
 
   .volumes > li:hover > .tile-body > :is(.panel-open, a.get),
-  .volumes > li:focus-within > .tile-body > :is(.panel-open, a.get),
+  .volumes > li:has(:focus-visible) > .tile-body > :is(.panel-open, a.get),
   .volumes > li > .tile-body > .panel-open[aria-expanded="true"] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* ⇄ waits the same way for the whole list: a pointer over the list, its
+   * gaps included, or keyboard focus among the volumes, shows every ⇄ on the
+   * page at once, so which volumes are aligned reads across the grid (O416).
+   * View's "Always show aligned" keeps them shown (`data-aligned`). Opacity
+   * keeps each mark's title in the accessible tree. */
+  .volumes .cover-box .aligned {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms;
+  }
+
+  .volumes:is(:hover, :has(:focus-visible), [data-aligned="always"])
+    .cover-box
+    .aligned {
     opacity: 1;
     pointer-events: auto;
   }
@@ -638,7 +660,8 @@
 
 /* No fade where the system asks for less motion. */
 @media (prefers-reduced-motion: reduce) {
-  .volumes > li > .tile-body > :is(.panel-open, a.get) {
+  .volumes > li > .tile-body > :is(.panel-open, a.get),
+  .volumes .cover-box .aligned {
     transition: none;
   }
 }
@@ -948,6 +971,42 @@
   max-width: none;
   box-sizing: border-box;
   block-size: calc(1.5em + 2 * var(--space-2) + 2px);
+}
+
+/* The series page's way back, above its heading row: the reader's top bar's
+ * chevron and word (`reader.css`'s `.reader-back`), in the page's ink. */
+.page-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 36px;
+  padding: 0 var(--space-2) 0 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: var(--text-ui);
+  white-space: nowrap;
+}
+
+.page-back:hover {
+  color: var(--text);
+}
+
+.page-back svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 44 px for a finger, as the reader's is. */
+@media (pointer: coarse) {
+  .page-back {
+    min-height: 44px;
+  }
 }
 
 /* A series title breaks rather than widening the page. */

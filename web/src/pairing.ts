@@ -30,7 +30,7 @@ export interface Group {
  * sequence itself already accounts for direction — `Edition::slots` orders a
  * spread's halves by it.
  *
- * `breaks` is the `regroup` module's per-edition, client-side list of slots a
+ * `breaks` is the `regroup` module's per-volume, per-edition list of slots a
  * reader has marked to restart pairing at — the case a sidecar's `spreads`
  * cannot state, because it is one missing page throwing off parity rather
  * than a fact about the work. Honoured only in `two` mode, where parity

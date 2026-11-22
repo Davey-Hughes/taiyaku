@@ -206,6 +206,7 @@ const libraryDetail = (): WorkDetail => ({
     },
   ],
   opens: 'raw',
+  series: null,
   alignments: [],
 })
 
@@ -934,6 +935,28 @@ describe('a work that fails to load — O176', () => {
     logged.mockRestore()
   })
 
+  it.each([
+    [{ word: 'Series', phrase: 'the series' }, 'Back to the series'],
+    [{ word: 'Back', phrase: '' }, 'Back'],
+  ])(
+    'names its button for where the way out it is handed goes: %o',
+    async (leaveTo, name) => {
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+      ports.getSidecarWithEtag.mockRejectedValue(answered500())
+      const onLeave = vi.fn()
+      const host = mount(
+        <App work={WORK} onLeave={onLeave} leaveTo={leaveTo} />,
+      )
+      await settle()
+      expect(
+        [...host.querySelectorAll('button')].map((b) => b.textContent),
+      ).toEqual([name])
+      click(button(host, name))
+      expect(onLeave).toHaveBeenCalledOnce()
+      logged.mockRestore()
+    },
+  )
+
   it('draws nothing and logs nothing for a 401, which the gate routes', async () => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     ports.getSidecarWithEtag.mockRejectedValue(new Unauthenticated())
@@ -1232,9 +1255,16 @@ describe('the reader keys', () => {
     expect(host.querySelector('[role="status"]')).not.toBeNull()
   })
 
-  it('Escape with nothing open is left to the browser', async () => {
-    await open()
-    expect(press('Escape').defaultPrevented).toBe(false)
+  it('Escape with nothing open leaves the reader (O419)', async () => {
+    const onLeave = vi.fn()
+    mount(
+      <GateContext value={administrator}>
+        <App work={WORK} onLeave={onLeave} />
+      </GateContext>,
+    )
+    await settle()
+    expect(press('Escape').defaultPrevented).toBe(true)
+    expect(onLeave).toHaveBeenCalledOnce()
   })
 
   it('Escape closes the settings panel (spec 2026-09-26 §3.3)', async () => {
@@ -1334,6 +1364,22 @@ describe('leaving the reader', () => {
     mount(<App work={WORK} onLeave={onLeave} />)
     await settle()
     press('L')
+    expect(onLeave).toHaveBeenCalled()
+  })
+
+  it("the chrome's button names the way out it is handed, and calls the onLeave prop", async () => {
+    const onLeave = vi.fn()
+    const host = mount(
+      <App
+        work={WORK}
+        onLeave={onLeave}
+        leaveTo={{ word: 'Series', phrase: 'the series' }}
+      />,
+    )
+    await settle()
+    press('Tab')
+    expect(host.querySelector('.reader-back')?.textContent).toBe('Series')
+    click(button(host, 'Series'))
     expect(onLeave).toHaveBeenCalled()
   })
 
@@ -1777,33 +1823,112 @@ describe('the preference keys', () => {
     expect(pages(host)).toEqual([expect.stringContaining('/raw/pages/3')])
   })
 
-  it('b breaks the pairing at the slot on screen', async () => {
+  it('b realigns from the pair on screen: its first page stands alone, and the reader stays on it', async () => {
     localStorage.setItem(
       'taiyaku.prefs.layout',
       JSON.stringify({ mode: 'two' }),
     )
-    // Slot 5 is the second half of the last pair, which is what makes the break
-    // visible: a break at a slot that already opens a group changes nothing.
+    const host = await open()
+    // Each cell's page, in the order the cells are drawn.
+    const drawn = () =>
+      pages(host).map((src) => Number(/\/raw\/pages\/(\d+)/.exec(src)?.[1]))
+    // `rtl`: `ArrowLeft` reads on, from the pair at slots 2 and 3 to the one
+    // at 4 and 5, and lands on its first slot, as an arrow always does. The
+    // turn's own progress write is let through before `b` is counted.
+    press('ArrowLeft')
+    await advance(1000)
+    expect(drawn()).toEqual([5, 4])
+    ports.putProgress.mockClear()
+
+    expect(press('b').defaultPrevented).toBe(true)
+    // The break is at the pair's second slot, in the viewed edition's own
+    // space.
+    expect(prefsFor('regroup').breaks).toEqual({ [WORK]: { raw: [5] } })
+    await settle()
+    // Slot 4 stands alone, mirrored into the second cell, and the reader is
+    // still on it: the pairing moved, the reader did not.
+    expect(drawn()).toEqual([4, 4])
+    await advance(1000)
+    expect(ports.putProgress).not.toHaveBeenCalled()
+
+    press('b')
+    expect(prefsFor('regroup').breaks).toEqual({ [WORK]: { raw: [] } })
+    await settle()
+    expect(drawn()).toEqual([5, 4])
+    await advance(1000)
+    expect(ports.putProgress).not.toHaveBeenCalled()
+  })
+
+  it('in single mode, b breaks at the page on screen', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.layout',
+      JSON.stringify({ mode: 'single' }),
+    )
+    await open()
+    // Slot 2 already opens a pair in two-page mode, so a break there would
+    // change nothing; slot 3, the next page on (`rtl`: `ArrowLeft`), closes
+    // that pair, and a break there is the one a single page can set.
+    press('b')
+    await settle()
+    expect(prefsFor('regroup').breaks).toEqual({})
+    press('ArrowLeft')
+    await settle()
+    press('b')
+    expect(prefsFor('regroup').breaks).toEqual({ [WORK]: { raw: [3] } })
+    await settle()
+  })
+
+  it("b's break belongs to its volume: another with the same edition keeps its pairs (O428)", async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.layout',
+      JSON.stringify({ mode: 'two' }),
+    )
+    ports.getProgress.mockResolvedValue({ edition: 'raw', slot: 4 })
+    const host = await open()
+    // Each cell's volume and page, in the order the cells are drawn.
+    const drawn = () =>
+      pages(host).map((src) =>
+        /\/works\/([^/]+)\/raw\/pages\/(\d+)/.exec(src)?.slice(1).join(' '),
+      )
+    expect(drawn()).toEqual([`${WORK} 5`, `${WORK} 4`])
+    press('b')
+    await settle()
+    expect(drawn()).toEqual([`${WORK} 4`, `${WORK} 4`])
+
+    // Another volume, with a `raw` edition too, opened as `Routes.tsx` opens
+    // one: a fresh `App` keyed by its slug.
+    rerender(
+      <GateContext value={administrator}>
+        <App key="vol-02" work="vol-02" onLeave={noop} />
+      </GateContext>,
+    )
+    await settle()
+    expect(drawn()).toEqual(['vol-02 5', 'vol-02 4'])
+    expect(prefsFor('regroup').breaks).toEqual({ [WORK]: { raw: [5] } })
+  })
+
+  it('b stores nothing where it would change no pair', async () => {
+    localStorage.setItem(
+      'taiyaku.prefs.layout',
+      JSON.stringify({ mode: 'two' }),
+    )
+    // A break at slot 5 leaves slot 4 alone and slot 5, the last, alone too:
+    // there is no next page to pair from.
+    localStorage.setItem(
+      'taiyaku.prefs.regroup',
+      JSON.stringify({ breaks: { [WORK]: { raw: [5] } } }),
+    )
     ports.getProgress.mockResolvedValue({ edition: 'raw', slot: 5 })
     const host = await open()
-    // Two cells, two different pages: slots 4 and 5, paired.
-    expect(new Set(pages(host)).size).toBe(2)
+    // The stored break is read: slot 5 is drawn alone, in both cells.
+    expect(pages(host)).toEqual([
+      expect.stringContaining('/raw/pages/5'),
+      expect.stringContaining('/raw/pages/5'),
+    ])
+    const before = localStorage.getItem('taiyaku.prefs.regroup')
     expect(press('b').defaultPrevented).toBe(true)
-    // Breaks are slots of the *viewed* edition's own space — `shown.slot`, not
-    // `state.slot`, which is authority-space and only equal when nothing has
-    // been swapped.
-    expect(prefsFor('regroup').breaks).toEqual({ raw: [5] })
     await settle()
-    // A break makes the slot open its own group. Still two cells — `cellsFor`
-    // mirrors a solo slot into the second one rather than unmounting it, which
-    // is what keeps `PageView`'s decode gate alive across the change — but one
-    // page between them. `groups` decided that; the keypress reached it through
-    // `toggleEditionBreak` and the preference map.
-    expect(new Set(pages(host)).size).toBe(1)
-    press('b')
-    expect(prefsFor('regroup').breaks).toEqual({ raw: [] })
-    await settle()
-    expect(new Set(pages(host)).size).toBe(2)
+    expect(localStorage.getItem('taiyaku.prefs.regroup')).toBe(before)
   })
 
   it('in two mode, a turn onto a solo page and back leaves both halves of the pair', async () => {
@@ -1815,7 +1940,7 @@ describe('the preference keys', () => {
     // pair at slots 2 and 3 lands on one page, mirrored into both cells.
     localStorage.setItem(
       'taiyaku.prefs.regroup',
-      JSON.stringify({ breaks: { raw: [5] } }),
+      JSON.stringify({ breaks: { [WORK]: { raw: [5] } } }),
     )
     const host = await open()
     // Whether each cell is hidden. `secondCellAlone` hides the second one when
@@ -2537,7 +2662,9 @@ describe('a `user` account — O58', () => {
     const host = await openGated()
     press('?')
     const help = dialog(host, 'Keyboard help')
-    expect(help?.textContent).toContain('back to the library')
+    expect(help?.textContent).toContain(
+      'back where you came from, else the library',
+    )
     expect(help?.textContent).not.toContain('correct this pairing')
   })
 })
@@ -4108,7 +4235,7 @@ describe('the keyboard ring', () => {
   it('walks the page, the top bar, the strip’s one stop and back to the page', async () => {
     const host = await open()
     const walk: string[] = []
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 9; i++) {
       expect(pressHere('Tab').defaultPrevented).toBe(true)
       walk.push(`${focused()}${barsUp(host) ? ' +bars' : ''}`)
     }
@@ -4121,6 +4248,7 @@ describe('the keyboard ring', () => {
       'compare +bars',
       'Settings +bars',
       'page 3 +bars',
+      'Help +bars',
       'page',
     ])
   })
@@ -4128,11 +4256,12 @@ describe('the keyboard ring', () => {
   it('walks it backwards with Shift+Tab', async () => {
     const host = await open()
     const walk: string[] = []
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 9; i++) {
       pressHere('Tab', true)
       walk.push(`${focused()}${barsUp(host) ? ' +bars' : ''}`)
     }
     expect(walk).toEqual([
+      'Help +bars',
       'page 3 +bars',
       'Settings +bars',
       'compare +bars',
@@ -4194,8 +4323,8 @@ describe('the keyboard ring', () => {
       etag: 'n1',
     })
     const host = await open()
-    for (let i = 0; i < 7; i++) pressHere('Tab')
-    expect(focused()).toBe('page 3')
+    for (let i = 0; i < 8; i++) pressHere('Tab')
+    expect(focused()).toBe('Help')
     pressHere('Tab')
     expect(barsUp(host)).toBe(false)
     expect(

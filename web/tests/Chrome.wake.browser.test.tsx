@@ -258,10 +258,10 @@ describe('the progress line wakes for a mouse', () => {
       expect(line.dataset.awake).toBe('')
     })
 
-    // The bars hidden mid-hold, as Escape hides them through `App`, while
-    // the button stays down; let go with no bars up, and shown again under
-    // the pointer. The move after goes straight up, off the line, so the
-    // new line hears nothing from it.
+    // The bars hidden mid-hold, as `App`'s Escape can while the keyboard
+    // holds them, while the button stays down; let go with no bars up, and
+    // shown again under the pointer. The move after goes straight up, off
+    // the line, so the new line hears nothing from it.
     it(`ends a hold the bars' hiding cuts off, ${reading}`, async () => {
       const overrides = { reading, currentIndex: 0 }
       const { host, line } = await bars(reading)

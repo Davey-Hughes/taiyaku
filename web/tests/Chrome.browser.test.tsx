@@ -8,7 +8,7 @@ import '../src/index.css'
 import type { ChromeProps } from '../src/Chrome'
 import { rerender } from './support/mount'
 import { mouse } from './support/mouse'
-import { pointerRulesAs } from './support/pointer'
+import { areaOf, overlapOf, pointerRulesAs } from './support/pointer'
 import {
   BARELY,
   centre,
@@ -662,5 +662,137 @@ describe('O141: the readout row at a phone’s width', () => {
     await page.viewport(1280, 800)
     const text = textOf(readoutOf(inReader(LONGEST)))
     expect(text.scrollWidth).toBeLessThanOrEqual(text.clientWidth)
+  })
+})
+
+/**
+ * O425: Help ends the readout row wherever a mouse or a trackpad is, and a
+ * touch screen alone draws none. The row's text gives way to it, so at a
+ * phone's width, where the text is cut short, the two never meet and nothing
+ * leaves the row; under a finger it is a 44 px press (spec 2026-09-17 §8.3),
+ * which the row grows to hold.
+ */
+describe('O425: Help at the readout row’s end', () => {
+  const helpOf = (row: HTMLElement) =>
+    row.querySelector('button[aria-label="Help"]') as HTMLElement
+
+  it('stands clear of the text and inside the row, at 390×844', async () => {
+    await page.viewport(390, 844)
+    const row = readoutOf(inReader({ ...LONGEST, onHelp: () => {} }))
+    const text = row.querySelector('span') as HTMLElement
+    const help = helpOf(row)
+    // THE FIXTURE TELLS: text longer than the whole row, which would run on
+    // under Help or push it out of the row if it did not give way.
+    expect(text.scrollWidth).toBeGreaterThan(row.clientWidth)
+    const rowBox = row.getBoundingClientRect()
+    const textBox = text.getBoundingClientRect()
+    const helpBox = help.getBoundingClientRect()
+    expect(overlapOf(areaOf(textBox), areaOf(helpBox))).toBe(0)
+    expect(textBox.left).toBeGreaterThanOrEqual(rowBox.left + PADDING_PX - 0.5)
+    expect(helpBox.right).toBeLessThanOrEqual(rowBox.right - PADDING_PX + 0.5)
+    expect(helpBox.top).toBeGreaterThanOrEqual(rowBox.top)
+    expect(helpBox.bottom).toBeLessThanOrEqual(rowBox.bottom)
+    expect(row.scrollWidth).toBe(row.clientWidth)
+    const bar = row.closest('.reader-bottom-bar') as HTMLElement
+    expect(bar.scrollWidth).toBe(bar.clientWidth)
+    expect(rowBox.height).toBe(32)
+  })
+
+  it.each([
+    [390, 844],
+    [1280, 800],
+  ])(
+    'stands at the row’s end beside a short readout, whole and centred in the room left, at %i×%i',
+    async (width, height) => {
+      await page.viewport(width, height)
+      const row = readoutOf(
+        inReader({ position: 'slot 1 / 3', onHelp: () => {} }),
+      )
+      const text = row.querySelector('span') as HTMLElement
+      expect(text.scrollWidth).toBeLessThanOrEqual(text.clientWidth)
+      const rowBox = row.getBoundingClientRect()
+      const helpBox = helpOf(row).getBoundingClientRect()
+      expect(helpBox.right).toBeCloseTo(rowBox.right - PADDING_PX, 1)
+      // The glyphs, between the row's padding and Help less the row's 4 px
+      // gap: the readout is still centred, in the room Help leaves it.
+      const glyphs = document.createRange()
+      glyphs.selectNodeContents(text)
+      const room = (rowBox.left + PADDING_PX + helpBox.left - 4) / 2
+      expect(
+        Math.abs(centre(glyphs.getBoundingClientRect()) - room),
+      ).toBeLessThanOrEqual(1)
+    },
+  )
+
+  it('leaves a short readout centred in the whole row under a touch screen alone, Help not drawn', async () => {
+    onTestFinished(pointerRulesAs('phone'))
+    await page.viewport(390, 844)
+    const row = readoutOf(
+      inReader({ position: 'slot 1 / 3', onHelp: () => {} }),
+    )
+    // The fixture tells: Help is in the row, undrawn.
+    expect(helpOf(row).checkVisibility()).toBe(false)
+    const glyphs = document.createRange()
+    glyphs.selectNodeContents(row.querySelector('span') as HTMLElement)
+    const off =
+      centre(glyphs.getBoundingClientRect()) -
+      centre(row.getBoundingClientRect())
+    expect(Math.abs(off)).toBeLessThanOrEqual(1)
+  })
+
+  it.each([
+    ['mouse', true, 32],
+    ['touch laptop', true, 32],
+    ['tablet with trackpad', true, 44],
+    ['phone', false, 44],
+  ] as const)(
+    'is drawn under a %s’s pointers: %s, in a row %i px tall',
+    async (device, drawn, height) => {
+      onTestFinished(pointerRulesAs(device))
+      await page.viewport(390, 844)
+      const row = readoutOf(inReader({ ...LONGEST, onHelp: () => {} }))
+      expect([
+        helpOf(row).checkVisibility(),
+        row.getBoundingClientRect().height,
+      ]).toEqual([drawn, height])
+    },
+  )
+
+  /**
+   * Where Help is drawn under a finger, a trackpad is there too, and so is
+   * the progress line's grip, which takes the top of the row under it,
+   * Help's included.
+   */
+  it('is 44 px under a finger, inside a row grown to hold it, and takes a press below the progress line’s grip', async () => {
+    onTestFinished(pointerRulesAs('tablet with trackpad'))
+    await page.viewport(390, 844)
+    const row = readoutOf(inReader({ ...LONGEST, onHelp: () => {} }))
+    const help = helpOf(row)
+    const box = help.getBoundingClientRect()
+    expect(box.width).toBeGreaterThanOrEqual(44)
+    expect(box.height).toBeGreaterThanOrEqual(44)
+    const bar = row.closest('.reader-bottom-bar') as HTMLElement
+    const grip = (
+      bar.querySelector('.reader-progress-grip') as HTMLElement
+    ).getBoundingClientRect()
+    // The fixture tells: the grip is drawn, and reaches past Help's top.
+    expect(grip.bottom).toBeGreaterThan(box.top)
+    // A press a pixel inside each edge, the top's below the grip, and at the
+    // middle, lands on Help. Hit tested point by point rather than walked
+    // out (`pressArea`): the bar's bottom is the window's, where a walk
+    // cannot go past.
+    const middle = { x: box.left + box.width / 2, y: box.top + box.height / 2 }
+    const reached = [
+      [middle.x, middle.y],
+      [middle.x, grip.bottom + 1],
+      [middle.x, box.bottom - 1],
+      [box.left + 1, middle.y],
+      [box.right - 1, middle.y],
+    ].map(([x, y]) => document.elementFromPoint(x, y) === help)
+    expect(reached).toEqual([true, true, true, true, true])
+    const rowBox = row.getBoundingClientRect()
+    expect(box.top).toBeGreaterThanOrEqual(rowBox.top)
+    expect(box.bottom).toBeLessThanOrEqual(rowBox.bottom)
+    expect(rowBox.height).toBe(44)
   })
 })

@@ -170,6 +170,7 @@
 }
 
 .reader-title-work,
+.reader-title-series-name,
 .reader-title-edition {
   display: block;
   overflow: hidden;
@@ -183,9 +184,39 @@
   font-weight: 600;
 }
 
-.reader-title-edition {
+/* The second line: the series, linked to its page, then the edition on
+   screen. */
+.reader-title-line {
+  display: flex;
   color: var(--muted);
   font-size: var(--text-meta);
+}
+
+/* The series gives way first, so the edition stays whole for as long as the
+   line can hold it. Its name, not the link, cuts the words short, so nothing
+   clips the press a coarse pointer gives the link (below). */
+.reader-title-series {
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  color: inherit;
+}
+
+.reader-title-series:hover {
+  color: var(--text);
+}
+
+/* `pre` keeps the space that opens the separator after the series. */
+.reader-title-edition {
+  flex: none;
+  max-width: 100%;
+  white-space: pre;
+}
+
+/* What the edition leaves the series is never less than a few letters and
+   the ellipsis: the link stays something to see and to press. */
+.reader-title-series + .reader-title-edition {
+  max-width: calc(100% - 3em);
 }
 
 .reader-layout {
@@ -246,6 +277,36 @@
   .reader-icon-button {
     min-width: 44px;
     min-height: 44px;
+  }
+
+  /* The series link's words are too small for a finger, so its press is
+     44 px from the link's start, 44 px tall, reaching up over the bar rather
+     than down past its edge onto the page. The title block clips it to its
+     own width, so it never takes a neighbour's press, and the work's title,
+     drawn over it, keeps its own taps. The clip stands out from the block's
+     content by a focus ring's reach (`.reader :focus-visible`'s 2 px offset
+     and 2 px width), so the link's ring is drawn whole; the bar's gap is
+     wider than that, so the press still takes nothing of a neighbour's. */
+  .reader-title {
+    overflow-x: clip;
+    margin-inline: -4px;
+    padding-inline: 4px;
+  }
+
+  .reader-title-work {
+    position: relative;
+    z-index: 1;
+    width: fit-content;
+    max-width: 100%;
+  }
+
+  .reader-title-series::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    bottom: -4px;
+    width: max(100%, 44px);
+    height: 44px;
   }
 }
 
@@ -362,9 +423,65 @@
   }
 }
 
+/* Centred here rather than in `bars.ts`'s inline style, so the book's row
+ * below can centre only while it fits. */
 .reader-readout {
+  justify-content: center;
   color: var(--muted);
   font-size: var(--text-meta);
+}
+
+/* Help's `?` (O425), drawn only where a mouse or a trackpad is: Help lists
+ * keys, which a touch-only screen has none of. Its auto margin and the first
+ * item's put it at the row's end and centre the rest in the room it leaves;
+ * the text, which can shrink, gives way to it rather than running under it.
+ * Undrawn, the row lays out as if it were not there, and the ring does not
+ * stop on it (`focus.ts`). */
+.reader-help {
+  display: none;
+  place-items: center;
+  flex: none;
+  min-width: 32px;
+  height: 100%;
+  margin-inline-start: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-ui);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+@media (any-pointer: fine) {
+  .reader-help {
+    display: inline-grid;
+  }
+
+  .reader-readout:has(> .reader-help) > :first-child {
+    margin-inline-start: auto;
+  }
+}
+
+/* Its ring inside it: the row sits on the window's bottom edge, which would
+ * cut a ring drawn outside. */
+.reader-help:focus-visible {
+  outline-offset: -2px;
+}
+
+/* 44 px for a finger (spec 2026-09-17 §8.3). The row grows to hold Help
+ * whole, so its press takes nothing from the strip above it and does not
+ * reach past the screen's edge below; the 44 px floor `.reader-button`
+ * carries then fits the row too. */
+@media (pointer: coarse) {
+  .reader {
+    --readout-height: 44px;
+  }
+
+  .reader-help {
+    min-width: 44px;
+  }
 }
 
 /* The strip's rail draws no scrollbar (O138). The second rule is for a WebKit
@@ -723,6 +840,53 @@ button.reader-secret:hover {
   .reader-field {
     min-height: 44px;
   }
+}
+
+/* The book's buttons in the readout row keep to one line, so its text alone
+ * gives way: a wrapped label grows past the row's height. After the rules
+ * for `.reader-button` above, which it is more specific than. */
+.reader-readout > .reader-button {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* Where the buttons are wider than the window even so, the row scrolls
+ * sideways rather than spill past its edges. Centred by auto margins, which
+ * take only room to spare, so an overflowing row starts at its first button,
+ * where `justify-content: center` would put that out of reach to the left.
+ * No scrollbar, as the strip has none (O138): one would take the height the
+ * buttons need. Focus is ringed inside each button, as the row clips
+ * anything drawn outside it. */
+.reader-readout:has(> .reader-button) {
+  justify-content: flex-start;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.reader-readout:has(> .reader-button) > :first-child {
+  margin-inline-start: auto;
+}
+
+/* The last item but Help closes the centring, unless Help is drawn after
+ * it, whose own margin then puts it at the row's end. */
+.reader-readout:has(> .reader-button)
+> :nth-last-child(1 of :not(.reader-help)) {
+  margin-inline-end: auto;
+}
+
+@media (any-pointer: fine) {
+  .reader-readout:has(> .reader-button)
+    > :nth-last-child(1 of :not(.reader-help)):has(+ .reader-help) {
+    margin-inline-end: 0;
+  }
+}
+
+.reader-readout:has(> .reader-button)::-webkit-scrollbar {
+  display: none;
+}
+
+.reader-readout:has(> .reader-button) :focus-visible {
+  outline-offset: -2px;
 }
 
 /* The note list beside the page or under it (`NoteList.tsx`). */
