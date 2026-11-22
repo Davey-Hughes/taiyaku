@@ -67,6 +67,21 @@ vi.mock('../src/library', async (importOriginal) => ({
 /** Enough series for two full rows at every size and width here. */
 const SERIES = 20
 
+/**
+ * The width the scrollbar's gutter takes in this browser, which keeps it
+ * though the scrollbar is hidden. The home page keeps its gutter while its
+ * panel can open (O417), so a window this much wider than another lays the
+ * page area the other would without it.
+ */
+const GUTTER = (() => {
+  const probe = document.createElement('div')
+  probe.style.cssText = 'overflow: hidden; scrollbar-gutter: stable'
+  document.body.append(probe)
+  const width = probe.offsetWidth - probe.clientWidth
+  probe.remove()
+  return width
+})()
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(aboutApi.about).mockResolvedValue(ABOUT)
@@ -571,7 +586,11 @@ describe('the Continue row over the grid (O288 item 2)', () => {
   it.each(['its end', 'the card at its start edge'] as const)(
     'keeps %s across cover-size changes, up and down, also where the grid’s columns change',
     async (place) => {
-      const { host, row } = await drawn({ width: 1280, size: 131, entries: 20 })
+      const { host, row } = await drawn({
+        width: 1280 + GUTTER,
+        size: 131,
+        entries: 20,
+      })
       // The seventh card, the last in view before the row scrolls: its
       // edge lies a whole number of px along at this size and width.
       const { off, stepped } = await standAt(
@@ -607,7 +626,11 @@ describe('the Continue row over the grid (O288 item 2)', () => {
   )
 
   it('keeps its end through a size at which every card fits', async () => {
-    const { host, row } = await drawn({ width: 1280, size: 144, entries: 7 })
+    const { host, row } = await drawn({
+      width: 1280 + GUTTER,
+      size: 144,
+      entries: 7,
+    })
     const travel = () => row.scrollWidth - row.clientWidth
     row.scrollLeft = travel()
     await frames(2)
@@ -749,7 +772,11 @@ describe('the Continue row over the grid (O288 item 2)', () => {
 
   it('holds at a 20 px root', async () => {
     rootFontAt('20px')
-    const { host } = await drawn({ width: 1290, size: 144, entries: 12 })
+    const { host } = await drawn({
+      width: 1290 + GUTTER,
+      size: 144,
+      entries: 12,
+    })
     const { width: W, gap, n } = columnsOf(need(host, 'main .grid'), 144)
     // The fixture tells: the least gap is 1rem at this root, and a 16 px
     // gap would count another column.
@@ -1058,7 +1085,7 @@ describe('the Continue row through a glide (O304)', () => {
   // fewer, the row at its start.
   it.each([
     ['beside the sidebar', 1280, 1200],
-    ['in the phone layout', 824, 808],
+    ['in the phone layout', 824 + GUTTER, 808 + GUTTER],
   ] as const)(
     'keeps card k over the grid’s cover k through a glide, %s',
     async (_, from, to) => {
@@ -1078,8 +1105,8 @@ describe('the Continue row through a glide (O304)', () => {
   // row is laid in React's commit there, before the frame the covers'
   // glide starts in.
   it.each([
-    ['beside the sidebar', 1280, 131],
-    ['in the phone layout', 824, 144],
+    ['beside the sidebar', 1280 + GUTTER, 131],
+    ['in the phone layout', 824 + GUTTER, 144],
   ] as const)(
     'keeps card k over the grid’s cover k through a Cover size step’s glide, %s',
     async (_, width, size) => {
@@ -1116,7 +1143,12 @@ describe('the Continue row through a glide (O304)', () => {
         seen.push({
           gliding: grid.hasAttribute('data-reseating'),
           main: [main.scrollWidth - main.clientWidth, main.scrollLeft],
-          page: [root.scrollWidth - root.clientWidth, root.scrollLeft],
+          // Past the page's area, which the gutter narrows (O417), where
+          // the root's clientWidth leaves out only a scrollbar drawn.
+          page: [
+            root.scrollWidth - document.documentElement.offsetWidth,
+            root.scrollLeft,
+          ],
         })
       })
       await frames(2)
@@ -1159,7 +1191,7 @@ describe('the Continue row through a glide (O304)', () => {
   })
 
   it('moves the page only as the reduced-motion drive does, and rests where it rests, in the phone layout', async () => {
-    const drive = { from: 820, to: [812], down: 1600 }
+    const drive = { from: 820 + GUTTER, to: [812 + GUTTER], down: 1600 }
     const glide = await scrolledThrough({ ...drive, still: false })
     const still = await scrolledThrough({ ...drive, still: true })
     const count = Math.min(glide.scrolls.length, still.scrolls.length)
@@ -1192,7 +1224,12 @@ describe('the Continue row through a glide (O304)', () => {
   ] as const)(
     'moves the page only as the reduced-motion drive does with the row %s, in the phone layout',
     async (where, down) => {
-      const drive = { from: 820, to: [812], back: [820], down }
+      const drive = {
+        from: 820 + GUTTER,
+        to: [812 + GUTTER],
+        back: [820 + GUTTER],
+        down,
+      }
       const glide = await scrolledThrough({ ...drive, still: false })
       const still = await scrolledThrough({ ...drive, still: true })
       const { before: row, cover, padding } = glide.row
@@ -1229,7 +1266,12 @@ describe('the Continue row through a glide (O304)', () => {
   )
 
   it('moves the page only as the reduced-motion drive does with a card’s placeholder text across the top of the view, in the phone layout', async () => {
-    const drive = { from: 820, to: [812], back: [820], down: 150 }
+    const drive = {
+      from: 820 + GUTTER,
+      to: [812 + GUTTER],
+      back: [820 + GUTTER],
+      down: 150,
+    }
     const glide = await scrolledThrough({ ...drive, still: false })
     const still = await scrolledThrough({ ...drive, still: true })
     const { before: row, text } = glide.row
@@ -1265,7 +1307,7 @@ describe('the Continue row through a glide (O304)', () => {
 
   it('starts the covers where they were drawn with the row across the view’s top edge and its covers in view, in the phone layout', async () => {
     const { host, row } = await drawn({
-      width: 820,
+      width: 820 + GUTTER,
       size: 144,
       entries: 12,
       series: 60,
@@ -1290,10 +1332,10 @@ describe('the Continue row through a glide (O304)', () => {
       ).getBoundingClientRect().bottom,
     }
     await act(async () => {
-      await dragged([{ width: 812 }])
+      await dragged([{ width: 812 + GUTTER }])
     })
     await afterMotion()
-    const at = seen.findIndex(({ width }) => width === 812)
+    const at = seen.findIndex(({ width }) => width === 812 + GUTTER)
     const shown = (box: DOMRect) => box.bottom > 0 && box.top < innerHeight
     // Each cover in view, in the frame the columns change against the frame
     // before: a glide starts where the cover was drawn.
@@ -1389,7 +1431,11 @@ describe('the Continue row’s fade (O288 item 3)', () => {
   })
 
   it('follows a slider change at any scroll position, its sides and its columns', async () => {
-    const { host, row } = await drawn({ width: 1280, size: 144, entries: 20 })
+    const { host, row } = await drawn({
+      width: 1280 + GUTTER,
+      size: 144,
+      entries: 20,
+    })
     const travel = () => row.scrollWidth - row.clientWidth
     const columns = [gridColumns(host).length]
     row.scrollLeft = travel() / 2

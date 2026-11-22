@@ -1804,6 +1804,21 @@ describe('Series, the alignment panel', () => {
     expect(host.querySelector('.alignment-panel')?.textContent).toContain('500')
   })
 
+  it('asks once for a volume whose detail cannot be read, and says why at each open', async () => {
+    vi.mocked(library.work).mockRejectedValue(
+      new Error('/api/library/works/gotoubun-v01: 500'),
+    )
+    const host = await settleWith({ panel: 'button' })
+    await open(host)
+    await open(host)
+    expect(host.querySelector('.alignment-panel'), 'closed').toBeNull()
+    // A failure is the volume's detail for the page's life, as an answer
+    // is, so reopening its panel says why without asking again.
+    await open(host)
+    expect(host.querySelector('.alignment-panel')?.textContent).toContain('500')
+    expect(vi.mocked(library.work)).toHaveBeenCalledTimes(1)
+  })
+
   it('fetches once, not twice, when hover and focus both land on the same tile before the request settles', async () => {
     // A real mouse click first moves focus to the link, then fires the
     // click — so "hover onto a tile, then click it" routes through both
@@ -2888,6 +2903,58 @@ describe('Series, the open panel’s observer (O283)', () => {
       [panel, tile],
     ])
   })
+
+  it('watches and lays the panel drawn again when the layout goes to the table and back with it open', async () => {
+    // In `on-select` mode focus outside a tile keeps the panel, so a
+    // keyboard can reach View and change the layout with one open.
+    const drawnAs = (layout: 'grid' | 'table') => (
+      <BrowsePrefsContext.Provider
+        value={{ ...browseModule.defaults, panel: 'on-select', layout }}
+      >
+        <GateContext.Provider value={{ who: who(), signOut: () => {} }}>
+          <MemoryRouter initialEntries={['/series/7']}>
+            <Routes>
+              <Route path="/series/:id" element={<Series />} />
+            </Routes>
+          </MemoryRouter>
+        </GateContext.Provider>
+      </BrowsePrefsContext.Provider>
+    )
+    let host!: HTMLElement
+    await act(async () => {
+      host = mount(drawnAs('grid'))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const first = host.querySelector('.volumes > li')
+    await act(async () => {
+      first
+        ?.querySelector<HTMLElement>(':scope > .tile-body > a:not(.get)')
+        ?.focus()
+      await Promise.resolve()
+    })
+    expect(
+      first?.querySelector('.tile-panel'),
+      'opened by focus',
+    ).not.toBeNull()
+
+    rerender(drawnAs('table'))
+    expect(watching(), 'the table').toEqual([])
+
+    rerender(drawnAs('grid'))
+    const grid = host.querySelector('.volumes')
+    const tile = host.querySelector('.volumes > li')
+    const panel = tile?.querySelector('.tile-panel')
+    expect(tile, 'a tile drawn anew').not.toBe(first)
+    expect(panel, 'the panel drawn in it').not.toBeNull()
+    const [watched, ...more] = watching()
+    expect(more, 'one observer').toEqual([])
+    expect(watched?.[0], 'its tile').toBe(tile)
+    expect(watched?.[1], 'its grid').toBe(grid)
+    const laid = vi.mocked(tilePanel.layPanel).mock.calls.at(-1)
+    expect(laid?.[0], 'laid').toBe(panel)
+    expect(laid?.[1], 'from its tile').toBe(tile)
+  })
 })
 
 /**
@@ -3139,6 +3206,41 @@ describe('Series, closing a volume’s panel (O283)', () => {
     expect(panelIn(first), 'on-select mode').not.toBeNull()
   })
 
+  it('closes on focus arriving outside once the mode an open on-select panel is in changes to button', async () => {
+    // In `on-select` mode focus outside a tile keeps the panel, so a
+    // keyboard can reach View and change the mode with one open.
+    vi.mocked(library.oneSeries).mockResolvedValue({
+      series: card(),
+      works: [work(), third],
+    })
+    const screenIn = (panel: 'button' | 'on-select') => (
+      <BrowsePrefsContext.Provider value={{ ...browseModule.defaults, panel }}>
+        <GateContext.Provider value={{ who: who(), signOut: () => {} }}>
+          <MemoryRouter initialEntries={['/series/7']}>
+            <Routes>
+              <Route path="/series/:id" element={<Series />} />
+            </Routes>
+          </MemoryRouter>
+        </GateContext.Provider>
+      </BrowsePrefsContext.Provider>
+    )
+    let host!: HTMLElement
+    await act(async () => {
+      host = mount(screenIn('on-select'))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const [first, second] = tilesOf(host)
+    await hoverOn(linkOf(first))
+    await focusOn(need(host.querySelector<HTMLElement>('.page-back'), 'Back'))
+    expect(panelIn(first), 'on-select mode').not.toBeNull()
+
+    rerender(screenIn('button'))
+    expect(panelIn(first), 'the mode changed').not.toBeNull()
+    await focusOn(linkOf(second))
+    expect(panelIn(first), 'button mode').toBeNull()
+  })
+
   it('closes an on-select panel on Escape with focus back on the tile’s link, and leaves it closed', async () => {
     const host = await page('on-select')
     const [tile] = tilesOf(host)
@@ -3333,6 +3435,37 @@ describe('Series, closing a volume’s panel (O283)', () => {
       second: panelIn(second) !== null,
       calls: calls().length,
     }).toEqual({ first: false, second: true, calls: 1 })
+  })
+
+  it('stays on the open on-select panel’s tile when the pointer comes back to it while a move waits on the save out', async () => {
+    const save = deferred<metadata.PatchResult>()
+    vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+    const host = await page('on-select')
+    const [first, second] = tilesOf(host)
+    await hoverOn(linkOf(first))
+    const field = fieldOf(first)
+    await focusOn(field)
+    await typeInto(field, renamed)
+    await flush(() => {
+      field.blur()
+    })
+    await hoverOn(linkOf(second))
+    expect({
+      first: panelIn(first) !== null,
+      second: panelIn(second) !== null,
+    }).toEqual({ first: true, second: false })
+
+    // The newer choice replaces the move waiting on the save.
+    await hoverOn(linkOf(first))
+    await flush(() => {
+      save.resolve(stored(renamed))
+    })
+    await flush()
+    expect({
+      first: panelIn(first) !== null,
+      second: panelIn(second) !== null,
+      calls: calls().length,
+    }).toEqual({ first: true, second: false, calls: 1 })
   })
 
   it('sends nothing when the pointer or focus comes back to the open on-select panel’s tile', async () => {

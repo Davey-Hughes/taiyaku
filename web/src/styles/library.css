@@ -137,8 +137,9 @@
  * `--space-1` on the top and sides, keeps a cover's hairline and a focus
  * ring unclipped; the margin takes it back, so the tracks are counted across
  * the grid's width. The bottom's `--space-2` keeps the cards clear of a
- * scrollbar. */
-.continue ul {
+ * scrollbar. `> ul`, here and below: the open card's panel, beside the
+ * list in the section, draws lists of its own. */
+.continue > ul {
   --track: var(--continue-col, var(--tile-min));
   list-style: none;
   margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) 0;
@@ -173,7 +174,7 @@
  * to any theme's ground and still take a press; it reads only alpha, so
  * `black` is no colour. One layer a side, intersected, so each side comes
  * and goes on its own. */
-.continue ul {
+.continue > ul {
   --fade: 80px;
   --fade-half: 50px;
   --fade-clear: 12px;
@@ -198,25 +199,25 @@
     --edge-after 200ms ease-out;
 }
 
-.continue ul[data-more-before] {
+.continue > ul[data-more-before] {
   --edge-before: 0;
 }
 
-.continue ul[data-more-after] {
+.continue > ul[data-more-after] {
   --edge-after: 0;
 }
 
 /* A focus ring shows whole, so the fade lifts while one is in the row, and
  * at once: a transition follows the style changed to, so with none set here
  * the change in is immediate and the row's own transition eases it back. */
-.continue ul:has(:focus-visible) {
+.continue > ul:has(:focus-visible) {
   --edge-before: 1;
   --edge-after: 1;
   transition: none;
 }
 
 @media (width < 900px) or (height < 500px) {
-  .continue ul {
+  .continue > ul {
     --fade: 40px;
     --fade-half: 25px;
     --fade-clear: 6px;
@@ -224,12 +225,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .continue ul {
+  .continue > ul {
     transition: none;
   }
 }
 
-.continue a,
+/* A card's link, and not the open card's ↓ Download beside the list;
+ * `:where()` holds the rule at the specificity of `.continue a`. */
+.continue > :where(ul) a,
 .continue .tile-unreadable {
   display: flex;
   flex-direction: column;
@@ -349,11 +352,12 @@
  * than widening its column. A volume's arm names the tile's own title, in
  * its link or its `tile-unreadable` box: an open volume draws the metadata
  * editor in the same tile, and its Title field, `label.field.title`, is a
- * form field drawn as the rest of the form. `:where()` keeps the arm at the
- * specificity of the other two. */
+ * form field drawn as the rest of the form. The Continue row's arm keeps to
+ * the list for the same reason: the open card's panel is in the row's
+ * section. `:where()` keeps both arms at the specificity of the first. */
 .grid .title,
 .volumes :where(a, .tile-unreadable) > .title,
-.continue .title {
+.continue > :where(ul) .title {
   font-family: var(--font-title);
   font-size: var(--text-ui);
   font-weight: 600;
@@ -361,7 +365,7 @@
   overflow-wrap: anywhere;
 }
 
-.continue .title {
+.continue > :where(ul) .title {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -547,14 +551,15 @@
 }
 
 /* The download control — spec C2 §8: on the cover's corner in `i`'s place,
- * or at the foot of the open panel (O283). Drawn as `.panel-open` below is,
- * so the two read as one kind of control.
+ * or at the foot of the open panel (O283), the Continue row's too (O417).
+ * Drawn as `.panel-open` below is, so the two read as one kind of control.
  *
  * **`align-self: start` is load-bearing, not tidying**: the panel's ↓ is an
  * item of the panel's column, and without it stretches to the panel's
  * width. A flex display centres the arrow in its 24 px box. jsdom computes
  * no layout, so `Series.test.tsx` passes either way and only a browser sees
  * it. */
+.continue a.get,
 .volumes a.get {
   display: inline-flex;
   align-items: center;
@@ -580,6 +585,9 @@
   font-size: var(--text-ui);
 }
 
+/* `.volumes .panel-open` ends the list: `index.css.test.ts` reads this
+ * rule by the selector before its brace. */
+.continue .panel-open,
 .volumes .panel-open {
   min-width: 24px;
   min-height: 24px;
@@ -594,9 +602,13 @@
 
 /* The boxes the open panel, and `i` and the corner ↓, are placed in: the
  * tile, and its body, which a glide moves with the cover (`Series.tsx`).
- * `> li`: the alignment panel draws a list of its own. */
+ * `> li`: the alignment panel draws a list of its own. On the Continue row,
+ * the section, which the open card's panel is laid in (`tilePanel.ts`), and
+ * the card, which holds its `i`. */
 .volumes > li,
-.volumes > li > .tile-body {
+.volumes > li > .tile-body,
+.continue,
+.continue > ul > li {
   position: relative;
 }
 
@@ -606,8 +618,10 @@
  * cover is the tile's width at 2:3, so 150% reaches the cover's foot at any
  * column width; `translate` lifts the control by its own height. Its size
  * is its minimum, border included and no padding, so the ↓, a glyph wider
- * than `i`, is drawn at `i`'s size. */
-.volumes > li > .tile-body > :is(.panel-open, a.get) {
+ * than `i`, is drawn at `i`'s size. A Continue card's `i` takes the same
+ * corner, the card being its cover's width too (O417). */
+.volumes > li > .tile-body > :is(.panel-open, a.get),
+.continue > ul > li > .panel-open {
   position: absolute;
   top: 0;
   right: 0.25rem;
@@ -624,14 +638,18 @@
  * Opacity, never `display` or `visibility`, so Tab still reaches it. Any
  * coarse pointer keeps it shown: a touch laptop's primary pointer hovers,
  * and its finger would tap a control it cannot see and land on the cover's
- * link. */
+ * link. A Continue card's `i` waits the same way (O417). */
 @media (hover: hover) and (not (any-pointer: coarse)) {
-  .volumes > li > .tile-body > :is(.panel-open, a.get) {
+  .volumes > li > .tile-body > :is(.panel-open, a.get),
+  .continue > ul > li > .panel-open {
     opacity: 0;
     pointer-events: none;
     transition: opacity 120ms;
   }
 
+  .continue > ul > li:hover > .panel-open,
+  .continue > ul > li:has(:focus-visible) > .panel-open,
+  .continue > ul > li > .panel-open[aria-expanded="true"],
   .volumes > li:hover > .tile-body > :is(.panel-open, a.get),
   .volumes > li:has(:focus-visible) > .tile-body > :is(.panel-open, a.get),
   .volumes > li > .tile-body > .panel-open[aria-expanded="true"] {
@@ -661,6 +679,7 @@
 /* No fade where the system asks for less motion. */
 @media (prefers-reduced-motion: reduce) {
   .volumes > li > .tile-body > :is(.panel-open, a.get),
+  .continue > ul > li > .panel-open,
   .volumes .cover-box .aligned {
     transition: none;
   }
@@ -718,17 +737,28 @@
   width: calc(200% + var(--tile-gap));
 }
 
+/* The Continue row's panel the same way, from the cover size and the least
+ * gap: the row's laid column and gap are set on its list (`continueRow.ts`),
+ * which the panel, beside the list, does not inherit. No wider than the
+ * section. */
+.continue > .tile-panel {
+  width: min(100%, calc(2 * var(--tile-min) + var(--tile-gap)));
+}
+
 /* What scrolls a series page while it draws the volume grid keeps its
- * scrollbar's gutter whether or not it scrolls (O283): `main`, and in the
- * phone layout, where `main` does not scroll (`shell.css`), the document.
- * A panel run past the end of a page that did not scroll brings a classic
- * scrollbar, which would narrow the grid and move every tile. */
-.library > main:has(.volumes) {
+ * scrollbar's gutter whether or not it scrolls (O283), and what scrolls a
+ * Library page whose panel is not off (O417): `main`, and in the phone
+ * layout, where `main` does not scroll (`shell.css`), the document. A panel
+ * run past the end of a page that did not scroll brings a classic
+ * scrollbar, which would narrow the page and move every tile. Keyed to the
+ * page's head, not the Continue row, which comes and goes with a read or a
+ * query and would take the gutter with it (O288). */
+.library > main:has(.volumes, .page-head[data-panel]) {
   scrollbar-gutter: stable;
 }
 
 @media (width < 900px) or (height < 500px) {
-  :root:has(.volumes) {
+  :root:has(.volumes, .page-head[data-panel]) {
     scrollbar-gutter: stable;
   }
 }
@@ -1035,6 +1065,8 @@
     min-height: 44px;
   }
 
+  .continue a.get,
+  .continue .panel-open,
   .volumes a.get,
   .volumes .panel-open {
     min-width: 44px;

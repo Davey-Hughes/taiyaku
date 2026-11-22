@@ -1,11 +1,13 @@
 // Shared by the browser tests that draw the home page inside the shell. Each
 // file keeps its own `vi.mock` of `src/library`, since a mock is hoisted per
 // file, answers its reads and waits for its own tiles.
-import { act, Profiler } from 'react'
+import { act, Profiler, type ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { onTestFinished } from 'vitest'
 import { page } from 'vitest/browser'
+import type { Me } from '../../src/api'
 import { browseModule } from '../../src/browseModule'
+import { GateContext } from '../../src/gate'
 import { Library } from '../../src/Library'
 import { NAMESPACE } from '../../src/prefs'
 import { Shell } from '../../src/Shell'
@@ -26,7 +28,8 @@ export function storedBrowse(): Record<string, unknown> {
  * real `localStorage` before the shell reads them; the shell stores its
  * preferences as it mounts and on every change, so the entry is removed
  * when the test ends either way. `onCommit`, where given, is called for
- * each commit inside `Library`, from a `Profiler` around it.
+ * each commit inside `Library`, from a `Profiler` around it; `who` is the
+ * account signed in, where given.
  */
 export async function homePage({
   width,
@@ -35,6 +38,8 @@ export async function homePage({
   browse = {},
   entry = '/',
   onCommit,
+  who,
+  routes,
 }: {
   width: number
   height?: number
@@ -42,6 +47,9 @@ export async function homePage({
   browse?: Record<string, unknown>
   entry?: string
   onCommit?: () => void
+  who?: Me
+  /** Routes beside the home page's, such as the reader's. */
+  routes?: ReactNode
 }): Promise<HTMLElement> {
   onTestFinished(() => localStorage.removeItem(BROWSE_KEY))
   const stored = coverSize === undefined ? browse : { ...browse, coverSize }
@@ -53,24 +61,29 @@ export async function homePage({
   let host: HTMLElement | undefined
   await act(async () => {
     host = mount(
-      <MemoryRouter initialEntries={[entry]}>
-        <Routes>
-          <Route
-            path="/"
-            element={
-              <Shell>
-                {onCommit === undefined ? (
-                  <Library />
-                ) : (
-                  <Profiler id="library" onRender={onCommit}>
+      <GateContext
+        value={who === undefined ? undefined : { who, signOut: () => {} }}
+      >
+        <MemoryRouter initialEntries={[entry]}>
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <Shell>
+                  {onCommit === undefined ? (
                     <Library />
-                  </Profiler>
-                )}
-              </Shell>
-            }
-          />
-        </Routes>
-      </MemoryRouter>,
+                  ) : (
+                    <Profiler id="library" onRender={onCommit}>
+                      <Library />
+                    </Profiler>
+                  )}
+                </Shell>
+              }
+            />
+            {routes}
+          </Routes>
+        </MemoryRouter>
+      </GateContext>,
     )
     // The height chain `base.css` gives `#root`, which `mount()`'s host is
     // not: without it `.library`'s `height: 100%` acts as `auto`, and the

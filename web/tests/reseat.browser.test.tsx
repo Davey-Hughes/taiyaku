@@ -57,6 +57,10 @@ vi.mock('../src/library', async (importOriginal) => ({
   search: vi.fn(),
 }))
 
+/** `homePage` with Panel off: these hold the page without a panel's gutter (O417). */
+const homeGrid = (how: Parameters<typeof homePage>[0]) =>
+  homePage({ ...how, browse: { panel: 'off' } })
+
 /** Each listener `reseat.ts` holds on the signals it is told by, until its answer is called. */
 const signalled = vi.hoisted(() => new Set<() => void>())
 
@@ -182,7 +186,7 @@ const offBy = (cover: DOMRect, was: DOMRect) =>
 describe('a glide starts where each cover is drawn', () => {
   it('through the scroll Chromium anchors in the frame the columns change', async () => {
     // Seven 131 px columns across the grid; at 132, six.
-    const host = await homePage({ width: 1280, coverSize: 131 })
+    const host = await homeGrid({ width: 1280, coverSize: 131 })
     await act(async () => {
       await userEvent.click(need(host, '.view-button'))
     })
@@ -225,7 +229,7 @@ describe('a glide starts where each cover is drawn', () => {
     early.hidden = true
     // Wider than tall throughout: a window that turns square snaps, as a
     // phone's turn does.
-    const host = await homePage({ width: 1000, height: 600, coverSize: 144 })
+    const host = await homeGrid({ width: 1000, height: 600, coverSize: 144 })
     await wheeledTo(host, 1200)
     const seen = watched(host)
     await frames(2)
@@ -598,7 +602,7 @@ const PAGES: Record<
   'the home grid': {
     edges: [1215, 1375],
     open: async (width) => {
-      const host = await homePage({ width, coverSize: 144 })
+      const host = await homeGrid({ width, coverSize: 144 })
       return { host, list: need(host, 'main .grid') }
     },
   },
@@ -783,7 +787,7 @@ describe('a glide on the Cover size slider', () => {
   it('glides on a Cover size slider step that adds a column, and ends clean', async () => {
     // Six 132 px columns across the grid at 1280 px; at 131, seven.
     const opened = async () => {
-      const host = await homePage({ width: 1280, coverSize: 132 })
+      const host = await homeGrid({ width: 1280, coverSize: 132 })
       return { host, list: need(host, 'main .grid') }
     }
     const glides: boolean[] = []
@@ -808,7 +812,7 @@ describe('a glide on the Cover size slider', () => {
   it('starts where drawn through a mouse drag along the slider, across two column changes', async () => {
     // Seven columns at 124 px covers and 1280 px, six from 132, five from 158.
     const opened = async () => {
-      const host = await homePage({ width: 1280, coverSize: 124 })
+      const host = await homeGrid({ width: 1280, coverSize: 124 })
       return { host, list: need(host, 'main .grid') }
     }
     const drive = async () => {
@@ -898,7 +902,11 @@ async function app(width: number): Promise<HTMLElement> {
   })
   history.replaceState(null, '', '/')
   onTestFinished(() => localStorage.removeItem(BROWSE_KEY))
-  localStorage.setItem(BROWSE_KEY, JSON.stringify({ coverSize: 144 }))
+  // Panel off, as `homeGrid` draws the home page, and for its reason.
+  localStorage.setItem(
+    BROWSE_KEY,
+    JSON.stringify({ coverSize: 144, panel: 'off' }),
+  )
   const was = [window.innerWidth, window.innerHeight] as const
   onTestFinished(() => page.viewport(...was))
   await page.viewport(width, 844)
@@ -1043,7 +1051,7 @@ describe('a glide and React', () => {
   it('renders nothing through a glide', async () => {
     const onCommit = vi.fn()
     const [edge] = PAGES['the home grid'].edges
-    const host = await homePage({ width: edge - 8, coverSize: 144, onCommit })
+    const host = await homeGrid({ width: edge - 8, coverSize: 144, onCommit })
     const record = recorded(need(host, 'main .grid'))
     await frames(2)
     onCommit.mockClear()
@@ -1077,7 +1085,7 @@ const someMulti = () =>
 
 describe('what snaps', () => {
   it("snaps across the phone layout's edge by width", async () => {
-    const host = await homePage({ width: 924, coverSize: 144 })
+    const host = await homeGrid({ width: 924, coverSize: 144 })
     const record = recorded(need(host, 'main .grid'))
     await frames(2)
     await act(async () => {
@@ -1093,7 +1101,7 @@ describe('what snaps', () => {
 
   it('snaps across it by height where the column count holds', async () => {
     // 240 px covers lay as many columns at 1280 × 800 as at 1280 × 480.
-    const host = await homePage({ width: 1280, height: 800, coverSize: 240 })
+    const host = await homeGrid({ width: 1280, height: 800, coverSize: 240 })
     const record = recorded(need(host, 'main .grid'))
     await frames(2)
     await act(async () => {
@@ -1110,7 +1118,7 @@ describe('what snaps', () => {
 
   it('snaps a cover beyond 200 px of the view before and after, and glides one on screen or within 200 px', async () => {
     const [edge] = PAGES['the home grid'].edges
-    const host = await homePage({ width: edge - 8, coverSize: 144 })
+    const host = await homeGrid({ width: edge - 8, coverSize: 144 })
     const record = recorded(need(host, 'main .grid'))
     await frames(2)
     await act(async () => {
@@ -1160,7 +1168,7 @@ describe('what snaps', () => {
     })
     await reducedMotion(true)
     const [edge, next] = PAGES['the home grid'].edges
-    const host = await homePage({ width: edge - 8, coverSize: 144 })
+    const host = await homeGrid({ width: edge - 8, coverSize: 144 })
     const record = recorded(need(host, 'main .grid'))
     await frames(2)
     await act(async () => {
@@ -1181,7 +1189,7 @@ describe('what snaps', () => {
     async (_, past) => {
       someMulti()
       const [edge] = PAGES['the home grid'].edges
-      const host = await homePage({ width: edge - 8, coverSize: 144 })
+      const host = await homeGrid({ width: edge - 8, coverSize: 144 })
       const list = need(host, 'main .grid')
       const record = recorded(list)
       await frames(2)
@@ -1244,7 +1252,7 @@ async function upright() {
     added: [],
     read: [],
   })
-  const host = await homePage({ width: 440, height: 956, coverSize: 121 })
+  const host = await homeGrid({ width: 440, height: 956, coverSize: 121 })
   const turn = await screenTurns()
   await turn('portrait-primary')
   await expect
@@ -1435,7 +1443,7 @@ async function gridOf(count: number, width: number): Promise<HTMLElement> {
     series: Array.from({ length: count }, (_, i) => series(i + 1)),
     unfiled: [],
   })
-  const host = await homePage({ width, coverSize: 144 })
+  const host = await homeGrid({ width, coverSize: 144 })
   await expect.poll(() => need(host, 'main .grid').children.length).toBe(count)
   return host
 }
@@ -1532,7 +1540,7 @@ describe('what a frame reads', () => {
 describe('the self-check', () => {
   it('snaps a list not laid where its arithmetic says', async () => {
     const [edge] = PAGES['the home grid'].edges
-    const host = await homePage({ width: edge - 8, coverSize: 144 })
+    const host = await homeGrid({ width: edge - 8, coverSize: 144 })
     const list = need(host, 'main .grid')
     // Covers stand this far in from the list's edge, which the arithmetic,
     // laying them from its box's corner, does not model.
@@ -1620,7 +1628,7 @@ describe("a glide the phone layout's edge interrupts", () => {
       )
       before.hidden = true
     }
-    const host = await homePage({
+    const host = await homeGrid({
       width: drive.from,
       height: drive.height,
       coverSize: 144,
@@ -1712,7 +1720,7 @@ describe('a glide after a scroll', () => {
     ['while the covers glide, then the next change', true],
   ] as const)('starts where drawn after a scroll %s', async (_, gliding) => {
     const [edge] = PAGES['the home grid'].edges
-    const host = await homePage({ width: edge - 2, coverSize: 144 })
+    const host = await homeGrid({ width: edge - 2, coverSize: 144 })
     const record = recorded(need(host, 'main .grid'))
     await frames(2)
     await act(async () => {
@@ -1758,7 +1766,7 @@ describe('a glide after a scroll', () => {
 
   it('reads where a list is drawn after a scroll, where its box alone changed size', async () => {
     const [edge] = PAGES['the home grid'].edges
-    const host = await homePage({ width: edge - 2, coverSize: 144 })
+    const host = await homeGrid({ width: edge - 2, coverSize: 144 })
     const list = need(host, 'main .grid')
     // Room below the covers: the list's box grows, the box its covers are
     // laid in does not.

@@ -104,12 +104,31 @@ box on 2026-11-13 (`2026-11-13-phone-fixes-design.md:146-151`), and laid
 again when the window or the page area changes width. Above the covers
 and their marks, under the phone bar and View, and drawn as View's panel
 is: 12 px padding, a `--line-strong` hairline, `--surface`, its shadow.
+*Since 2026-11-22 (O417) a Continue card's panel, the same
+`.tile-panel`, lies under the row rather than under its card: from the
+row's foot, below the room the row keeps under its cards and its own
+scrollbar there, over the chips and the grid. It is a child of the row's
+section, not of its card, because the row's list scrolls sideways and is
+masked for its fade, and would clip it. It is two cards and the row's
+own gap wide, laid as a tile's panel is from the card's box held to the
+page area first, and laid again outside React whenever the card moves;
+see O417's row in `docs/status.md`.*
 
 **Closing** in `button` mode: on Escape, a press outside the tile and its
 panel, or `i` again (owner). Escape sends focus back to `i`. An Escape in
 a focused Title field first puts its title back; the next one closes the
 panel. It also closes when focus arrives outside, as `usePopover` does
 (controller; settled item 6). No close loses an edit (settled item 3).
+*Since 2026-11-22 (O417) the Continue row's panel has these closes too,
+a press or a focus in it counting as inside its card though it lies
+outside the card in the document, and in either mode one of its own, on
+the owner's ruling on a scroll of the row: once its card has wholly left
+the row's view it closes, after the editor's save, unless the card comes
+back into view while that close waits (a read that brings it back is
+O439). It also closes when its card can no longer draw it. Tab runs from
+the card's last stop into the panel and from the panel's last stop on to
+the next card, and Shift+Tab back; in `on-select` mode focus or the
+pointer coming into the panel counts as its card's.*
 
 **Contents**, top to bottom, 12 px apart: the Title field, the alignment
 detail, ↓ Download (owner, round 3). The stamp section, which the editor
@@ -143,6 +162,13 @@ by `i`'s rule below, with today's `href`, `download`, `aria-label` and
 guards; it is the only download such a tile has, so an `on-select` panel
 does not repeat it. (owner, after review) So every mode keeps a download
 in the grid, and no tile has more than one control on its cover.
+*Since 2026-11-22 (O417) ↓ does not take `i`'s corner on a Continue
+card, which has `i` in `button` mode only: on the owner's ruling no
+Continue card has ↓ on its cover in any mode, and its `on-select` panel
+offers no download, as a volume's does not. "Every mode keeps a download
+in the grid" stays a sentence about a series page's volumes. ↓ Download
+at the foot of the row's `button`-mode panel downloads the edition the
+card shows, the one its link opens.*
 
 **`on-select` mode** keeps its overlay and gains `button`'s closes:
 Escape (focus back to the tile's link) and a press outside the tile and
@@ -159,6 +185,14 @@ from 900 px up, the document root below, and only where `.volumes` is
 drawn. A panel running past the end of a page that did not scroll adds a
 classic scrollbar, which narrows the grid and moves every tile.
 (controller; the prototype added it unasked)
+*Since 2026-11-22 (O417) a Library page keeps the gutter too while
+`panel` is not `off`, keyed to its head (`.page-head[data-panel]`)
+rather than to the Continue row, which comes and goes with a read and a
+query and would move the page area with it. So with classic scrollbars a
+Library page too short to scroll is a scrollbar's width narrower than
+before, with a Continue row or without one, and switching Panel between
+Off and either other setting in View widens or narrows it by that
+width.*
 
 **Phone and desktop.** Touch always shows a 44 px `i`, a hover pointer a
 24 px one on hover or focus. At 390 px the panel spans the page area from

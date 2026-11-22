@@ -3,9 +3,9 @@
  *
  * **Contextual, not a metadata section.** There is no route to navigate to:
  * the same editor mounts wherever the thing being corrected already renders
- * — a volume's own title, on the series page — because "the correction is
+ * — a volume's own title, in its `i` panel — because "the correction is
  * always prompted by looking at something wrong" (§5's own words). This file
- * knows nothing about a route or which caller mounted it; `Series.tsx`
+ * knows nothing about a route or which caller mounted it; `VolumePanel.tsx`
  * decides when one belongs on screen and which PATCH route `onPatch` calls.
  *
  * **Scope: the one field every one of §5's contextual entry points can edit
@@ -256,7 +256,10 @@ function fitTitle(box: HTMLTextAreaElement) {
   box.scrollTop = scrolled
 }
 
-/** What `Series.tsx` holds of the open editor, so that no close loses a title. */
+/**
+ * What `useVolumePanel` holds of the open editor, so that no close loses a
+ * title.
+ */
 export interface TitleFlush {
   /**
    * A blank title is put back first. Then `null` when nothing typed is
@@ -271,7 +274,7 @@ export interface TitleFlush {
   /**
    * Whether the field holds a title whose save failed. A leave, an Enter
    * or a close asks for it to be sent again; a pointer passing over tiles
-   * does not, so `Series` moves no panel by hover while this holds.
+   * does not, so `useVolumePanel` moves no panel by hover while this holds.
    */
   failed(): boolean
 }
@@ -306,14 +309,18 @@ export function MetadataEditor({
    * screen could tell them.
    */
   canStamp?: boolean
-  /** Where `Series` is handed the editor's `flush`, which its closes wait on. */
+  /**
+   * Where `useVolumePanel` is handed the editor's `flush`, which its closes
+   * wait on.
+   */
   ref?: Ref<TitleFlush>
 }) {
   const [value, setValue] = useState(title)
   /**
    * The field's text, as `value` holds it, for the readers no render
    * reaches: a save as it lands, which closes over the render that sent
-   * it, and `flush`, which `Series` calls from its document listeners.
+   * it, and `flush`, which `useVolumePanel` calls from its document
+   * listeners.
    */
   const latest = useRef(title)
   /** Sets the field's text and `latest` together, so neither lags. */
@@ -622,8 +629,8 @@ export function MetadataEditor({
         setSaving(false)
         setFailure(messageOf(err))
         // Focused, the field holds a title not stored, which its own Escape
-        // puts back; unmarked, `Series` would take that Escape as a close
-        // and send the failed title again.
+        // puts back; unmarked, `useVolumePanel` would take that Escape as a
+        // close and send the failed title again.
         if (document.activeElement === titleBox.current) setEditing(true)
         return false
       },

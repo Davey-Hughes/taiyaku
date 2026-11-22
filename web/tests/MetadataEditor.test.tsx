@@ -1192,9 +1192,9 @@ describe('MetadataEditor, a title changed while a save is out (O283)', () => {
 
 describe('MetadataEditor’s flush, which a close waits on (O283)', () => {
   /**
-   * `flush` called as `Series` calls it, from outside the editor. Its
-   * answer comes back wrapped: an async function's own answer would wait
-   * on it.
+   * `flush` called as `useVolumePanel` calls it, from outside the editor.
+   * Its answer comes back wrapped: an async function's own answer would
+   * wait on it.
    */
   const flushFrom = async (handle: RefObject<TitleFlush | null>) => {
     let answer: Promise<boolean> | null | undefined

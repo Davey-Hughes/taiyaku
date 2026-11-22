@@ -3,6 +3,8 @@ import {
   Link,
   MemoryRouter,
   type MemoryRouterProps,
+  Route,
+  Routes,
   useLocation,
   useNavigate,
   useNavigationType,
@@ -11,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Me } from '../src/api'
 import {
   BrowseControlsContext,
+  type BrowsePrefs,
   BrowsePrefsContext,
   browseModule,
 } from '../src/browseModule'
@@ -18,6 +21,8 @@ import { GateContext } from '../src/gate'
 import * as library from '../src/library'
 import type { LibraryStatus } from '../src/library'
 import { Library } from '../src/Library'
+import * as matches from '../src/matches'
+import * as metadata from '../src/metadata'
 import { invalidateLibraryViews } from '../src/pageReads'
 import { PHONE_LAYOUT_PARTS } from '../src/phoneLayout'
 import type { ScanFeed } from '../src/scanFeed'
@@ -25,7 +30,9 @@ import { SEARCH_BOX_ID } from '../src/searchHits'
 import { STATUS_FAILED, StatusContext } from '../src/shell'
 import { Sidebar } from '../src/Sidebar'
 import { deferred, flush, land } from './support/async'
+import { emptyDerive } from './support/derive'
 import { FirstCommit } from './support/firstCommit'
+import { press, submit, typeInto } from './support/input'
 import { mount, rerender } from './support/mount'
 import { feedJob, serveFeed } from './support/scanFeed'
 import {
@@ -40,6 +47,19 @@ vi.mock('../src/library', async (importOriginal) => ({
   home: vi.fn(),
   grid: vi.fn(),
   search: vi.fn(),
+  // The Continue row's panel reads its card's work as it opens.
+  work: vi.fn(),
+}))
+
+vi.mock('../src/metadata', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/metadata')>()),
+  patchWork: vi.fn(),
+}))
+
+vi.mock('../src/matches', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/matches')>()),
+  // A Split pressed in the Continue row's panel.
+  splitMatch: vi.fn(),
 }))
 
 /**
@@ -1918,7 +1938,7 @@ describe('the library page’s View panel — spec §2', () => {
     ).toEqual(['visually-hidden', 'search-box', 'view-menu'])
   })
 
-  it('holds Continue strip, Cover size and Reset, in sentence case', async () => {
+  it('holds Continue strip, Panel, Cover size and Reset, in sentence case', async () => {
     const panel = openView(await mountWithView())
     // `control`, as the slider's label names its range by `for`.
     expect(
@@ -1932,6 +1952,7 @@ describe('the library page’s View panel — spec §2', () => {
       }),
     ).toEqual([
       ['Continue strip', 'checkbox', []],
+      ['Panel', 'SELECT', ['Off', 'Button', 'On-select']],
       ['Cover size', 'range', []],
     ])
     expect(
@@ -1953,6 +1974,1465 @@ describe('the library page’s View panel — spec §2', () => {
     expect(viewButton(host)).toBe(button)
     expect(button.getAttribute('aria-expanded')).toBe('false')
     expect(panel.hidden).toBe(true)
+  })
+})
+
+/**
+ * The Continue row's `i` (O417): the series page's panel, drawn under the
+ * row as a child of its section, for each readable card. Three cards,
+ * readable, unreadable, readable, whose slugs are not their ids, so a read
+ * or a download asked by id or by position names the wrong work.
+ */
+describe('the Continue row’s panel — O417', () => {
+  const bride = work({
+    id: 21,
+    slug: 'bride-v02',
+    title: 'Bride v02',
+    volume: 2,
+  })
+  const lost = work({
+    id: 22,
+    slug: 'lost-v01',
+    title: 'Lost v01',
+    editions: [
+      {
+        key: 'raw',
+        label: 'Raw',
+        members: 1,
+        pages: 180,
+        missing: 1,
+        cover: coverOf('lost-v01', 'raw'),
+      },
+    ],
+  })
+  const heron = work({
+    id: 23,
+    slug: 'heron-v05',
+    title: 'Heron v05',
+    volume: 5,
+  })
+
+  const who = (over: Partial<Me> = {}): Me => ({
+    user_id: 1,
+    admin: false,
+    can_download: true,
+    can_stream: true,
+    can_stamp: false,
+    ...over,
+  })
+
+  beforeEach(() => {
+    vi.mocked(library.grid).mockResolvedValue({ series: [], unfiled: [] })
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: [bride, lost, heron],
+      added: [],
+      read: [],
+    })
+    // Each work's verdict its own, so a panel drawn from another card's read
+    // says so.
+    vi.mocked(library.work).mockReset()
+    vi.mocked(library.work).mockImplementation(async (slug) => ({
+      ...work({ slug }),
+      series: null,
+      alignments: [
+        {
+          from: 'raw',
+          to: 'en',
+          verdict: slug === 'heron-v05' ? 'confident' : 'partial',
+          slots: 180,
+          paired: 178,
+        },
+      ],
+    }))
+    vi.mocked(metadata.patchWork).mockReset()
+  })
+
+  /**
+   * The home page with `panel` set, under a router that draws the reader's
+   * address as a page of its own, so a link followed leaves the row. In
+   * `.library > main` as the shell draws it, where focus goes when a press
+   * in the panel takes its card away. Drawn again with another `panel`, the
+   * same page sees the preference change, as View's control changes it.
+   */
+  const rowTree = (panel: BrowsePrefs['panel'], me?: Me) => (
+    <GateContext
+      value={me === undefined ? undefined : { who: me, signOut: () => {} }}
+    >
+      <BrowsePrefsContext value={{ ...browseModule.defaults, panel }}>
+        <MemoryRouter initialEntries={['/']}>
+          <StatusContext.Provider value={defaultStatus}>
+            <div className="library">
+              <main>
+                <Routes>
+                  <Route path="/" element={<Library />} />
+                  <Route
+                    path="/read/:slug"
+                    element={<p className="reader" />}
+                  />
+                </Routes>
+              </main>
+            </div>
+          </StatusContext.Provider>
+        </MemoryRouter>
+      </BrowsePrefsContext>
+    </GateContext>
+  )
+  /** `rowTree` mounted, its reads landed and its row drawn. */
+  const row = async (panel: BrowsePrefs['panel'], me?: Me) => {
+    let host!: HTMLElement
+    await act(async () => {
+      host = mount(rowTree(panel, me))
+    })
+    await land()
+    if (host.querySelector('section.continue') === null) {
+      throw new Error('no Continue row drawn')
+    }
+    return host
+  }
+
+  const cards = (host: HTMLElement) => [
+    ...host.querySelectorAll<HTMLLIElement>('section.continue > ul > li'),
+  ]
+
+  /** The `index`th card's `i`, pressed, and the read it sends landed. */
+  const pressI = async (host: HTMLElement, index: number) => {
+    const i = cards(host)[index].querySelector<HTMLButtonElement>(
+      ':scope > .panel-open',
+    )
+    if (i === null) throw new Error(`card ${index} has no i`)
+    await flush(() => {
+      i.click()
+    })
+    await land()
+    return i
+  }
+
+  /** The alignment lines of every panel drawn, by their words. */
+  const verdicts = (host: HTMLElement) =>
+    [...host.querySelectorAll('.tile-panel')].map((panel) =>
+      [...panel.querySelectorAll('.alignment-panel li')].map(
+        (li) => li.textContent,
+      ),
+    )
+
+  /** The row's panel, a child of its section. */
+  const panelOf = (host: HTMLElement) =>
+    host.querySelector<HTMLElement>('section.continue > .tile-panel')
+  const need = <T extends Element>(el: T | null | undefined, what: string) => {
+    if (!el) throw new Error(`no ${what}`)
+    return el
+  }
+  const iOf = (card: Element) =>
+    need(card.querySelector<HTMLButtonElement>(':scope > .panel-open'), 'i')
+  const linkOf = (card: Element) =>
+    need(card.querySelector<HTMLAnchorElement>(':scope > a'), 'link')
+  const titlesOf = (host: HTMLElement) =>
+    cards(host).map((li) => li.querySelector('.title')?.textContent)
+  const fieldIn = (host: HTMLElement) =>
+    need(
+      panelOf(host)?.querySelector<HTMLTextAreaElement>(
+        'textarea[name="title"]',
+      ),
+      'Title field',
+    )
+  const focusOn = (el: HTMLElement) =>
+    flush(() => {
+      el.focus()
+    })
+  /** A press dispatched where it would land: jsdom has no pointer. */
+  const pressOn = (target: Element) =>
+    flush(() => {
+      target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    })
+  /** Escape pressed where focus is, as a keyboard sends it. */
+  const pressEscape = () =>
+    flush(() => {
+      ;(document.activeElement ?? document.body).dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }),
+      )
+    })
+  /**
+   * Tab pressed where focus is, as a keyboard sends it, with `held` the
+   * modifiers held; whether the page took it from the document's order.
+   * jsdom moves no focus for a Tab, so focus moves only where the page
+   * moves it.
+   */
+  const pressTab = async (held: KeyboardEventInit = {}) => {
+    const tab = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+      ...held,
+    })
+    await flush(() => {
+      ;(document.activeElement ?? document.body).dispatchEvent(tab)
+    })
+    return tab.defaultPrevented
+  }
+  /** A pointer entering `target`; React's `onMouseEnter` hears `mouseover`. */
+  const hoverOn = async (target: Element) => {
+    await flush(() => {
+      target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    })
+    await land()
+  }
+  /**
+   * The pointer moving from `from` straight into `to`: React hears the
+   * move from the `mouseout`, whose `relatedTarget` is where it went, as
+   * one leave and one enter.
+   */
+  const crossTo = async (from: Element, to: Element) => {
+    await flush(() => {
+      from.dispatchEvent(
+        new MouseEvent('mouseout', { bubbles: true, relatedTarget: to }),
+      )
+      to.dispatchEvent(
+        new MouseEvent('mouseover', { bubbles: true, relatedTarget: from }),
+      )
+    })
+    await land()
+  }
+  /** The home lists answer `drawn` from the next read on. */
+  const continuing = (...drawn: library.WorkCard[]) => {
+    vi.mocked(library.home).mockResolvedValue({
+      continuing: drawn,
+      added: [],
+      read: [],
+    })
+  }
+
+  it('gives each readable card one i, named for it, beside its link and not in it, and an unreadable card none', async () => {
+    const host = await row('button')
+    expect(
+      cards(host).map((li) => {
+        const buttons = [...li.querySelectorAll('button.panel-open')]
+        const link = li.querySelector(':scope > a')
+        return {
+          buttons: buttons.length,
+          name: buttons[0]?.getAttribute('aria-label'),
+          child: buttons[0]?.parentElement === li,
+          inLink: buttons[0] !== undefined && link?.contains(buttons[0]),
+          expanded: buttons[0]?.getAttribute('aria-expanded'),
+        }
+      }),
+    ).toEqual([
+      {
+        buttons: 1,
+        name: 'details for Bride v02',
+        child: true,
+        inLink: false,
+        expanded: 'false',
+      },
+      {
+        buttons: 0,
+        name: undefined,
+        child: false,
+        inLink: false,
+        expanded: undefined,
+      },
+      {
+        buttons: 1,
+        name: 'details for Heron v05',
+        child: true,
+        inLink: false,
+        expanded: 'false',
+      },
+    ])
+  })
+
+  it('draws no i with the panel off, and opens no panel on a pointer or a focus', async () => {
+    const host = await row('off')
+    expect(host.querySelectorAll('.panel-open')).toHaveLength(0)
+    for (const li of cards(host)) {
+      const target = li.firstElementChild
+      if (target === null) throw new Error('an empty card')
+      await flush(() => {
+        target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+        target.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+      })
+    }
+    await land()
+    expect(host.querySelectorAll('.tile-panel')).toHaveLength(0)
+    expect(vi.mocked(library.work)).not.toHaveBeenCalled()
+  })
+
+  it('draws no i on select, and opens the panel of the readable card focused or pointed at', async () => {
+    const host = await row('on-select')
+    expect(host.querySelectorAll('.panel-open')).toHaveLength(0)
+    const [first, unreadableCard, third] = cards(host)
+    await flush(() => {
+      third
+        .querySelector(':scope > a')
+        ?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+    })
+    await land()
+    expect(vi.mocked(library.work).mock.calls).toEqual([['heron-v05']])
+    expect(verdicts(host)).toEqual([['raw → en confident · 178 of 180']])
+    // An unreadable card has no panel in any mode, so a pointer over it
+    // leaves the panel where it is.
+    await flush(() => {
+      unreadableCard.firstElementChild?.dispatchEvent(
+        new MouseEvent('mouseover', { bubbles: true }),
+      )
+    })
+    await land()
+    expect(vi.mocked(library.work).mock.calls).toEqual([['heron-v05']])
+    expect(verdicts(host)).toEqual([['raw → en confident · 178 of 180']])
+    await flush(() => {
+      first
+        .querySelector(':scope > a')
+        ?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    })
+    await land()
+    expect(vi.mocked(library.work).mock.calls).toEqual([
+      ['heron-v05'],
+      ['bride-v02'],
+    ])
+    expect(verdicts(host)).toEqual([['raw → en partial · 178 of 180']])
+  })
+
+  it('still opens the reader from a card’s link on select', async () => {
+    const host = await row('on-select')
+    const link = cards(host)[2].querySelector<HTMLAnchorElement>(':scope > a')
+    expect(link?.getAttribute('href')).toBe('/read/heron-v05')
+    await flush(() => {
+      link?.click()
+    })
+    expect(host.querySelector('section.continue')).toBeNull()
+    expect(host.querySelector('p.reader')).not.toBeNull()
+  })
+
+  it('opens a card’s panel under the row, from one read of that card’s work, and i names the panel', async () => {
+    const host = await row('button')
+    const section = host.querySelector('section.continue')
+    const i = await pressI(host, 2)
+    expect(vi.mocked(library.work).mock.calls).toEqual([['heron-v05']])
+    const panels = [...host.querySelectorAll<HTMLElement>('.tile-panel')]
+    expect(panels).toHaveLength(1)
+    expect(panels[0].parentElement).toBe(section)
+    expect(verdicts(host)).toEqual([['raw → en confident · 178 of 180']])
+    expect(
+      cards(host).map((li) =>
+        li.querySelector(':scope > .panel-open')?.getAttribute('aria-expanded'),
+      ),
+    ).toEqual(['false', undefined, 'true'])
+    expect(panels[0].id).not.toBe('')
+    expect(i.getAttribute('aria-controls')).toBe(panels[0].id)
+  })
+
+  it('draws the Title field afresh for each card its panel opens under, and saves it for that card', async () => {
+    const host = await row('button', who({ admin: true }))
+    const field = () => {
+      const found = host.querySelector<HTMLTextAreaElement>(
+        '.tile-panel textarea[name="title"]',
+      )
+      if (found === null) throw new Error('no Title field')
+      return found
+    }
+    await pressI(host, 0)
+    expect(field().value).toBe('Bride v02')
+    await pressI(host, 2)
+    expect(field().value).toBe('Heron v05')
+    vi.mocked(metadata.patchWork).mockResolvedValueOnce({
+      taiyaku_library: 1,
+      updated: '2026-11-22T00:00:00Z',
+      title: 'Heron, the fifth',
+      persisted: true,
+    })
+    await typeInto(field(), 'Heron, the fifth')
+    const form = host.querySelector('.tile-panel .metadata-editor')
+    if (form === null) throw new Error('no editor')
+    await submit(form)
+    await land()
+    expect(vi.mocked(metadata.patchWork).mock.calls).toEqual([
+      ['heron-v05', { title: 'Heron, the fifth' }],
+    ])
+  })
+
+  describe('↓ Download at the panel’s foot', () => {
+    /** Heron read in its second edition, which its card shows. */
+    const heronInEnglish = work({
+      ...heron,
+      editions: [
+        {
+          key: 'raw',
+          label: 'Raw',
+          members: 1,
+          pages: 180,
+          missing: 0,
+          cover: coverOf('heron-v05', 'raw'),
+        },
+        {
+          key: 'en',
+          label: 'English',
+          members: 1,
+          pages: 184,
+          missing: 0,
+          cover: coverOf('heron-v05', 'en'),
+        },
+      ],
+      opens: 'en',
+    })
+
+    beforeEach(() => {
+      vi.mocked(library.home).mockResolvedValue({
+        continuing: [bride, lost, heronInEnglish],
+        added: [],
+        read: [],
+      })
+    })
+
+    it('downloads the edition the card shows', async () => {
+      const host = await row('button', who())
+      await pressI(host, 2)
+      expect(
+        [...host.querySelectorAll('a.get')].map((a) => [
+          a.parentElement?.className,
+          a.getAttribute('href'),
+          a.textContent,
+          a.getAttribute('download'),
+          a.getAttribute('aria-label'),
+        ]),
+      ).toEqual([
+        [
+          'tile-panel',
+          '/api/works/heron-v05/en/download',
+          '↓ Download',
+          '',
+          'download Heron v05 — English',
+        ],
+      ])
+    })
+
+    it('is not offered to an account that may not download', async () => {
+      const host = await row('button', who({ can_download: false }))
+      await pressI(host, 2)
+      expect(verdicts(host)).toEqual([['raw → en confident · 178 of 180']])
+      expect(host.querySelectorAll('a.get')).toHaveLength(0)
+    })
+  })
+
+  it('closes on Escape with focus back on the card’s i, on i again, and on a press outside', async () => {
+    const host = await row('button', who())
+    const card = cards(host)[2]
+    await pressI(host, 2)
+    await focusOn(
+      need(panelOf(host)?.querySelector<HTMLElement>('a.get'), '↓ Download'),
+    )
+    await pressEscape()
+    expect(panelOf(host), 'after Escape').toBeNull()
+    expect(document.activeElement).toBe(iOf(card))
+
+    await pressI(host, 2)
+    expect(panelOf(host), 'opened again').not.toBeNull()
+    await pressI(host, 2)
+    expect(panelOf(host), 'after i again').toBeNull()
+
+    await pressI(host, 2)
+    await pressOn(need(host.querySelector('section.continue > h2'), 'heading'))
+    expect(panelOf(host), 'after a press outside').toBeNull()
+  })
+
+  it('stays open on a press inside its panel, which lies outside its card', async () => {
+    const host = await row('button', who({ admin: true }))
+    await pressI(host, 2)
+    const panel = need(panelOf(host), 'panel')
+    for (const [what, inside] of [
+      ['the Title field', panel.querySelector('textarea[name="title"]')],
+      ['the alignment detail', panel.querySelector('.alignment-panel')],
+      ['↓ Download', panel.querySelector('a.get')],
+      ['the card’s link', linkOf(cards(host)[2])],
+    ] as const) {
+      await pressOn(need(inside, what))
+      expect(panelOf(host), `after a press on ${what}`).toBe(panel)
+    }
+  })
+
+  it('stays open on focus arriving inside its panel in button mode, and closes on focus arriving outside', async () => {
+    const host = await row('button', who({ admin: true }))
+    await pressI(host, 2)
+    const panel = need(panelOf(host), 'panel')
+    for (const [what, inside] of [
+      ['the Title field', panel.querySelector<HTMLElement>('textarea')],
+      ['↓ Download', panel.querySelector<HTMLElement>('a.get')],
+    ] as const) {
+      await focusOn(need(inside, what))
+      expect(panelOf(host), `after focus on ${what}`).toBe(panel)
+    }
+    await focusOn(
+      need(
+        host.querySelector<HTMLElement>('.library-chip-group button'),
+        'chip',
+      ),
+    )
+    expect(panelOf(host), 'after focus outside').toBeNull()
+  })
+
+  it('joins a card and its panel for Tab: from i into the panel, back by Shift+Tab, and from its end past an unreadable card to the next card’s link', async () => {
+    const host = await row('button', who({ admin: true }))
+    const [first, , last] = cards(host)
+    await pressI(host, 0)
+    await focusOn(iOf(first))
+    expect(
+      { taken: await pressTab(), focus: document.activeElement },
+      'Tab from i',
+    ).toEqual({ taken: true, focus: fieldIn(host) })
+    expect(
+      {
+        taken: await pressTab({ shiftKey: true }),
+        focus: document.activeElement,
+      },
+      'Shift+Tab from the Title field',
+    ).toEqual({ taken: true, focus: iOf(first) })
+    await focusOn(
+      need(panelOf(host)?.querySelector<HTMLElement>('a.get'), '↓ Download'),
+    )
+    expect(
+      {
+        taken: await pressTab(),
+        focus: document.activeElement,
+        panel: panelOf(host),
+      },
+      'Tab from ↓ Download',
+    ).toEqual({ taken: true, focus: linkOf(last), panel: null })
+  })
+
+  it('leaves every other Tab to the document’s order: no panel open, the last card’s panel’s end, Shift+Tab from i, a modifier held, from the link and inside the panel', async () => {
+    const host = await row('button', who({ admin: true }))
+    const [first, , last] = cards(host)
+    await focusOn(iOf(first))
+    expect(await pressTab(), 'Tab from i, no panel open').toBe(false)
+
+    await pressI(host, 2)
+    await focusOn(
+      need(panelOf(host)?.querySelector<HTMLElement>('a.get'), '↓ Download'),
+    )
+    expect(await pressTab(), 'Tab from the last card’s panel').toBe(false)
+    await focusOn(iOf(last))
+    expect(await pressTab({ shiftKey: true }), 'Shift+Tab from i').toBe(false)
+    for (const held of ['ctrlKey', 'metaKey', 'altKey'] as const) {
+      expect(await pressTab({ [held]: true }), `Tab from i, ${held}`).toBe(
+        false,
+      )
+    }
+    await focusOn(linkOf(last))
+    expect(await pressTab(), 'Tab from the link').toBe(false)
+    await focusOn(fieldIn(host))
+    expect(await pressTab(), 'Tab inside the panel').toBe(false)
+  })
+
+  it('passes over a panel with no stop, a reader’s, for Tab from its card’s i', async () => {
+    const host = await row('button', who({ can_download: false }))
+    await pressI(host, 0)
+    // The fixture tells: the panel is open and holds nothing Tab stops on.
+    expect(
+      need(panelOf(host), 'panel').querySelectorAll(
+        'a[href], button, input, select, textarea, [tabindex]',
+      ),
+    ).toHaveLength(0)
+    await focusOn(iOf(cards(host)[0]))
+    expect(await pressTab()).toBe(false)
+  })
+
+  it('goes back by Shift+Tab from the next readable card’s link to the panel’s last stop while a save that failed holds the panel open, and leaves Shift+Tab from its own card’s link to the document’s order', async () => {
+    vi.mocked(metadata.patchWork).mockRejectedValue(
+      new Error('the library is read-only'),
+    )
+    const host = await row('button', who({ admin: true }))
+    const [first, , last] = cards(host)
+    await pressI(host, 0)
+    await typeInto(fieldIn(host), 'Bride, the second')
+    await focusOn(linkOf(last))
+    await land()
+    // The fixture tells: focus on Heron's link, past the unreadable card,
+    // and Bride's panel held open by the save that failed.
+    expect({
+      focus: document.activeElement,
+      open: iOf(first).getAttribute('aria-expanded'),
+      saves: vi.mocked(metadata.patchWork).mock.calls.length,
+    }).toEqual({ focus: linkOf(last), open: 'true', saves: 1 })
+    expect(
+      {
+        taken: await pressTab({ shiftKey: true }),
+        focus: document.activeElement,
+      },
+      'Shift+Tab from Heron’s link',
+    ).toEqual({
+      taken: true,
+      focus: panelOf(host)?.querySelector('a.get'),
+    })
+    await focusOn(linkOf(first))
+    expect(
+      await pressTab({ shiftKey: true }),
+      'Shift+Tab from Bride’s link',
+    ).toBe(false)
+  })
+
+  it('closes an on-select panel on Escape with focus on the card’s link', async () => {
+    const host = await row('on-select', who({ admin: true }))
+    const card = cards(host)[2]
+    await hoverOn(linkOf(card))
+    await focusOn(fieldIn(host))
+    // The field's own Escape: the panel stays.
+    await pressEscape()
+    expect(panelOf(host)?.contains(document.activeElement)).toBe(true)
+    await pressEscape()
+    expect(panelOf(host)).toBeNull()
+    expect(document.activeElement).toBe(linkOf(card))
+  })
+
+  // Held against the arm from the row's last stop left out, and against the
+  // arm back to it left out.
+  it('goes from the row’s last stop to the stop after the row, and back by Shift+Tab, while a save that failed holds an earlier card’s panel open', async () => {
+    vi.mocked(metadata.patchWork).mockRejectedValue(
+      new Error('the library is read-only'),
+    )
+    const host = await row('button', who({ admin: true }))
+    const [first, , last] = cards(host)
+    await pressI(host, 0)
+    await typeInto(fieldIn(host), 'Bride, the second')
+    await focusOn(iOf(last))
+    await land()
+    const chip = need(
+      host.querySelector<HTMLElement>('.library-chip-group button'),
+      'chip',
+    )
+    // The fixture tells: focus on the row's last stop, and Bride's panel
+    // held open by the save that failed.
+    expect({
+      focus: document.activeElement,
+      open: iOf(first).getAttribute('aria-expanded'),
+      saves: vi.mocked(metadata.patchWork).mock.calls.length,
+    }).toEqual({ focus: iOf(last), open: 'true', saves: 1 })
+    expect(
+      { taken: await pressTab(), focus: document.activeElement },
+      'Tab from Heron’s i',
+    ).toEqual({ taken: true, focus: chip })
+    expect(
+      {
+        taken: await pressTab({ shiftKey: true }),
+        focus: document.activeElement,
+      },
+      'Shift+Tab from the first chip',
+    ).toEqual({ taken: true, focus: iOf(last) })
+  })
+
+  // Held against the arm back from the stop after the row left out, and
+  // against that arm taken under the row's last card too.
+  it('goes back by Shift+Tab from the stop after the row to the last card’s link while the pointer holds an earlier card’s panel open on select, and leaves that Shift+Tab to the document’s order under the last card', async () => {
+    const host = await row('on-select', who({ admin: true }))
+    const [first, , last] = cards(host)
+    await hoverOn(linkOf(first))
+    const chip = need(
+      host.querySelector<HTMLElement>('.library-chip-group button'),
+      'chip',
+    )
+    await focusOn(chip)
+    // The fixture tells: Bride's panel open, focus on the first chip.
+    expect({ verdicts: verdicts(host), focus: document.activeElement }).toEqual(
+      { verdicts: [['raw → en partial · 178 of 180']], focus: chip },
+    )
+    expect(
+      {
+        taken: await pressTab({ shiftKey: true }),
+        focus: document.activeElement,
+      },
+      'Shift+Tab under Bride',
+    ).toEqual({ taken: true, focus: linkOf(last) })
+    await land()
+    // The fixture tells: focus on Heron's link moved the panel there.
+    expect(verdicts(host)).toEqual([['raw → en confident · 178 of 180']])
+    await focusOn(chip)
+    expect(await pressTab({ shiftKey: true }), 'Shift+Tab under Heron').toBe(
+      false,
+    )
+  })
+
+  describe('on select, a move to another card waiting on the save', () => {
+    const saving = () => {
+      const save = deferred<metadata.PatchResult>()
+      vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+      return async () => {
+        await flush(() => {
+          save.resolve({
+            taiyaku_library: 1,
+            updated: '2026-11-22T00:00:00Z',
+            title: 'Bride, the second',
+            persisted: true,
+          })
+        })
+        await land()
+      }
+    }
+    /** Bride's panel opened by `open`, and a title typed in it. */
+    const typed = async (open: (host: HTMLElement) => Promise<unknown>) => {
+      const host = await row('on-select', who({ admin: true }))
+      await open(host)
+      await land()
+      await focusOn(fieldIn(host))
+      await typeInto(fieldIn(host), 'Bride, the second')
+      return host
+    }
+    const BRIDE = [['raw → en partial · 178 of 180']]
+    const HERON = [['raw → en confident · 178 of 180']]
+
+    // Held against the panel left without its card's focus handler.
+    it('is dropped as focus comes back into the panel, by Shift+Tab from the next card’s link, and focus stays there', async () => {
+      const landed = saving()
+      const host = await typed((at) => focusOn(linkOf(cards(at)[0])))
+      const [, , last] = cards(host)
+      // On to Heron's link: the field's leave sends its save, and the move
+      // to Heron waits on it.
+      await focusOn(linkOf(last))
+      const taken = await pressTab({ shiftKey: true })
+      // The fixture tells: focus back in Bride's panel, held open with its
+      // save out.
+      expect({
+        taken,
+        verdicts: verdicts(host),
+        focus: panelOf(host)?.contains(document.activeElement),
+        saves: vi.mocked(metadata.patchWork).mock.calls,
+      }).toEqual({
+        taken: true,
+        verdicts: BRIDE,
+        focus: true,
+        saves: [['bride-v02', { title: 'Bride, the second' }]],
+      })
+      const at = document.activeElement
+
+      await landed()
+      expect({
+        verdicts: verdicts(host),
+        focus: document.activeElement === at,
+        saves: vi.mocked(metadata.patchWork).mock.calls.length,
+      }).toEqual({ verdicts: BRIDE, focus: true, saves: 1 })
+    })
+
+    // Held against the panel left without its card's pointer handler.
+    it('is dropped as the pointer comes back into the panel from that card', async () => {
+      const landed = saving()
+      const host = await typed((at) => hoverOn(linkOf(cards(at)[0])))
+      const [, , last] = cards(host)
+      const panel = need(panelOf(host), 'panel')
+      const detail = need(panel.querySelector('.alignment-panel'), 'detail')
+      // A press on the panel's blank space takes focus from the field, whose
+      // leave sends its save; the pointer goes up to Heron's card.
+      await flush(() => {
+        fieldIn(host).blur()
+      })
+      await crossTo(detail, linkOf(last))
+      // The fixture tells: Bride's panel held with its save out.
+      expect({
+        verdicts: verdicts(host),
+        saves: vi.mocked(metadata.patchWork).mock.calls.length,
+      }).toEqual({ verdicts: BRIDE, saves: 1 })
+
+      await crossTo(linkOf(last), detail)
+      await landed()
+      expect(verdicts(host)).toEqual(BRIDE)
+    })
+
+    // Held against either check left out: the panel's enter heard from
+    // its own card, or its card's enter heard from the panel.
+    it('is kept as the pointer crosses between the open card and its panel', async () => {
+      const landed = saving()
+      const host = await typed((at) => hoverOn(linkOf(cards(at)[0])))
+      const [first, , last] = cards(host)
+      const detail = need(
+        panelOf(host)?.querySelector('.alignment-panel'),
+        'detail',
+      )
+      // Focus on to Heron's link: the field's leave sends its save, and the
+      // move to Heron waits on it.
+      await focusOn(linkOf(last))
+      await crossTo(linkOf(first), detail)
+      await crossTo(detail, linkOf(first))
+      // The fixture tells: Bride's panel held with its save out.
+      expect({
+        verdicts: verdicts(host),
+        saves: vi.mocked(metadata.patchWork).mock.calls.length,
+      }).toEqual({ verdicts: BRIDE, saves: 1 })
+
+      await landed()
+      expect({
+        verdicts: verdicts(host),
+        focus: document.activeElement === linkOf(last),
+      }).toEqual({ verdicts: HERON, focus: true })
+    })
+  })
+
+  it('reads home again after a title saved in its panel, and the card draws the new title', async () => {
+    const host = await row('button', who({ admin: true }))
+    await pressI(host, 2)
+    vi.mocked(metadata.patchWork).mockResolvedValueOnce({
+      taiyaku_library: 1,
+      updated: '2026-11-22T00:00:00Z',
+      title: 'Heron, the fifth',
+      persisted: true,
+    })
+    vi.mocked(library.home).mockClear()
+    continuing(bride, lost, { ...heron, title: 'Heron, the fifth' })
+    await typeInto(fieldIn(host), 'Heron, the fifth')
+    await submit(need(panelOf(host)?.querySelector('.metadata-editor'), 'form'))
+    await land()
+    expect(vi.mocked(library.home)).toHaveBeenCalledTimes(1)
+    expect(titlesOf(host)).toEqual([
+      'Bride v02',
+      'Lost v01',
+      'Heron, the fifth',
+    ])
+    expect(iOf(cards(host)[2]).getAttribute('aria-label')).toBe(
+      'details for Heron, the fifth',
+    )
+    expect(panelOf(host), 'still open under its card').not.toBeNull()
+  })
+
+  describe('a Split answered in its panel', () => {
+    /** Heron's own read: its English joined to it by content, pair 7. */
+    const heronMarked = (): library.WorkDetail => ({
+      ...heron,
+      editions: [
+        ...heron.editions,
+        {
+          key: 'en',
+          label: 'English',
+          members: 1,
+          pages: 184,
+          missing: 0,
+          cover: coverOf('heron-v05', 'en'),
+          matched: { id: 7, score: 0.91 },
+        },
+      ],
+      series: null,
+      alignments: [],
+      kept_apart: [],
+    })
+
+    /**
+     * Heron's panel open in `mode` for an administrator, focus on Split's
+     * confirm, and the press made: the home lists answer `after` from then
+     * on. In `button` mode focus arriving on `main` closes the panel by
+     * itself; only `on-select` holds the row's own close.
+     */
+    const splitHeron = async (
+      mode: 'button' | 'on-select',
+      ...after: library.WorkCard[]
+    ) => {
+      vi.mocked(library.work).mockImplementation(async (slug) =>
+        slug === 'heron-v05'
+          ? heronMarked()
+          : { ...work({ slug }), series: null, alignments: [] },
+      )
+      vi.mocked(matches.splitMatch).mockReset()
+      vi.mocked(matches.splitMatch).mockImplementation(async () => {
+        continuing(...after)
+        return { split: [7], derive: emptyDerive }
+      })
+      const host = await row(mode, who({ admin: true }))
+      if (mode === 'button') await pressI(host, 2)
+      else await hoverOn(linkOf(cards(host)[2]))
+      await press(
+        need(panelOf(host)?.querySelector('button[name="split"]'), 'Split…'),
+      )
+      const confirm = need(
+        panelOf(host)?.querySelector<HTMLElement>(
+          'button[name="confirm-split"]',
+        ),
+        'its confirm',
+      )
+      await focusOn(confirm)
+      vi.mocked(library.home).mockClear()
+      await press(confirm)
+      await land()
+      expect(vi.mocked(matches.splitMatch).mock.calls).toEqual([
+        [7, 'heron-v05', 'en'],
+      ])
+      expect(vi.mocked(library.home)).toHaveBeenCalledTimes(1)
+      return host
+    }
+
+    /** A later read, as a scan's end sends, answering `drawn`. */
+    const readAgain = async (...drawn: library.WorkCard[]) => {
+      continuing(...drawn)
+      await flush(() => {
+        invalidateLibraryViews()
+      })
+      await land()
+    }
+
+    it('leaves focus on the panel where the read after it draws no Undo, and Shift+Tab from there goes back to the card’s i, the panel staying open', async () => {
+      const host = await splitHeron('button', bride, lost, heron)
+      const panel = need(panelOf(host), 'panel')
+      // The fixture tells: focus on the panel itself.
+      expect(document.activeElement).toBe(panel)
+      expect(
+        {
+          taken: await pressTab({ shiftKey: true }),
+          focus: document.activeElement,
+          panel: panelOf(host),
+        },
+        'Shift+Tab from the panel',
+      ).toEqual({ taken: true, focus: iOf(cards(host)[2]), panel })
+    })
+
+    it.each(['button', 'on-select'] as const)(
+      'gives focus to main where the read after it has no such card, and draws no panel when the card comes back (%s)',
+      async (mode) => {
+        const host = await splitHeron(mode, bride, lost)
+        expect(titlesOf(host)).toEqual(['Bride v02', 'Lost v01'])
+        expect(panelOf(host)).toBeNull()
+        expect(document.activeElement).toBe(
+          host.querySelector('.library > main'),
+        )
+
+        await readAgain(bride, lost, heron)
+        expect(titlesOf(host)).toEqual(['Bride v02', 'Lost v01', 'Heron v05'])
+        expect(panelOf(host)).toBeNull()
+        expect(
+          cards(host)[2].querySelector('[aria-expanded="true"]'),
+        ).toBeNull()
+      },
+    )
+
+    it.each(['button', 'on-select'] as const)(
+      'closes as for a card that left where the read after it finds the card unreadable (%s)',
+      async (mode) => {
+        const heronLost = work({
+          ...heron,
+          editions: [{ ...heron.editions[0], missing: 1 }],
+        })
+        const host = await splitHeron(mode, bride, lost, heronLost)
+        expect(titlesOf(host)).toEqual(['Bride v02', 'Lost v01', 'Heron v05'])
+        expect(cards(host)[2].querySelector('.panel-open')).toBeNull()
+        expect(panelOf(host)).toBeNull()
+        expect(document.activeElement).toBe(
+          host.querySelector('.library > main'),
+        )
+
+        await readAgain(bride, lost, heron)
+        // The fixture tells: the card is readable again.
+        expect(cards(host)[2].querySelector(':scope > a')).not.toBeNull()
+        expect(panelOf(host)).toBeNull()
+        expect(
+          cards(host)[2].querySelector('[aria-expanded="true"]'),
+        ).toBeNull()
+      },
+    )
+  })
+
+  it('closes an on-select panel when the strip goes, so the strip comes back with none', async () => {
+    vi.mocked(library.search).mockResolvedValue({
+      series: [],
+      unfiled: [],
+      query: 'heron',
+    })
+    const host = await row('on-select')
+    await hoverOn(linkOf(cards(host)[2]))
+    expect(verdicts(host)).toEqual([['raw → en confident · 178 of 180']])
+    const box = need(
+      host.querySelector<HTMLInputElement>('input[type="search"]'),
+      'search box',
+    )
+    // On select, focus arriving outside keeps the panel.
+    await focusOn(box)
+    expect(panelOf(host), 'focus in the box').not.toBeNull()
+    await typeInto(box, 'heron')
+    await land()
+    expect(host.querySelector('section.continue'), 'searching').toBeNull()
+    await typeInto(box, '')
+    await land()
+    expect(host.querySelector('section.continue'), 'cleared').not.toBeNull()
+    expect(panelOf(host)).toBeNull()
+  })
+
+  it.each(['button', 'on-select'] as const)(
+    'closes an open panel when Panel is switched to off, so switching back to %s draws none',
+    async (mode) => {
+      const host = await row(mode)
+      if (mode === 'button') await pressI(host, 2)
+      else await hoverOn(linkOf(cards(host)[2]))
+      expect(verdicts(host)).toEqual([['raw → en confident · 178 of 180']])
+      rerender(rowTree('off'))
+      await land()
+      expect(panelOf(host), 'off').toBeNull()
+      rerender(rowTree(mode))
+      await land()
+      expect(panelOf(host), `back to ${mode}`).toBeNull()
+      if (mode === 'button') {
+        expect(iOf(cards(host)[2]).getAttribute('aria-expanded')).toBe('false')
+      }
+    },
+  )
+
+  /**
+   * The open panel follows its card (O417): laid again as the row scrolls,
+   * as `useContinueRow` writes the row's style, and at a resize of the card,
+   * the row or the section; and closed once the card has wholly left the
+   * row's view. jsdom lays nothing out and has no `ResizeObserver`, so the
+   * boxes are stubbed as a browser lays them, and a stub observer keeps what
+   * each one watches and reports a resize to those watching it. The style
+   * watch is jsdom's own `MutationObserver`.
+   */
+  describe('the panel following its card', () => {
+    class StubResizeObserver {
+      static made: StubResizeObserver[] = []
+      watched: Element[] = []
+      report: ResizeObserverCallback
+      constructor(report: ResizeObserverCallback) {
+        this.report = report
+        StubResizeObserver.made.push(this)
+      }
+      observe(el: Element) {
+        this.watched.push(el)
+      }
+      unobserve(el: Element) {
+        this.watched = this.watched.filter((each) => each !== el)
+      }
+      disconnect() {
+        this.watched = []
+      }
+    }
+
+    /** What each observer watches, leaving out those that watch nothing. */
+    const watching = () =>
+      StubResizeObserver.made
+        .map((each) => each.watched)
+        .filter((watched) => watched.length > 0)
+
+    /** A resize of `el`, reported to each observer watching it. */
+    const resize = (el: Element) =>
+      flush(() => {
+        for (const each of [...StubResizeObserver.made]) {
+          if (each.watched.includes(el)) {
+            each.report([], each as unknown as ResizeObserver)
+          }
+        }
+      })
+
+    beforeEach(() => {
+      StubResizeObserver.made = []
+      vi.stubGlobal('ResizeObserver', StubResizeObserver)
+    })
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    /**
+     * The row's boxes as a browser lays them beside the sidebar: the section
+     * is the page area, 976 px wide from 264, its top at 120; the row's
+     * view, its padding box, runs from 264 to 1240, and its foot is at 380.
+     * Each card is `at.wide` px wide, `at.wide` and the 23 px gap on from
+     * the one before, drawn `at.scrolled` px left of where it stands at
+     * rest. At rest, Heron's panel lies 334 px into the area, 311 px wide.
+     */
+    const laidOut = (host: HTMLElement) => {
+      const section = need(
+        host.querySelector<HTMLElement>('section.continue'),
+        'section',
+      )
+      const list = need(
+        section.querySelector<HTMLElement>(':scope > ul'),
+        'row',
+      )
+      const at = { scrolled: 0, wide: 144 }
+      // Written before any panel opens, so no style watch hears it.
+      list.style.columnGap = '23px'
+      vi.spyOn(section, 'getBoundingClientRect').mockReturnValue({
+        left: 264,
+        right: 1240,
+        width: 976,
+        top: 120,
+        bottom: 420,
+      } as DOMRect)
+      vi.spyOn(list, 'getBoundingClientRect').mockReturnValue({
+        left: 260,
+        right: 1244,
+        width: 984,
+        top: 160,
+        bottom: 380,
+      } as DOMRect)
+      Object.defineProperty(list, 'clientLeft', { value: 4 })
+      Object.defineProperty(list, 'clientWidth', { value: 976 })
+      cards(host).forEach((card, index) => {
+        vi.spyOn(card, 'getBoundingClientRect').mockImplementation(() => {
+          const left = 264 + index * (at.wide + 23) - at.scrolled
+          return {
+            left,
+            right: left + at.wide,
+            width: at.wide,
+            top: 164,
+            bottom: 372,
+          } as DOMRect
+        })
+      })
+      return { section, list, at }
+    }
+
+    /** The row's panel's place, as its style lays it. */
+    const placeOf = (host: HTMLElement) => {
+      const panel = panelOf(host)
+      return panel === null
+        ? null
+        : {
+            left: panel.style.left,
+            top: panel.style.top,
+            width: panel.style.width,
+          }
+    }
+    const AT_REST = { left: '334px', top: '260px', width: '311px' }
+    /** The row scrolled `by` px on, and its `scroll` sent. */
+    const scrollRow = (
+      list: HTMLElement,
+      at: { scrolled: number },
+      by: number,
+    ) =>
+      flush(() => {
+        at.scrolled += by
+        list.dispatchEvent(new Event('scroll'))
+      })
+
+    // Held against a follow that adds no `scroll` listener to the row.
+    it('lies under its card as the row scrolls sideways, and inside the page area with the card half out of view', async () => {
+      const host = await row('button')
+      const { list, at } = laidOut(host)
+      await pressI(host, 2)
+      const panel = panelOf(host)
+      expect(placeOf(host), 'opened').toEqual(AT_REST)
+
+      await scrollRow(list, at, 167)
+      expect(panelOf(host), 'the same panel').toBe(panel)
+      expect(placeOf(host), 'one card on').toEqual({
+        left: '167px',
+        top: '260px',
+        width: '311px',
+      })
+
+      await scrollRow(list, at, 233)
+      expect(placeOf(host), 'its card half out').toEqual({
+        left: '0px',
+        top: '260px',
+        width: '311px',
+      })
+    })
+
+    // Held against a style watch that observes nothing.
+    it('lies under its card as the row is laid through its style, as a slide lays it', async () => {
+      const host = await row('button')
+      const { list, at } = laidOut(host)
+      await pressI(host, 2)
+      expect(placeOf(host), 'opened').toEqual(AT_REST)
+      await flush(() => {
+        at.wide = 160
+        list.style.setProperty('--continue-col', '160px')
+      })
+      expect(placeOf(host)).toEqual({
+        left: '366px',
+        top: '260px',
+        width: '343px',
+      })
+    })
+
+    // Held against each of the three left unwatched.
+    it.each(['card', 'row', 'section'] as const)(
+      'lies under its card after a resize of its %s',
+      async (which) => {
+        const host = await row('button')
+        const { section, list, at } = laidOut(host)
+        await pressI(host, 2)
+        expect(placeOf(host), 'opened').toEqual(AT_REST)
+        at.wide = 160
+        await resize({ card: cards(host)[2], row: list, section }[which])
+        expect(placeOf(host)).toEqual({
+          left: '366px',
+          top: '260px',
+          width: '343px',
+        })
+      },
+    )
+
+    // Held against the close left out, and against a close that gives focus
+    // to nothing.
+    it.each([
+      ['button', 'i'],
+      ['on-select', 'link'],
+    ] as const)(
+      'in %s mode, closes once its card has wholly left the row’s view, with focus from its panel on the card’s %s',
+      async (mode, to) => {
+        const host = await row(mode, who({ admin: true }))
+        const { list, at } = laidOut(host)
+        const card = cards(host)[2]
+        if (mode === 'button') await pressI(host, 2)
+        else await hoverOn(linkOf(card))
+        await focusOn(fieldIn(host))
+
+        await scrollRow(list, at, 400)
+        expect(placeOf(host), 'its card half out').toEqual({
+          left: '0px',
+          top: '260px',
+          width: '311px',
+        })
+
+        await scrollRow(list, at, 101)
+        await land()
+        expect(panelOf(host), 'wholly out').toBeNull()
+        expect(document.activeElement, `focus on the card’s ${to}`).toBe(
+          mode === 'button' ? iOf(card) : linkOf(card),
+        )
+        expect(vi.mocked(metadata.patchWork)).not.toHaveBeenCalled()
+      },
+    )
+
+    // Held against a close that gives focus to the card wherever focus is.
+    it('leaves focus where it is outside its panel as it closes on select', async () => {
+      const host = await row('on-select')
+      const { list, at } = laidOut(host)
+      await hoverOn(linkOf(cards(host)[2]))
+      const box = need(
+        host.querySelector<HTMLInputElement>('input[type="search"]'),
+        'search box',
+      )
+      await focusOn(box)
+      expect(panelOf(host), 'focus in the box').not.toBeNull()
+
+      await scrollRow(list, at, 501)
+      await land()
+      expect(panelOf(host), 'wholly out').toBeNull()
+      expect(document.activeElement).toBe(box)
+    })
+
+    // Held against the close dropped by a choice of the card it closes:
+    // focus or the pointer coming back into its panel while the save is out.
+    it.each(['focus', 'the pointer'] as const)(
+      'closes on select once its card has wholly left the row’s view and the save has landed, though %s came back into its panel meanwhile',
+      async (by) => {
+        const save = deferred<metadata.PatchResult>()
+        vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+        const host = await row('on-select', who({ admin: true }))
+        const { list, at } = laidOut(host)
+        await hoverOn(linkOf(cards(host)[2]))
+        await focusOn(fieldIn(host))
+        await typeInto(fieldIn(host), 'Heron v05 (2)')
+        // A press on the panel's blank space takes focus from the field,
+        // whose leave sends its save.
+        await flush(() => {
+          fieldIn(host).blur()
+        })
+        await scrollRow(list, at, 501)
+        await land()
+        const panel = need(panelOf(host), 'panel')
+        // The fixture tells: the card wholly out, and its panel held by the
+        // save out.
+        expect(vi.mocked(metadata.patchWork).mock.calls).toEqual([
+          ['heron-v05', { title: 'Heron v05 (2)' }],
+        ])
+        if (by === 'focus') await focusOn(fieldIn(host))
+        else
+          await hoverOn(need(panel.querySelector('.alignment-panel'), 'detail'))
+
+        await flush(() => {
+          save.resolve({
+            taiyaku_library: 1,
+            updated: '2026-11-22T00:00:00Z',
+            title: 'Heron v05 (2)',
+            persisted: true,
+          })
+        })
+        await land()
+        expect({
+          drawn: panelOf(host) !== null,
+          saves: vi.mocked(metadata.patchWork).mock.calls.length,
+        }).toEqual({ drawn: false, saves: 1 })
+      },
+    )
+
+    /**
+     * Heron's panel open in `mode` for an administrator, a title typed in it
+     * and its save held out, focus taken from the field, and Heron then
+     * scrolled wholly out of the row's view and back: answers the host and
+     * the save's landing.
+     */
+    const outAndBack = async (mode: 'button' | 'on-select') => {
+      const save = deferred<metadata.PatchResult>()
+      vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+      const host = await row(mode, who({ admin: true }))
+      const { list, at } = laidOut(host)
+      if (mode === 'button') await pressI(host, 2)
+      else await hoverOn(linkOf(cards(host)[2]))
+      await focusOn(fieldIn(host))
+      await typeInto(fieldIn(host), 'Heron v05 (2)')
+      // A press on the panel's blank space takes focus from the field,
+      // whose leave sends its save.
+      await flush(() => {
+        fieldIn(host).blur()
+      })
+      await scrollRow(list, at, 501)
+      await scrollRow(list, at, -501)
+      await land()
+      // The fixture tells: the save out, and the panel held for it.
+      expect({
+        drawn: panelOf(host) !== null,
+        saves: vi.mocked(metadata.patchWork).mock.calls,
+      }).toEqual({
+        drawn: true,
+        saves: [['heron-v05', { title: 'Heron v05 (2)' }]],
+      })
+      const landed = async () => {
+        await flush(() => {
+          save.resolve({
+            taiyaku_library: 1,
+            updated: '2026-11-22T00:00:00Z',
+            title: 'Heron v05 (2)',
+            persisted: true,
+          })
+        })
+        await land()
+      }
+      return { host, landed }
+    }
+
+    // Held against the close left waiting as the card comes back into view.
+    it.each(['button', 'on-select'] as const)(
+      'stays open on its card in %s mode once its save lands, the card having left the row’s view and come back',
+      async (mode) => {
+        const { host, landed } = await outAndBack(mode)
+        await landed()
+        expect({
+          drawn: panelOf(host) !== null,
+          saves: vi.mocked(metadata.patchWork).mock.calls.length,
+        }).toEqual({ drawn: true, saves: 1 })
+      },
+    )
+
+    // Held against the close left waiting as the card comes back into view,
+    // which the card's own focus or pointer then leaves waiting too.
+    it.each(['focus', 'the pointer'] as const)(
+      'stays open on select once its save lands, the card having come back into the row’s view and %s having come onto it',
+      async (by) => {
+        const { host, landed } = await outAndBack('on-select')
+        const link = linkOf(cards(host)[2])
+        if (by === 'focus') await focusOn(link)
+        else await hoverOn(link)
+        await landed()
+        expect({
+          drawn: panelOf(host) !== null,
+          focus: document.activeElement === link,
+          saves: vi.mocked(metadata.patchWork).mock.calls.length,
+        }).toEqual({ drawn: true, focus: by === 'focus', saves: 1 })
+      },
+    )
+
+    // Held against a card coming back into view dropping whatever waits on
+    // the save, rather than only the close its leaving asked.
+    it.each(['an Escape close', 'a move to Bride'] as const)(
+      'leaves %s waiting on the save as its card comes back into the row’s view, and makes it once the save lands',
+      async (what) => {
+        const save = deferred<metadata.PatchResult>()
+        vi.mocked(metadata.patchWork).mockReturnValueOnce(save.promise)
+        const host = await row('on-select', who({ admin: true }))
+        const { list, at } = laidOut(host)
+        await hoverOn(linkOf(cards(host)[2]))
+        await focusOn(fieldIn(host))
+        await typeInto(fieldIn(host), 'Heron v05 (2)')
+        // A press on the panel's blank space takes focus from the field,
+        // whose leave sends its save.
+        await flush(() => {
+          fieldIn(host).blur()
+        })
+        await scrollRow(list, at, 501)
+        if (what === 'an Escape close') await pressEscape()
+        else await focusOn(linkOf(cards(host)[0]))
+        await scrollRow(list, at, -501)
+        await land()
+        // The fixture tells: Heron's panel held, its save out.
+        expect({
+          verdicts: verdicts(host),
+          saves: vi.mocked(metadata.patchWork).mock.calls,
+        }).toEqual({
+          verdicts: [['raw → en confident · 178 of 180']],
+          saves: [['heron-v05', { title: 'Heron v05 (2)' }]],
+        })
+
+        await flush(() => {
+          save.resolve({
+            taiyaku_library: 1,
+            updated: '2026-11-22T00:00:00Z',
+            title: 'Heron v05 (2)',
+            persisted: true,
+          })
+        })
+        await land()
+        expect(verdicts(host)).toEqual(
+          what === 'an Escape close' ? [] : [['raw → en partial · 178 of 180']],
+        )
+      },
+    )
+
+    // Held against the close asked at each scroll with the card out.
+    it('stays open on its card’s failed save, and sends it once, as the row scrolls on', async () => {
+      vi.mocked(metadata.patchWork).mockRejectedValue(
+        new Error('the server is away'),
+      )
+      const host = await row('button', who({ admin: true }))
+      const { list, at } = laidOut(host)
+      await pressI(host, 2)
+      const panel = panelOf(host)
+      await typeInto(fieldIn(host), 'Heron v05 (2)')
+
+      await scrollRow(list, at, 501)
+      await land()
+      const saved = [['heron-v05', { title: 'Heron v05 (2)' }]]
+      expect({
+        same: panelOf(host) === panel,
+        failed: panel?.querySelector('[role="alert"]') !== null,
+        saves: vi.mocked(metadata.patchWork).mock.calls,
+      }).toEqual({ same: true, failed: true, saves: saved })
+
+      await scrollRow(list, at, 167)
+      await land()
+      expect({
+        same: panelOf(host) === panel,
+        saves: vi.mocked(metadata.patchWork).mock.calls,
+      }).toEqual({ same: true, saves: saved })
+    })
+
+    // Held against each of the three not undone when the follow moves to
+    // another card: the `scroll` listener, the style watch and the observer.
+    it('follows only the card its panel moved to, through a scroll, a style write and a resize', async () => {
+      const host = await row('button')
+      const { list, at } = laidOut(host)
+      await pressI(host, 0)
+      await pressI(host, 2)
+      expect(placeOf(host), 'moved to Heron').toEqual(AT_REST)
+
+      // Bride wholly out of the view, Heron in it.
+      await scrollRow(list, at, 167)
+      const laid = { left: '167px', top: '260px', width: '311px' }
+      expect(placeOf(host), 'after the scroll').toEqual(laid)
+      await flush(() => {
+        list.style.setProperty('--continue-gap', '23px')
+      })
+      expect(placeOf(host), 'after a style write').toEqual(laid)
+      await resize(list)
+      expect(placeOf(host), 'after a resize').toEqual(laid)
+      expect(verdicts(host)).toEqual([['raw → en confident · 178 of 180']])
+    })
+
+    // Held against the observer not disconnected as the panel closes.
+    it('watches its card, the row and the section while open, and none of them once closed', async () => {
+      const host = await row('button')
+      const { section, list } = laidOut(host)
+      const card = cards(host)[2]
+      expect(watching(), 'none open').toEqual([[list]])
+      await pressI(host, 2)
+      expect(watching(), 'open').toEqual([[list], [card, list, section]])
+      await pressI(host, 2)
+      expect(panelOf(host), 'closed').toBeNull()
+      expect(watching(), 'closed').toEqual([[list]])
+    })
   })
 })
 

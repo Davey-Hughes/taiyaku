@@ -1372,7 +1372,7 @@ describe('the place across the scroller swap, from 1280 × 800', () => {
  * on its side (956 × 440), its screen turned to match, and nothing in `act`
  * from here on. The page anchors its scroll or does not, as `anchors` says:
  * the keeper's put-back must land the same whichever a phone's browser
- * does through a turn.
+ * does through a turn. `panel`, where given, is the browse preference's.
  */
 async function phoneAt(
   path: string,
@@ -1380,9 +1380,10 @@ async function phoneAt(
     upright,
     coverSize,
     anchors,
-  }: { upright: boolean; coverSize: number; anchors: boolean },
+    panel,
+  }: { upright: boolean; coverSize: number; anchors: boolean; panel?: 'off' },
 ) {
-  localStorage.setItem(BROWSE_KEY, JSON.stringify({ coverSize }))
+  localStorage.setItem(BROWSE_KEY, JSON.stringify({ coverSize, panel }))
   // The screen first, as a phone's faces one way from the start: the
   // keeper counts a turn by it.
   const turn = await screenTurns()
@@ -1794,6 +1795,8 @@ describe.each([
       upright: true,
       coverSize: 121,
       anchors,
+      // Panel off: this holds the page without a panel's gutter (O417).
+      panel: 'off',
     })
     // Opened at the page's top by a real click, which focuses the page
     // too; the panel stays open as the page scrolls and turns.

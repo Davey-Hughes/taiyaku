@@ -899,7 +899,8 @@ describe('a tab row and a pill row stay two different rows', () => {
 /**
  * A volume tile's `i`, and its corner ↓ where it has no `i`, wait for the
  * tile to be pointed at or focused only where every pointer can hover
- * (O283). A touch laptop's primary pointer hovers, so `(hover: hover)` alone
+ * (O283), and so does a Continue card's `i`, in the same rule (O417). A
+ * touch laptop's primary pointer hovers, so `(hover: hover)` alone
  * would leave its finger tapping a control it cannot see. The browser cases
  * switch the rule by this text (`support/pointer.ts`'s `pointerRulesAs`), so
  * it is held here as written.
@@ -907,7 +908,7 @@ describe('a tab row and a pill row stay two different rows', () => {
 describe('a volume tile’s controls on the cover (O283)', () => {
   it('hides i only where every pointer hovers', () => {
     const hiding = withoutComments(librarySource).match(
-      /@media([^{]*)\{\s*\.volumes > li > \.tile-body > :is\(\.panel-open, a\.get\)\s*\{[^}]*\bopacity:\s*0;/,
+      /@media([^{]*)\{\s*\.volumes > li > \.tile-body > :is\(\.panel-open, a\.get\),\s*\.continue > ul > li > \.panel-open\s*\{[^}]*\bopacity:\s*0;/,
     )
     expect(hiding?.[1].trim()).toBe(
       '(hover: hover) and (not (any-pointer: coarse))',

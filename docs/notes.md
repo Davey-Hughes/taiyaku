@@ -32249,3 +32249,213 @@ logs are kept locally under `.superpowers/sdd/2026-11-22-o437/logs/`.
   `tests::every_connection_carries_the_busy_timeout` and
   `tests::several_first_opens_of_one_fresh_library_at_once_all_succeed`
   still do (`final-busy50.log`).
+
+## O417: the Continue row's `i` (2026-11-22)
+
+O417's row and the sentences it adds to O274, O283, O288 and O406 in
+`docs/status.md` say what the PR does. The pre-flight, the plan and the
+ledger are under `.superpowers/sdd/` (`2026-11-22-o417/`), which is not
+committed.
+
+**Why the panel is not inside its card.** The row's list scrolls sideways,
+and `overflow-x: auto` clips it downward as well; it is masked for its fade,
+and a mask paints everything inside it, a fixed-position child included. So
+the panel is a child of the row's section (`.continue > .tile-panel`), laid
+under the row by `tilePanel.ts`'s `layUnderRow`, and it lies after the list
+in the document, outside its card, where a volume's panel lies inside its
+tile's `li`. What a series page has from that nesting, the row builds by
+hand:
+
+- **The closes.** `useVolumePanel`'s close effect asks whether a press or a
+  focus lands inside the open tile or its panel (`inside`), so a press in
+  the row's panel is not a press outside its card. On a series page, whose
+  panel is inside its tile, the second half changes nothing.
+- **Tab.** Drawn after the list, the panel would follow the row's last card:
+  Tab from `i` would go on to the next card, and in `button` mode focus
+  arriving there closes the panel. `Library.tsx`'s `tabAcross` joins them:
+  from the card's last stop into the panel, from the panel's last stop on to
+  the next card with a stop, and Shift+Tab back across each, from the panel
+  itself too, where a Split or an Undo leaves focus. `i` names the panel in
+  `aria-controls` while it is open, since its `aria-expanded` no longer sits
+  beside what it expands.
+- **The pointer.** A pointer crossing between the open card and its panel
+  enters neither (`crossed`, read from `relatedTarget`), as a tile and the
+  panel nested in it are one element to a series page's handlers.
+- **Following.** A volume's panel moves with its tile by lying inside it.
+  The row's is laid again by `follow` whenever its card moves: on the row's
+  `scroll`; from a `ResizeObserver` on the card, the row and the section;
+  from a `MutationObserver` on the row's `style`, which `useContinueRow`
+  writes frame by frame through a slide; and in the commit that draws a new
+  answer (`laidFor`). Each lays from the same three boxes outside React, so
+  no frame renders and a frame's reads do not grow with the cards (O304). CI
+  runs no browser project, so `Library.test.tsx` also reaches that wiring
+  with a stubbed `ResizeObserver`, as `Series.test.tsx` reaches the series
+  page's.
+- **The laying.** `panelSpan` takes its tile to lie inside the page area, so
+  `layUnderRow` holds the card's box to the area first. The row's gap is the
+  list's own `column-gap`. The
+  panel's top is the row's foot, below the room the row keeps under its
+  cards and its own scrollbar there.
+- **A panel that outlives its card.** On the home page a search hides the
+  row and clearing it draws the same cards again, so a panel left open would
+  come back with nobody having asked; `orphaned` closes it when its card can
+  no longer draw it.
+
+**What held the panel before it moved.** Before the panel's state left
+`Series` for `volumePanel.ts`, Task 1 put each defect the plan named into
+the unmoved `Series.tsx` by hand, with the case the plan's reading expected
+to catch it, and ran the series page's suites. Most were caught by jsdom
+cases. Two were caught only by the series page's browser suites, which CI
+does not run: `on-select`'s pointer guard without its arm for focus in the
+open panel, for which the reading had found no case, though "reveals the
+volume under the pointer again once a press outside has closed the panel"
+(`Series.onSelect.browser.test.tsx`) asserts it outright; and focus sent to
+`main` after an Undo empties the volume pressed on, even where the person
+had moved it elsewhere ("stays where the person moved it when an Undo
+empties the volume pressed on", `Series.panel.browser.test.tsx`). Four were
+caught by nothing, and `Series.test.tsx` gained a case for each, watched
+failing against its defect:
+
+- "stays on the open on-select panel’s tile when the pointer comes back to
+  it while a move waits on the save out";
+- "asks once for a volume whose detail cannot be read, and says why at each
+  open";
+- "watches and lays the panel drawn again when the layout goes to the table
+  and back with it open";
+- "closes on focus arriving outside once the mode an open on-select panel is
+  in changes to button".
+
+From then on the plan froze `Series.test.tsx`, the four
+`Series.*.browser.test.tsx` suites and `tilePanel.test.tsx`, so a red case
+there would be a defect in the move, and the branch leaves them as Task 1
+left them. Task 2 put those six defects and others into the moved code, and
+each failed its case again.
+
+**What the browser runs found that reading had not.**
+
+- **The gutter moved with the row.** The pre-flight's settled point on the
+  gutter kept a home page's while the row is drawn and `panel` is not `off`.
+  In the browser project's launch with scrollbars hidden,
+  `scrollbar-gutter: stable` still reserves a classic scrollbar's width
+  though the scrollbar takes none there, and existing cases of the row's
+  glides and sizes, of View and of `reseat` went red. One of them was a
+  shift a person sees where scrollbars are classic and the page does not
+  scroll: "moves nothing above the Continue heading" failed because the
+  gutter came and went with the row, so the page area narrowed when a read
+  drew the row, against the cover-size spec's constraint that nothing above
+  the Continue heading moves. The gutter is keyed to the Library page's head
+  instead (`div.page-head[data-panel]`), which is drawn searching or not. A
+  Library page with no Continue row then keeps it as well, so cases of the
+  home grid that are not about the panel, in `reseat`, `Cover` and
+  `coverLayout`, draw it with Panel off, and the row's own cases whose
+  fixtures it moved take a window widened by the gutter.
+- **A card half past the row's end** has its `i` clipped by the row, so no
+  pointer reaches it until the row is scrolled; the case that lays a panel
+  from such a card opens it with a scripted click on `i`.
+- **A press on a grid tile in `button` mode** moves focus to the tile's
+  link, and focus arriving outside closes the panel by itself, so the case
+  cannot tell that close from the press's; it holds the press's own close in
+  `on-select`.
+- **A Cover size step** is heard by the `ResizeObserver` and the style watch
+  each, so "lies under its card and inside the page area after a Cover size
+  step, in on-select mode" fails only with both removed: dropping `laidFor`,
+  the defect the plan named for it, cannot fail it, and the cover size is
+  not in `laidFor`.
+
+**The try.** The owner tried the branch once the Tab bridge was built,
+before the whole-branch review, served from a scratch copy of the test
+library's store beside a build of main. One round: "ok all good", with
+nothing asked to change.
+
+Before the build the owner ruled the plan's two open questions, each on the
+pre-flight's recommended option, and kept its six settled points. With the
+row scrolled sideways under an open panel, the panel follows its card, held
+to the page area, and closes after the editor's save once the card has
+wholly left the row's view; the other options were a panel that follows and
+never closes by a scroll, resting at the area's edge under no card, and one
+that any sideways scroll closes. With `panel` set to `off` or `on-select`,
+no Continue card has ↓ on its cover's corner; the other option was ↓ there
+in those two modes, as on a volume's tile. The settled points: an unreadable
+card has no `i`; ↓ Download in the row's panel downloads the edition the
+card shows; the home page's View lists Panel; the home page keeps its
+scrollbar's gutter (keyed to the head since, as above); `on-select` on the
+row is the series page's, literally; and the panel's top is the row's foot.
+
+**The whole-branch review and its rounds.** The review read the branch as
+the owner had tried it: no Critical finding, one Important (I1) and three
+Minor (M1 to M3), and of the task reviews' deferred minors, eleven to fix
+before merge, one to a row and the rest dropped. One wave of fixes followed
+and was re-reviewed, then a second round on what that re-review found,
+re-reviewed in turn.
+
+- **I1, fixed.** In `on-select`, a move to another card waiting on the
+  editor's save was not dropped when focus or the pointer came back into the
+  row's panel. On a series page it is: the panel lies inside its tile's
+  `li`, whose `onFocusCapture` and `onMouseEnter` choose that tile again,
+  which replaces the waiting move. The review ran the same steps in jsdom on
+  the row and on a series page: the row's panel moved to the other card and
+  focus fell to `<body>`, and the series page's stayed. `VolumePanel` now
+  takes `onFocusCapture` and `onMouseEnter`, which the row passes in
+  `on-select` to choose the open card, and `crossed` keeps the pointer's
+  crossing between the card and its panel from choosing either, which would
+  drop a move the series page keeps. The cases under "on select, a move to
+  another card waiting on the save" in `Library.test.tsx` hold it.
+- **Its `button`-mode twin is O438.** With a changed title, focus moved
+  outside the tile and its panel asks the close, which waits on the save;
+  focus brought back into the panel cancels nothing, and once the save lands
+  the panel closes and focus falls to `<body>`. The review ran it on a
+  series page as it was before this PR as well as on both screens on the
+  branch, with that outcome on each, so it is not this PR's, and it is filed
+  rather than fixed: the fix changes the series page and needs a case in
+  `Series.test.tsx`, which the plan froze.
+- **M1, and a loop it uncovered.** In `on-select`, with the pointer holding
+  an earlier card's panel open, Shift+Tab up from the chips met the panel
+  before the cards after its own, and passed them by. Fixing it found the
+  forward half, which the review had not listed: with a failed save holding
+  an earlier card's panel open, Tab from the row's last stop entered the
+  panel again, went on to the next card and round the row, with no way out
+  by Tab. While the open card does not hold the row's last stop (`away`),
+  Tab from that stop now goes on to the first stop after the row, and
+  Shift+Tab from there back to it. That stop, the first chip, lies outside
+  the row's section, so `tabAcross` is heard on the document while a panel
+  is drawn, not on the section. Browser cases with real keys hold both:
+  "comes to the last card first while the pointer holds an earlier card’s
+  panel open on select, then to each card before it" and "goes on from the
+  row’s last stop to the first chip, not into the panel again, while a save
+  that failed holds an earlier card’s panel open".
+- **Which waiting closes a return drops.** As first fixed, focus or the
+  pointer coming into the panel dropped any close waiting on the save, the
+  close for a card that has left the row's view included, which left a panel
+  open under a card out of view. The row follows the series page instead: in
+  `on-select`, where focus or the pointer coming back into a series page's
+  tile drops a close waiting on the save (a jsdom run on the series page
+  showed it for a press outside), the row's panel drops one too, and the
+  close the row alone has, for its card wholly out of view, stays waiting
+  (`leave`, and `held` in `focused` and `pointed`).
+- **N1, made by that round and fixed in the next.** The view's close stayed
+  waiting in `on-select` when focus or the pointer came onto the card itself
+  too, though focus scrolls the card into view and the pointer reaches it
+  only in view: once the save landed, the panel closed under a card just
+  focused or pointed at. The first re-review found it by a jsdom run.
+  `follow`'s `lay` now calls `stay` as the card comes back into the row's
+  view, which drops a waiting view close and nothing else; that also keeps a
+  panel open on a card scrolled back with nothing focused, which closed
+  before the fix wave as well. "stays open on its card in %s mode once its
+  save lands, the card having left the row’s view and come back", in both
+  modes, and its `on-select` cases for focus and the pointer coming onto the
+  card hold it.
+- **The guard.** `stay` asks for the open card again only while the view's
+  close is the newest call waiting on the save (`held`); unguarded, it would
+  drop whatever waited. "leaves %s waiting on the save as its card comes
+  back into the row’s view, and makes it once the save lands", run for an
+  Escape close and for a move to another card, fails with the guard removed.
+- **O439, left open.** Read, not run: a new answer runs `follow` again with
+  `inView` true, so a read that brings the card back into view while its
+  close waits is not seen as the card coming back, and a run with the card
+  still out asks `leave` again over an Escape close or a move waiting on the
+  same save. A page read must land while a save is out; it is filed rather
+  than fixed in a third round.
+- **The rest** renamed the follow's `shown` to `inView`, corrected false
+  comments and a test title that claimed what its case could not fail, and
+  made a browser case wait for the series page to be drawn before reading
+  it.

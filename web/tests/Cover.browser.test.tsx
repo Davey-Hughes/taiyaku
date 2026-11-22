@@ -280,7 +280,13 @@ describe('a cover’s image', () => {
       added: [],
       read: [],
     })
-    const host = await homePage({ width, height, coverSize })
+    // Panel off: these hold the page without a panel's gutter (O417).
+    const host = await homePage({
+      width,
+      height,
+      coverSize,
+      browse: { panel: 'off' },
+    })
     const img = () => host.querySelector<HTMLImageElement>('.grid img')
     await expect
       .poll(() => (img()?.complete ? img()?.currentSrc : ''))

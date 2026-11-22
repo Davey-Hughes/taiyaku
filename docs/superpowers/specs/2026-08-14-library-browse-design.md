@@ -128,6 +128,13 @@ the right one for this library: with about 90% of series single-edition, a panel
 that opens on every selection is mostly empty, while a small `i` on the cover
 costs nothing until it is wanted.
 
+*Since 2026-11-22 (O417) `panel` governs the Library home's Continue row as
+well, and the home page's View lists it beside `continueStrip` and
+`coverSize`: in `button` mode each readable card has `i`, which opens this
+panel under the row; in `on-select` a card pointed at or focused opens it;
+`off` draws neither. An unreadable card has no panel in any mode; see O417's
+row in `docs/status.md`.*
+
 **What the page must show that a Komga series page cannot.** Go-Toubun is 14
 volumes in `Manga`, 14 in `Manga (RAW)`, a fan chapter release — and **only
 volumes 1, 3 and 8 are actually aligned**. A series page that lists volumes and

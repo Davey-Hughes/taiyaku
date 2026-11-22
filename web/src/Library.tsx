@@ -27,7 +27,7 @@
  * one set, so a return draws what was kept in its first render and reads it
  * again, and a first visit draws both in one step.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   Link,
   useLocation,
@@ -38,8 +38,11 @@ import { type BrowsePrefs, coverSizeOf, useBrowsePrefs } from './browseModule'
 import { useContinueRow } from './continueRow'
 import { Cover } from './Cover'
 import { type EmptyKind, EmptyState } from './EmptyState'
+import { tabbablesIn } from './focus'
+import { useGate } from './gate'
 import {
   type Chip,
+  editionDownload,
   type Grid,
   type HomeLists,
   type LibraryStatus,
@@ -73,11 +76,15 @@ import { ViewMenu } from './ViewMenu'
 import { SearchBar } from './SearchBar'
 import { useKeptScroll } from './scrollKeeper'
 import { boxStateOf, SEARCH_BOX_ID, useSearchHits } from './searchHits'
+import { inRowView, layUnderRow } from './tilePanel'
 import { usePage } from './usePage'
+import { useVolumePanel } from './volumePanel'
+import { VolumePanel } from './VolumePanel'
 
 /** What this page's View panel offers: the preferences that act here. */
 const LIBRARY_VIEW: readonly (keyof BrowsePrefs)[] = [
   'continueStrip',
+  'panel',
   'coverSize',
 ]
 
@@ -105,6 +112,20 @@ function ContinueCard({ w }: { w: WorkCard }) {
       {w.volume !== null && <span className="meta">Vol. {w.volume}</span>}
     </>
   )
+}
+
+/**
+ * The first stop of the first element after `card` (a Continue card, or the
+ * row's section) that has one: an unreadable card has none.
+ */
+function firstAfter(card: Element): HTMLElement | undefined {
+  let next = card.nextElementSibling
+  while (next !== null) {
+    const first = tabbablesIn(next)[0]
+    if (first !== undefined) return first
+    next = next.nextElementSibling
+  }
+  return undefined
 }
 
 /**
@@ -373,6 +394,7 @@ export function Library() {
   }
 
   const continueList = useRef<HTMLUListElement>(null)
+  const continueSection = useRef<HTMLElement>(null)
   // One condition for the strip and its hook, so they cannot disagree.
   const stripDrawn =
     !searching &&
@@ -392,6 +414,202 @@ export function Library() {
   // view, and a browser that anchors the page carries the view down with it.
   useKeptScroll(searching ? !searchWait : ready, { library: true })
 
+  const { panel } = prefs
+  const mayDownload = useGate()?.who.can_download === true
+  const rowPanelId = useId()
+  // A close by Escape, or by the card leaving the row's view, gives focus
+  // back to the card's `i`, or in `on-select` mode, which draws none, to
+  // its link: only a readable card, which has a link, opens a panel.
+  const backTo = (card: HTMLElement) =>
+    card.querySelector<HTMLElement>(
+      panel === 'button' ? ':scope > .panel-open' : ':scope > a',
+    )
+  // A card's panel lies under the row, over the chips and the grid (O417), as a
+  // child of the row's section: the list scrolls sideways and is masked for its
+  // fade, so it would clip the panel. Laid from the card, the row and the
+  // section, and again when any of their sizes changes: the card's with the
+  // cover size, the row's and the section's with the page area; and when the
+  // card moves and nothing resizes: as the row scrolls, as `useContinueRow`
+  // lays its column and gap, and when a read draws the row from a new answer.
+  const follow = (box: HTMLElement, card: HTMLElement) => {
+    const row = continueList.current
+    const section = continueSection.current
+    if (row === null || section === null) return
+    layUnderRow(box, card, row, section)
+    // jsdom has no observer and lays nothing out to follow.
+    if (typeof ResizeObserver === 'undefined') return
+    // Taken as in view, since a panel opens on a card whose `i` or link was
+    // just pressed, pointed at or focused. When a new answer lays the panel
+    // again, the observers' first report finds a card that answer moved out
+    // of the row's view and closes its panel, as a scroll would (O417).
+    let inView = true
+    // Every signal lays the panel through this, outside React, from the one
+    // card's box and the row's and the section's, so no frame renders and a
+    // frame's reads do not grow with the number of cards (O304).
+    const lay = () => {
+      // Read before the panel is laid: read after its write, the page would
+      // be laid out again for the read.
+      const was = inView
+      inView = inRowView(card, row)
+      layUnderRow(box, card, row, section)
+      // A panel whose card has wholly left the row's view closes (O417), after
+      // the editor's save. Focus or the pointer coming back into the panel
+      // leaves the close waiting; the card coming back into view drops it,
+      // unless a read brings it back (O439).
+      // Focus in the panel goes to the card where it is: scrolled into view, it
+      // would undo the person's scroll. Asked once as the card leaves: asked at
+      // each scroll, a close held by a failed save would send it each time.
+      if (was && !inView) {
+        rowPanel.leave(
+          box.contains(document.activeElement)
+            ? rowPanel.refocus(backTo(card), { preventScroll: true })
+            : undefined,
+        )
+      } else if (!was && inView) {
+        rowPanel.stay()
+      }
+    }
+    // Laid in the event itself: the browser sends `scroll` at most once a
+    // frame, before it paints, so a scroll lays the panel once a frame at
+    // most, and before the frame is painted.
+    row.addEventListener('scroll', lay, { passive: true })
+    const resized = new ResizeObserver(lay)
+    resized.observe(card)
+    resized.observe(row)
+    resized.observe(section)
+    // `useContinueRow` lays the row through its style: frame by frame
+    // through a slide, in an animation frame, which moves the card and may
+    // resize nothing; and at a cover size or a width. Heard in the microtask
+    // after the write, so the frame is laid before it is painted. `style`
+    // alone: the row's scroll marks are other attributes, and the panel
+    // this lays is the row's sibling, so laying it is not heard here.
+    const restyled = new MutationObserver(lay)
+    restyled.observe(row, { attributeFilter: ['style'] })
+    return () => {
+      row.removeEventListener('scroll', lay)
+      resized.disconnect()
+      restyled.disconnect()
+    }
+  }
+  // The cards a panel can be drawn under, as the hook's works: a read after
+  // a press in the panel that leaves its card unreadable then sends focus to
+  // `main`, as one that takes the card away does. One array per read, which
+  // the hook compares to tell a read's answer from a render.
+  const continuing = home?.continuing
+  const panelCards = useMemo(
+    () => continuing?.filter((w) => !unreadable(w)),
+    [continuing],
+  )
+  const rowPanel = useVolumePanel({
+    mode: panel,
+    works: panelCards,
+    follow,
+    // A new answer can move the open card one place or more with nothing
+    // resized or restyled: a card dropped or added before it. The panel is
+    // then laid in the commit that draws the row, after `useContinueRow`'s
+    // layout effect (its hook is called first) has laid the row.
+    laidFor: continuing,
+    backTo,
+  })
+  // The card whose panel is drawn: drawn itself, and readable, since an
+  // unreadable card has no panel in any mode (O417).
+  const openCard =
+    stripDrawn && panel !== 'off'
+      ? panelCards?.find((w) => w.slug === rowPanel.open)
+      : undefined
+  // A panel its card can no longer draw closes: the strip gone, the panel
+  // switched off, or the card gone from the row or unreadable on a read. Left
+  // open, it would come back under the card, with nobody having asked, once
+  // the card is drawn again (O417).
+  const orphaned = rowPanel.open !== undefined && openCard === undefined
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `orphaned` is the trigger; `close` reads only the hook's refs and setter, so any render's serves.
+  useEffect(() => {
+    if (orphaned) rowPanel.close()
+  }, [orphaned])
+  // Tab joins the open card and its panel (O417), which lies after the
+  // row's list in the document, away from its card: from the card's last
+  // stop into the panel, from the panel's last stop on to the next card
+  // with a stop, which the document's order would pass for the chips, and
+  // from the row's last stop on past a panel under an earlier card;
+  // Shift+Tab mirrors each, as nesting gives the series page. Every other
+  // Tab keeps the document's order, which passes a panel with no stop; in
+  // `button` mode one that missed the panel closes it, as focus outside does.
+  const tabAcross = (event: KeyboardEvent) => {
+    if (event.key !== 'Tab' || event.ctrlKey || event.metaKey || event.altKey)
+      return
+    const card = rowPanel.tile.current
+    const box = rowPanel.box.current
+    const list = continueList.current
+    const section = continueSection.current
+    if (card === null || box === null || list === null || section === null)
+      return
+    const inPanel = tabbablesIn(box)
+    const cardEnd = tabbablesIn(card).at(-1)
+    // While the row's last stop is not in the open card, its panel lies past
+    // the row's last stop in the document: Tab from that stop would meet it a
+    // second time, and Shift+Tab from the stop after the row would meet it
+    // before the cards after its own. Both go between those two stops, as on
+    // the series page.
+    const listEnd = tabbablesIn(list).at(-1)
+    const away = listEnd !== undefined && !card.contains(listEnd)
+    const from = event.target
+    let to: HTMLElement | undefined
+    if (event.shiftKey) {
+      // The panel itself holds focus where a Split or an Undo left it.
+      if (from === box || from === inPanel[0]) to = cardEnd
+      else if (from === firstAfter(card)) to = inPanel.at(-1)
+      else if (away && from === firstAfter(section)) to = listEnd
+    } else if (from === cardEnd) {
+      to = inPanel[0]
+    } else if (from === inPanel.at(-1)) {
+      to = firstAfter(card)
+    } else if (away && from === listEnd) {
+      to = firstAfter(section)
+    }
+    if (to === undefined) return
+    event.preventDefault()
+    to.focus()
+  }
+  // Heard on the document: the stop after the row lies outside its section.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `openCard` is the trigger; `tabAcross` reads only refs, so the render that drew the panel's serves.
+  useEffect(() => {
+    if (openCard === undefined) return
+    document.addEventListener('keydown', tabAcross)
+    return () => {
+      document.removeEventListener('keydown', tabAcross)
+    }
+  }, [openCard])
+  // The open card and its panel are one tile to the pointer, as a tile and
+  // the panel nested in it are on the series page: a pointer crossing from
+  // one to the other enters neither, so it drops no move or close waiting
+  // on the editor's save.
+  const crossed = (event: React.MouseEvent) => {
+    const from = event.relatedTarget
+    return (
+      from instanceof Node &&
+      ((rowPanel.tile.current?.contains(from) ?? false) ||
+        (rowPanel.box.current?.contains(from) ?? false))
+    )
+  }
+  // ↓ Download at the panel's foot asks of the edition the card shows, the
+  // one its link opens, as a volume's tile asks of the one it shows (O283).
+  // That edition has no file missing, or the card would be unreadable. An
+  // `on-select` panel does not offer it, as a volume's does not.
+  const shown = openCard?.editions.find((e) => e.key === openCard.opens)
+  const download = panel === 'button' &&
+    mayDownload &&
+    openCard !== undefined &&
+    shown !== undefined && (
+      <a
+        className="get"
+        href={editionDownload(openCard.slug, shown.key)}
+        download
+        aria-label={`download ${openCard.title} — ${shown.label}`}
+      >
+        ↓ Download
+      </a>
+    )
+
   const visible = gridData
     ? sorted(
         gridData.series.filter((s) => matchesChip(s, chip)),
@@ -404,7 +622,12 @@ export function Library() {
       {/* O163: one h1 per screen, for a screen reader's heading list; the
           library shows no title of its own, so it is hidden. A library's
           page is named for its library. */}
-      <div className="page-head">
+      <div
+        className="page-head"
+        // `library.css` keeps the page's scrollbar gutter while this is set:
+        // on the head, drawn searching or not, rather than the Continue row.
+        data-panel={panel === 'off' ? undefined : panel}
+      >
         <h1 className="visually-hidden">{entry?.name ?? 'Library'}</h1>
         {offered && <SearchBar placeholder={placeholder} />}
         <ViewMenu keys={LIBRARY_VIEW} />
@@ -433,32 +656,102 @@ export function Library() {
       ) : (
         <>
           {stripDrawn && (
-            <section data-testid="continue" className="continue">
+            <section
+              ref={continueSection}
+              data-testid="continue"
+              className="continue"
+            >
               <h2>Continue</h2>
               <ul ref={continueList}>
-                {home.continuing.map((w) => (
-                  <li key={w.slug}>
-                    {unreadable(w) ? (
-                      // **O62 — the link is the treatment, not a badge.** This
-                      // strip is the likeliest place to meet a work whose files
-                      // just vanished: the reader was mid-read when they went,
-                      // so this is exactly where an unguarded link would send
-                      // them back into a page that cannot load. The volume
-                      // keeps its name, same as `Series.tsx`'s `Table`.
-                      <span className="tile-unreadable">
-                        <ContinueCard w={w} />
-                        <span className="unreadable">
-                          files missing — cannot be opened
+                {home.continuing.map((w) => {
+                  const lost = unreadable(w)
+                  const selects = !lost && panel === 'on-select'
+                  const drawsPanel = openCard?.slug === w.slug
+                  return (
+                    <li
+                      key={w.slug}
+                      ref={drawsPanel ? rowPanel.tile : undefined}
+                      onFocusCapture={
+                        selects
+                          ? () => {
+                              rowPanel.focused(w.slug)
+                            }
+                          : undefined
+                      }
+                      onMouseEnter={
+                        selects
+                          ? (event) => {
+                              if (drawsPanel && crossed(event)) return
+                              rowPanel.pointed(w.slug)
+                            }
+                          : undefined
+                      }
+                    >
+                      {lost ? (
+                        // **O62 — the link is the treatment, not a badge.** This
+                        // strip is the likeliest place to meet a work whose files
+                        // just vanished: the reader was mid-read when they went,
+                        // so this is exactly where an unguarded link would send
+                        // them back into a page that cannot load. The volume
+                        // keeps its name, same as `Series.tsx`'s `Table`.
+                        <span className="tile-unreadable">
+                          <ContinueCard w={w} />
+                          <span className="unreadable">
+                            files missing — cannot be opened
+                          </span>
                         </span>
-                      </span>
-                    ) : (
-                      <Link to={readerPath(w)}>
-                        <ContinueCard w={w} />
-                      </Link>
-                    )}
-                  </li>
-                ))}
+                      ) : (
+                        <Link to={readerPath(w)}>
+                          <ContinueCard w={w} />
+                        </Link>
+                      )}
+                      {/* In the card, never in its link, and not a child of
+                        the list, whose first two children `useContinueRow`
+                        reads the row's pitch from. */}
+                      {!lost && panel === 'button' && (
+                        <button
+                          type="button"
+                          className="panel-open"
+                          aria-expanded={drawsPanel}
+                          aria-controls={drawsPanel ? rowPanelId : undefined}
+                          aria-label={`details for ${w.title}`}
+                          onClick={(event) => {
+                            rowPanel.toggle(w.slug, event.currentTarget)
+                          }}
+                        >
+                          i
+                        </button>
+                      )}
+                    </li>
+                  )
+                })}
               </ul>
+              {openCard !== undefined && (
+                <VolumePanel
+                  id={rowPanelId}
+                  state={rowPanel}
+                  work={openCard}
+                  foot={download}
+                  // On select, focus or the pointer coming into the panel
+                  // chooses its card, as the card's `li` holding the panel
+                  // would: a move to another card that waits on the
+                  // editor's save is then dropped, as on the series page.
+                  onFocusCapture={
+                    panel === 'on-select'
+                      ? () => {
+                          rowPanel.focused(openCard.slug)
+                        }
+                      : undefined
+                  }
+                  onMouseEnter={
+                    panel === 'on-select'
+                      ? (event) => {
+                          if (!crossed(event)) rowPanel.pointed(openCard.slug)
+                        }
+                      : undefined
+                  }
+                />
+              )}
             </section>
           )}
           <div className="library-chips">

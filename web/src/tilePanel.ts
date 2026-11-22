@@ -1,8 +1,9 @@
 /**
  * Where an open volume's panel lies on the Series page (O283): under its
  * tile, over the rows below, two tiles and the grid's gap wide, and never
- * past either edge of the page area. Read from the layout, since only the
- * grid knows which column a tile fell in and how wide the columns came out.
+ * past either edge of the page area; and the Continue row's, under the row
+ * (O417). Read from the layout, since only the grid knows which column a
+ * tile fell in and how wide the columns came out.
  */
 
 /**
@@ -62,13 +63,20 @@ function laidGap(grid: HTMLElement, width: number): number {
 }
 
 /**
+ * Whether `at` lies in a page's area, the only place a panel has a layout
+ * to lie across: elsewhere it is left as its stylesheet draws it.
+ */
+function inPageArea(at: Element): boolean {
+  return at.closest('.library > main') !== null
+}
+
+/**
  * Lays `panel`, absolutely placed in `tile`, from the tile's grid and the
- * page area around it. Only a volume's tile on a page has columns to lie
- * across, so elsewhere it leaves the panel as its stylesheet draws it.
+ * page area around it.
  */
 export function layPanel(panel: HTMLElement, tile: HTMLElement): void {
   const grid = tile.parentElement
-  if (grid === null || tile.closest('.library > main') === null) return
+  if (grid === null || !inPageArea(tile)) return
   const box = tile.getBoundingClientRect()
   // The grid fills the page area's content box, and its own box is laid out
   // to the fraction of a pixel where the area's `clientWidth` is rounded to
@@ -80,5 +88,48 @@ export function layPanel(panel: HTMLElement, tile: HTMLElement): void {
     end: area.right,
   })
   panel.style.left = `${left - box.left}px`
+  panel.style.width = `${width}px`
+}
+
+/**
+ * Whether any of `card` lies in `row`'s view: the list's padding box, which
+ * the row scrolls its cards across and clips them to.
+ */
+export function inRowView(card: HTMLElement, row: HTMLElement): boolean {
+  const box = card.getBoundingClientRect()
+  const left = row.getBoundingClientRect().left + row.clientLeft
+  return box.right > left && box.left < left + row.clientWidth
+}
+
+/**
+ * Lays `panel`, absolutely placed in the Continue row's `section`, under
+ * `card` in `row`. The gap is the row's own `column-gap`. The top is the
+ * row's foot, so the panel covers neither the room the row keeps under its
+ * cards nor its scrollbar there.
+ */
+export function layUnderRow(
+  panel: HTMLElement,
+  card: HTMLElement,
+  row: HTMLElement,
+  section: HTMLElement,
+): void {
+  if (!inPageArea(section)) return
+  const area = section.getBoundingClientRect()
+  const box = card.getBoundingClientRect()
+  // `panelSpan` takes its tile to lie inside the area, and the row scrolls a
+  // card partly past either edge. The card's width is kept, so the panel is
+  // still two cards and the gap wide.
+  const held = {
+    left: Math.max(box.left, area.left),
+    right: Math.min(box.right, area.right),
+    width: box.width,
+  }
+  const gap = Number.parseFloat(getComputedStyle(row).columnGap)
+  const { left, width } = panelSpan(held, gap, {
+    start: area.left,
+    end: area.right,
+  })
+  panel.style.left = `${left - area.left}px`
+  panel.style.top = `${row.getBoundingClientRect().bottom - area.top}px`
   panel.style.width = `${width}px`
 }

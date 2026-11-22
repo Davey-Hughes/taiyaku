@@ -82,10 +82,11 @@ export interface BrowsePrefs {
   /** §3's edition-as-a-mode switch. */
   editionSelector: boolean
   /**
-   * §3's alignment panel. `'button'` rather than `'on-select'` is right for
-   * this library: with about 90% of series single-edition, a panel that opens
-   * on every selection is mostly empty, while a small `i` on the cover costs
-   * nothing until it is wanted.
+   * §3's alignment panel, on a series page's volumes and on the Library
+   * home's Continue row alike (O417). `'button'` rather than `'on-select'`
+   * is right for this library: with about 90% of series single-edition, a
+   * panel that opens on every selection is mostly empty, while a small `i`
+   * on the cover costs nothing until it is wanted.
    */
   panel: 'off' | 'button' | 'on-select'
   /**

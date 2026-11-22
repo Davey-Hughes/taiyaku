@@ -39,6 +39,14 @@ On the library's home page (`/`), with the sidebar beside the main column:
    the row is: not with the Continue strip turned off in View, not on search
    results, not with nothing in progress.
 
+*Since 2026-11-22 (O417) each readable card also holds `i` on its cover's
+bottom-right corner, outside its link, in `button` mode, and `i` opens a
+series page's volume panel under the row. It is inside the card, not a child
+of the row's list, so the row's pitch, read from the list's first two cards,
+and its laying, fade and line are unchanged, and a ring on `i` lifts the
+fade as one on the link does. See O417's row in `docs/status.md` and, for
+the panel, `2026-11-14-compact-series-tiles-design.md`.*
+
 ### Cover size (O285)
 
 The View menu's density switch (Compact / Comfortable) becomes a **Cover

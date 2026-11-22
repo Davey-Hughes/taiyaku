@@ -115,7 +115,13 @@ async function drawn(
       series: Array.from({ length: count }, (_, i) => series(i + 1)),
       unfiled: [],
     })
-    host = await homePage({ width, height, coverSize: size })
+    // Panel off: these hold the page without a panel's gutter (O417).
+    host = await homePage({
+      width,
+      height,
+      coverSize: size,
+      browse: { panel: 'off' },
+    })
   } else {
     const works = Array.from({ length: count }, (_, i) => work(i + 1))
     vi.mocked(library.oneSeries).mockResolvedValue({
