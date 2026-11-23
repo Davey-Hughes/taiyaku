@@ -1168,6 +1168,32 @@ describe('the keyboard ring, with real keys (spec 2026-09-26 §3.1)', () => {
 })
 
 /**
+ * The page a gap is reached on: `raw` slot 5 has no `en` counterpart, and
+ * the borrow module is off so the gap is drawn as a gap (`App.test.tsx`'s
+ * `swapOntoUnpaired`, which the same keys reach).
+ */
+async function readerInAGap() {
+  localStorage.setItem(
+    'taiyaku.prefs.borrow',
+    JSON.stringify({ enabled: false }),
+  )
+  ports.getProgress.mockResolvedValue({ edition: 'raw', slot: 5 })
+  const pairs: Record<string, number> = {}
+  for (let i = 0; i < 5; i++) {
+    pairs[`raw|en|${i}`] = i
+    pairs[`en|raw|${i}`] = i
+  }
+  pairs['en|raw|5'] = 5
+  ports.wasmResolver.mockImplementation(async () =>
+    fakeResolver({ raw: whole(PAGES), en: whole(PAGES) }, pairs),
+  )
+  await readerFocused(1440, 900)
+  press('2')
+  await until(() => document.querySelector('.reader-gap-title') !== null)
+  ;(document.querySelector('[data-reader-page]') as HTMLElement).focus()
+}
+
+/**
  * The rest of §3.6's real-key cases. Each starts from `readerFocused` — a
  * press before anything in the test iframe has focus goes to the frame, not
  * the page — and each is at 1440×900 unless it says why not: nothing below
@@ -1250,32 +1276,6 @@ describe('the keyboard ring, with real keys: every stop and every region (spec 2
     expect(focused(), 'Help keeps focus').toBe('Help')
     expect(barsUp(), 'Help: bars').toBe(true)
   })
-
-  /**
-   * The page a gap is reached on: `raw` slot 5 has no `en` counterpart, and
-   * the borrow module is off so the gap is drawn as a gap (`App.test.tsx`'s
-   * `swapOntoUnpaired`, which the same keys reach).
-   */
-  async function readerInAGap() {
-    localStorage.setItem(
-      'taiyaku.prefs.borrow',
-      JSON.stringify({ enabled: false }),
-    )
-    ports.getProgress.mockResolvedValue({ edition: 'raw', slot: 5 })
-    const pairs: Record<string, number> = {}
-    for (let i = 0; i < 5; i++) {
-      pairs[`raw|en|${i}`] = i
-      pairs[`en|raw|${i}`] = i
-    }
-    pairs['en|raw|5'] = 5
-    ports.wasmResolver.mockImplementation(async () =>
-      fakeResolver({ raw: whole(PAGES), en: whole(PAGES) }, pairs),
-    )
-    await readerFocused(1440, 900)
-    press('2')
-    await until(() => document.querySelector('.reader-gap-title') !== null)
-    ;(document.querySelector('[data-reader-page]') as HTMLElement).focus()
-  }
 
   /** What focus is on, and whether it is inside the page area. */
   const where = () =>
@@ -1400,6 +1400,60 @@ describe('the keyboard ring, with real keys: every stop and every region (spec 2
     expect(first).toBeGreaterThan(cancel)
     expect(walk.at(-1)).toBe('page')
   })
+})
+
+/**
+ * O430: the comic reader's page area takes no selection, so a double click on
+ * it leaves nothing for `::selection`'s accent to tint. Chromium, which the
+ * browser test project runs, selects a word of a gap's sentence on a double
+ * click but not the page image, which Firefox selects; so the gesture is tried
+ * on a gap, and the rule itself is read in each mode. Both fail with the rule
+ * removed.
+ * The same rule on `.reader` passes both but fails the lit words of
+ * `bookLookup.browser.test.tsx`: it would take the book's text too.
+ */
+describe('The page takes no selection (O430)', () => {
+  /** Whether the selection takes in any part of each element named. */
+  const selected = (named: Record<string, Element | null>) =>
+    Object.fromEntries(
+      Object.entries(named).map(([name, el]) => [
+        name,
+        el === null
+          ? 'not drawn'
+          : (window.getSelection()?.containsNode(el, true) ?? false),
+      ]),
+    )
+
+  it('a double click on each of a gap’s sentences selects neither, over three rounds', async () => {
+    await readerInAGap()
+    const sentences = () => ({
+      title: document.querySelector('[data-reader-page] .reader-gap-title'),
+      verdict: document.querySelector('[data-reader-page] .reader-muted'),
+    })
+    const seen: Record<string, unknown> = {}
+    const want: Record<string, unknown> = {}
+    for (const round of [1, 2, 3]) {
+      for (const name of ['title', 'verdict'] as const) {
+        await userEvent.dblClick(sentences()[name] as Element)
+        seen[`round ${round}, ${name}`] = selected(sentences())
+        want[`round ${round}, ${name}`] = { title: false, verdict: false }
+      }
+    }
+    expect(seen).toEqual(want)
+  })
+
+  it.each(['single', 'two', 'scroll'] as const)(
+    'in %s mode the page area’s computed user-select is none',
+    async (mode) => {
+      localStorage.setItem('taiyaku.prefs.layout', JSON.stringify({ mode }))
+      await readerWithChrome(1280, 800)
+      const area = document.querySelector('[data-reader-page]') as HTMLElement
+      expect({
+        pressed: button(mode).getAttribute('aria-pressed'),
+        userSelect: getComputedStyle(area).userSelect,
+      }).toEqual({ pressed: 'true', userSelect: 'none' })
+    },
+  )
 })
 
 /**

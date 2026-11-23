@@ -195,6 +195,10 @@ interface Props {
   /** The way out (`back.ts`), and what it is called: the library where none is given. */
   onLeave: () => void
   leaveTo?: Destination
+  /** As `App`'s: the work's series from the library's answer, as it lands (O431). */
+  onSeries?: (series: WorkDetail['series']) => void
+  /** As `App`'s: whether "Back from reading" was "Series page" as the reader opened, for the help's `L` row (O431). */
+  putsSeriesUnder?: boolean
 }
 
 interface Place {
@@ -442,6 +446,8 @@ export function BookReader({
   work,
   onLeave,
   leaveTo = destination('/'),
+  onSeries,
+  putsSeriesUnder = true,
 }: Props) {
   const gate = useGate()
   const [book, setBook] = useState<Book>()
@@ -932,9 +938,17 @@ export function BookReader({
   // fails, and for a work filed in no series, the bar links to none. No
   // stale-answer guard: `Routes.tsx` keys this component by `work`.
   const [series, setSeries] = useState<WorkDetail['series']>(null)
+  // The route hears the answer, never this state, whose `null` before the
+  // answer would tell it "in no series" (O431). A ref, so a new function
+  // from the route does not ask the library again.
+  const onSeriesRef = useRef(onSeries)
+  onSeriesRef.current = onSeries
   useEffect(() => {
     workDetail(work).then(
-      (detail) => setSeries(detail.series),
+      (detail) => {
+        setSeries(detail.series)
+        onSeriesRef.current?.(detail.series)
+      },
       (err: unknown) => {
         if (!(err instanceof Unauthenticated)) console.error(err)
       },
@@ -2339,6 +2353,7 @@ export function BookReader({
         visible={panel === 'help'}
         modules={enabledModules(registry.all(), prefs)}
         bindings={BOOK_KEYS}
+        putsSeriesUnder={putsSeriesUnder}
         onClose={() => setPanel(undefined)}
       />
       <Settings

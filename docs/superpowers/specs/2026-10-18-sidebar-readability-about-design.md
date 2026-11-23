@@ -100,6 +100,10 @@ are drawn changes. Labels are in sentence case.
 *Replaced 2026-11-15 (O285): Density is Cover size, a slider, on both
 pages; see `2026-11-14-cover-size-and-continue-row-design.md`.*
 
+*Since 2026-11-22 the Library row also holds Back from reading (O431), and
+Reset restores seven preferences, the Series page's Always show aligned
+(O416) among them.*
+
 Reset restores all five preferences from either page, as it does today.
 The panel follows §1's disclosure rules.
 

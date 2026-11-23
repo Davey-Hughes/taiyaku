@@ -101,7 +101,9 @@ export const READER_KEYS: ReaderBinding[] = [
   },
   {
     keys: ['L'],
-    label: 'back where you came from, else the library',
+    // The words for the series page; `withWayBackLabel` gives a reader's help
+    // the words for the way back it opened with (O431).
+    label: wayBackLabel(true),
     resolve: () => ({ kind: 'library' }),
   },
   {
@@ -122,6 +124,34 @@ export const READER_KEYS: ReaderBinding[] = [
 export function withoutCorrecting(bindings: ReaderBinding[]): ReaderBinding[] {
   return bindings.filter(
     (b) => b.resolve(b.keys[0] ?? '', [])?.kind !== 'correct',
+  )
+}
+
+/**
+ * What `L`'s row says, by whether the "Back from reading" preference
+ * (`backFromReading`) was "Series page", not "Where you came from", as the
+ * reader opened (O431). Both readers' tables take their `L` row from here,
+ * so each sentence is written once.
+ */
+export function wayBackLabel(putsSeriesUnder: boolean): string {
+  return putsSeriesUnder
+    ? 'back to the series, else where you came from'
+    : 'back where you came from, else the library'
+}
+
+/**
+ * The reader's keys with `L`'s row in `wayBackLabel`'s words for this
+ * reader's way back, and every other row as it is. Found by what the row asks
+ * for, as `withoutCorrecting` finds its row, so it reads either table.
+ */
+export function withWayBackLabel(
+  bindings: ReaderBinding[],
+  putsSeriesUnder: boolean,
+): ReaderBinding[] {
+  return bindings.map((b) =>
+    b.resolve(b.keys[0] ?? '', [])?.kind === 'library'
+      ? { ...b, label: wayBackLabel(putsSeriesUnder) }
+      : b,
   )
 }
 

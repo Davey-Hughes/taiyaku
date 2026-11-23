@@ -50,6 +50,7 @@
  */
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { deferred } from './support/async'
 import { fakeResolver, whole } from './support/fixtures'
 import { Unauthenticated, WorkMissing, WorkNotFound } from '../src/api'
 import type { WorkDetail } from '../src/library'
@@ -346,10 +347,15 @@ const administrator: Gated = {
   signOut: noop,
 }
 
-async function open(): Promise<HTMLElement> {
+/** What `open` and `openGated` hand the reader beside its work and its way out. */
+interface Opening {
+  putsSeriesUnder?: boolean
+}
+
+async function open(props: Opening = {}): Promise<HTMLElement> {
   const host = mount(
     <GateContext value={administrator}>
-      <App work={WORK} onLeave={noop} />
+      <App work={WORK} onLeave={noop} {...props} />
     </GateContext>,
   )
   await settle()
@@ -363,10 +369,10 @@ async function open(): Promise<HTMLElement> {
  * from inside it, so the sign-out test mounts the thing that does the
  * unmounting; the O58 tests reach a `user` account the way the app does.
  */
-async function openGated(): Promise<HTMLElement> {
+async function openGated(props: Opening = {}): Promise<HTMLElement> {
   const host = mount(
     <Gate>
-      <App work={WORK} onLeave={noop} />
+      <App work={WORK} onLeave={noop} {...props} />
     </Gate>,
   )
   await settle()
@@ -444,6 +450,12 @@ function type(el: HTMLTextAreaElement, value: string) {
 
 const dialog = (host: HTMLElement, label: string) =>
   host.querySelector(`[role="dialog"][aria-label="${label}"]`)
+
+/** What the help's row for `key` says it does, `undefined` with no such row. */
+const helpRow = (host: HTMLElement, key: string) =>
+  [...(dialog(host, 'Keyboard help')?.querySelectorAll('dl > div') ?? [])]
+    .find((row) => row.querySelector('kbd')?.textContent === key)
+    ?.querySelector('dd')?.textContent
 
 /** The account panel's own button, and so a proxy for the panel being open. */
 const signOutButton = (host: HTMLElement) =>
@@ -1233,6 +1245,22 @@ describe('the reader keys', () => {
     )
   })
 
+  // O431: `L`'s row says where the way back goes, by the "Back from reading"
+  // value the route read as the reader opened; a reader mounted with none is
+  // given the series page's.
+  it.each([
+    [{ putsSeriesUnder: true }, 'back to the series, else where you came from'],
+    [{ putsSeriesUnder: false }, 'back where you came from, else the library'],
+    [{}, 'back to the series, else where you came from'],
+  ])(
+    'the help says where L goes back to, opened with %o (O431)',
+    async (props, words) => {
+      const host = await open(props)
+      press('?')
+      expect(helpRow(host, 'L')).toBe(words)
+    },
+  )
+
   it('? is inert with the help module switched off', async () => {
     localStorage.setItem(
       'taiyaku.prefs.help',
@@ -1383,6 +1411,29 @@ describe('leaving the reader', () => {
     expect(onLeave).toHaveBeenCalled()
   })
 
+  /**
+   * The keys are heard by a listener subscribed once the work has loaded,
+   * and the way out handed in can change after that: the route's names the
+   * series page only once the library's answer lands, which can be after
+   * the pages (O431). `L` and `Escape` take the one handed in last.
+   */
+  it('L and Escape take the onLeave handed in last, not the one the keys were first heard with', async () => {
+    const first = vi.fn()
+    const last = vi.fn()
+    const reader = (onLeave: () => void) => (
+      <GateContext value={administrator}>
+        <App work={WORK} onLeave={onLeave} />
+      </GateContext>
+    )
+    mount(reader(first))
+    await settle()
+    rerender(reader(last))
+    await settle()
+    press('L')
+    press('Escape')
+    expect([first.mock.calls.length, last.mock.calls.length]).toEqual([0, 2])
+  })
+
   it("the chrome's Library button calls the onLeave prop", async () => {
     const onLeave = vi.fn()
     const host = mount(<App work={WORK} onLeave={onLeave} />)
@@ -1487,6 +1538,49 @@ describe('leaving the reader', () => {
     )
     press('Escape')
     expect(pageArea(host).style.scrollPaddingTop).toBe('')
+  })
+})
+
+// ---- the work's series ------------------------------------------------------
+
+/**
+ * O431: the reader hands its route the series the library's answer for the
+ * work names, so the way out can go to the series page. From the answer and
+ * nothing else: before it lands the series is not known, which is not a work
+ * in none, and the route must not hear the one as the other.
+ */
+describe('the series the library’s answer names — O431', () => {
+  const SEVEN = { id: 7, title: 'Seven' }
+
+  it('reports nothing while the answer is out, then its series, once', async () => {
+    const answer = deferred<WorkDetail>()
+    ports.workDetail.mockReturnValue(answer.promise)
+    const onSeries = vi.fn()
+    mount(<App work={WORK} onLeave={noop} onSeries={onSeries} />)
+    await settle()
+    const out = [...onSeries.mock.calls]
+    await act(async () => {
+      answer.resolve({ ...libraryDetail(), series: SEVEN })
+    })
+    await settle()
+    expect([out, onSeries.mock.calls]).toEqual([[], [[SEVEN]]])
+  })
+
+  it('reports null for a work the answer files in no series', async () => {
+    const onSeries = vi.fn()
+    mount(<App work={WORK} onLeave={noop} onSeries={onSeries} />)
+    await settle()
+    expect(onSeries.mock.calls).toEqual([[null]])
+  })
+
+  it('reports nothing when the answer fails', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    ports.workDetail.mockRejectedValue(new Error('no server'))
+    const onSeries = vi.fn()
+    mount(<App work={WORK} onLeave={noop} onSeries={onSeries} />)
+    await settle()
+    expect(onSeries.mock.calls).toEqual([])
+    logged.mockRestore()
   })
 })
 
@@ -2658,15 +2752,21 @@ describe('a `user` account — O58', () => {
     expect(banner).toBeUndefined()
   })
 
-  it('the help lists no row for correcting a pairing', async () => {
-    const host = await openGated()
-    press('?')
-    const help = dialog(host, 'Keyboard help')
-    expect(help?.textContent).toContain(
-      'back where you came from, else the library',
-    )
-    expect(help?.textContent).not.toContain('correct this pairing')
-  })
+  // Under each way back: `L`'s row is relabelled, and `c`'s stays out (O431).
+  it.each([
+    [{ putsSeriesUnder: true }, 'back to the series, else where you came from'],
+    [{ putsSeriesUnder: false }, 'back where you came from, else the library'],
+  ])(
+    'the help lists no row for correcting a pairing, opened with %o',
+    async (props, words) => {
+      const host = await openGated(props)
+      press('?')
+      const help = dialog(host, 'Keyboard help')
+      expect(helpRow(host, 'L')).toBe(words)
+      expect(helpRow(host, 'c')).toBeUndefined()
+      expect(help?.textContent).not.toContain('correct this pairing')
+    },
+  )
 })
 
 // ---- the pointer ------------------------------------------------------------
@@ -3431,6 +3531,30 @@ describe('the pointer on the page', () => {
     // document. With it, two taps turn two pages.
     expect(pageArea(host).style.touchAction).toBe('manipulation')
   })
+
+  // O430, for CI, which runs no browser: `App.browser.test.tsx` has the
+  // gesture and the computed value. The reader's root holds the panels, whose
+  // text stays selectable, so the rule is on the page area alone.
+  it.each(['single', 'two', 'scroll'] as const)(
+    'gives the page area user-select none, prefixed too, and the reader’s root neither, in %s mode',
+    async (mode) => {
+      localStorage.setItem('taiyaku.prefs.layout', JSON.stringify({ mode }))
+      const host = await open()
+      press('Tab')
+      const root = host.querySelector('.reader') as HTMLElement
+      expect({
+        pressed: button(host, mode)?.getAttribute('aria-pressed'),
+        page: [
+          pageArea(host).style.getPropertyValue('user-select'),
+          pageArea(host).style.getPropertyValue('-webkit-user-select'),
+        ],
+        root: [
+          root.style.getPropertyValue('user-select'),
+          root.style.getPropertyValue('-webkit-user-select'),
+        ],
+      }).toEqual({ pressed: 'true', page: ['none', 'none'], root: ['', ''] })
+    },
+  )
 })
 
 // ---- the wheel --------------------------------------------------------------

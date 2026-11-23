@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  type BrowsePrefs,
   browseModule,
   browseRegistry,
   coverPositionOf,
   coverSizeAt,
   coverSizeOf,
   coverSizeScale,
+  putsSeriesUnder,
 } from '../src/browseModule'
 import { fieldsOf } from '../src/settingsPanel'
 
@@ -18,6 +20,7 @@ describe('the browse module', () => {
       coverSize: 144,
       continueStrip: true,
       alwaysShowAligned: false,
+      backFromReading: 'seriesPage',
     })
   })
 
@@ -34,6 +37,7 @@ describe('the browse module', () => {
       ['coverSize', 'slider'],
       ['continueStrip', 'boolean'],
       ['alwaysShowAligned', 'boolean'],
+      ['backFromReading', 'select'],
     ])
   })
 
@@ -54,7 +58,15 @@ describe('the browse module', () => {
     const options = (key: string) => fields.find((f) => f.key === key)?.options
     expect(options('layout')).toEqual(['grid', 'table'])
     expect(options('panel')).toEqual(['off', 'button', 'on-select'])
-    expect(Object.keys(browseModule.options ?? {})).toEqual(['layout', 'panel'])
+    expect(options('backFromReading')).toEqual([
+      'seriesPage',
+      'whereYouCameFrom',
+    ])
+    expect(Object.keys(browseModule.options ?? {})).toEqual([
+      'layout',
+      'panel',
+      'backFromReading',
+    ])
   })
 
   it('is a registry of its own, holding exactly one module', () => {
@@ -89,5 +101,21 @@ describe('the cover-size scale (O285)', () => {
     expect(
       [Number.NaN, Number.POSITIVE_INFINITY, '144', '200'].map(drawn),
     ).toEqual([144, 144, 144, 144])
+  })
+})
+
+describe('the way back from a reader (O431)', () => {
+  it('puts the series page under a reader for any value but where you came from', () => {
+    // Cast, as `loadBrowsePrefs` lets any stored value through.
+    const under = (backFromReading: unknown) =>
+      putsSeriesUnder({
+        ...browseModule.defaults,
+        backFromReading: backFromReading as BrowsePrefs['backFromReading'],
+      })
+    expect(
+      ['whereYouCameFrom', 'seriesPage', 'home', '', 1].map(under),
+    ).toEqual([false, true, true, true, true])
+    const { backFromReading: _dropped, ...missing } = browseModule.defaults
+    expect(putsSeriesUnder(missing as BrowsePrefs)).toBe(true)
   })
 })

@@ -1,7 +1,14 @@
 import { act, useEffect } from 'react'
-import { MemoryRouter, useLocation, useNavigate, useParams } from 'react-router'
+import {
+  MemoryRouter,
+  useLocation,
+  useNavigate,
+  useNavigationType,
+  useParams,
+} from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../src/api'
+import type { Destination } from '../src/back'
 import { GateContext } from '../src/gate'
 import * as library from '../src/library'
 import { AppRoutes } from '../src/Routes'
@@ -9,6 +16,7 @@ import { RESTORE_SCROLL } from '../src/scrollKeeper'
 import { flush } from './support/async'
 import { licenceTextsLanded } from './support/licence'
 import { mount } from './support/mount'
+import { fakeStorage } from './support/storage'
 
 // Populated by the mocked `App` below, from a `useEffect` with an empty
 // dependency array — so it records one entry per *mount*, not per render.
@@ -33,8 +41,22 @@ vi.mock('react-router', async (importOriginal) => {
   return { ...actual, useParams: vi.fn(actual.useParams) }
 })
 
+/**
+ * What both stand-ins are handed. Each draws the word its way out is named
+ * by and whether "Back from reading" is "Series page", and reports a series,
+ * or none, only when its button is pressed: a case that presses neither has a
+ * reader whose series is not known.
+ */
+interface StandIn {
+  work: string
+  onLeave: () => void
+  leaveTo?: Destination
+  onSeries?: (series: library.WorkDetail['series']) => void
+  putsSeriesUnder?: boolean
+}
+
 vi.mock('../src/App', () => ({
-  default: ({ work, onLeave }: { work: string; onLeave: () => void }) => {
+  default: ({ work, onLeave, leaveTo, onSeries, putsSeriesUnder }: StandIn) => {
     // Empty deps: fires once per mount, never on a prop-only update — which is
     // the whole point. A reused instance (the unpinned-`key` regression) would
     // push nothing a second time.
@@ -49,16 +71,56 @@ vi.mock('../src/App', () => ({
         <button type="button" data-testid="leave" onClick={onLeave}>
           leave
         </button>
+        <output data-testid="leave-to">{leaveTo?.word}</output>
+        <output data-testid="puts-series-under">
+          {String(putsSeriesUnder)}
+        </output>
+        <button
+          type="button"
+          data-testid="in-series"
+          onClick={() => onSeries?.({ id: 7, title: 'Seven' })}
+        >
+          in series 7
+        </button>
+        <button
+          type="button"
+          data-testid="in-none"
+          onClick={() => onSeries?.(null)}
+        >
+          in none
+        </button>
       </div>
     )
   },
 }))
 vi.mock('../src/BookReader', () => ({
-  BookReader: ({ work, onLeave }: { work: string; onLeave: () => void }) => (
+  BookReader: ({
+    work,
+    onLeave,
+    leaveTo,
+    onSeries,
+    putsSeriesUnder,
+  }: StandIn) => (
     <div data-testid="book">
       {work}
       <button type="button" data-testid="leave-book" onClick={onLeave}>
         leave
+      </button>
+      <output data-testid="leave-to">{leaveTo?.word}</output>
+      <output data-testid="puts-series-under">{String(putsSeriesUnder)}</output>
+      <button
+        type="button"
+        data-testid="in-series"
+        onClick={() => onSeries?.({ id: 7, title: 'Seven' })}
+      >
+        in series 7
+      </button>
+      <button
+        type="button"
+        data-testid="in-none"
+        onClick={() => onSeries?.(null)}
+      >
+        in none
       </button>
     </div>
   ),
@@ -594,4 +656,259 @@ describe('the routes', () => {
     // second time.
     expect(mounts).toEqual(['one', 'two'])
   })
+})
+
+/**
+ * O431: a reader that reports its work's series is handed the way out to
+ * that series page. `MemoryRouter` puts no entry before the reader, and a
+ * stand-in's button pressed by `click()` sends no pointer event, so the one
+ * input in a case is the `keydown` it sends: before it the series page takes
+ * the reader's place, and after it the page is under the reader, put there
+ * without being drawn, for the way out to step back to.
+ */
+describe('a reader that reports its series — O431', () => {
+  // A screen under the shell saves a preference as it draws, which needs a
+  // storage.
+  beforeEach(() => {
+    vi.stubGlobal('localStorage', fakeStorage())
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const READERS = [
+    ['comic reader', '/read/one', 'leave'],
+    ['book reader', '/book/one', 'leave-book'],
+  ] as const
+
+  /** The routes at `path`, with each pathname drawn and how it was reached. */
+  const routesAt = (path: string) => {
+    const drawn: [string, string][] = []
+    let state: unknown
+    // Declared here for the reason `Shell.test.tsx`'s `reporter()` gives.
+    function Seen() {
+      const location = useLocation()
+      const arrival = useNavigationType()
+      drawn.push([location.pathname, arrival])
+      state = location.state
+      return null
+    }
+    const host = mount(
+      <MemoryRouter initialEntries={[path]}>
+        <AppRoutes />
+        <Seen />
+      </MemoryRouter>,
+    )
+    return { host, drawn, state: () => state }
+  }
+
+  const pressed = async (host: HTMLElement, id: string) => {
+    const button = host.querySelector(`[data-testid="${id}"]`)
+    if (!(button instanceof HTMLButtonElement)) throw new Error(`no ${id}`)
+    await act(async () => {
+      button.click()
+      await Promise.resolve()
+    })
+  }
+
+  const keyed = () =>
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }))
+    })
+
+  const word = (host: HTMLElement) =>
+    host.querySelector('[data-testid="leave-to"]')?.textContent
+
+  it.each(READERS)(
+    'a %s is named for its series, and leaving it before any input puts the series page in its place',
+    async (_reader, path, leave) => {
+      const { host, drawn } = routesAt(path)
+      const named = [word(host)]
+      await pressed(host, 'in-series')
+      named.push(word(host))
+      await pressed(host, leave)
+      expect([named, drawn]).toEqual([
+        ['Library', 'Series'],
+        [
+          [path, 'POP'],
+          ['/series/7', 'REPLACE'],
+        ],
+      ])
+      await flush()
+    },
+  )
+
+  it.each(READERS)(
+    'a %s puts its series page under itself at the first input, unseen, and leaving steps back to it',
+    async (_reader, path, leave) => {
+      const { host, drawn } = routesAt(path)
+      await pressed(host, 'in-series')
+      keyed()
+      const put = [...drawn]
+      await pressed(host, leave)
+      expect([put, drawn.at(-1)]).toEqual([
+        [
+          [path, 'POP'],
+          [path, 'PUSH'],
+        ],
+        ['/series/7', 'POP'],
+      ])
+      await flush()
+    },
+  )
+
+  it.each(READERS)(
+    'a %s in no series leaves as it did, and an input puts nothing under it',
+    async (_reader, path, leave) => {
+      const { host, drawn, state } = routesAt(path)
+      await pressed(host, 'in-none')
+      keyed()
+      const named = word(host)
+      await pressed(host, leave)
+      expect([named, drawn, state()]).toEqual([
+        'Library',
+        [
+          [path, 'POP'],
+          ['/', 'PUSH'],
+        ],
+        { [RESTORE_SCROLL]: true },
+      ])
+      await flush()
+    },
+  )
+
+  /**
+   * Another work's reader starts with no series: the one reported here is
+   * the work's it was reported for.
+   */
+  it('keeps the series a reader reported to its own work', async () => {
+    let navigate: ReturnType<typeof useNavigate> | undefined
+    function Nav() {
+      navigate = useNavigate()
+      return null
+    }
+    const host = mount(
+      <MemoryRouter initialEntries={['/read/one']}>
+        <AppRoutes />
+        <Nav />
+      </MemoryRouter>,
+    )
+    await pressed(host, 'in-series')
+    const named = [word(host)]
+    await act(async () => {
+      await navigate?.('/read/two')
+    })
+    named.push(word(host))
+    expect(named).toEqual(['Series', 'Library'])
+    await flush()
+  })
+
+  /** The Library view's "Back from reading" (O431), stored where the shell keeps it. */
+  const storeBackFromReading = (value: string) =>
+    localStorage.setItem(
+      'taiyaku.prefs.browse',
+      JSON.stringify({ backFromReading: value }),
+    )
+
+  it.each(READERS)(
+    'a %s opened under "Where you came from" leaves by O422\'s rule, and an input puts nothing under it',
+    async (_reader, path, leave) => {
+      storeBackFromReading('whereYouCameFrom')
+      const { host, drawn, state } = routesAt(path)
+      await pressed(host, 'in-series')
+      const named = word(host)
+      keyed()
+      const put = [...drawn]
+      await pressed(host, leave)
+      expect([named, put, drawn.at(-1), state()]).toEqual([
+        'Library',
+        [[path, 'POP']],
+        ['/', 'PUSH'],
+        { [RESTORE_SCROLL]: true },
+      ])
+      await flush()
+    },
+  )
+
+  it('reads the way back as each reader opens', async () => {
+    let navigate: ReturnType<typeof useNavigate> | undefined
+    function Nav() {
+      navigate = useNavigate()
+      return null
+    }
+    const host = mount(
+      <MemoryRouter initialEntries={['/read/one']}>
+        <AppRoutes />
+        <Nav />
+      </MemoryRouter>,
+    )
+    await pressed(host, 'in-series')
+    const named = [word(host)]
+    storeBackFromReading('whereYouCameFrom')
+    await act(async () => {
+      await navigate?.('/read/two')
+    })
+    await pressed(host, 'in-series')
+    named.push(word(host))
+    expect(named).toEqual(['Series', 'Library'])
+    await flush()
+  })
+
+  /**
+   * The press of `in-series` draws the way out again after the change: the
+   * reader keeps the way back it opened with.
+   */
+  it('keeps the way back a reader opened with when it is changed while the reader is open', async () => {
+    const { host, drawn } = routesAt('/read/one')
+    storeBackFromReading('whereYouCameFrom')
+    await pressed(host, 'in-series')
+    const named = word(host)
+    keyed()
+    const put = [...drawn]
+    await pressed(host, 'leave')
+    expect([named, put, drawn.at(-1)]).toEqual([
+      'Series',
+      [
+        ['/read/one', 'POP'],
+        ['/read/one', 'PUSH'],
+      ],
+      ['/series/7', 'POP'],
+    ])
+    await flush()
+  })
+
+  it('reads a stored way back that is neither choice as the series page', async () => {
+    storeBackFromReading('home')
+    const { host, drawn } = routesAt('/read/one')
+    await pressed(host, 'in-series')
+    const named = word(host)
+    await pressed(host, 'leave')
+    expect([named, drawn]).toEqual([
+      'Series',
+      [
+        ['/read/one', 'POP'],
+        ['/series/7', 'REPLACE'],
+      ],
+    ])
+    await flush()
+  })
+
+  /** What the stand-in was handed for its help's `L` row, as it draws it. */
+  const handed = (host: HTMLElement) =>
+    host.querySelector('[data-testid="puts-series-under"]')?.textContent
+
+  it.each(
+    READERS.flatMap(([reader, path]) => [
+      [reader, path, 'whereYouCameFrom', 'false'] as const,
+      [reader, path, undefined, 'true'] as const,
+    ]),
+  )(
+    'a %s at %s, with %s stored, is handed whether “Back from reading” is “Series page”: %s',
+    async (_reader, path, stored, said) => {
+      if (stored !== undefined) storeBackFromReading(stored)
+      const { host } = routesAt(path)
+      expect(handed(host)).toBe(said)
+      await flush()
+    },
+  )
 })

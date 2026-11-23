@@ -317,9 +317,27 @@ export interface AppProps {
   onLeave: () => void
   /** What the way out is called; the library's name where none is given. */
   leaveTo?: Destination
+  /**
+   * Handed the series the library's answer for the work names, `null` for
+   * none, as that answer lands, for the way out to go to (O431); never
+   * before it lands or where it fails, when the series is not known.
+   */
+  onSeries?: (series: WorkDetail['series']) => void
+  /**
+   * Whether "Back from reading" was "Series page" when the route opened this
+   * reader (O431), for the help's `L` row to say; "Series page" where none
+   * is given.
+   */
+  putsSeriesUnder?: boolean
 }
 
-function App({ work, onLeave, leaveTo = destination('/') }: AppProps) {
+function App({
+  work,
+  onLeave,
+  leaveTo = destination('/'),
+  onSeries,
+  putsSeriesUnder = true,
+}: AppProps) {
   const [session, setSession] = useState<Session>()
   // O176: what the load threw, when it threw anything but a 401, as
   // `ReaderFailed.tsx`'s `LoadFailure` — the slug for a `WorkNotFound` or a
@@ -366,10 +384,19 @@ function App({ work, onLeave, leaveTo = destination('/') }: AppProps) {
   // says the app's name rather than the last screen's. `ReaderHeading` names
   // the work once the reader draws.
   useDocumentTitle(undefined)
+  // A ref, so a new function from the route does not ask the library again.
+  const onSeriesRef = useRef(onSeries)
+  onSeriesRef.current = onSeries
   useEffect(() => {
-    workDetail(work).then(setDetail, (err: unknown) => {
-      if (!(err instanceof Unauthenticated)) console.error(err)
-    })
+    workDetail(work).then(
+      (answer) => {
+        setDetail(answer)
+        onSeriesRef.current?.(answer.series)
+      },
+      (err: unknown) => {
+        if (!(err instanceof Unauthenticated)) console.error(err)
+      },
+    )
   }, [work])
 
   // `c`'s target. Set to a `Pending` assertion the moment correction mode
@@ -609,6 +636,11 @@ function App({ work, onLeave, leaveTo = destination('/') }: AppProps) {
   // `helpVisibleRef` above (spec 2026-09-26 §3.3).
   const settingsVisibleRef = useLatest(settingsVisible)
   const creditsVisibleRef = useLatest(creditsVisible)
+
+  // The way out, for `L` and `Escape` in the same keydown effect, by the
+  // same route: the route hands in a new one once the work's series is
+  // known (O431), which can be after that effect has subscribed.
+  const onLeaveRef = useLatest(onLeave)
 
   // The grouping the page area is drawing right now, for the keydown effect —
   // which subscribes once at load and so cannot see `grouped`, computed below
@@ -954,7 +986,7 @@ function App({ work, onLeave, leaveTo = destination('/') }: AppProps) {
         case 'begin-correction':
           return beginCorrection()
         case 'leave-reader':
-          return onLeave()
+          return onLeaveRef.current()
         case 'module':
           return moduleKey(plan.action.intent)
         case 'reading':
@@ -2836,6 +2868,14 @@ function App({ work, onLeave, leaveTo = destination('/') }: AppProps) {
           // and scrolling are untouched — `touch-action: none` would take
           // both, and §9.2 keeps the pinch the browser's.
           touchAction: 'manipulation',
+          // O430: a double click, or two quick turning clicks, would otherwise
+          // select a gap's sentence, or in Firefox the page image, and
+          // `::selection` tints the page with the accent. Nothing in the comic
+          // reader reads a selection. Here and not on `.reader`, which also
+          // holds the book reader's text and the comic reader's panels, both
+          // selectable. The prefixed one is for Safari.
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
           // What `Annotations`' `inset: 0` is measured against — the page area,
           // not the whole reader. The two share a top edge; they differ at the
           // bottom, where the root also holds the note list placed below the
@@ -3258,6 +3298,7 @@ function App({ work, onLeave, leaveTo = destination('/') }: AppProps) {
         modules={enabledModules(registry.all(), prefsMap)}
         reading={effectiveReading}
         mayCorrect={mayCorrect}
+        putsSeriesUnder={putsSeriesUnder}
         onClose={() => setHelpVisible(false)}
       />
       {/*

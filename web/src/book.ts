@@ -7,7 +7,7 @@
  * reader's does.
  */
 import { getJson, sendJson } from './api'
-import type { ReaderBinding } from './keys'
+import { type ReaderBinding, wayBackLabel } from './keys'
 
 /** Where a link goes: a block of the edition it is drawn from, or a web page. */
 export interface LinkTo {
@@ -610,7 +610,7 @@ export const BOOK_KEYS: ReaderBinding[] = [
   },
   {
     keys: ['L'],
-    label: 'back where you came from, else the library',
+    label: wayBackLabel(true),
     resolve: () => ({ kind: 'library' }),
   },
 ]

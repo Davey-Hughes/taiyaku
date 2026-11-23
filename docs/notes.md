@@ -32459,3 +32459,306 @@ re-reviewed in turn.
   comments and a test title that claimed what its case could not fail, and
   made a browser case wait for the series page to be drawn before reading
   it.
+
+## The reader's way back and the browser's history (O431)
+
+2026-11-22, the PR that closes O431 and with it O430 (the comic page takes
+no selection) and O434 (the way back's guard reset). Their rows in
+`docs/status.md` say what the PR does. The pre-flights, the plan and the
+ledger are under `.superpowers/sdd/` (`2026-11-22-o431/`), which is not
+committed; this section holds what the rows point to, and the owner's
+rulings behind each FLAG label they cite.
+
+**The rule.** Each reader hands its route its work's series as the library's
+answer for the work lands (`App.tsx`'s and `BookReader.tsx`'s `onSeries`),
+and `Routes.tsx`'s `WayOut` hands that series page, `/series/{id}`, to
+`back.ts`'s `useBack`. Under "Back from reading"'s default, "Series page",
+every way out, the top bar's button, `L`, `Escape` with nothing open and a
+failed load's button, is then named "Series", and:
+
+- steps back (`navigate(-1)`) where the series page is the entry under the
+  reader's: the reader's entry carries the mark (`BENEATH`), or the
+  in-memory record says the entry was pushed from that page, compared by
+  pathname so that an `?edition=` or `?library=` on it changes nothing, or
+  the hook's own rewrite has just run (`rewritten`), which covers an `L`
+  whose own `keydown` made the rewrite before React drew the entry it
+  pushed;
+- otherwise puts the series page in the reader's place, by a replace, with
+  no entry before it too. A press of the button, `L` or a failed load's
+  button is itself an input, so the rewrite below runs first and the press
+  steps back; only `Escape`, which is not one, meets a reader with nothing
+  under it.
+
+A work in no series, and a reader whose answer is still out or has failed,
+keep O422's rule: a step back where an entry of this app comes before the
+reader's, else a push of the last Library view drawn in the tab, or of `/`.
+After a reload the mark is still on the entry, so the reader steps back as
+it did before. An entry with neither the mark nor the record, after a reload
+before the answer first landed or on an entry an older build pushed, is
+taken as not opened from its series page: the way out puts the series page
+in its place, or the next input puts it under, which can leave the series
+page in the history twice.
+
+**The stamp and the rewrite.** The reader puts its series page under itself
+once, in one of two ways:
+
+- *The stamp*, under either value of the setting below. A reader whose entry
+  was pushed from its series page replaces its own entry with the same
+  address and the mark, as the answer lands. A replace, which no browser
+  skips on its Back.
+- *The rewrite*, under "Series page" only. Any other reader of a work in a
+  series replaces its entry with the series page, writing into that entry's
+  state the address the reader was pushed from (`CAME_FROM`), and in the
+  same synchronous step pushes its own address again, with its state and the
+  mark. React draws only the last of the two, so the series page is not
+  drawn on the way. It happens as the answer lands where the click that
+  opened the reader is still the page's activation
+  (`navigator.userActivation` active, the reader drawn under 5 s ago) and
+  the browser is not Firefox (`rewritesAtAnswer`), and otherwise at the
+  first input the HTML spec counts as an activation (`countsAsInput`: a key
+  but `Escape`, a mouse's press, any other pointer's lift, a touch's end),
+  heard on `window` as it is captured, so that it runs before the way out's
+  handlers, which bubble, and `L`'s way out finds the page under the reader.
+  A press of a way out disarms it, and so does a `popstate` while the reader
+  is drawn: a push then would land over the entry the step is going to.
+
+**Why at that moment: what each browser keeps on its Back.** Each of the
+three engines skips, on its Back, some entries a page pushed by script. From
+their sources, as the design read them:
+
+- **Chromium** (Chrome, Edge, Chrome on Android).
+  `navigation_controller_impl.cc`'s `SetShouldSkipOnBackForwardUIIfNeeded`
+  marks the entry a script's push leaves, and every entry of the same
+  document, as skipped by Back while the document has no sticky user
+  activation (a click, tap or key since it loaded, which a browser-initiated
+  same-document Back or Forward stops counting until the next one), and a
+  later activation clears the marks (`NotifyUserActivation`; Chromium's
+  `docs/history_manipulation_intervention.md` says the same). So a page that
+  has had a click keeps a push it makes later with no input, and for a
+  reader opened from a typed address, a bookmark, a fresh tab or a reload,
+  Back skips every entry of the reader's document under a push made before
+  the first input, until that input clears the marks.
+- **WebKit** (Safari, and every browser on an iPhone).
+  `HistoryController.cpp`'s `pushState` flags the new item as added without
+  user interaction unless a gesture is being handled or the window's last
+  activation is under 10 s old, and `replaceState` flags nothing. Back from
+  a flagged item, by `WebBackForwardList.cpp`'s
+  `itemStartingAtIndexSkippingItemsAddedByJSWithoutUserGesture`, which
+  Safari's button and its swipe both take, passes the nearest unflagged item
+  behind it and lands on the one before that, unless the unflagged item is
+  the tab's first, so Back from a reader pushed again within 10 s of a tap
+  lands on the series page, and Back from one pushed later passes it unless
+  it is the tab's first entry.
+- **Firefox** (desktop and Android). With
+  `browser.navigation.requireUserInteraction` on (bug 1939691), Back skips
+  every entry, but the first and the last, that no user activation reached
+  while it was the current entry; a push starts an entry with none, and a
+  replace keeps the entry's (`CanonicalBrowsingContext.cpp`). So the series
+  page put under a reader survives Back only where an input reached the
+  reader's entry, before the rewrite or in the moment of it, and a click on
+  the page the reader was opened from does not count.
+
+The one moment all three keep is a rewrite in the moment of an input made
+while the reader is shown, or after one. Chromium and WebKit also keep one
+made a few seconds after the click that opened the reader, and Firefox never
+does, which is FLAG 4.1 (a)'s split. Firefox's side rests on that reading:
+the browser project runs Chromium, which reaches Firefox's timing only
+through a stubbed user agent, and no run of the way back in a real Firefox
+is recorded.
+
+**How the series reaches the route, and why.** The work's series is in the
+library's answer for the work, which each reader asks for anyway, so the
+route asks for nothing. Each reader calls `onSeries` from that answer's own
+`then`, with the answer's series or `null`: never on a failure, and never
+from state, since `BookReader`'s series state starts at `null`, which would
+tell the route "in no series" before the answer has said anything. `WayOut`
+keeps what it is told and is keyed by the slug under both reader routes
+(`ReaderRoute`), so one work's series never reaches another's way out, and
+neither does the hook's state for the reader on screen. The other route was
+the links: a Continue card would push the series page and then the reader in
+its click. Nothing would then be under a reader opened from an address,
+Firefox would skip a series page that was never the current entry when the
+user touched the page, and a card carries no series, so the API would
+change, and so would the Continue row's link, which the O417 lane was
+rewriting.
+
+**O434: unreachable before, reachable after.** The reset clears `left` when
+another entry is drawn, and it decides one case: a screen that stays mounted
+while another entry is drawn, and then stands on the entry it pressed from
+again with no press between. react-router keeps a screen mounted across a
+change of entry only where both entries match one route, and before O431 no
+two adjacent entries the app could make shared the series page's route or a
+reader's: no link goes from a series page to another series page, or from a
+reader to another reader, and every replace rewrites the screen's own entry.
+That was read, not run. Under "Series page", a reader opened from another
+series' page puts its own series page directly above that one: `/series/60`,
+`/series/41`, the reader. The reader's way out steps back to 41, whose Back
+steps back to 60 with the series page staying mounted; the browser's Forward
+brings 41 back, still mounted, and its Back steps back again only with the
+reset. A reload with neither mark nor record can make another such pair.
+`back.browser.test.tsx`'s "steps back from the series page again after
+Forward, round after round" walks that path with real clicks, and
+`back.hook.test.tsx` holds the reset in CI.
+
+**The O422 cases that moved.** Four browser cases O422 left in
+`back.browser.test.tsx` opened the work from series 60's page while the work
+is filed in series 41, which under O431 is a reader opened from another
+series' page: the reader puts 41 above 60 and its way out steps back to 41.
+Each now opens the work from series 41's page, with the same expectations
+but the address: "goes from a book that would not open to the series page,
+and from there to the grid, each a step back"; "steps back once for Escape
+pressed twice in the reader", which also holds the browser's step back until
+both presses are in, as the guard's other cases do; "Escape at %i px (O419)"
+› "steps back from the comic reader to the series page it was opened from,
+round after round"; and "steps back from a book with its bars up from a tap
+to the series page it was opened from, round after round (O419)". A reader
+opened from another series' page has cases of its own. The stand-in readers
+report no series, so their cases still hold O422's rule.
+
+**O430: what Chromium selects, and Firefox.** On the code before the rule, a
+probe in the browser project (Chromium, 1280×800, single mode, the pages
+real images, each click a real mouse event through CDP with the click count
+rising per press) read the selection after each gesture:
+
+| Gesture | Selected |
+| --- | --- |
+| double click, the page image's centre | nothing |
+| double click, the page image's right (turn) third | nothing |
+| triple click, the page image's centre | nothing |
+| a press at the page area's left edge, dragged level across the image | nothing |
+| the same, dragged diagonally | nothing |
+| two turn clicks 100 ms apart in the right third, the second a double click's | nothing |
+| double click, a gap's title sentence | a word of it |
+| double click, a gap's verdict sentence | a word of it |
+
+So `App.browser.test.tsx`'s case double-clicks a gap's sentences: it is the
+gesture that selects in the browser the gate runs. Playwright's Firefox was
+run against the try's builds of `main` and the branch, served side by side.
+On `main`'s, a double-click on the page image selected it, and so did a
+second quick page-turn click, sent as a double click's second once the
+selection was cleared; the page area's computed `user-select` read `auto`.
+On the branch's no step selected anything, and it read `none`.
+
+**The FLAG labels.** The owner's rulings of 2026-11-22, each on a choice a
+pre-flight put:
+
+- **FLAG 1 (a)**, a work in no series: O422's rule, unchanged, and `L`'s
+  line in Help reads "back to the series, else where you came from" (under
+  "Series page", since FLAG 9.6).
+- **FLAG 2 (a)**, before the work's answer lands and after it fails: O422's
+  rule until the answer names a series, so the button's word may change
+  once, to "Series". Nothing is under the reader in that window, so the
+  browser's Back goes where the reader was opened from.
+- **FLAG 3 (a)**, after a reload, when the record of where the reader was
+  opened from is gone: the reader is taken as not opened from its series
+  page, which then replaces it. The mark outlives a reload, so this holds
+  only for an entry with neither mark nor record.
+- **FLAG 4 (b)**, against the pre-flight's recommendation: the browser's
+  Back and a phone's back gesture land on the series page too. It was
+  designed after the ruling: the stamp, the rewrite and their timing above.
+- **FLAG 4.1 (a)**, when the reader puts its series page under itself: as
+  the answer lands where the click that opened the reader is fresh and the
+  browser is not Firefox, else at the first input.
+- **FLAG 5 (a)**, how O430's test fails against its defect: a per-element
+  computed-style check in the gate, and Playwright's Firefox once, at the
+  try. No Firefox in the gate.
+- **FLAG 6 (a)**: the series page that takes the reader's place, or that the
+  reader puts under itself, is `/series/{id}`, with no `?library=`, the
+  address O427's series link uses.
+- **FLAGs 9.1 to 9.6**, on the setting: below.
+
+**The try.** The owner tried the branch over the tailnet beside a build of
+`main`, both served from scratch copies of the test library. After it, the
+owner asked for two things: "this should actually be a user setting —
+whether to go back to the series or back to the home page when you open from
+continue", and "there's sometimes flashing when you go back to the series
+page from the reader when things reload. can we make a follow up task to
+eliminate this?" Asked how far each went, the owner ruled the same day that
+the setting goes in this PR, with the series page as its default, as O431
+was ruled; that its other value covers every reader not opened from its own
+series page, from the Continue row, a typed address or another series' page,
+the browser's Back and the swipe included, so that those readers put nothing
+under themselves; and that the flash, which `main` shows too, becomes a row
+of its own once what flashes is recorded: O440. After the setting was built,
+the owner looked briefly and gave the word for the PR: "ok let's do the
+review and make the PR". The rounds planned for a second try, the iPhone's
+swipe under each value of the setting and a change made in a second tab
+among them, were not run.
+
+**The setting.** "Back from reading" (`browseModule.ts`'s
+`backFromReading`), a browse preference. The pre-flight of the setting put
+six choices to the owner, ruled as follows:
+
+- **FLAG 9.1**: the other value is O422's rule, "where you came from, else
+  the last Library view", not the home page always. Where the reader was not
+  opened from `/`, no move reaches `/` and keeps the browser's Back in step
+  with the way out: a push leaves the reader behind `/` for Back to reopen,
+  which is what O422 fixed.
+- **FLAG 9.2**: its words, "Back from reading": "Series page" / "Where you
+  came from". View words a control from its key and each choice from its own
+  spelling (`settingsPanel.ts`'s `humanize`), so the words are the stored
+  key and values, `seriesPage` and `whereYouCameFrom`, and changing them
+  later is a migration of stored data.
+- **FLAG 9.3**: on this device for now, through `prefs.ts`, and a follow-up
+  row for account-level settings that moves a bunch of the per-device
+  settings to the account: O441.
+- **FLAG 9.4**: in the Library view's View panel, after Continue strip
+  (`Library.tsx`'s `LIBRARY_VIEW`).
+- **FLAG 9.5**: a change applies to the next reader opened.
+- **FLAG 9.6**: `L`'s line in each reader's Help follows the setting, the
+  pre-flight's option (b), not its recommendation: "back to the series, else
+  where you came from" under "Series page", and O422's "back where you came
+  from, else the library" under "Where you came from" (`keys.ts`'s
+  `wayBackLabel`, handed to both readers' Help as `putsSeriesUnder`).
+
+Why per device: every reader and browse preference is kept per device, in
+`localStorage` through `prefs.ts`, whose head doc keeps position and content
+on the server, because they must survive a different machine, and layout and
+preference on the client; the book's compared editions sit in `localStorage`
+too, outside `prefs.ts` (O441). The server stores none, and kept there this
+one would have needed a migration, a store function, a route, the value in
+the account's answer, a write that can fail on screen, and Rust tests.
+
+Why read as each reader opens: the reader's routes draw no `Shell`, so the
+browse preferences' context there holds only the defaults, and `WayOut`
+reads storage itself (`loadBrowsePrefs`, through `putsSeriesUnder`) in a
+`useState` initialiser, once per reader. Read at every press instead, a
+reader's way out could change after its series page is under it, and its
+button's word could change under the reader. The View panel is the Library
+view's, so the tab a reader is open in cannot change the setting; another
+tab can, and its change reaches the next reader opened. A reader drawn
+again, by Back, Forward or a reload, reads it again and finds its entry as
+it left it: an entry the default marked steps back to the series page under
+either value.
+
+The history each value leaves. H is `/`, L2 `/?library=2`, S the work's
+series page, S60 another series' page, R the reader, R′ the reader pushed
+again by the rewrite, X the tab's page before the app, and `*` the entry on
+screen:
+
+| Opened from | "Series page" | "Where you came from" |
+| --- | --- | --- |
+| its own series page | `[S, R*]`, the entry stamped; the way out and Back step back to S | the same |
+| the Continue row on H | `[H, S, R′*]` as the answer lands after a fresh click, or at the first input; the way out and Back land on S, whose Back, "Library", goes to H | `[H, R*]`; the way out and Back step back to H |
+| the Continue row on L2 | `[L2, S, R′*]`; S, then L2 | `[L2, R*]`; L2 |
+| a typed address | `[X, S, R′*]` from the first input; Back before one goes to X | `[X, R*]`; the way out pushes H, `[X, R, H*]`; Back from R goes to X |
+| another series' page | `[H, S60, S, R′*]`; S, whose Back, "Series", goes to S60 | `[H, S60, R*]`; S60 |
+| a reload, with neither mark nor record, after an entry of the app | S, in R's place or, after an input, under it | a step back to the entry before, the button reading "Back" |
+| a reload of a stamped or rewritten entry | a step back to S | the same |
+| a work in no series, or before its answer | O422's rule | O422's rule |
+
+**The whole-branch review's fix, and what it leaves.** Choosing an edition
+on a series page the reader had put under itself dropped that page's Back
+word: `Series.tsx`'s edition replace writes no navigation state, so
+`CAME_FROM` went with the entry it replaced, and the Back read "Back".
+`useBackTracker` now hands a replaced entry's `CAME_FROM` on, as the record
+for the entry taking its place, so the Back keeps its word. That record is
+in memory, so after an edition is chosen there a reload names the Back
+"Back"; it still steps back to the same entry. The review also asked for a
+case for the reset's `POP` half, which `back.hook.test.tsx` now has.
+
+**Left open.** Going back to a series page can draw it with every cover
+missing for a moment, on `main` too, and under "Series page" a reader opened
+from a Continue card goes back to a series page the tab may not have drawn,
+whose covers then come in one by one: O440. Every setting, this one
+included, is kept on the device it was made on: O441.

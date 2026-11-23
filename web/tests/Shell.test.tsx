@@ -891,7 +891,7 @@ describe('Shell', () => {
 
   /**
    * Spec §2: Reset restores every browse preference from either page. The
-   * library page's View shows two of them, so a Reset that restored only
+   * library page's View shows four of them, so a Reset that restored only
    * what its panel shows would leave the series page's four as they were.
    */
   it('restores the series page’s four as well on a Reset from the library page', async () => {
@@ -905,6 +905,7 @@ describe('Shell', () => {
         coverSize: 104,
         continueStrip: false,
         alwaysShowAligned: true,
+        backFromReading: 'whereYouCameFrom',
       }),
     )
     vi.stubGlobal('localStorage', s)
@@ -952,10 +953,13 @@ describe('Shell', () => {
       )
       return [range.value, output?.textContent]
     }
+    const backFromReading = (panel: HTMLElement) =>
+      (controlLabelled(panel, 'Back from reading') as HTMLSelectElement).value
 
     await follow(host, '.sidebar-heading a[href="/"]')
     expect(checkboxLabelled(host, 'Continue strip').checked).toBe(false)
     expect(coverSize(openView(host))).toEqual(['8', '104 px'])
+    expect(backFromReading(openView(host))).toBe('whereYouCameFrom')
     const reset = resetIn(host)
     act(() => {
       reset.click()
@@ -966,6 +970,7 @@ describe('Shell', () => {
         .checked,
     ).toBe(true)
     expect(coverSize(libraryView)).toEqual(['48', '144 px'])
+    expect(backFromReading(libraryView)).toBe('seriesPage')
 
     await follow(host, 'main a[href="/series/7"]')
     expect(seriesView(host)).toEqual({

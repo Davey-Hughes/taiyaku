@@ -76,6 +76,16 @@ export function coverSizeOf(prefs: BrowsePrefs): number {
   return coverSizeAt(coverPositionOf(size))
 }
 
+/**
+ * Whether a reader puts its series page under itself (O431): for anything
+ * but `'whereYouCameFrom'`, so a stored value that is neither choice reads as
+ * the default, as a cover size off the scale does. `loadBrowsePrefs` lets
+ * any stored value through.
+ */
+export function putsSeriesUnder(prefs: BrowsePrefs): boolean {
+  return prefs.backFromReading !== 'whereYouCameFrom'
+}
+
 export interface BrowsePrefs {
   /** §3's two presentations. */
   layout: 'grid' | 'table'
@@ -102,6 +112,14 @@ export interface BrowsePrefs {
    * hovered or to hold keyboard focus (`library.css`).
    */
   alwaysShowAligned: boolean
+  /**
+   * Where a reader's way out goes. `'seriesPage'` puts the work's series page
+   * under the reader, so the way out and the browser's Back land there
+   * (O431); `'whereYouCameFrom'` keeps O422's rule for a reader not opened
+   * from its own series page: back where you came from, else the last Library
+   * view. Each reader reads it once, as it opens.
+   */
+  backFromReading: 'seriesPage' | 'whereYouCameFrom'
 }
 
 export const browseModule: ReaderModule<BrowsePrefs> = {
@@ -114,10 +132,12 @@ export const browseModule: ReaderModule<BrowsePrefs> = {
     coverSize: COVER_DEFAULT,
     continueStrip: true,
     alwaysShowAligned: false,
+    backFromReading: 'seriesPage',
   },
   options: {
     layout: ['grid', 'table'],
     panel: ['off', 'button', 'on-select'],
+    backFromReading: ['seriesPage', 'whereYouCameFrom'],
   },
   // A slider rather than a number box: a few px is judged by eye, and the
   // covers move as it is dragged.

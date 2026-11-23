@@ -22,7 +22,10 @@ sort or the chosen edition. After this:
 - **The reader's Library button** opens the last Library view seen in this
   tab (its library, chip and sort) at the scroll it was left at. *Since
   2026-11-21 it goes back where the reader was opened from, and opens that
-  view only when no entry of this app precedes the reader's (ruling 4).*
+  view only when no entry of this app precedes the reader's (ruling 4).
+  Since 2026-11-22 it goes to the work's series page where the work has one,
+  once the reader knows it, and keeps that rule where "Back from reading" is
+  "Where you came from".*
 - **The sidebar's Libraries heading** opens the defaults at the top, as
   today. Its link for each library switches library and keeps the chip and
   the sort. A link to the view already shown, a library's own link or,
@@ -52,16 +55,26 @@ sort or the chosen edition. After this:
 3. **After reading, draw, then update** (§1): the return draws the kept rows
    and the quiet re-read moves them once, over marking them stale so the
    return waits. The re-read waits for the last progress save (§3.3).
-4. **The reader's way out goes back where the reader was opened from**
-   (§5.2): a step back when an entry of this app precedes the reader's, and
-   the last Library view only when none does (the owner, 2026-11-20; O422 in
-   `docs/status.md`). *Until 2026-11-21:* **The reader's Library button
-   returns to where the reader was** (§5.2), over going Back only when the
-   reader was opened from the grid, and over leaving it. It was reversed
-   because the push left the reader behind the library in history, so the
-   browser's Back reopened the reader just closed, and the owner wants Back
-   to go where you came from, and to the library only when nothing in the
-   app precedes it.
+4. **The reader's way out goes to its work's series page** (§5.2), once
+   the reader knows it: a step back where that page is the entry under the
+   reader's, else that page in the reader's place. The reader puts the page
+   under itself, so the browser's Back and a phone's back gesture land there
+   too (the owner, 2026-11-22; O431 in `docs/status.md`). "Back from
+   reading" in the Library view's View offers "Where you came from", under
+   which a reader not opened from its own series page keeps O422's rule, the
+   browser's Back with it (the owner, 2026-11-22); a work in no series, or
+   whose series is not yet known, keeps it under either. *From 2026-11-21
+   until 2026-11-22 the rule for every reader, and since then the rule under
+   Where you came from:* **The reader's way out goes back where the reader
+   was opened from** (§5.2): a step back when an entry of this app precedes
+   the reader's, and the last Library view only when none does (the owner,
+   2026-11-20; O422 in `docs/status.md`). *Until 2026-11-21:* **The
+   reader's Library button returns to where the reader was** (§5.2), over
+   going Back only when the reader was opened from the grid, and over
+   leaving it. It was reversed because the push left the reader behind the
+   library in history, so the browser's Back reopened the reader just
+   closed, and the owner wants Back to go where you came from, and to the
+   library only when nothing in the app precedes it.
 5. **The store and a scroll keeper**, over making the page scroll at every
    width for the browser to restore, and over keeping the Library view
    mounted but hidden.
@@ -217,7 +230,12 @@ of the page's body.
      entry the reader was opened from wherever an entry of this app precedes
      it, by the `idx` react-router keeps in `history.state` (`back.ts`), and
      open the held address only where none does; the top bar's button and the
-     failed load's name where they go.*
+     failed load's name where they go. Since 2026-11-22 (ruling 4, O431),
+     once the reader knows its work's series, they step back to that series
+     page, which the reader puts under itself, or put the page in the
+     reader's place where it is not there yet; under "Back from reading"'s
+     "Where you came from" a reader not opened from its series page keeps the
+     rule above.*
    - **Every other arrival lands at the top**: as today, the sidebar's
      heading, a link within the app and a library switch, and now a
      sidebar link or a wordmark to the view already shown, which kept the

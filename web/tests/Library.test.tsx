@@ -2130,7 +2130,7 @@ describe('the library page’s View panel — spec §2', () => {
     ).toEqual(['visually-hidden', 'search-box', 'view-menu'])
   })
 
-  it('holds Continue strip, Panel, Cover size and Reset, in sentence case', async () => {
+  it('holds Continue strip, Back from reading, Panel, Cover size and Reset, in sentence case', async () => {
     const panel = openView(await mountWithView())
     // `control`, as the slider's label names its range by `for`.
     expect(
@@ -2144,6 +2144,7 @@ describe('the library page’s View panel — spec §2', () => {
       }),
     ).toEqual([
       ['Continue strip', 'checkbox', []],
+      ['Back from reading', 'SELECT', ['Series page', 'Where you came from']],
       ['Panel', 'SELECT', ['Off', 'Button', 'On-select']],
       ['Cover size', 'range', []],
     ])

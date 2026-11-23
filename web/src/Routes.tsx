@@ -15,15 +15,23 @@
  * hand. The wasm module is a module-level ES import, so it initialises once per
  * *page* and a remount costs a sidecar fetch and a resolver construction.
  */
+import { type ReactNode, useState } from 'react'
 import { Navigate, Route, Routes, useParams } from 'react-router'
 import { About } from './About'
 import { Account } from './Account'
 import App from './App'
-import { useBack, useBackTracker } from './back'
+import { type Destination, useBack, useBackTracker } from './back'
 import { BookReader } from './BookReader'
+import {
+  type BrowsePrefs,
+  browseModule,
+  loadBrowsePrefs,
+  putsSeriesUnder,
+} from './browseModule'
 import { Config } from './Config'
 import { useGate } from './gate'
 import { Library } from './Library'
+import type { WorkDetail } from './library'
 import { Licence } from './Licence'
 import { Proposals } from './Proposals'
 import { Search } from './Search'
@@ -33,34 +41,83 @@ import { useDocumentTitle } from './title'
 
 /**
  * The reader, keyed by the slug in the URL. Its exits (the top bar's button,
- * its key, and the failed load's way back) are `back.ts`'s way back, and
- * the button and the failed load name where it goes.
+ * its key, and the failed load's way back) are `back.ts`'s way back, to the
+ * work's series page once the reader has named it (O431), and the button and
+ * the failed load name where it goes. The "Back from reading" browse
+ * preference (`backFromReading`) picks the way back as the reader opens, and
+ * a reader keeps the way it opened with.
  */
 function Reader() {
-  const { work, leave, leaveTo } = useReaderRoute()
-  if (!work) return <Navigate to="/" replace />
-  // `.reader-route` blacks out the page from the first frame (spec 2026-09-17
-  // §8.2): `App` draws nothing until its load answers, so its own `.reader`
-  // root is not there for `styles/reader.css`'s ground rule until then.
   return (
-    <div className="reader-route">
-      <App key={work} work={work} onLeave={leave} leaveTo={leaveTo} />
-    </div>
+    <ReaderRoute
+      draw={(work, way) => (
+        // `.reader-route` blacks out the page from the first frame (spec
+        // 2026-09-17 §8.2): `App` draws nothing until its load answers, so
+        // its own `.reader` root is not there for `styles/reader.css`'s
+        // ground rule until then.
+        <div className="reader-route">
+          <App key={work} work={work} {...way} />
+        </div>
+      )}
+    />
   )
 }
 
 /** A book, keyed by the slug in the URL, leaving as the reader leaves. */
 function BookRoute() {
-  const { work, leave, leaveTo } = useReaderRoute()
-  if (!work) return <Navigate to="/" replace />
-  return <BookReader key={work} work={work} onLeave={leave} leaveTo={leaveTo} />
+  return (
+    <ReaderRoute
+      draw={(work, way) => <BookReader key={work} work={work} {...way} />}
+    />
+  )
 }
 
-/** A reader's slug from the URL, its way back, and that way's name. */
-function useReaderRoute() {
+/**
+ * What a reader is handed: its way out, that way's name, where to name its
+ * work's series, and whether "Back from reading" is "Series page", which its
+ * help says of `L`.
+ */
+interface ReaderWay {
+  onLeave: () => void
+  leaveTo: Destination
+  onSeries: (series: WorkDetail['series']) => void
+  putsSeriesUnder: boolean
+}
+
+type DrawReader = (work: string, way: ReaderWay) => ReactNode
+
+/** The reader of the slug in the URL, drawn by `draw`; the library where there is none. */
+function ReaderRoute({ draw }: { draw: DrawReader }) {
   const { work } = useParams()
-  const { word, phrase, go } = useBack()
-  return { work, leave: go, leaveTo: { word, phrase } }
+  if (!work) return <Navigate to="/" replace />
+  return <WayOut key={work} work={work} draw={draw} />
+}
+
+/**
+ * One work's reader and its way out, keyed by the slug: the series a reader
+ * names is its own work's, and another work's reader starts with none
+ * (O431). Until a series is named, and for a work in none, the way out is
+ * `back.ts`'s rule for every other screen. Whether the series page goes under
+ * the reader is the "Back from reading" browse preference (`backFromReading`)
+ * as this mounts, read once, so changing the preference never changes the way
+ * out's word, its step or the help's `L` row under an open reader; a change
+ * made while it is open applies to the next reader (O431).
+ */
+function WayOut({ work, draw }: { work: string; draw: DrawReader }) {
+  const [seriesPage, setSeriesPage] = useState<string>()
+  const [putsUnder] = useState(() =>
+    putsSeriesUnder(
+      loadBrowsePrefs(browseModule.id, browseModule.defaults) as BrowsePrefs,
+    ),
+  )
+  const { word, phrase, go } = useBack(seriesPage, putsUnder)
+  return draw(work, {
+    onLeave: go,
+    leaveTo: { word, phrase },
+    onSeries: (series) =>
+      setSeriesPage(series === null ? undefined : `/series/${series.id}`),
+    putsSeriesUnder: putsUnder,
+  })
 }
 
 /**

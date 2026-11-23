@@ -675,6 +675,27 @@ describe('BookReader', () => {
     expect(host.querySelector('[aria-label="Settings"]')).toBeNull()
   })
 
+  // O431: by the "Back from reading" value the route read as the book
+  // opened; a book mounted with none is given the series page's.
+  it.each([
+    [{ putsSeriesUnder: true }, 'back to the series, else where you came from'],
+    [{ putsSeriesUnder: false }, 'back where you came from, else the library'],
+    [{}, 'back to the series, else where you came from'],
+  ])(
+    'names L in help by where the way back goes, opened with %o (O431)',
+    async (props, words) => {
+      vi.stubGlobal('fetch', server().fetch)
+      Element.prototype.scrollIntoView = vi.fn()
+      const host = mount(<BookReader work="w" onLeave={vi.fn()} {...props} />)
+      await land()
+      press('?')
+      const row = [
+        ...host.querySelectorAll('[aria-label="Keyboard help"] dl > div'),
+      ].find((one) => one.querySelector('kbd')?.textContent === 'L')
+      expect(row?.querySelector('dd')?.textContent).toBe(words)
+    },
+  )
+
   it('closes help from its own button', async () => {
     const { host } = await opened()
     press('?')
@@ -3800,6 +3821,61 @@ describe('BookReader', () => {
     await land()
     tap(host)
     expect(host.querySelector('.reader-back')?.textContent).toBe('Series')
+  })
+})
+
+/**
+ * O431: the book hands its route the series the library's answer for the
+ * work names, as the comic reader does, and from the answer alone: the
+ * series the top bar keeps starts as `null` before the answer lands, which
+ * would say "in no series" before anything is known.
+ */
+describe('the series the library’s answer names — O431', () => {
+  const SEVEN = { id: 7, title: 'Seven' }
+
+  /** The book, the library's answer for the work being `answer`. */
+  async function reading(answer: Promise<Response>) {
+    const { fetch } = server()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, init?: RequestInit) =>
+        url === '/api/library/works/w' ? answer : fetch(url, init),
+      ),
+    )
+    Element.prototype.scrollIntoView = vi.fn()
+    const onSeries = vi.fn()
+    mount(<BookReader work="w" onLeave={vi.fn()} onSeries={onSeries} />)
+    await land()
+    return onSeries
+  }
+
+  it('reports nothing while the answer is out, then its series, once', async () => {
+    const answer = deferred<Response>()
+    const onSeries = await reading(answer.promise)
+    const out = [...onSeries.mock.calls]
+    await act(async () => {
+      answer.resolve(Response.json({ series: SEVEN }))
+    })
+    await land()
+    expect([out, onSeries.mock.calls]).toEqual([[], [[SEVEN]]])
+  })
+
+  it('reports null for a work the answer files in no series', async () => {
+    const onSeries = await reading(
+      Promise.resolve(Response.json({ series: null })),
+    )
+    expect(onSeries.mock.calls).toEqual([[null]])
+  })
+
+  it('reports nothing when the answer fails', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onSeries = await reading(
+      Promise.resolve(new Response('gone', { status: 500 })),
+    )
+    expect([onSeries.mock.calls, logged.mock.calls.length > 0]).toEqual([
+      [],
+      true,
+    ])
   })
 })
 

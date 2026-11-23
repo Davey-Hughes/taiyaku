@@ -85,6 +85,7 @@ import { VolumePanel } from './VolumePanel'
 /** What this page's View panel offers: the preferences that act here. */
 const LIBRARY_VIEW: readonly (keyof BrowsePrefs)[] = [
   'continueStrip',
+  'backFromReading',
   'panel',
   'coverSize',
 ]

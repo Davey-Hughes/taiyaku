@@ -1,6 +1,11 @@
 import { useRef, type CSSProperties } from 'react'
 import { usePanelFocus } from './focus'
-import { READER_KEYS, type ReaderBinding, withoutCorrecting } from './keys'
+import {
+  READER_KEYS,
+  type ReaderBinding,
+  withoutCorrecting,
+  withWayBackLabel,
+} from './keys'
 import type { Direction } from './modules/direction'
 import { helpGroups } from './modules/help'
 import type { ReaderModule } from './module'
@@ -58,6 +63,12 @@ export interface HelpProps {
    * `mayCorrect` then has no say over.
    */
   bindings?: ReaderBinding[]
+  /**
+   * Whether "Back from reading" was "Series page" as the route read it when
+   * the reader opened (O431): `L`'s row, in either table, says `keys.ts`'s
+   * words for it. "Series page" when not given.
+   */
+  putsSeriesUnder?: boolean
   onClose: () => void
 }
 
@@ -98,6 +109,7 @@ export function Help({
   reading = 'ltr',
   mayCorrect = false,
   bindings,
+  putsSeriesUnder = true,
   onClose,
 }: HelpProps) {
   const panelRef = useRef<HTMLDivElement>(null)
@@ -120,7 +132,11 @@ export function Help({
       {helpGroups(
         modules,
         reading,
-        bindings ?? (mayCorrect ? READER_KEYS : withoutCorrecting(READER_KEYS)),
+        withWayBackLabel(
+          bindings ??
+            (mayCorrect ? READER_KEYS : withoutCorrecting(READER_KEYS)),
+          putsSeriesUnder,
+        ),
       ).map((group) => (
         <section key={group.heading}>
           <h3 className="reader-panel-heading">{group.heading}</h3>
