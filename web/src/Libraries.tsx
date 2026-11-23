@@ -433,7 +433,7 @@ export function Libraries() {
       // cascades, the rules scoped to them, the rule each accepted proposal
       // that wrote one names, and every account's grant of the library.
       void invalidate(ROOTS, RULES, ACCEPTED_PROPOSALS, USER_LIST)
-      invalidateLibraryViews()
+      void invalidateLibraryViews()
       answered(from, { at: LIBRARIES, name, derive: answer.derive }, (held) =>
         withoutLibrary(held, id),
       )
@@ -472,7 +472,7 @@ export function Libraries() {
         ...(how === 'removed' ? [RULES, ACCEPTED_PROPOSALS] : []),
         ...(emptied.length > 0 ? [USER_LIST] : []),
       )
-      invalidateLibraryViews()
+      void invalidateLibraryViews()
       answered(
         from,
         left.how === 'unlinked'
@@ -506,7 +506,7 @@ export function Libraries() {
       // list carries: which it changed is the server's to know. A move that
       // emptied its library removed it, and every account's grant of it.
       void invalidate(ROOTS, ...(gone ? [USER_LIST] : []))
-      invalidateLibraryViews()
+      void invalidateLibraryViews()
       const left = drawn.current?.find((one) => one.id === id)
       answered(
         from,

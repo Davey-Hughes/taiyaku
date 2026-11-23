@@ -1104,6 +1104,97 @@ describe('DirPage, why a held button is held (O250)', () => {
       'Waits for a scan of a directory around or inside this one.',
     )
   })
+
+  /** Scan directory's words, and whether it is held, disabled or free. */
+  const scanButton = (host: HTMLElement) => {
+    const scan = host.querySelector(
+      '.dir-page .page-actions button',
+    ) as HTMLButtonElement
+    return [scan.textContent, holdOf(scan)]
+  }
+  /** The lines under the header saying what a scan holding it is doing. */
+  const scanLines = (host: HTMLElement) =>
+    [...host.querySelectorAll('.dir-page > .scanning')].map(
+      (one) => one.textContent,
+    )
+
+  // A scan of a directory around this one holds its removal, which would
+  // hand its files to that directory, but not its scan: the server queues a
+  // press then behind the job lock as it queues one behind any job, so the
+  // press is drawn as any queued press is (O260), with the line naming each
+  // other library its job covers.
+  it.each([
+    {
+      behind: 'a scan around it',
+      status: { ...idle(7), held_removals: [1, 2], moves_held: true },
+      other: feedJob({
+        id: 12,
+        dirs: [{ id: 50, path: '/media' }],
+        libraries: [{ id: 8, name: 'Comics' }],
+      }),
+      removal: [
+        'held',
+        'Waits for a scan of a directory around or inside this one.',
+      ],
+      // Comics shows this directory nested in /media, so its scan covers
+      // Comics too.
+      libraries: [
+        { id: 7, name: 'Manga' },
+        { id: 8, name: 'Comics' },
+      ],
+      lines: ['Waiting for another job', 'This scan covers Comics too.'],
+    },
+    {
+      behind: 'another library’s scan',
+      status: { ...idle(7), moves_held: true },
+      other: feedJob({
+        id: 12,
+        dirs: [{ id: 80, path: '/media/Comics' }],
+        libraries: [{ id: 8, name: 'Comics' }],
+      }),
+      removal: ['free', 'Asks first, with what it would take.'],
+      libraries: [{ id: 7, name: 'Manga' }],
+      lines: ['Waiting for another job'],
+    },
+  ])(
+    'leaves Scan directory free behind $behind, and draws its press as any queued press: Cancel, free, over Waiting for another job and each library its job covers too (O260)',
+    async ({ status, other, removal, libraries, lines }) => {
+      vi.mocked(api.libraryScanStatus).mockResolvedValue(status)
+      vi.mocked(config.startScan).mockResolvedValue({
+        root_id: 2,
+        status_url: '/api/library/roots/2/scan',
+      })
+      feed.answer(runningFeed(other))
+      const { host } = await shown()
+      expect([
+        holdOf(control(host, 'Remove…')),
+        helpIn(host, 'Remove this directory'),
+      ]).toEqual(removal)
+      expect(scanButton(host)).toEqual(['Scan directory', 'free'])
+      expect(scanLines(host)).toEqual([])
+
+      // Taken, and its job waits for the one running to end.
+      feed.answer(
+        runningFeed(
+          other,
+          feedJob({
+            id: 13,
+            step: 'waiting',
+            done: null,
+            of: null,
+            dir: null,
+            dirs: [{ id: 2, path: '/media/Manga/Chapters' }],
+            libraries,
+          }),
+        ),
+      )
+      await press(control(host, 'Scan directory'))
+      await clock(0)
+      expect(config.startScan).toHaveBeenCalledWith(2, 7)
+      expect(scanButton(host)).toEqual(['Cancel', 'free'])
+      expect(scanLines(host)).toEqual(lines)
+    },
+  )
 })
 
 describe('DirPage, a derive holding the lease (O51)', () => {

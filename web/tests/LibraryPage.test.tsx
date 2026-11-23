@@ -1716,6 +1716,103 @@ describe('LibraryPage, a directory inside one of its own', () => {
     )
   })
 
+  /** Manga, Volumes scanned once and Chapters never. */
+  const scannedOnce = () =>
+    manga({
+      dirs: [
+        {
+          ...dir(1, '/media/Manga/Volumes'),
+          last_scan_at: '2026-10-01 10:00:00',
+          last_scan_status: 'ok',
+        },
+        dir(2, '/media/Manga/Chapters'),
+      ],
+    })
+
+  // A scan of a directory around one of the library's holds its removal,
+  // which would hand its files to that directory, but not its scan: the
+  // server queues a press then behind the job lock as it queues one behind
+  // any job, so the press is drawn as any queued press is (O260), with the
+  // line naming each other library its job covers.
+  it.each([
+    {
+      behind: 'a scan around its directories',
+      status: { ...idle(7), held_removals: [1, 2], moves_held: true },
+      other: feedJob({
+        id: 12,
+        dirs: [{ id: 50, path: '/media' }],
+        libraries: [{ id: 8, name: 'Comics' }],
+      }),
+      removal: [
+        'held',
+        "Waits for a scan of a directory around or inside one of Manga's directories.",
+      ],
+      // Comics' directory, /media, holds Manga's directories, so Comics
+      // shows what they hold and their scan covers Comics too.
+      libraries: [
+        { id: 7, name: 'Manga' },
+        { id: 8, name: 'Comics' },
+      ],
+      lines: ['Waiting for another job', 'This scan covers Comics too.'],
+    },
+    {
+      behind: 'another library’s scan',
+      status: { ...idle(7), moves_held: true },
+      other: feedJob({
+        id: 12,
+        dirs: [{ id: 80, path: '/media/Comics' }],
+        libraries: [{ id: 8, name: 'Comics' }],
+      }),
+      removal: ['free', 'Asks first, with what it would take.'],
+      libraries: [{ id: 7, name: 'Manga' }],
+      lines: ['Waiting for another job'],
+    },
+  ])(
+    'leaves Scan library free behind $behind, and draws its press as any queued press: Cancel, free, over Waiting for another job and each library its job covers too, and each directory Scanning… (O260)',
+    async ({ status, other, removal, libraries, lines }) => {
+      vi.mocked(api.libraryScanStatus).mockResolvedValue(status)
+      vi.mocked(api.startLibraryScan).mockResolvedValue(started)
+      feed.answer(runningFeed(other))
+      const { host } = await shown(scannedOnce())
+      await clock(0)
+      expect([
+        holdOf(button(host, 'remove-library')),
+        removalHelp(host),
+      ]).toEqual(removal)
+      expect([
+        button(host, 'scan-library').textContent,
+        holdOf(button(host, 'scan-library')),
+      ]).toEqual(['Scan library', 'free'])
+      expect(scanLines(host)).toEqual([])
+      expect(lastScans(host)).toEqual(['2026-10-01 10:00:00 UTC', 'Never'])
+
+      // Taken, and its job waits for the one running to end.
+      feed.answer(
+        runningFeed(
+          other,
+          feedJob({
+            id: 13,
+            step: 'waiting',
+            done: null,
+            of: null,
+            dir: null,
+            dirs: whole().dirs,
+            libraries,
+          }),
+        ),
+      )
+      await press(button(host, 'scan-library'))
+      await clock(0)
+      expect(api.startLibraryScan).toHaveBeenCalledWith(7)
+      expect([
+        button(host, 'scan-library').textContent,
+        holdOf(button(host, 'scan-library')),
+      ]).toEqual(['Cancel', 'free'])
+      expect(scanLines(host)).toEqual(lines)
+      expect(lastScans(host)).toEqual(['Scanning…', 'Scanning…'])
+    },
+  )
+
   it('keeps Remove… held through two failed reads of a held removal, and frees it on the third, saying why', async () => {
     vi.mocked(api.libraryScanStatus).mockResolvedValueOnce({
       ...idle(7),

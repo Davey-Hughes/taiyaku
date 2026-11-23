@@ -12,7 +12,10 @@
  * **Only the newest request for an address is kept.** `invalidate` never
  * joins a request that is out, because the one out may predate the write
  * that made the address stale; an answer to any request but the newest is
- * dropped, so an older answer landing late cannot undo a newer one.
+ * dropped, so an older answer landing late cannot undo a newer one. So
+ * `invalidate`'s promise follows the newest: a request of its own that a
+ * newer one overtook leaves the answer from before, and the promise waits
+ * until the newest request for that address has landed.
  *
  * **A mark can tell no one.** `markStale` marks an entry for a write that no
  * page on screen is to take up: a page drawing it keeps drawing it, and one
@@ -66,6 +69,14 @@ interface Request {
   /** The call's outcome; never rejects, so a set waits on all its members. */
   readonly outcome: Promise<Outcome>
   /**
+   * Resolves once a set holding the request has landed and told its
+   * listeners, whether the request was applied, overtaken or dropped: what
+   * `invalidate` waits on for a request that overtook one of its own.
+   */
+  readonly landed: Promise<void>
+  /** Resolves `landed`: `land` and `readNow` call it once they have told. */
+  readonly markLanded: () => void
+  /**
    * Set once its outcome is in the entry. A request two sets share is
    * applied by whichever lands first, and the other must change nothing: a
    * failure applied twice would be a new entry, and a redraw, for nothing.
@@ -84,8 +95,8 @@ interface Request {
 
 interface Slot {
   /**
-   * The `Read` the latest request here was started from: how
-   * `invalidatePrefix` reads again an address it knows only as a key of
+   * The `Read` the latest request here was started from: how `readsUnder`
+   * hands back, to be read again, an address it knows only as a key of
    * `slots`.
    */
   read: Read<unknown>
@@ -190,12 +201,18 @@ function start(r: Read<unknown>): Request {
   // The executor runs before this returns, so the call is sent at once, and
   // a client that throws rather than rejecting fails like any other.
   const call = new Promise<unknown>((resolve) => resolve(r.fetch()))
+  let markLanded = (): void => undefined
+  const landed = new Promise<void>((resolve) => {
+    markLanded = () => resolve()
+  })
   const request: Request = {
     address: r.address,
     outcome: call.then(
       (answer): Outcome => ({ answered: true, answer }),
       (failure: unknown): Outcome => ({ answered: false, failure }),
     ),
+    landed,
+    markLanded,
     applied: false,
     beforeMark: false,
   }
@@ -276,6 +293,26 @@ async function land(
   })
   trim()
   tell(addresses)
+  for (const q of requests) q.markLanded()
+}
+
+/**
+ * Follows `request`, once it has landed, to the newest request for its
+ * address: one a newer request overtook was not applied, so its entry holds
+ * the answer from before until the newest lands, and a newer one may
+ * overtake that in turn. Ends at a request that was applied, at none out, or
+ * at a step that finds `slot`, the one `request` was sent for, emptied: the
+ * check is made between steps, so a slot emptied while a newer request is
+ * awaited still waits for that request to land.
+ */
+async function newestLanded(request: Request, slot: Slot | undefined) {
+  let followed = request
+  while (!followed.applied && slots.get(request.address) === slot) {
+    const newest = slot?.newest
+    if (newest === undefined || newest === followed) return
+    await newest.landed
+    followed = newest
+  }
 }
 
 export function entryOf<T>(r: Read<T>): Entry<T> | undefined {
@@ -332,7 +369,9 @@ export function readSet(reads: readonly Read<unknown>[]): Promise<void> {
 
 /**
  * Marks each stale and reads the drawn ones now as one set, always with new
- * requests (§3.2, §3.6). Resolves once applied.
+ * requests (§3.2, §3.6). Resolves once each address it sent a request for
+ * holds the newest request's outcome: the set applied, and any request that
+ * overtook one of its own landed (`newestLanded`). Never rejects.
  */
 export function invalidate(...reads: readonly Read<unknown>[]): Promise<void> {
   const named = new Map(reads.map((r) => [r.address, r]))
@@ -351,7 +390,12 @@ export function invalidate(...reads: readonly Read<unknown>[]): Promise<void> {
       slot.newest = undefined
     }
   }
-  return land(requests, named.keys())
+  // Each request's slot, taken as it is sent: one emptied before the set
+  // lands ends the wait, rather than leading it into a slot made since.
+  const sentTo = requests.map((q) => slots.get(q.address))
+  return land(requests, named.keys()).then(async () => {
+    await Promise.all(requests.map((q, i) => newestLanded(q, sentTo[i])))
+  })
 }
 
 /** Whether `address` is `prefix`, or continues it with a query or a path. */
@@ -364,17 +408,25 @@ function under(address: string, prefix: string): boolean {
 }
 
 /**
- * `invalidate` for every kept address equal to a prefix or continuing it with
- * `?` or `/`: for a write that changes addresses carrying ids and queries it
- * cannot name one by one. `/api/library/series` covers `?library=2` and `/17`,
- * not `/api/library/seriesX`. An address never read, or dropped by the bound,
- * is not read: its next arrival reads it anyway.
+ * Every kept address equal to a prefix or continuing it with `?` or `/`, as
+ * the `Read` it was last read from: for a write that changes addresses
+ * carrying ids and queries it cannot name one by one, so that they can be
+ * handed to `invalidate` in one set with reads named outright.
+ * `/api/library/series` covers `?library=2` and `/17`, not
+ * `/api/library/seriesX`. An address never read, or dropped by the bound, is
+ * not here: its next arrival reads it anyway.
  */
-export function invalidatePrefix(...prefixes: readonly string[]): void {
-  const matching = [...slots]
+export function readsUnder(...prefixes: readonly string[]): Read<unknown>[] {
+  return [...slots]
     .filter(([address]) => prefixes.some((p) => under(address, p)))
     .map(([, slot]) => slot.read)
-  void invalidate(...matching)
+}
+
+/** `invalidate` of `readsUnder(...prefixes)`, resolving as it does. */
+export function invalidatePrefix(
+  ...prefixes: readonly string[]
+): Promise<void> {
+  return invalidate(...readsUnder(...prefixes))
 }
 
 /**
@@ -417,6 +469,7 @@ export async function readNow<T>(r: Read<T>): Promise<T> {
   apply(request, outcome)
   trim()
   tell([r.address])
+  request.markLanded()
   if (!outcome.answered) throw outcome.failure
   return outcome.answer as T
 }

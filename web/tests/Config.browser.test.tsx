@@ -74,14 +74,20 @@ import { holdTheClock, pass, WAIT_DRAWN_AFTER_MS } from './support/wait'
  * `scripts/check-all.sh` does.
  */
 
-vi.mock('../src/config', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../src/config')>()),
-  patchRoot: vi.fn(),
-  removalCost: vi.fn(),
-  removeRoot: vi.fn(),
-  scanStatus: vi.fn(),
-  startScan: vi.fn(),
-}))
+vi.mock('../src/config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/config')>()
+  return {
+    ...actual,
+    // The real read unless a case answers it. The Scan schedule's cases do:
+    // choosing Every reads the directories before it saves.
+    listRoots: vi.fn(actual.listRoots),
+    patchRoot: vi.fn(),
+    removalCost: vi.fn(),
+    removeRoot: vi.fn(),
+    scanStatus: vi.fn(),
+    startScan: vi.fn(),
+  }
+})
 
 vi.mock('../src/libraries', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/libraries')>()),
@@ -359,6 +365,7 @@ beforeEach(() => {
   vi.mocked(usersApi.patchUser).mockReset()
   vi.mocked(usersApi.removalCost).mockReset()
   vi.mocked(config.patchRoot).mockReset()
+  vi.mocked(config.listRoots).mockReset()
 })
 
 /**
@@ -649,6 +656,9 @@ describe('the Libraries screen, with real keys and a real pointer', () => {
       [1440, '24m'],
       [300, '5m'],
     ])
+    /** The radio a stored interval is drawn as, as `RootRow` reads it. */
+    const choiceOf = (stored: number | null) =>
+      stored === null ? 'automatic' : stored <= 0 ? 'off' : 'every'
 
     /**
      * The directory's page over a store that holds `from` and keeps each
@@ -680,6 +690,9 @@ describe('the Libraries screen, with real keys and a real pointer', () => {
       vi.mocked(librariesApi.listLibraries).mockImplementation(async () =>
         holding(root({ scan_interval_secs: store.stored })),
       )
+      vi.mocked(config.listRoots).mockImplementation(async () => ({
+        roots: [root({ scan_interval_secs: store.stored })],
+      }))
       const host = await opened(DIR)
       const radio = (value: string) =>
         host.querySelector(
@@ -702,14 +715,18 @@ describe('the Libraries screen, with real keys and a real pointer', () => {
         fact(),
       ]
       /**
-       * Until the keys have landed on `value`'s radio, every write is
-       * answered and the facts read what is stored.
+       * Until the keys have landed on `value`'s radio, the store holds that
+       * choice, every write is answered and the facts read what is stored.
+       * The store's choice too, since Every is drawn as chosen and its write
+       * goes only once its read of the directories lands: until then the
+       * writes before it are all answered and the facts read the old choice.
        */
       const landed = (what: string, value: string) =>
         settleUntil(
           what,
           () =>
             radio(value).checked &&
+            choiceOf(store.stored) === value &&
             store.answered === store.writes.length &&
             fact() === WORDS.get(store.stored),
           2000,
@@ -789,6 +806,9 @@ describe('the Libraries screen, with real keys and a real pointer', () => {
       vi.mocked(librariesApi.listLibraries).mockImplementation(async () =>
         holding(root({ scan_interval_secs: stored })),
       )
+      vi.mocked(config.listRoots).mockImplementation(async () => ({
+        roots: [root({ scan_interval_secs: stored })],
+      }))
       const host = await opened(DIR)
       const radio = (value: string) =>
         host.querySelector(

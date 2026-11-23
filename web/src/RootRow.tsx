@@ -64,6 +64,7 @@ import {
 import { Link } from 'react-router'
 import { Callout } from './Callout'
 import {
+  listRoots,
   patchRoot,
   type Probe,
   regimeFacts,
@@ -345,9 +346,13 @@ function textPatch(
 const MIN_EVERY_SECS = 300
 
 /**
- * What choosing Every saves where no interval is kept for it: a day, drawn
- * as 24 hours for the admin to change. Saved at once, as every choice is, so
- * that the radio never reads Every while the store holds another choice.
+ * What choosing Every saves where neither the store nor the row keeps an
+ * interval for it: a day, drawn as 24 hours for the admin to change. Saved
+ * without waiting for a count, so that the radio reads Every against another
+ * choice in the store only while the writes before it, the read it waits for
+ * and its own write are out: the interval a row keeps can be older than an
+ * Every another tab has saved since, which saving it unread would undo
+ * (O319).
  */
 const DEFAULT_EVERY_SECS = 86400
 
@@ -447,6 +452,18 @@ function knownInterval(
 ): number | null {
   const last = sent.at(-1)
   return last === undefined ? row.scan_interval_secs : last.secs
+}
+
+/**
+ * The Every interval `roots` holds for directory `id`, kept as a row keeps
+ * one (`everyKept`), one under the minimum as the minimum; nothing where it
+ * holds another choice, or no such directory.
+ */
+function everyIn(roots: readonly Root[], id: number): number | undefined {
+  const stored = roots.find((one) => one.id === id)?.scan_interval_secs ?? null
+  return choiceOf(stored) === 'every'
+    ? Math.max(stored as number, MIN_EVERY_SECS)
+    : undefined
 }
 
 /**
@@ -714,16 +731,29 @@ export function RootRow({
   const sentSchedules = useRef<SentSchedule[]>([])
   /**
    * The last Every interval the row has read or this row has sent, kept
-   * while another choice is drawn, so that choosing Every again saves it
-   * again at once. Arrow keys save each radio they land on, so an Every
-   * drawn empty and unsent would read Every while the store holds the
-   * choice passed through. One under the minimum is kept as the minimum,
-   * which the scheduler scans it at (`schedule::every`): the server
-   * refuses less.
+   * while another choice is drawn so that choosing Every saves it again
+   * where the store holds none: the store is read first, since this can be
+   * older than an Every another tab has saved (O319). Arrow keys save each
+   * radio they land on, so an Every drawn empty and unsent would read Every
+   * while the store holds the choice passed through. One under the minimum
+   * is kept as the minimum, which the scheduler scans it at
+   * (`schedule::every`): the server refuses less.
    */
   const everyKept = useRef<number | undefined>(undefined)
   /** The last Every interval the store took, read or answered, as kept. */
   const everyStored = useRef<number | undefined>(undefined)
+  /**
+   * The Scan schedule's words from this row, counted: each Every chosen and
+   * each write sent. An Every saves once its read of the store lands only
+   * where none has come since, so that a choice or a count made while the
+   * read is out is the one that stays.
+   */
+  const scheduleWords = useRef(0)
+  /**
+   * The word of the last Every chosen, which saves only once its read lands:
+   * while it is still the newest, no write sent says the admin's last choice.
+   */
+  const everyWord = useRef<number | undefined>(undefined)
 
   // **Follow the row when it changes underneath.** The state is seeded once,
   // so a value changed from anywhere but this row — another admin, another
@@ -828,6 +858,7 @@ export function RootRow({
           knownInterval(sentSchedules.current, row),
         )
         if (patch === undefined) continue
+        if ('scan_interval_secs' in patch) scheduleWords.current += 1
         const label = leftLabel(box)
         writeRoot(intervalWrites, row.id, patch).then(
           () => {
@@ -1028,27 +1059,18 @@ export function RootRow({
   }
 
   /**
-   * Choose a schedule, saved at once: Automatic, Off, and Every at the
-   * interval kept for it, or `DEFAULT_EVERY_SECS` where none is kept.
+   * Choose a schedule: Automatic and Off saved at once, and Every drawn at
+   * once at the interval kept for it, or `DEFAULT_EVERY_SECS` where none is
+   * kept, and saved once a read of the store lands, at the store's own Every
+   * where it holds one (O319) and at the interval kept then where it does
+   * not.
    */
   const chooseSchedule = (next: Choice) => {
-    const secs =
-      next === 'every'
-        ? (everyKept.current ?? DEFAULT_EVERY_SECS)
-        : next === 'off'
-          ? 0
-          : null
-    if (next === 'every') {
-      // In its unit, so that the count the box starts with and the unit
-      // beside it say the same interval.
-      setUnit(unitOf(secs))
-      setCount(countOf(secs))
-    }
     // A count typed in and not left goes with Every's box: sent as the row
     // goes, it would undo this choice.
     edited.current.delete(EVERY_BOX)
     setChoice(next)
-    saveSchedule(secs, () => {
+    const refused = () => {
       // A radio left on a refused choice says the store holds what it does
       // not, and a press on it sends nothing, since a checked radio fires no
       // change; so it goes back, as the checkbox does. Not over a choice
@@ -1058,7 +1080,42 @@ export function RootRow({
         edited.current.delete(EVERY_BOX)
         drawSchedule(knownInterval(sentSchedules.current, latest.current))
       }
-    })
+    }
+    if (next !== 'every') {
+      saveSchedule(next === 'off' ? 0 : null, refused)
+      return
+    }
+    const kept = everyKept.current ?? DEFAULT_EVERY_SECS
+    // In its unit, so that the count the box starts with and the unit
+    // beside it say the same interval.
+    setUnit(unitOf(kept))
+    setCount(countOf(kept))
+    scheduleWords.current += 1
+    const word = scheduleWords.current
+    everyWord.current = word
+    // Once this row's writes before it are answered, so that an Every the
+    // store holds is another tab's or this row's last, never one this row
+    // has written over since.
+    void (intervalWrites.current ?? Promise.resolve())
+      .then(() => listRoots())
+      .then(({ roots }) => everyIn(roots, root.id))
+      // A read that fails saves the interval kept, as a row that cannot
+      // read the store has nothing newer to go by.
+      .catch(() => undefined)
+      .then((stored) => {
+        // A choice or count made since is the newer word, and another
+        // choice drawn from a read of the row is the store's already.
+        if (scheduleWords.current !== word || choiceNow.current !== 'every') {
+          return
+        }
+        const secs = stored ?? everyKept.current ?? DEFAULT_EVERY_SECS
+        if (secs !== kept) {
+          // A count typed in the box this replaces goes, as a read's does.
+          edited.current.delete(EVERY_BOX)
+          drawSchedule(secs)
+        }
+        saveSchedule(secs, refused)
+      })
   }
 
   /**
@@ -1066,6 +1123,7 @@ export function RootRow({
    * (`sentSchedules`); `refused` runs once a refused one has left it.
    */
   const saveSchedule = (secs: number | null, refused?: () => void) => {
+    scheduleWords.current += 1
     const write = { secs }
     sentSchedules.current.push(write)
     // Kept as it is sent, for a choice of Every before it is answered; a
@@ -1103,6 +1161,9 @@ export function RootRow({
     if (secs === undefined) return
     setFailure(undefined)
     saveSchedule(secs, () => {
+      // An Every chosen since is the admin's last word: it is not yet among
+      // the writes sent, so the choice known here would draw over it.
+      if (everyWord.current === scheduleWords.current) return
       // Kept for a retry only where the store holds Every: otherwise the
       // radio would read Every against the choice the store holds.
       const known = knownInterval(sentSchedules.current, latest.current)

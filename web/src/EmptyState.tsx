@@ -60,6 +60,7 @@ export type EmptyKind =
   | 'not-scanned'
   | 'scanning'
   | 'no-matches'
+  | 'no-works'
   | 'inbox-clear'
   | 'inbox-weak-hidden'
   | 'kind-answered'
@@ -132,9 +133,21 @@ export function EmptyState({
       </section>
     )
   }
+  // A read library whose grid is empty with no chip or search set (O520): "No
+  // series match this filter." would send someone looking for a filter that
+  // is not set. The status counts no files, so the line cannot say why the
+  // scans found nothing, only that they did.
+  if (kind === 'no-works') {
+    return (
+      <section className="empty">
+        <h2>Nothing to read yet</h2>
+        <p>The scans so far found no series or volume to read.</p>
+      </section>
+    )
+  }
   // A library a scan holds (O311): a first scan's works come only after its
-  // hashing, so "Not read yet", or "Nothing here" once a directory's walk is
-  // saved, would stand for it until then.
+  // hashing, so "Not read yet", or "Nothing to read yet" once a directory's
+  // walk is saved, would stand for it until then.
   if (kind === 'scanning') {
     return (
       <section className="empty">

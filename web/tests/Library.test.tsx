@@ -25,6 +25,7 @@ import * as matches from '../src/matches'
 import * as metadata from '../src/metadata'
 import { invalidateLibraryViews } from '../src/pageReads'
 import { PHONE_LAYOUT_PARTS } from '../src/phoneLayout'
+import { SCAN_POLL_MS } from '../src/config'
 import type { ScanFeed } from '../src/scanFeed'
 import { SEARCH_BOX_ID } from '../src/searchHits'
 import { STATUS_FAILED, StatusContext } from '../src/shell'
@@ -35,6 +36,7 @@ import { FirstCommit } from './support/firstCommit'
 import { press, submit, typeInto } from './support/input'
 import { mount, rerender } from './support/mount'
 import { feedJob, serveFeed } from './support/scanFeed'
+import { StatusFromStore } from './support/statusFromStore'
 import {
   holdTheClock,
   pass,
@@ -173,6 +175,21 @@ const showAt = async (
 /** `showAt` the page of every library. */
 const show = (who?: Me, status: LibraryStatus = defaultStatus) =>
   showAt('/', status, who)
+
+/** What the empty state says, its heading and each line under it. */
+const said = (host: HTMLElement) => {
+  const empty = host.querySelector('.empty')
+  return [
+    empty?.querySelector('h2')?.textContent,
+    ...[...(empty?.querySelectorAll('p') ?? [])].map((p) => p.textContent),
+  ]
+}
+
+/** What a read library with no works says with no chip or search set (O520). */
+const nothingToRead = [
+  'Nothing to read yet',
+  'The scans so far found no series or volume to read.',
+]
 
 describe('the library screen', () => {
   beforeEach(() => {
@@ -482,9 +499,9 @@ describe('the library screen', () => {
       restricted: false,
     }
     const comics = await showAt('/?library=2', status)
-    expect(comics.textContent).toContain('Not read yet')
+    expect(said(comics)[0]).toBe('Not read yet')
     const manga = await showAt('/?library=1', status)
-    expect(manga.textContent).toContain('No series match this filter.')
+    expect(said(manga)).toEqual(nothingToRead)
   })
 
   it('the page of every library is not read yet only while none is', async () => {
@@ -495,12 +512,12 @@ describe('the library screen', () => {
       ],
       restricted: false,
     })
-    expect(one.textContent).toContain('No series match this filter.')
+    expect(said(one)).toEqual(nothingToRead)
     const none = await show(undefined, {
       libraries: [{ id: 1, name: 'Manga', scanned: false }],
       restricted: false,
     })
-    expect(none.textContent).toContain('Not read yet')
+    expect(said(none)[0]).toBe('Not read yet')
   })
 
   it('a library the status does not list is said to be no library here', async () => {
@@ -542,13 +559,43 @@ describe('the library screen', () => {
       libraries: [{ id: 1, name: 'Manga', scanned: true }],
       restricted: true,
     })
-    expect(read.querySelector('.empty h2')?.textContent).toBe('Nothing here')
-    expect(read.textContent).toContain('No series match this filter.')
+    expect(said(read)).toEqual(nothingToRead)
     const unread = await showAt('/?library=1', {
       libraries: [{ id: 1, name: 'Manga', scanned: false }],
       restricted: true,
     })
-    expect(unread.querySelector('.empty h2')?.textContent).toBe('Not read yet')
+    expect(said(unread)[0]).toBe('Not read yet')
+  })
+
+  it('a read library with no works says so with no filter set, and a chip or a search still says nothing matched', async () => {
+    vi.mocked(library.search).mockResolvedValue({
+      series: [],
+      unfiled: [],
+      query: '花嫁',
+    })
+    // The read library listed second: the page of every library asks
+    // whether any library is read, not whether the first is.
+    const status: LibraryStatus = {
+      libraries: [
+        { id: 2, name: 'Comics', scanned: false },
+        { id: 1, name: 'Manga', scanned: true },
+      ],
+      restricted: false,
+    }
+    expect(said(await showAt('/?library=1', status))).toEqual(nothingToRead)
+    expect(said(await showAt('/?library=1&show=unread', status))).toEqual([
+      'Nothing here',
+      'No series match this filter.',
+    ])
+    expect(said(await showAt('/?library=1&q=花嫁', status))).toEqual([
+      'Nothing here',
+      'Nothing matched 花嫁.',
+    ])
+    expect(said(await showAt('/', status))).toEqual(nothingToRead)
+    expect(said(await showAt('/?show=unread', status))).toEqual([
+      'Nothing here',
+      'No series match this filter.',
+    ])
   })
 
   describe('the empty view while a scan holds its library (O311)', () => {
@@ -570,15 +617,6 @@ describe('the library screen', () => {
       libraries: [{ id, step: 'resolving' }],
       jobs: [feedJob({ libraries: [{ id, name: 'Manga' }] })],
     })
-
-    /** What the empty state says, its heading and each line under it. */
-    const said = (host: HTMLElement) => {
-      const empty = host.querySelector('.empty')
-      return [
-        empty?.querySelector('h2')?.textContent,
-        ...[...(empty?.querySelectorAll('p') ?? [])].map((p) => p.textContent),
-      ]
-    }
 
     /** `showAt`, and the feed's first answer landed. */
     const shownAt = async (path: string, status: LibraryStatus) => {
@@ -640,7 +678,7 @@ describe('the library screen', () => {
       ])
     })
 
-    it('a library a job holds draws Scanning, never nothing here', async () => {
+    it('a library a job holds draws Scanning, never Nothing to read yet', async () => {
       const drawn = headingsDrawn()
       serveFeed(adminFeed())
       const host = await shownAt('/?library=1', manga(true))
@@ -849,6 +887,160 @@ describe('the library screen', () => {
       expect(host.querySelectorAll('a[href^="/series/"]')).toHaveLength(1)
       await clock(20000)
       expect(feed.polls()).toBe(0)
+    })
+
+    /**
+     * Stubs the status, answered with what `answer` last set, and counts its
+     * reads. Stubbed before the feed, which hands on what it does not answer.
+     */
+    const serveStatus = (first: LibraryStatus) => {
+      let now = first
+      let reads = 0
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((input: RequestInfo | URL) => {
+          const url = String(input)
+          if (url !== '/api/library/status')
+            return Promise.reject(new Error(`unexpected ${url}`))
+          reads += 1
+          return Promise.resolve(
+            new Response(JSON.stringify(now), {
+              headers: { 'content-type': 'application/json' },
+            }),
+          )
+        }),
+      )
+      return {
+        /** Answers every read of the status from now on with `next`. */
+        answer(next: LibraryStatus) {
+          now = next
+        },
+        /** How many reads of the status have been sent. */
+        reads: () => reads,
+      }
+    }
+
+    /**
+     * The page at `path` under the status read through the store, as the
+     * shell reads it, once the status, the view and the feed's first answer
+     * have landed.
+     */
+    const shownFromStore = async (path: string) => {
+      let host!: HTMLElement
+      await act(async () => {
+        host = mount(
+          <MemoryRouter initialEntries={[path]}>
+            <StatusFromStore>
+              <Library />
+            </StatusFromStore>
+          </MemoryRouter>,
+        )
+      })
+      await clock(0)
+      return host
+    }
+
+    it.each([
+      {
+        path: '/',
+        restricted: false,
+        before: 'No library yet',
+        scanning: adminFeed(7),
+        step: 'Reading files · 120 of 2,097 · directory 1 of 1',
+      },
+      {
+        path: '/?library=7',
+        restricted: false,
+        before: 'No such library',
+        scanning: adminFeed(7),
+        step: 'Reading files · 120 of 2,097 · directory 1 of 1',
+      },
+      {
+        // A reader's feed: the step alone, and no job.
+        path: '/',
+        restricted: true,
+        before: 'No library shared',
+        scanning: {
+          ended: 0,
+          libraries: [{ id: 7, step: 'hashing' }],
+        } satisfies ScanFeed,
+        step: 'Hashing',
+      },
+    ])(
+      'the view at $path, saying $before before library 7 was made, says Scanning within one poll of the feed listing it (O322)',
+      async ({ path, restricted, before, scanning, step }) => {
+        const status = serveStatus({ libraries: [], restricted })
+        const feed = serveFeed({ ended: 0, libraries: [] })
+        const host = await shownFromStore(path)
+        expect(said(host)[0]).toBe(before)
+
+        status.answer({
+          libraries: [{ id: 7, name: 'Manga', scanned: false }],
+          restricted,
+        })
+        feed.answer(scanning)
+        // The pinned idle poll, not the constant, so that a slower poll fails.
+        await clock(5000)
+        expect(said(host)).toEqual(['Scanning', step])
+        expect(status.reads()).toBe(2)
+      },
+    )
+
+    it('the status is read again once for each library the feed lists on every poll and the status does not, and never for one it lists', async () => {
+      const status = serveStatus(manga(false))
+      const feed = serveFeed(adminFeed(1))
+      await shownFromStore('/')
+      await clock(2 * SCAN_POLL_MS)
+      expect(status.reads()).toBe(1)
+
+      feed.answer({
+        ended: 0,
+        libraries: [
+          { id: 1, step: 'resolving' },
+          { id: 9, step: 'resolving' },
+        ],
+        jobs: [
+          feedJob({
+            libraries: [
+              { id: 1, name: 'Manga' },
+              { id: 9, name: 'Comics' },
+            ],
+          }),
+        ],
+      })
+      const polled = feed.polls()
+      await clock(6 * SCAN_POLL_MS)
+      expect(feed.polls() - polled).toBeGreaterThanOrEqual(6)
+      expect(status.reads()).toBe(2)
+
+      // Library 11 is made after library 9 had its read: it has one of its
+      // own, which the status then lists, and 9 still has no second.
+      status.answer({
+        libraries: [
+          { id: 1, name: 'Manga', scanned: false },
+          { id: 11, name: 'Magazines', scanned: false },
+        ],
+        restricted: false,
+      })
+      feed.answer({
+        ended: 0,
+        libraries: [
+          { id: 1, step: 'resolving' },
+          { id: 9, step: 'resolving' },
+          { id: 11, step: 'resolving' },
+        ],
+        jobs: [
+          feedJob({
+            libraries: [
+              { id: 1, name: 'Manga' },
+              { id: 9, name: 'Comics' },
+              { id: 11, name: 'Magazines' },
+            ],
+          }),
+        ],
+      })
+      await clock(3 * SCAN_POLL_MS)
+      expect(status.reads()).toBe(3)
     })
   })
 

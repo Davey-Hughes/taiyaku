@@ -57,7 +57,8 @@ import {
   withView,
 } from './library'
 import { useDrawnWait } from './hooks'
-import { gridRead, homeRead } from './pageReads'
+import { gridRead, homeRead, LIBRARY_STATUS } from './pageReads'
+import { invalidate } from './reads'
 import {
   askScanFeed,
   jobsHolding,
@@ -131,11 +132,11 @@ function firstAfter(card: Element): HTMLElement | undefined {
 /**
  * Which first-run screen an empty grid is (spec C1 §8). A library's page asks
  * of its own library, and the page of every library of them all: one library
- * read and another not is "nothing here" on the first and "not read yet" on
- * the second. With no library listed, `restricted` says whose doing that is:
- * an account granted none, or a server with none. A library's page asks it
- * too: an account granted none is told so there as well, rather than that
- * this one library is not to be seen.
+ * read and another not is "nothing to read yet" on the first and "not read
+ * yet" on the second. With no library listed, `restricted` says whose doing
+ * that is: an account granted none, or a server with none. A library's page
+ * asks it too: an account granted none is told so there as well, rather than
+ * that this one library is not to be seen.
  */
 function emptyKind(
   status: LibraryStatus,
@@ -153,9 +154,10 @@ function emptyKind(
       : 'no-library'
   if (library === undefined && status.libraries.length === 0)
     return status.restricted ? 'no-grant' : 'no-libraries'
-  // A filter or a search hides works, so under one `scanned` false says
-  // nothing of whether the library has any (a first scan cancelled between
-  // works leaves some), and a scan holding it is a line beside no match.
+  // A filter or a search hides works, so under one neither `scanned` value
+  // says whether the library has any (a first scan cancelled between works
+  // leaves some with `scanned` false), and a scan holding it is a line
+  // beside no match.
   if (filtered) return 'no-matches'
   // `held`: a scan holds what this asks of, which is neither unread nor
   // empty while it runs (O311).
@@ -164,7 +166,9 @@ function emptyKind(
     entry === undefined
       ? status.libraries.some((l) => l.scanned)
       : entry.scanned
-  return read ? 'no-matches' : 'not-scanned'
+  // Unfiltered, an empty grid over a read library is a library with nothing
+  // to draw, not a filter that matched nothing (O520).
+  return read ? 'no-works' : 'not-scanned'
 }
 
 /**
@@ -210,6 +214,26 @@ function EmptyView({
   // only an answer since then says whether a scan holds the library.
   const [kept] = useState(feed)
   const since = feed === kept ? undefined : feed
+  /**
+   * The libraries the feed lists and the status did not, each of which has had
+   * the status read again (O322): the shell reads it as it mounts, so a view
+   * drawn before a library was made or granted says there is none while a
+   * scan holds it. Once per library while the view is drawn: a library the
+   * feed and the status disagree about, such as one whose grant changed
+   * between the two reads, would otherwise have the status read every poll.
+   */
+  const readAgainFor = useRef(new Set<number>())
+  useEffect(() => {
+    if (since === undefined || status === undefined) return
+    const unlisted = since.libraries.filter(
+      ({ id }) =>
+        !readAgainFor.current.has(id) &&
+        !status.libraries.some((listed) => listed.id === id),
+    )
+    if (unlisted.length === 0) return
+    for (const { id } of unlisted) readAgainFor.current.add(id)
+    void invalidate(LIBRARY_STATUS)
+  }, [since, status])
   const [answered, setAnswered] = useState(false)
   useEffect(() => {
     let drawn = true

@@ -14,24 +14,28 @@
  * Shown again, it asks at once.
  *
  * **The feed says when to read again.** When a scan leaves it, or `ended`
- * moves, the reads a scan changes are read again: the library status, the
- * libraries and directories, and the Library views. `ended` is what catches
- * a scan that started and ended between two polls, or while the tab was
- * hidden, which no poll ever listed. A first answer has nothing to compare,
- * so it reads again only where a poll was missed before it (`missed`).
+ * moves, the reads a scan changes that a page draws are read again, as one
+ * set: the library status, the libraries and directories, the Library views
+ * and the split editions. `ended` is what catches a scan that started and
+ * ended between two polls, or while the tab was hidden, which no poll ever
+ * listed. A first answer has nothing to compare, so it reads again only where
+ * a poll was missed before it (`missed`).
+ *
+ * **A scan's end is drawn once those reads have landed (O321).** The answer
+ * that ends a scan is held, and every page draws the answer before it, with
+ * the scan, until the set is applied: drawn at once, it would take the scan
+ * off a page still drawing what it read before the scan, a "Never" or a "Not
+ * read yet" between the scan and what it left. A read that never answers
+ * holds it no longer than `SCAN_END_HOLD_MS`, and the next poll is timed from
+ * the answer's publication.
  */
 import { useSyncExternalStore } from 'react'
 import { getJson, sendJson } from './api'
 import { humanBytes } from './bytes'
 import { expectBody, SCAN_POLL_MS } from './config'
 import { namesOf } from './libraries'
-import {
-  invalidateLibraryViews,
-  LIBRARIES,
-  LIBRARY_STATUS,
-  ROOTS,
-} from './pageReads'
-import { invalidatePrefix } from './reads'
+import { LIBRARIES, LIBRARY_STATUS, libraryViewReads, ROOTS } from './pageReads'
+import { invalidate, readsUnder } from './reads'
 
 /**
  * The step a job is in: a scan's, in the order a scan passes through them,
@@ -107,6 +111,17 @@ export interface CancelAnswer {
  */
 export const FEED_IDLE_MS = 5000
 
+/**
+ * The longest an answer that ends a scan is held for the reads it sent. The
+ * idle poll's interval: a scan that starts and ends between two idle polls is
+ * already seen that late, so a read that never answers delays the end by no
+ * more than the feed's own slack. Only a read silent this long meets the
+ * bound, held by the Library views' wait for progress saves (O435) or a
+ * stalled network; a shorter bound would take the scan off a page before a
+ * slow re-read that does answer has landed.
+ */
+export const SCAN_END_HOLD_MS = FEED_IDLE_MS
+
 const FEED = '/api/library/scans'
 
 const listeners = new Set<() => void>()
@@ -118,6 +133,11 @@ const scanEndListeners = new Set<() => void>()
  * lands.
  */
 let latest: ScanFeed | undefined
+/**
+ * The next poll, or, while an answer that ends a scan is held, the end of
+ * its hold: an ask or a stop clears either, as either overtakes the held
+ * answer.
+ */
 let timer: ReturnType<typeof setTimeout> | undefined
 /**
  * A poll was dropped for a hidden tab, or a read failed, before any answer
@@ -126,7 +146,10 @@ let timer: ReturnType<typeof setTimeout> | undefined
  * a hidden tab keeps reads from before the scan's end until it is left.
  */
 let missed = false
-/** Bumped by every ask and by stopping, so only the newest ask's answer lands. */
+/**
+ * Bumped by every ask and by stopping, so only the newest ask's answer lands,
+ * and only an answer no ask has overtaken while it was held is published.
+ */
 let asked = 0
 /** The ask `askScanFeed` sent, while it is the newest and has not landed. */
 let askedNow: number | undefined
@@ -153,19 +176,11 @@ function ask(): void {
   getJson<ScanFeed>(FEED).then(
     (answer) => {
       if (id !== asked) return
-      if (latest === undefined ? missed : scanEnded(latest, answer))
-        readScanAgain()
-      latest = answer
-      for (const listener of listeners) listener()
-      settle(answer)
-      timer = setTimeout(
-        ask,
-        answer.libraries.length > 0 ||
-          fingerprintJob(answer) !== undefined ||
-          matchJob(answer) !== undefined
-          ? SCAN_POLL_MS
-          : FEED_IDLE_MS,
-      )
+      if (latest === undefined ? missed : scanEnded(latest, answer)) {
+        publishOnceRead(id, answer)
+      } else {
+        publish(answer)
+      }
     },
     () => {
       // The last answer is kept: one failed read says nothing of the scan.
@@ -194,16 +209,57 @@ function scanEnded(before: ScanFeed, now: ScanFeed): boolean {
 }
 
 /**
- * The reads a scan changes. One `invalidatePrefix` call is one set, so a page
- * drawn from several of the first call's reads moves once. The Library views
- * are marked in sets of their own, so a page drawn from them and from these
- * may move more than once. `LIBRARIES`' address is also the prefix of each
- * library's own reads.
+ * Draws `answer` on every page, hands it to each waiting `askScanFeed`, and
+ * times the next poll from now.
  */
-function readScanAgain(): void {
+function publish(answer: ScanFeed): void {
+  latest = answer
+  for (const listener of listeners) listener()
+  settle(answer)
+  timer = setTimeout(
+    ask,
+    answer.libraries.length > 0 ||
+      fingerprintJob(answer) !== undefined ||
+      matchJob(answer) !== undefined
+      ? SCAN_POLL_MS
+      : FEED_IDLE_MS,
+  )
+}
+
+/**
+ * Sends the reads changed by the scan whose end `answer` shows, and
+ * publishes `answer` once they are applied or `SCAN_END_HOLD_MS` has passed,
+ * whichever is first, unless an ask or a stop has overtaken ask `id` by then:
+ * a newer answer is compared with the one still published, so it ends the
+ * scan again and is held for reads of its own.
+ */
+function publishOnceRead(id: number, answer: ScanFeed): void {
+  let holding = true
+  const release = () => {
+    if (!holding || id !== asked) return
+    holding = false
+    clearTimeout(timer)
+    publish(answer)
+  }
+  void readScanAgain().then(release)
+  timer = setTimeout(release, SCAN_END_HOLD_MS)
+}
+
+/**
+ * Tells each scan-end listener, then sends the reads a scan changes that a
+ * page draws as one set, so a page drawn from several of them moves once
+ * where no read overtakes one: the library status, the libraries, with each
+ * library's own reads under `LIBRARIES`' address, the directories, the
+ * Library views and the split editions. Resolves as `invalidate` does, a
+ * failed read included, so a read that overtakes one it sent holds the end
+ * until it lands too; never rejects.
+ */
+function readScanAgain(): Promise<void> {
   for (const listener of scanEndListeners) listener()
-  invalidatePrefix(LIBRARY_STATUS.address, LIBRARIES.address, ROOTS.address)
-  invalidateLibraryViews()
+  return invalidate(
+    ...readsUnder(LIBRARY_STATUS.address, LIBRARIES.address, ROOTS.address),
+    ...libraryViewReads(),
+  )
 }
 
 function onVisibilityChange(): void {
@@ -231,8 +287,8 @@ function stop(): void {
 }
 
 /**
- * The feed's last answer, `undefined` before the first; drawn again on each
- * answer. While any component draws it, the tab polls.
+ * The feed's last answer published, `undefined` before the first; drawn
+ * again on each one published. While any component draws it, the tab polls.
  */
 export function useScanFeed(): ScanFeed | undefined {
   return useSyncExternalStore(subscribe, () => latest)
@@ -240,11 +296,13 @@ export function useScanFeed(): ScanFeed | undefined {
 
 /**
  * Asks the feed now, for a page that has just started or cancelled a scan,
- * and hands back the answer once it lands: `undefined` where it failed, or
- * where nothing was asked because nothing draws the feed or the tab is
- * hidden, so a caller is never held for good. An ask this sent and still
- * out is shared; a poll still out is not, since it may have been sent before
- * the caller's write was answered, and is overtaken.
+ * and hands back the answer once it is published, which for one that ends a
+ * scan is once the reads it sent have landed or `SCAN_END_HOLD_MS` has
+ * passed: `undefined` where it failed, or where nothing was asked because
+ * nothing draws the feed or the tab is hidden, so a caller is never held for
+ * good. An ask this sent and still out is shared; a poll still out is not,
+ * since it may have been sent before the caller's write was answered, and is
+ * overtaken.
  */
 export function askScanFeed(): Promise<ScanFeed | undefined> {
   if (listeners.size === 0 || document.visibilityState === 'hidden') {

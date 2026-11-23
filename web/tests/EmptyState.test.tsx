@@ -26,6 +26,21 @@ describe('the empty states', () => {
     expect(host.textContent).not.toContain('--add')
   })
 
+  it('says a read library holding nothing has nothing to read yet, in one line and nothing else (O520)', () => {
+    // `scanning` set too: a scan holding the library is the `scanning`
+    // state, so this state never adds a line for one.
+    const host = mount(<EmptyState kind="no-works" scanning />)
+    expect(
+      [...(host.querySelector('section.empty')?.children ?? [])].map((el) => [
+        el.tagName,
+        el.textContent,
+      ]),
+    ).toEqual([
+      ['H2', 'Nothing to read yet'],
+      ['P', 'The scans so far found no series or volume to read.'],
+    ])
+  })
+
   it('says a library it cannot show is no library here, and offers no scan', () => {
     const host = mount(<EmptyState kind="no-library" />)
     expect(host.querySelector('h2')?.textContent).toBe('No such library')
@@ -166,6 +181,7 @@ describe('the empty states', () => {
       'not-scanned',
       'scanning',
       'no-matches',
+      'no-works',
       'inbox-clear',
       'inbox-weak-hidden',
       'kind-answered',

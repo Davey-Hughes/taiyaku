@@ -18,7 +18,7 @@ import { listRoots } from './config'
 import { listProposals } from './curation'
 import { libraryScanStatus, listLibraries } from './libraries'
 import { grid, home, narrowedTo, oneSeries, search, status } from './library'
-import { invalidate, invalidatePrefix, read } from './reads'
+import { invalidate, type Read, read, readsUnder } from './reads'
 import { listRules } from './rules'
 import { listSplitEditions } from './splitEditions'
 import { listUsers } from './users'
@@ -78,7 +78,7 @@ export const searchRead = (q: string, library: number | undefined) =>
 
 /**
  * The prefixes of every address the four reads above name, for
- * `invalidatePrefix`. `/api/library/series` covers a series page as well as
+ * `readsUnder`. `/api/library/series` covers a series page as well as
  * the grid. No cover is here: a cover is an image the browser keeps by its
  * versioned address, not an entry of the store.
  */
@@ -89,13 +89,23 @@ export const LIBRARY_VIEWS: readonly string[] = [
 ]
 
 /**
- * Marks every Library view address kept stale, and reads now the ones drawn,
- * and the split editions with them: every write that changes which works a
- * library's views hold changes which editions are split as well.
+ * Every Library view read kept, and the split editions with them: every write
+ * that changes which works a library's views hold changes which editions are
+ * split as well. A list, so that a scan's end can send them in one set with
+ * the other reads it changes.
  */
-export function invalidateLibraryViews(): void {
-  invalidatePrefix(...LIBRARY_VIEWS)
-  void invalidate(SPLIT_EDITIONS)
+export function libraryViewReads(): Read<unknown>[] {
+  return [...readsUnder(...LIBRARY_VIEWS), SPLIT_EDITIONS]
+}
+
+/**
+ * Marks every Library view read kept stale, and the split editions, and reads
+ * now the ones drawn as one set, so a page drawn from a view and the split
+ * editions moves once where no read overtakes one. Resolves as `invalidate`
+ * does.
+ */
+export function invalidateLibraryViews(): Promise<void> {
+  return invalidate(...libraryViewReads())
 }
 
 /**

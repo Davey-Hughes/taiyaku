@@ -1,6 +1,7 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SCAN_POLL_MS } from '../src/config'
+import type { LibraryStatus } from '../src/library'
 import {
   gridRead,
   LIBRARIES,
@@ -8,8 +9,9 @@ import {
   libraryScan,
   ROOTS,
   RULES,
+  SPLIT_EDITIONS,
 } from '../src/pageReads'
-import { entryOf, readSet } from '../src/reads'
+import { entryOf, invalidate, readSet } from '../src/reads'
 import {
   askScanFeed,
   cancelScan,
@@ -29,14 +31,17 @@ import {
   useScanFeed,
 } from '../src/scanFeed'
 import { usePage } from '../src/usePage'
+import { deferred } from './support/async'
 import { mount, rerender } from './support/mount'
 import { address } from './support/reads'
 import {
+  type FeedAnswer,
   feedJob,
   fingerprintPass,
   matchPass,
   serveFeed,
 } from './support/scanFeed'
+import { holdTheClock, watchDrawn } from './support/wait'
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -97,10 +102,32 @@ function consumers() {
     return <p className="status">{page.ready ? 'read' : 'reading'}</p>
   }
 
-  return { Ended, Consumers, StatusReader }
+  /**
+   * A page drawn from the library status and library 7's grid, as a
+   * library's page is: whether its first library has been scanned, and how
+   * many series the grid holds.
+   */
+  function StatusAndGrid() {
+    const page = usePage([LIBRARY_STATUS, gridRead(7)])
+    const [status, grid] = page.answers
+    return (
+      <>
+        <p className="scanned">{String(status?.libraries[0]?.scanned)}</p>
+        <p className="series">{String(grid?.series.length)}</p>
+      </>
+    )
+  }
+
+  /** Draws the step of the feed's first scan job, or `none`. */
+  function Step() {
+    const job = scanJobs(useScanFeed())[0]
+    return <p className="step">{job === undefined ? 'none' : job.step}</p>
+  }
+
+  return { Ended, Consumers, StatusReader, StatusAndGrid, Step }
 }
 
-const { Ended, Consumers, StatusReader } = consumers()
+const { Ended, Consumers, StatusReader, StatusAndGrid, Step } = consumers()
 
 const drawn = (host: Element) =>
   [...host.querySelectorAll('.ended')].map((p) => p.textContent)
@@ -121,6 +148,77 @@ function serveStatus() {
   )
   vi.stubGlobal('fetch', sent)
   return () => sent.mock.calls.length
+}
+
+const STATUS = LIBRARY_STATUS.address
+const GRID = gridRead(7).address
+
+/** Library 7, Manga, as the status lists it, scanned or not yet. */
+const mangaStatus = (scanned: boolean): LibraryStatus => ({
+  libraries: [{ id: 7, name: 'Manga', scanned }],
+  restricted: false,
+})
+
+/** Library 7's grid holding `count` series, with ids unlike their places. */
+const gridOf = (count: number) => ({
+  series: Array.from({ length: count }, (_, i) => ({ id: 31 + i })),
+  unfiled: [],
+})
+
+/**
+ * Stubs each of `paths`, under the feed's stub, with every request held open
+ * until the test answers it: `answer` and `fail` settle the route's `n`th
+ * request, counting from 0, and `sent` counts its requests.
+ */
+function holdRoutes(...paths: string[]) {
+  const requests = new Map(
+    paths.map((path) => [path, [] as ReturnType<typeof deferred<Response>>[]]),
+  )
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) => {
+      const held = requests.get(String(input))
+      if (held === undefined) {
+        return Promise.reject(new Error(`unexpected ${String(input)}`))
+      }
+      const one = deferred<Response>()
+      held.push(one)
+      return one.promise
+    }),
+  )
+  const request = (path: string, n: number) => {
+    const one = requests.get(path)?.[n]
+    if (one === undefined) throw new Error(`no request ${n} to ${path}`)
+    return one
+  }
+  return {
+    answer(path: string, n: number, body: unknown) {
+      request(path, n).resolve(
+        new Response(JSON.stringify(body), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+    },
+    fail(path: string, n: number, status: number) {
+      request(path, n).resolve(new Response('refused', { status }))
+    },
+    sent: (path: string) => requests.get(path)?.length ?? 0,
+  }
+}
+
+/**
+ * Mounts `ui` under a feed answering `first`, with every request to the
+ * library status held, and lands the feed's first answer and the status's
+ * first read, Manga not yet scanned.
+ */
+async function mountWithStatus(first: ScanFeed, ui: React.ReactNode) {
+  const routes = holdRoutes(STATUS)
+  const feed = serveFeed(first)
+  const host = mount(ui)
+  await wait(0)
+  routes.answer(STATUS, 0, mangaStatus(false))
+  await wait(0)
+  return { routes, feed, host }
 }
 
 describe('the scan feed', () => {
@@ -310,6 +408,49 @@ describe('the scan feed', () => {
     expect([afterFailure, afterAnswer, statusReads()]).toEqual([1, 2, 2])
   })
 
+  it.each<{
+    missed: string
+    first: FeedAnswer
+    hidden: boolean
+    reach: () => Promise<void>
+  }>([
+    {
+      missed: 'a tab that mounted hidden',
+      first: running(1),
+      hidden: true,
+      reach: () => turn('visible'),
+    },
+    {
+      missed: 'a failed first read',
+      first: 500,
+      hidden: false,
+      reach: () => wait(FEED_IDLE_MS),
+    },
+  ])(
+    'draws the first answer after $missed only once the status read it sent again has landed',
+    async ({ first, hidden, reach }) => {
+      const routes = holdRoutes(STATUS)
+      const feed = serveFeed(first)
+      if (hidden) await turn('hidden')
+      const host = mount(
+        <>
+          <StatusReader />
+          <Ended />
+        </>,
+      )
+      await wait(0)
+      routes.answer(STATUS, 0, mangaStatus(false))
+      await wait(0)
+      feed.answer(idle(2))
+      await reach()
+      await wait(0)
+      const whileOut = [drawn(host), routes.sent(STATUS)]
+      routes.answer(STATUS, 1, mangaStatus(true))
+      await wait(0)
+      expect([whileOut, drawn(host)]).toEqual([[['none'], 2], ['2']])
+    },
+  )
+
   it('marks every library, directory and Library view read stale when a scan ends, and no other', async () => {
     const kept = [
       LIBRARY_STATUS,
@@ -317,6 +458,7 @@ describe('the scan feed', () => {
       libraryScan(7),
       ROOTS,
       gridRead(7),
+      SPLIT_EDITIONS,
       RULES,
     ].map((one) => address<object>(one.address))
     const reading = readSet(kept.map((one) => one.read))
@@ -333,8 +475,273 @@ describe('the scan feed', () => {
       true,
       true,
       true,
+      true,
       false,
     ])
+  })
+
+  it('publishes the answer that ended a scan only once the reads it sent have landed', async () => {
+    const { routes, feed, host } = await mountWithStatus(
+      idle(3),
+      <>
+        <StatusReader />
+        <Ended />
+      </>,
+    )
+    feed.answer(idle(4))
+    await wait(FEED_IDLE_MS)
+    const whileOut = [drawn(host), routes.sent(STATUS)]
+    routes.answer(STATUS, 1, mangaStatus(true))
+    await wait(0)
+    expect([whileOut, drawn(host)]).toEqual([[['3'], 2], ['4']])
+  })
+
+  it.each([
+    ['the status', 'the grid'],
+    ['the grid', 'the status'],
+  ] as const)(
+    "sends a scan's re-reads as one set: a page drawn from the status and the grid moves once, %s answering first",
+    async (first, second) => {
+      const routes = holdRoutes(STATUS, GRID)
+      const feed = serveFeed(idle(3))
+      const host = mount(
+        <>
+          <StatusAndGrid />
+          <Ended />
+        </>,
+      )
+      await wait(0)
+      routes.answer(STATUS, 0, mangaStatus(false))
+      routes.answer(GRID, 0, gridOf(0))
+      await wait(0)
+      const states = watchDrawn(() =>
+        [...host.querySelectorAll('.scanned, .series')]
+          .map((p) => p.textContent)
+          .join(' '),
+      )
+      feed.answer(idle(4))
+      await wait(FEED_IDLE_MS)
+      const after = { 'the status': mangaStatus(true), 'the grid': gridOf(3) }
+      const path = { 'the status': STATUS, 'the grid': GRID }
+      for (const one of [first, second]) {
+        routes.answer(path[one], 1, after[one])
+        await wait(0)
+      }
+      states.stop()
+      expect([...states.seen]).toEqual(['false 0', 'true 3'])
+    },
+  )
+
+  it('draws a scan’s end only once a read of the status sent while the end is held has landed, never over the status from before the scan', async () => {
+    const routes = holdRoutes(STATUS, GRID)
+    const feed = serveFeed(idle(3))
+    const host = mount(
+      <>
+        <StatusAndGrid />
+        <Ended />
+      </>,
+    )
+    await wait(0)
+    routes.answer(STATUS, 0, mangaStatus(false))
+    routes.answer(GRID, 0, gridOf(0))
+    await wait(0)
+    const states = watchDrawn(() =>
+      [...host.querySelectorAll('.scanned, .series, .ended')]
+        .map((p) => p.textContent)
+        .join(' '),
+    )
+    feed.answer(idle(4))
+    await wait(FEED_IDLE_MS)
+    void invalidate(LIBRARY_STATUS)
+    routes.answer(STATUS, 1, mangaStatus(true))
+    routes.answer(GRID, 1, gridOf(3))
+    await wait(0)
+    routes.answer(STATUS, 2, mangaStatus(true))
+    await wait(0)
+    states.stop()
+    // The set lands without the status read the newer one overtook, so the
+    // grid moves first; the end waits for the newer read.
+    expect([...states.seen]).toEqual([
+      'false 0 3',
+      'false 3 3',
+      'true 3 3',
+      'true 3 4',
+    ])
+  })
+
+  it('publishes at the cap when a re-read never answers, and polls on', async () => {
+    // Only the test moves the clock, so 1 ms before the cap is 1 ms before it.
+    holdTheClock()
+    const { feed, host } = await mountWithStatus(
+      idle(3),
+      <>
+        <StatusReader />
+        <Ended />
+      </>,
+    )
+    feed.answer(idle(4))
+    await wait(FEED_IDLE_MS)
+    const landed = feed.polls()
+    // The pinned cap, not the constant, so that a longer one fails.
+    await wait(4999)
+    const before = [drawn(host), feed.polls()]
+    await wait(1)
+    const at = drawn(host)
+    await wait(FEED_IDLE_MS)
+    expect([landed, before, at, feed.polls()]).toEqual([
+      2,
+      [['3'], 2],
+      ['4'],
+      3,
+    ])
+  })
+
+  it('times the next poll from the cap, though the re-read lands after it', async () => {
+    // Only the test moves the clock, so a poll due at a time is sent at it.
+    holdTheClock()
+    const { routes, feed, host } = await mountWithStatus(
+      idle(3),
+      <>
+        <StatusReader />
+        <Ended />
+      </>,
+    )
+    feed.answer(idle(4))
+    await wait(FEED_IDLE_MS)
+    await wait(5000)
+    const atCap = [drawn(host), feed.polls()]
+    // The re-read lands 2000 ms after the cap published: the poll that
+    // publication timed stays due one idle interval after it.
+    await wait(2000)
+    routes.answer(STATUS, 1, mangaStatus(true))
+    await wait(FEED_IDLE_MS - 2000)
+    expect([atCap, feed.polls()]).toEqual([[['4'], 2], 3])
+  })
+
+  it('publishes at once when a re-read fails', async () => {
+    const { routes, feed, host } = await mountWithStatus(
+      idle(3),
+      <>
+        <StatusReader />
+        <Ended />
+      </>,
+    )
+    feed.answer(idle(4))
+    await wait(FEED_IDLE_MS)
+    const whileOut = drawn(host)
+    routes.fail(STATUS, 1, 500)
+    await wait(SCAN_POLL_MS)
+    expect([whileOut, drawn(host)]).toEqual([['3'], ['4']])
+  })
+
+  it('publishes an answer that ends no scan as it lands, while a read is out', async () => {
+    const routes = holdRoutes(STATUS, GRID)
+    const feed = serveFeed(running(3, feedJob({ id: 7, step: 'resolving' })))
+    const host = mount(
+      <>
+        <StatusAndGrid />
+        <Step />
+      </>,
+    )
+    await wait(0)
+    routes.answer(STATUS, 0, mangaStatus(false))
+    routes.answer(GRID, 0, gridOf(0))
+    await wait(0)
+    // A re-read of a drawn view is out, as one sent for a step's writes
+    // would be; an answer that ends no scan does not wait for it.
+    void invalidate(gridRead(7))
+    feed.answer(running(3, feedJob({ id: 7, step: 'hashing' })))
+    const step = () => host.querySelector('.step')?.textContent
+    const before = step()
+    await wait(SCAN_POLL_MS)
+    expect([before, step(), routes.sent(STATUS), routes.sent(GRID)]).toEqual([
+      'resolving',
+      'hashing',
+      1,
+      2,
+    ])
+  })
+
+  it('an ask sent while an answer is held overtakes it', async () => {
+    const { routes, feed, host } = await mountWithStatus(
+      idle(1),
+      <>
+        <StatusReader />
+        <Ended />
+      </>,
+    )
+    const ended = watchDrawn(() => drawn(host).join(' '))
+    feed.answer(idle(2))
+    await wait(FEED_IDLE_MS)
+    // Ended 2 is held for the status read it sent; the ask sent now is held
+    // too, so the first's read lands while the second is out.
+    feed.answer(idle(3))
+    const release = feed.hold()
+    void askScanFeed()
+    routes.answer(STATUS, 1, mangaStatus(true))
+    await wait(0)
+    release()
+    await wait(0)
+    routes.answer(STATUS, 2, mangaStatus(true))
+    await wait(0)
+    ended.stop()
+    expect([...ended.seen]).toEqual(['1', '3'])
+  })
+
+  it('an askScanFeed made while its own ask is held settles at publication', async () => {
+    const { routes, feed } = await mountWithStatus(
+      idle(3),
+      <>
+        <StatusReader />
+        <Ended />
+      </>,
+    )
+    feed.answer(idle(4))
+    const answers: (ScanFeed | undefined)[] = []
+    void askScanFeed().then((answer) => answers.push(answer))
+    await wait(0)
+    const whileOut = [...answers]
+    // Made while the held ask is its own, so it joins it.
+    void askScanFeed().then((answer) => answers.push(answer))
+    await wait(0)
+    routes.answer(STATUS, 1, mangaStatus(true))
+    await wait(0)
+    expect([whileOut, answers, feed.polls()]).toEqual([
+      [],
+      [idle(4), idle(4)],
+      2,
+    ])
+  })
+
+  it('stopping while an answer is held publishes nothing and times no poll', async () => {
+    const { routes, feed, host } = await mountWithStatus(
+      idle(3),
+      <>
+        <StatusReader />
+        <Consumers n={1} />
+      </>,
+    )
+    feed.answer(idle(4))
+    await wait(FEED_IDLE_MS)
+    rerender(
+      <>
+        <StatusReader />
+        <Consumers n={0} />
+      </>,
+    )
+    routes.answer(STATUS, 1, mangaStatus(true))
+    await wait(2 * FEED_IDLE_MS)
+    const polls = feed.polls()
+    // A consumer mounted now draws the answer last published while its own
+    // ask is out.
+    feed.hold()
+    rerender(
+      <>
+        <StatusReader />
+        <Consumers n={1} />
+      </>,
+    )
+    expect([polls, drawn(host)]).toEqual([2, ['3']])
   })
 
   it('tells each scan-end listener before it reads again, until stopped', async () => {

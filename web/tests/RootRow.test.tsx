@@ -23,6 +23,7 @@ vi.mock('../src/libraries', async (importOriginal) => ({
 }))
 vi.mock('../src/config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/config')>()),
+  listRoots: vi.fn(),
   patchRoot: vi.fn(),
   removalCost: vi.fn(),
   removeRoot: vi.fn(),
@@ -139,12 +140,19 @@ async function tabThrough(host: HTMLElement, name: string) {
   })
 }
 
+/**
+ * The directories as the store holds them, which `listRoots` answers: each
+ * as its case mounts it or reads it again, with each Scan schedule write the
+ * default `patchRoot` takes. A write a case answers itself changes nothing.
+ */
+const store = new Map<number, config.Root>()
+
 async function settle(over: Partial<config.Root> = {}, onChanged = vi.fn()) {
+  const row = root(over)
+  store.set(row.id, row)
   let host: HTMLElement | undefined
   await act(async () => {
-    host = mount(
-      <RootRow root={root(over)} probe={undefined} onChanged={onChanged} />,
-    )
+    host = mount(<RootRow root={row} probe={undefined} onChanged={onChanged} />)
     await Promise.resolve()
   })
   if (!host) throw new Error('nothing mounted')
@@ -202,7 +210,16 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.useFakeTimers({ shouldAdvanceTime: true })
   feed = serveFeed(idleFeed())
-  vi.mocked(config.patchRoot).mockResolvedValue(undefined)
+  store.clear()
+  vi.mocked(config.listRoots).mockImplementation(async () => ({
+    roots: [...store.values()],
+  }))
+  vi.mocked(config.patchRoot).mockImplementation(async (id, patch) => {
+    const row = store.get(id)
+    if (row !== undefined && patch.scan_interval_secs !== undefined) {
+      store.set(id, { ...row, scan_interval_secs: patch.scan_interval_secs })
+    }
+  })
   // `RemoveRoot` is mounted by this component, so its two routes are mocked
   // here as well — otherwise the dialog reaches the real client, `fetch` is
   // not stubbed in this suite, and the dialog renders its failure state with
@@ -1362,14 +1379,10 @@ async function pickUnit(host: HTMLElement, unit: 'minutes' | 'hours') {
 
 /** The row read again, its interval `scan_interval_secs`, as its page does. */
 async function readAgain(scan_interval_secs: number | null) {
+  const row = root({ scan_interval_secs })
+  store.set(row.id, row)
   await act(async () => {
-    rerender(
-      <RootRow
-        root={root({ scan_interval_secs })}
-        probe={undefined}
-        onChanged={vi.fn()}
-      />,
-    )
+    rerender(<RootRow root={row} probe={undefined} onChanged={vi.fn()} />)
     await Promise.resolve()
   })
 }
@@ -1484,7 +1497,7 @@ describe('RootRow, the Scan schedule', () => {
     expect(everyBox(host)).toBeNull()
   })
 
-  it('saves 24 hours at once for choosing Every with no interval kept, and draws it in hours, from Automatic and from Off', async () => {
+  it('saves 24 hours for choosing Every with no interval kept where the store holds none, and draws it in hours, from Automatic and from Off', async () => {
     // A directory each, so that each row's radios are a group of their own.
     for (const [id, scan_interval_secs] of [
       [3, null],
@@ -1651,7 +1664,7 @@ describe('RootRow, the Scan schedule', () => {
     expect([chosen(every), chosen(off)]).toEqual(['Every', 'Off'])
   })
 
-  it('saves the stored interval again at once, its count refilled, when Every is chosen after this row’s Off, read back or not', async () => {
+  it('saves the stored interval again, its count refilled, when Every is chosen after this row’s Off, read back or not', async () => {
     const sent = await settle()
     await choose(sent, 'Off')
     await choose(sent, 'Every')
@@ -2010,6 +2023,239 @@ describe('RootRow, the Scan schedule', () => {
     await readAgain(60)
     expect(words(hour)).toEqual(['minute', 'hour'])
     expect(everyUnit(hour)?.value).toBe('minutes')
+  })
+})
+
+describe('RootRow, Every chosen on a page older than the store (O319)', () => {
+  type Listing = Awaited<ReturnType<typeof config.listRoots>>
+  /**
+   * The store's directories as `listRoots` answers them: another at Every
+   * 30 minutes, listed first, and the row's at `secs`.
+   */
+  const listing = (secs: number | null): Listing => ({
+    roots: [
+      root({ id: 8, path: '/srv/comics', scan_interval_secs: 1800 }),
+      root({ scan_interval_secs: secs }),
+    ],
+  })
+  /**
+   * A row that read Every 1 hour and then Automatic, so that it keeps 1 hour
+   * for Every and draws Automatic, whatever the store holds since.
+   */
+  const stale = async () => {
+    const host = await settle({ scan_interval_secs: 3600 })
+    await readAgain(null)
+    return host
+  }
+  /** The interval each Scan schedule write sent, in turn. */
+  const intervals = () =>
+    vi
+      .mocked(config.patchRoot)
+      .mock.calls.map(([, patch]) => patch.scan_interval_secs)
+
+  it('chooses Every on a page that read Automatic, after another tab saved Every 6 hours, and saves 6 hours', async () => {
+    const host = await stale()
+    vi.mocked(config.listRoots).mockResolvedValue(listing(21600))
+    await choose(host, 'Every')
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 21600 }],
+    ])
+    expect(scheduleOf(host)).toEqual(['Every', '6', 'hours'])
+  })
+
+  it('saves the interval kept where the store holds no Every', async () => {
+    const host = await stale()
+    vi.mocked(config.listRoots).mockResolvedValue(listing(null))
+    await choose(host, 'Every')
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 3600 }],
+    ])
+    expect(scheduleOf(host)).toEqual(['Every', '1', 'hours'])
+  })
+
+  it('a choice made while Every’s read is out wins', async () => {
+    const read = deferred<Listing>()
+    vi.mocked(config.listRoots).mockReturnValueOnce(read.promise)
+    const host = await stale()
+    await choose(host, 'Every')
+    // Drawn as chosen, at the interval kept, and saved once the read lands.
+    expect(scheduleOf(host)).toEqual(['Every', '1', 'hours'])
+    expect(intervals()).toEqual([])
+    await choose(host, 'Off')
+    await flush(() => read.resolve(listing(21600)))
+    await flush()
+    expect(intervals()).toEqual([0])
+    expect(scheduleOf(host)).toEqual(['Off', undefined, undefined])
+  })
+
+  it.each([
+    ['the newer read landing first', [1, 0]],
+    ['the older read landing first', [0, 1]],
+  ])('only the newest of two Every choices saves, %s', async (_, order) => {
+    // The older read answers another tab's 2 hours, the newer its 6 hours
+    // saved since, so that which read saved is drawn as well as sent.
+    const reads = [deferred<Listing>(), deferred<Listing>()]
+    const answers = [listing(7200), listing(21600)]
+    vi.mocked(config.listRoots)
+      .mockReturnValueOnce(reads[0].promise)
+      .mockReturnValueOnce(reads[1].promise)
+    const host = await stale()
+    await choose(host, 'Every')
+    await choose(host, 'Automatic')
+    await choose(host, 'Every')
+    await flush()
+    expect(config.listRoots).toHaveBeenCalledTimes(2)
+    for (const at of order) {
+      await flush(() => reads[at].resolve(answers[at]))
+      await flush()
+    }
+    expect(intervals()).toEqual([null, 21600])
+    expect(scheduleOf(host)).toEqual(['Every', '6', 'hours'])
+  })
+
+  it('a read that fails saves the interval kept, as before', async () => {
+    vi.mocked(config.listRoots).mockRejectedValue(
+      new Error('/api/library/roots: 502 Bad Gateway'),
+    )
+    const host = await stale()
+    await choose(host, 'Every')
+    await flush()
+    expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
+      [3, { scan_interval_secs: 3600 }],
+    ])
+  })
+
+  it('reads the store only once this row’s schedule writes before Every are answered', async () => {
+    // Read while the count is out, the store would answer the 15 minutes
+    // this row has written over, and Every would save it.
+    const count = deferred<undefined>()
+    vi.mocked(config.patchRoot).mockReturnValueOnce(count.promise)
+    const host = await settle({ scan_interval_secs: 900 })
+    await edit(host, 'scan_every', '10')
+    await choose(host, 'Off')
+    await choose(host, 'Every')
+    await flush()
+    expect(config.listRoots).not.toHaveBeenCalled()
+    await flush(() => count.resolve(undefined))
+    await flush()
+    await flush()
+    expect(intervals()).toEqual([600, 0, 600])
+  })
+
+  it('a count left while Every’s read is out wins, drawn as typed', async () => {
+    const read = deferred<Listing>()
+    vi.mocked(config.listRoots).mockReturnValueOnce(read.promise)
+    const host = await stale()
+    await choose(host, 'Every')
+    await edit(host, 'scan_every', '12')
+    await flush(() => read.resolve(listing(21600)))
+    await flush()
+    expect(intervals()).toEqual([43200])
+    expect(scheduleOf(host)).toEqual(['Every', '12', 'hours'])
+  })
+
+  it('a count sent as the row goes while Every’s read is out wins', async () => {
+    const read = deferred<Listing>()
+    vi.mocked(config.listRoots).mockReturnValueOnce(read.promise)
+    const host = await stale()
+    await choose(host, 'Every')
+    await typeAndStay(host, 'scan_every', '12')
+    await unmountRow()
+    await flush(() => read.resolve(listing(21600)))
+    await flush()
+    expect(intervals()).toEqual([43200])
+  })
+
+  it('another choice a read of the row draws while Every’s read is out stands, and Every saves nothing', async () => {
+    const read = deferred<Listing>()
+    vi.mocked(config.listRoots).mockReturnValueOnce(read.promise)
+    const host = await stale()
+    await choose(host, 'Every')
+    await readAgain(0)
+    await flush(() => read.resolve(listing(0)))
+    await flush()
+    expect(intervals()).toEqual([])
+    expect(scheduleOf(host)).toEqual(['Off', undefined, undefined])
+  })
+
+  it('only the newer Every saves when a read of the row, not a write, comes between the two choices', async () => {
+    const reads = [deferred<Listing>(), deferred<Listing>()]
+    vi.mocked(config.listRoots)
+      .mockReturnValueOnce(reads[0].promise)
+      .mockReturnValueOnce(reads[1].promise)
+    const host = await stale()
+    await choose(host, 'Every')
+    await readAgain(0)
+    expect(chosen(host)).toBe('Off')
+    await choose(host, 'Every')
+    // The older read lands first: second, it would find the newer Every's
+    // save counted and save nothing, whatever it checked.
+    await flush(() => reads[0].resolve(listing(7200)))
+    await flush()
+    await flush(() => reads[1].resolve(listing(0)))
+    await flush()
+    expect(intervals()).toEqual([3600])
+    expect(scheduleOf(host)).toEqual(['Every', '1', 'hours'])
+  })
+
+  it('sends no count typed in the box Every’s read draws afresh, as the row goes', async () => {
+    const read = deferred<Listing>()
+    vi.mocked(config.listRoots).mockReturnValueOnce(read.promise)
+    const host = await stale()
+    await choose(host, 'Every')
+    await typeAndStay(host, 'scan_every', '12')
+    await flush(() => read.resolve(listing(21600)))
+    await flush()
+    expect(scheduleOf(host)).toEqual(['Every', '6', 'hours'])
+    await unmountRow()
+    await flush()
+    expect(intervals()).toEqual([21600])
+  })
+
+  it('keeps Every chosen after a count that is then refused, and saves the last Every interval the store took', async () => {
+    // The count is refused while Every waits on it, so Every's read lands
+    // after the refusal and saves the last Every interval the store took, not
+    // the count.
+    const count = deferred<undefined>()
+    vi.mocked(config.patchRoot).mockReturnValueOnce(count.promise)
+    const host = await settle({ scan_interval_secs: 900 })
+    await edit(host, 'scan_every', '10')
+    await choose(host, 'Off')
+    await choose(host, 'Every')
+    await flush(() =>
+      count.reject(
+        new Error('/api/library/roots/3: 500 {"error":"the store is locked"}'),
+      ),
+    )
+    await flush()
+    await flush()
+    expect(intervals()).toEqual([600, 0, 900])
+    expect(scheduleOf(host)).toEqual(['Every', '15', 'minutes'])
+  })
+
+  it('sends 5 minutes where the store holds an Every under the minimum, as the scheduler reads it', async () => {
+    const host = await stale()
+    vi.mocked(config.listRoots).mockResolvedValue(listing(60))
+    await choose(host, 'Every')
+    await flush()
+    expect(intervals()).toEqual([300])
+    expect(scheduleOf(host)).toEqual(['Every', '5', 'minutes'])
+  })
+
+  it('saves the Every a read of the row draws while Every’s read is out, where the store answered none', async () => {
+    // Every's read went out before another tab saved 2 hours, and the row's
+    // read after it brings them.
+    const read = deferred<Listing>()
+    vi.mocked(config.listRoots).mockReturnValueOnce(read.promise)
+    const host = await stale()
+    await choose(host, 'Every')
+    await readAgain(7200)
+    await flush(() => read.resolve(listing(null)))
+    await flush()
+    expect(intervals()).toEqual([7200])
+    expect(scheduleOf(host)).toEqual(['Every', '2', 'hours'])
   })
 })
 
@@ -2708,9 +2954,10 @@ describe('RootRow, an edit still in its box when the row goes', () => {
     await flush(() => off.resolve(undefined))
     await flush()
     await flush()
+    // No 24 hours: Every reads the store only once Off is answered, and the
+    // count sent as the row went is a newer word, which it yields to.
     expect(vi.mocked(config.patchRoot).mock.calls).toEqual([
       [3, { scan_interval_secs: 0 }],
-      [3, { scan_interval_secs: 86400 }],
       [3, { scan_interval_secs: 43200 }],
     ])
   })

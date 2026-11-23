@@ -612,6 +612,67 @@ describe('the read store', () => {
     expect(entryOf(a.read)?.answer).toBe('polled')
   })
 
+  it('resolves an invalidate only once each read it sent holds the newest request’s answer, following every request that overtook its own', async () => {
+    const a = address<string>('/api/a')
+    const b = address<string>('/api/b')
+    listen('/api/a')
+    listen('/api/b')
+    const applied: unknown[][] = []
+    const done = invalidate(a.read, b.read).then(() => {
+      applied.push([a, b].map((one) => entryOf(one.read)?.answer))
+    })
+    void invalidate(a.read)
+    a.requests[0].resolve('a overtaken')
+    b.requests[0].resolve('b after')
+    await landed()
+    const whileNewerOut = [...applied]
+    // Sent while the first invalidate follows the second's request.
+    void invalidate(a.read)
+    a.requests[1].resolve('a overtaken again')
+    await landed()
+    const whileNewestOut = [...applied]
+    a.requests[2].resolve('a after')
+    await done
+    expect([whileNewerOut, whileNewestOut, applied]).toEqual([
+      [],
+      [],
+      [['a after', 'b after']],
+    ])
+  })
+
+  it('resolves an invalidate whose request a readNow overtook once the readNow has landed', async () => {
+    const a = address<string>('/api/a')
+    listen('/api/a')
+    let resolved = false
+    const done = invalidate(a.read).then(() => {
+      resolved = true
+    })
+    const polled = readNow(a.read)
+    a.requests[0].resolve('overtaken')
+    await landed()
+    const whileOut = resolved
+    a.requests[1].resolve('polled')
+    await Promise.all([done, polled])
+    expect([whileOut, entryOf(a.read)?.answer]).toEqual([false, 'polled'])
+  })
+
+  it('resolves an invalidate once the store is emptied, though a request that overtook its own is still out', async () => {
+    const a = address<string>('/api/a')
+    listen('/api/a')
+    let resolved = false
+    const done = invalidate(a.read).then(() => {
+      resolved = true
+    })
+    void invalidate(a.read)
+    emptyReads()
+    a.requests[0].resolve('dropped')
+    await landed()
+    const whileOut = resolved
+    a.requests[1].resolve('dropped too')
+    await done
+    expect(whileOut).toBe(true)
+  })
+
   it('keeps the same entry for a second invalidate of an entry already stale', async () => {
     // `useSyncExternalStore` compares entries by identity: a new object for
     // a mark already made would redraw a page for nothing.
@@ -849,5 +910,21 @@ describe('invalidatePrefix', () => {
     expect(series.fetch).toHaveBeenCalledTimes(2)
     expect(home.fetch).toHaveBeenCalledTimes(2)
     expect(status.fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolves once every read it sent is applied, and not while one is held', async () => {
+    const paths = ['/api/library/series?library=2', '/api/library/series/17']
+    for (const path of paths) listen(path)
+    const [grid, series] = await keptAll(paths)
+    const applied: unknown[][] = []
+    const done = invalidatePrefix(PREFIX).then(() => {
+      applied.push([grid, series].map((a) => entryOf(a.read)?.answer))
+    })
+    grid.requests[1].resolve('grid after')
+    await landed()
+    const whileHeld = [...applied]
+    series.requests[1].resolve('series after')
+    await done
+    expect([whileHeld, applied]).toEqual([[], [['grid after', 'series after']]])
   })
 })

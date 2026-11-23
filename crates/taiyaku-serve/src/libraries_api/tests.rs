@@ -6286,6 +6286,205 @@ async fn a_library_scan_queued_behind_the_job_lock_reads_waiting_on_each_directo
     );
 }
 
+/// The feed an administrator is sent once it lists two jobs, each naming its
+/// libraries, which a job does once its task has read them; the last answer,
+/// for the caller's assertion to show, if that outlasts the ceiling.
+async fn until_the_feed_names_two_jobs(router: &axum::Router) -> serde_json::Value {
+    let mut fed = serde_json::Value::Null;
+    for _ in 0..400 {
+        fed = get_json(router, "/api/library/scans").await;
+        let jobs = fed["jobs"].as_array().expect("a jobs array");
+        if jobs.len() == 2
+            && jobs
+                .iter()
+                .all(|job| job["libraries"] != serde_json::json!([]))
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    fed
+}
+
+/// Each job `fed` lists, in its order: the ids of the libraries it holds, its
+/// step, and the ids of the directories it walks.
+fn jobs_in(fed: &serde_json::Value) -> Vec<(Vec<i64>, serde_json::Value, Vec<i64>)> {
+    let ids = |list: &serde_json::Value| -> Vec<i64> {
+        list.as_array()
+            .expect("a list")
+            .iter()
+            .map(|one| one["id"].as_i64().expect("an id"))
+            .collect()
+    };
+    fed["jobs"]
+        .as_array()
+        .expect("a jobs array")
+        .iter()
+        .map(|job| {
+            (
+                ids(&job["libraries"]),
+                job["step"].clone(),
+                ids(&job["dirs"]),
+            )
+        })
+        .collect()
+}
+
+/// O260, option (a): a scan of a directory reserves that directory alone, so
+/// one of Manga's `m` holds the removal of Kids' `m/kids` inside it but not
+/// Kids' scan. Scan library pressed for Kids while `m`'s scan waits for the
+/// job lock is taken, 202, and queues as a press behind any job does: the
+/// feed shows its job holding Kids at `waiting`. Once the lock is free, each
+/// runs to its end and walks its own directory.
+#[tokio::test]
+async fn a_library_scan_pressed_under_a_scan_around_its_directory_queues_behind_it() {
+    let n = test_support::router_over_a_library_nested_in_another();
+    let held = holding_the_job(&n.state);
+    let (status, around) = answered(
+        &n.admin,
+        Method::POST,
+        &a_dirs_scan(n.m),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "m's scan: {around}");
+
+    let (status, pressed) = answered(
+        &n.admin,
+        Method::POST,
+        &the_scan_of(n.kids),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "Kids' scan, under m's: {pressed}"
+    );
+    let fed = until_the_feed_names_two_jobs(&n.admin).await;
+    drop(held);
+    let m_ended = until_the_dirs_scan_ends(&n.admin, n.m).await;
+    until_the_library_scan_ends(&n.admin, n.kids).await;
+    let kids_ended = get_json(&n.admin, &a_dirs_scan(n.m_kids)).await;
+
+    // Manga shows `m/kids` nested in `m`, so Kids' scan covers it too.
+    assert_eq!(
+        jobs_in(&fed),
+        [
+            (vec![n.manga], serde_json::json!("waiting"), vec![n.m]),
+            (
+                vec![n.manga, n.kids],
+                serde_json::json!("waiting"),
+                vec![n.m_kids]
+            ),
+        ],
+        "(libraries, step, dirs) of m's job, then Kids': {fed}"
+    );
+    assert_eq!(
+        fed["libraries"],
+        serde_json::json!([
+            { "id": n.manga, "step": "waiting" },
+            { "id": n.kids, "step": "waiting" },
+        ]),
+        "{fed}"
+    );
+    assert_eq!(
+        [
+            m_ended["report"]["scan"]["root"].clone(),
+            kids_ended["report"]["scan"]["root"].clone(),
+        ],
+        [
+            serde_json::json!(path_of(&n.state, n.m)),
+            serde_json::json!(path_of(&n.state, n.m_kids)),
+        ],
+        "the directory each scan walked: {m_ended} {kids_ended}"
+    );
+}
+
+/// O260 as a person meets it: Kids' Scan library pressed while a scan of
+/// Manga's `m`, around Kids' `m/kids`, walks and holds the job lock is taken,
+/// 202, and its job waits at `waiting`; once that scan ends and frees the
+/// lock, Kids' runs to its end and walks its own directory. The walk is
+/// planted with a job naming `m`, since a reservation's job is where a
+/// scan's directories are read from.
+#[tokio::test]
+async fn a_library_scan_pressed_while_a_scan_around_its_directory_walks_queues_behind_it() {
+    let n = test_support::router_over_a_library_nested_in_another();
+    let held = holding_the_job(&n.state);
+    let started = std::time::Instant::now();
+    let around = std::sync::Arc::new(crate::scan_jobs::Job::new(
+        started,
+        vec![(n.m, std::path::PathBuf::from(path_of(&n.state, n.m)))],
+        std::sync::Arc::clone(&n.state.jobs_ended),
+    ));
+    *around.libraries.lock().unwrap() = vec![(n.manga, "Manga".to_string())];
+    crate::scan_jobs::Running::new(&around, None).at_dir(1, 1);
+    n.state.scans.lock().unwrap().insert(
+        n.m,
+        crate::ScanProgress {
+            waiting: false,
+            started,
+            done: false,
+            report: None,
+            library: Some(n.manga),
+            job: std::sync::Arc::clone(&around),
+        },
+    );
+
+    let (status, pressed) = answered(
+        &n.admin,
+        Method::POST,
+        &the_scan_of(n.kids),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "Kids' scan, while m's walks: {pressed}"
+    );
+    let fed = until_the_feed_names_two_jobs(&n.admin).await;
+    // m's scan ends, and frees the lock.
+    n.state
+        .scans
+        .lock()
+        .unwrap()
+        .get_mut(&n.m)
+        .expect("m's slot")
+        .done = true;
+    around.end(crate::scan_jobs::JobEnded::Finished);
+    drop(held);
+    until_the_library_scan_ends(&n.admin, n.kids).await;
+    let kids_ended = get_json(&n.admin, &a_dirs_scan(n.m_kids)).await;
+
+    // Manga shows `m/kids` nested in `m`, so Kids' scan covers it too.
+    assert_eq!(
+        jobs_in(&fed),
+        [
+            (vec![n.manga], serde_json::json!("listing"), vec![n.m]),
+            (
+                vec![n.manga, n.kids],
+                serde_json::json!("waiting"),
+                vec![n.m_kids]
+            ),
+        ],
+        "(libraries, step, dirs) of m's job, then Kids': {fed}"
+    );
+    assert_eq!(
+        fed["libraries"],
+        serde_json::json!([
+            { "id": n.manga, "step": "listing" },
+            { "id": n.kids, "step": "waiting" },
+        ]),
+        "{fed}"
+    );
+    assert_eq!(
+        kids_ended["report"]["scan"]["root"],
+        serde_json::json!(path_of(&n.state, n.m_kids)),
+        "the directory Kids' scan walked: {kids_ended}"
+    );
+}
+
 /// Spec §7, "Pause": a press refused because a scan already holds one of the
 /// library's directories clears nothing, so its pause stands.
 #[tokio::test]

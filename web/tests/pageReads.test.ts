@@ -11,6 +11,7 @@ import {
   homeRead,
   invalidateLibraryViews,
   LIBRARY_VIEWS,
+  SPLIT_EDITIONS,
   searchRead,
   seriesRead,
 } from '../src/pageReads'
@@ -242,6 +243,61 @@ describe('the Library view’s reads', () => {
       expect(entryOf(o.read)?.stale, o.read.address).toBe(false)
     }
   })
+
+  it.each([
+    ['the grid', 'the split editions'],
+    ['the split editions', 'the grid'],
+  ] as const)(
+    'applies a drawn grid and the split editions in one step on invalidateLibraryViews, %s answering first',
+    async (first, second) => {
+      const grid = address<string>(gridRead(2).address)
+      const split: ReturnType<typeof deferred<Response>>[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((input: RequestInfo | URL) => {
+          if (String(input) !== SPLIT_EDITIONS.address) {
+            return Promise.reject(new Error(`unexpected ${String(input)}`))
+          }
+          const request = deferred<Response>()
+          split.push(request)
+          return request.promise
+        }),
+      )
+      /** The split editions' answer: `count` editions, ids unlike places. */
+      const editions = (count: number) =>
+        new Response(
+          JSON.stringify({
+            editions: Array.from({ length: count }, (_, i) => ({ id: 41 + i })),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        )
+      const kept = readSet([grid.read, SPLIT_EDITIONS])
+      grid.requests[0].resolve('grid before')
+      split[0].resolve(editions(0))
+      await kept
+      /** What a page drawn from both draws, each time it is told. */
+      const drawn: string[] = []
+      const draw = () => {
+        const answer = entryOf(SPLIT_EDITIONS)?.answer as
+          | { editions: unknown[] }
+          | undefined
+        drawn.push(`${entryOf(grid.read)?.answer} ${answer?.editions.length}`)
+      }
+      for (const a of [grid.read.address, SPLIT_EDITIONS.address]) {
+        subscriptions.push(subscribe(a, draw))
+      }
+      const done = invalidateLibraryViews()
+      const answer = {
+        'the grid': () => grid.requests[1].resolve('grid after'),
+        'the split editions': () => split[1].resolve(editions(3)),
+      }
+      answer[first]()
+      await landed()
+      answer[second]()
+      await done
+      expect(drawn).toEqual(['grid after 3'])
+    },
+  )
 
   it('marks the split editions kept stale on invalidateLibraryViews, sending nothing while nothing draws them', async () => {
     const split = await keptSplitEditions()

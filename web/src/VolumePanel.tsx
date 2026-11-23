@@ -30,7 +30,7 @@ import type { Landing, PanelState } from './volumePanel'
  */
 async function saveWork(slug: string, fields: WorkEdit): Promise<PatchResult> {
   const saved = await patchWork(slug, fields)
-  invalidateLibraryViews()
+  void invalidateLibraryViews()
   return saved
 }
 

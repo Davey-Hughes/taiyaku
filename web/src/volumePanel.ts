@@ -364,7 +364,7 @@ export function useVolumePanel({
    */
   const rereadAfterMatch = (slug: string, to: Landing): Promise<void> => {
     if (works !== undefined) pressedOn.current = { slug, from: works }
-    invalidateLibraryViews()
+    void invalidateLibraryViews()
     setDetail((prev) => {
       const kept = prev[slug]
       return kept === undefined ? {} : { [slug]: kept }

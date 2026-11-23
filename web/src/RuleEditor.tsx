@@ -630,7 +630,7 @@ export function RuleEditor() {
         // them, so the works Libraries counts for each library are re-read,
         // and the Library views, which draw those works, are marked.
         void invalidate(LIBRARIES)
-        invalidateLibraryViews()
+        void invalidateLibraryViews()
       })
       .catch((err: unknown) => {
         writer.current = undefined
