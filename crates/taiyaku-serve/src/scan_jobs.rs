@@ -76,9 +76,9 @@ pub(crate) struct Job {
     cancel: AtomicBool,
     snapshot: Mutex<Snapshot>,
     ended: Mutex<Option<JobEnded>>,
-    /// The server's count of ended jobs ([`crate::ServeState::jobs_ended`]),
-    /// which [`Job::end`] raises.
-    jobs_ended: Arc<AtomicU64>,
+    /// The server's feed markers ([`crate::ServeState::jobs_ended`]):
+    /// [`Job::end`] raises `ended`, and [`Running`]'s count raises `written`.
+    marks: Arc<crate::FeedMarks>,
 }
 
 /// Where a job is: its step, that step's count, and the directory it walks.
@@ -92,6 +92,10 @@ pub(crate) struct Snapshot {
     /// The directory walked, from 1, of the job's: set while listing and
     /// resolving, since hashing and writing cover every directory at once.
     pub(crate) dir: Option<(usize, usize)>,
+    /// The volumes the job's early passes have written so far (O314), `None`
+    /// until one has. Only [`Watch::written`] sets it, so the count stays
+    /// beside every step reported after it.
+    pub(crate) ready: Option<u64>,
 }
 
 /// How a job ended.
@@ -105,11 +109,11 @@ pub(crate) enum JobEnded {
 
 impl Job {
     /// A job of `dirs` reserved at `started`, waiting, with the next id,
-    /// counted in `jobs_ended` once it ends.
+    /// counted in `marks`' `ended` once it ends.
     pub(crate) fn new(
         started: Instant,
         dirs: Vec<(i64, PathBuf)>,
-        jobs_ended: Arc<AtomicU64>,
+        marks: Arc<crate::FeedMarks>,
     ) -> Self {
         Self {
             id: NEXT_JOB.fetch_add(1, Ordering::SeqCst),
@@ -123,9 +127,10 @@ impl Job {
                 done: None,
                 of: None,
                 dir: None,
+                ready: None,
             }),
             ended: Mutex::new(None),
-            jobs_ended,
+            marks,
         }
     }
 
@@ -140,6 +145,7 @@ impl Job {
                 done: Some(0),
                 of: None,
                 dir: None,
+                ready: None,
             }),
             ..Self::new(started, Vec::new(), Arc::default())
         }
@@ -156,6 +162,7 @@ impl Job {
                 done: Some(0),
                 of: None,
                 dir: None,
+                ready: None,
             }),
             ..Self::new(started, Vec::new(), Arc::default())
         }
@@ -164,11 +171,13 @@ impl Job {
     /// A pass's count in its one `step`: `done` units finished with, whatever
     /// came of each, of the `of` queued so far.
     pub(crate) fn set_count(&self, step: Step, done: u64, of: u64) {
-        *locked(&self.snapshot) = Snapshot {
+        let mut snapshot = locked(&self.snapshot);
+        *snapshot = Snapshot {
             step,
             done: Some(done),
             of: Some(of),
             dir: None,
+            ready: snapshot.ready,
         };
     }
 
@@ -195,7 +204,7 @@ impl Job {
     /// reads the job ended.
     pub(crate) fn end(&self, ended: JobEnded) {
         *locked(&self.ended) = Some(ended);
-        self.jobs_ended.fetch_add(1, Ordering::SeqCst);
+        self.marks.ended.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -245,11 +254,13 @@ impl<'a> Running<'a> {
             }
         }
         if waiting {
-            *locked(&self.job.snapshot) = Snapshot {
+            let mut snapshot = locked(&self.job.snapshot);
+            *snapshot = Snapshot {
                 step: Step::Waiting,
                 done: None,
                 of: None,
                 dir: None,
+                ready: snapshot.ready,
             };
         }
     }
@@ -258,11 +269,13 @@ impl<'a> Running<'a> {
     /// with nothing found yet, so no count of the last directory's shows
     /// against this one.
     pub(crate) fn at_dir(&self, at: usize, of: usize) {
-        *locked(&self.job.snapshot) = Snapshot {
+        let mut snapshot = locked(&self.job.snapshot);
+        *snapshot = Snapshot {
             step: Step::Listing,
             done: Some(0),
             of: None,
             dir: Some((at, of)),
+            ready: snapshot.ready,
         };
     }
 }
@@ -286,11 +299,29 @@ impl Watch for Running<'_> {
             done: Some(done),
             of,
             dir,
+            ready: snapshot.ready,
         };
     }
 
     fn cancelled(&self) -> bool {
         self.job.cancelling()
+    }
+
+    /// The count the job shows beside its step, stored before the feed's
+    /// `written` is raised, so an answer whose marker counts the rise shows
+    /// the count. The count only rises, as the volumes it counts stay written,
+    /// so a lower one is not stored. A count that does not rise moves nothing:
+    /// each move sends every open Library view to read its grid again.
+    fn written(&self, works: u64) {
+        let rose = {
+            let mut snapshot = locked(&self.job.snapshot);
+            let shown = snapshot.ready.unwrap_or(0);
+            snapshot.ready = Some(works.max(shown));
+            works > shown
+        };
+        if rose {
+            self.job.marks.written.fetch_add(1, Ordering::SeqCst);
+        }
     }
 }
 
@@ -490,10 +521,25 @@ pub(crate) fn run(
         job_lock,
         running,
         scan::scan_root_watched,
-        |conn, fresh, watch| {
-            derive::derive_watched(conn, derive::Documents::Reconcile, fresh, watch)
-        },
+        job_derive,
     )
+}
+
+/// A scan job's derive: the filling derive ([`derive::derive_filling`]), so a
+/// reader sees new volumes while the job runs (O314). A pass writes them at
+/// its cadence, each once every file of its group is hashed, and only where
+/// the design's rules 1–3 allow; the rest wait for the full derive at the
+/// job's end. It reconciles hand documents ([`derive::Documents::Reconcile`]).
+///
+/// # Errors
+///
+/// As [`derive::derive_filling`].
+pub(crate) fn job_derive(
+    conn: &rusqlite::Connection,
+    fresh: &[i64],
+    watch: &dyn Watch,
+) -> Result<Outcome<derive::DeriveReport>, String> {
+    derive::derive_filling(conn, derive::Documents::Reconcile, fresh, watch)
 }
 
 /// [`run_watched`] over a walk and derive that neither report nor stop, as a
@@ -533,7 +579,7 @@ pub(crate) fn run_watched(
     reread: Reread,
     job_lock: &crate::LibraryJob,
     running: &Running<'_>,
-    mut walk: impl FnMut(
+    walk: impl FnMut(
         &rusqlite::Connection,
         &scan::Root,
         &dyn Watch,
@@ -551,6 +597,54 @@ pub(crate) fn run_watched(
             let _ = scan::unpause(&conn, asked);
         }
     }
+    let ended = run_job(library, asked, reread, job_lock, running, walk, derive);
+    // On every way out, a cancel's and an error's among them. A panic skips
+    // it, and the next start reads the mark as a stop's, as it reads the
+    // `deriving` a panic leaves. A refused clearing scans these once more at
+    // the next start, which costs a scan and loses nothing.
+    if let Ok(conn) = library.working() {
+        let _ = scan::unmark_held(&conn, &dirs_of(asked));
+    }
+    ended
+}
+
+/// Clear the held mark of `job`'s directories as a cancel of it is accepted
+/// ([`scan::unmark_held`]). The job pauses them only when it next reads its
+/// flag, after the file or the step it is on, and a stop before then would
+/// leave a mark the next start takes up, against the cancel (Design O314 §5,
+/// ruling 9). The pause stays the job's, so a cancel that lands after the last
+/// file pauses no finished scan. Best-effort: a refused write leaves the
+/// cancel as it stands.
+pub(crate) fn unmark_cancelled(library: &taiyaku_library::Library, job: &Job) {
+    // An in-memory store does not outlive a stop, and its one connection is
+    // the running job's until the job ends.
+    if library.path().is_none() {
+        return;
+    }
+    if let Ok(conn) = library.working() {
+        let _ = scan::unmark_held(&conn, &job.dirs);
+    }
+}
+
+/// [`run_watched`]'s body, which marks `asked` held ([`scan::mark_held`]);
+/// [`run_watched`] clears the mark.
+fn run_job(
+    library: &taiyaku_library::Library,
+    asked: &[scan::Root],
+    reread: Reread,
+    job_lock: &crate::LibraryJob,
+    running: &Running<'_>,
+    mut walk: impl FnMut(
+        &rusqlite::Connection,
+        &scan::Root,
+        &dyn Watch,
+    ) -> Result<Outcome<scan::ScanReport>, String>,
+    derive: impl FnOnce(
+        &rusqlite::Connection,
+        &[i64],
+        &dyn Watch,
+    ) -> Result<Outcome<derive::DeriveReport>, String>,
+) -> Result<Vec<serde_json::Value>, String> {
     let (held, queued) = the_job_lock(library, asked, job_lock, running);
     let Some(_held) = held else {
         // Nothing was walked, so each directory's last scan is as read here.
@@ -579,6 +673,12 @@ pub(crate) fn run_watched(
             return Err(why);
         }
     };
+    // From here to the job's end, a walk that has recorded nothing included;
+    // a job that waited for the lock was marked with its `waiting`
+    // (`scan::mark_queued`). Not before the wait: a store another job writes
+    // would hold this job's start for the busy timeout, before its
+    // reservation says it waits.
+    let _ = scan::mark_held(&working, asked);
     let _ = scan::unmark_queued(&working, &queued);
     if reread.pressed() {
         // Again, once held: a holder's write that outlasts the busy timeout,

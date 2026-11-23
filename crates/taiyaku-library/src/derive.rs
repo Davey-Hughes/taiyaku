@@ -697,6 +697,39 @@ pub fn derive_watched(
     fresh: &[i64],
     watch: &dyn Watch,
 ) -> Result<Outcome<DeriveReport>, String> {
+    derive_in(conn, documents, &setup(conn, fresh)?, watch, Mode::Full)
+}
+
+/// Which derive [`derive_in`] runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// The derive itself: every entry hashed, every group written, then the
+    /// tail.
+    Full,
+    /// The early pass a filling derive runs while files wait to be hashed
+    /// ([`fill::early_pass`]): an entry still to hash holds back the group
+    /// its own key names and is read no further, only the groups
+    /// [`fill::early_writes`] keeps are written, and the tail waits for the
+    /// full derive, since it reads and writes the whole store.
+    Early,
+}
+
+/// What a derive reads before its first entry: the rules, the roots, and
+/// the roots it reads frozen.
+struct Setup {
+    engine: Engine,
+    roots: Vec<Root>,
+    frozen: HashSet<i64>,
+}
+
+/// The [`Setup`] of a derive given `fresh`. A filling derive reads it once
+/// and hands the one value to its queue, every pass and its full derive: a
+/// pause can change while a job runs (a pressed Scan unpauses its directories
+/// before it waits for the job, and a waiting job's cancel pauses them), and a
+/// pass that read another frozen set than the full derive would show a volume
+/// the job's end then changes, and the full derive would hash files the job's
+/// line never counts.
+fn setup(conn: &Connection, fresh: &[i64]) -> Result<Setup, String> {
     // Once, for the whole library. `Engine::compile` is where every regex in
     // the rule set is compiled, and compiling per entry would recompile the
     // same handful of patterns for every file in a library of thousands.
@@ -716,22 +749,51 @@ pub fn derive_watched(
         .into_iter()
         .filter(|id| !fresh.contains(id))
         .collect();
+    Ok(Setup {
+        engine,
+        roots,
+        frozen,
+    })
+}
+
+/// [`derive_watched`] in either [`Mode`], over the rules, the roots and the
+/// frozen set `setup` holds, so the passes of a filling derive and its full
+/// derive, handed one [`Setup`], read one input.
+fn derive_in(
+    conn: &Connection,
+    documents: Documents,
+    setup: &Setup,
+    watch: &dyn Watch,
+    mode: Mode,
+) -> Result<Outcome<DeriveReport>, String> {
+    let Setup {
+        engine,
+        roots,
+        frozen,
+    } = setup;
 
     let mut report = DeriveReport::default();
-    let mut named_series: BTreeSet<String> = BTreeSet::new();
-    let groups = match grouped(
-        conn,
-        &engine,
-        &roots,
-        &frozen,
-        watch,
-        &mut named_series,
-        &mut report,
-    )? {
-        Outcome::Done(groups) => groups,
+    let Grouped {
+        groups,
+        mut named_series,
+        waiting,
+    } = match grouped(conn, engine, roots, frozen, watch, mode, &mut report)? {
+        Outcome::Done(grouped) => grouped,
         Outcome::Cancelled(step) => return Ok(Outcome::Cancelled(step)),
     };
-    let (groups, joined) = joins::apply(conn, groups, &mut report)?;
+    let (mut groups, joined) = joins::apply(conn, groups, &mut report)?;
+    // Of every group placed, written by this pass or not: `held_work` leaves a
+    // row whose content another group claims, or that holds another group's
+    // file, and a group an early pass leaves still claims its content and
+    // holds its files, so no group it writes takes that group's row.
+    let placed = Placed::of(&groups)?;
+    if mode == Mode::Early {
+        let writes = fill::early_writes(conn, &groups, &waiting, &placed)?;
+        groups.retain(|key, _| writes.contains(key));
+        // Only the series of what it writes (design call 12), so no series
+        // shows early holding no work.
+        named_series = groups.values().map(|group| group.series.clone()).collect();
+    }
 
     // Every series that produced *anything* gets a row, including one holding
     // only unattached chapters: `proposal.subject_id` references `series(id)`,
@@ -756,7 +818,6 @@ pub fn derive_watched(
     // exactly what `import::scanned`'s `Scope::Scan` arm writes into `edition`
     // for a work `write_work` writes, and what `unchanged` found for one it left.
     let mut written_editions: BTreeSet<(i64, String)> = BTreeSet::new();
-    let placed = Placed::of(&groups)?;
     let to_write = u64::try_from(groups.len()).unwrap_or(u64::MAX);
     let mut works_written: u64 = 0;
     let mut work_ids: BTreeMap<GroupKey, i64> = BTreeMap::new();
@@ -787,6 +848,9 @@ pub fn derive_watched(
         works_written += 1;
     }
     watch.at(Step::Writing, works_written, Some(to_write));
+    if mode == Mode::Early {
+        return Ok(Outcome::Done(report));
+    }
     // The tail reads and writes the whole store, so a cancelled derive leaves
     // all of it to the next one, as a stop does.
     if watch.cancelled() {
@@ -909,7 +973,7 @@ pub fn derive_watched(
     // After the folds, so a work folded away this pass is gone rather than
     // marked or counted found again. Under both `Documents` modes: a
     // rolled-back preview predicts the mark as it predicts everything else.
-    digest_held_members(conn, &roots, &frozen, &mut report.unreadable)?;
+    digest_held_members(conn, roots, frozen, &mut report.unreadable)?;
     (report.marked_missing, report.found_again) = mark_missing(conn)?;
 
     // After the folds, because a fold is what empties a series — but over the
@@ -967,7 +1031,7 @@ pub fn derive_watched(
     // and reports; a preview wants none of the three, and the report fields it
     // populates would be artefacts of a derivation nobody asked to keep.
     if documents == Documents::Reconcile {
-        for root in &roots {
+        for root in roots {
             let found = crate::hand::reconcile(conn, root)?;
             report.repaired_documents += found.repaired;
             report.unwritable_documents.extend(found.unwritable);
@@ -994,24 +1058,116 @@ pub fn derive_watched(
 }
 
 /// Every root's entries resolved, hashed where they become members, and filed
-/// into groups by [`place`], with each series a group or an unattached chapter
-/// directory names added to `named_series`. Nothing is written but digests.
+/// into groups by [`place`]. Nothing is written but digests.
+///
+/// In [`Mode::Early`] nothing is hashed or sized: an entry [`hashes`]
+/// accepts puts its own key into [`Grouped::waiting`] and goes no further,
+/// so it is neither placed nor counted.
 fn grouped(
     conn: &Connection,
     engine: &Engine,
     roots: &[Root],
     frozen: &HashSet<i64>,
     watch: &dyn Watch,
-    named_series: &mut BTreeSet<String>,
+    mode: Mode,
     report: &mut DeriveReport,
-) -> Result<Outcome<BTreeMap<GroupKey, Group>>, String> {
+) -> Result<Outcome<Grouped>, String> {
     let mut staged: Vec<Staged> = Vec::new();
     let mut chapter_dirs: BTreeSet<(i64, String)> = BTreeSet::new();
+    let mut named_series: BTreeSet<String> = BTreeSet::new();
+    let mut waiting: BTreeSet<GroupKey> = BTreeSet::new();
 
     // Hashing is shown from here, with no total yet: sizing the folders below
     // can take a while on a share, and the screen must not stay on the walk.
     watch.at(Step::Hashing, 0, None);
 
+    let size = mode == Mode::Full;
+    let to_classify = match read_input(conn, engine, roots, frozen, watch, report, size)? {
+        Outcome::Done(to_classify) => to_classify,
+        Outcome::Cancelled(step) => return Ok(Outcome::Cancelled(step)),
+    };
+
+    // Every root is admitted and claimed before the first digest, so the
+    // bytes to hash are known before the first is read. Nothing a root's classify
+    // writes is read by another root's admit or claim: a digest lands on its
+    // own root's `scan_entry` row, and claims are per root.
+    let to_hash: u64 = to_classify
+        .iter()
+        .flat_map(|(_, kept)| kept)
+        .filter_map(|(_, bytes)| *bytes)
+        .sum();
+    let mut hashed: u64 = 0;
+    for (root, kept) in to_classify {
+        for (admitted, bytes) in kept {
+            if bytes.is_some() {
+                watch.at(Step::Hashing, hashed, Some(to_hash));
+            }
+            if watch.cancelled() {
+                return Ok(Outcome::Cancelled(Step::Hashing));
+            }
+            // The full derive that hashes it counts it, so an early pass,
+            // which opens no file, only notes the group it holds back.
+            if mode == Mode::Early && hashes(&admitted) {
+                waiting.insert(own_key_of(&admitted));
+                continue;
+            }
+            classify(
+                conn,
+                root,
+                admitted,
+                &mut Sorting {
+                    staged: &mut staged,
+                    chapter_dirs: &mut chapter_dirs,
+                    named_series: &mut named_series,
+                    report,
+                    frozen,
+                },
+            )?;
+            // After the digest, and for a file found gone too, the figure the
+            // total holds, so the count ends at the total.
+            if let Some(bytes) = bytes {
+                hashed += bytes;
+            }
+        }
+    }
+    watch.at(Step::Hashing, hashed, Some(to_hash));
+    report.unattached_chapter_dirs = chapter_dirs.len();
+    let groups = place(conn, staged, &mut named_series, report)?;
+    Ok(Outcome::Done(Grouped {
+        groups,
+        named_series,
+        waiting,
+    }))
+}
+
+/// What [`grouped`] answers.
+struct Grouped {
+    /// Every group [`place`] filed.
+    groups: BTreeMap<GroupKey, Group>,
+    /// Every series a group or an unattached chapter directory names.
+    named_series: BTreeSet<String>,
+    /// In [`Mode::Early`], the own key ([`own_key_of`]) of every entry still
+    /// to hash. Empty in [`Mode::Full`], which hashes them.
+    waiting: BTreeSet<GroupKey>,
+}
+
+/// Every root's entries as derivation reads them: each admitted, any that
+/// another entry speaks for dropped and counted, and each kept one paired with
+/// the bytes its digest reads where [`hashes`] says it is read.
+///
+/// With `size` false nothing is sized, so every bytes is `None`, and no
+/// cancel flag is read, since the only long step a cancel here interrupts is
+/// sizing: a caller that needs only what the input holds pays no folder
+/// listing for it.
+fn read_input<'r>(
+    conn: &Connection,
+    engine: &Engine,
+    roots: &'r [Root],
+    frozen: &HashSet<i64>,
+    watch: &dyn Watch,
+    report: &mut DeriveReport,
+    size: bool,
+) -> Result<Outcome<Input<'r>>, String> {
     // **Two passes over each root's entries, and the second is what stops a
     // volume being counted twice.** The fact layer records the container
     // directory *and* everything beneath it, so "each entry is one member"
@@ -1047,7 +1203,7 @@ fn grouped(
                 report.suppressed += 1;
                 continue;
             }
-            let bytes = if hashes(&admitted) {
+            let bytes = if size && hashes(&admitted) {
                 // Sizing a folder lists it and stats each page, so the flag is
                 // read before each one; nothing is written yet, so a cancel
                 // here is a stop.
@@ -1062,48 +1218,13 @@ fn grouped(
         }
         to_classify.push((root, kept));
     }
-
-    // Every root is admitted and claimed before the first digest, so the
-    // bytes to hash are known before the first is read. Nothing a root's classify
-    // writes is read by another root's admit or claim: a digest lands on its
-    // own root's `scan_entry` row, and claims are per root.
-    let to_hash: u64 = to_classify
-        .iter()
-        .flat_map(|(_, kept)| kept)
-        .filter_map(|(_, bytes)| *bytes)
-        .sum();
-    let mut hashed: u64 = 0;
-    for (root, kept) in to_classify {
-        for (admitted, bytes) in kept {
-            if bytes.is_some() {
-                watch.at(Step::Hashing, hashed, Some(to_hash));
-            }
-            if watch.cancelled() {
-                return Ok(Outcome::Cancelled(Step::Hashing));
-            }
-            classify(
-                conn,
-                root,
-                admitted,
-                &mut Sorting {
-                    staged: &mut staged,
-                    chapter_dirs: &mut chapter_dirs,
-                    named_series,
-                    report,
-                    frozen,
-                },
-            )?;
-            // After the digest, and for a file found gone too, the figure the
-            // total holds, so the count ends at the total.
-            if let Some(bytes) = bytes {
-                hashed += bytes;
-            }
-        }
-    }
-    watch.at(Step::Hashing, hashed, Some(to_hash));
-    report.unattached_chapter_dirs = chapter_dirs.len();
-    place(conn, staged, named_series, report).map(Outcome::Done)
+    Ok(Outcome::Done(to_classify))
 }
+
+/// What [`read_input`] keeps: each root, in the order given, with its kept
+/// entries in walk order, each beside the bytes its digest reads where it was
+/// sized.
+type Input<'r> = Vec<(&'r Root, Vec<(Seen, Option<u64>)>)>;
 
 /// A group's identity: the series title, the volume number as its bit
 /// pattern, and — where there is no volume — the `rel_path` that keeps the
@@ -1149,6 +1270,38 @@ type GroupKey = (String, Option<u64>, Option<Alone>);
 enum Alone {
     Titled(String),
     Path(String),
+}
+
+/// The [`GroupKey`] an entry files under by itself: its series, its
+/// volume's bits, and, only where there is no volume, the title a rule
+/// captured, else its own path. [`place`] keys every member by it, so a
+/// caller asking it agrees with `place` on every entry except a copy: a
+/// byte-identical file under another directory, which `place` files under
+/// its primary's group, wherever that is.
+fn own_key(series: &str, volume: Option<f64>, titled: Option<&str>, rel_path: &str) -> GroupKey {
+    let alone = volume.is_none().then(|| match titled {
+        Some(title) => Alone::Titled(title.to_string()),
+        None => Alone::Path(rel_path.to_string()),
+    });
+    (series.to_string(), volume.map(f64::to_bits), alone)
+}
+
+/// [`own_key`] of an admitted entry, from the fields [`classify`] hands
+/// [`place`]: the title a rule captured, never the one the file declares.
+///
+/// An early pass holds back the group this names until the entry is hashed.
+/// An entry that proves a copy joins its primary's group instead, which is
+/// not held back for it: that group can be written first, and the copy, once
+/// hashed, adds the work a `member_root` row and no page. Where the copy sorts
+/// before its primary in walk order, one derive would have made it the
+/// primary, under its own group; design call 14 accepts that difference.
+fn own_key_of(seen: &Seen) -> GroupKey {
+    own_key(
+        &seen.series,
+        seen.resolved.volume,
+        seen.resolved.title.as_deref(),
+        &seen.entry.rel_path,
+    )
 }
 
 /// One `scan_entry` row, as derivation reads it.
@@ -1863,11 +2016,7 @@ fn place(
         // that case — so this is the entry the rules placed in a series and
         // nothing more: keyed to the title a rule gave it, or else to itself.
         // See [`GroupKey`].
-        let alone = volume.is_none().then(|| match titled {
-            Some(title) => Alone::Titled(title),
-            None => Alone::Path(candidate.rel_path.clone()),
-        });
-        let key = (series.clone(), volume.map(f64::to_bits), alone);
+        let key = own_key(&series, volume, titled.as_deref(), &candidate.rel_path);
         let group = groups.entry(key).or_insert_with(|| Group {
             series,
             volume,
@@ -1987,14 +2136,7 @@ pub(crate) fn parent_of(rel_path: &str) -> &str {
 /// id a dismissed proposal and a reader's links already name, where more than
 /// one exists.
 fn reconcile_series(conn: &Connection, sort_title: &str) -> Result<i64, String> {
-    let held: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM series WHERE sort_title = ?1 ORDER BY id LIMIT 1",
-            [sort_title],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("looking up the series `{sort_title}`: {e}"))?;
+    let held = series_id_of(conn, sort_title)?;
     let series_id = match held {
         Some(id) => id,
         None => {
@@ -2027,6 +2169,23 @@ fn reconcile_series(conn: &Connection, sort_title: &str) -> Result<i64, String> 
         .map_err(|e| format!("recording the title of series `{sort_title}`: {e}"))?;
     }
     Ok(series_id)
+}
+
+/// The series [`reconcile_series`] finds for `sort_title`, the oldest of that
+/// `sort_title`, or `None` where it would mint one. Inserts nothing, so an
+/// early pass can ask without taking the write lock.
+///
+/// # Errors
+///
+/// Returns an error if SQLite refuses the statement.
+fn series_id_of(conn: &Connection, sort_title: &str) -> Result<Option<i64>, String> {
+    conn.query_row(
+        "SELECT id FROM series WHERE sort_title = ?1 ORDER BY id LIMIT 1",
+        [sort_title],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("looking up the series `{sort_title}`: {e}"))
 }
 
 /// The document [`write_work`] imports for one group, with `held_hub` the hub
@@ -3954,6 +4113,9 @@ pub(crate) fn rel_paths_by_series(
     Ok(found)
 }
 
+pub use fill::{Cadence, derive_filling, derive_filling_at};
+
+mod fill;
 mod joins;
 
 #[cfg(test)]

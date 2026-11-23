@@ -90,6 +90,14 @@ had its mtime moved) still belongs to a volume, and skipping it:
    half-written volume appears. A cancel that lands while works are
    being written keeps the works already written (a derive commits work
    by work, `derive_watched`'s write loop), and those stand as written.
+   *Note, 2026-11-23: "a first import cancelled while hashing shows none
+   of its series" is reversed by the first scan's PR 2
+   (`2026-11-22-first-scan-series-as-they-finish-design.md`, §5 pick 4,
+   O314): a scan job writes volumes in early passes while it hashes, and a
+   cancel keeps them, so a first import cancelled while hashing shows the
+   volumes its passes wrote. No half-written volume appears, and a file
+   hashed but not written still waits for the Scan; the freeze's code is
+   unchanged.*
 4. A rules save regroups a paused directory's held files by the new
    rules, from their held readings, as it would if they had not
    changed.
@@ -287,6 +295,12 @@ over it until the next press. (My call; §8.)
 2. A new file that was hashed before the cancel waits too (§3, goal 3),
    so a half-hashed first import shows nothing until Scan rather than
    the volumes that happened to be hashed.
+   *Note, 2026-11-23: reversed by the first scan's PR 2
+   (`2026-11-22-first-scan-series-as-they-finish-design.md`, §5 pick 4,
+   on the owner's picks of 2026-11-22, O314): a volume an early pass
+   wrote before the cancel stands, and the freeze keeps it as written,
+   since `frozen_entries` passes an entry whose digest a member under its
+   root holds. A file hashed but not written still waits for the Scan.*
 3. The old reading is kept in new columns on `scan_entry` (migration
    027), not read back from the member, because a copy's path is not
    stored on the member.

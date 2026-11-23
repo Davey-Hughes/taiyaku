@@ -1051,6 +1051,10 @@ impl Watch for CancelWhen<'_> {
     fn cancelled(&self) -> bool {
         self.inner.cancelled()
     }
+
+    fn written(&self, works: u64) {
+        self.inner.written(works);
+    }
 }
 
 /// A job of `asked`, as `reread` says, cancelled at the first count of
@@ -1168,7 +1172,10 @@ async fn a_job_reports_its_directory_and_step_as_it_goes() {
     let job = super::reserve(&state, &roots, started, None).expect("reserves");
     let reserved = job.snapshot();
     let seen = std::sync::Arc::new(std::sync::Mutex::new(vec![(reserved.step, reserved.dir)]));
-    let ended_before = state.jobs_ended.load(std::sync::atomic::Ordering::SeqCst);
+    let ended_before = state
+        .jobs_ended
+        .ended
+        .load(std::sync::atomic::Ordering::SeqCst);
 
     let recorder = (std::sync::Arc::clone(&job), std::sync::Arc::clone(&seen));
     super::spawn_job(
@@ -1231,7 +1238,10 @@ async fn a_job_reports_its_directory_and_step_as_it_goes() {
         (
             job.ended(),
             ended_before,
-            state.jobs_ended.load(std::sync::atomic::Ordering::SeqCst)
+            state
+                .jobs_ended
+                .ended
+                .load(std::sync::atomic::Ordering::SeqCst)
         ),
         (Some(super::JobEnded::Finished), 0, 1),
         "(how it ended, the server's count of ended jobs once it was reserved, once it ended)"
@@ -1872,6 +1882,7 @@ fn a_pass_job_starts_fingerprinting_with_no_file_done() {
             done: Some(0),
             of: None,
             dir: None,
+            ready: None,
         }
     );
 }
@@ -1889,6 +1900,847 @@ fn a_match_job_starts_matching_with_no_file_done() {
             done: Some(0),
             of: None,
             dir: None,
+            ready: None,
         }
+    );
+}
+
+/// Design O314 §7, "The report and the feed": the count a job shows is the
+/// highest a pass told, the feed's `written` moves only where the count rose,
+/// and neither a lower count nor a report after it takes the count away.
+#[test]
+fn the_written_marker_moves_when_the_count_rises_and_survives_every_report() {
+    let marks = std::sync::Arc::new(crate::FeedMarks::default());
+    let job = super::Job::new(
+        std::time::Instant::now(),
+        Vec::new(),
+        std::sync::Arc::clone(&marks),
+    );
+    let running = super::Running::new(&job, None);
+    let read = || {
+        (
+            marks.written.load(std::sync::atomic::Ordering::SeqCst),
+            job.snapshot().ready,
+        )
+    };
+
+    running.written(1);
+    let first = read();
+    running.written(1);
+    let told_again = read();
+    running.written(3);
+    let risen = read();
+    running.written(2);
+    let lower = read();
+    running.at(Step::Hashing, 7, Some(9));
+    let hashing = read();
+    running.at(Step::Writing, 1, Some(3));
+    let writing = read();
+
+    assert_eq!(
+        [first, told_again, risen, lower, hashing, writing],
+        [
+            (1, Some(1)),
+            (1, Some(1)),
+            (2, Some(3)),
+            (2, Some(3)),
+            (2, Some(3)),
+            (2, Some(3))
+        ],
+        "(marker, count) after 1, 1 again, 3, 2, then a Hashing and a Writing report"
+    );
+}
+
+/// The filling derive with a pass after every group that completes.
+fn every_group() -> derive::Cadence<'static> {
+    derive::Cadence {
+        floor: std::time::Duration::ZERO,
+        factor: 0,
+        now: &std::time::Instant::now,
+    }
+}
+
+/// A watch that passes everything on to `inner`, and after each count of
+/// volumes written keeps what `job` then shows: its step and its count.
+struct ReadyAt<'a> {
+    inner: &'a dyn Watch,
+    job: &'a super::Job,
+    shown: &'a std::sync::Mutex<Vec<(Step, Option<u64>)>>,
+}
+
+impl Watch for ReadyAt<'_> {
+    fn at(&self, step: Step, done: u64, of: Option<u64>) {
+        self.inner.at(step, done, of);
+    }
+
+    fn cancelled(&self) -> bool {
+        self.inner.cancelled()
+    }
+
+    fn written(&self, works: u64) {
+        self.inner.written(works);
+        let now = self.job.snapshot();
+        self.shown
+            .lock()
+            .expect("one recorder")
+            .push((now.step, now.ready));
+    }
+}
+
+/// Design O314 §8 test 12 and call 6: through each pass the job reads Hashing,
+/// with the count the pass just told, since a pass reports no step of its
+/// own; and the job's report counts every volume, the early ones among them.
+/// Alpha's two volumes each complete a group before the last, so a pass writes
+/// each; the full derive writes Beta's.
+#[test]
+fn a_job_reads_hashing_with_its_volumes_ready_through_each_pass() {
+    let (library, fixture, a, b) = two_dirs("job-ready-through-passes");
+    test_support::write_pages(
+        &fixture.path().join("a").join("Alpha").join("Alpha - v02"),
+        2,
+    );
+    let job = super::Job::new(
+        std::time::Instant::now(),
+        Vec::new(),
+        std::sync::Arc::default(),
+    );
+    let shown = std::sync::Mutex::new(Vec::new());
+
+    let reports = super::run_watched(
+        &library,
+        &[a, b],
+        Reread::Dir,
+        &crate::LibraryJob::default(),
+        &super::Running::new(&job, None),
+        scan::scan_root_watched,
+        |conn, fresh, watch| {
+            derive::derive_filling_at(
+                conn,
+                derive::Documents::Reconcile,
+                fresh,
+                &ReadyAt {
+                    inner: watch,
+                    job: &job,
+                    shown: &shown,
+                },
+                &every_group(),
+            )
+        },
+    )
+    .expect("the job answers");
+
+    assert_eq!(
+        shown.into_inner().expect("the record"),
+        [(Step::Hashing, Some(1)), (Step::Hashing, Some(2))],
+        "(step, count) the job showed as each pass told its count"
+    );
+    let works: Vec<serde_json::Value> = reports
+        .iter()
+        .map(|report| report["derive"]["works"].clone())
+        .collect();
+    assert_eq!(
+        works,
+        [json!(3), json!(3)],
+        "each directory's report counts every volume: {reports:?}"
+    );
+}
+
+/// Hash `rel_path` in `root` now, so its entry holds its digest before a job.
+fn hash_now(conn: &rusqlite::Connection, root: &scan::Root, rel_path: &str) {
+    let sha256 = taiyaku_read::member_digest(&root.path.join(rel_path))
+        .unwrap_or_else(|e| panic!("{rel_path} hashes: {e}"));
+    let rows = conn
+        .execute(
+            "UPDATE scan_entry SET sha256 = ?1 WHERE root_id = ?2 AND rel_path = ?3",
+            rusqlite::params![sha256, root.id, rel_path],
+        )
+        .expect("writes the digest");
+    assert_eq!(
+        rows, 1,
+        "the fixture: {rel_path} has a row under directory {}",
+        root.id
+    );
+}
+
+/// The series of each work, in order.
+fn work_series(conn: &rusqlite::Connection) -> Vec<String> {
+    conn.prepare(
+        "SELECT s.sort_title FROM work w JOIN series s ON s.id = w.series_id \
+         ORDER BY s.sort_title",
+    )
+    .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
+    .expect("reads the works")
+}
+
+/// A watch that passes everything on to `inner`, and asks `job` to cancel
+/// at the first read of the flag once `conn` holds a work.
+struct CancelOnceAWork<'a> {
+    inner: &'a dyn Watch,
+    job: &'a super::Job,
+    conn: &'a rusqlite::Connection,
+}
+
+impl Watch for CancelOnceAWork<'_> {
+    fn at(&self, step: Step, done: u64, of: Option<u64>) {
+        self.inner.at(step, done, of);
+    }
+
+    fn cancelled(&self) -> bool {
+        if count(self.conn, "SELECT count(*) FROM work") > 0 {
+            self.job.request_cancel();
+        }
+        self.inner.cancelled()
+    }
+
+    fn written(&self, works: u64) {
+        self.inner.written(works);
+    }
+}
+
+/// Design O314 §7, "Cancel": a cancel while a pass writes stops it after the
+/// work it is on, and the job ends in the step it shows, Hashing, its
+/// directories paused as any cancel leaves them. Beta's volume is hashed
+/// before the job, so the pass after Alpha's group, not the last, writes
+/// Alpha's volume and then Beta's; the cancel comes once Alpha's is written.
+#[test]
+fn a_cancel_inside_a_pass_ends_the_job_cancelled_in_hashing() {
+    let (library, fixture, a, b) = two_dirs("job-cancelled-in-a-pass");
+    test_support::write_pages(
+        &fixture
+            .path()
+            .join("b")
+            .join("Charlie")
+            .join("Charlie - v01"),
+        2,
+    );
+    {
+        let conn = library.conn();
+        for root in [&a, &b] {
+            scan::scan_root(&conn, root).expect("walks");
+        }
+        hash_now(&conn, &b, "Beta/Beta - v01");
+    }
+    let job = super::Job::new(
+        std::time::Instant::now(),
+        Vec::new(),
+        std::sync::Arc::default(),
+    );
+    let running = super::Running::new(&job, None);
+
+    let reports = super::run_watched(
+        &library,
+        &[a.clone(), b.clone()],
+        Reread::Dir,
+        &crate::LibraryJob::default(),
+        &running,
+        scan::scan_root_watched,
+        |conn, fresh, watch| {
+            assert_eq!(
+                count(conn, DIGESTS),
+                1,
+                "the fixture: Beta's volume alone is hashed as the job derives"
+            );
+            derive::derive_filling_at(
+                conn,
+                derive::Documents::Reconcile,
+                fresh,
+                &CancelOnceAWork {
+                    inner: watch,
+                    job: &job,
+                    conn,
+                },
+                &every_group(),
+            )
+        },
+    );
+
+    assert_eq!(
+        reports,
+        Ok(vec![cancelled_in("hashing"), cancelled_in("hashing")])
+    );
+    assert_eq!(
+        running.stopped.get(),
+        Some(Step::Hashing),
+        "the job ends cancelled in the step it shows"
+    );
+    assert_eq!(
+        work_series(&library.conn()),
+        ["Alpha"],
+        "the pass stops before Beta's volume"
+    );
+    assert_eq!(
+        both_paused(&library, &a, &b),
+        (true, true),
+        "each directory paused"
+    );
+}
+
+/// A watch that keeps, at each report, each entry that has gained a digest
+/// since the last, in the order they gained one.
+struct Digested<'a> {
+    conn: &'a rusqlite::Connection,
+    order: std::cell::RefCell<Vec<(i64, String)>>,
+}
+
+impl Watch for Digested<'_> {
+    fn at(&self, _step: Step, _done: u64, _of: Option<u64>) {
+        let now: Vec<(i64, String)> = self
+            .conn
+            .prepare(
+                "SELECT root_id, rel_path FROM scan_entry WHERE sha256 IS NOT NULL \
+                 ORDER BY root_id, rel_path",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect()
+            })
+            .expect("reads the digests");
+        let mut order = self.order.borrow_mut();
+        for entry in now {
+            if !order.contains(&entry) {
+                order.push(entry);
+            }
+        }
+    }
+
+    fn cancelled(&self) -> bool {
+        false
+    }
+}
+
+/// Design O314 §7, "The hashing queue": a scan job's derive hashes each volume
+/// of a series in every directory, in volume order, before the next series,
+/// where one derive hashes directory by directory. `v10` sorts before `v2`
+/// by path, and both directories hold every series.
+#[test]
+fn a_job_derive_hashes_a_series_in_every_directory_before_the_next() {
+    let fixture = test_support::Fixture::new("job-derive-series-order");
+    let library = test_support::library();
+    let conn = library.conn();
+    let mut roots = Vec::new();
+    for name in ["x", "y"] {
+        let dir = fixture.path().join(name);
+        for volume in ["A/A v2", "A/A v10", "B/B v1"] {
+            test_support::write_pages(&dir.join(volume), 2);
+        }
+        let root = scan::add_root(&conn, &dir).expect("adds the directory");
+        scan::scan_root(&conn, &root).expect("walks");
+        roots.push(root.id);
+    }
+    let probe = Digested {
+        conn: &conn,
+        order: std::cell::RefCell::default(),
+    };
+
+    let outcome = super::job_derive(&conn, &[], &probe).expect("derives");
+
+    assert!(matches!(outcome, Outcome::Done(_)), "{outcome:?}");
+    let (x, y) = (roots[0], roots[1]);
+    assert_eq!(
+        probe.order.into_inner(),
+        [
+            (x, "A/A v2"),
+            (y, "A/A v2"),
+            (x, "A/A v10"),
+            (y, "A/A v10"),
+            (x, "B/B v1"),
+            (y, "B/B v1")
+        ]
+        .map(|(root, rel_path)| (root, rel_path.to_string())),
+        "A's volume 2 in both directories, then its volume 10, then B"
+    );
+}
+
+thread_local! {
+    /// Each digest statement the traced connection ran, bound, in the order run.
+    static DIGEST_STATEMENTS: std::cell::RefCell<Vec<Option<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keeps each digest statement, bound, in [`DIGEST_STATEMENTS`]. It runs inside
+/// SQLite, so it reads nothing and cannot fail: the test reads the text after.
+fn digests(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Stmt(stmt, sql) = event
+        && sql.starts_with("UPDATE scan_entry SET sha256 = ?1 WHERE root_id = ?2")
+    {
+        DIGEST_STATEMENTS.with(|digests| digests.borrow_mut().push(stmt.expanded_sql()));
+    }
+}
+
+/// Design O314 §7, "The hashing queue", through `run`: a scan job's derive is
+/// the filling derive, which hashes each volume of a series in every directory
+/// before the next series, where one derive hashes directory by directory.
+/// `v10` sorts before `v2` by path. An in-memory store's working connection
+/// is its one connection, so a trace on it sees each digest the job writes.
+#[test]
+fn a_scan_job_hashes_a_series_in_every_directory_before_the_next() {
+    let fixture = test_support::Fixture::new("run-series-order");
+    let library = test_support::library();
+    let roots = {
+        let mut conn = library.conn();
+        let roots = ["x", "y"].map(|name| {
+            let dir = fixture.path().join(name);
+            for volume in ["A/A v2", "A/A v10", "B/B v1"] {
+                test_support::write_pages(&dir.join(volume), 2);
+            }
+            scan::add_root(&conn, &dir).expect("adds the directory")
+        });
+        conn.trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(digests),
+        )
+        .expect("installs the trace");
+        roots
+    };
+    let job = crate::LibraryJob::default();
+
+    let reports = test_support::run_unreserved(&library, &roots, Reread::Batch, &job);
+    library
+        .conn()
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::empty(),
+            None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+        )
+        .expect("clears the trace");
+
+    let reports = reports.expect("the job runs");
+    assert!(
+        reports.iter().all(|report| report.get("derive").is_some()),
+        "each directory walked and derived: {reports:?}"
+    );
+    let written: Vec<(i64, String)> = DIGEST_STATEMENTS
+        .take()
+        .into_iter()
+        .map(|bound| {
+            let bound = bound.expect("the statement's bound text");
+            let (_, place) = bound
+                .split_once(" WHERE root_id = ")
+                .unwrap_or_else(|| panic!("a directory in {bound}"));
+            let (root_id, rel_path) = place
+                .split_once(" AND rel_path = ")
+                .unwrap_or_else(|| panic!("a path in {bound}"));
+            (
+                root_id.parse().expect("a directory id"),
+                rel_path.trim_matches('\'').to_string(),
+            )
+        })
+        .collect();
+    let (x, y) = (roots[0].id, roots[1].id);
+    assert_eq!(
+        written,
+        [
+            (x, "A/A v2"),
+            (y, "A/A v2"),
+            (x, "A/A v10"),
+            (y, "A/A v10"),
+            (x, "B/B v1"),
+            (y, "B/B v1")
+        ]
+        .map(|(root, rel_path)| (root, rel_path.to_string())),
+        "A's volume 2 in both directories, then its volume 10, then B"
+    );
+}
+
+/// Whether each of `roots` is marked held, in order.
+fn held<const N: usize>(conn: &rusqlite::Connection, roots: [&scan::Root; N]) -> [bool; N] {
+    roots.map(|root| {
+        conn.query_row(
+            "SELECT scan_held_at IS NOT NULL FROM root WHERE id = ?1",
+            [root.id],
+            |r| r.get(0),
+        )
+        .expect("reads the mark")
+    })
+}
+
+/// A watch that passes everything on to `inner` and keeps, at each report,
+/// whether `roots` are marked held.
+struct HeldAt<'a> {
+    inner: &'a dyn Watch,
+    conn: &'a rusqlite::Connection,
+    roots: [&'a scan::Root; 2],
+    seen: &'a std::cell::RefCell<Vec<(Step, [bool; 2])>>,
+}
+
+impl Watch for HeldAt<'_> {
+    fn at(&self, step: Step, done: u64, of: Option<u64>) {
+        self.seen
+            .borrow_mut()
+            .push((step, held(self.conn, self.roots)));
+        self.inner.at(step, done, of);
+    }
+
+    fn cancelled(&self) -> bool {
+        self.inner.cancelled()
+    }
+
+    fn written(&self, works: u64) {
+        self.inner.written(works);
+    }
+}
+
+/// O314 spec, §7 "Server: a restart mid-job": a job marks every directory it
+/// was asked for held before its first walk records anything, and keeps the
+/// mark through every walk and every report of its derive, so a stop at any
+/// of them leaves the mark a start scans the directory again by; the job's end
+/// clears it.
+#[test]
+fn a_job_holds_every_directory_from_before_its_first_walk_to_its_end() {
+    let (library, _fixture, a, b) = two_dirs("job-holds-its-directories");
+    let seen = std::cell::RefCell::new(Vec::new());
+    let job = super::Job::new(
+        std::time::Instant::now(),
+        Vec::new(),
+        std::sync::Arc::default(),
+    );
+
+    let reports = super::run_watched(
+        &library,
+        &[a.clone(), b.clone()],
+        Reread::Dir,
+        &crate::LibraryJob::default(),
+        &super::Running::new(&job, None),
+        |conn, root, watch| {
+            seen.borrow_mut()
+                .push((Step::Resolving, held(conn, [&a, &b])));
+            scan::scan_root_watched(conn, root, watch)
+        },
+        |conn, fresh, watch| {
+            super::job_derive(
+                conn,
+                fresh,
+                &HeldAt {
+                    inner: watch,
+                    conn,
+                    roots: [&a, &b],
+                    seen: &seen,
+                },
+            )
+        },
+    );
+
+    assert!(reports.is_ok(), "{reports:?}");
+    let seen = seen.into_inner();
+    assert!(
+        seen.iter().any(|(step, _)| *step == Step::Hashing)
+            && seen.iter().any(|(step, _)| *step == Step::Writing),
+        "the fixture: the derive reports hashing and writing: {seen:?}"
+    );
+    assert!(
+        seen.iter().all(|(_, now)| *now == [true, true]),
+        "a and b held at the start of each walk and at every report: {seen:?}"
+    );
+    assert_eq!(
+        held(&library.conn(), [&a, &b]),
+        [false, false],
+        "neither held once the job ends"
+    );
+}
+
+/// Design O314 §5, ruling 9: a directory a cancel stopped stays paused
+/// until Scan is pressed, and is not a cut a start takes up, so the cancelled
+/// job clears its mark as any end does.
+#[test]
+fn a_cancelled_job_leaves_its_directories_paused_and_not_held() {
+    let (library, _fixture, a, b) = two_dirs("job-cancelled-not-held");
+    let mut walked = Vec::new();
+
+    let reports = cancelled_after_the_first_walk(&library, &[a.clone(), b.clone()], &mut walked);
+
+    assert_eq!(
+        reports,
+        Ok(vec![cancelled_in("resolving"), cancelled_in("resolving")]),
+        "the fixture: the job is cancelled after a's walk"
+    );
+    assert_eq!(
+        (
+            both_paused(&library, &a, &b),
+            held(&library.conn(), [&a, &b])
+        ),
+        ((true, true), [false, false]),
+        "(paused, held)"
+    );
+}
+
+/// A watch that passes everything on to `inner`, and stops the process at the
+/// first report `stop` names by its step and whether a pass has written a
+/// volume yet. The stop is a panic: no code of the job after it runs, as after
+/// a stop. Unwinding runs the drops on the way out, the open transaction's
+/// rollback and the job lock's and the lease's release, which a killed process
+/// gets too, from SQLite at the next open and from the system; no drop writes
+/// the held mark.
+struct Stopping<'a, F> {
+    inner: &'a dyn Watch,
+    stop: F,
+    written: Cell<bool>,
+}
+
+impl<'a, F: Fn(Step, bool) -> bool> Stopping<'a, F> {
+    fn new(inner: &'a dyn Watch, stop: F) -> Self {
+        Self {
+            inner,
+            stop,
+            written: Cell::new(false),
+        }
+    }
+}
+
+impl<F: Fn(Step, bool) -> bool> Watch for Stopping<'_, F> {
+    fn at(&self, step: Step, done: u64, of: Option<u64>) {
+        assert!(
+            !(self.stop)(step, self.written.get()),
+            "the process stops at {step:?}, {done} of {of:?}"
+        );
+        self.inner.at(step, done, of);
+    }
+
+    fn cancelled(&self) -> bool {
+        self.inner.cancelled()
+    }
+
+    fn written(&self, works: u64) {
+        self.inner.written(works);
+        self.written.set(true);
+    }
+}
+
+/// What a job that was cut and taken up must leave as one that ran through
+/// does, with no id in it: the works by slug as (series, volume), the editions
+/// as (slug, key), and the members as (slug, edition key, ordinal, path,
+/// digest).
+#[derive(Debug, PartialEq)]
+struct Settled {
+    works: std::collections::BTreeMap<String, (Option<String>, Option<f64>)>,
+    editions: std::collections::BTreeSet<(String, String)>,
+    members: std::collections::BTreeSet<(String, String, i64, String, Option<String>)>,
+}
+
+fn settled(conn: &rusqlite::Connection) -> Settled {
+    let works = conn
+        .prepare(
+            "SELECT w.slug, s.sort_title, w.volume FROM work w \
+             LEFT JOIN series s ON s.id = w.series_id",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?
+                .collect()
+        })
+        .expect("reads the works");
+    let editions = conn
+        .prepare("SELECT w.slug, e.key FROM edition e JOIN work w ON w.id = e.work_id")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })
+        .expect("reads the editions");
+    let members = conn
+        .prepare(
+            "SELECT w.slug, e.key, m.ordinal, m.path, m.sha256 FROM member m \
+             JOIN edition e ON e.id = m.edition_id JOIN work w ON w.id = e.work_id",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect()
+        })
+        .expect("reads the members");
+    Settled {
+        works,
+        editions,
+        members,
+    }
+}
+
+/// Every work's id, by slug.
+fn work_ids(conn: &rusqlite::Connection) -> std::collections::BTreeMap<String, i64> {
+    conn.prepare("SELECT slug, id FROM work")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })
+        .expect("reads the works")
+}
+
+/// `fixture`'s directory `a`, holding three one-volume series.
+fn three_series(fixture: &test_support::Fixture) -> std::path::PathBuf {
+    let dir = fixture.path().join("a");
+    for series in ["Alpha", "Beta", "Gamma"] {
+        test_support::write_pages(&dir.join(series).join(format!("{series} - v01")), 2);
+    }
+    dir
+}
+
+/// The path of a store in `fixture`'s directory `name`.
+fn store_at(fixture: &test_support::Fixture, name: &str) -> std::path::PathBuf {
+    let db_dir = fixture.path().join(name);
+    std::fs::create_dir_all(&db_dir).expect("makes the store's directory");
+    db_dir.join("library.db")
+}
+
+/// `dir` added to `library` and set Off, never scanned.
+fn added_off(library: &Library, dir: &std::path::Path) -> scan::Root {
+    let conn = library.conn();
+    let root = scan::add_root(&conn, dir).expect("adds the directory");
+    conn.execute(
+        "UPDATE root SET scan_interval_secs = 0 WHERE id = ?1",
+        [root.id],
+    )
+    .expect("sets it Off");
+    root
+}
+
+/// A pressed scan of `a` over the store at `store`, its walk and its filling
+/// derive, a pass after every group, each watched under `stop`, which must
+/// stop the process before the job ends.
+fn cut_by_a_stop(store: &std::path::Path, a: &scan::Root, stop: impl Fn(Step, bool) -> bool) {
+    let library = Library::open(store).expect("opens the store");
+    let job = test_support::a_planted_job();
+    let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        super::run_watched(
+            &library,
+            std::slice::from_ref(a),
+            Reread::Dir,
+            &crate::LibraryJob::default(),
+            &super::Running::new(&job, None),
+            |conn, root, watch| scan::scan_root_watched(conn, root, &Stopping::new(watch, &stop)),
+            |conn, fresh, watch| {
+                derive::derive_filling_at(
+                    conn,
+                    derive::Documents::Reconcile,
+                    fresh,
+                    &Stopping::new(watch, &stop),
+                    &every_group(),
+                )
+            },
+        )
+    }));
+    assert!(
+        stopped.is_err(),
+        "the fixture: the job stops before its end"
+    );
+}
+
+/// The next process over the store at `store`: its start rewrites the cut
+/// words, and its startup tick starts each batch, which this awaits. Answers
+/// that process and the ids of each batch.
+async fn the_next_start(
+    fixture: &test_support::Fixture,
+    store: &std::path::Path,
+) -> (std::sync::Arc<crate::ServeState>, Vec<Vec<i64>>) {
+    let next = std::sync::Arc::new(crate::ServeState {
+        library: std::sync::Arc::new(Library::open(store).expect("opens the store again")),
+        cache_dir: fixture.path().join("next-covers"),
+        ..test_support::state(fixture.path())
+    });
+    scan::interrupt_derives(&next.library.conn()).expect("rewrites the cut words");
+    let now = taiyaku_library::schedule::now(&next.library.conn()).expect("the store's clock");
+    let mut calls = Vec::new();
+    let mut taken_up = Vec::new();
+    crate::scheduler::Scheduler::new()
+        .tick(&next, &now, |roots, started| {
+            calls.push(roots.iter().map(|root| root.id).collect::<Vec<_>>());
+            taken_up.push(super::spawn(
+                std::sync::Arc::clone(&next),
+                roots,
+                started,
+                Reread::Batch,
+            ));
+        })
+        .expect("the startup tick");
+    for job in taken_up {
+        job.await.expect("the scan taken up ends");
+    }
+    (next, calls)
+}
+
+/// Design O314 §5, ruling 9, through the job runner: the first scan of
+/// an Off directory, cut by a stop after a pass wrote its first volume, is
+/// taken up by the next start as one job, which leaves the works one scan that
+/// ran through leaves, the early volume keeping its id. The run through is a
+/// second store over the same directory, so paths and digests compare.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_first_scan_of_an_off_directory_cut_by_a_stop_is_taken_up_as_one_job() {
+    let fixture = test_support::Fixture::new("cut-first-scan-taken-up");
+    let dir = three_series(&fixture);
+    let cut_store = store_at(&fixture, "cut");
+    let a = added_off(&Library::open(&cut_store).expect("opens the store"), &dir);
+    cut_by_a_stop(&cut_store, &a, |_, written| written);
+    let early = work_ids(&Library::open(&cut_store).expect("opens the store").conn());
+    assert_eq!(
+        early.len(),
+        1,
+        "the fixture: the stop came after the pass that wrote Alpha's volume: {early:?}"
+    );
+
+    let (next, calls) = the_next_start(&fixture, &cut_store).await;
+
+    let through = Library::open(&store_at(&fixture, "through")).expect("opens a second store");
+    let through_root = added_off(&through, &dir);
+    let job = test_support::a_planted_job();
+    super::run(
+        &through,
+        &[through_root],
+        Reread::Dir,
+        &crate::LibraryJob::default(),
+        &super::Running::new(&job, None),
+    )
+    .expect("the scan runs through");
+    let conn = next.library.conn();
+    let resumed = work_ids(&conn);
+    assert_eq!(calls, [vec![a.id]], "the start runs one job, of a");
+    assert!(
+        early.iter().all(|(slug, id)| resumed.get(slug) == Some(id)),
+        "Alpha's volume keeps its id: {early:?} then {resumed:?}"
+    );
+    assert_eq!(
+        settled(&conn),
+        settled(&through.conn()),
+        "the works, editions and members of a scan that ran through"
+    );
+    assert_eq!(
+        (status(&conn, &a), held(&conn, [&a])),
+        (word("ok"), [false]),
+        "a's word, and whether it is held"
+    );
+}
+
+/// Design O314 §5, ruling 9, at the point no word records: the first scan of
+/// an Off directory, cut by a stop in its walk before the walk records
+/// anything, leaves the directory reading Never, and the next start takes it
+/// up as one job, which writes its works.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_first_scan_of_an_off_directory_cut_in_its_walk_is_taken_up_as_one_job() {
+    let fixture = test_support::Fixture::new("cut-walk-taken-up");
+    let dir = three_series(&fixture);
+    let cut_store = store_at(&fixture, "cut");
+    let a = added_off(&Library::open(&cut_store).expect("opens the store"), &dir);
+    cut_by_a_stop(&cut_store, &a, |step, _| step == Step::Resolving);
+    {
+        let cut = Library::open(&cut_store).expect("opens the store");
+        let conn = cut.conn();
+        assert_eq!(
+            (
+                status(&conn, &a),
+                last_scan_at(&conn, &a),
+                count(&conn, "SELECT count(*) FROM scan_entry"),
+            ),
+            (None, None, 0),
+            "the fixture: the walk recorded nothing, so a reads Never"
+        );
+    }
+
+    let (next, calls) = the_next_start(&fixture, &cut_store).await;
+
+    let conn = next.library.conn();
+    assert_eq!(
+        (
+            calls,
+            count(&conn, "SELECT count(*) FROM work"),
+            status(&conn, &a),
+            held(&conn, [&a])
+        ),
+        (vec![vec![a.id]], 3, word("ok"), [false]),
+        "(what the start runs, the works, a's word, whether a is held)"
     );
 }

@@ -24,6 +24,7 @@ export const feedJob = (over: Partial<FeedJob> = {}): FeedJob => ({
   libraries: [{ id: 7, name: 'Manga' }],
   elapsed_secs: 3.5,
   cancelling: false,
+  ready: null,
   ...over,
 })
 
@@ -44,6 +45,7 @@ export const fingerprintPass = (over: Partial<FeedJob> = {}): FeedJob => ({
   libraries: [{ id: 7, name: 'Manga' }],
   elapsed_secs: 12.5,
   cancelling: false,
+  ready: null,
   ...over,
 })
 
@@ -64,6 +66,7 @@ export const matchPass = (over: Partial<FeedJob> = {}): FeedJob => ({
   libraries: [{ id: 1, name: 'Manga' }],
   elapsed_secs: 1.5,
   cancelling: false,
+  ready: null,
   ...over,
 })
 

@@ -27,21 +27,25 @@ use crate::ServeState;
 use crate::auth::Principal;
 use crate::scan_jobs::{Job, JobEnded, JobKind, Snapshot};
 
-/// `GET /api/library/scans`, for any signed-in account: `ended`, a marker
-/// that moves each time a scan job or the match pass's derive ends, and each
-/// library a running scan job holds with that job's step. An administrator in a browser
-/// ([`crate::session::administers`]) is also sent every running job, the
-/// passes among them, each with its kind; any other caller only the libraries
-/// it is granted, with no count and no directory path, since a job's counts and
-/// directories cover libraries it may not see. A pass holds no library, so it
-/// is in no answer's libraries.
+/// `GET /api/library/scans`, for any signed-in account: `ended`, a marker that
+/// moves as a scan job or the match pass's derive ends; `written`, one that
+/// moves as a scan job's early passes write volumes (O314); and each library a
+/// running scan job holds, with its step. An administrator in a browser
+/// ([`crate::session::administers`]) is also sent every running job, passes
+/// too, with its kind and a scan's volumes written so far; any other caller
+/// only the libraries it is granted, with no count and no path, since a job's
+/// counts and directories cover libraries it may not see.
 pub(crate) async fn feed(
     State(state): State<Arc<ServeState>>,
     extensions: axum::http::Extensions,
 ) -> Response {
     // Read before the jobs, and a job is marked ended before it is counted:
     // an answer whose marker counts a job's end never lists that job.
-    let ended = state.jobs_ended.load(Ordering::SeqCst);
+    let ended = state.jobs_ended.ended.load(Ordering::SeqCst);
+    // Read before the jobs too, and a job stores its count before raising it:
+    // an answer whose marker counts a pass shows that pass's count. The
+    // volumes are in the store before either.
+    let written = state.jobs_ended.written.load(Ordering::SeqCst);
     let jobs: Vec<(Arc<Job>, Snapshot)> = running_jobs(&state)
         .into_iter()
         .map(|job| {
@@ -63,6 +67,7 @@ pub(crate) async fn feed(
     if crate::session::administers(&extensions) {
         return Json(serde_json::json!({
             "ended": ended,
+            "written": written,
             "libraries": held_json(&held),
             "jobs": jobs
                 .iter()
@@ -75,6 +80,7 @@ pub(crate) async fn feed(
     held.retain(|library, _| access.grants(*library));
     Json(serde_json::json!({
         "ended": ended,
+        "written": written,
         "libraries": held_json(&held),
     }))
     .into_response()
@@ -105,7 +111,17 @@ pub(crate) async fn cancel(
         // it is left to read the flag: it ended as it would have.
         None => {
             match job.kind {
-                JobKind::Scan => job.request_cancel(),
+                JobKind::Scan => {
+                    job.request_cancel();
+                    // After the flag, so a mark the job writes after this
+                    // clearing is followed by its next read of the flag.
+                    let library = Arc::clone(&state.library);
+                    let cancelled = Arc::clone(&job);
+                    let _ = tokio::task::spawn_blocking(move || {
+                        crate::scan_jobs::unmark_cancelled(&library, &cancelled);
+                    })
+                    .await;
+                }
                 JobKind::Fingerprint => state.fingerprints.cancel(&job),
                 JobKind::Match => state.matches.cancel(&job),
             }
@@ -206,6 +222,7 @@ fn job_json(job: &Job, snapshot: Snapshot) -> serde_json::Value {
             .collect::<Vec<_>>(),
         "elapsed_secs": job.started.elapsed().as_secs_f64(),
         "cancelling": job.cancelling(),
+        "ready": snapshot.ready,
     })
 }
 

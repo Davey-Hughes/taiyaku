@@ -173,14 +173,21 @@ function emptyKind(
 }
 
 /**
- * The step of a scan holding one of `libraries`, `undefined` while none
- * does: with its count for an administrator, whom the feed sends its jobs,
- * and the word alone for anyone else, who is sent no count.
+ * The step of a scan holding a library the view shows, `undefined` while
+ * none does: with its count for an administrator, whom the feed sends its
+ * jobs, and the word alone for anyone else, who is sent no count. A library's
+ * page shows its own library; the page of every library, each one the status
+ * lists.
  */
 function scanLine(
   feed: ScanFeed | undefined,
-  libraries: readonly number[],
+  status: LibraryStatus | undefined,
+  library: number | undefined,
 ): string | undefined {
+  const libraries =
+    library !== undefined
+      ? [library]
+      : (status?.libraries.map((l) => l.id) ?? [])
   for (const id of libraries) {
     const step = libraryStep(feed, id)
     if (step === undefined) continue
@@ -192,10 +199,9 @@ function scanLine(
 
 /**
  * An empty view's state, and a search's that found nothing, with the scan
- * holding its library. Only this reads the feed, so a tab polls it only
- * while the view is empty: a view drawing works has no scan to show, and a
- * reader's tab left on one would otherwise poll for as long as it is open.
- * A search can find nothing before the status lands, and is then no match.
+ * holding its library. A view drawing works says its scan in `ScanLine`
+ * instead, so the feed is polled while the view is drawn, empty or not. A
+ * search can find nothing before the status lands, and is then no match.
  */
 function EmptyView({
   status,
@@ -261,12 +267,7 @@ function EmptyView({
       document.removeEventListener('visibilitychange', onShown)
     }
   }, [])
-  const scan = scanLine(
-    since,
-    library !== undefined
-      ? [library]
-      : (status?.libraries.map((l) => l.id) ?? []),
-  )
+  const scan = scanLine(since, status, library)
   const kind =
     status === undefined
       ? 'no-matches'
@@ -671,11 +672,14 @@ export function Library() {
               query={hits.query}
             />
           ) : (
-            <SeriesGrid
-              series={hits.series}
-              unfiled={hits.unfiled}
-              library={narrowed}
-            />
+            <>
+              <ScanLine status={status} library={narrowed} />
+              <SeriesGrid
+                series={hits.series}
+                unfiled={hits.unfiled}
+                library={narrowed}
+              />
+            </>
           )}
         </div>
       ) : (
@@ -820,14 +824,42 @@ export function Library() {
               filtered={chip !== 'all'}
             />
           ) : (
-            <SeriesGrid
-              series={visible}
-              unfiled={gridData?.unfiled ?? []}
-              library={narrowed}
-            />
+            <>
+              <ScanLine status={status} library={library} />
+              <SeriesGrid
+                series={visible}
+                unfiled={gridData?.unfiled ?? []}
+                library={narrowed}
+              />
+            </>
           )}
         </>
       )}
     </>
+  )
+}
+
+/**
+ * The line over a view drawing works while a scan holds a library it shows.
+ * Drawn with the works, so the tab polls the feed while the view is open
+ * (O314). It draws the feed's last answer as it stands, not waiting for one
+ * since it was drawn as `EmptyView` does, so the line holds through the
+ * commit that swaps `EmptyView` for a scan's first works. Not a live region:
+ * an administrator's counts change at every poll.
+ */
+function ScanLine({
+  status,
+  library,
+}: {
+  status: LibraryStatus | undefined
+  library: number | undefined
+}) {
+  const feed = useScanFeed()
+  const step = scanLine(feed, status, library)
+  if (step === undefined) return null
+  return (
+    <p className="scan-line">
+      A scan is running: {step}. More series appear as they are read.
+    </p>
   )
 }

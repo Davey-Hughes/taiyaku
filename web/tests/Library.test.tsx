@@ -877,16 +877,182 @@ describe('the library screen', () => {
       ])
     })
 
-    it('the view asks the feed nothing while it draws works', async () => {
+    it('the view polls the feed while it draws works: every five seconds with no scan, every second with one, never while hidden', async () => {
       vi.mocked(library.grid).mockResolvedValue({
         series: [series()],
         unfiled: [],
       })
-      const feed = serveFeed(adminFeed())
+      const feed = serveFeed({ ended: 0, libraries: [] })
       const host = await shownAt('/?library=1', manga(true))
       expect(host.querySelectorAll('a[href^="/series/"]')).toHaveLength(1)
+      const polls = [feed.polls()]
+      // The pinned intervals, not the constants, so that a slower poll fails.
+      await clock(1000)
+      polls.push(feed.polls())
+      feed.answer(adminFeed())
+      // The scan's answer lands at the idle poll, and the next waits a second.
+      await clock(4000)
+      polls.push(feed.polls())
+      await clock(1000)
+      polls.push(feed.polls())
+      await clock(1000)
+      polls.push(feed.polls())
+      await turn('hidden')
       await clock(20000)
-      expect(feed.polls()).toBe(0)
+      polls.push(feed.polls())
+      await turn('visible')
+      polls.push(feed.polls())
+      expect(polls).toEqual([1, 1, 2, 3, 4, 4, 5])
+    })
+
+    describe('the scan line over works (O314)', () => {
+      const alpha = series({ id: 1, title: 'Alpha' })
+      const beta = series({ id: 2, title: 'Beta' })
+
+      /** The scan line's text, `undefined` while none is drawn. */
+      const lineOf = (host: Element | null | undefined) =>
+        host?.querySelector('.scan-line')?.textContent
+
+      /** Each series card's link, in the order drawn. */
+      const cards = (host: Element | null | undefined) =>
+        [...(host?.querySelectorAll('a[href^="/series/"]') ?? [])].map((a) =>
+          a.getAttribute('href'),
+        )
+
+      /**
+       * The feed as an administrator is sent it while job 7 hashes library 1,
+       * its early passes having written `ready` volumes, under marker
+       * `written`.
+       */
+      const hashing = (ready: number, written: number): ScanFeed => ({
+        ended: 0,
+        written,
+        libraries: [{ id: 1, step: 'hashing' }],
+        jobs: [
+          feedJob({
+            step: 'hashing',
+            done: 1024 ** 2,
+            of: 5 * 1024 ** 3,
+            ready,
+            libraries: [{ id: 1, name: 'Manga' }],
+          }),
+        ],
+      })
+
+      beforeEach(() => {
+        vi.mocked(library.grid).mockResolvedValue({
+          series: [alpha],
+          unfiled: [],
+        })
+      })
+
+      it('a view drawing works says a scan is running, draws the series a pass wrote, and drops the line when the scan ends', async () => {
+        const drawn = headingsDrawn()
+        const feed = serveFeed(hashing(3, 1))
+        const host = await shownAt('/?library=1', manga(true))
+        const alphaLink = host.querySelector('a[href="/series/1?library=1"]')
+        expect(alphaLink).not.toBeNull()
+        expect(lineOf(host)).toBe(
+          'A scan is running: Hashing · 1.0 MiB of 5.0 GiB · 3 volumes ready. More series appear as they are read.',
+        )
+        vi.mocked(library.grid).mockResolvedValue({
+          series: [alpha, beta],
+          unfiled: [],
+        })
+        feed.answer(hashing(5, 2))
+        await clock(1000)
+        // The same card, so the view read its works again in place.
+        expect(cards(host)).toEqual([
+          '/series/1?library=1',
+          '/series/2?library=1',
+        ])
+        expect(host.querySelector('a[href="/series/1?library=1"]')).toBe(
+          alphaLink,
+        )
+        expect(lineOf(host)).toBe(
+          'A scan is running: Hashing · 1.0 MiB of 5.0 GiB · 5 volumes ready. More series appear as they are read.',
+        )
+        feed.answer({ ended: 1, written: 2, libraries: [], jobs: [] })
+        await clock(1000)
+        expect(host.querySelector('.scan-line')).toBeNull()
+        expect(cards(host)).toEqual([
+          '/series/1?library=1',
+          '/series/2?library=1',
+        ])
+        // No empty state was drawn on the way.
+        expect(drawn).toEqual([])
+      })
+
+      it('the line holds through the commit that swaps Scanning for a scan’s first works', async () => {
+        vi.mocked(library.grid).mockResolvedValue({ series: [], unfiled: [] })
+        const feed = serveFeed(hashing(0, 1))
+        const host = await shownAt('/?library=1', manga(false))
+        const before = host.querySelector('.empty h2')?.textContent
+        // Each change to the page that leaves a card drawn, and whether the
+        // line was drawn with it.
+        const frames: boolean[] = []
+        probe = new MutationObserver(() => {
+          if (host.querySelector('a[href^="/series/"]') !== null)
+            frames.push(host.querySelector('.scan-line') !== null)
+        })
+        probe.observe(host, { childList: true, subtree: true })
+        vi.mocked(library.grid).mockResolvedValue({
+          series: [alpha],
+          unfiled: [],
+        })
+        feed.answer(hashing(1, 2))
+        await clock(1000)
+        expect(before).toBe('Scanning')
+        expect(cards(host)).toEqual(['/series/1?library=1'])
+        expect(frames.length).toBeGreaterThan(0)
+        expect(frames.filter((line) => !line)).toEqual([])
+      })
+
+      it('the scan line shows only for a library the view shows, and a reader sees the step alone', async () => {
+        const feed = serveFeed(adminFeed(2))
+        const own = await shownAt('/?library=1', twoLibraries)
+        expect(cards(own)).toEqual(['/series/1?library=1'])
+        expect(lineOf(own)).toBeUndefined()
+        const every = await shownAt('/', twoLibraries)
+        expect(lineOf(every)).toBe(
+          'A scan is running: Reading files · 120 of 2,097 · directory 1 of 1. More series appear as they are read.',
+        )
+        feed.answer({ ended: 0, libraries: [{ id: 1, step: 'hashing' }] })
+        await clock(1000)
+        expect(lineOf(own)).toBe(
+          'A scan is running: Hashing. More series appear as they are read.',
+        )
+        expect(lineOf(own)).not.toMatch(/\d/)
+      })
+
+      it('a search drawing hits says a scan is running too', async () => {
+        vi.mocked(library.search).mockResolvedValue({
+          series: [beta],
+          unfiled: [],
+          query: 'Beta',
+        })
+        serveFeed(adminFeed())
+        const host = await shownAt('/?library=1&q=Beta', manga(true))
+        const hits = host.querySelector('.search-hits')
+        expect(cards(hits)).toEqual(['/series/2?library=1'])
+        expect(lineOf(hits)).toBe(
+          'A scan is running: Reading files · 120 of 2,097 · directory 1 of 1. More series appear as they are read.',
+        )
+      })
+
+      it('the scan line is no live region', async () => {
+        serveFeed(adminFeed())
+        const host = await shownAt('/?library=1', manga(true))
+        const line = host.querySelector('.scan-line')
+        expect(line).not.toBeNull()
+        // An administrator's counts change at every poll: a live region
+        // would have a screen reader read each one.
+        expect(
+          line?.closest(
+            '[aria-live], [role="status"], [role="alert"], [role="log"]',
+          ),
+        ).toBeNull()
+      })
     })
 
     /**

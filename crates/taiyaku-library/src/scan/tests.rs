@@ -2194,6 +2194,115 @@ fn rewriting_cut_derives_marks_only_deriving_and_waiting_interrupted() {
     );
 }
 
+/// Whether directory `id` is marked held ([`super::mark_held`]).
+fn is_held(conn: &Connection, id: i64) -> bool {
+    conn.query_row(
+        "SELECT scan_held_at IS NOT NULL FROM root WHERE id = ?1",
+        [id],
+        |r| r.get(0),
+    )
+    .expect("reading the mark")
+}
+
+/// Design O314 §5, ruling 10: the start marks nothing held. A `deriving` or a
+/// `waiting` it rewrites may be an earlier version's, cut when this one was
+/// deployed, which says nothing of whether that scan is still wanted; a scan
+/// of this version holds its own mark already, a queued one's among them.
+#[test]
+fn rewriting_cut_derives_marks_no_directory_held() {
+    let dir = crate::tests::tempdir("scan-interrupt-marks-none");
+    let library = crate::Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let ids: Vec<i64> = ["deriving", "ok", "cancelled", "waiting", "failed"]
+        .into_iter()
+        .map(|status| {
+            let path = dir.path().join(status);
+            std::fs::create_dir_all(&path).expect("makes the directory");
+            let root = super::add_root(&conn, &path).expect("adds the directory");
+            set_status(&conn, root.id, status);
+            root.id
+        })
+        .collect();
+
+    assert_eq!(super::interrupt_derives(&conn), Ok(2));
+    assert_eq!(
+        ids.iter().map(|id| is_held(&conn, *id)).collect::<Vec<_>>(),
+        [false; 5],
+        "none held"
+    );
+}
+
+/// Design O314 §5, ruling 9: a scan queued behind another job is marked held
+/// with its `waiting`, so a stop before it holds the job lock is taken up at
+/// the next start; writing its last word back leaves the mark, which its job
+/// clears as it ends.
+#[test]
+fn a_queued_scan_is_marked_held_with_its_waiting() {
+    let dir = crate::tests::tempdir("scan-queued-held");
+    let library = crate::Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let roots = dirs_reading(&conn, dir.path(), &["ok", "failed"]);
+
+    let queued = super::mark_queued(&conn, &roots);
+    let while_queued: Vec<(Option<String>, bool)> = roots
+        .iter()
+        .map(|root| {
+            (
+                status_and_entries(&conn, root.id).0,
+                is_held(&conn, root.id),
+            )
+        })
+        .collect();
+    super::unmark_queued(&conn, &queued).expect("writes the words back");
+    let once_held: Vec<(Option<String>, bool)> = roots
+        .iter()
+        .map(|root| {
+            (
+                status_and_entries(&conn, root.id).0,
+                is_held(&conn, root.id),
+            )
+        })
+        .collect();
+
+    let word = |w: &str| Some(w.to_string());
+    assert_eq!(
+        (while_queued, once_held),
+        (
+            vec![(word("waiting"), true), (word("waiting"), true)],
+            vec![(word("ok"), true), (word("failed"), true)]
+        ),
+        "(while queued, once its job holds the lock): (word, held)"
+    );
+}
+
+/// The held mark asks the directory's id and its path, as every status write
+/// does: a stale root marks nothing on the directory that took its id, so a
+/// start does not scan that one again, and clears nothing of its mark either.
+#[test]
+fn the_held_mark_leaves_the_dir_that_took_a_removed_ones_id_alone() {
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let (stale, new, _walked, _other) =
+        stale_root_and_the_dir_that_took_its_id(&conn, "stale-held");
+
+    super::mark_held(&conn, std::slice::from_ref(&stale)).expect("the write runs");
+    let marked_by_the_stale_root = is_held(&conn, new.id);
+    super::mark_held(&conn, std::slice::from_ref(&new)).expect("marks the new directory");
+    super::unmark_held(&conn, &[(stale.id, stale.path.clone())]).expect("the write runs");
+    let cleared_by_the_stale_root = !is_held(&conn, new.id);
+    super::unmark_held(&conn, &[(new.id, new.path.clone())]).expect("clears the new directory");
+
+    assert_eq!(
+        (
+            marked_by_the_stale_root,
+            cleared_by_the_stale_root,
+            is_held(&conn, new.id)
+        ),
+        (false, false, false),
+        "(marked by the stale root, cleared by it, held once its own job ends)"
+    );
+}
+
 /// Directories under `dir`, one per status, each added and set to it.
 fn dirs_reading(conn: &Connection, dir: &Path, statuses: &[&str]) -> Vec<Root> {
     statuses

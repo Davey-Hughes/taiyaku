@@ -54,6 +54,12 @@ pub trait Watch {
     /// Whether the job has been asked to stop. It is asked only between units
     /// of work, so a cancel leaves what a stop at that point would.
     fn cancelled(&self) -> bool;
+
+    /// The volumes this job's early passes have written so far, told after
+    /// each pass that wrote at least one (O314), so a caller can show them
+    /// ready while the step stays Hashing. Nothing by default: only a scan
+    /// job's watch shows the count.
+    fn written(&self, _works: u64) {}
 }
 
 /// A [`Watch`] that keeps nothing and is never cancelled, for every caller

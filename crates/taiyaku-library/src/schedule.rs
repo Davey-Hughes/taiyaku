@@ -58,16 +58,16 @@ pub struct Scheduled {
     pub due: bool,
 }
 
-/// Every directory that is not Off, by path, as [`crate::reach::walked_by`]
-/// sorts, so a directory is walked before one nested in it. One is due where
-/// [`next_scan_at`] is `None` or is at or before `now`.
+/// Every directory that is not Off or that a scan job holds, by path, as
+/// [`crate::reach::walked_by`] sorts, so a directory is walked before one
+/// nested in it. One is due where it is not Off and [`next_scan_at`] is `None`
+/// or is at or before `now`.
 ///
-/// **A paused directory is left out** however due: a cancelled job paused
-/// it, and only a pressed scan resumes it ([`scan::pause`]).
+/// **A paused directory is left out** however due or held: a cancelled job
+/// paused it, and only a pressed scan resumes it ([`scan::pause`]).
 ///
-/// **Compared as text**: `now` comes from [`now`] and `next_scan_at` is
-/// written in the same fixed-width `datetime()` shape, so text order is time
-/// order.
+/// **Compared as text**: `now` ([`now`]) and `next_scan_at` share one
+/// fixed-width `datetime()` shape, so text order is time order.
 ///
 /// # Errors
 ///
@@ -79,21 +79,32 @@ pub fn scheduled(conn: &Connection, now: &str) -> Result<Vec<Scheduled>, String>
         .map_err(|e| format!("starting a read of the scan schedule: {e}"))?;
     let roots = scan::roots(conn)?;
     let mut stmt = conn
-        .prepare("SELECT id, last_scan_at, paused_at IS NOT NULL FROM root")
+        .prepare(
+            "SELECT id, last_scan_at, paused_at IS NOT NULL, scan_held_at IS NOT NULL FROM root",
+        )
         .map_err(|e| format!("reading when each directory was last scanned: {e}"))?;
-    let last: HashMap<i64, (Option<String>, bool)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))
+    let last: HashMap<i64, (Option<String>, bool, bool)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))
         .map_err(|e| format!("reading when each directory was last scanned: {e}"))?
         .collect::<Result<_, _>>()
         .map_err(|e| format!("reading when each directory was last scanned: {e}"))?;
-    let paused = |root: &scan::Root| last.get(&root.id).is_some_and(|(_, paused)| *paused);
+    let paused = |root: &scan::Root| last.get(&root.id).is_some_and(|(_, paused, _)| *paused);
+    let held = |root: &scan::Root| last.get(&root.id).is_some_and(|(_, _, held)| *held);
+    // A held directory is listed whatever its schedule: at the server's start
+    // its mark is a scan a stop cut ([`scan::mark_held`]), which the startup
+    // tick takes up, as it takes every directory listed (Design O314 §5, ruling
+    // 9). Never due by it, so no later tick takes a held Off directory, while
+    // its own job holds it or after a panic left the mark.
     let mut listed: Vec<Scheduled> = roots
         .into_iter()
-        .filter(|root| every(root.scan_interval_secs).is_some() && !paused(root))
+        .filter(|root| (every(root.scan_interval_secs).is_some() || held(root)) && !paused(root))
         .map(|root| {
-            let last_scan_at = last.get(&root.id).and_then(|(at, _)| at.as_deref());
-            let due = next_scan_at(last_scan_at, root.scan_interval_secs)
-                .is_none_or(|next| next.as_str() <= now);
+            let last_scan_at = last.get(&root.id).and_then(|(at, _, _)| at.as_deref());
+            // `next_scan_at` is `None` for Off as for a directory never
+            // scanned, and only the second is due.
+            let due = every(root.scan_interval_secs).is_some()
+                && next_scan_at(last_scan_at, root.scan_interval_secs)
+                    .is_none_or(|next| next.as_str() <= now);
             Scheduled { root, due }
         })
         .collect();

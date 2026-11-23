@@ -651,3 +651,217 @@ fn a_batch_hashes_none_of_a_directory_paused_after_its_tick_read_the_schedule() 
 
     assert_eq!(gamma_of(&state), (None, 0), "Gamma's (digest, members)");
 }
+
+/// Mark `root` held, as its job's start marks it: a store the server finds so
+/// at its start is one a stop cut that job in.
+fn cut(state: &ServeState, root: &scan::Root) {
+    scan::mark_held(&state.library.conn(), std::slice::from_ref(root))
+        .expect("marks the directory held");
+}
+
+/// Whether `root` is marked held.
+fn is_held(state: &ServeState, root: &scan::Root) -> bool {
+    state
+        .library
+        .conn()
+        .query_row(
+            "SELECT scan_held_at IS NOT NULL FROM root WHERE id = ?1",
+            [root.id],
+            |r| r.get(0),
+        )
+        .expect("reads the mark")
+}
+
+/// Design O314 §5, ruling 9: a start scans again a directory whose
+/// scan a stop cut, whatever its schedule. b, Off as well and not cut, is left
+/// alone.
+#[test]
+fn the_first_tick_takes_an_off_directory_whose_scan_a_stop_cut() {
+    let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let (a, b) = a_and_b(&state);
+    schedule_of(&state, &a, Some(0), NOW);
+    schedule_of(&state, &b, Some(0), NOW);
+    cut(&state, &a);
+
+    let calls = started_ids(&mut Scheduler::new(), &state, NOW).expect("the tick reads the store");
+
+    assert_eq!(
+        calls,
+        [vec![a.id]],
+        "a, Off and cut, is scanned again; b, Off, is not"
+    );
+}
+
+/// Design O314 §5, ruling 9: a directory a cancel paused stays paused
+/// until Scan is pressed, though a stop cut its scan too.
+#[test]
+fn the_first_tick_passes_over_a_paused_directory_whose_scan_a_stop_cut() {
+    let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let (a, b) = a_and_b(&state);
+    schedule_of(&state, &a, Some(0), NOW);
+    schedule_of(&state, &b, None, NOW);
+    cut(&state, &a);
+    scan::pause(&state.library.conn(), std::slice::from_ref(&a)).expect("pauses a");
+
+    let calls = started_ids(&mut Scheduler::new(), &state, NOW).expect("the tick reads the store");
+
+    assert_eq!(calls, [vec![b.id]], "b alone; a is paused");
+}
+
+/// O275: a directory added Off with "Don't scan yet" has had no scan, so none
+/// was cut, and a start leaves it for Scan. b, Off and cut, sits beside it.
+#[test]
+fn the_first_tick_passes_over_an_off_directory_never_scanned() {
+    let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let (a, b) = a_and_b(&state);
+    state
+        .library
+        .conn()
+        .execute(
+            "UPDATE root SET scan_interval_secs = 0, last_scan_at = NULL, last_scan_status = NULL \
+             WHERE id = ?1",
+            [a.id],
+        )
+        .expect("makes a an Off directory never scanned");
+    schedule_of(&state, &b, Some(0), NOW);
+    cut(&state, &b);
+
+    let calls = started_ids(&mut Scheduler::new(), &state, NOW).expect("the tick reads the store");
+
+    assert_eq!(calls, [vec![b.id]], "b alone; a was never scanned");
+}
+
+/// A cut is read at the startup tick alone, so it adds no scan to an
+/// Automatic or Every directory's timer: a later tick takes each as its timer
+/// says, cut or not, and the startup tick takes both, as it did before.
+#[test]
+fn a_cut_adds_no_scan_to_an_automatic_or_every_directorys_timer() {
+    let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let (a, b) = a_and_b(&state);
+    schedule_of(&state, &a, None, NOW);
+    schedule_of(
+        &state,
+        &b,
+        Some(schedule::MIN_INTERVAL_SECS),
+        AN_HOUR_BEFORE,
+    );
+    cut(&state, &a);
+
+    let mut later = Vec::new();
+    Scheduler { first: false }
+        .tick(&state, NOW, |roots, started| {
+            later.push(ids(&roots));
+            // Ended at once, so the startup tick after it finds them free.
+            for root in &roots {
+                finish(&state, root.id, started);
+            }
+        })
+        .expect("the later tick reads the store");
+    let startup =
+        started_ids(&mut Scheduler::new(), &state, NOW).expect("the tick reads the store");
+
+    assert_eq!(
+        (later, startup),
+        (vec![vec![b.id]], vec![vec![a.id, b.id]]),
+        "(a later tick: b, due under Every, and not a, Automatic and not due though cut; \
+         the startup tick: both)"
+    );
+}
+
+/// Design O314 §5, ruling 9: the scan a start takes up clears the cut
+/// as it ends, so the start after it leaves the Off directory alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cut_scan_taken_up_to_its_end_is_not_taken_up_again() {
+    let (_router, state, _fixture) = test_support::state_with_two_scanned_roots();
+    let (a, b) = a_and_b(&state);
+    schedule_of(&state, &a, Some(0), NOW);
+    schedule_of(&state, &b, Some(0), NOW);
+    cut(&state, &a);
+    let mut taken_up = Vec::new();
+    Scheduler::new()
+        .tick(&state, NOW, |roots, started| {
+            taken_up.push(scan_jobs::spawn(
+                std::sync::Arc::clone(&state),
+                roots,
+                started,
+                Reread::Batch,
+            ));
+        })
+        .expect("the startup tick");
+    assert_eq!(
+        taken_up.len(),
+        1,
+        "the fixture: the startup tick takes a up"
+    );
+    for job in taken_up {
+        job.await.expect("the scan taken up ends");
+    }
+
+    let calls = started_ids(&mut Scheduler::new(), &state, NOW).expect("the tick reads the store");
+
+    assert_eq!(
+        (stored(&state, &a), is_held(&state, &a), calls),
+        (Some("ok".to_string()), false, Vec::<Vec<i64>>::new()),
+        "(a's word, whether a is held, what the next startup tick takes)"
+    );
+}
+
+/// Design O314 §5, ruling 9, at the first point a stop can cut a job: a
+/// scan of an Off directory cut while it waits for the job lock, which never
+/// walked, is taken up at the next start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scan_of_an_off_directory_cut_while_queued_is_taken_up_at_the_next_start() {
+    let (_router, state, fixture) = test_support::state_with_two_scanned_roots_on_disk();
+    let (a, b) = a_and_b(&state);
+    schedule_of(&state, &a, Some(0), NOW);
+    schedule_of(&state, &b, Some(0), NOW);
+    let held = test_support::holding_the_job(&state);
+    let started = Instant::now();
+    scan_jobs::reserve(&state, std::slice::from_ref(&b), started, None).expect("reserves b");
+    let queued = scan_jobs::spawn(
+        std::sync::Arc::clone(&state),
+        vec![b.clone()],
+        started,
+        Reread::Dir,
+    );
+    assert_eq!(
+        until_stored(&state, &b, "waiting").await.as_deref(),
+        Some("waiting"),
+        "the fixture: b's scan is queued"
+    );
+
+    // The next process: its own state over the same store, whose job lock the
+    // queued scan never takes.
+    let next = std::sync::Arc::new(ServeState {
+        library: std::sync::Arc::new(test_support::the_store_elsewhere(&state)),
+        cache_dir: fixture.join("next-covers"),
+        ..test_support::state(fixture.path())
+    });
+    scan::interrupt_derives(&next.library.conn()).expect("rewrites the cut words");
+    let now = schedule::now(&next.library.conn()).expect("the store's clock");
+    let mut calls = Vec::new();
+    let mut startup = Vec::new();
+    Scheduler::new()
+        .tick(&next, &now, |roots, started| {
+            calls.push(ids(&roots));
+            startup.push(scan_jobs::spawn(
+                std::sync::Arc::clone(&next),
+                roots,
+                started,
+                Reread::Batch,
+            ));
+        })
+        .expect("the startup tick");
+    for job in startup {
+        job.await.expect("the startup scan ends");
+    }
+    let after = (stored(&next, &b), is_held(&next, &b));
+    drop(held);
+    queued.await.expect("the queued scan's thread ends");
+
+    assert_eq!(
+        (calls, after),
+        (vec![vec![b.id]], (Some("ok".to_string()), false)),
+        "(what the startup tick takes, then b's word and whether it is held)"
+    );
+}

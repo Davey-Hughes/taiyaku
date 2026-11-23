@@ -64,10 +64,12 @@ pub fn library_of_root(conn: &Connection, root_id: i64) -> i64 {
 /// of.
 pub type Report = (Step, u64, Option<u64>);
 
-/// A [`Watch`] that keeps every report, in order, and answers cancelled from
-/// the first report `stop` matches on, as a job asked to stop stays asked.
+/// A [`Watch`] that keeps every report and every count of volumes written,
+/// in order, and answers cancelled from the first report `stop` matches on,
+/// as a job asked to stop stays asked.
 pub struct Recording {
     reports: Mutex<Vec<Report>>,
+    written: Mutex<Vec<u64>>,
     stop: Box<dyn Fn(Report) -> bool + Send + Sync>,
 }
 
@@ -77,6 +79,7 @@ impl Recording {
     pub fn cancelling(stop: impl Fn(Report) -> bool + Send + Sync + 'static) -> Self {
         Self {
             reports: Mutex::new(Vec::new()),
+            written: Mutex::new(Vec::new()),
             stop: Box::new(stop),
         }
     }
@@ -89,6 +92,16 @@ impl Recording {
     #[must_use]
     pub fn reports(&self) -> Vec<Report> {
         self.reports.lock().expect("the reports").clone()
+    }
+
+    /// Every count [`Watch::written`] was given so far, in the order given.
+    ///
+    /// # Panics
+    ///
+    /// If a thread panicked while it held the counts.
+    #[must_use]
+    pub fn written_so_far(&self) -> Vec<u64> {
+        self.written.lock().expect("the counts").clone()
     }
 }
 
@@ -103,6 +116,7 @@ impl std::fmt::Debug for Recording {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Recording")
             .field("reports", &self.reports)
+            .field("written", &self.written)
             .finish_non_exhaustive()
     }
 }
@@ -118,5 +132,9 @@ impl Watch for Recording {
     fn cancelled(&self) -> bool {
         let reports = self.reports.lock().expect("the reports");
         reports.iter().any(|report| (self.stop)(*report))
+    }
+
+    fn written(&self, works: u64) {
+        self.written.lock().expect("the counts").push(works);
     }
 }

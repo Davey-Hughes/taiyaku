@@ -772,7 +772,7 @@ fn counting(into: &Arc<AtomicUsize>) -> Hook {
 
 /// The feed's `ended` marker of `state`.
 fn ended(state: &ServeState) -> u64 {
-    state.jobs_ended.load(Ordering::SeqCst)
+    state.jobs_ended.ended.load(Ordering::SeqCst)
 }
 
 /// The title set by hand on [`planted_beside_a_document_gap`]'s volume.

@@ -592,7 +592,7 @@ fn derive_after(state: &ServeState, job: &Job, at_bar: usize) {
     let Some(derived) = derived(state, settings.poll, job) else {
         return;
     };
-    state.jobs_ended.fetch_add(1, Ordering::SeqCst);
+    state.jobs_ended.ended.fetch_add(1, Ordering::SeqCst);
     settings.derived();
     say(&derived_line(at_bar, &derived));
 }

@@ -19,28 +19,28 @@ use crate::test_support::{Recording, library_of_root};
 use crate::{Library, browse, libraries, preview, project, rules, state};
 
 /// The official English volumes: key, edition kind and language.
-const VOLUMES: (&str, &str, &str) = ("en", "official", "en");
+pub(in crate::derive) const VOLUMES: (&str, &str, &str) = ("en", "official", "en");
 /// The Japanese raws.
-const RAW: (&str, &str, &str) = ("ja", "raw", "ja");
+pub(in crate::derive) const RAW: (&str, &str, &str) = ("ja", "raw", "ja");
 /// An English fan translation.
 const FAN: (&str, &str, &str) = ("fan", "fan", "en");
 
 /// A tree of directories laid out as `derive/tests.rs`'s `archived_volumes` lays
 /// one out: volume archives at `Series/v01/Series v01.cbz`, three pages each,
 /// every page naming its file's path so no two files share bytes.
-struct Shelf {
+pub(in crate::derive) struct Shelf {
     tree: crate::tests::TempDir,
 }
 
 impl Shelf {
-    fn new(label: &str) -> Self {
+    pub(in crate::derive) fn new(label: &str) -> Self {
         Self {
             tree: crate::tests::tempdir(label),
         }
     }
 
     /// Where `file` sits under directory `name`.
-    fn path(&self, name: &str, file: &str) -> PathBuf {
+    pub(in crate::derive) fn path(&self, name: &str, file: &str) -> PathBuf {
         self.tree.path().join(name).join(file)
     }
 
@@ -72,22 +72,22 @@ impl Shelf {
 }
 
 /// Each group this derive's files and rules make, as derive makes them.
-fn groups(conn: &Connection) -> BTreeMap<GroupKey, Group> {
+pub(in crate::derive) fn groups(conn: &Connection) -> BTreeMap<GroupKey, Group> {
     let (engine, _complaints) = Engine::load(conn).expect("loads the rules");
     let roots = scan::roots(conn).expect("lists the directories");
     let frozen = scan::paused(conn).expect("reads the pauses");
-    let Ok(Outcome::Done(groups)) = derive::grouped(
+    let Ok(Outcome::Done(grouped)) = derive::grouped(
         conn,
         &engine,
         &roots,
         &frozen,
         &Unwatched,
-        &mut BTreeSet::new(),
+        derive::Mode::Full,
         &mut DeriveReport::default(),
     ) else {
         panic!("groups the files");
     };
-    groups
+    grouped.groups
 }
 
 fn applying(conn: &Connection, groups: &BTreeMap<GroupKey, Group>) -> Applicable {
@@ -95,7 +95,7 @@ fn applying(conn: &Connection, groups: &BTreeMap<GroupKey, Group>) -> Applicable
 }
 
 /// The digest of `file` under `root`, which the first derive wrote back.
-fn digest(conn: &Connection, root: &Root, file: &str) -> String {
+pub(in crate::derive) fn digest(conn: &Connection, root: &Root, file: &str) -> String {
     conn.query_row(
         "SELECT sha256 FROM scan_entry WHERE root_id = ?1 AND rel_path = ?2",
         rusqlite::params![root.id, file],
@@ -105,7 +105,7 @@ fn digest(conn: &Connection, root: &Root, file: &str) -> String {
 }
 
 /// A fingerprint row for `digest`, read with `outcome`.
-fn read(conn: &Connection, digest: &str, outcome: &str) {
+pub(in crate::derive) fn read(conn: &Connection, digest: &str, outcome: &str) {
     conn.execute(
         "INSERT INTO fingerprint (sha256, version, outcome, pages, prints)
          VALUES (?1, 1, ?2, 3, x'00')",
@@ -116,7 +116,7 @@ fn read(conn: &Connection, digest: &str, outcome: &str) {
 
 /// `one` and `two` stored as a pair at `v`, as the match pass stores one.
 /// Answers the pair's id.
-fn pair(conn: &Connection, one: &str, two: &str, v: f64) -> i64 {
+pub(in crate::derive) fn pair(conn: &Connection, one: &str, two: &str, v: f64) -> i64 {
     let scored = NewPair {
         sha_a: one.to_owned(),
         sha_b: two.to_owned(),
@@ -901,14 +901,14 @@ fn holders(conn: &Connection, digest: &str) -> Vec<i64> {
 }
 
 /// The one work holding `digest`.
-fn holder(conn: &Connection, digest: &str) -> i64 {
+pub(in crate::derive) fn holder(conn: &Connection, digest: &str) -> i64 {
     let works = holders(conn, digest);
     assert_eq!(works.len(), 1, "one work holds {digest}: {works:?}");
     works[0]
 }
 
 /// A work's series, volume and hub.
-fn work(conn: &Connection, id: i64) -> (String, Option<f64>, String) {
+pub(in crate::derive) fn work(conn: &Connection, id: i64) -> (String, Option<f64>, String) {
     conn.query_row(
         "SELECT s.sort_title, w.volume, w.hub FROM work w JOIN series s ON s.id = w.series_id
           WHERE w.id = ?1",
@@ -923,7 +923,7 @@ fn work(conn: &Connection, id: i64) -> (String, Option<f64>, String) {
 type EditionRow = (String, Option<String>, Option<String>, Option<i64>);
 
 /// A work's editions, by key.
-fn editions(conn: &Connection, id: i64) -> Vec<EditionRow> {
+pub(in crate::derive) fn editions(conn: &Connection, id: i64) -> Vec<EditionRow> {
     conn.prepare(
         "SELECT key, kind, language, joined_by FROM edition WHERE work_id = ?1 ORDER BY key",
     )
@@ -936,7 +936,10 @@ fn editions(conn: &Connection, id: i64) -> Vec<EditionRow> {
 
 /// The edition a directory labelled `(key, kind, language)` makes, joined by
 /// `joined_by`.
-fn labelled((key, kind, language): (&str, &str, &str), joined_by: Option<i64>) -> EditionRow {
+pub(in crate::derive) fn labelled(
+    (key, kind, language): (&str, &str, &str),
+    joined_by: Option<i64>,
+) -> EditionRow {
     (
         key.to_owned(),
         Some(kind.to_owned()),
@@ -2278,13 +2281,13 @@ fn a_hand_value_holds_the_guest_and_never_stops_the_host() {
 }
 
 /// Volume `n` of the official English Oshi, in a directory of its own.
-fn oshi(n: u32) -> String {
+pub(in crate::derive) fn oshi(n: u32) -> String {
     format!("Oshi/v{n:02}/Oshi v{n:02}.cbz")
 }
 
 /// Volume `n` of the raw Oshinoko, beside the other raw volumes in one
 /// directory, which is what a directory follows by.
-fn oshinoko(n: u32) -> String {
+pub(in crate::derive) fn oshinoko(n: u32) -> String {
     format!("Oshinoko/Oshinoko v{n:02}.cbz")
 }
 
@@ -2293,22 +2296,22 @@ fn oshinoko(n: u32) -> String {
 const SCANS: (&str, &str, &str) = ("scans", "fan", "en");
 
 /// The English and raw directories [`shelved`] adds.
-struct Shelved {
-    volumes: Root,
-    raw: Root,
+pub(in crate::derive) struct Shelved {
+    pub(in crate::derive) volumes: Root,
+    pub(in crate::derive) raw: Root,
 }
 
 impl Shelved {
-    fn en(&self, conn: &Connection, n: u32) -> String {
+    pub(in crate::derive) fn en(&self, conn: &Connection, n: u32) -> String {
         digest(conn, &self.volumes, &oshi(n))
     }
 
-    fn ja(&self, conn: &Connection, n: u32) -> String {
+    pub(in crate::derive) fn ja(&self, conn: &Connection, n: u32) -> String {
         digest(conn, &self.raw, &oshinoko(n))
     }
 
     /// Each of English `volumes` paired with its raw at 0.95: the pairs.
-    fn pair_volumes(&self, conn: &Connection, volumes: &[u32]) -> Vec<i64> {
+    pub(in crate::derive) fn pair_volumes(&self, conn: &Connection, volumes: &[u32]) -> Vec<i64> {
         volumes
             .iter()
             .map(|&n| pair(conn, &self.en(conn, n), &self.ja(conn, n), 0.95))
@@ -2322,7 +2325,12 @@ fn as_strs(files: &[String]) -> Vec<&str> {
 
 /// `english` under an English directory and `raws` under a raw one, derived,
 /// every file read whole.
-fn shelved(shelf: &Shelf, conn: &Connection, english: &[String], raws: &[String]) -> Shelved {
+pub(in crate::derive) fn shelved(
+    shelf: &Shelf,
+    conn: &Connection,
+    english: &[String],
+    raws: &[String],
+) -> Shelved {
     let volumes = shelf.directory(conn, "Volumes", "Manga", VOLUMES, &as_strs(english));
     let raw = shelf.directory(conn, "Raw", "Manga", RAW, &as_strs(raws));
     derive::derive(conn).expect("derives");
@@ -2335,7 +2343,7 @@ fn shelved(shelf: &Shelf, conn: &Connection, english: &[String], raws: &[String]
 }
 
 /// A work as [`work`] reads one: in `series` at `volume`, its hub the raw's.
-fn raw_at(series: &str, volume: u32) -> (String, Option<f64>, String) {
+pub(in crate::derive) fn raw_at(series: &str, volume: u32) -> (String, Option<f64>, String) {
     (series.to_owned(), Some(f64::from(volume)), "ja".to_owned())
 }
 

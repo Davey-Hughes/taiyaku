@@ -1,0 +1,16 @@
+-- When the server's scan job took this directory; NULL while no job holds it
+-- (O314 spec, §7 "Server: a restart mid-job"). A job marks each of its
+-- directories as it queues for the job lock, or once it holds the lock, and
+-- clears the mark as it ends, however it ends but by a stop or a panic, so a
+-- mark the server finds at its start is a scan cut partway.
+-- `schedule::scheduled` lists a held directory whatever its schedule, for the
+-- startup tick to scan again, unless a cancel paused it.
+--
+-- A column apart from `last_scan_status`, because a walk leaves that word as
+-- the last scan left it until the walk records, so a cut walk leaves no word
+-- of its own there.
+--
+-- Every directory starts with no mark, one reading `interrupted` too: a scan
+-- cut before this version says nothing of whether it is still wanted (spec §5,
+-- ruling 10).
+ALTER TABLE root ADD COLUMN scan_held_at TEXT;

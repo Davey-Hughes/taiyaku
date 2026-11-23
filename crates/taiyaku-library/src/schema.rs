@@ -28,7 +28,7 @@ use rusqlite::Connection;
 mod remake;
 
 /// The schema version this build expects.
-pub const SCHEMA_VERSION: u32 = 31;
+pub const SCHEMA_VERSION: u32 = 32;
 
 /// One step of [`MIGRATIONS`]: SQL, or a Rust pass where the rule it applies
 /// lives in Rust and SQL cannot call it (O282's slugs).
@@ -50,7 +50,7 @@ enum Migration {
 /// the two diverge silently. `002` adds one column to `migrated_document`
 /// rather than changing the table `001` creates, for exactly that reason.
 /// A pass is held to the same rule; see [`Migration::Pass`] for what it costs.
-const MIGRATIONS: [Migration; 31] = [
+const MIGRATIONS: [Migration; 32] = [
     Migration::Sql(include_str!("schema/001_initial.sql")),
     Migration::Sql(include_str!("schema/002_absorbed.sql")),
     Migration::Sql(include_str!("schema/003_scanner.sql")),
@@ -82,6 +82,7 @@ const MIGRATIONS: [Migration; 31] = [
     Migration::Sql(include_str!("schema/029_entry_counted_by.sql")),
     Migration::Sql(include_str!("schema/030_content_matches.sql")),
     Migration::Sql(include_str!("schema/031_drop_member_format.sql")),
+    Migration::Sql(include_str!("schema/032_root_scan_held_at.sql")),
 ];
 
 /// The version a database reaches is the number of migrations applied to it,

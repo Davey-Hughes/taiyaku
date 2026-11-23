@@ -11,7 +11,7 @@ import {
   RULES,
   SPLIT_EDITIONS,
 } from '../src/pageReads'
-import { entryOf, invalidate, readSet } from '../src/reads'
+import { entryOf, invalidate, readSet, subscribe } from '../src/reads'
 import {
   askScanFeed,
   cancelScan,
@@ -33,7 +33,7 @@ import {
 import { usePage } from '../src/usePage'
 import { deferred } from './support/async'
 import { mount, rerender } from './support/mount'
-import { address } from './support/reads'
+import { address, keptGrid } from './support/reads'
 import {
   type FeedAnswer,
   feedJob,
@@ -795,6 +795,110 @@ describe('the scan feed', () => {
     })
   })
 
+  it('reads the Library views again when the written marker moves, and nothing else', async () => {
+    const kept = [
+      LIBRARY_STATUS,
+      LIBRARIES,
+      libraryScan(7),
+      ROOTS,
+      gridRead(7),
+      SPLIT_EDITIONS,
+      RULES,
+    ].map((one) => address<object>(one.address))
+    const reading = readSet(kept.map((one) => one.read))
+    for (const one of kept) one.requests[0].resolve({})
+    await reading
+    const view = kept[4]
+    const feed = serveFeed({ ...running(3), written: 0 })
+    let told = 0
+    const stop = onScanEnd(() => {
+      told += 1
+    })
+    mount(<Ended />)
+    await wait(0)
+    // An answer without the marker leaves it where it was.
+    feed.answer(running(3))
+    await wait(SCAN_POLL_MS)
+    const withoutMarker = entryOf(view.read)?.stale
+    feed.answer({ ...running(3), written: 1 })
+    await wait(SCAN_POLL_MS)
+    stop()
+    expect({
+      withoutMarker,
+      stale: kept.map((one) => entryOf(one.read)?.stale),
+      told,
+    }).toEqual({
+      withoutMarker: false,
+      stale: [false, false, false, false, true, true, false],
+      told: 0,
+    })
+  })
+
+  it('reads the Library views once when a scan ends in the answer that moves the marker', async () => {
+    const status = address<object>(LIBRARY_STATUS.address)
+    const view = address<object>(gridRead(7).address)
+    const reading = readSet([status.read, view.read])
+    status.requests[0].resolve({})
+    view.requests[0].resolve({})
+    await reading
+    // A listener is what makes an address drawn: `invalidate` sends a new
+    // request for each call naming a drawn read, and only marks one that
+    // nothing draws, so only a drawn view's requests count the calls.
+    const undraw = subscribe(view.read.address, () => {})
+    const feed = serveFeed({ ...running(3), written: 0 })
+    mount(<Ended />)
+    await wait(0)
+    feed.answer({ ...idle(4), written: 1 })
+    await wait(SCAN_POLL_MS)
+    undraw()
+    expect({
+      stale: [entryOf(status.read)?.stale, entryOf(view.read)?.stale],
+      viewRequests: view.fetch.mock.calls.length,
+    }).toEqual({ stale: [true, true], viewRequests: 2 })
+  })
+
+  it('a first answer reads nothing again for its marker', async () => {
+    const view = await keptGrid(7)
+    const feed = serveFeed({ ...running(3), written: 5 })
+    mount(<Ended />)
+    await wait(0)
+    const afterFirst = view.stale()
+    feed.answer({ ...running(3), written: 6 })
+    await wait(SCAN_POLL_MS)
+    expect([afterFirst, view.stale()]).toEqual([false, true])
+  })
+
+  it('draws the answer that moves the written marker as it lands, while the views it reads again are out', async () => {
+    const routes = holdRoutes(STATUS, GRID)
+    const feed = serveFeed({
+      ...running(3, feedJob({ step: 'hashing' })),
+      written: 0,
+    })
+    const host = mount(
+      <>
+        <StatusAndGrid />
+        <Step />
+      </>,
+    )
+    await wait(0)
+    routes.answer(STATUS, 0, mangaStatus(false))
+    routes.answer(GRID, 0, gridOf(1))
+    await wait(0)
+    // The step moves with the marker so the draw says which answer is
+    // published; the scan runs on in both.
+    feed.answer({ ...running(3, feedJob({ step: 'writing' })), written: 1 })
+    await wait(SCAN_POLL_MS)
+    const step = () => host.querySelector('.step')?.textContent
+    const series = () => host.querySelector('.series')?.textContent
+    const whileOut = [step(), series(), routes.sent(GRID)]
+    routes.answer(GRID, 1, gridOf(2))
+    await wait(0)
+    expect([whileOut, [step(), series()]]).toEqual([
+      ['writing', '1', 2],
+      ['writing', '2'],
+    ])
+  })
+
   it('stops asking once the last consumer unmounts', async () => {
     const feed = serveFeed(idle(1))
     mount(<Consumers n={2} />)
@@ -1101,6 +1205,27 @@ describe('stepLine', () => {
       'Hashing · sizing files',
       'Writing works · 40 of 138',
       'Finishing',
+    ])
+  })
+
+  it('adds to the hashing count the volumes ready once a pass has written one, the noun agreeing with the figure', () => {
+    expect(
+      [null, 0, 1, 1204].map((ready) =>
+        stepLine(
+          feedJob({
+            step: 'hashing',
+            done: 1048576,
+            of: 5368709120,
+            dir: null,
+            ready,
+          }),
+        ),
+      ),
+    ).toEqual([
+      'Hashing · 1.0 MiB of 5.0 GiB',
+      'Hashing · 1.0 MiB of 5.0 GiB',
+      'Hashing · 1.0 MiB of 5.0 GiB · 1 volume ready',
+      'Hashing · 1.0 MiB of 5.0 GiB · 1,204 volumes ready',
     ])
   })
 

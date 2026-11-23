@@ -1,8 +1,9 @@
 //! The directory scans the server answers for without a press (spec
 //! `docs/superpowers/specs/2026-11-10-pre-deploy-design.md`, §4): at its
 //! start, the scans an earlier process cut as they waited or derived; then each
-//! directory's scan on its schedule, every one not Off once at startup, as one
-//! job per tick (O51).
+//! directory's scan on its schedule, as one job per tick (O51). The first tick
+//! takes every directory not Off, and every one whose scan a stop cut, whatever
+//! its schedule (Design O314 §5, ruling 9).
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -51,10 +52,11 @@ pub(crate) fn interrupt_cut_derives(library: &taiyaku_library::Library) {
 /// What one tick takes, carried from tick to tick.
 pub(crate) struct Scheduler {
     /// Whether the next tick is the startup scan, which takes every directory
-    /// that is not Off, due or not (spec §4). It stays set until a tick has
-    /// read the store and either reserved its batch or found nothing to start,
-    /// so a failed read, or a batch a press's reservation refused, is tried
-    /// again whole at the next tick.
+    /// that is not Off, due or not (spec §4), and every one whose scan a stop
+    /// cut, whatever its schedule ([`schedule::scheduled`]). It stays set until
+    /// a tick has read the store and either reserved its batch or found nothing
+    /// to start, so a failed read, or a batch a press's reservation refused, is
+    /// tried again whole at the next tick.
     first: bool,
 }
 

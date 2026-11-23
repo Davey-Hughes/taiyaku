@@ -1059,6 +1059,14 @@
   font-size: var(--text-ui);
 }
 
+/* The scan line over the works (`Library.tsx`'s `ScanLine`): muted, as the
+ * empty states' prose is, since the works are what the view is for. */
+.scan-line {
+  margin: 0 0 var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-ui);
+}
+
 /* 44 px targets for a finger (spec 2026-09-17 §7.1). */
 @media (pointer: coarse) {
   .library-chips button {

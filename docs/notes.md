@@ -32762,3 +32762,116 @@ missing for a moment, on `main` too, and under "Series page" a reader opened
 from a Continue card goes back to a series page the tab may not have drawn,
 whose covers then come in one by one: O440. Every setting, this one
 included, is kept on the device it was made on: O441.
+
+## O314: volumes appear as a scan goes (2026-11-23)
+
+O314's row in `docs/status.md` says what the PR builds, and its design is
+`docs/superpowers/specs/2026-11-22-first-scan-series-as-they-finish-design.md`.
+The plan, the ledger and the drive's evidence are under
+`.superpowers/sdd/2026-11-22-o314/`, which is not committed. The drive's
+write-up is `evidence/drive.md` there, and each figure below names the file
+beside it in that `evidence/` directory.
+
+**The drive.** A release build of the branch, before the restart work below,
+served a scratch store over copies of the test library on this machine:
+Yotsuba&! from Volumes in one directory, the other 45 Volumes series in a
+second, and seven Raw series in a third, every schedule Off. Matching by
+content was off for the library: left on, its fingerprint pass would have
+read every file during the drive, and main's one derive, the comparison, runs
+no such pass. Headless Chromium tabs held a reader's Library view, loaded
+once, and the admin's library page, with a feed logger and a store logger
+beside them. The drive scanned the first directory alone, pressed Scan
+library, cancelled at 45 % of the bytes, pressed it again, stopped the server
+mid-job and started it, and pressed Scan library to finish
+(`drive-steps.jsonl`, `restart-drill.json`).
+
+- **Passes in the server's job.** The `written` marker moved 27 times across
+  the three Scan library jobs (`feed-marker-moves.txt`). In the first of
+  them the admin's line went from 13 to 254 volumes ready (`admin-ready-count.txt`); the
+  reader's line said a scan was running, with no counts.
+- **Series arrive without a reload.** The reader's view, loaded once, went
+  from one card to 49 by the scan's end (`dom-R1.jsonl`), and in that first
+  Scan library job it read the series and home views again once per marker
+  move
+  (`reader-feed-intervals.txt`).
+- **Both editions at once, and nothing moves.** 85 volumes were first seen
+  holding both the `en` and the `ja` edition. The store logger saw no work
+  change slug, editions, series, content key or hub after it first appeared,
+  across the Cancel and the restart (`store-log.jsonl`).
+- **Reading during a scan.** A page read in Berserk v01, which a pass had
+  written, during the job after the restart was the same page at the same
+  URL after the job, and its progress row named the same work
+  (`reading-during-scan.json`, `drive-steps.jsonl`).
+- **Cancel.** The store held the same 269 works, with the same ids, slugs and
+  editions, before the Cancel and after it, and all three directories were
+  paused (`store-before-cancel.json`, `store-after-cancel.json`,
+  `roots-after-cancel.json`).
+- **The same library as one derive.** Main's CLI `library scan`, one derive
+  over the same three copies in the same order with the same keys, made the
+  same 687 works, each identical in series, volume, title, slug, hub,
+  content key, editions with their members, and `member_root` count; a slug
+  altered in memory made the comparison find one difference
+  (`compare-branch-vs-main.json`). Neither of the two differences the
+  design accepts (its call 14) arose in this material.
+- **Pass time.** A pass took 114 to 793 ms over 847 `scan_entry` rows, timed
+  from `strace`, which makes the write part an upper bound, and the 10 s
+  floor set every gap between passes (`pass-timing.txt`). Rule 3's
+  directory check sits in the part before a pass's first write, which took
+  at most 25 ms, so no row is opened for a pass's cost at this size.
+- **Polling.** The reader's view asked the feed a median 5.0 s apart with no
+  scan and 1.0 s apart while one held the library
+  (`reader-feed-intervals.txt`).
+- **Not staged.** The hand-off where a pass writes a library's first works
+  into an empty view; `web/tests/Library.test.tsx`'s "the line holds
+  through the commit that swaps Scanning for a scan’s first works" covers it.
+- **Isolation.** A listing of the test library (path, size, mtime, inode,
+  link count) was byte-identical before and after, and its store's digests
+  were equal (`manga-test-before.tsv`, `manga-test-after.tsv`,
+  `manga-test-db-sha256-before.txt`, `-after.txt`).
+
+What the drive found:
+
+- **A restart did not take the job up.** A start took up only directories
+  whose schedule is not Off, so for six minutes, until Scan library was
+  pressed, no job ran and every directory read `interrupted`
+  (`roots-after-restart.json`); main does the same. The owner answered "a"
+  on 2026-11-23, and the PR builds it (below). Also seen: after the stop
+  signal the job's thread hashed one more file and ran one more pass,
+  writing 14 works, before the process exited (`store-log.jsonl`).
+- **The grid moves (O453).** Under the Added sort every arrival moved the
+  cards in view, with scroll anchoring on or off. Under the title sort
+  "[Oshi no Ko]" and its Fan Translated series were hashed last and drawn
+  first, so the last pass put them above all 45 series drawn
+  (`arrivals-vs-title-order.txt`).
+- **A stale scan line (O451).** A tab going back to the Library view after
+  the scan ended drew the kept "A scan is running" for one frame
+  (`dom-R2.jsonl`).
+- **Scanning to the grid.** At a scan's end the view passed through "Not
+  read yet" and "Nothing here" in the DOM for 2 to 6 ms, and in the one run
+  sampled per frame neither was painted (`dom-R2.jsonl`). No row is opened
+  for it here.
+
+**What a restart does now** (the owner's answer "a" of 2026-11-23, and the
+controller's ruling that day on migration 032; no drive ran after it). A scan
+job marks its directories held (`root.scan_held_at`, migration 032) in the
+write that says it waits for the job lock, and again once it holds that lock,
+and clears the mark when it ends, a cancel's or an error's end included. A
+stop leaves the mark, and the next start takes up every held directory
+whatever its schedule, unless a cancel paused it. So a restart now scans an
+Off directory again where it used to leave it reading `interrupted` until
+Scan was pressed. Migration 032 marks no directory and the start marks none,
+so a scan cut by a stop of an older version is not taken up by a mark, one
+main was running when this version deploys included, and waits for Scan or
+its schedule as before: a directory reading
+`interrupted` from before says nothing of whether its scan is still wanted,
+and the owner's Volumes/Raw import of 2026-11-16 was stopped on purpose,
+which a backfill would have restarted at the first start after the deploy.
+The cancel route clears the mark as it accepts a cancel, before the job
+writes its pause, so a stop between the two leaves nothing to take up. What
+is left is in the design's §7: a stop after a job starts and before its first
+mark leaves none, and the clearing is best effort, one UPDATE per directory,
+each able to wait out the 5 s busy timeout, so a cancel can answer slowly
+and a clearing that late can wipe a newer job's mark.
+
+**The mutation sweep** is in `docs/mutants-baseline.md`'s run log, its two
+rows of 2026-11-23; the factor no test pins is O454.

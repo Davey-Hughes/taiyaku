@@ -92,6 +92,21 @@ pub use taiyaku_library::Progress;
 // route writes rows without a file.
 pub use works::{Work, from_library, load_works, work_id};
 
+/// The scan feed's two markers, [`ServeState::jobs_ended`]. Each tells a page
+/// to read something again, and its value means only that it moved. One per
+/// server, as [`ServeState::scans`] is, so each count is this server's alone.
+#[derive(Debug, Default)]
+pub struct FeedMarks {
+    /// Raised as each scan job is marked ended, and as each match pass's
+    /// derive ends: the feed's `ended`, so a page that polls between two
+    /// readings learns that one ended although it never saw it run.
+    pub ended: std::sync::atomic::AtomicU64,
+    /// Raised as a scan job's early passes write volumes (O314): the feed's
+    /// `written`, so an open Library view reads its grid again while the job
+    /// runs, without the re-read of everything a job's end makes.
+    pub written: std::sync::atomic::AtomicU64,
+}
+
 /// Everything a request needs: which works exist, and where pages come from.
 #[derive(Debug)]
 pub struct ServeState {
@@ -151,12 +166,10 @@ pub struct ServeState {
     /// only to write its finished report back. A crate this size gains
     /// nothing from a lock-free map for that shape of access.
     pub scans: Arc<std::sync::Mutex<std::collections::HashMap<i64, ScanProgress>>>,
-    /// How many scan jobs have ended in this server, raised as each is marked
-    /// ended, and as each match pass's derive ends: the scan feed's `ended`
-    /// marker, so a page that polls between two readings learns that one ended
-    /// although it never saw it run. One per server, as [`Self::scans`] is, so
-    /// the count is this server's alone.
-    pub jobs_ended: Arc<std::sync::atomic::AtomicU64>,
+    /// The scan feed's markers: `ended`, raised as each scan job ends and as
+    /// each match pass's derive ends, and `written`, raised as a scan job's
+    /// early passes write volumes.
+    pub jobs_ended: Arc<FeedMarks>,
     /// The store's job lock: [`LibraryJob`] names the jobs that take it, a
     /// scan's derive and a save's `preview::apply` among them.
     ///

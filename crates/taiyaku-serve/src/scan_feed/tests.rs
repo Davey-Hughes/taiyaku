@@ -176,7 +176,11 @@ async fn the_feed_answers_an_admin_each_running_job_with_its_step_counts_dirs_an
 
     let body = fed(&nested.state, as_admin()).await;
 
-    assert_eq!(keys_of(&body), ["ended", "jobs", "libraries"], "{body}");
+    assert_eq!(
+        keys_of(&body),
+        ["ended", "jobs", "libraries", "written"],
+        "{body}"
+    );
     assert!(body["ended"].is_u64(), "{body}");
     assert_eq!(
         body["libraries"],
@@ -214,6 +218,7 @@ async fn the_feed_answers_an_admin_each_running_job_with_its_step_counts_dirs_an
                 { "id": nested.b, "name": "B" },
             ],
             "cancelling": false,
+            "ready": null,
         }),
     );
 }
@@ -270,6 +275,52 @@ async fn a_step_with_no_count_or_no_total_yet_sends_null() {
     );
 }
 
+/// Design O314 §7, "The report and the feed", and §8 test 12: an admin's job
+/// carries the volumes its passes have written, null until one has, beside
+/// the step it shows; every answer's `written`, a reader's too, moves as the
+/// count rises.
+#[tokio::test]
+async fn a_jobs_ready_count_is_null_until_a_pass_writes_and_then_sent_to_an_admin() {
+    let nested = nested("feed-ready");
+    let job = nested.a_job();
+    let running = Running::new(&job, None);
+    let reader = || signed_in(a_reader_of(vec![nested.a]), crate::auth::By::Cookie);
+    running.at(Step::Hashing, 1_024, Some(4_096));
+    let before = (
+        fed(&nested.state, as_admin()).await,
+        fed(&nested.state, reader()).await,
+    );
+    running.written(41);
+    let after = (
+        fed(&nested.state, as_admin()).await,
+        fed(&nested.state, reader()).await,
+    );
+
+    let sent = |(admin, reader): &(serde_json::Value, serde_json::Value)| {
+        (
+            admin["jobs"][0]["step"].clone(),
+            admin["jobs"][0]["ready"].clone(),
+            admin["written"].clone(),
+            reader["written"].clone(),
+        )
+    };
+    assert_eq!(
+        sent(&before),
+        (
+            json!("hashing"),
+            serde_json::Value::Null,
+            json!(0),
+            json!(0)
+        ),
+        "(step, count, admin's marker, reader's marker) before a pass: {before:?}"
+    );
+    assert_eq!(
+        sent(&after),
+        (json!("hashing"), json!(41), json!(1), json!(1)),
+        "(step, count, admin's marker, reader's marker) once a pass told 41: {after:?}"
+    );
+}
+
 /// Spec §7, "The feed", the reader form: only the granted libraries a job
 /// holds, each with its step, and no count and no path. B is nested in A's
 /// directory, so the job shows on both pages, and a reader granted B alone
@@ -286,7 +337,7 @@ async fn the_feed_answers_a_reader_the_granted_libraries_a_job_holds_with_the_st
     )
     .await;
 
-    assert_eq!(keys_of(&body), ["ended", "libraries"], "{body}");
+    assert_eq!(keys_of(&body), ["ended", "libraries", "written"], "{body}");
     assert_eq!(
         body["libraries"],
         json!([{ "id": nested.b, "step": "hashing" }]),
@@ -316,7 +367,7 @@ async fn an_admins_device_key_gets_the_reader_form() {
     )
     .await;
 
-    assert_eq!(keys_of(&body), ["ended", "libraries"], "{body}");
+    assert_eq!(keys_of(&body), ["ended", "libraries", "written"], "{body}");
     assert_eq!(
         body["libraries"],
         json!([
@@ -754,6 +805,7 @@ async fn an_admin_sees_the_pass_as_a_job_of_its_own_kind() {
             "kind",
             "libraries",
             "of",
+            "ready",
             "step"
         ],
         "{body}"
@@ -799,7 +851,11 @@ async fn a_reader_is_sent_nothing_of_the_pass() {
         Some(1),
         "the fixture: the pass is in the feed: {admin}"
     );
-    assert_eq!(keys_of(&reader), ["ended", "libraries"], "{reader}");
+    assert_eq!(
+        keys_of(&reader),
+        ["ended", "libraries", "written"],
+        "{reader}"
+    );
     assert_eq!(reader["libraries"], json!([]), "{reader}");
 }
 
@@ -980,6 +1036,7 @@ async fn the_feed_shows_the_match_pass_and_its_cancel_stops_it() {
                 { "id": matched.manga, "name": "Manga" },
             ],
             "cancelling": false,
+            "ready": null,
         }),
     );
     assert_eq!(pressed, StatusCode::ACCEPTED);
@@ -997,4 +1054,100 @@ async fn the_feed_shows_the_match_pass_and_its_cancel_stops_it() {
         "no pass of its own"
     );
     assert_eq!(looked_up.len(), 1, "one volume looked up: {looked_up:?}");
+}
+
+/// Design O314 §5, ruling 9, "a directory you cancelled stays paused": a
+/// cancel the route accepted clears the job's held mark at once, so a stop
+/// before the job reads the flag and writes its pause leaves nothing the next
+/// start takes up. The job here is held inside its walk, past its mark and
+/// before its next read of the flag; once let go, it writes the pause itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_accepted_before_a_stop_leaves_nothing_the_next_start_takes_up() {
+    let (_router, state, fixture) = test_support::state_with_two_scanned_roots_on_disk();
+    let roots = scan::roots(&state.library.conn()).expect("the directories");
+    state
+        .library
+        .conn()
+        .execute("UPDATE root SET scan_interval_secs = 0", [])
+        .expect("sets both Off");
+    let b = roots[1].clone();
+    let held = |state: &crate::ServeState| -> (bool, bool) {
+        state
+            .library
+            .conn()
+            .query_row(
+                "SELECT scan_held_at IS NOT NULL, paused_at IS NOT NULL FROM root WHERE id = ?1",
+                [b.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("reads the directory")
+    };
+    let started = Instant::now();
+    let job =
+        scan_jobs::reserve(&state, std::slice::from_ref(&b), started, None).expect("reserves b");
+    let (walking, walks) = mpsc::channel::<()>();
+    let (release, released) = mpsc::channel::<()>();
+    let running = scan_jobs::spawn_job(
+        Arc::clone(&state),
+        vec![b.clone()],
+        started,
+        move |state, roots, running| {
+            scan_jobs::run_watched(
+                &state.library,
+                roots,
+                Reread::Dir,
+                &state.library_job,
+                running,
+                |conn, root, watch| {
+                    let _ = walking.send(());
+                    let _ = released.recv();
+                    scan::scan_root_watched(conn, root, watch)
+                },
+                scan_jobs::job_derive,
+            )
+        },
+    );
+    walks
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the job walks b");
+    let before = held(&state);
+
+    let answer = cancelled(&state, an_administrator(), crate::auth::By::Cookie, job.id).await;
+    let accepted = held(&state);
+    // The stop: the next process, over the same store, while this one's job
+    // has not yet read the flag.
+    let next = Arc::new(crate::ServeState {
+        library: Arc::new(test_support::the_store_elsewhere(&state)),
+        cache_dir: fixture.join("next-covers"),
+        ..test_support::state(fixture.path())
+    });
+    scan::interrupt_derives(&next.library.conn()).expect("rewrites the cut words");
+    let now = taiyaku_library::schedule::now(&next.library.conn()).expect("the store's clock");
+    let mut taken_up = Vec::new();
+    crate::scheduler::Scheduler::new()
+        .tick(&next, &now, |roots, _| {
+            taken_up.push(roots.iter().map(|root| root.id).collect::<Vec<_>>());
+        })
+        .expect("the startup tick");
+    drop(release);
+    running.await.expect("the job ends");
+
+    assert_eq!(
+        answer,
+        (
+            StatusCode::ACCEPTED,
+            json!({ "job": job.id, "cancelling": true })
+        )
+    );
+    assert_eq!(
+        (before, accepted, taken_up, held(&state)),
+        (
+            (true, false),
+            (false, false),
+            Vec::<Vec<i64>>::new(),
+            (false, true)
+        ),
+        "(b held and paused: walking, once the cancel is accepted; what the next start takes up; \
+         b once the job has read the flag)"
+    );
 }

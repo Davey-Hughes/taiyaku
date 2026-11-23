@@ -1546,8 +1546,8 @@ fn migration_20_adds_missing_since_leaving_existing_works_present() {
 /// The version and the migration count are one fact, and this is the refusal
 /// that depends on it staying true.
 #[test]
-fn the_schema_version_is_thirty_one() {
-    assert_eq!(SCHEMA_VERSION, 31);
+fn the_schema_version_is_thirty_two() {
+    assert_eq!(SCHEMA_VERSION, 32);
     assert_eq!(
         MIGRATIONS.len(),
         SCHEMA_VERSION as usize,
@@ -3674,6 +3674,50 @@ fn migration_31_drops_member_format_and_keeps_every_other_column_and_row() {
         tables,
         "every other table's rows as they were"
     );
+}
+
+/// Design O314 §5, ruling 10: migration 32 marks no directory held, one an
+/// earlier server left `deriving` or `waiting` or a start read as
+/// `interrupted` included, since a scan cut before it says nothing of whether
+/// it is still wanted; so no startup tick takes an Off one up. The Automatic
+/// directory is listed whatever its mark, so the read is not empty by itself.
+#[test]
+fn migration_32_marks_no_directory_held_an_interrupted_one_included() {
+    let conn = Connection::open_in_memory().expect("in-memory connection");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("foreign keys on, as `Library::open` sets them");
+    migrate_with(&conn, &MIGRATIONS[..31]).expect("migrates to 31");
+    conn.execute_batch(
+        "INSERT INTO root (id, path, last_scan_at, last_scan_status, scan_interval_secs) VALUES
+           (1, '/srv/a', '2026-11-10 12:00:00', 'ok', 0),
+           (2, '/srv/b', '2026-11-10 12:00:00', 'deriving', 0),
+           (3, '/srv/c', NULL, NULL, 0),
+           (4, '/srv/d', '2026-11-10 12:00:00', 'waiting', 0),
+           (5, '/srv/e', '2026-11-10 12:00:00', 'failed', 0),
+           (6, '/srv/f', '2026-11-10 12:00:00', 'interrupted', 0),
+           (7, '/srv/g', '2026-11-10 12:00:00', 'refused', 0),
+           (8, '/srv/h', NULL, 'cancelled', 0),
+           (9, '/srv/i', '2026-11-10 12:00:00', 'interrupted', NULL);",
+    )
+    .expect("seeds a schema-31 directory of each word");
+
+    migrate_with(&conn, &MIGRATIONS[..32]).expect("migrates to 32");
+
+    assert_eq!(version(&conn).expect("reads the version"), 32);
+    assert_eq!(
+        rows_of(
+            &conn,
+            "SELECT count(*) FROM root WHERE scan_held_at IS NOT NULL"
+        ),
+        [["Integer(0)"]],
+        "no directory held"
+    );
+    let listed: Vec<i64> = crate::schedule::scheduled(&conn, "2026-11-10 12:00:00")
+        .expect("reads the schedule")
+        .into_iter()
+        .map(|one| one.root.id)
+        .collect();
+    assert_eq!(listed, [9], "the Automatic directory alone is listed");
 }
 
 /// An entry no member names holds no reading: a reading held here is what a

@@ -19,7 +19,11 @@
  * and the split editions. `ended` is what catches a scan that started and
  * ended between two polls, or while the tab was hidden, which no poll ever
  * listed. A first answer has nothing to compare, so it reads again only where
- * a poll was missed before it (`missed`).
+ * a poll was missed before it (`missed`). Where `written` moves in an answer
+ * that ends no scan, a running scan's early pass has written volumes, and
+ * only the Library views and the split editions are read again, so a page
+ * draws them while the scan runs (O314); that answer is not held for them,
+ * as it takes no scan off a page.
  *
  * **A scan's end is drawn once those reads have landed (O321).** The answer
  * that ends a scan is held, and every page draws the answer before it, with
@@ -34,7 +38,13 @@ import { getJson, sendJson } from './api'
 import { humanBytes } from './bytes'
 import { expectBody, SCAN_POLL_MS } from './config'
 import { namesOf } from './libraries'
-import { LIBRARIES, LIBRARY_STATUS, libraryViewReads, ROOTS } from './pageReads'
+import {
+  invalidateLibraryViews,
+  LIBRARIES,
+  LIBRARY_STATUS,
+  libraryViewReads,
+  ROOTS,
+} from './pageReads'
 import { invalidate, readsUnder } from './reads'
 
 /**
@@ -77,6 +87,12 @@ export interface FeedJob {
   elapsed_secs: number
   /** Cancel was pressed and the job has not stopped yet. */
   cancelling: boolean
+  /**
+   * The volumes the scan's early passes have written so far while it hashes;
+   * `null` until the first early pass reports, and always for the
+   * fingerprint and match passes, which run none.
+   */
+  ready: number | null
 }
 
 /** What the feed answers. */
@@ -87,6 +103,12 @@ export interface ScanFeed {
    * it, since ending changes nothing the pages read.
    */
   ended: number
+  /**
+   * Moves each time a running scan's early pass writes volumes; its value
+   * means nothing else. Compared only for a change: an answer without it reads as
+   * unmoved.
+   */
+  written?: number
   /**
    * Each library a running job holds, with the step of the lowest job id
    * holding it: for an administrator every one, for anyone else those it
@@ -179,6 +201,8 @@ function ask(): void {
       if (latest === undefined ? missed : scanEnded(latest, answer)) {
         publishOnceRead(id, answer)
       } else {
+        if (latest !== undefined && worksArrived(latest, answer))
+          void invalidateLibraryViews()
         publish(answer)
       }
     },
@@ -328,6 +352,17 @@ export function onScanEnd(listener: () => void): () => void {
   }
 }
 
+/**
+ * Whether a running scan's early pass wrote volumes between `before` and
+ * `now`, so the Library views are read again and show them while the scan
+ * runs. Asked only of an answer that ends no scan, as one that does reads the
+ * views with everything else. An answer that carries the marker after one
+ * that did not reads as moved: volumes may have been written between them.
+ */
+function worksArrived(before: ScanFeed, now: ScanFeed): boolean {
+  return now.written !== undefined && now.written !== before.written
+}
+
 /** Every running scan job: every job but the two passes. */
 export function scanJobs(feed: ScanFeed | undefined): FeedJob[] {
   return (feed?.jobs ?? []).filter((job) => job.kind === 'scan')
@@ -436,6 +471,12 @@ export function stepWord(step: ScanStep): string {
 
 const figure = (n: number) => n.toLocaleString('en')
 
+/** " · 41 volumes ready", or nothing before a pass has written a volume. */
+function volumesReady(ready: number | null): string {
+  if (ready === null || ready <= 0) return ''
+  return ` · ${figure(ready)} ${ready === 1 ? 'volume' : 'volumes'} ready`
+}
+
 /** `done of of`, or `done` alone while the total is not known. */
 function outOf(done: number, of: number | null, unit: (n: number) => string) {
   return of === null ? unit(done) : `${unit(done)} of ${unit(of)}`
@@ -463,7 +504,7 @@ export function stepLine(job: FeedJob): string {
       // Folders are sized before the first byte is hashed.
       return job.of === null
         ? `${word} · sizing files`
-        : `${word} · ${outOf(done, job.of, humanBytes)}`
+        : `${word} · ${outOf(done, job.of, humanBytes)}${volumesReady(job.ready)}`
     case 'writing':
     // The step's word names what its figures count.
     case 'matching':

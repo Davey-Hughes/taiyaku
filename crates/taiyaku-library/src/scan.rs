@@ -2813,9 +2813,9 @@ pub struct Queued {
     before: Option<String>,
 }
 
-/// Mark each of `roots` `"waiting"`: its scan has not started, because
-/// another job in the server holds the job lock (O51). Answers the
-/// directories marked, each with its word before, for [`unmark_queued`].
+/// Mark each of `roots` `"waiting"`, and held ([`mark_held`]) in the same
+/// write: its scan has not started, as another job holds the job lock (O51).
+/// Answers each marked, with its word before, for [`unmark_queued`].
 ///
 /// Each write asks that the word is still the one just read, and
 /// [`mark_deriving`]'s id-and-path question, so a word another writer
@@ -2835,9 +2835,12 @@ pub fn mark_queued(conn: &Connection, roots: &[Root]) -> Vec<Queued> {
                     |r| r.get(0),
                 )
                 .ok()?;
+            // One write: a second, where another writer holds the store, would
+            // wait a second busy timeout before the job reads its cancel.
             let marked = conn
                 .execute(
-                    "UPDATE root SET last_scan_status = 'waiting' \
+                    "UPDATE root SET last_scan_status = 'waiting', \
+                     scan_held_at = datetime('now') \
                      WHERE id = ?1 AND path = ?2 AND last_scan_status IS ?3",
                     rusqlite::params![root.id, path, before],
                 )
@@ -2952,9 +2955,9 @@ pub fn mark_cancelled(conn: &Connection, unfinished: &[Unfinished]) -> Result<()
 ///
 /// As [`mark_derived`].
 pub fn pause(conn: &Connection, roots: &[Root]) -> Result<(), String> {
-    write_pause(
+    update_each(
         conn,
-        roots,
+        roots.iter().map(|root| (root.id, root.path.as_path())),
         "UPDATE root SET paused_at = datetime('now') WHERE id = ?1 AND path = ?2",
         "is paused",
     )
@@ -2966,25 +2969,64 @@ pub fn pause(conn: &Connection, roots: &[Root]) -> Result<(), String> {
 ///
 /// As [`mark_derived`].
 pub fn unpause(conn: &Connection, roots: &[Root]) -> Result<(), String> {
-    write_pause(
+    update_each(
         conn,
-        roots,
+        roots.iter().map(|root| (root.id, root.path.as_path())),
         "UPDATE root SET paused_at = NULL WHERE id = ?1 AND path = ?2",
         "is no longer paused",
     )
 }
 
-/// Run `sql` for each of `roots`, with its id as `?1` and its path as `?2`;
+/// Mark each of `roots` held by a scan job of the server, from the moment
+/// the job holds the job lock to its end ([`unmark_held`]).
+///
+/// **A mark the server finds at its start is a scan a stop or a panic cut**,
+/// in a walk that has recorded nothing too, or, marked by [`mark_queued`],
+/// while it waited for the lock. The startup tick scans a held directory
+/// again whatever its schedule, unless a cancel paused it
+/// ([`crate::schedule::scheduled`]; O314 spec, §7 "Server: a restart mid-job").
+///
+/// # Errors
+///
+/// As [`mark_derived`].
+pub fn mark_held(conn: &Connection, roots: &[Root]) -> Result<(), String> {
+    update_each(
+        conn,
+        roots.iter().map(|root| (root.id, root.path.as_path())),
+        "UPDATE root SET scan_held_at = datetime('now') WHERE id = ?1 AND path = ?2",
+        "is held by a scan",
+    )
+}
+
+/// Clear the [`mark_held`] of each of `dirs`, by id and path, so the next
+/// start does not scan it again: as its job ends however it ends but by a
+/// stop or a panic, and as a cancel of its job is accepted.
+///
+/// # Errors
+///
+/// As [`mark_derived`].
+pub fn unmark_held(conn: &Connection, dirs: &[(i64, PathBuf)]) -> Result<(), String> {
+    update_each(
+        conn,
+        dirs.iter().map(|(id, path)| (*id, path.as_path())),
+        "UPDATE root SET scan_held_at = NULL WHERE id = ?1 AND path = ?2",
+        "is no longer held by a scan",
+    )
+}
+
+/// Run `sql` for each of `dirs`, with its id as `?1` and its path as `?2`;
 /// `done` says what the write records, in the error.
-fn write_pause(conn: &Connection, roots: &[Root], sql: &str, done: &str) -> Result<(), String> {
+fn update_each<'a>(
+    conn: &Connection,
+    dirs: impl IntoIterator<Item = (i64, &'a Path)>,
+    sql: &str,
+    done: &str,
+) -> Result<(), String> {
     let mut first_refusal = None;
-    for root in roots {
-        if let Err(e) = conn.execute(sql, rusqlite::params![root.id, root.path.to_string_lossy()]) {
+    for (id, path) in dirs {
+        if let Err(e) = conn.execute(sql, rusqlite::params![id, path.to_string_lossy()]) {
             first_refusal.get_or_insert_with(|| {
-                format!(
-                    "recording that directory {} {done}: {e}",
-                    root.path.display()
-                )
+                format!("recording that directory {} {done}: {e}", path.display())
             });
         }
     }

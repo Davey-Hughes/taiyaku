@@ -1284,4 +1284,4 @@ fn held(
 }
 
 #[cfg(test)]
-mod tests;
+pub(in crate::derive) mod tests;

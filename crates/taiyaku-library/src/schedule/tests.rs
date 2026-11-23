@@ -101,6 +101,57 @@ fn an_off_directory_is_not_listed() {
     );
 }
 
+/// Design O314 §5, ruling 9: a directory a scan job holds is listed whatever
+/// its schedule, for the startup tick, which takes every directory listed, to
+/// take up a scan a stop cut. Never due by an Off schedule, so no later tick
+/// takes it. The Off directory beside it is not listed.
+#[test]
+fn a_held_off_directory_is_listed_and_never_due() {
+    let dir = crate::tests::tempdir("schedule-held-off");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let held = dir_with(&conn, dir.path(), "held", Some(0), None);
+    let off = dir_with(&conn, dir.path(), "off", Some(0), None);
+
+    scan::mark_held(&conn, std::slice::from_ref(&held)).expect("marks it held");
+
+    let now = "2026-11-10 12:00:00";
+    assert_eq!(
+        [due_at(&conn, now, held.id), due_at(&conn, now, off.id)],
+        [Some(false), None],
+        "(held, beside)"
+    );
+}
+
+/// A mark adds no scan to a timer: a held Automatic directory scanned a
+/// minute ago is listed, as it always is, and not due.
+#[test]
+fn a_held_automatic_directory_is_due_by_its_timer_alone() {
+    let dir = crate::tests::tempdir("schedule-held-automatic");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let held = dir_with(&conn, dir.path(), "held", None, Some("2026-11-10 11:59:00"));
+
+    scan::mark_held(&conn, std::slice::from_ref(&held)).expect("marks it held");
+
+    assert_eq!(due_at(&conn, "2026-11-10 12:00:00", held.id), Some(false));
+}
+
+/// Design O314 §5, ruling 9: a directory a cancel paused stays paused until
+/// Scan is pressed, held or not.
+#[test]
+fn a_held_directory_a_cancel_paused_is_not_listed() {
+    let dir = crate::tests::tempdir("schedule-held-paused");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let held = dir_with(&conn, dir.path(), "held", Some(0), None);
+
+    scan::mark_held(&conn, std::slice::from_ref(&held)).expect("marks it held");
+    scan::pause(&conn, std::slice::from_ref(&held)).expect("pauses it");
+
+    assert_eq!(due_at(&conn, "2026-11-10 12:00:00", held.id), None);
+}
+
 /// A cancelled job's directories wait for Scan to be pressed, so the
 /// scheduler passes a paused one over though it is due, and lists the one
 /// beside it.

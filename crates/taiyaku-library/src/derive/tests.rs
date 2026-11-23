@@ -2155,6 +2155,131 @@ fn a_volume_less_work_still_matches_itself_on_the_next_derive() {
 }
 
 #[test]
+fn an_entrys_own_key_takes_its_volume_else_its_captured_title_else_its_path() {
+    // A volume is what groups, whatever title a rule also captured: keyed by
+    // the title too, two editions of volume 2 titled differently would be two
+    // works.
+    assert_eq!(
+        derive::own_key("Alpha", Some(2.0), Some("Ignored"), "a/x.cbz"),
+        ("Alpha".to_string(), Some(2.0f64.to_bits()), None),
+    );
+    // With no volume, the captured title comes before the path, so two
+    // translations a rule titles alike are one work.
+    assert_eq!(
+        derive::own_key("Alpha", None, Some("Book"), "a/y.cbz"),
+        (
+            "Alpha".to_string(),
+            None,
+            Some(derive::Alone::Titled("Book".to_string())),
+        ),
+    );
+    assert_eq!(
+        derive::own_key("Alpha", None, None, "a/z.cbz"),
+        (
+            "Alpha".to_string(),
+            None,
+            Some(derive::Alone::Path("a/z.cbz".to_string())),
+        ),
+    );
+}
+
+#[test]
+fn own_keys_sort_volume_less_first_then_by_volume_and_keep_half_volumes_apart() {
+    // Whatever walks groups in key order meets a series' volumes as a reader
+    // numbers them, not as their names sort (`v10` before `v2`). Sorted
+    // stably by key alone, so two volumes keyed alike keep their input order
+    // and show as out of place.
+    let volumes = [None, Some(10.0), Some(2.0), Some(1.5), Some(1.0)];
+    let mut keyed: Vec<_> = volumes
+        .iter()
+        .map(|&volume| (derive::own_key("Alpha", volume, None, "a/x.cbz"), volume))
+        .collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    let order: Vec<Option<f64>> = keyed.into_iter().map(|(_, volume)| volume).collect();
+    assert_eq!(order, [None, Some(1.0), Some(1.5), Some(2.0), Some(10.0)]);
+    // A half-volume is a volume of its own ("omnibus and half-volumes exist"),
+    // not more pages of the whole one below it.
+    assert_ne!(
+        derive::own_key("Alpha", Some(1.0), None, "a/x.cbz"),
+        derive::own_key("Alpha", Some(1.5), None, "a/x.cbz"),
+    );
+}
+
+/// A watch asked to stop from the start.
+struct Stopped;
+
+impl crate::progress::Watch for Stopped {
+    fn at(&self, _step: Step, _done: u64, _of: Option<u64>) {}
+
+    fn cancelled(&self) -> bool {
+        true
+    }
+}
+
+/// The input an early pass reads: it hashes nothing, so it sizes nothing,
+/// and reads no cancel flag, since the only step a cancel here interrupts is
+/// sizing. The controls show the fixture sized and cancelled when asked.
+#[test]
+fn the_input_read_without_sizes_sizes_no_folder_and_reads_no_cancel() {
+    let tree = crate::tests::tempdir("derive-input-unsized");
+    write_archive(&tree.path().join("Alpha").join("Alpha v01.cbz"), 2);
+    write_pages(&tree.path().join("Beta").join("Beta v01"), 3);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    scanned_root(&conn, tree.path(), None);
+    let (engine, _) = crate::rules::Engine::load(&conn).expect("rules");
+    let roots = scan::roots(&conn).expect("lists");
+    let read = |watch: &dyn crate::progress::Watch, size: bool| {
+        let mut report = derive::DeriveReport::default();
+        match derive::read_input(
+            &conn,
+            &engine,
+            &roots,
+            &std::collections::HashSet::new(),
+            watch,
+            &mut report,
+            size,
+        )
+        .expect("reads")
+        {
+            Outcome::Done(input) => Some(
+                input
+                    .iter()
+                    .flat_map(|(_, kept)| kept)
+                    .filter(|(seen, _)| derive::hashes(seen))
+                    .map(|(seen, bytes)| (seen.entry.rel_path.clone(), bytes.is_some()))
+                    .collect::<Vec<_>>(),
+            ),
+            Outcome::Cancelled(_) => None,
+        }
+    };
+
+    let without_sizes = read(&Stopped, false);
+
+    assert_eq!(
+        without_sizes,
+        Some(vec![
+            ("Alpha/Alpha v01.cbz".to_string(), false),
+            ("Beta/Beta v01".to_string(), false),
+        ]),
+        "read whole, with no bytes for either"
+    );
+    assert_eq!(
+        read(&crate::progress::Unwatched, true),
+        Some(vec![
+            ("Alpha/Alpha v01.cbz".to_string(), true),
+            ("Beta/Beta v01".to_string(), true),
+        ]),
+        "the control: sized when asked"
+    );
+    assert_eq!(
+        read(&Stopped, true),
+        None,
+        "the control: the folder's sizing reads the flag"
+    );
+}
+
+#[test]
 fn a_container_that_would_not_open_is_counted_rather_than_written_with_no_pages() {
     // The walk swallowed `member_pages`' refusal so one truncated download
     // would not leave a whole library unscanned, and recorded the row with
@@ -2559,7 +2684,10 @@ fn holders_of(conn: &Connection, file: &str) -> Vec<i64> {
 /// A root of one unnumbered book in `keys` translations, `Rowling/Stone
 /// [key]/Stone [key].cbz`, scanned under a rule that titles them all `Stone`
 /// and keys each by its bracket, and derived into one work.
-fn translations(label: &str, keys: &[&str]) -> (crate::tests::TempDir, Library, scan::Root) {
+pub(super) fn translations(
+    label: &str,
+    keys: &[&str],
+) -> (crate::tests::TempDir, Library, scan::Root) {
     let rel_paths: Vec<String> = keys
         .iter()
         .map(|key| format!("Rowling/Stone [{key}]/Stone [{key}].cbz"))
@@ -6537,13 +6665,17 @@ fn two_releases_told_apart_only_by_their_directories_are_two_works() {
 
 /// The one integer `sql` answers with: a count, or an id where the fixture
 /// holds one row.
-fn scalar(conn: &Connection, sql: &str) -> i64 {
+pub(super) fn scalar(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get(0)).expect(sql)
 }
 
 /// A directory of its own library for `dir`, with its edition key set to
 /// `edition` where one is given, scanned.
-fn scanned_root(conn: &Connection, dir: &std::path::Path, edition: Option<&str>) -> scan::Root {
+pub(super) fn scanned_root(
+    conn: &Connection,
+    dir: &std::path::Path,
+    edition: Option<&str>,
+) -> scan::Root {
     let root = scan::add_root(conn, dir).expect("a library of its own");
     if let Some(edition) = edition {
         scan::update_root(
@@ -10353,13 +10485,13 @@ fn a_derive_cancelled_while_folders_are_sized_reports_no_total_and_hashes_nothin
 /// `(id, content_key)`, the members as `(work_id, edition key, ordinal, path,
 /// sha256, pages)`, and the `member_root` rows as `(member path, root_id)`.
 #[derive(Debug, PartialEq)]
-struct Standing {
+pub(super) struct Standing {
     works: Vec<(i64, String)>,
     members: Vec<(i64, String, i64, String, String, i64)>,
     member_roots: Vec<(String, i64)>,
 }
 
-fn standing(conn: &Connection) -> Standing {
+pub(super) fn standing(conn: &Connection) -> Standing {
     let mut works: Vec<(i64, String)> = conn
         .prepare("SELECT id, content_key FROM work")
         .and_then(|mut stmt| {
@@ -10412,7 +10544,7 @@ fn two_file_volume(dir: &std::path::Path) {
     write_archive(&dir.join("Alpha").join("Alpha - v01 - c002.cbz"), 3);
 }
 
-fn pause(conn: &Connection, root: &scan::Root) {
+pub(super) fn pause(conn: &Connection, root: &scan::Root) {
     scan::pause(conn, std::slice::from_ref(root)).expect("pauses the directory");
 }
 
@@ -10426,7 +10558,7 @@ fn digest_at(conn: &Connection, root_id: i64, rel_path: &str) -> Option<String> 
     .unwrap_or_else(|e| panic!("{rel_path} has a row: {e}"))
 }
 
-fn digests_under(conn: &Connection, root_id: i64) -> i64 {
+pub(super) fn digests_under(conn: &Connection, root_id: i64) -> i64 {
     scalar(
         conn,
         &format!(
@@ -10443,7 +10575,7 @@ fn member_roots_under(conn: &Connection, root_id: i64) -> i64 {
 }
 
 /// Every member's path, in path order.
-fn member_paths(conn: &Connection) -> Vec<String> {
+pub(super) fn member_paths(conn: &Connection) -> Vec<String> {
     conn.prepare("SELECT path FROM member ORDER BY path")
         .and_then(|mut stmt| stmt.query_map([], |r| r.get(0))?.collect())
         .expect("reads the members")
@@ -11426,6 +11558,7 @@ fn a_reading_migration_27_held_is_dropped_by_the_derive_that_writes_its_work() {
          ALTER TABLE scan_entry DROP COLUMN held_pages;
          ALTER TABLE scan_entry DROP COLUMN held_title;
          ALTER TABLE scan_entry DROP COLUMN counted_by;
+         ALTER TABLE root DROP COLUMN scan_held_at;
          UPDATE meta SET value = '26' WHERE key = 'schema_version';
          UPDATE scan_entry SET sha256 = NULL, pages = 4 WHERE rel_path = '{C002}';"
     ))
