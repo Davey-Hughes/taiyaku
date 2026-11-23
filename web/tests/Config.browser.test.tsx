@@ -52,6 +52,7 @@ import {
   overlapOf,
   pressArea,
 } from './support/pointer'
+import { ringOf } from './support/ring'
 import { rootFontAt } from './support/rootFont'
 import { tapAt } from './support/touch'
 import { holdTheClock, pass, WAIT_DRAWN_AFTER_MS } from './support/wait'
@@ -1395,6 +1396,801 @@ describe('the Libraries pages at a phone’s width', () => {
       0,
     )
   })
+})
+
+describe('the directory browser below its form’s buttons, on a listing of many directories', () => {
+  /** `count` directories in `at`, each `word` and a number from 01. */
+  const dirsIn = (at: string, word: string, count: number) =>
+    Array.from({ length: count }, (_, i) => {
+      const name = `${word} ${String(i + 1).padStart(2, '0')}`
+      return { name, path: `${at}/${name}` }
+    })
+  /** What Browse… lists first: thirty directories. */
+  const SERIES: librariesApi.DirListing = {
+    path: '/srv/manga',
+    parent: '/srv',
+    dirs: dirsIn('/srv/manga', 'Series', 30),
+  }
+  /** What entering SERIES's seventh lists: sixty others. */
+  const VOLUMES: librariesApi.DirListing = {
+    path: '/srv/manga/Series 07',
+    parent: '/srv/manga',
+    dirs: dirsIn('/srv/manga/Series 07', 'Volume', 60),
+  }
+  /** SERIES's names that "Series 1" finds: its tens. */
+  const TENS = SERIES.dirs
+    .map((dir) => dir.name)
+    .filter((name) => name.startsWith('Series 1'))
+
+  beforeEach(() => {
+    vi.mocked(librariesApi.listLibraries).mockResolvedValue(holding(root()))
+    vi.mocked(librariesApi.listDirs).mockImplementation(async (to) =>
+      to === VOLUMES.path ? VOLUMES : SERIES,
+    )
+  })
+
+  /** The browser's entries, in the order drawn. */
+  const entries = (browser: Element) => [
+    ...browser.querySelectorAll<HTMLElement>('.dir-list button'),
+  ]
+  const names = (browser: Element) =>
+    entries(browser).map((entry) => entry.textContent)
+
+  /**
+   * Configuration at `entry`, the picker's Browse… pressed and `first`, what
+   * it lists first, drawn.
+   */
+  async function browsing(
+    entry: typeof NEW_LIBRARY | typeof LIBRARY,
+    first: librariesApi.DirListing = SERIES,
+  ) {
+    const host = await opened(entry)
+    if (entry === LIBRARY) {
+      await press(host.querySelector('button[name="add-dir"]') as Element)
+    }
+    await press(host.querySelector('button[name="browse"]') as Element)
+    await document.fonts.ready
+    const browser = host.querySelector('.dir-browser') as HTMLElement
+    expect(names(browser)).toEqual(first.dirs.map((dir) => dir.name))
+    return { host, browser }
+  }
+
+  it.each([
+    [NEW_LIBRARY, 390, 'Make the library and Cancel'],
+    [NEW_LIBRARY, 1280, 'Make the library and Cancel'],
+    [LIBRARY, 390, 'Don’t scan yet'],
+    [LIBRARY, 1280, 'Don’t scan yet'],
+  ] as const)('opens on %s at %ipx below %s', async (entry, width, _under) => {
+    await sized(width, 844)
+    const { host, browser } = await browsing(entry)
+    const above =
+      entry === NEW_LIBRARY
+        ? [
+            '.new-library button[type="submit"]',
+            '.new-library button[name="cancel"]',
+          ]
+        : ['.add-root > label.scan-off']
+    const top = browser.getBoundingClientRect().top
+    for (const selector of above) {
+      const el = host.querySelector(selector) as HTMLElement
+      expect(top, selector).toBeGreaterThanOrEqual(
+        el.getBoundingClientRect().bottom,
+      )
+    }
+  })
+
+  it('draws each entry a line high, its name on one line, with no border and no ground of its own', async () => {
+    await sized(1280, 844)
+    const { browser } = await browsing(NEW_LIBRARY)
+    // A line, and the `--space-1` the row's padding takes above and below
+    // it: a button's own padding and border would make the list a stack of
+    // buttons.
+    const room = token('--space-1')
+    for (const entry of entries(browser)) {
+      const name = entry.textContent ?? ''
+      const words = document.createRange()
+      words.selectNodeContents(entry)
+      expect(words.getClientRects(), name).toHaveLength(1)
+      const style = getComputedStyle(entry)
+      expect(
+        [
+          style.borderTopWidth,
+          style.borderRightWidth,
+          style.borderBottomWidth,
+          style.borderLeftWidth,
+        ],
+        name,
+      ).toEqual(['0px', '0px', '0px', '0px'])
+      expect(style.backgroundColor, name).toBe('rgba(0, 0, 0, 0)')
+      expect(entry.getBoundingClientRect().height, name).toBeLessThanOrEqual(
+        Number.parseFloat(style.lineHeight) + room,
+      )
+    }
+  })
+
+  it.each([NEW_LIBRARY, LIBRARY] as const)(
+    'gives each entry 44px of height or more under a coarse pointer on %s at 390px, no entry over the next',
+    async (entry) => {
+      // The coarse block's floor on every `.config` button reaches these
+      // rows, whose own padding is set for a mouse: a finger needs 44px.
+      onTestFinished(coarseRulesOn())
+      await sized(390, 844)
+      const { browser } = await browsing(entry)
+      let above: DOMRect | undefined
+      for (const row of entries(browser)) {
+        const name = row.textContent ?? ''
+        const box = row.getBoundingClientRect()
+        expect(box.height, name).toBeGreaterThanOrEqual(44)
+        if (above !== undefined) {
+          expect(box.top, name).toBeGreaterThanOrEqual(above.bottom)
+        }
+        above = box
+      }
+    },
+  )
+
+  /** A name the path ending in it cannot hold on one line of the browser. */
+  const LONG_NAME =
+    'The Collected Editions of a Series Whose Name Runs On Past One Line, Volumes One to Twelve'
+  /** What Browse… lists first here: the top level, with no Up. */
+  const TOP: librariesApi.DirListing = {
+    path: null,
+    parent: null,
+    dirs: [
+      { name: '/srv/manga', path: '/srv/manga' },
+      { name: '/srv/comics', path: '/srv/comics' },
+    ],
+  }
+  /** What entering TOP's first lists: three directories. */
+  const THREE: librariesApi.DirListing = {
+    path: '/srv/manga',
+    parent: null,
+    dirs: [
+      { name: 'Series 07', path: '/srv/manga/Series 07' },
+      { name: 'Kids', path: '/srv/manga/Kids' },
+      { name: LONG_NAME, path: `/srv/manga/${LONG_NAME}` },
+    ],
+  }
+  /** What entering THREE's second lists: nothing. */
+  const EMPTY: librariesApi.DirListing = {
+    path: '/srv/manga/Kids',
+    parent: '/srv/manga',
+    dirs: [],
+  }
+  /** What entering THREE's third lists, at a path on more than one line. */
+  const LONG: librariesApi.DirListing = {
+    path: `/srv/manga/${LONG_NAME}`,
+    parent: '/srv/manga',
+    dirs: dirsIn(`/srv/manga/${LONG_NAME}`, 'Volume', 3),
+  }
+
+  /** Each shape `walk` draws the browser in, in the order it draws them. */
+  type Shape =
+    | 'the top level'
+    | 'three directories'
+    | 'sixty directories'
+    | 'a filter that matches none'
+    | 'an empty directory'
+    | 'a path on more than one line'
+    | 'a slow read'
+    | 'a refused read'
+
+  /**
+   * Browse… pressed on `entry`, and the browser walked through each `Shape`
+   * in turn, `at` called at each once it is drawn.
+   */
+  async function walk(
+    entry: typeof NEW_LIBRARY | typeof LIBRARY,
+    at: (shape: Shape, browser: HTMLElement) => void | Promise<void>,
+  ) {
+    const listings = [TOP, THREE, VOLUMES, EMPTY, LONG]
+    vi.mocked(librariesApi.listDirs).mockImplementation(async (to) => {
+      const listing = listings.find((one) => (one.path ?? undefined) === to)
+      if (listing === undefined) throw new Error(`no listing at ${to}`)
+      return listing
+    })
+    const { browser } = await browsing(entry, TOP)
+    const enter = (name: string) =>
+      press(entries(browser).find((one) => one.textContent === name) as Element)
+    const up = () =>
+      press(browser.querySelector('button[name="up"]') as Element)
+    /** The line drawn in the list's place, where there is one. */
+    const empty = () => browser.querySelector('.empty')?.textContent
+
+    expect(browser.querySelector('button[name="up"]')).toBeNull()
+    await at('the top level', browser)
+    await enter('/srv/manga')
+    expect(names(browser)).toEqual(THREE.dirs.map((dir) => dir.name))
+    await at('three directories', browser)
+    await enter('Series 07')
+    expect(names(browser)).toEqual(VOLUMES.dirs.map((dir) => dir.name))
+    await at('sixty directories', browser)
+    await typeInto(
+      browser.querySelector('input[name="filter"]') as HTMLInputElement,
+      'Tome',
+    )
+    expect({ entries: names(browser), line: empty() }).toEqual({
+      entries: [],
+      line: 'No directories here match this filter.',
+    })
+    await at('a filter that matches none', browser)
+    await up()
+    await enter('Kids')
+    expect(empty()).toBe('No directories in here.')
+    await at('an empty directory', browser)
+    await up()
+    await enter(LONG_NAME)
+    await document.fonts.ready
+    const path = browser.querySelector('.where code') as HTMLElement
+    expect(path.textContent).toBe(LONG.path)
+    expect(path.getClientRects().length).toBeGreaterThan(1)
+    await at('a path on more than one line', browser)
+    const held = deferred<librariesApi.DirListing>()
+    vi.mocked(librariesApi.listDirs).mockReturnValueOnce(held.promise)
+    await enter(LONG.dirs[0].name)
+    await act(
+      () =>
+        new Promise((done) =>
+          setTimeout(done, librariesApi.READING_DELAY_MS + 50),
+        ),
+    )
+    expect(browser.querySelector('.reading')?.textContent).toBe(
+      'Reading directories…',
+    )
+    await at('a slow read', browser)
+    await act(async () =>
+      held.resolve({
+        path: LONG.dirs[0].path,
+        parent: LONG.path,
+        dirs: [],
+      }),
+    )
+    await up()
+    vi.mocked(librariesApi.listDirs).mockRejectedValueOnce(
+      new Error(
+        `/api/library/dirs: 403 {"error":"${LONG.dirs[1].path} is not readable"}`,
+      ),
+    )
+    await enter(LONG.dirs[1].name)
+    expect({
+      alert: browser.querySelector('[role="alert"]')?.textContent,
+      entries: names(browser),
+    }).toEqual({
+      alert: `${LONG.dirs[1].path} is not readable`,
+      entries: LONG.dirs.map((dir) => dir.name),
+    })
+    await at('a refused read', browser)
+  }
+
+  /** The browser's box inside its border and padding. */
+  const inside = (browser: HTMLElement) => {
+    const box = browser.getBoundingClientRect()
+    const style = getComputedStyle(browser)
+    const px = (value: string) => Number.parseFloat(value)
+    return {
+      top: box.top + px(style.borderTopWidth) + px(style.paddingTop),
+      bottom:
+        box.bottom - px(style.borderBottomWidth) - px(style.paddingBottom),
+      width:
+        box.width -
+        px(style.borderLeftWidth) -
+        px(style.paddingLeft) -
+        px(style.paddingRight) -
+        px(style.borderRightWidth),
+    }
+  }
+  /** The shapes `walk` draws with no list, a line in its place. */
+  const LISTLESS: Shape[] = ['a filter that matches none', 'an empty directory']
+  /** Each edge of `el`'s border: its width, style and colour. */
+  const edges = (el: Element) => {
+    const style = getComputedStyle(el)
+    return ['top', 'right', 'bottom', 'left'].map((side) =>
+      ['width', 'style', 'color']
+        .map((part) => style.getPropertyValue(`border-${side}-${part}`))
+        .join(' '),
+    )
+  }
+  /** The box of `el`'s words' first line. */
+  const firstWords = (el: Element) => {
+    const words = document.createRange()
+    words.selectNodeContents(el)
+    return words.getClientRects()[0]
+  }
+
+  it.each([
+    [NEW_LIBRARY, 900, '28rem'],
+    [NEW_LIBRARY, 500, '60vh'],
+    [LIBRARY, 900, '28rem'],
+    [LIBRARY, 500, '60vh'],
+  ] as const)(
+    'on %s at a %ipx window keeps the browser %s tall, its border and padding inside it, whatever it draws',
+    async (entry, height, arm) => {
+      await sized(1280, height)
+      const heights: [Shape, number][] = []
+      await walk(entry, (shape, browser) => {
+        heights.push([shape, browser.getBoundingClientRect().height])
+      })
+      const [[, first], ...rest] = heights
+      for (const [shape, drawn] of rest) {
+        expect(drawn, shape).toBeCloseTo(first, 0)
+      }
+      const rem = Number.parseFloat(
+        getComputedStyle(document.documentElement).fontSize,
+      )
+      const tall = Math.min(28 * rem, 0.6 * innerHeight)
+      // The arm of the `min` this window is at.
+      expect(tall).toBe(arm === '28rem' ? 28 * rem : 0.6 * innerHeight)
+      expect(first).toBeCloseTo(tall, 0)
+    },
+  )
+
+  it.each([
+    [NEW_LIBRARY, 900],
+    [NEW_LIBRARY, 500],
+    [LIBRARY, 900],
+    [LIBRARY, 500],
+  ] as const)(
+    'on %s at a %ipx window gives the list the height the lines above it leave, and scrolls it inside itself at sixty directories',
+    async (entry, height) => {
+      await sized(1280, height)
+      await walk(entry, async (shape, browser) => {
+        // Through a slow read the list shares what is left with the line
+        // that says so, drawn below it.
+        if (LISTLESS.includes(shape) || shape === 'a slow read') return
+        const list = browser.querySelector('.dir-list') as HTMLElement
+        expect(list, shape).not.toBeNull()
+        expect(list.getBoundingClientRect().bottom, shape).toBeCloseTo(
+          inside(browser).bottom,
+          0,
+        )
+        if (shape !== 'sixty directories') return
+        // It scrolls inside itself: there is more of it than it shows, and a
+        // real wheel over it moves it.
+        expect(list.scrollHeight).toBeGreaterThan(list.clientHeight)
+        await userEvent.wheel(list, { delta: { y: 100 } })
+        await expect.poll(() => list.scrollTop).toBeGreaterThan(0)
+        expect(getComputedStyle(list).overscrollBehaviorY).toBe('contain')
+      })
+    },
+  )
+
+  it.each([NEW_LIBRARY, LIBRARY] as const)(
+    'on %s puts its padding alone above the first line the browser draws, and the gap alone between each line and the next, whatever it draws',
+    async (entry) => {
+      await sized(1280, 900)
+      const gap = token('--space-2')
+      await walk(entry, (shape, browser) => {
+        // The visually hidden status line is placed out of the column.
+        const lines = [...browser.children].filter(
+          (line) => getComputedStyle(line).position !== 'absolute',
+        )
+        let above = inside(browser).top
+        lines.forEach((line, i) => {
+          const name =
+            line.getAttribute('role') ??
+            line.getAttribute('name') ??
+            line.className
+          const box = line.getBoundingClientRect()
+          expect(box.top - above, `${shape}: above ${name}`).toBeCloseTo(
+            i === 0 ? 0 : gap,
+            0,
+          )
+          above = box.bottom
+        })
+      })
+    },
+  )
+
+  it.each([NEW_LIBRARY, LIBRARY] as const)(
+    'on %s draws the filter and the list across the browser’s width inside its padding, whatever it draws',
+    async (entry) => {
+      await sized(1280, 900)
+      await walk(entry, (shape, browser) => {
+        const across = inside(browser).width
+        const filter = browser.querySelector('.search-box') as HTMLElement
+        expect(
+          filter.getBoundingClientRect().width,
+          `${shape}: filter`,
+        ).toBeCloseTo(across, 0)
+        if (LISTLESS.includes(shape)) return
+        const list = browser.querySelector('.dir-list') as HTMLElement
+        expect(
+          list.getBoundingClientRect().width,
+          `${shape}: list`,
+        ).toBeCloseTo(across, 0)
+      })
+    },
+  )
+
+  it.each([
+    [NEW_LIBRARY, 'fine', 1280],
+    [NEW_LIBRARY, 'coarse', 390],
+    [LIBRARY, 'fine', 1280],
+    [LIBRARY, 'coarse', 390],
+  ] as const)(
+    'on %s with a %s pointer at %ipx draws the line of an empty directory and of a filter that matches none in a frame drawn as the list and where the list is at sixty directories, its words where the first row’s are',
+    async (entry, pointer, width) => {
+      // Under a coarse pointer a row is floored at 44px and centres its
+      // words, so they sit lower in it than its padding alone puts them.
+      if (pointer === 'coarse') onTestFinished(coarseRulesOn())
+      await sized(width, 900)
+      let full:
+        | { browser: number; list: DOMRect; edges: string[]; words: DOMRect }
+        | undefined
+      const checked: Shape[] = []
+      await walk(entry, (shape, browser) => {
+        if (shape === 'sixty directories') {
+          const list = browser.querySelector('.dir-list') as HTMLElement
+          full = {
+            browser: browser.getBoundingClientRect().height,
+            list: list.getBoundingClientRect(),
+            edges: edges(list),
+            words: firstWords(entries(browser)[0]),
+          }
+        }
+        if (!LISTLESS.includes(shape)) return
+        if (full === undefined) throw new Error(`${shape} before sixty`)
+        const line = browser.querySelector('.empty') as HTMLElement
+        // The frame is the browser's line that holds the empty line: the
+        // line itself, or a box drawn around it.
+        const frame = [...browser.children].find((one) =>
+          one.contains(line),
+        ) as HTMLElement
+        expect(
+          browser.getBoundingClientRect().height,
+          `${shape}: browser`,
+        ).toBeCloseTo(full.browser, 0)
+        expect(edges(frame), `${shape}: edges`).toEqual(full.edges)
+        const box = frame.getBoundingClientRect()
+        for (const side of ['top', 'right', 'bottom', 'left'] as const) {
+          expect(box[side], `${shape}: ${side}`).toBeCloseTo(full.list[side], 0)
+        }
+        const words = firstWords(line)
+        expect(words.left, `${shape}: words' left`).toBeCloseTo(
+          full.words.left,
+          0,
+        )
+        expect(words.top, `${shape}: words' top`).toBeCloseTo(full.words.top, 0)
+        checked.push(shape)
+      })
+      expect(checked).toEqual(LISTLESS)
+    },
+  )
+
+  it('draws the ring of each row a real Tab or Shift+Tab reaches inside the list’s visible box, the rows scrolled to as well', async () => {
+    await sized(1280, 844)
+    const { browser } = await browsing(NEW_LIBRARY)
+    const list = browser.querySelector('.dir-list') as HTMLElement
+    const rows = entries(browser)
+    // Inside the frame first: a key pressed before anything here has focus
+    // goes to the frame around the test. Up is focused, and the rows follow
+    // it in Tab's order.
+    await act(async () =>
+      (browser.querySelector('button[name="up"]') as HTMLElement).focus(),
+    )
+    /** `row` focused, and its ring within the box the list shows. */
+    const ringedInside = (row: HTMLElement) => {
+      expect(document.activeElement).toBe(row)
+      const ring = ringOf(row)
+      const at = list.getBoundingClientRect()
+      const shown = {
+        left: at.left + list.clientLeft,
+        top: at.top + list.clientTop,
+        right: at.left + list.clientLeft + list.clientWidth,
+        bottom: at.top + list.clientTop + list.clientHeight,
+      }
+      const name = row.textContent
+      expect(ring.top, `${name} top`).toBeGreaterThanOrEqual(shown.top)
+      expect(ring.bottom, `${name} bottom`).toBeLessThanOrEqual(shown.bottom)
+      expect(ring.left, `${name} left`).toBeGreaterThanOrEqual(shown.left)
+      expect(ring.right, `${name} right`).toBeLessThanOrEqual(shown.right)
+    }
+    for (const row of rows) {
+      await userEvent.tab()
+      ringedInside(row)
+    }
+    // Down to the last row, so the list was scrolled to reach it; then back
+    // up, so the rows it scrolls up to are held at its top edge too.
+    expect(list.scrollTop).toBeGreaterThan(0)
+    for (const row of rows.toReversed().slice(1)) {
+      await userEvent.tab({ shift: true })
+      ringedInside(row)
+    }
+  })
+
+  it('makes no library at a real Enter in the filter, where the form could be sent', async () => {
+    await sized(1280, 844)
+    vi.mocked(librariesApi.createLibrary).mockResolvedValue({
+      library: holding(root()).libraries[0],
+      added: [],
+    })
+    const { host, browser } = await browsing(NEW_LIBRARY)
+    const named = host.querySelector(
+      'input[name="library-name"]',
+    ) as HTMLInputElement
+    // Inside the frame first: a key pressed before anything here has focus
+    // goes to the frame around the test.
+    await act(async () => named.focus())
+    await userEvent.keyboard('Westerns')
+    // The form could be sent: the listing wrote its path into the box, and
+    // the name clashes with no library's, so its submit is not held.
+    expect(
+      (host.querySelector('input[name="path"]') as HTMLInputElement).value,
+    ).toBe(SERIES.path)
+    expect(
+      (
+        host.querySelector(
+          '.new-library button[type="submit"]',
+        ) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false)
+    const filter = browser.querySelector(
+      'input[name="filter"]',
+    ) as HTMLInputElement
+    await act(async () => filter.focus())
+    await userEvent.keyboard('Series 1')
+    expect(names(browser)).toEqual(TENS)
+    await userEvent.keyboard('{Enter}')
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+    expect(librariesApi.createLibrary).not.toHaveBeenCalled()
+  })
+
+  it('empties the filter at a real Escape, and the browser stays open', async () => {
+    await sized(1280, 844)
+    const { host, browser } = await browsing(NEW_LIBRARY)
+    const filter = browser.querySelector(
+      'input[name="filter"]',
+    ) as HTMLInputElement
+    // Inside the frame first: a key pressed before anything here has focus
+    // goes to the frame around the test.
+    await act(async () => filter.focus())
+    await userEvent.keyboard('Series 1')
+    expect(names(browser)).toEqual(TENS)
+    await userEvent.keyboard('{Escape}')
+    await flush()
+    const browse = host.querySelector('button[name="browse"]') as HTMLElement
+    expect({
+      expanded: browse.getAttribute('aria-expanded'),
+      drawn: browser.isConnected,
+    }).toEqual({ expanded: 'true', drawn: true })
+    expect({ box: filter.value, entries: names(browser) }).toEqual({
+      box: '',
+      entries: SERIES.dirs.map((dir) => dir.name),
+    })
+  })
+
+  it.each([NEW_LIBRARY, LIBRARY] as const)(
+    'on %s leaves focus on the where line after a real click on Browse…, and the line matches no :focus-visible',
+    async (entry) => {
+      await sized(1280, 844)
+      const host = await opened(entry)
+      if (entry === LIBRARY) {
+        await press(host.querySelector('button[name="add-dir"]') as Element)
+      }
+      await userEvent.click(
+        host.querySelector('button[name="browse"]') as HTMLElement,
+      )
+      await flush()
+      const where = host.querySelector('.dir-browser .where') as HTMLElement
+      expect(where.textContent).toBe(SERIES.path)
+      expect(document.activeElement).toBe(where)
+      expect(where.matches(':focus-visible')).toBe(false)
+    },
+  )
+
+  /** What entering VOLUMES's last lists: ninety, more than it holds. */
+  const CHAPTERS: librariesApi.DirListing = {
+    path: '/srv/manga/Series 07/Volume 60',
+    parent: VOLUMES.path,
+    dirs: dirsIn('/srv/manga/Series 07/Volume 60', 'Chapter', 90),
+  }
+
+  it.each([NEW_LIBRARY, LIBRARY] as const)(
+    'on %s draws a directory entered, the directory Up goes to and a filter’s new matches from the top of the list, each after a real wheel took the list to its foot',
+    async (entry) => {
+      await sized(1280, 844)
+      const listings = [SERIES, VOLUMES, CHAPTERS]
+      vi.mocked(librariesApi.listDirs).mockImplementation(
+        async (to) => listings.find((one) => one.path === to) ?? SERIES,
+      )
+      const { browser } = await browsing(entry)
+      const list = () => browser.querySelector('.dir-list') as HTMLElement
+      const toFoot = async () => {
+        await userEvent.wheel(list(), { delta: { y: list().scrollHeight } })
+        await expect
+          .poll(
+            () => list().scrollHeight - list().clientHeight - list().scrollTop,
+          )
+          .toBeLessThan(1)
+      }
+      const clicked = async (el: Element | undefined) => {
+        await userEvent.click(el as HTMLElement)
+        await flush()
+      }
+      /**
+       * The first entry drawn, how far the list is scrolled, and how far
+       * that entry's top is from where the list's border and padding put
+       * the top of what it holds; each to the nearest pixel, a zero never
+       * negative.
+       */
+      const atTop = () => {
+        const shown = list()
+        const first = entries(browser)[0]
+        const holds =
+          shown.getBoundingClientRect().top +
+          shown.clientTop +
+          Number.parseFloat(getComputedStyle(shown).paddingTop)
+        return {
+          first: first.textContent,
+          scrollTop: Math.round(shown.scrollTop) + 0,
+          drop: Math.round(first.getBoundingClientRect().top - holds) + 0,
+        }
+      }
+      const volumes = VOLUMES.dirs.map((dir) => dir.name)
+
+      await clicked(
+        entries(browser).find((one) => one.textContent === 'Series 07'),
+      )
+      expect(names(browser)).toEqual(volumes)
+      await toFoot()
+      // A click that moves no focus, as Safari's on a button: in Chromium,
+      // an entry that took focus and goes with its listing takes the list's
+      // offset with it, so a focusing click would find the list at its top
+      // however the next listing is drawn.
+      await press(entries(browser).at(-1) as Element)
+      expect(names(browser)).toEqual(CHAPTERS.dirs.map((dir) => dir.name))
+      const entered = atTop()
+
+      await toFoot()
+      await clicked(browser.querySelector('button[name="up"]') ?? undefined)
+      expect(names(browser)).toEqual(volumes)
+      const climbed = atTop()
+
+      await toFoot()
+      const filter = browser.querySelector(
+        'input[name="filter"]',
+      ) as HTMLInputElement
+      // Inside the frame first: a key pressed before anything here has focus
+      // goes to the frame around the test.
+      await act(async () => filter.focus())
+      await userEvent.keyboard('1')
+      await flush()
+      expect(names(browser)).toEqual(
+        volumes.filter((name) => name.includes('1')),
+      )
+      // More matches than the list shows, so an offset kept from the sixty
+      // would leave the first of them out of view.
+      expect(list().scrollHeight).toBeGreaterThan(list().clientHeight)
+      const filtered = atTop()
+
+      expect({ entered, climbed, filtered }).toEqual({
+        entered: { first: 'Chapter 01', scrollTop: 0, drop: 0 },
+        climbed: { first: 'Volume 01', scrollTop: 0, drop: 0 },
+        filtered: { first: 'Volume 01', scrollTop: 0, drop: 0 },
+      })
+    },
+  )
+
+  it.each([
+    ['a listing at a path on one line', SERIES],
+    ['a listing at a path on more than one line', LONG],
+    ['an empty directory', EMPTY],
+  ] as const)(
+    'on New library at an 844×390 window under a coarse pointer, a refusal and a slow read drawn over %s, draws nothing outside the browser’s border, keeps the first row or line in the list’s place whole, and a real wheel brings it and the reading line into view',
+    async (_shape, first) => {
+      onTestFinished(coarseRulesOn())
+      await sized(844, 390)
+      vi.mocked(librariesApi.listDirs).mockResolvedValue(first)
+      const { browser } = await browsing(NEW_LIBRARY, first)
+      const path = browser.querySelector('.where code') as HTMLElement
+      expect(path.getClientRects().length > 1).toBe(first === LONG)
+      // Two entries pressed, or Up twice where there is none: the first
+      // refused, the second held past the delay.
+      const presses =
+        first.dirs.length > 0
+          ? [entries(browser)[0], entries(browser)[1]]
+          : [browser.querySelector('button[name="up"]') as HTMLElement]
+      const refused = first.dirs[0]?.path ?? first.parent
+      vi.mocked(librariesApi.listDirs).mockRejectedValueOnce(
+        new Error(
+          `/api/library/dirs: 403 {"error":"${refused} is not readable"}`,
+        ),
+      )
+      await press(presses[0])
+      const held = deferred<librariesApi.DirListing>()
+      vi.mocked(librariesApi.listDirs).mockReturnValueOnce(held.promise)
+      await press(presses.at(-1) as HTMLElement)
+      await act(
+        () =>
+          new Promise((done) =>
+            setTimeout(done, librariesApi.READING_DELAY_MS + 50),
+          ),
+      )
+      const reading = browser.querySelector('.reading') as HTMLElement
+      expect({
+        alert: browser.querySelector('[role="alert"]')?.textContent,
+        reading: reading?.textContent,
+        entries: names(browser),
+        empty: browser.querySelector('.empty')?.textContent,
+      }).toEqual({
+        alert: `${refused} is not readable`,
+        reading: 'Reading directories…',
+        entries: first.dirs.map((dir) => dir.name),
+        empty: first.dirs.length > 0 ? undefined : 'No directories in here.',
+      })
+      await document.fonts.ready
+      // The page's foot in view, so the band under the browser is too.
+      await act(async () => {
+        scrollTo(0, document.documentElement.scrollHeight)
+      })
+
+      /**
+       * What hit testing finds of the browser in the bands 48px deep above
+       * and below its border box, across its width: anything of the
+       * browser's drawn there is drawn outside it.
+       */
+      const spilled = () => {
+        const box = browser.getBoundingClientRect()
+        const found: string[] = []
+        const rows = [
+          ...Array.from(
+            { length: 24 },
+            (_, i) => Math.floor(box.top) - 2 - 2 * i,
+          ),
+          ...Array.from(
+            { length: 24 },
+            (_, i) => Math.ceil(box.bottom) + 1 + 2 * i,
+          ),
+        ].filter((y) => y >= 0 && y < innerHeight)
+        for (const y of rows) {
+          for (let x = Math.ceil(box.left) + 1; x < box.right; x += 8) {
+            const hit = document.elementFromPoint(x, y)
+            if (hit !== null && browser.contains(hit)) {
+              found.push(`${hit.className || hit.tagName} at ${x},${y}`)
+            }
+          }
+        }
+        return found.slice(0, 3)
+      }
+      expect(spilled(), 'before the wheel').toEqual([])
+
+      // The list, or the frame an empty listing's line is drawn in, and the
+      // first row or line of words in it.
+      const place = browser.querySelector('.dir-list, .empty') as HTMLElement
+      const firstIn = () =>
+        first.dirs.length > 0
+          ? entries(browser)[0].getBoundingClientRect()
+          : firstWords(place)
+      /** `rect`'s top and foot inside `box`'s border, as `box` shows it now. */
+      const wholeIn = (rect: DOMRect, box: HTMLElement, name: string) => {
+        const at = box.getBoundingClientRect()
+        const top = at.top + box.clientTop
+        expect(rect.top, `${name}'s top`).toBeGreaterThanOrEqual(top - 0.5)
+        expect(rect.bottom, `${name}'s foot`).toBeLessThanOrEqual(
+          top + box.clientHeight + 0.5,
+        )
+      }
+      wholeIn(firstIn(), place, 'the first row or line in the list’s place')
+
+      // Over the where line, which is the browser's and not the list's.
+      await userEvent.wheel(browser.querySelector('.where') as HTMLElement, {
+        delta: { y: 400 },
+      })
+      await expect
+        .poll(
+          () => browser.scrollHeight - browser.clientHeight - browser.scrollTop,
+        )
+        .toBeLessThan(1)
+      expect(spilled(), 'after the wheel').toEqual([])
+      wholeIn(firstIn(), browser, 'the first row or line, in the browser,')
+      wholeIn(reading.getBoundingClientRect(), browser, 'the reading line')
+      await act(async () =>
+        held.resolve({ path: '/srv/held', parent: first.path, dirs: [] }),
+      )
+    },
+  )
 })
 
 describe('the Users pages at a phone’s width', () => {
@@ -4727,10 +5523,15 @@ describe('the libraries screen at desktop width', () => {
       box(host.querySelector('.dir-picker') as Element).width,
       0,
     )
-    // A directory's button takes the whole row of the list it is in.
+    // A directory's button takes the whole row of the list it is in, inside
+    // the list's padding.
     const entry = host.querySelector('.dir-list button') as Element
+    const list = host.querySelector('.dir-list') as HTMLElement
+    const inset = getComputedStyle(list)
     expect(box(entry).width).toBeCloseTo(
-      box(host.querySelector('.dir-list') as Element).width,
+      list.clientWidth -
+        Number.parseFloat(inset.paddingLeft) -
+        Number.parseFloat(inset.paddingRight),
       0,
     )
   })

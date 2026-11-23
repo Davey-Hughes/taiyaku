@@ -1501,18 +1501,55 @@
   flex: 1 1 12rem;
 }
 
-/* The browser, when open, on a line of its own beneath the box. */
+/* The browser, when open, on a line of its own beneath the box when it is
+   drawn in the picker, with no host to draw it in. One height whatever it
+   lists, so going from one directory to the next never moves the page: only
+   the list's share of the box changes. A column whose lines keep their own
+   width, so Up stays a button the size of its words; the path, the filter
+   and the list are stretched across it. Positioned so its visually hidden
+   status line is placed in its box and scrolls with it, for the reason
+   `.catalog-address` is. */
 .dir-browser {
+  position: relative;
   flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  height: min(28rem, 60vh);
+  /* Where its lines need more than that, as a refusal and a slow read's
+     line can in a short window, it scrolls as a whole rather than draw past
+     its border, and the list keeps the room of one row. */
+  overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
   padding: var(--space-3);
+  /* A row's inset, and how far below a row's top its first line of words
+     sits. An empty listing's line is drawn by them too, so it sits where a
+     first row's words would. */
+  --dir-row-block: calc(var(--space-1) / 2);
+  --dir-row-inline: var(--space-2);
+  --dir-row-line: 1.35;
+  --dir-row-words: var(--dir-row-block);
+  /* A one-line row's height: its line, and its inset above and below. */
+  --dir-row-height: calc(var(--dir-row-line) * 1em + 2 * var(--dir-row-block));
+}
+
+/* Each step from one line to the next is the column's gap, which a
+   paragraph's own margins, not collapsed in a flex column, would add to. */
+.dir-browser > p {
+  margin: 0;
 }
 
 .dir-browser .where {
-  min-width: 0;
-  margin: 0 0 var(--space-2);
+  align-self: stretch;
   overflow-wrap: anywhere;
+}
+
+.dir-browser .search-box {
+  align-self: stretch;
+  margin: 0;
 }
 
 /* Nothing to draw yet: the first listing is being read and is not yet slow
@@ -1522,14 +1559,10 @@
   display: none;
 }
 
-/* A slow read: what is still drawn is the listing being left, and the line
-   that says so may be below the window on a long one. */
+/* A slow read: what is still drawn is the listing being left, muted so that
+   it is not taken for the listing asked for. */
 .dir-browser:has(> .reading) > :not(.reading) {
   color: var(--muted);
-}
-
-.dir-browser .reading {
-  margin: var(--space-2) 0 0;
 }
 
 /* Up names the directory it goes to, and a directory's name may have nowhere to
@@ -1540,18 +1573,77 @@
   overflow-wrap: anywhere;
 }
 
-.dir-list {
-  list-style: none;
-  margin: var(--space-2) 0 0;
-  padding: 0;
-  display: grid;
-  gap: var(--space-1);
+/* One column in what the browser's height leaves, which scrolls inside
+   itself, so a directory of many folders does not stretch the page, and a
+   wheel that reaches the list's end stops there rather than scrolling the
+   page on. A listing with nothing to show draws its line in this same
+   frame, so the box looks the same from one listing to the next. */
+.dir-list,
+.dir-browser > .empty {
+  align-self: stretch;
+  flex: 1 1 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
 }
 
+/* A row the keyboard scrolls to stops the padding's width inside the box,
+   where the first row sits, so the ring drawn around it is not cut off at
+   the box's edge. */
+.dir-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1);
+  scroll-padding-block: var(--space-1);
+  /* One whole row, however little the lines above it leave: the browser
+     scrolls to it instead. */
+  min-height: var(--dir-row-height);
+}
+
+/* The line where the first row's words sit: the list's padding, then a
+   row's inline inset and how far below a row's top its words sit. */
+.dir-browser > .empty {
+  padding: calc(var(--space-1) + var(--dir-row-words))
+    calc(var(--space-1) + var(--dir-row-inline));
+  line-height: var(--dir-row-line);
+  /* Its first line whole, which with the padding is the list's one row. */
+  min-height: 1lh;
+}
+
+/* Rows, not buttons: with no border or ground of their own, many names read
+   as one list. */
 .dir-list button {
   width: 100%;
+  padding: var(--dir-row-block) var(--dir-row-inline);
+  border: 0;
+  background: none;
+  line-height: var(--dir-row-line);
   text-align: left;
   overflow-wrap: anywhere;
+}
+
+.dir-list button:hover {
+  background: var(--surface);
+  text-decoration: underline;
+}
+
+/* With no border to set it apart, the keyboard's row takes the pointer's
+   ground as well as the ring, and the ring sits on the row's edge, inside
+   the box's padding, where the box's scrolling does not cut it off. */
+.dir-list button:focus-visible {
+  background: var(--surface);
+  outline-offset: 0;
+}
+
+/* The browser's place in its caller's form, below the form's buttons (O316):
+   nothing at all until the browser in it has something to draw, so a closed
+   browser leaves no gap or line in the form. */
+.dir-browser-host:not(:has(> .dir-browser:not(:empty))) {
+  display: none;
+}
+
+.add-root > .dir-browser-host {
+  flex-basis: 100%;
 }
 
 /* The most destructive action in the product. C4 §2 opens by saying it does
@@ -1705,8 +1797,9 @@
 }
 
 /* The directory picker under a library's table. Its own box gives way, so its
-   box, its buttons with the Cancel it draws after them, and the browser wrap
-   in `.add-root`'s row, and a refusal joins that row at its gap. */
+   box and its buttons, with the Cancel it draws after them, wrap in
+   `.add-root`'s row, and a refusal joins that row at its gap. Its browser is
+   drawn in the row's host instead (`.add-root > .dir-browser-host`). */
 .add-root {
   margin-top: var(--space-3);
 }
@@ -2754,6 +2847,17 @@
   .add-root > .scan-off {
     min-height: 44px;
     align-items: center;
+  }
+
+  /* The floor above makes a one-line directory row 44px and centres its
+     words in it, and an empty listing's line follows them there. The
+     list's room for one row is that row's height. */
+  .dir-browser {
+    --dir-row-words: max(var(--dir-row-block), (44px - 1lh) / 2);
+    --dir-row-height: max(
+      44px,
+      calc(var(--dir-row-line) * 1em + 2 * var(--dir-row-block))
+    );
   }
 
   /* **O157: the three underlined one-of-N rows reach 44px to the touch

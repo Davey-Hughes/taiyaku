@@ -485,6 +485,8 @@ export function LibraryPage({
    * kept through a refusal, as the typed path is.
    */
   const [scanOff, setScanOff] = useState(false)
+  /** Where the picker draws its browser: below Don’t scan yet (O316). */
+  const [browserHost, setBrowserHost] = useState<HTMLDivElement | null>(null)
   /**
    * The directory the last add, or the making of the library, linked, which
    * other libraries held; the room the line saying so is drawn in, until it
@@ -1370,6 +1372,7 @@ export function LibraryPage({
               action="Add directory"
               onPick={add}
               disabled={removing}
+              browserHost={browserHost}
               onEdit={() => setAddFailure(undefined)}
             >
               <button
@@ -1443,6 +1446,10 @@ export function LibraryPage({
             </p>
           )}
           {addFailure !== undefined && <Refusal>{addFailure}</Refusal>}
+          {/* The directory browser, last in the add's row (O316): below
+              Don’t scan yet and below a refusal, which answers the buttons,
+              so a long listing pushes neither out of sight. */}
+          <div className="dir-browser-host" ref={setBrowserHost} />
         </div>
       </Section>
 

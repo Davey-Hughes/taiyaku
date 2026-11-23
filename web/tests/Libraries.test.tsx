@@ -31,7 +31,7 @@ import * as rulesApi from '../src/rules'
 import { deferred, flush, settleUntil } from './support/async'
 import './support/dialog'
 import { holdOf } from './support/held'
-import { press, submit, typeInto } from './support/input'
+import { press, pressEnter, submit, typeInto } from './support/input'
 import { changesIn } from './support/liveRegion'
 import { dir, idle, scanningIn } from './support/libraries'
 import { mount, rerender } from './support/mount'
@@ -96,6 +96,7 @@ vi.mock('../src/libraries', async (importOriginal) => ({
   createLibrary: vi.fn(),
   libraryRemovalCost: vi.fn(),
   libraryScanStatus: vi.fn(),
+  listDirs: vi.fn(),
   listLibraries: vi.fn(),
   moveCost: vi.fn(),
   moveDir: vi.fn(),
@@ -126,6 +127,16 @@ const twoAndOne = () => [
   library(1, 'Manga', ['/media/Manga/Volumes', '/media/Manga/Chapters']),
   library(2, 'Comics', ['/media/Comics']),
 ]
+
+/** What Browse… lists first: two directories the server may browse. */
+const TWO_SHELVES: api.DirListing = {
+  path: null,
+  parent: null,
+  dirs: [
+    { name: 'Comics', path: '/media/Comics' },
+    { name: 'Manga', path: '/media/Manga' },
+  ],
+}
 
 let steer: NavigateFunction | undefined
 let where = ''
@@ -2756,21 +2767,101 @@ describe('Libraries, making one', () => {
         ? child.querySelector('.settings-row-label')?.textContent
         : child.matches('[role="status"]')
           ? { says: child.textContent }
-          : [...child.querySelectorAll('button')].map((b) => b.textContent),
+          : child.matches('.dir-browser-host')
+            ? { browser: child.childElementCount }
+            : [...child.querySelectorAll('button')].map((b) => b.textContent),
     )
-    // Last, why the name typed would be refused, empty until it is.
+    // Then why the name typed would be refused, empty until it is, and last
+    // the room Browse… draws the directories in, empty until it is pressed
+    // (O316).
     expect(parts).toEqual([
       'Name',
       'Directory path',
       'Don’t scan yet (schedule Off)',
       ['Make the library', 'Cancel'],
       { says: '' },
+      { browser: 0 },
     ])
     // Browse… is the directory row's, with the box it writes a path into.
     expect(
       row(made, 'Directory path').querySelector('button[name="browse"]'),
     ).not.toBeNull()
     expect(page.querySelector('.actions')).toBeNull()
+  })
+
+  it('draws the directories Browse… lists in the room after Make the library and Cancel — O316', async () => {
+    vi.mocked(api.listDirs).mockResolvedValue(TWO_SHELVES)
+    const host = await at(NEW_LIBRARY)
+    const room = form(host).querySelector(
+      ':scope > .dir-browser-host',
+    ) as HTMLElement
+    const cancel = form(host).querySelector(
+      'button[name="cancel"]',
+    ) as HTMLButtonElement
+    expect(
+      [makeButton(host), cancel].map((b) =>
+        Boolean(
+          b.compareDocumentPosition(room) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+      ),
+    ).toEqual([true, true])
+
+    await press(form(host).querySelector('button[name="browse"]') as Element)
+    expect(
+      [
+        ...room.querySelectorAll(
+          '[role="group"][aria-label="Browse for a directory"] .dir-list button',
+        ),
+      ].map((entry) => entry.textContent),
+    ).toEqual(['Comics', 'Manga'])
+  })
+
+  it('makes nothing and draws no refusal on Enter in the directories’ filter, where Enter in Name makes the library — O317', async () => {
+    vi.mocked(api.listDirs).mockResolvedValue(TWO_SHELVES)
+    vi.mocked(api.createLibrary).mockRejectedValue(
+      new Error(
+        '/api/library/libraries: 400 {"error":"/media/Manga: No such file or directory (os error 2)"}',
+      ),
+    )
+    const host = await at(NEW_LIBRARY)
+    await typeInto(nameBox(host), 'Manga')
+    await typeInto(pathBox(host), '/media/Manga')
+    await press(form(host).querySelector('button[name="browse"]') as Element)
+    const filter = form(host).querySelector(
+      'input[name="filter"]',
+    ) as HTMLInputElement
+    await typeInto(filter, 'man')
+    const refusal = () => form(host).querySelector(':scope > [role="alert"]')
+
+    await pressEnter(filter)
+    await flush()
+    expect(api.createLibrary).not.toHaveBeenCalled()
+    expect(refusal()).toBeNull()
+
+    // The control: the same key, taken the same way, in Name sends the make
+    // and draws its refusal, so the two above would see a make the filter's
+    // Enter sent.
+    await pressEnter(nameBox(host))
+    await flush()
+    expect(api.createLibrary).toHaveBeenCalledWith(
+      'Manga',
+      ['/media/Manga'],
+      false,
+    )
+    expect(refusal()?.textContent).toBe(
+      '/media/Manga: No such file or directory (os error 2)',
+    )
+    // Above the listing, so a long listing never pushes it out of sight
+    // (O316).
+    const listing = form(host).querySelector(
+      ':scope > .dir-browser-host [role="group"]',
+    ) as Element
+    expect(
+      Boolean(
+        (refusal() as Element).compareDocumentPosition(listing) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true)
   })
 
   it('wires each of the make form’s rows to its control, and its help to the control it explains', async () => {

@@ -25,6 +25,15 @@
  * what is left; the server sends the same empty listing when it was told and
  * none of what it was told exists, so the sentence names both.
  *
+ * **The browser's filter narrows the listing drawn, and only that one.** It
+ * matches anywhere in a directory's name, folded as Find in a book folds its
+ * text (`bookSearch.ts`'s `fold`), so case is set aside and accents are
+ * kept. Up is never filtered: it is how a person leaves a listing the filter
+ * has emptied. Each new listing, and each opening, starts unfiltered, since
+ * a filter typed for one directory's names says nothing about the next's.
+ * Enter in it is kept from the form around it, as the path box's is: on New
+ * library that form's submit makes the library.
+ *
  * **In a settings row the row's label is the box's.** Handed a `Row`'s ids,
  * the box is drawn bare and takes them, so the row's label names it and the
  * row's help describes it; a box with a label of its own as well would have
@@ -34,7 +43,9 @@
  * question a browser cannot ask, and the refusal's own sentence says which
  * check failed.
  */
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { fold } from './bookSearch'
 import { useFocusLeavesHeld } from './hooks'
 import { type DirListing, listDirs, READING_DELAY_MS } from './libraries'
 import { sentenceOf } from './message'
@@ -76,7 +87,17 @@ export interface DirPickerProps {
   children?: ReactNode
   /** The ids of the settings row the picker is the control of. */
   ids?: RowIds
+  /**
+   * Where the browser is drawn (O316): an element the caller places below
+   * its own form's buttons, so a long listing never pushes them out of
+   * sight. `null` while that element is not yet mounted, when nothing is
+   * drawn. Without one the browser is drawn in the picker, beneath the box.
+   */
+  browserHost?: HTMLElement | null
 }
+
+/** Drawn, and said by the browser's status line, when the filter hides all. */
+const NO_MATCH = 'No directories here match this filter.'
 
 export function DirPicker({
   action,
@@ -86,6 +107,7 @@ export function DirPicker({
   onPath,
   children,
   ids,
+  browserHost,
 }: DirPickerProps) {
   const [path, setPath] = useState('')
   /**
@@ -137,6 +159,16 @@ export function DirPicker({
 
   const [open, setOpen] = useState(false)
   const [listing, setListing] = useState<DirListing | undefined>()
+  const [filter, setFilter] = useState('')
+  const needle = fold(filter.trim()).text
+  /** The list drawn, so new matches can be drawn from its top. */
+  const list = useRef<HTMLUListElement>(null)
+  const shownDirs =
+    needle === ''
+      ? (listing?.dirs ?? [])
+      : (listing?.dirs ?? []).filter((dir) =>
+          fold(dir.name).text.includes(needle),
+        )
   const [browseFailure, setBrowseFailure] = useState<string | undefined>()
   /** The newest listing asked for. Answers need not arrive in order. */
   const latest = useRef(0)
@@ -178,6 +210,7 @@ export function DirPicker({
         setBrowseFailure(undefined)
         moved.current = entering
         setListing(answer)
+        setFilter('')
         // A path typed while the listing was being read is the person's.
         if (answer.path !== null && !typed.current) {
           onEdit?.()
@@ -192,6 +225,7 @@ export function DirPicker({
   }
 
   const browser = useRef<HTMLDivElement>(null)
+  const browserId = useId()
 
   // Entering a directory or going up replaces what the person was looking at,
   // and the button they pressed may be gone with it: focus goes to the line
@@ -208,8 +242,32 @@ export function DirPicker({
     }
   }, [listing])
 
+  /**
+   * Browse… was pressed to open the browser, and focus has not yet followed.
+   * The listing is drawn below the form's buttons (O316), after them in tab
+   * order, so opening it takes focus to its `where` line as entering a
+   * directory does: from Browse… itself, or from the page if focus fell
+   * there. Focus put anywhere else while the first listing is read stays.
+   */
+  const opening = useRef(false)
+  const browseButton = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!open || listing === undefined || !opening.current) return
+    opening.current = false
+    const at = document.activeElement
+    if (
+      at === document.body ||
+      at === browseButton.current ||
+      browser.current?.contains(at)
+    ) {
+      where.current?.focus()
+    }
+  }, [open, listing])
+
   const toggle = () => {
     if (!open && listing === undefined) go()
+    setFilter('')
+    opening.current = !open
     setOpen(!open)
   }
 
@@ -237,6 +295,118 @@ export function DirPicker({
         pick()
       }}
     />
+  )
+
+  const browserEl = (
+    <div
+      ref={browser}
+      id={browserId}
+      className="dir-browser"
+      role="group"
+      aria-label="Browse for a directory"
+      aria-busy={reading}
+    >
+      {browseFailure !== undefined && <p role="alert">{browseFailure}</p>}
+      {listing === undefined ? null : (
+        <>
+          <p className="where" ref={where} tabIndex={-1}>
+            {listing.path === null ? (
+              'Directories this server may browse'
+            ) : (
+              <code>{listing.path}</code>
+            )}
+          </p>
+          {/* The library's search box's look and shape (`SearchBar.tsx`): a
+              label read out and not drawn, and a placeholder naming what it
+              narrows. Under the where line and above Up and the entries;
+              it narrows the entries only. Drawn for an empty listing too,
+              so the box keeps one shape from one listing to the next. */}
+          <label className="search-box">
+            <span className="visually-hidden">Filter</span>
+            {/* No remembered entries: a browser's list of them would be
+                drawn over the listing the box narrows. */}
+            <input
+              type="search"
+              name="filter"
+              autoComplete="off"
+              value={filter}
+              placeholder="Filter these directories"
+              onChange={(e) => {
+                // New matches start at the top of the list: left at the
+                // offset the last ones were scrolled to, the first of them
+                // can be out of sight with nothing to say so.
+                if (
+                  list.current !== null &&
+                  fold(e.target.value.trim()).text !== needle
+                ) {
+                  list.current.scrollTop = 0
+                }
+                setFilter(e.target.value)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.preventDefault()
+              }}
+            />
+          </label>
+          {listing.path !== null && (
+            // O207: where Up goes is the server's answer, the canonical
+            // path's parent while that is inside a browsable directory and
+            // none once it is not, so it is read and never cut from the
+            // path. The arrow is for the eye; the name is where it goes.
+            <button
+              type="button"
+              name="up"
+              onClick={() => go(listing.parent ?? undefined, true)}
+            >
+              <span aria-hidden="true">↑ </span>
+              {listing.parent === null
+                ? 'Back to all browsable directories'
+                : `Up to ${lastPart(listing.parent)}`}
+            </button>
+          )}
+          {listing.dirs.length === 0 ? (
+            <p className="empty">
+              {listing.path === null
+                ? 'No directories to browse: either the server was not told ' +
+                  'which it may browse (--dirs, or TAIYAKU_DIRS), ' +
+                  'or none of the directories it was told about exist. ' +
+                  'Type the path instead.'
+                : 'No directories in here.'}
+            </p>
+          ) : shownDirs.length === 0 ? (
+            <p className="empty">{NO_MATCH}</p>
+          ) : (
+            // A list of its own for each listing, so a listing that lands
+            // is drawn from its top rather than at the offset the one it
+            // replaces was scrolled to. The listing held while the next is
+            // read keeps its list, and its offset, until that one lands.
+            <ul className="dir-list" key={listing.path ?? ''} ref={list}>
+              {shownDirs.map((dir) => (
+                <li key={dir.path}>
+                  <button
+                    type="button"
+                    name="enter"
+                    onClick={() => go(dir.path, true)}
+                  >
+                    {dir.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {/* Drawn empty while the filter matches something, so that a
+              screen reader reads it as it fills: what typing in the filter
+              did is otherwise said to the eye alone. */}
+          <p role="status" className="visually-hidden">
+            {listing.dirs.length > 0 && shownDirs.length === 0
+              ? NO_MATCH
+              : null}
+          </p>
+        </>
+      )}
+      {/* After the listing, so saying it moves nothing above. */}
+      {slow && <p className="reading">Reading directories…</p>}
+    </div>
   )
 
   return (
@@ -268,9 +438,11 @@ export function DirPicker({
         )}
         <div className="dir-picker-browse">
           <button
+            ref={browseButton}
             type="button"
             name="browse"
             aria-expanded={open}
+            aria-controls={open ? browserId : undefined}
             onClick={toggle}
           >
             Browse…
@@ -278,70 +450,10 @@ export function DirPicker({
           {children}
         </div>
       </div>
-      {open && (
-        <div
-          ref={browser}
-          className="dir-browser"
-          role="group"
-          aria-label="Browse for a directory"
-          aria-busy={reading}
-        >
-          {browseFailure !== undefined && <p role="alert">{browseFailure}</p>}
-          {listing === undefined ? null : (
-            <>
-              <p className="where" ref={where} tabIndex={-1}>
-                {listing.path === null ? (
-                  'Directories this server may browse'
-                ) : (
-                  <code>{listing.path}</code>
-                )}
-              </p>
-              {listing.path !== null && (
-                // O207: where Up goes is the server's answer, the canonical
-                // path's parent while that is inside a browsable directory and
-                // none once it is not, so it is read and never cut from the
-                // path. The arrow is for the eye; the name is where it goes.
-                <button
-                  type="button"
-                  name="up"
-                  onClick={() => go(listing.parent ?? undefined, true)}
-                >
-                  <span aria-hidden="true">↑ </span>
-                  {listing.parent === null
-                    ? 'Back to all browsable directories'
-                    : `Up to ${lastPart(listing.parent)}`}
-                </button>
-              )}
-              {listing.dirs.length === 0 ? (
-                <p className="empty">
-                  {listing.path === null
-                    ? 'No directories to browse: either the server was not told ' +
-                      'which it may browse (--dirs, or TAIYAKU_DIRS), ' +
-                      'or none of the directories it was told about exist. ' +
-                      'Type the path instead.'
-                    : 'No directories in here.'}
-                </p>
-              ) : (
-                <ul className="dir-list">
-                  {listing.dirs.map((dir) => (
-                    <li key={dir.path}>
-                      <button
-                        type="button"
-                        name="enter"
-                        onClick={() => go(dir.path, true)}
-                      >
-                        {dir.name}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
-          )}
-          {/* After the listing, so saying it moves nothing above. */}
-          {slow && <p className="reading">Reading directories…</p>}
-        </div>
-      )}
+      {open &&
+        (browserHost === undefined
+          ? browserEl
+          : browserHost !== null && createPortal(browserEl, browserHost))}
     </div>
   )
 }

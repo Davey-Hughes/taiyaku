@@ -186,7 +186,7 @@ const PAIRS = [
     opens: 'a directory',
     from: 'its library’s page',
     entry: dirPath(MANGA.name, MANGA.dirs[2].id),
-    height: 1000,
+    height: 1400,
   },
 ] as const
 

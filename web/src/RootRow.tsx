@@ -41,9 +41,8 @@
  * line, and a newline is the only separator a real path cannot itself
  * contain — a comma and a space both occur in real directory names. The
  * label says what the syntax is and does not claim the pattern is checked:
- * the server rejects a dangling `\` and an unclosed `{` and accepts
- * everything else, which is a guard against two typos rather than a
- * verification.
+ * the server refuses only a pattern `ignore` will not compile, which is a
+ * guard against typos rather than a verification.
  *
  * **Every figure on the step line is the server's** (`stepLine`): the job
  * keeps each step's count, and nothing here works one out or times anything.
@@ -97,6 +96,7 @@ import { messageOf, sentenceOf } from './message'
 import { useLineEnds } from './lineEnds'
 import { ROOTS } from './pageReads'
 import { PathWithBreaks } from './PathWithBreaks'
+import { READ_HELP } from './readHelp'
 import {
   askScanFeed,
   cancelScan,
@@ -263,18 +263,18 @@ interface TextField {
    */
   multiline?: boolean
   /**
-   * The row's help, beside the label, drawn only when set.
+   * The row's help, under the label, drawn only when set. Its words are in
+   * `readHelp.ts` (O315), with the rest of the setup help.
    *
-   * **`exclude_globs` alone, because it alone hides a trap the matcher's own
-   * correctness makes invisible.** With the `ignore` crate, `**\/extras/**`
-   * does not exclude the `extras` directory it names, only files under it — so
-   * a scan descends into every `extras`, records one as a scan entry, and
-   * reports "Directories excluded: 0", which reads to an admin as "my pattern
-   * did nothing" when gitignore did exactly what was asked. The label already
-   * says what the syntax is; this says what one shape of it does that has no
-   * equivalent trap on the other three fields, and it is silent about
-   * validation on purpose — the server rejects a dangling `\` and an unclosed
-   * `{` and accepts everything else, and this line must not imply otherwise.
+   * **`exclude_globs`'s help names a trap the matcher's own correctness makes
+   * invisible.** With the `ignore` crate, `**\/extras/**` does not exclude the
+   * `extras` directory it names, only files under it — so a scan descends into
+   * every `extras`, records one as a scan entry, and reports "Directories
+   * excluded: 0", which reads to an admin as "my pattern did nothing" when
+   * gitignore did what was asked. The label says what the syntax is; this says
+   * what four shapes do (a trailing slash, a bare name, a `/**` suffix, a `[`),
+   * and it is silent about validation on purpose: the server refuses only a
+   * pattern `ignore` will not compile, and this line must not imply more.
    */
   help?: string
 }
@@ -287,6 +287,7 @@ const TEXT_FIELDS: TextField[] = [
     group: 'read',
     from: (r) => r.edition_key ?? '',
     patch: (edition_key) => ({ edition_key }),
+    help: READ_HELP.editionKey,
   },
   {
     name: 'default_kind',
@@ -295,6 +296,7 @@ const TEXT_FIELDS: TextField[] = [
     group: 'read',
     from: (r) => r.default_kind ?? '',
     patch: (default_kind) => ({ default_kind }),
+    help: READ_HELP.defaultKind,
   },
   {
     name: 'default_language',
@@ -303,24 +305,22 @@ const TEXT_FIELDS: TextField[] = [
     group: 'read',
     from: (r) => r.default_language ?? '',
     patch: (default_language) => ({ default_language }),
+    help: READ_HELP.defaultLanguage,
   },
   {
     name: 'exclude_globs',
     // The label says what the syntax is, because gitignore's is not what
     // "globs" alone implies — `!` negates, a leading `/` anchors, a trailing
     // `/` means the directory. It does *not* claim the pattern is checked: the
-    // server rejects a dangling `\` and an unclosed `{` and accepts everything
-    // else, which is a guard against two typos rather than a verification.
+    // server refuses only a pattern `ignore` will not compile, which is a
+    // guard against typos rather than a verification.
     label: 'Exclude globs (one gitignore pattern per line)',
     title: 'Exclude globs',
     group: 'scan',
     multiline: true,
     from: (r) => r.exclude_globs ?? '',
     patch: (exclude_globs) => ({ exclude_globs }),
-    help:
-      'One gitignore pattern per line. A trailing slash or a bare name ' +
-      "excludes the directory and all under it; a '/**' suffix excludes " +
-      'only what is inside it.',
+    help: READ_HELP.excludeGlobs,
   },
 ]
 
@@ -1470,7 +1470,7 @@ export function RootRow({
         </Row>
       </Section>
 
-      <Section title="How it is read">
+      <Section title="How it is read" description={READ_HELP.section}>
         {TEXT_FIELDS.filter((field) => field.group === 'read').map(textRow)}
       </Section>
 

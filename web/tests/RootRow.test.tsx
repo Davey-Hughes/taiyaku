@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as config from '../src/config'
 import * as api from '../src/libraries'
+import { READ_HELP } from '../src/readHelp'
 import { RootRow } from '../src/RootRow'
 import type { FeedJob, ScanFeed } from '../src/scanFeed'
 import { inUtc } from '../src/utc'
@@ -1176,16 +1177,54 @@ describe('RootRow', () => {
     expect(hint).toContain("a '/**' suffix excludes only what is inside it")
   })
 
-  it('gives the other three text fields no hint', async () => {
+  it('draws beside each of the other three text fields its own help, in READ_HELP’s words — O315', async () => {
     // Per field, not a page-level count: a page-level assertion cannot see
     // which field a hint landed on.
     const host = await settle()
-    for (const label of ['Edition key', 'Default kind', 'Default language']) {
-      expect(
-        helpOf(row(host, label)),
-        `${label} should carry no hint`,
-      ).toBeNull()
-    }
+    expect(
+      ['Edition key', 'Default kind', 'Default language'].map(
+        (label) => helpOf(row(host, label))?.textContent,
+      ),
+    ).toEqual([
+      READ_HELP.editionKey,
+      READ_HELP.defaultKind,
+      READ_HELP.defaultLanguage,
+    ])
+  })
+
+  it('says under the How it is read heading when its settings are best set, in READ_HELP’s words — O315', async () => {
+    const host = await settle()
+    expect(
+      section(host, 'How it is read').querySelector(
+        ':scope > .settings-section-head > .settings-section-description',
+      )?.textContent,
+    ).toBe(READ_HELP.section)
+  })
+
+  it('says each setup help in the words the owner approved — O315', async () => {
+    // Word for word, and not through READ_HELP: an edit to readHelp.ts
+    // changes approved words, and this is the test that sees it.
+    const host = await settle()
+    const help = (label: string) => helpOf(row(host, label))?.textContent
+    expect(
+      section(host, 'How it is read').querySelector(
+        ':scope > .settings-section-head > .settings-section-description',
+      )?.textContent,
+    ).toBe(
+      'Set these before the directory’s first scan. To do that, add it with Don’t scan yet ticked, set them here, then press Scan directory.',
+    )
+    expect(help('Edition key')).toBe(
+      'The name of the edition this directory’s volumes become, unless a rule says otherwise. Left empty, the key is raw. Two directories that hold the same volumes need different keys, such as en and ja: under one key, their copies of a volume become one long edition.',
+    )
+    expect(help('Default kind')).toBe(
+      'What this directory’s editions are, unless a rule says otherwise: raw, official or fan. It labels them; only the key decides which files make one edition.',
+    )
+    expect(help('Default language')).toBe(
+      'The language of this directory’s editions, unless a rule says otherwise, as a short tag such as en or ja. Like the kind, it labels them.',
+    )
+    expect(help('Exclude globs')).toBe(
+      "One gitignore pattern per line. A trailing slash or a bare name excludes the directory and all under it; a '/**' suffix excludes only what is inside it. A [ starts a set of characters, as in [0-9], so to match a [ in a name, write \\[ instead.",
+    )
   })
 
   it('draws the keeps-documents checkbox as a check row, its box kept beside its words', async () => {
@@ -1243,30 +1282,29 @@ describe('RootRow', () => {
     )
     expect(box.hasAttribute('aria-labelledby')).toBe(false)
     expect(text('aria-describedby')).toBe(helpOf(globs)?.textContent)
-    expect(text('aria-describedby')).toBe(
-      'One gitignore pattern per line. A trailing slash or a bare name ' +
-        "excludes the directory and all under it; a '/**' suffix excludes " +
-        'only what is inside it.',
-    )
+    expect(text('aria-describedby')).toBe(READ_HELP.excludeGlobs)
   })
 
-  it('names every text box by its label alone, so a later hint cannot join a name — O165', async () => {
+  it('names each of the other three text boxes by its label alone and describes it by its help, READ_HELP’s words, so the help cannot join a name — O165, O315', async () => {
     const host = await settle()
-    const named = ['edition_key', 'default_kind', 'default_language'].map(
-      (name) => {
+    // What each attribute points at, by id, as for Exclude globs above.
+    const text = (box: Element | null, attr: string) => {
+      const id = box?.getAttribute(attr)
+      return id == null ? null : document.getElementById(id)?.textContent
+    }
+    expect(
+      ['edition_key', 'default_kind', 'default_language'].map((name) => {
         const box = host.querySelector(`input[name="${name}"]`)
         return [
-          name,
           box?.getAttribute('aria-label'),
-          box?.hasAttribute('aria-labelledby'),
-          box?.hasAttribute('aria-describedby'),
+          text(box, 'aria-labelledby'),
+          text(box, 'aria-describedby'),
         ]
-      },
-    )
-    expect(named).toEqual([
-      ['edition_key', 'Edition key', false, false],
-      ['default_kind', 'Default kind', false, false],
-      ['default_language', 'Default language', false, false],
+      }),
+    ).toEqual([
+      ['Edition key', null, READ_HELP.editionKey],
+      ['Default kind', null, READ_HELP.defaultKind],
+      ['Default language', null, READ_HELP.defaultLanguage],
     ])
   })
 

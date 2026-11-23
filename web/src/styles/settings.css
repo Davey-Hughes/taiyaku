@@ -524,10 +524,9 @@ section:has(.callout[data-over-focus], .linked[data-over-focus])
 }
 
 /* A row whose control is the directory picker (New library) puts the
-   picker under its label at the box's width: its browser opens beneath its
-   buttons, and in the control's column beside the label its listing would
-   take the label's room or have too little of its own. The box takes the
-   line its buttons leave. */
+   picker under its label at the box's width, so that a long path has the
+   row's width to be read in: the control's column beside the label is only
+   as wide as what it holds. The path box takes the line its buttons leave. */
 .settings-row:has(> .settings-row-control > .dir-picker) {
   grid-template-columns: minmax(0, 1fr);
 }

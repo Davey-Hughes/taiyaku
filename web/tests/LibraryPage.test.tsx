@@ -10,7 +10,7 @@ import { FEED_IDLE_MS, type FeedJob, type ScanFeed } from '../src/scanFeed'
 import { inUtc } from '../src/utc'
 import { deferred, flush, land } from './support/async'
 import { emptyDerive } from './support/derive'
-import { press, submit, typeInto } from './support/input'
+import { press, pressEnter, submit, typeInto } from './support/input'
 import { holdOf } from './support/held'
 import { changesIn } from './support/liveRegion'
 import { counted, dir, idle, manga, tick } from './support/libraries'
@@ -2349,6 +2349,78 @@ describe('LibraryPage, Don’t scan yet (schedule Off) beside Add directory — 
     await press(scanOffBox(host) as Element)
     expect(scanOffBox(host)?.checked).toBe(true)
     expect(refused()).toBeNull()
+  })
+})
+
+/**
+ * The directories Browse… lists on the add's row (O316, O317): two, so a
+ * listing that drew one would be seen.
+ */
+describe('LibraryPage, the directories Browse… lists beside Add directory', () => {
+  const twoShelves: api.DirListing = {
+    path: null,
+    parent: null,
+    dirs: [
+      { name: 'Comics', path: '/media/Comics' },
+      { name: 'Manga', path: '/media/Manga' },
+    ],
+  }
+  const browse = (add: HTMLElement) =>
+    press(add.querySelector('button[name="browse"]') as Element)
+  const pathBox = (add: HTMLElement) =>
+    add.querySelector('input[name="path"]') as HTMLInputElement
+
+  beforeEach(() => {
+    vi.mocked(api.listDirs).mockResolvedValue(twoShelves)
+  })
+
+  it('draws the listing below Don’t scan yet, and below the add’s refusal while one is drawn — O316', async () => {
+    vi.mocked(api.addDir).mockRejectedValue(
+      new Error('/api/library/libraries/7/dirs: 400 {"error":"nope"}'),
+    )
+    const { host } = await shown()
+    const add = await openPicker(host)
+    await typeInto(pathBox(add), '/media/typo')
+    await press(add.querySelector('button[name="pick"]') as Element)
+    await browse(add)
+    const listing = add.querySelector(
+      '[role="group"][aria-label="Browse for a directory"]',
+    ) as HTMLElement
+    expect(
+      [...listing.querySelectorAll('.dir-list button')].map(
+        (entry) => entry.textContent,
+      ),
+    ).toEqual(['Comics', 'Manga'])
+    const scanOff = [
+      ...add.querySelectorAll<HTMLLabelElement>(':scope > label'),
+    ].find((label) => label.textContent === 'Don’t scan yet (schedule Off)')
+    const refusal = add.querySelector(':scope > [role="alert"]')
+    expect(refusal?.textContent).toBe('nope')
+    const below = (above: Element | null | undefined) =>
+      Boolean(
+        above &&
+          above.compareDocumentPosition(listing) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+      )
+    expect(below(scanOff)).toBe(true)
+    expect(below(refusal)).toBe(true)
+  })
+
+  it('adds nothing on Enter in the directories’ filter, where Enter in the path box adds — O317', async () => {
+    vi.mocked(api.addDir).mockReturnValue(deferred<config.Added>().promise)
+    const { host } = await shown()
+    const add = await openPicker(host)
+    await typeInto(pathBox(add), '/media/Manga/Extras')
+    await browse(add)
+    const filter = add.querySelector('input[name="filter"]') as HTMLInputElement
+    await typeInto(filter, 'man')
+
+    await pressEnter(filter)
+    expect(api.addDir).not.toHaveBeenCalled()
+
+    // The control: the same key, taken the same way, in the path box adds.
+    await pressEnter(pathBox(add))
+    expect(api.addDir).toHaveBeenCalledWith(7, '/media/Manga/Extras', false)
   })
 })
 

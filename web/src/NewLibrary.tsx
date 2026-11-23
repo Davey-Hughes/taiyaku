@@ -75,6 +75,8 @@ export function NewLibrary({
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
   const [scanOff, setScanOff] = useState(false)
+  /** Where the picker draws its browser: below the form's buttons (O316). */
+  const [browserHost, setBrowserHost] = useState<HTMLDivElement | null>(null)
   const [creating, setCreating] = useState(false)
   const creatingDrawn = useDrawnWait(creating)
   /** Why the last library was not made. */
@@ -176,6 +178,7 @@ export function NewLibrary({
             {(ids) => (
               <DirPicker
                 ids={ids}
+                browserHost={browserHost}
                 onPath={(typed) => {
                   setFailure(undefined)
                   setPath(typed)
@@ -232,6 +235,10 @@ export function NewLibrary({
           </div>
           {failure !== undefined && <Refusal>{failure}</Refusal>}
           <NameClash id={clashNote} sentence={saidClash} />
+          {/* The directory browser, last in the form (O316): a long listing
+              opens below Make the library and Cancel, and below what answers
+              them, so it pushes none of them out of sight. */}
+          <div className="dir-browser-host" ref={setBrowserHost} />
         </form>
       </Section>
     </div>

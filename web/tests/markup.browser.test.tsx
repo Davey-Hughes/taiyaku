@@ -132,7 +132,8 @@ describe('names — §4.3 and §4.4', () => {
       .toHaveAccessibleDescription(
         'One gitignore pattern per line. A trailing slash or a bare name ' +
           "excludes the directory and all under it; a '/**' suffix excludes " +
-          'only what is inside it.',
+          'only what is inside it. A [ starts a set of characters, as in ' +
+          '[0-9], so to match a [ in a name, write \\[ instead.',
       )
   })
 

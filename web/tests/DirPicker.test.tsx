@@ -1,4 +1,4 @@
-import { act } from 'react'
+import { act, useState } from 'react'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { DirPicker } from '../src/DirPicker'
 import * as api from '../src/libraries'
@@ -685,7 +685,7 @@ describe('DirPicker, browsing', () => {
     expect(box(host).value).toBe('/media')
   })
 
-  it('moves focus to the line that says where it is, after entering a directory and after Up, and not on opening', async () => {
+  it('moves focus to the line that says where it is, after entering a directory and after Up, and not on opening while focus is in the path box', async () => {
     const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
     host.querySelector<HTMLElement>('input[name="path"]')?.focus()
     await press(browse(host))
@@ -776,5 +776,421 @@ describe('DirPicker, browsing', () => {
     first.focus()
     await press(first)
     expect(document.activeElement).toBe(first)
+  })
+  it('takes focus to the line that says where it is when Browse… opens it', async () => {
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
+    // Focus is on the button that was pressed, as a click or a key leaves it.
+    browse(host).focus()
+    await press(browse(host))
+    expect(document.activeElement).toBe(host.querySelector('.where'))
+  })
+
+  it('takes focus to the line that says where it is when Browse… opens it with focus on the page', async () => {
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
+    // A click in Safari focuses no button, so focus is on the page's body
+    // as the listing lands; `press` moves no focus either.
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    expect(document.activeElement).toBe(document.body)
+    await press(browse(host))
+    expect(document.activeElement).toBe(host.querySelector('.where'))
+  })
+
+  it('takes focus to the line that says where it is when Browse… opens it again over the listing it holds', async () => {
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
+    browse(host).focus()
+    await press(browse(host))
+    await press(browse(host))
+    expect(host.querySelector('.where')).toBeNull()
+
+    browse(host).focus()
+    await press(browse(host))
+    // Drawn from what it held: the second opening asked for nothing.
+    expect(api.listDirs).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(host.querySelector('.where'))
+  })
+
+  it('leaves focus in a field it was moved to while the first listing is read', async () => {
+    const first = deferred<api.DirListing>()
+    vi.mocked(api.listDirs).mockReturnValueOnce(first.promise)
+    const host = mount(
+      <div>
+        <input name="name" aria-label="Name" />
+        <DirPicker action="Add directory" onPick={vi.fn()} />
+      </div>,
+    )
+    browse(host).focus()
+    await press(browse(host))
+    const name = host.querySelector('input[name="name"]') as HTMLInputElement
+    name.focus()
+
+    await flush(() => first.resolve(PREFIXES))
+    expect(host.querySelector('.where')?.textContent).toBe(
+      'Directories this server may browse',
+    )
+    expect(document.activeElement).toBe(name)
+  })
+})
+
+/**
+ * The callers' shape: a host drawn after the form, handed over once mounted.
+ * Made in a function because `useComponentExportOnlyModules` refuses an
+ * unexported component at module scope, and `noExportsInTest` refuses the
+ * export.
+ */
+function hosted() {
+  function Hosted() {
+    const [place, setPlace] = useState<HTMLDivElement | null>(null)
+    return (
+      <>
+        <DirPicker
+          action="Add directory"
+          onPick={vi.fn()}
+          browserHost={place}
+        />
+        <div className="dir-browser-host" ref={setPlace} />
+      </>
+    )
+  }
+  return <Hosted />
+}
+
+describe('DirPicker, where its browser is drawn (O316)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(api.listDirs).mockResolvedValue(PREFIXES)
+  })
+
+  const listed = (place: ParentNode) =>
+    [...place.querySelectorAll('.dir-list button')].map((b) => b.textContent)
+
+  it('draws its browser in the picker, beneath the box, when handed no host', async () => {
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
+    await press(browse(host))
+    const browser = host.querySelector('.dir-browser') as HTMLElement
+    expect(browser.parentElement).toBe(host.querySelector('.dir-picker'))
+    expect(
+      box(host).compareDocumentPosition(browser) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0)
+  })
+
+  it('points Browse… at the browser it opens, in the host it is handed, while it is open', async () => {
+    const host = mount(hosted())
+    expect(browse(host).hasAttribute('aria-controls')).toBe(false)
+    await press(browse(host))
+    const browser = host.querySelector('.dir-browser-host > .dir-browser')
+    expect(browser).not.toBeNull()
+    expect(
+      document.getElementById(browse(host).getAttribute('aria-controls') ?? ''),
+    ).toBe(browser)
+    await press(browse(host))
+    expect(browse(host).hasAttribute('aria-controls')).toBe(false)
+  })
+
+  it('draws its browser in the host it is handed, and not in the picker', async () => {
+    const host = mount(hosted())
+    await press(browse(host))
+    const place = host.querySelector('.dir-browser-host') as HTMLElement
+    expect(listed(place)).toEqual(['/media'])
+    expect(host.querySelector('.dir-picker .dir-browser')).toBeNull()
+  })
+
+  it('draws nothing while its host is not yet there, and the browser once it is', async () => {
+    const place = document.createElement('div')
+    document.body.append(place)
+    onTestFinished(() => {
+      place.remove()
+    })
+    const host = mount(
+      <DirPicker action="Add directory" onPick={vi.fn()} browserHost={null} />,
+    )
+    await press(browse(host))
+    expect(document.querySelector('.dir-browser')).toBeNull()
+
+    rerender(
+      <DirPicker action="Add directory" onPick={vi.fn()} browserHost={place} />,
+    )
+    expect(listed(place)).toEqual(['/media'])
+  })
+})
+
+const ROOTS: api.DirListing = {
+  path: null,
+  parent: null,
+  dirs: [
+    { name: '/srv/comics', path: '/srv/comics' },
+    { name: '/srv/manga', path: '/srv/manga' },
+  ],
+}
+/**
+ * Names that differ in case (Bocchi, BOCCHI the Rock) and by an accent alone
+ * (Café, Cafe), and two that "af" matches inside a word.
+ */
+const SHELF: api.DirListing = {
+  path: '/srv/manga',
+  parent: null,
+  dirs: [
+    { name: 'Bocchi', path: '/srv/manga/Bocchi' },
+    { name: 'BOCCHI the Rock', path: '/srv/manga/BOCCHI the Rock' },
+    { name: 'Café', path: '/srv/manga/Café' },
+    { name: 'Cafe', path: '/srv/manga/Cafe' },
+  ],
+}
+/** Names no filter typed on the shelf matches, so one kept hides them. */
+const VOLUMES: api.DirListing = {
+  path: '/srv/manga/Bocchi',
+  parent: '/srv/manga',
+  dirs: [
+    { name: 'Vol. 01', path: '/srv/manga/Bocchi/Vol. 01' },
+    { name: 'Vol. 02', path: '/srv/manga/Bocchi/Vol. 02' },
+  ],
+}
+
+describe('DirPicker, the filter (O317)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(api.listDirs).mockImplementation((path) =>
+      Promise.resolve(
+        path === undefined ? ROOTS : path === '/srv/manga' ? SHELF : VOLUMES,
+      ),
+    )
+  })
+
+  const filterBox = (host: HTMLElement) =>
+    host.querySelector('input[name="filter"]') as HTMLInputElement
+  const names = (host: HTMLElement) => entries(host).map((b) => b.textContent)
+  const entry = (host: HTMLElement, name: string) => {
+    const found = entries(host).find((b) => b.textContent === name)
+    if (!found) throw new Error(`no entry named ${name}`)
+    return found
+  }
+  /** The filter's text and the entries drawn under it, read together. */
+  const narrowed = (host: HTMLElement) => ({
+    filter: filterBox(host).value,
+    entries: names(host),
+  })
+  /** Opens the browser and enters the shelf the filter is tried on. */
+  const openShelf = async (host: HTMLElement) => {
+    await press(browse(host))
+    await press(entry(host, '/srv/manga'))
+  }
+  const mountShelf = async () => {
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
+    await openShelf(host)
+    return host
+  }
+
+  it('draws the filter under the where line, above Up and the entries', async () => {
+    const host = await mountShelf()
+    const parts = [...(host.querySelector('.dir-browser')?.children ?? [])]
+    expect(parts.map((el) => el.getAttribute('name') ?? el.className)).toEqual([
+      'where',
+      'search-box',
+      'up',
+      'dir-list',
+      'visually-hidden',
+    ])
+  })
+
+  it('names the filter "Filter" alone, unseen, and says what it narrows in its placeholder, as a search box', async () => {
+    const host = await mountShelf()
+    const box = filterBox(host)
+    expect([...(box.labels ?? [])].map((l) => l.textContent)).toEqual([
+      'Filter',
+    ])
+    // Either would outrank the label as the name.
+    expect(box.hasAttribute('aria-label')).toBe(false)
+    expect(box.hasAttribute('aria-labelledby')).toBe(false)
+    expect(box.placeholder).toBe('Filter these directories')
+    expect(box.type).toBe('search')
+    expect(
+      box.labels?.[0]?.querySelector('.visually-hidden')?.textContent,
+    ).toBe('Filter')
+  })
+
+  it('asks the browser for no remembered entries, which would be drawn over the listing', async () => {
+    const host = await mountShelf()
+    expect(filterBox(host).getAttribute('autocomplete')).toBe('off')
+  })
+
+  it('says to a screen reader that no directory matches, in a status line drawn empty until then', async () => {
+    const host = await mountShelf()
+    const status = () =>
+      host.querySelector('.dir-browser [role="status"]')?.textContent
+    expect(status()).toBe('')
+    await typeInto(filterBox(host), 'zz')
+    expect(status()).toBe('No directories here match this filter.')
+    await typeInto(filterBox(host), 'af')
+    expect(status()).toBe('')
+  })
+
+  it('matches inside a name, not only at its start', async () => {
+    const host = await mountShelf()
+    await typeInto(filterBox(host), 'af')
+    expect(names(host)).toEqual(['Café', 'Cafe'])
+  })
+
+  it('sets case aside, in the name and in the filter', async () => {
+    const host = await mountShelf()
+    await typeInto(filterBox(host), 'bocchi')
+    expect(names(host)).toEqual(['Bocchi', 'BOCCHI the Rock'])
+    await typeInto(filterBox(host), 'BOCCHI')
+    expect(names(host)).toEqual(['Bocchi', 'BOCCHI the Rock'])
+  })
+
+  it('keeps accents: e matches no é, and é no e', async () => {
+    const host = await mountShelf()
+    await typeInto(filterBox(host), 'Cafe')
+    expect(names(host)).toEqual(['Cafe'])
+    await typeInto(filterBox(host), 'Café')
+    expect(names(host)).toEqual(['Café'])
+  })
+
+  it('sets aside spaces around the filter', async () => {
+    const host = await mountShelf()
+    await typeInto(filterBox(host), '  af  ')
+    expect(names(host)).toEqual(['Café', 'Cafe'])
+  })
+
+  it('never hides Up, which is the way out of a listing it has emptied', async () => {
+    const host = await mountShelf()
+    await typeInto(filterBox(host), 'af')
+    expect(up(host)?.textContent).toBe('↑ Back to all browsable directories')
+  })
+
+  it('says no directory matches, and draws no list, when none does', async () => {
+    const host = await mountShelf()
+    await typeInto(filterBox(host), 'zz')
+    expect(host.querySelector('.dir-browser .empty')?.textContent).toBe(
+      'No directories here match this filter.',
+    )
+    expect(host.querySelector('.dir-list')).toBeNull()
+  })
+
+  it('is drawn over a directory that holds none', async () => {
+    vi.mocked(api.listDirs).mockResolvedValue({
+      path: '/srv/manga/Empty',
+      parent: '/srv/manga',
+      dirs: [],
+    })
+    const host = mount(<DirPicker action="Add directory" onPick={vi.fn()} />)
+    await press(browse(host))
+    expect(filterBox(host)).not.toBeNull()
+  })
+
+  it('keeps the filter, and what it narrows, while the next listing is read', async () => {
+    const host = await mountShelf()
+    await typeInto(filterBox(host), 'bocchi')
+    vi.mocked(api.listDirs).mockReturnValueOnce(
+      deferred<api.DirListing>().promise,
+    )
+    await press(entry(host, 'Bocchi'))
+    expect(narrowed(host)).toEqual({
+      filter: 'bocchi',
+      entries: ['Bocchi', 'BOCCHI the Rock'],
+    })
+  })
+
+  it('is emptied when the directory entered is listed', async () => {
+    const host = await mountShelf()
+    await typeInto(filterBox(host), 'bocchi')
+    await press(entry(host, 'Bocchi'))
+    expect(narrowed(host)).toEqual({
+      filter: '',
+      entries: ['Vol. 01', 'Vol. 02'],
+    })
+  })
+
+  it('is emptied when the directory Up goes to is listed', async () => {
+    const host = await mountShelf()
+    await typeInto(filterBox(host), 'af')
+    await press(up(host))
+    expect(narrowed(host)).toEqual({
+      filter: '',
+      entries: ['/srv/comics', '/srv/manga'],
+    })
+  })
+
+  it('is emptied when the browser is closed and opened again', async () => {
+    const host = await mountShelf()
+    await typeInto(filterBox(host), 'af')
+    await press(browse(host))
+    await press(browse(host))
+    expect(narrowed(host)).toEqual({
+      filter: '',
+      entries: ['Bocchi', 'BOCCHI the Rock', 'Café', 'Cafe'],
+    })
+  })
+
+  // jsdom lays nothing out: a list's scroll offset here is only the number
+  // set on it, which is enough to tell which list a listing is drawn in and
+  // what that list carries over.
+  it('draws each listing that lands in a list of its own, at its top, and keeps the list it had, and its offset, while the next is read', async () => {
+    const host = await mountShelf()
+    const list = () => host.querySelector('.dir-list') as HTMLElement
+    const shelf = list()
+    shelf.scrollTop = 40
+    const next = deferred<api.DirListing>()
+    vi.mocked(api.listDirs).mockReturnValueOnce(next.promise)
+    await press(entry(host, 'Bocchi'))
+    expect({ kept: list() === shelf, scrollTop: list().scrollTop }).toEqual({
+      kept: true,
+      scrollTop: 40,
+    })
+    await flush(() => next.resolve(VOLUMES))
+    expect({
+      entries: names(host),
+      kept: list() === shelf,
+      scrollTop: list().scrollTop,
+    }).toEqual({ entries: ['Vol. 01', 'Vol. 02'], kept: false, scrollTop: 0 })
+    const volumes = list()
+    volumes.scrollTop = 40
+    await press(up(host))
+    expect({
+      entries: names(host),
+      kept: list() === volumes,
+      scrollTop: list().scrollTop,
+    }).toEqual({
+      entries: ['Bocchi', 'BOCCHI the Rock', 'Café', 'Cafe'],
+      kept: false,
+      scrollTop: 0,
+    })
+  })
+
+  it('takes the list back to its top as the filter’s words change, and not for a space after them, which matches nothing new', async () => {
+    const host = await mountShelf()
+    const list = () => host.querySelector('.dir-list') as HTMLElement
+    list().scrollTop = 40
+    await typeInto(filterBox(host), 'b')
+    expect({ entries: names(host), scrollTop: list().scrollTop }).toEqual({
+      entries: ['Bocchi', 'BOCCHI the Rock'],
+      scrollTop: 0,
+    })
+    list().scrollTop = 40
+    await typeInto(filterBox(host), 'b ')
+    expect({ entries: names(host), scrollTop: list().scrollTop }).toEqual({
+      entries: ['Bocchi', 'BOCCHI the Rock'],
+      scrollTop: 40,
+    })
+  })
+
+  it('keeps Enter from the form around it, and picks nothing', async () => {
+    const onPick = vi.fn()
+    const host = mount(<DirPicker action="Add directory" onPick={onPick} />)
+    // Entering the shelf wrote its path in the box, so a pick would be taken.
+    await openShelf(host)
+    await typeInto(filterBox(host), 'af')
+    // jsdom submits no form for a key event, so what is asserted is the
+    // event's own default being prevented, which is what stops a browser.
+    const enter = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    })
+    await flush(() => {
+      filterBox(host).dispatchEvent(enter)
+    })
+    expect(enter.defaultPrevented).toBe(true)
+    expect(onPick).not.toHaveBeenCalled()
   })
 })
