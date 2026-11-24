@@ -1826,9 +1826,12 @@
   font-size: var(--text-ui);
 }
 
-/* The room the add form took as a link was said, which `LibraryPage.tsx`
-   keeps as the box's height whatever the window does after, so that
-   nothing below it moves. Its lines start at the room's top. */
+/* The room the add form took as a link was said, less its directory
+   browser (`roomOf`), which `LibraryPage.tsx` keeps as the box's height
+   whatever the window does after, so that the line's arrival and its going
+   move nothing below it. An add made with the browser open moves the page
+   once, at the add, as one that links nothing does (O524). Its lines start
+   at the room's top. */
 .add-root[data-linked] {
   align-content: flex-start;
 }

@@ -303,6 +303,11 @@ So the validation is a guard against two specific typos, not a syntax check.
 `RootRow.tsx`'s label must not suggest a pattern is verified to do what its
 author meant.
 
+*O523: `add_line` rejects more than these two: an unopened `}` and an
+inverted range such as `[z-a]` are refused too. `check_exclude_globs`' doc
+comment says it refuses exactly what `ignore` will not compile, and names those
+shapes.*
+
 ## 7. The surfaces
 
 ```

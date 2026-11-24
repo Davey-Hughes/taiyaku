@@ -220,6 +220,12 @@ fn check_exclude_globs_names_the_line_it_refuses() {
 }
 ```
 
+*O523: `\` and `a{b` are not the only shapes `ignore` 0.4.33 rejects: an
+unopened `}` and an inverted range such as `[z-a]` are refused too. The shipped
+doc comment over `a_bad_line_disables_itself_and_nothing_else` calls `\` one of
+the shapes, and `check_exclude_globs_refuses_only_what_ignore_will_not_compile`
+pins each one `check_exclude_globs`' doc comment names.*
+
 - [ ] **Step 3: Run the tests to verify they fail**
 
 Run:
@@ -347,6 +353,17 @@ pub fn check_exclude_globs(patterns: &str) -> Result<(), String> {
         .map_err(|why| format!("the root's `exclude_globs` will not compile: {why}"))
 }
 ```
+
+*O523: the matcher refuses more than these two: an unopened `}` and an
+inverted range such as `[z-a]` are refused too. The shipped doc comment on
+`check_exclude_globs` says it refuses exactly what `ignore` will not compile and
+names those shapes.*
+
+*O523: `build` can fail where `add_line` accepted every line. `add_line` only
+parses a line, and a set too large to compile, such as one holding a line of
+`[a-z]` repeated 200,000 times, passes `add_line` and will not build, so every
+line goes. The shipped comment in `Excluder::build` says so, and
+`a_set_too_large_to_compile_complains_once_and_excludes_nothing` pins it.*
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -1363,6 +1380,11 @@ async fn a_roots_patch_may_still_clear_exclude_globs() {
 }
 ```
 
+*O523: `ignore` rejects more than two shapes, an unopened `}` and an inverted
+range such as `[z-a]` among them. The shipped comment calls `a{b` a shape
+`ignore` rejects and claims no count; `check_exclude_globs`' doc comment gives
+examples.*
+
 - [ ] **Step 2: Run them to verify they fail**
 
 Run:
@@ -1391,6 +1413,11 @@ literal with a validated local built above the `Ok(...)`:
 ```
 
 and use `exclude_globs,` in the struct literal.
+
+*O523: `ignore` refuses more than these two: an unopened `}` and an inverted
+range such as `[z-a]` are refused too. The shipped comment says only a pattern
+`ignore` will not compile is refused, and points at `scan::check_exclude_globs`
+for examples.*
 
 - [ ] **Step 4: Run the tests**
 
@@ -1635,6 +1662,11 @@ and the `exclude_globs` entry of `TEXT_FIELDS` becomes:
     patch: (exclude_globs) => ({ exclude_globs }),
   },
 ```
+
+*O523: the server refuses more than these two, an unopened `}` and an
+inverted range such as `[z-a]` among them. The shipped comment says the server
+refuses only a pattern `ignore` will not compile, and names no shape;
+`check_exclude_globs`' doc comment gives examples.*
 
 - [ ] **Step 4: Branch the JSX**
 

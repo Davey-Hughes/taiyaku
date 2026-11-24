@@ -5253,13 +5253,13 @@ fn no_pattern_excludes_nothing() {
     }
 }
 
-/// A line that will not compile disables itself and leaves every other line
+/// A line `add_line` refuses disables itself and leaves every other line
 /// standing — `rules.rs`'s rule, for its reason: a scan of a real library
 /// must not die over one bad pattern.
 ///
-/// **`\` and `a{b` are the two shapes `ignore` 0.4.33 actually rejects.** `a[`,
-/// `[a-`, `[[:bogus:]]` and `***` all compile, so this test names the two that
-/// exist rather than a category that does not.
+/// **`\` is a line `ignore` will not compile**, one of the shapes
+/// [`check_exclude_globs_refuses_only_what_ignore_will_not_compile`] pins.
+/// `a[`, `[a-`, `[[:bogus:]]` and `***` all compile, so none would exercise it.
 #[test]
 fn a_bad_line_disables_itself_and_nothing_else() {
     let excluder = super::Excluder::build(Some("extras\n\\\n*.nfo"));
@@ -5277,6 +5277,27 @@ fn a_bad_line_disables_itself_and_nothing_else() {
     assert!(
         excluder.excludes("a/b.nfo", false),
         "the line after it applies"
+    );
+}
+
+/// **`build` can fail where `add_line` accepted every line**: `add_line`
+/// only parses a line and `build` compiles the set, and a line too large to
+/// compile parses. The set then goes whole, its good lines too, under one
+/// complaint that is `build`'s, rather than a panic.
+#[test]
+fn a_set_too_large_to_compile_complains_once_and_excludes_nothing() {
+    let patterns = format!("extras\n{}", "[a-z]".repeat(200_000));
+    let excluder = super::Excluder::build(Some(patterns.as_str()));
+
+    assert_eq!(excluder.complaints.len(), 1, "one complaint, for the set");
+    assert!(
+        excluder.complaints[0].starts_with("compiling this directory's exclude patterns"),
+        "the complaint is build's, not add_line's: {:.80}",
+        excluder.complaints[0]
+    );
+    assert!(
+        !excluder.excludes("a/extras", true),
+        "a set that will not compile excludes nothing, its good lines included"
     );
 }
 
@@ -5305,6 +5326,26 @@ fn check_exclude_globs_names_the_line_it_refuses() {
 
     let why = super::check_exclude_globs("extras\na{b").expect_err("a{b is unclosed");
     assert!(why.contains("a{b"), "the message names the line: {why}");
+}
+
+/// **Each shape `check_exclude_globs`' doc comment names, on its own side.**
+/// The function refuses exactly what `ignore` will not compile, narrower than
+/// "a malformed pattern": a refused shape is one an admin cannot save, and an
+/// accepted one is saved whatever it happens to mean (O523).
+#[test]
+fn check_exclude_globs_refuses_only_what_ignore_will_not_compile() {
+    for refused in ["\\", "a{b", "a}", "[z-a]"] {
+        assert!(
+            super::check_exclude_globs(refused).is_err(),
+            "`{refused}` will not compile, so it must be refused"
+        );
+    }
+    for accepted in ["a[", "[a-", "[[:bogus:]]", "[]", "***", "a**b"] {
+        assert!(
+            super::check_exclude_globs(accepted).is_ok(),
+            "`{accepted}` compiles, so it must be accepted whatever it means"
+        );
+    }
 }
 
 /// A root whose fixture holds a directory worth excluding and a file worth

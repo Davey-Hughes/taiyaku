@@ -32875,3 +32875,25 @@ and a clearing that late can wipe a newer job's mark.
 
 **The mutation sweep** is in `docs/mutants-baseline.md`'s run log, its two
 rows of 2026-11-23; the factor no test pins is O454.
+
+## O524: the blank under a link's line with the directory browser open (2026-11-23)
+
+O524's row in `docs/status.md` says what changed. The case that measures it
+is `Config.browser.test.tsx`'s 'keeps no room for a directory browser open as
+a link was said, …', which adds `/srv/manga/Kids`, a directory the Kids
+library also holds, once with the browser shut and once with it open, at
+1280×900 and at 390×844. It measures the blank under the line from the
+foot of the lowest thing drawn in the add form's room to the room's content
+foot, and the reach from the add form's top to the next section's top.
+
+- **The directory picker's PR.** The fix wave after its second whole-branch
+  review measured 499px of blank under the link line after an add made with
+  the browser open, against 43px with it shut, at 1280×900, to a foot of its
+  own.
+- **Before, `main`'s `roomOf`.** The blank was 487px open against 31px
+  shut at both sizes, the same 456px apart as those two figures. With the
+  blank's assertion set aside, the reach after the add was 605px open against
+  149px shut at 1280×900, and 647px against 191px at 390×844.
+- **After.** The blank is 31px against 31px at both sizes, and the reach after
+  the add 149px against 149px at 1280×900 and 191px against 191px at 390×844,
+  read by a probe since removed; the case asserts each pair equal.

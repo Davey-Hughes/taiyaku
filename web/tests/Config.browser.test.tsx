@@ -8,6 +8,7 @@ import { cdp, type Locator, page, userEvent } from 'vitest/browser'
 // measure browser defaults.
 import '../src/index.css'
 import { resetScanFeed } from '../src/scanFeed'
+import { emptyReads } from '../src/reads'
 import { Config } from '../src/Config'
 import * as config from '../src/config'
 import type { Derived, FinishedScan, Unreadable, Walk } from '../src/config'
@@ -4552,17 +4553,63 @@ describe('a library page’s lines for a directory another library holds too', (
     expect(place.onTop).toBe(true)
   })
 
-  it('keeps the whole room of a picker whose directory browser was open as the link was said, moving nothing below it', async () => {
-    const { line, open, reach } = await linkedAt(
-      1280,
-      900,
-      '/srv/manga/Kids',
-      ['Kids'],
-      true,
-    )
-    expect(line.textContent).toContain('is also a directory of Kids')
-    expect(reach()).toBeCloseTo(open, 0)
-  })
+  /**
+   * The blank under a link's line in the room kept for it: from the foot of
+   * the lowest thing drawn in the room to the foot of the room's content.
+   */
+  function blankUnder(room: HTMLElement) {
+    const foot =
+      room.getBoundingClientRect().bottom -
+      Number.parseFloat(getComputedStyle(room).paddingBottom)
+    const drawn = [...room.children]
+      .map((part) => part.getBoundingClientRect())
+      .filter((at) => at.height > 0)
+    return foot - Math.max(...drawn.map((at) => at.bottom))
+  }
+
+  it.each(SIZES)(
+    'keeps no room for a directory browser open as a link was said, at %ipx×%ipx: the blank under the line is a shut browser’s, and the line’s arrival and going move nothing below',
+    async (width, height) => {
+      const shut = await linkedAt(width, height, '/srv/manga/Kids', ['Kids'])
+      const shutBlank = blankUnder(shut.addRoot())
+      const shutReach = shut.reach()
+      expect(shutReach).toBeCloseTo(shut.open, 0)
+      act(() => rerender(<div />))
+      // Drawn afresh, as the first page was, and not from the reads its add
+      // changed.
+      emptyReads()
+      const { host, addRoot, line, reach } = await linkedAt(
+        width,
+        height,
+        '/srv/manga/Kids',
+        ['Kids'],
+        true,
+      )
+      expect(line.textContent).toBe(
+        '/srv/manga/Kids is also a directory of Kids. It keeps the settings it has there.',
+      )
+      expect(blankUnder(addRoot())).toBeCloseTo(shutBlank, 0)
+      // Where the add made with the browser shut left it, which is where the
+      // picker without its browser had it: up by the browser's room, and the
+      // line arriving took nothing more.
+      expect(reach()).toBeCloseTo(shutReach, 0)
+      const room = addRoot().getBoundingClientRect()
+      const at = line.getBoundingClientRect()
+      expect(at.top).toBeGreaterThanOrEqual(room.top - 0.5)
+      expect(at.bottom).toBeLessThanOrEqual(room.bottom + 0.5)
+      const place = linePlace(host, line)
+      expect(place.foot).toBeGreaterThanOrEqual(-0.5)
+      expect(place.clear).toBeGreaterThan(0)
+      expect(place.halves).toEqual([])
+      expect(place.onTop).toBe(true)
+      assertNoSidewaysScroll(host)
+      const said = reach()
+      line.scrollIntoView({ block: 'nearest' })
+      await pressOn(line)
+      expect(line.textContent).toBe('')
+      expect(reach()).toBeCloseTo(said, 0)
+    },
+  )
 
   /**
    * The page of Extras, made at `width` over `path`, which Kids and Comics

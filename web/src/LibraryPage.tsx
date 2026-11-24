@@ -260,24 +260,37 @@ function shownInside(library: Library): (NestedDir & { outer: string })[] {
   )
 }
 
+const px = (length: string) => Number.parseFloat(length) || 0
+
 /**
- * The room the add form takes in `root` as it is drawn, the picker's whole,
- * its directory browser among it, or Add directory… alone: what a link's
- * line is drawn in, so that nothing below it moves. A content height, as
- * `height` takes one.
+ * The room the add form takes in `root` as it is drawn, the picker without
+ * its directory browser, or Add directory… alone: what a link's line is
+ * drawn in, so that its arrival and its going move nothing below it. The
+ * browser's room goes at the add, as after an add that links nothing
+ * (O524). A content height, as `height` takes one.
  */
 function roomOf(root: HTMLElement | null): number {
   if (root === null) return 0
   const style = getComputedStyle(root)
+  // The browser's host is a line of the row to itself, drawn only while the
+  // browser in it draws something (`admin.css`), with the row's gap above
+  // it. Heights unrounded, so that a room taken with the browser open is
+  // the room taken with it shut.
+  const host = root.querySelector(':scope > .dir-browser-host')
+  const browser =
+    host === null || getComputedStyle(host).display === 'none'
+      ? 0
+      : host.getBoundingClientRect().height + px(style.rowGap)
   return Math.max(
     0,
-    root.clientHeight -
-      (Number.parseFloat(style.paddingTop) || 0) -
-      (Number.parseFloat(style.paddingBottom) || 0),
+    root.getBoundingClientRect().height -
+      px(style.borderTopWidth) -
+      px(style.borderBottomWidth) -
+      px(style.paddingTop) -
+      px(style.paddingBottom) -
+      browser,
   )
 }
-
-const px = (length: string) => Number.parseFloat(length) || 0
 
 /**
  * Lays a link's line where `linkedPlace` says, read from the page as it is

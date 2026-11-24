@@ -195,7 +195,11 @@ export interface Walk {
   excluded_dirs: string[]
   /** Files a pattern named. A count, not a list — a library may exclude thousands. */
   excluded_files: number
-  /** Lines of `exclude_globs` that would not compile, each naming itself. */
+  /**
+   * Lines of `exclude_globs` that `ignore` refused, each naming itself, and
+   * one entry, naming none, if the set then would not compile, when the whole
+   * set goes.
+   */
   bad_exclude_patterns: string[]
   /** Rows dropped because a pattern now covers them — not because a file vanished. */
   forgotten_by_exclusion: number

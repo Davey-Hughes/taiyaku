@@ -1024,6 +1024,46 @@ describe('DirPicker, the filter (O317)', () => {
     expect(status()).toBe('')
   })
 
+  /**
+   * The elements saying `words` alone that a screen reader reads: none
+   * `aria-hidden`, nor inside one that is. No testing-library here, so the
+   * tree is read as it comes out for this markup.
+   */
+  const readSaying = (host: HTMLElement, words: string) =>
+    [...host.querySelectorAll('*')].filter(
+      (el) =>
+        el.childElementCount === 0 &&
+        el.textContent === words &&
+        el.closest('[aria-hidden="true"]') === null,
+    )
+
+  it('has a screen reader read that no directory matches once, from the status line, while the line drawn says it too', async () => {
+    const host = await mountShelf()
+    await typeInto(filterBox(host), 'zz')
+    const words = 'No directories here match this filter.'
+    expect(host.querySelector('.dir-browser .empty')?.textContent).toBe(words)
+    expect(readSaying(host, words)).toEqual([
+      host.querySelector('.dir-browser [role="status"]'),
+    ])
+  })
+
+  it('leaves an empty listing’s line to a screen reader, drawn where a no-match line was', async () => {
+    const host = await mountShelf()
+    await typeInto(filterBox(host), 'zz')
+    const line = host.querySelector('.dir-browser .empty')
+    vi.mocked(api.listDirs).mockResolvedValueOnce({
+      path: null,
+      parent: null,
+      dirs: [],
+    })
+    await press(up(host))
+    const empty = host.querySelector('.dir-browser .empty') as HTMLElement
+    // The same element, saying other words.
+    expect(empty).toBe(line)
+    expect(empty.textContent).toMatch(/^No directories to browse/)
+    expect(readSaying(host, empty.textContent ?? '')).toEqual([empty])
+  })
+
   it('matches inside a name, not only at its start', async () => {
     const host = await mountShelf()
     await typeInto(filterBox(host), 'af')

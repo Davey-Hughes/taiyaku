@@ -374,7 +374,11 @@ export function DirPicker({
                 : 'No directories in here.'}
             </p>
           ) : shownDirs.length === 0 ? (
-            <p className="empty">{NO_MATCH}</p>
+            // Unread: the status line below says the same words to a screen
+            // reader, which would read them twice otherwise (O525).
+            <p className="empty" aria-hidden="true">
+              {NO_MATCH}
+            </p>
           ) : (
             // A list of its own for each listing, so a listing that lands
             // is drawn from its top rather than at the offset the one it

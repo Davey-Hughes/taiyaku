@@ -77,9 +77,9 @@ pub struct Root {
     /// Patterns a scan is meant to skip, as one stored string.
     ///
     /// Compiled once per scan into an [`Excluder`] and applied by
-    /// `scan_root_inner`'s walk — O92. A pattern this cannot compile is
-    /// dropped and named in [`ScanReport::bad_exclude_patterns`] rather than
-    /// failing the scan; see [`Excluder::build`].
+    /// `scan_root_inner`'s walk — O92. What will not compile is dropped and
+    /// reported in [`ScanReport::bad_exclude_patterns`] rather than failing
+    /// the scan; see [`Excluder::build`].
     pub exclude_globs: Option<String>,
     pub scan_interval_secs: Option<i64>,
     /// Whether this root keeps `<root>/.taiyaku/<content_key>.library.json`.
@@ -2345,17 +2345,18 @@ pub enum KeptOut {
 /// ignored. None of that is written here, which is the point — `rules.rs`
 /// refuses "a second, drifting reimplementation" for the same reason.
 ///
-/// **Building never fails.** A line that will not compile is dropped and
-/// named in [`Self::complaints`], which [`ScanReport::bad_exclude_patterns`]
-/// carries out to whoever asked for the scan. That is `rules.rs`'s rule
-/// again: a malformed pattern disables its own rule and nothing else,
-/// because a scan of a real library must not die over one bad line. The
-/// column predates any validation — migration 1 — so a row can already hold
-/// anything, and treating a build failure as impossible would make it a
-/// crash rather than a complaint.
+/// **Building never fails.** A line `add_line` refuses is dropped and named
+/// in [`Self::complaints`], which [`ScanReport::bad_exclude_patterns`]
+/// carries out to whoever asked for the scan: `rules.rs`'s rule, a malformed
+/// pattern disables its own rule and nothing else, because a scan of a real
+/// library must not die over one bad line. A set too large to compile goes
+/// whole ([`Self::build`]). Migration 1's column predates any validation,
+/// so a row can already hold anything, and treating a build failure as
+/// impossible would make it a crash rather than a complaint.
 pub(crate) struct Excluder {
     gitignore: ignore::gitignore::Gitignore,
-    /// One message per line that would not compile, naming the line.
+    /// One message per line `add_line` refused, naming the line, and one,
+    /// naming none, if the set then would not compile.
     complaints: Vec<String>,
 }
 
@@ -2370,9 +2371,10 @@ impl Excluder {
                 complaints.push(format!("`{}`: {why}", line.trim()));
             }
         }
-        // `build` cannot fail once `add_line` has accepted every line it
-        // kept. Handled rather than unwrapped anyway: this module's rule is
-        // that a pattern problem is a complaint, never a panic.
+        // `build` compiles what `add_line` only parsed, so it can still fail,
+        // on a set too large to compile, and then every line goes. Handled
+        // rather than unwrapped: this module's rule is that a pattern problem
+        // is a complaint, never a panic.
         let gitignore = builder.build().unwrap_or_else(|why| {
             complaints.push(format!(
                 "compiling this directory's exclude patterns: {why}"
@@ -2460,15 +2462,16 @@ impl Excluder {
 /// business — see [`Excluder::build`], which drops it and complains.
 ///
 /// **What this actually catches is narrow, and callers must not imply
-/// otherwise.** With `ignore` 0.4.33, `add_line` rejects a dangling `\` and an
-/// unclosed `{`. It accepts `a[`, `[a-`, `[[:bogus:]]`, `[]`, `***` and `a**b`.
-/// This is a guard against two specific typos, not a check that a pattern means
-/// what its author meant.
+/// otherwise.** It refuses exactly what `ignore` will not compile, such as a
+/// dangling `\`, an unclosed `{`, an unopened `}` or an inverted range like
+/// `[z-a]`, and accepts `a[`, `[a-`, `[[:bogus:]]`, `[]`, `***` and `a**b`. It
+/// is no check that a pattern means what its author meant.
 ///
 /// # Errors
 ///
-/// Returns a message naming the offending line, ready to be handed to a
-/// person, if any line will not compile.
+/// Returns a message, ready to be handed to a person, if `patterns` will not
+/// compile. It names the first line `ignore` refuses, or no line for a set too
+/// large to compile.
 pub fn check_exclude_globs(patterns: &str) -> Result<(), String> {
     let mut builder = ignore::gitignore::GitignoreBuilder::new("");
     for line in patterns.lines() {
@@ -2527,8 +2530,9 @@ pub struct ScanReport {
     /// excludes one reduces its directory's page total, which is what
     /// excluding it means.
     pub excluded_files: usize,
-    /// Lines of `root.exclude_globs` that would not compile, each naming
-    /// itself.
+    /// Lines of `root.exclude_globs` that `ignore` refused, each naming
+    /// itself, and one entry, naming none, if the set then would not
+    /// compile, when the whole set goes.
     ///
     /// A malformed pattern disables its own line and nothing else —
     /// `rules.rs`'s rule, because a scan of a real library must not die over

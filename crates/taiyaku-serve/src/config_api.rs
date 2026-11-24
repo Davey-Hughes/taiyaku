@@ -1293,9 +1293,10 @@ fn root_patch_from_json(body: &serde_json::Value) -> Result<scan::RootPatch, Str
     }
     // **Refused here rather than at the store**, so a typo is caught at save
     // rather than after a scan. `Some(None)` — clearing the column — is not
-    // a pattern and is not checked. What this catches is narrow: `ignore`
-    // rejects a dangling `\` and an unclosed `{` and accepts a great deal
-    // that means nothing useful, which is why a stored pattern that will not
+    // a pattern and is not checked. What this catches is narrow: it refuses
+    // only a pattern `ignore` will not compile (`scan::check_exclude_globs`
+    // gives examples), and much that compiles means nothing useful. A row
+    // can predate this check, which is why a stored pattern that will not
     // build is *also* handled, in `scan::Excluder::build`, rather than
     // treated as impossible.
     let exclude_globs = patch_nullable_text(body, "exclude_globs", "directory")?;

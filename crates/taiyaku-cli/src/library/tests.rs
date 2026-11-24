@@ -1442,8 +1442,8 @@ fn scan_summary_omits_excluded_files_when_none() {
     assert!(!line.contains("files excluded"), "{line}");
 }
 
-/// O92: a line of `exclude_globs` that would not compile disables only
-/// itself, and this is the line that names it.
+/// O92: what of `exclude_globs` will not compile is dropped rather than
+/// failing the scan, and this is the line that says so.
 #[test]
 fn scan_summary_names_bad_exclude_patterns_when_present() {
     let mut report = scan_report(3, 1, 2);
