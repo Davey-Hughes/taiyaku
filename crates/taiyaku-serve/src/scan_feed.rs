@@ -28,13 +28,13 @@ use crate::auth::Principal;
 use crate::scan_jobs::{Job, JobEnded, JobKind, Snapshot};
 
 /// `GET /api/library/scans`, for any signed-in account: `ended`, a marker that
-/// moves as a scan job or the match pass's derive ends; `written`, one that
-/// moves as a scan job's early passes write volumes (O314); and each library a
-/// running scan job holds, with its step. An administrator in a browser
-/// ([`crate::session::administers`]) is also sent every running job, passes
-/// too, with its kind and a scan's volumes written so far; any other caller
-/// only the libraries it is granted, with no count and no path, since a job's
-/// counts and directories cover libraries it may not see.
+/// moves as a scan job, the match pass's derive or another process's scan ends;
+/// `written`, one that moves as a scan job's early passes write volumes (O314);
+/// and each library a running scan job holds, with its step. An administrator
+/// in a browser ([`crate::session::administers`]) is also sent every running
+/// job, passes too, with its kind and a scan's volumes written so far; any
+/// other caller only the libraries it is granted, with no count and no path,
+/// since a job's counts and directories cover libraries it may not see.
 pub(crate) async fn feed(
     State(state): State<Arc<ServeState>>,
     extensions: axum::http::Extensions,
@@ -46,21 +46,23 @@ pub(crate) async fn feed(
     // an answer whose marker counts a pass shows that pass's count. The
     // volumes are in the store before either.
     let written = state.jobs_ended.written.load(Ordering::SeqCst);
-    let jobs: Vec<(Arc<Job>, Snapshot)> = running_jobs(&state)
+    let jobs: Vec<_> = running_jobs(&state)
         .into_iter()
         .map(|job| {
             let snapshot = job.snapshot();
-            (job, snapshot)
+            // One read for both lists of libraries, so an answer cannot disagree with itself.
+            let libraries = libraries_of(&job);
+            (job, snapshot, libraries)
         })
         .collect();
     // By job id ascending, so the first step kept is the lowest id's.
     let mut held: BTreeMap<i64, Step> = BTreeMap::new();
-    for (job, snapshot) in &jobs {
+    for (job, snapshot, libraries) in &jobs {
         if job.kind != JobKind::Scan {
             continue;
         }
-        for (library, _) in libraries_of(job) {
-            held.entry(library).or_insert(snapshot.step);
+        for (library, _) in libraries {
+            held.entry(*library).or_insert(snapshot.step);
         }
     }
 
@@ -71,7 +73,7 @@ pub(crate) async fn feed(
             "libraries": held_json(&held),
             "jobs": jobs
                 .iter()
-                .map(|(job, snapshot)| job_json(job, *snapshot))
+                .map(|(job, snapshot, libraries)| job_json(job, *snapshot, libraries))
                 .collect::<Vec<_>>(),
         }))
         .into_response();
@@ -150,7 +152,7 @@ pub(crate) async fn cancel(
 /// before it is marked ended, so a page that sees a job leave the feed reads
 /// each directory's report. A pass keeps its last job once it ends, which a
 /// page would otherwise show running, with its Cancel, for good.
-fn running_jobs(state: &ServeState) -> Vec<Arc<Job>> {
+pub(crate) fn running_jobs(state: &ServeState) -> Vec<Arc<Job>> {
     let mut jobs: BTreeMap<u64, Arc<Job>> = BTreeMap::new();
     {
         let scans = state.scans.lock().unwrap_or_else(PoisonError::into_inner);
@@ -200,8 +202,11 @@ fn held_json(held: &BTreeMap<i64, Step>) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// One running job, as an administrator is sent it, where `snapshot` is.
-fn job_json(job: &Job, snapshot: Snapshot) -> serde_json::Value {
+/// One running job, as an administrator is sent it, from the `snapshot` and
+/// `libraries` its caller read. The caller reads a job's libraries once for
+/// the whole answer, so the job's own list and the answer's top-level
+/// `libraries` come from one read and cannot disagree.
+fn job_json(job: &Job, snapshot: Snapshot, libraries: &[(i64, String)]) -> serde_json::Value {
     // Waiting has no count yet, and Finishing reports a 0 that counts nothing.
     let counted = !matches!(snapshot.step, Step::Waiting | Step::Finishing);
     serde_json::json!({
@@ -216,8 +221,8 @@ fn job_json(job: &Job, snapshot: Snapshot) -> serde_json::Value {
             .iter()
             .map(|(id, path)| serde_json::json!({ "id": id, "path": path.to_string_lossy() }))
             .collect::<Vec<_>>(),
-        "libraries": libraries_of(job)
-            .into_iter()
+        "libraries": libraries
+            .iter()
             .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
             .collect::<Vec<_>>(),
         "elapsed_secs": job.started.elapsed().as_secs_f64(),

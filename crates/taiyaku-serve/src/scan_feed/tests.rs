@@ -413,6 +413,72 @@ async fn a_library_two_jobs_hold_shows_the_step_of_the_lower_id() {
     assert_eq!(ids, [first.id, second.id], "by id, each once");
 }
 
+/// An answer's top-level `libraries` and each job's own come from one read:
+/// a job whose libraries are filled in while the feed answers, as a spawned
+/// job's are, is in the top-level list exactly when its own list names it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_names_the_same_libraries_at_the_top_as_in_each_job() {
+    let nested = nested("feed-one-read");
+    let job =
+        scan_jobs::reserve(&nested.state, &nested.roots, Instant::now(), None).expect("reserves");
+    let stop = Arc::new(AtomicBool::new(false));
+    let flipping = {
+        let job = Arc::clone(&job);
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut filled = false;
+            while !stop.load(Ordering::SeqCst) {
+                filled = !filled;
+                *job.libraries.lock().expect("unpoisoned") = if filled {
+                    vec![(70, "Manga".to_string())]
+                } else {
+                    Vec::new()
+                };
+            }
+        })
+    };
+
+    // Collected rather than asserted in the loop, so a contradiction still
+    // stops the thread above instead of leaving it spinning for the rest of
+    // the run.
+    let mut checked = 0;
+    let mut contradicting = Vec::new();
+    for _ in 0..2000 {
+        let body = fed(&nested.state, as_admin()).await;
+        if !lists(&body, &job) {
+            continue;
+        }
+        let top: Vec<i64> = body["libraries"]
+            .as_array()
+            .expect("a libraries array")
+            .iter()
+            .map(|held| held["id"].as_i64().expect("an id"))
+            .collect();
+        let in_jobs: std::collections::BTreeSet<i64> = body["jobs"]
+            .as_array()
+            .expect("a jobs array")
+            .iter()
+            .filter(|sent| sent["kind"] == "scan")
+            .flat_map(|sent| sent["libraries"].as_array().expect("a libraries array"))
+            .map(|library| library["id"].as_i64().expect("an id"))
+            .collect();
+        if top != in_jobs.into_iter().collect::<Vec<_>>() {
+            contradicting.push(body);
+        }
+        checked += 1;
+    }
+    stop.store(true, Ordering::SeqCst);
+    flipping.join().expect("the flipping thread ends");
+
+    assert!(
+        contradicting.is_empty(),
+        "{} of {checked} answers name other libraries at the top than in their scan jobs, the first: {}",
+        contradicting.len(),
+        contradicting[0]
+    );
+    assert_eq!(checked, 2000, "answers that list the job, each checked");
+}
+
 /// Statements run on the traced connection.
 static STATEMENTS: AtomicUsize = AtomicUsize::new(0);
 

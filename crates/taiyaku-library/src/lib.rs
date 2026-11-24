@@ -711,6 +711,23 @@ impl Library {
         self.deriving.load(std::sync::atomic::Ordering::SeqCst)
             || self.path.as_deref().is_some_and(lease::held_elsewhere)
     }
+
+    /// Whether a connection other than this library's own holds the derive
+    /// lease now, such as another process's derive. False for an in-memory
+    /// library, which no other process can open, and on any error.
+    ///
+    /// **This library's flag is read on both sides of the probe, and either
+    /// read set answers false**, since the probe reads this library's own
+    /// lease as busy too: the first read covers a lease held across the probe,
+    /// the second one taken during it. A take sets the flag only once its hold
+    /// succeeds, so a probe in that moment still answers true.
+    #[must_use]
+    pub fn derive_held_elsewhere(&self) -> bool {
+        let own = || self.deriving.load(std::sync::atomic::Ordering::SeqCst);
+        self.path
+            .as_deref()
+            .is_some_and(|path| !own() && lease::held_elsewhere(path) && !own())
+    }
 }
 
 /// A connection to run a long job or a save on: a fresh one where

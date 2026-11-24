@@ -112,6 +112,22 @@ pub fn scheduled(conn: &Connection, now: &str) -> Result<Vec<Scheduled>, String>
     Ok(listed)
 }
 
+/// One directory's `(id, last_scan_at, last_scan_status)`.
+pub type ScanMark = (i64, Option<String>, Option<String>);
+
+/// Every directory's [`ScanMark`], by id: what a walk writes as it ends, in
+/// this process or another.
+///
+/// # Errors
+///
+/// If the store refuses the read.
+pub fn scan_marks(conn: &Connection) -> rusqlite::Result<Vec<ScanMark>> {
+    let mut stmt =
+        conn.prepare("SELECT id, last_scan_at, last_scan_status FROM root ORDER BY id")?;
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect()
+}
+
 /// The store's clock, the one that writes `last_scan_at`, in its
 /// `datetime()` shape.
 ///

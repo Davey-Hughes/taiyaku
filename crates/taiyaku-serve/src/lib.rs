@@ -12,6 +12,7 @@ mod book;
 mod cache_root;
 mod cache_sweep;
 mod cbz;
+mod cli_watch;
 mod composite;
 /// Spec C4 §6's rule-editor routes: the admin-only CRUD, preview and import
 /// over [`taiyaku_library::rules`] and [`taiyaku_library::preview`].
@@ -97,8 +98,10 @@ pub use works::{Work, from_library, load_works, work_id};
 /// server, as [`ServeState::scans`] is, so each count is this server's alone.
 #[derive(Debug, Default)]
 pub struct FeedMarks {
-    /// Raised as each scan job is marked ended, and as each match pass's
-    /// derive ends: the feed's `ended`, so a page that polls between two
+    /// Raised as each scan job is marked ended, as each match pass's derive
+    /// ends, and as `cli_watch` sees another process's writes (a scan, or any
+    /// write that moves the store's structure version) or this server's own
+    /// outside a job: the feed's `ended`, so a page that polls between two
     /// readings learns that one ended although it never saw it run.
     pub ended: std::sync::atomic::AtomicU64,
     /// Raised as a scan job's early passes write volumes (O314): the feed's
@@ -166,9 +169,9 @@ pub struct ServeState {
     /// only to write its finished report back. A crate this size gains
     /// nothing from a lock-free map for that shape of access.
     pub scans: Arc<std::sync::Mutex<std::collections::HashMap<i64, ScanProgress>>>,
-    /// The scan feed's markers: `ended`, raised as each scan job ends and as
-    /// each match pass's derive ends, and `written`, raised as a scan job's
-    /// early passes write volumes.
+    /// The scan feed's markers: `ended`, raised as each scan job ends, as
+    /// each match pass's derive ends and as a scan another process ran ends,
+    /// and `written`, raised as a scan job's early passes write volumes.
     pub jobs_ended: Arc<FeedMarks>,
     /// The store's job lock: [`LibraryJob`] names the jobs that take it, a
     /// scan's derive and a save's `preview::apply` among them.

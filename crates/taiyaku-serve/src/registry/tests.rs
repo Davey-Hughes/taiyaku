@@ -784,3 +784,39 @@ async fn the_refresher_serves_a_new_volume_before_anything_asks_for_it() {
         "the refresher never picked up a volume another process derived"
     );
 }
+
+/// The refresher's tick also looks for a scan another process ran. Its first
+/// look takes what it reads as seen, and nothing here can tell when that look
+/// has been, so each round writes marks no round wrote before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_refresher_raises_ended_for_a_scan_another_handle_wrote() {
+    let (_router, state, fixture) = crate::test_support::router_over_a_live_library();
+    let before = state.jobs_ended.ended.load(Ordering::SeqCst);
+    let refresher = super::spawn_refresher(Arc::clone(&state), Duration::from_millis(20));
+    let other = Library::open(&fixture.path().join("db").join("library.db"))
+        .expect("a second library over the same file");
+
+    let mut raised = false;
+    for round in 0..100 {
+        let at = format!("2030-01-01 00:{:02}:{:02}", round / 60, round % 60);
+        let changed = other
+            .conn()
+            .execute(
+                "UPDATE root SET last_scan_at = ?1, last_scan_status = 'ok' \
+                 WHERE id = (SELECT min(id) FROM root)",
+                [&at],
+            )
+            .expect("writes a directory's marks");
+        assert_eq!(changed, 1, "the fixture has one directory");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        if state.jobs_ended.ended.load(Ordering::SeqCst) != before {
+            raised = true;
+            break;
+        }
+    }
+    refresher.abort();
+    assert!(
+        raised,
+        "the refresher never moved ended for a walk another process ended"
+    );
+}

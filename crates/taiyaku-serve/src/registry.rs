@@ -340,15 +340,20 @@ impl Works {
     }
 }
 
-/// How often a live registry asks whether the library has moved. The
-/// question is one connection opened and a one-row read, and at this rate a
-/// volume a scan derives is listed even by the routes that never name a
-/// work: `/api/works` and the OPDS feed.
+/// How often a live registry asks whether the library has moved, and looks for
+/// a scan another process ran ([`crate::cli_watch`]). The question is one
+/// connection opened and a one-row read, and the look a second connection, a
+/// read of every directory's last scan and of the structure version, and a
+/// probe of the derive lock file. At this rate a volume a scan derives is
+/// listed even by the routes that never name a work, `/api/works` and the OPDS
+/// feed, and an open page reads again soon after a `library scan` ends.
 pub(crate) const REFRESH_EVERY: Duration = Duration::from_secs(2);
 
 /// Every `every`, ask whether `state`'s library has moved, and read its works
-/// again when it has, on the blocking pool, because the question reads the
-/// database.
+/// again when it has; then look for a scan another process ran, by every
+/// directory's last scan, the structure version and the derive lease, with one
+/// [`crate::cli_watch::CliWatch`] kept from tick to tick. Both on the blocking
+/// pool, because both read the database.
 ///
 /// `serve` spawns this for a live registry only and lets it run for the
 /// runtime's life. It answers the task so that a test can stop it.
@@ -359,20 +364,30 @@ pub(crate) fn spawn_refresher(
     tokio::spawn(async move {
         let mut ticks = tokio::time::interval(every);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut watch = crate::cli_watch::CliWatch::default();
         loop {
             ticks.tick().await;
             let asking = Arc::clone(&state);
-            // The refresh reports itself, in its own order (`Works::refresh`).
-            if let Err(panicked) =
-                tokio::task::spawn_blocking(move || asking.works.refresh_if_moved(&asking.library))
-                    .await
+            let mut watching = std::mem::take(&mut watch);
+            match tokio::task::spawn_blocking(move || {
+                // The refresh reports itself, in its own order (`Works::refresh`).
+                let _ = asking.works.refresh_if_moved(&asking.library);
+                watching.look(&asking);
+                watching
+            })
+            .await
             {
-                // Not `eprintln!`, which panics when nothing reads stderr,
-                // and a panic here would end the refresher for good.
-                let _ = writeln!(
-                    std::io::stderr(),
-                    "taiyaku: the refresh panicked: {panicked}"
-                );
+                Ok(looked) => watch = looked,
+                // The watch is lost with the panic, and its fresh one's first
+                // look raises nothing.
+                Err(panicked) => {
+                    // Not `eprintln!`, which panics when nothing reads stderr,
+                    // and a panic here would end the refresher for good.
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "taiyaku: the refresher panicked: {panicked}"
+                    );
+                }
             }
         }
     })

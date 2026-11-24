@@ -277,6 +277,11 @@ schedule again.
     paths** (my call). A job's counts cover every library it holds, and
     hashing and writing cannot be split by library, so counts would
     show a reader figures from libraries they have no grant to.
+
+  *O521: a server task, the registry's refresher, may raise the feed's
+  `ended` for a scan another process ran, seen by a directory's last scan,
+  the derive lease or the store's structure version (`cli_watch`), so the
+  handler still answers from memory only.*
 - **Cancel endpoint:** admin only, it cancels a job by its id. Pressing
   it twice is harmless, and cancelling a job that has already ended
   answers the job's actual result.
