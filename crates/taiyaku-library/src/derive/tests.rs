@@ -10945,6 +10945,54 @@ fn digest_held_members_passes_over_a_paused_directory() {
     );
 }
 
+/// How many times `recorder`, [`crate::derive::DIGEST_OPENS`] or
+/// [`crate::derive::FOLDER_SIZINGS`], names `rel_path` on the calling thread.
+pub(super) fn recorded(
+    recorder: &'static std::thread::LocalKey<std::cell::RefCell<Vec<String>>>,
+    rel_path: &str,
+) -> usize {
+    recorder.with_borrow(|paths| paths.iter().filter(|path| *path == rel_path).count())
+}
+
+/// O452: a plain derive opens a standing member's file, changed and then
+/// gone, once: `classify` finds it gone, and the held members' digest does
+/// not open it again.
+#[test]
+fn a_plain_derive_opens_a_gone_members_file_once() {
+    let tree = crate::tests::tempdir("derive-gone-member-once");
+    let gamma = "Gamma/Gamma v01.cbz";
+    for file in [
+        "Alpha/Alpha v01.cbz",
+        "Beta/Beta - v01 - c001.cbz",
+        "Beta/Beta - v01 - c002.cbz",
+        gamma,
+        "Zeta/Zeta v01.cbz",
+    ] {
+        write_archive(&tree.path().join(file), 2);
+    }
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let r = scanned_root(&conn, tree.path(), None);
+    derive::derive(&conn).expect("derives");
+    write_archive(&tree.path().join(gamma), 5);
+    scan::scan_root(&conn, &r).expect("walks R again");
+    std::fs::remove_file(tree.path().join(gamma)).expect("Gamma's file goes");
+    crate::derive::DIGEST_OPENS.with_borrow_mut(Vec::clear);
+
+    let report = derive::derive(&conn).expect("derives");
+
+    assert_eq!(
+        recorded(&crate::derive::DIGEST_OPENS, gamma),
+        1,
+        "classify opens the gone file, and the held members' digest does not"
+    );
+    assert_eq!(
+        report.unreadable.vanished,
+        [tree.path().join(gamma).display().to_string()],
+        "the gone file counted vanished, once"
+    );
+}
+
 #[test]
 fn a_fresh_directory_is_read_as_the_walk_saved_it_though_paused() {
     let (tree, _) = three_undigested_archives("frozen-fresh");

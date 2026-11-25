@@ -377,6 +377,25 @@ above):
   "directories follow": `follow` moves a group only where its files'
   origin (root, parent directory, series) holds files that joined
   (joins.rs:788-878, read), and a file joins only through a stored pair.
+  *Note, 2026-11-24: a matched file or folder moved or renamed is a new
+  entry with no digest until it is hashed, so rule 3 also names the
+  directory of an entry still to hash, with no held reading, whose page
+  count is a stray's, a digest a match row names that a member holds and
+  no entry holds; the claim holds for a moved matched file whose page
+  count reads as its member's did (O450), and not for one moved onto the
+  path of a file already there, whose row holds a reading (O550), nor for
+  one moved while another directory holds a copy of its bytes, whose
+  digest is then no stray (O551). The cost falls wherever a stray stands,
+  as one does after a walk drops a moved file's entry, until the moved
+  file is hashed, and after a deletion, while the deleted file's member
+  stands: a pass holds back any directory holding an entry the queue still
+  has to hash, with no held reading, at the stray's page count, until the
+  first pass after that entry is hashed, or to the full derive where the
+  queue found it gone. An entry with no digest that the queue does not
+  hash holds nothing: in a directory the job does not read frozen the full
+  derive stages no such entry, so beside one a pass writes what the full
+  derive writes, and in a paused directory it reads frozen rule 2 holds
+  every group. A delay only; rule 3 is not reversed.*
 - At the full derive the group is the same. `held_work` finds its row,
   `Placed::claims` names this group for its content key, and `unchanged`
   finds it written: no write lock, no rewrite (derive.rs:2380-2391). A
@@ -568,6 +587,11 @@ work of its own until the match pass joins it after the job, as today.
 - The full derive at the end has nothing to hash, so its Hashing reports
   are not sent: the line goes from Hashing to Writing without "sizing
   files" or a zero total between.
+  *Note, 2026-11-24: the queue hands the full derive the files it found
+  gone, and the full derive neither sizes nor opens them, so it has
+  nothing to hash, a file the queue found gone included (O452). The
+  cost: a file gone at the queue's digest and back before the full
+  derive is counted vanished and waits for the next scan.*
 
 ### Web
 
@@ -749,6 +773,15 @@ store and roots on a scratch copy of the local test library
    for the full derive** (rule 3). It is wider than the joins need, and
    it is what keeps a join or a follow from moving a volume a reader has
    already seen. A first import with no match rows loses nothing to it.
+   *Note, 2026-11-24: rule 3 also holds back the directory of an entry
+   still to hash, with no held reading, at a stray's page count, where a
+   matched file moved or renamed may be (O450); see the note under rule 3
+   in §7, "Why a volume written early is final". A first import still
+   loses nothing to it; after a matched file is deleted, a directory
+   holding such an entry at its page count waits until the first pass
+   after that entry is hashed, or to the full derive if the queue found it
+   gone, and an entry with no digest that the queue does not hash holds
+   nothing. The call stands.*
 5. **A pass runs** once a group has completed and max(10 s, 4 × the last
    pass's time) has passed since the last one ended; never after the
    last digest.

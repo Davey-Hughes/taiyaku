@@ -32875,6 +32875,7 @@ and a clearing that late can wipe a newer job's mark.
 
 **The mutation sweep** is in `docs/mutants-baseline.md`'s run log, its two
 rows of 2026-11-23; the factor no test pins is O454.
+*O454 has since closed.*
 
 ## O524: the blank under a link's line with the directory browser open (2026-11-23)
 
@@ -32897,3 +32898,277 @@ foot, and the reach from the add form's top to the next section's top.
 - **After.** The blank is 31px against 31px at both sizes, and the reach after
   the add 149px against 149px at 1280×900 and 191px against 191px at 390×844,
   read by a probe since removed; the case asserts each pair equal.
+
+## Scan-fill: O450, O452 and O454 (2026-11-24)
+
+The rows in `docs/status.md` say what the scan-fill PR builds. The plan, the
+ledger, the task reports and their logs are under
+`.superpowers/sdd/2026-11-24-scan-fill/`, which is not committed. Every test
+named below is in `crates/taiyaku-library/src/derive/fill/tests.rs` but
+`a_plain_derive_opens_a_gone_members_file_once`, in `derive/tests.rs`. Each
+mutation was put in by hand, run against the tests named, and taken out, and
+no mutation sweep ran for the branch.
+
+**O454.** `a_scan_jobs_cadence_waits_four_times_the_last_pass_before_the_next`
+runs `derive_filling_at` with `Cadence::scan_job` over twelve one-file
+series on a clock its probe moves at each Hashing report and each cancel
+check, and asserts how many volumes each of its passes has left written; its
+doc gives the arithmetic. It failed to compile before `scan_job` existed, and
+fails with `FACTOR` at 0, at 3 and at 5. `FLOOR` at zero fails
+`a_scan_jobs_cadence_runs_no_pass_in_a_job_shorter_than_its_floor` and not the
+new test, whose first pass is due at the floor either way.
+
+**O452.** Four tests count a gone file's opens through `DIGEST_OPENS` and a
+gone folder's listings through `FOLDER_SIZINGS`, test-only recorders in
+`derive.rs`, and each asserts that the report names the file once, by its
+full path: `a_file_the_queue_finds_gone_is_opened_once`,
+`a_changed_file_the_queue_finds_gone_is_opened_once_and_keeps_its_held_reading`,
+which also holds the gone file's held reading as it was (O320),
+`a_folder_the_queue_finds_gone_is_listed_once_and_opened_once` and
+`a_plain_derive_opens_a_gone_members_file_once`. Each failed on the unfixed
+code, on its count of opens or listings. `classify`'s check is one early
+return, so it has no separate guard on its push to put wrong. Put wrong by
+hand:
+
+- the full derive handed no list: the three queue tests fail;
+- `classify`'s check removed: the three queue tests, and the existing gone
+  test, `a_file_gone_before_its_hash_holds_back_only_its_own_volume`, whose
+  report then names the file twice;
+- that check inverted: all five, the changed file's test at its fixture's
+  assertion, as the inverted check also stops the derive that sets the
+  fixture up;
+- a named entry that skips its digest but is still pushed: the `vanished`
+  assertions of the three queue tests and the existing gone test;
+- `read_input`'s check removed: the folder test alone; inverted: the folder
+  test and the existing gone test;
+- `digest_held_members`' check put back after the digest, or inverted: the
+  changed file's test and the plain derive's;
+- the queue's `is_none()` inverted: the three queue tests and the existing
+  gone test;
+- the queue clearing the gone entry's held reading: the changed file's test,
+  at its O320 assertion.
+
+**O450.** Nine tests: five for the statement, here, and four for its narrowing
+to the entries a pass waits on, below. Of the five, four drive a scan job
+through `fill`:
+`a_pass_leaves_a_volume_beside_a_joined_file_moved_into_its_directory`, with
+raw 5 renamed in its directory and, as a second case, moved into another;
+`a_pass_leaves_a_volume_beside_a_joined_folder_renamed_in_its_directory`, the
+same for a folder volume; `a_pass_leaves_a_volume_beside_a_file_of_a_gone_matched_files_page_count`,
+a joined raw 5 deleted, then raw 6 still to hash beside a new raw 4, at raw
+5's page count, at another, and at raw 5's count with a held reading; and the
+first control, `a_pass_writes_a_volume_beside_a_file_of_a_present_matched_files_page_count`.
+Each case of the first three also asserts where raw 4 ends the job. The moved
+and gone tests failed on the unfixed code and the first control passed; the
+folder test failed with directory rows left out of the statement. The second
+control,
+`a_pass_writes_a_volume_beside_a_file_of_an_unmatched_or_waiting_members_page_count`,
+runs one pass with Zz 1 hashed beside a Zz 2 still to hash at 3 pages, once
+with no match rows and once with the joined raw 5 waiting to be hashed again,
+and asserts that Zz 1 is written. It was written after the first whole-branch
+review.
+
+The statement's clauses were put wrong by hand twice: as each test was
+written, on the code before the narrowing below, and again by the whole-range
+review, which ran each mutation over all of `derive::fill`'s tests on the code
+with the narrowing in. The list is the second set of runs:
+
+- the statement removed: the moved, folder and gone tests, and the gone-file
+  test of the narrowing;
+- the page match dropped, keeping the test for a stray: the gone test, at
+  another count, and the narrowing's chapter file's, chapter's folder's and
+  tail's tests;
+- `pages IN` as `NOT IN`: the moved, folder and gone tests, both controls,
+  those three of the narrowing's tests, and
+  `a_hand_document_that_does_not_read_beside_a_volume_a_pass_writes_is_reported_once`;
+- `NOT IN present` dropped, or inverted: both controls;
+- the match filter on a stray's members (`sha256 IN named`) dropped: the
+  second control, with no match rows;
+- `present`'s held-reading arm dropped: the second control, with raw 5 waiting
+  to be hashed again;
+- `sha256 IS NULL` inverted: the gone test, at the stray's count, and the
+  moved, folder and gone-file tests;
+- `held_sha256 IS NULL` dropped: the gone test, with a held reading; inverted:
+  the gone test, at the stray's count, and the moved, folder and gone-file
+  tests;
+- directory rows left out (`kind = 'file'`): the folder test.
+
+`sha256 IS NULL` dropped fails no test. The narrowing implies the clause: the
+set of entries a pass waits on holds only entries with no digest, so the
+filter already passes over every row the clause does, and no test pins the
+clause alone. Before the narrowing that mutation failed the gone test, at
+another count. One mutation of the first set was not run again: `pages IN (…)`
+dropped whole, which drops the test for a stray inside it too, failed the gone
+test and the first control before the narrowing.
+
+No run put any other clause of the statement wrong, so no other clause is
+watched failing.
+
+**O450, narrowed.** By the owner's ruling of 2026-11-24 a row of the stray
+statement names its directory only while the pass waits on its entry.
+`grouped`, in an early pass, puts each entry `hashes` accepts into `Waiting`:
+the entries the queue has still to hash, a file the queue found gone among
+them, since it keeps no digest. `named_directories` passes over a
+stray-statement row outside that set. The SQL is as it was, and the first
+statement's rows are not filtered.
+
+Why it is safe, by a reading with one run beside it. Whether the full derive
+stages an entry is decided, its digest apart, by the walk's row and the rules:
+`admit`, `read_input`'s two drops and `classify`'s returns before it reads a
+digest look at nothing else but the list of files the queue found gone, which
+only takes entries out, and `hashes` is that test with "holds no digest"
+added. One `Setup` serves the queue, every pass and the full derive. So in a
+directory the job does not read frozen, an entry the full derive stages was
+waited on at every pass where it held no digest, and a row a pass does not
+wait on while it holds no digest is staged by no derive of the job, whoever
+gives it one later: the full derive's tail (`digest_held_members`, which
+hashes an entry a member names by path) or the fingerprint pass
+(`fingerprints::record_digest`). Beside such an entry a pass writes what the
+full derive writes. A directory the job reads frozen is the exception: paused
+when the job read its `Setup` and unpaused while it runs, a row there can be
+given a digest by the fingerprint pass, which asks the pause as it stands, and
+where a member of the directory holds that digest `frozen_entries` then hands
+on a row no pass waited on. No early write turns on it: every row
+`frozen_entries` hands on with pages, a chapter apart, holds a digest a member
+of the directory holds, so rule 2 (`bytes_held`) holds back every group with a
+file there. The run is the tail's test, below.
+
+The four tests. The first three stand over `beside_a_stray`, a joined raw 5
+deleted:
+
+- `a_pass_writes_a_volume_beside_a_chapter_file_of_a_gone_matched_files_page_count`:
+  a chapter-only file at the stray's count beside a new raw 4, which is
+  written early;
+- `a_pass_writes_a_volume_beside_a_chapters_folder_of_a_gone_matched_files_page_count`:
+  the same beside a chapter's folder of loose images totalling that count;
+- `a_pass_leaves_a_volume_beside_a_file_of_a_strays_page_count_the_queue_found_gone`:
+  raw 3 at the stray's count, deleted after the walk, and no pass writes raw 4
+  beside it;
+- `a_pass_writes_a_volume_beside_a_file_only_the_full_derives_tail_hashes`: a
+  file a second directory, Inner, reads no series from, whose digest is a
+  stray once the first directory excludes its folder. Volume 5 beside it is
+  written early, the queue hashes the two volumes alone, and the entry holds
+  the stray's digest after the job. Its stray is made by an exclude glob, not
+  a deletion.
+
+On the code before the narrowing the first, second and fourth failed and the
+third passed. Put wrong by hand:
+
+- the filter removed: the chapter file's, the chapter's folder's and the
+  tail's tests;
+- the filter inverted: all four, with the moved, folder and gone tests above;
+- the set left empty, `grouped` adding no entry to it: the gone-file test,
+  with the moved, folder and gone tests.
+
+Each of the three was run by the task's implementer and again by its review.
+The review's report (`task-5-review.md` in the uncommitted directory) names
+four more hand mutations; its logs for them are the `task-5-review-m*.log`
+files under `logs/` there, uncommitted as the rest. A file not on disk left
+out of the set failed the gone-file test alone. The tail's call removed, and
+the tail also run before the grouping, each with the tail's test run alone,
+failed it in its second assertion. The filter comparing `rel_path` alone,
+without the root, failed no test of `derive::fill`.
+
+**What the cost runs found.** Each was a temporary test, removed after it ran,
+on the code as it stood before the narrowing, which leaves the hold of an
+entry the queue hashes as it was.
+
+- A stored match that never joined (a pair stored directly at a score too low
+  to join), one file then deleted: its work is marked missing, so its member
+  keeps the digest, and its match row stays. A new directory in the other
+  root, holding a file still to hash at that page count, had none of its
+  volumes written by a pass; at another count, it did.
+- Over the gone test's stray, in the other root: a directory holding a file of
+  the stray's count was held at each pass until the first pass after that file
+  was hashed, which wrote the directory's volumes hashed by then.
+- Over the same stray, a volume-less folder at its count, which the queue
+  hashes, held nothing back by the time a pass ran.
+
+Two more of those runs no longer describe the code. A chapter-only file at the
+stray's count, and a chapter's folder of loose images at it, each held a
+directory to the full derive; each is now one of the four tests above, which
+asserts that the volume beside it is written early.
+
+Every cost run made its stray by deleting a matched file; none dropped one's
+entry by an exclude glob.
+
+**O550 and O551, two gaps the fix leaves.** Each is a row that waits on the
+owner's ruling, and neither is built.
+
+O550 is a matched file moved onto the path of a file already there. A scratch
+test, run once on the branch with the narrowing in and then removed; its
+source and output are in `logs/o550-gap.log` under the uncommitted directory
+named above. English 5 of "Oshi" and raws 5 and 7 of "Oshinoko", raw 5 joined
+to English 5 by a stored match; raw 5 is renamed onto raw 7's path and its
+time moved on, as both files have one size and were written in one second, a
+new raw 4 is written beside it, the directory is walked, and the job runs a
+pass after every group. From its output:
+
+```
+GAP row after the walk: Oshinoko/Oshinoko v07.cbz sha256=NULL held_sha256=old raw7's pages=Some(3)
+GAP digested, in order: [(2, "Oshinoko/Oshinoko v04.cbz"), (2, "Oshinoko/Oshinoko v07.cbz")]
+GAP written_so_far: [1]
+GAP after the job: raw 4's work 4 = ("Oshi", Some(4.0), "ja")
+```
+
+At the one write a pass made, work 4 read `series=Some("Oshinoko")
+volume=Some(4.0)`. So the row at raw 7's path held raw 7's old digest as its
+reading, the stray statement passed it over, raw 4 was written early in the
+raws' series, and the job ended with it in the English one, the moved file an
+edition of English 5's work. The run had raw 4 before the moved-onto path in
+the queue, a pass after every group, and no other file in the directory that a
+stored match names.
+
+The whole-range review ran the test again with two variants
+(`logs/final-review-2-o550-variants.log`, uncommitted as the rest). Laid out
+as above, it hashed the two files in the same order, wrote raw 4 early in
+"Oshinoko" and ended the job with it in "Oshi". With English 6 and raw 6
+added, paired and joined, in the raws' directory, it gave `written_so_far:
+[]`: the first statement names a directory for any file there that a stored
+match names, not for the old occupant alone. With a new raw 9 in raw 4's
+place, so that the moved-onto path is hashed first, it gave `written_so_far:
+[]` too. That last run has two files to hash and no pass follows a job's last
+digest, so it does not show by itself that the first statement is what held
+raw 9 back; that part is still a reading. In both variants the new raw ended
+the job in "Oshi".
+
+Reading rows with a held reading too would close it, at the price of holding
+back, while a stray stands, the directory of every file changed in place at
+the stray's page count until it is hashed again. It would also reverse the
+third case of
+`a_pass_leaves_a_volume_beside_a_file_of_a_gone_matched_files_page_count`,
+which the branch's pre-flight (ruling F3 in the ledger) asked for to hold
+`held_sha256 IS NULL`. Not built; the row waits on the owner's ruling.
+
+O551 is a joined file moved while another directory holds a copy of its bytes.
+The whole-range review found it with a scratch test, since removed
+(`logs/final-review-2-copy-elsewhere.log`): English 5 of "Oshi", raw 5 of
+"Oshinoko" and a byte copy of raw 5 in a third directory, raw 5 joined to
+English 5 by a stored match; raw 5 is moved to `Moved/` in its directory, a
+new raw 4 is written beside it there, the raws' directory is walked, and the
+job runs a pass after every group. From its output:
+
+```
+FR2 copy row after the walk: root 2 Moved/Oshinoko v05.cbz sha256=NULL held=NULL pages=Some(3)
+FR2 copy row after the walk: root 3 Oshinoko/Oshinoko v05.cbz sha256=raw5's held=NULL pages=Some(3)
+FR2 copy digested, in order: [(2, "Moved/Oshinoko v04.cbz"), (2, "Moved/Oshinoko v05.cbz")]
+FR2 copy written_so_far: [1]
+FR2 copy after the job: raw 4's work = ("Oshi", Some(4.0), "ja")
+```
+
+At the one write a pass made, raw 4's work read `series=Some("Oshinoko")
+volume=Some(4.0)`. The copy's row still holds raw 5's digest, so that digest
+is no stray and the moved file's row, with no digest, names nothing; the first
+statement names the copy's directory and not `Moved/`, which holds no other
+file a stored match names; where a folder does, the first statement names it.
+The same test with the narrowing's filter taken out by hand gave the same rows
+after the walk, the same order of digests, the same early write and the same
+end, so the narrowing did not open it: the statement's test for a stray
+did, on this branch. The run had raw 4 before the moved file in the queue; the
+other order was not run. By the review's reading, not a run, the moved file is
+its member's primary again at the full derive (`keep_primaries`), joins, and
+its directory follows.
+
+One way to close it, neither built nor run, is to read as a stray a matched
+member whose own path no entry holds, though another entry holds its bytes.
+What that would hold back is not worked out.

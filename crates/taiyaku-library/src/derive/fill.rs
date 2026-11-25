@@ -42,6 +42,17 @@ impl std::fmt::Debug for Cadence<'_> {
     }
 }
 
+impl<'a> Cadence<'a> {
+    /// A scan job's cadence, [`FLOOR`] and [`FACTOR`], read on `now`.
+    fn scan_job(now: &'a dyn Fn() -> Instant) -> Self {
+        Self {
+            floor: FLOOR,
+            factor: FACTOR,
+            now,
+        }
+    }
+}
+
 /// A scan job's floor (design call 5): ten seconds keeps a small store from
 /// passing after every volume.
 const FLOOR: Duration = Duration::from_secs(10);
@@ -66,11 +77,7 @@ pub fn derive_filling(
         documents,
         fresh,
         watch,
-        &Cadence {
-            floor: FLOOR,
-            factor: FACTOR,
-            now: &Instant::now,
-        },
+        &Cadence::scan_job(&Instant::now),
     )
 }
 
@@ -129,6 +136,7 @@ pub fn derive_filling_at(
     let total: u64 = queue.iter().map(|queued| queued.bytes).sum();
     let mut hashed: u64 = 0;
     let mut written: u64 = 0;
+    let mut vanished = Vec::new();
     // Once sizing is done, so the first pass waits from when hashing began,
     // not from a walk of the folders.
     let mut last_end = (cadence.now)();
@@ -138,9 +146,11 @@ pub fn derive_filling_at(
         if watch.cancelled() {
             return Ok(Outcome::Cancelled(Step::Hashing));
         }
-        // A file gone answers no digest and is left unhashed, for the full
-        // derive to find gone again and count.
-        digest(conn, queued.root, &queued.entry)?;
+        // A file gone answers no digest and is left unhashed; the full derive
+        // counts it without opening it again.
+        if digest(conn, queued.root, &queued.entry)?.is_none() {
+            vanished.push(super::vanished_name(queued.root, &queued.entry.rel_path));
+        }
         hashed += queued.bytes;
         let completes = queue.get(at + 1).is_some_and(|next| next.key != queued.key);
         if !completes
@@ -174,7 +184,14 @@ pub fn derive_filling_at(
     if watch.cancelled() {
         return Ok(Outcome::Cancelled(Step::Hashing));
     }
-    derive_in(conn, documents, &setup, &NoHashing(watch), Mode::Full)
+    derive_in(
+        conn,
+        documents,
+        &setup,
+        &NoHashing(watch),
+        Mode::Full,
+        vanished,
+    )
 }
 
 /// One entry the filling derive hashes: its own key, which orders the queue
@@ -231,7 +248,14 @@ pub(super) fn early_pass(
     watch: &dyn Watch,
 ) -> Result<Outcome<u64>, String> {
     Ok(
-        match derive_in(conn, documents, setup, &Quiet(watch), Mode::Early)? {
+        match derive_in(
+            conn,
+            documents,
+            setup,
+            &Quiet(watch),
+            Mode::Early,
+            Vec::new(),
+        )? {
             Outcome::Done(report) => Outcome::Done(u64::try_from(report.works).unwrap_or(u64::MAX)),
             Outcome::Cancelled(step) => Outcome::Cancelled(step),
         },
@@ -262,14 +286,14 @@ impl Watch for Quiet<'_> {
 pub(super) fn early_writes(
     conn: &Connection,
     groups: &BTreeMap<GroupKey, Group>,
-    waiting: &BTreeSet<GroupKey>,
+    waiting: &super::Waiting,
     placed: &Placed,
 ) -> Result<BTreeSet<GroupKey>, String> {
-    let named = named_directories(conn)?;
+    let named = named_directories(conn, &waiting.entries)?;
     let mut series: HashMap<&str, Option<i64>> = HashMap::new();
     let mut writes = BTreeSet::new();
     for (key, group) in groups {
-        if waiting.contains(key) || in_a_named_directory(group, &named) {
+        if waiting.keys.contains(key) || in_a_named_directory(group, &named) {
             continue;
         }
         let series_id = if let Some(id) = series.get(group.series.as_str()) {
@@ -348,28 +372,61 @@ fn bytes_held(conn: &Connection, group: &Group) -> Result<bool, String> {
 /// restore a split one. A file is named by its digest, or by the reading it
 /// holds while it waits to be hashed again, which a pair still names when
 /// only the file's time changed: hashed at the full derive, it joins, and its
-/// directory follows.
-fn named_directories(conn: &Connection) -> Result<HashMap<i64, HashSet<String>>, String> {
+/// directory follows. Also the directory of each entry of `waiting`, those
+/// still to hash, that may be a matched file moved since a walk dropped it.
+fn named_directories(
+    conn: &Connection,
+    waiting: &HashSet<(i64, String)>,
+) -> Result<HashMap<i64, HashSet<String>>, String> {
     let failed = |e: rusqlite::Error| format!("reading the directories a stored match names: {e}");
-    let mut stmt = conn
-        .prepare(
-            "WITH named (sha256) AS (SELECT sha_a FROM content_match
-                                     UNION SELECT sha_b FROM content_match)
-             SELECT root_id, rel_path FROM scan_entry
-              WHERE sha256 IN (SELECT sha256 FROM named)
-                 OR held_sha256 IN (SELECT sha256 FROM named)",
-        )
-        .map_err(failed)?;
-    let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
-        .map_err(failed)?;
     let mut named: HashMap<i64, HashSet<String>> = HashMap::new();
-    for row in rows {
-        let (root_id, rel_path) = row.map_err(failed)?;
-        named
-            .entry(root_id)
-            .or_default()
-            .insert(parent_of(&rel_path).to_owned());
+    for (only_waiting, sql) in [
+        (
+            false,
+            "WITH named (sha256) AS (SELECT sha_a FROM content_match
+                                 UNION SELECT sha_b FROM content_match)
+         SELECT root_id, rel_path FROM scan_entry
+          WHERE sha256 IN (SELECT sha256 FROM named)
+             OR held_sha256 IN (SELECT sha256 FROM named)",
+        ),
+        // A stray, a digest a match names that a member holds and no entry holds by digest or
+        // held reading, is a matched file or folder whose entry a walk has dropped. Moved, it
+        // keeps its page count and its new row has no digest until hashed, so a row with no
+        // digest and no held reading at a stray's count names its directory (O450), but only
+        // while the pass waits on it, a folder volume as a file. A row it does not wait on
+        // moves nothing written early: no derive of the job stages it, whoever hashes it, or
+        // the job reads its directory frozen, where rule 2 holds every group. With no match
+        // rows there is no stray, and a first import waits for nothing more.
+        (
+            true,
+            "WITH named (sha256) AS (SELECT sha_a FROM content_match
+                                 UNION SELECT sha_b FROM content_match),
+              present (sha256) AS (SELECT sha256 FROM scan_entry
+                                    WHERE sha256 IN (SELECT sha256 FROM named)
+                                   UNION SELECT held_sha256 FROM scan_entry
+                                    WHERE held_sha256 IN (SELECT sha256 FROM named))
+         SELECT root_id, rel_path FROM scan_entry
+          WHERE sha256 IS NULL AND held_sha256 IS NULL
+            AND pages IN (SELECT pages FROM member
+                           WHERE sha256 IN (SELECT sha256 FROM named)
+                             AND sha256 NOT IN (SELECT sha256 FROM present))",
+        ),
+    ] {
+        let mut stmt = conn.prepare(sql).map_err(failed)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(failed)?;
+        for row in rows {
+            let entry = row.map_err(failed)?;
+            if only_waiting && !waiting.contains(&entry) {
+                continue;
+            }
+            let (root_id, rel_path) = entry;
+            named
+                .entry(root_id)
+                .or_default()
+                .insert(parent_of(&rel_path).to_owned());
+        }
     }
     Ok(named)
 }

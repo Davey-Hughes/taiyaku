@@ -733,6 +733,389 @@ fn a_pass_leaves_a_volume_beside_a_joined_file_waiting_to_be_hashed_again() {
     );
 }
 
+/// Rule 3 names the directory a joined file was renamed or moved into: at its
+/// new path it has no digest until the queue reaches it, and the walk drops its
+/// old path, so its old digest is a stray, held by a member and by no entry. A new raw of the stray's page
+/// count beside it waits; written early, it would show in the raws' series
+/// and move to the English one when the moved raw joins at the full derive
+/// and its directory follows.
+#[test]
+fn a_pass_leaves_a_volume_beside_a_joined_file_moved_into_its_directory() {
+    for (moved, new) in [
+        ("Oshinoko/Oshinoko v5.cbz", oshinoko(4)),
+        (
+            "Moved/Oshinoko v05.cbz",
+            "Moved/Oshinoko v04.cbz".to_owned(),
+        ),
+    ] {
+        let shelf = Shelf::new("fill-moved");
+        let library = Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        let shelved = shelved(&shelf, &conn, &[oshi(5)], &[oshinoko(5)]);
+        shelved.pair_volumes(&conn, &[5]);
+        let joined = derive::derive(&conn).expect("derives the join");
+        assert_eq!(joined.joined, 1, "the fixture: raw 5 joined English 5");
+        let to = shelf.path("Raw", moved);
+        std::fs::create_dir_all(to.parent().expect("a directory")).expect("makes it");
+        std::fs::rename(shelf.path("Raw", &oshinoko(5)), to).expect("moves raw 5");
+        write_archive(&shelf.path("Raw", &new), 3);
+        scan::scan_root(&conn, &shelved.raw).expect("rescan");
+        let probe = Probe::new(&conn);
+
+        derive::done(fill(&conn, &probe, Duration::ZERO)).expect("the job ends");
+
+        assert_eq!(
+            probe.recording.written_so_far(),
+            Vec::<u64>::new(),
+            "raw 4 waits beside raw 5 at {moved}"
+        );
+        assert_eq!(
+            work(&conn, holder(&conn, &digest(&conn, &shelved.raw, &new))),
+            raw_at("Oshi", 4),
+            "the full derive puts raw 4 in the English series beside raw 5 at {moved}"
+        );
+    }
+}
+
+/// Raw 5 joined to English 5, then deleted, walked and derived: its edition
+/// stays on the English work, so its digest is a stray.
+fn beside_a_stray(label: &str) -> (Shelf, Library, crate::derive::joins::tests::Shelved) {
+    let shelf = Shelf::new(label);
+    let library = Library::open_in_memory().expect("open");
+    let shelved = {
+        let conn = library.conn();
+        let shelved = shelved(&shelf, &conn, &[oshi(5)], &[oshinoko(5)]);
+        shelved.pair_volumes(&conn, &[5]);
+        derive::derive(&conn).expect("derives the join");
+        std::fs::remove_file(shelf.path("Raw", &oshinoko(5))).expect("deletes raw 5");
+        scan::scan_root(&conn, &shelved.raw).expect("rescan");
+        derive::derive(&conn).expect("derives without raw 5");
+        shelved
+    };
+    (shelf, library, shelved)
+}
+
+/// Rule 3 matches a file still to hash to a stray by page count, and only a
+/// file with neither a digest nor a held reading. Raw 5, joined and deleted,
+/// leaves its digest on the English work. Raw 6 at its count holds raw 4 back;
+/// at another count, or held to be hashed again, it holds nothing and raw 4 is
+/// written early. Wider, a store with a stray would hold back every directory
+/// holding a file still to hash.
+/// Raw 4 ends in the raws' series either way: a deleted file leads no follow.
+#[test]
+fn a_pass_leaves_a_volume_beside_a_file_of_a_gone_matched_files_page_count() {
+    for (pages, held, written) in [(3, false, vec![]), (4, false, vec![1]), (3, true, vec![1])] {
+        let (shelf, library, shelved) = beside_a_stray("fill-stray-pages");
+        let conn = library.conn();
+        write_archive(&shelf.path("Raw", &oshinoko(6)), pages);
+        if held {
+            scan::scan_root(&conn, &shelved.raw).expect("walks raw 6");
+            derive::derive(&conn).expect("derives raw 6");
+        }
+        write_archive(&shelf.path("Raw", &oshinoko(4)), 3);
+        scan::scan_root(&conn, &shelved.raw).expect("walks raw 4");
+        if held {
+            // As a walk leaves a held file whose time changed.
+            conn.execute(
+                "UPDATE scan_entry SET held_sha256 = sha256, sha256 = NULL
+                  WHERE root_id = ?1 AND rel_path = ?2",
+                rusqlite::params![shelved.raw.id, oshinoko(6)],
+            )
+            .expect("raw 6 waits to be hashed again");
+        }
+        let probe = Probe::new(&conn);
+
+        derive::done(fill(&conn, &probe, Duration::ZERO)).expect("the job ends");
+
+        assert_eq!(
+            probe.recording.written_so_far(),
+            written,
+            "raw 6 at {pages} pages (held: {held})"
+        );
+        assert_eq!(
+            work(&conn, holder(&conn, &shelved.ja(&conn, 4))),
+            raw_at("Oshinoko", 4),
+            "raw 4 ends in the raws' series (raw 6 at {pages} pages, held: {held})"
+        );
+    }
+}
+
+/// Rule 3 reads a directory's row too: a folder volume is fingerprinted and
+/// matched as an archive is, and renamed it keeps its digest and page count
+/// while its new row has no digest. Raw 4, beside a joined raw 5 folder
+/// renamed in its directory, waits; written early, it would show in the raws'
+/// series and move to the English one when the folder joins at the full
+/// derive and its directory follows.
+#[test]
+fn a_pass_leaves_a_volume_beside_a_joined_folder_renamed_in_its_directory() {
+    let shelf = Shelf::new("fill-folder-renamed");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let shelved = shelved(&shelf, &conn, &[oshi(5)], &[]);
+    let folder = "Oshinoko/Oshinoko v05";
+    write_pages(&shelf.path("Raw", folder), 3);
+    scan::scan_root(&conn, &shelved.raw).expect("walks raw 5's folder");
+    derive::derive(&conn).expect("derives raw 5");
+    let ja = digest(&conn, &shelved.raw, folder);
+    read(&conn, &ja, "whole");
+    pair(&conn, &shelved.en(&conn, 5), &ja, 0.95);
+    let joined = derive::derive(&conn).expect("derives the join");
+    assert_eq!(
+        joined.joined, 1,
+        "the fixture: raw 5's folder joined English 5"
+    );
+    std::fs::rename(
+        shelf.path("Raw", folder),
+        shelf.path("Raw", "Oshinoko/Oshinoko v5"),
+    )
+    .expect("renames raw 5's folder");
+    write_archive(&shelf.path("Raw", &oshinoko(4)), 3);
+    scan::scan_root(&conn, &shelved.raw).expect("rescan");
+    let probe = Probe::new(&conn);
+
+    derive::done(fill(&conn, &probe, Duration::ZERO)).expect("the job ends");
+
+    assert_eq!(
+        probe.recording.written_so_far(),
+        Vec::<u64>::new(),
+        "raw 4 waits beside raw 5's renamed folder"
+    );
+    assert_eq!(
+        work(&conn, holder(&conn, &shelved.ja(&conn, 4))),
+        raw_at("Oshi", 4),
+        "the full derive puts raw 4 in the English series beside raw 5's folder"
+    );
+}
+
+/// Rule 3's stray is a matched digest no entry holds. With the joined pair
+/// where it was, a file still to hash at the pair's page count names nothing,
+/// and Zz 1 beside it is written early; reading every matched member as a
+/// stray would hold back every directory holding a file still to hash, with
+/// no held reading, at that page count.
+#[test]
+fn a_pass_writes_a_volume_beside_a_file_of_a_present_matched_files_page_count() {
+    let shelf = Shelf::new("fill-present");
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    let shelved = shelved(&shelf, &conn, &[oshi(5)], &[oshinoko(5)]);
+    shelved.pair_volumes(&conn, &[5]);
+    derive::derive(&conn).expect("derives the join");
+    write_archive(&shelf.path("Raw", "Zz/Zz v01.cbz"), 2);
+    write_archive(&shelf.path("Raw", "Zz/Zz v02.cbz"), 3);
+    scan::scan_root(&conn, &shelved.raw).expect("rescan");
+    let probe = Probe::new(&conn);
+
+    derive::done(fill(&conn, &probe, Duration::ZERO)).expect("the job ends");
+
+    assert_eq!(
+        probe.recording.written_so_far(),
+        [1],
+        "Zz 1 is written early beside Zz 2"
+    );
+}
+
+/// Rule 3's stray is a member's digest that a match names and that no entry
+/// holds by digest or held reading. A member no match names is no stray, so
+/// on a rescan with no match rows a file still to hash at an English volume's
+/// page count names nothing; and a joined raw waiting to be hashed again holds
+/// its digest as a held reading, so a file at its count in another directory
+/// names nothing. Zz 1 is written early beside Zz 2 in both; reading either
+/// as a stray would hold back, on a rescan, every directory holding a file
+/// still to hash, with no held reading, at its page count.
+#[test]
+fn a_pass_writes_a_volume_beside_a_file_of_an_unmatched_or_waiting_members_page_count() {
+    for joined in [false, true] {
+        let shelf = Shelf::new("fill-not-stray");
+        let library = Library::open_in_memory().expect("open");
+        let conn = library.conn();
+        let raws = if joined { vec![oshinoko(5)] } else { vec![] };
+        let shelved = shelved(&shelf, &conn, &[oshi(5)], &raws);
+        if joined {
+            shelved.pair_volumes(&conn, &[5]);
+            let report = derive::derive(&conn).expect("derives the join");
+            assert_eq!(report.joined, 1, "the fixture: raw 5 joined English 5");
+        } else {
+            assert_eq!(
+                scalar(&conn, "SELECT count(*) FROM content_match"),
+                0,
+                "the fixture: no match rows"
+            );
+        }
+        write_archive(&shelf.path("Raw", "Zz/Zz v01.cbz"), 2);
+        write_archive(&shelf.path("Raw", "Zz/Zz v02.cbz"), 3);
+        scan::scan_root(&conn, &shelved.raw).expect("rescan");
+        hash_now(&conn, &shelved.raw, "Zz/Zz v01.cbz");
+        if joined {
+            // As a walk leaves a held file whose time changed.
+            conn.execute(
+                "UPDATE scan_entry SET held_sha256 = sha256, sha256 = NULL
+                  WHERE root_id = ?1 AND rel_path = ?2",
+                rusqlite::params![shelved.raw.id, oshinoko(5)],
+            )
+            .expect("raw 5 waits to be hashed again");
+        }
+
+        let outcome = pass(&conn);
+
+        assert_eq!(
+            outcome,
+            Outcome::Done(1),
+            "Zz 1 is written early beside Zz 2 at 3 pages (raw 5 joined and waiting: {joined})"
+        );
+    }
+}
+
+/// Rule 3's stray holds only for an entry the pass waits on, one the queue
+/// has still to hash. A chapter with no volume is not queued and no derive of
+/// the job stages it, so at raw 5's page count beside raw 4 it names nothing
+/// and raw 4 is written early, at the pass before raw 6, which is at another
+/// count. Counted, every such chapter file would hold its directory back to
+/// the full derive.
+#[test]
+fn a_pass_writes_a_volume_beside_a_chapter_file_of_a_gone_matched_files_page_count() {
+    let (shelf, library, shelved) = beside_a_stray("fill-stray-chapter");
+    let conn = library.conn();
+    write_archive(&shelf.path("Raw", "Oshinoko/Oshinoko - c001.cbz"), 3);
+    write_archive(&shelf.path("Raw", &oshinoko(4)), 3);
+    write_archive(&shelf.path("Raw", &oshinoko(6)), 4);
+    scan::scan_root(&conn, &shelved.raw).expect("rescan");
+    let probe = Probe::new(&conn);
+
+    let report = derive::done(fill(&conn, &probe, Duration::ZERO)).expect("the job ends");
+
+    assert_eq!(
+        report.unattached_chapter_dirs, 1,
+        "the fixture: a chapter with no volume"
+    );
+    assert_eq!(
+        probe.recording.written_so_far(),
+        [1],
+        "raw 4 is written early beside the chapter"
+    );
+}
+
+/// A chapter's folder of loose images is no volume: the queue does not hash
+/// it and no derive of the job stages it, so totalling raw 5's page count
+/// beside raw 4 it names nothing and raw 4 is written early. A folder volume
+/// is queued and holds until hashed
+/// ([`a_pass_leaves_a_volume_beside_a_joined_folder_renamed_in_its_directory`]);
+/// counted, any folder at a stray's count would hold its parent back.
+#[test]
+fn a_pass_writes_a_volume_beside_a_chapters_folder_of_a_gone_matched_files_page_count() {
+    let (shelf, library, shelved) = beside_a_stray("fill-stray-chapter-folder");
+    let conn = library.conn();
+    write_pages(&shelf.path("Raw", "Oshinoko/Oshinoko - c001"), 3);
+    write_archive(&shelf.path("Raw", &oshinoko(4)), 3);
+    write_archive(&shelf.path("Raw", &oshinoko(6)), 4);
+    scan::scan_root(&conn, &shelved.raw).expect("rescan");
+    let probe = Probe::new(&conn);
+
+    let report = derive::done(fill(&conn, &probe, Duration::ZERO)).expect("the job ends");
+
+    assert_eq!(
+        report.unattached_chapter_dirs, 1,
+        "the fixture: a chapter's folder with no volume"
+    );
+    assert_eq!(
+        probe.recording.written_so_far(),
+        [1],
+        "raw 4 is written early beside the chapter's folder"
+    );
+}
+
+/// A file the queue finds gone is still waited on, so at a stray's page count
+/// it holds its directory at every later pass: raw 3, gone before its digest,
+/// keeps raw 4 back at the pass that follows raw 4. Not waited on, it would
+/// release raw 4 beside a file whose bytes no pass has read.
+#[test]
+fn a_pass_leaves_a_volume_beside_a_file_of_a_strays_page_count_the_queue_found_gone() {
+    let (shelf, library, shelved) = beside_a_stray("fill-stray-gone");
+    let conn = library.conn();
+    for (n, pages) in [(3, 3), (4, 3), (6, 4)] {
+        write_archive(&shelf.path("Raw", &oshinoko(n)), pages);
+    }
+    scan::scan_root(&conn, &shelved.raw).expect("rescan");
+    let gone = shelf.path("Raw", &oshinoko(3));
+    std::fs::remove_file(&gone).expect("raw 3 goes");
+    let probe = Probe::new(&conn);
+
+    let report = derive::done(fill(&conn, &probe, Duration::ZERO)).expect("the job ends");
+
+    assert_eq!(
+        report.unreadable.vanished,
+        [gone.display().to_string()],
+        "the fixture: the queue found raw 3 gone"
+    );
+    assert_eq!(
+        probe.recording.written_so_far(),
+        Vec::<u64>::new(),
+        "raw 4 waits beside raw 3"
+    );
+}
+
+/// An entry the pass does not wait on names nothing though the job hashes it.
+/// Inner, at Manga's series folder, reads no series from `S 01.cbz`, whose
+/// digest is a stray once Manga excludes `S/`: the queue passes it over, so
+/// volume 5 beside it is written early, and the full derive's tail, which
+/// hashes an entry a member names by path, gives it the stray digest after
+/// the job's last report. Held, volume 5 would wait for an entry no derive
+/// of the job stages.
+#[test]
+fn a_pass_writes_a_volume_beside_a_file_only_the_full_derives_tail_hashes() {
+    let (top, library, manga) = crate::scan::tests::manga_holding(
+        "fill-stray-tail",
+        &[("S/S 01.cbz", 3), ("T/T v01.cbz", 3)],
+    );
+    let conn = library.conn();
+    let stray = digest(&conn, &manga, "S/S 01.cbz");
+    pair(&conn, &stray, &digest(&conn, &manga, "T/T v01.cbz"), 0.95);
+    conn.execute(
+        "UPDATE root SET exclude_globs = 'S/' WHERE id = ?1",
+        [manga.id],
+    )
+    .expect("Manga excludes S/");
+    let manga = scan::Root {
+        exclude_globs: Some("S/".to_string()),
+        ..manga
+    };
+    let inner = scan::add_root_checked_in(
+        &conn,
+        &manga.path.join("S"),
+        scan::InLibrary::Named("Inner"),
+    )
+    .expect("adds Inner")
+    .root;
+    write_archive(&top.path().join("m/S/S - v05.cbz"), 2);
+    write_archive(&top.path().join("m/S/S - v06.cbz"), 4);
+    scan::scan_root(&conn, &manga).expect("Manga drops S/");
+    scan::scan_root(&conn, &inner).expect("Inner walks S");
+    assert_eq!(
+        hashed_under(&conn, &inner),
+        Vec::<String>::new(),
+        "the fixture: Inner's entries hold no digest"
+    );
+    let probe = Probe::new(&conn);
+
+    derive::done(fill(&conn, &probe, Duration::ZERO)).expect("the job ends");
+
+    assert_eq!(
+        probe.recording.written_so_far(),
+        [1],
+        "volume 5 is written early beside S 01.cbz"
+    );
+    assert_eq!(
+        (probe.digested(), digest(&conn, &inner, "S 01.cbz")),
+        (
+            vec![
+                (inner.id, "S - v05.cbz".to_owned()),
+                (inner.id, "S - v06.cbz".to_owned()),
+            ],
+            stray,
+        ),
+        "the queue hashes the two volumes alone, and the tail gives S 01.cbz the stray digest"
+    );
+}
+
 /// Design §7: `Placed::of` reads the groups a pass holds back as well as those
 /// it writes. A rule titles a book's Korean apart once its file has changed:
 /// the English keeps the book's row and is held back (rule 2), and the Korean,
@@ -1267,6 +1650,59 @@ fn a_scan_jobs_cadence_runs_no_pass_in_a_job_shorter_than_its_floor() {
         work_series(&conn),
         ["Alpha", "Beta", "Delta"],
         "the full derive wrote every volume"
+    );
+}
+
+/// Twelve one-file series, one volume each, in series order: with [`SERIES`]'s
+/// six, a factor of 3 and one of 4 pass alike.
+const DOZEN: [&str; 12] = [
+    "Aa/Aa v01.cbz",
+    "Ab/Ab v01.cbz",
+    "Ac/Ac v01.cbz",
+    "Ad/Ad v01.cbz",
+    "Ae/Ae v01.cbz",
+    "Af/Af v01.cbz",
+    "Ag/Ag v01.cbz",
+    "Ah/Ah v01.cbz",
+    "Ai/Ai v01.cbz",
+    "Aj/Aj v01.cbz",
+    "Ak/Ak v01.cbz",
+    "Al/Al v01.cbz",
+];
+
+/// Design call 5's factor, in the cadence a scan job runs at. Each Hashing
+/// report moves the clock 9 s and each cancel check 1 s, so a digest takes
+/// 10 s and the first pass is due at the floor, after Aa's; it checks the flag
+/// at each of the twelve entries it reads and the one work it writes, 13 s. The
+/// next is due 52 s on, after Ag's digest, and takes 18 s for its six works;
+/// the 72 s due after it outlasts the rest. A factor of 3 would pass after the
+/// fifth digest, one of 5 after the eighth.
+#[test]
+fn a_scan_jobs_cadence_waits_four_times_the_last_pass_before_the_next() {
+    let (_tree, library) = scanned_files("fill-job-factor", &DOZEN);
+    let conn = library.conn();
+    let probe = Probe::new(&conn)
+        .ticking(Duration::from_secs(9))
+        .checking(Duration::from_secs(1));
+    let now = || probe.now();
+
+    derive::done(
+        derive::derive_filling_at(
+            &conn,
+            derive::Documents::Reconcile,
+            &[],
+            &probe,
+            &Cadence::scan_job(&now),
+        )
+        .expect("derives"),
+    )
+    .expect("the job ends");
+
+    assert_eq!(
+        probe.recording.written_so_far(),
+        [1, 7],
+        "a pass after Aa's digest, then none until four times its 13 s of hashing \
+         has followed it, six digests on"
     );
 }
 
@@ -2255,6 +2691,138 @@ fn a_file_gone_before_its_hash_holds_back_only_its_own_volume() {
         report.unreadable.vanished,
         [gone.display().to_string()],
         "the gone file counted vanished"
+    );
+}
+
+/// O452: the queue's digest is the one open of a file it finds gone; the
+/// full derive counts it vanished without opening it again.
+#[test]
+fn a_file_the_queue_finds_gone_is_opened_once() {
+    let (tree, library) = scanned_files(
+        "fill-gone-once",
+        &[ALPHA, BETA_C001, BETA_C002, GAMMA_CBZ, ZETA],
+    );
+    std::fs::remove_file(tree.path().join(BETA_C001)).expect("Beta's first file goes");
+    let conn = library.conn();
+    crate::derive::DIGEST_OPENS.with_borrow_mut(Vec::clear);
+
+    let report = derive::done(
+        derive::derive_filling_at(
+            &conn,
+            derive::Documents::Reconcile,
+            &[],
+            &Recording::default(),
+            &every_group(),
+        )
+        .expect("the job derives"),
+    )
+    .expect("the job ends");
+
+    assert_eq!(
+        crate::derive::tests::recorded(&crate::derive::DIGEST_OPENS, BETA_C001),
+        1,
+        "the queue's digest opens the gone file, and nothing after it"
+    );
+    assert_eq!(
+        report.unreadable.vanished,
+        [tree.path().join(BETA_C001).display().to_string()],
+        "the gone file counted vanished, once"
+    );
+}
+
+/// O452 and O320: a standing work's sole file, changed and then gone before
+/// the queue's digest, is opened once in the job, and its held reading
+/// stands for the next scan.
+#[test]
+fn a_changed_file_the_queue_finds_gone_is_opened_once_and_keeps_its_held_reading() {
+    let (tree, library) = scanned_files(
+        "fill-gone-held",
+        &[ALPHA, BETA_C001, BETA_C002, GAMMA_CBZ, ZETA],
+    );
+    let conn = library.conn();
+    derive::derive(&conn).expect("the first derive");
+    write_archive(&tree.path().join(GAMMA_CBZ), 5);
+    let root = scan::roots(&conn).expect("reads the directories").remove(0);
+    scan::scan_root(&conn, &root).expect("walks the directory again");
+    let held = scan::tests::held_reading(&conn, root.id, GAMMA_CBZ);
+    assert!(
+        held.0.is_some(),
+        "the fixture: the walk holds Gamma's old reading"
+    );
+    std::fs::remove_file(tree.path().join(GAMMA_CBZ)).expect("Gamma's file goes");
+    crate::derive::DIGEST_OPENS.with_borrow_mut(Vec::clear);
+
+    let report = derive::done(
+        derive::derive_filling_at(
+            &conn,
+            derive::Documents::Reconcile,
+            &[],
+            &Recording::default(),
+            &every_group(),
+        )
+        .expect("the job derives"),
+    )
+    .expect("the job ends");
+
+    assert_eq!(
+        crate::derive::tests::recorded(&crate::derive::DIGEST_OPENS, GAMMA_CBZ),
+        1,
+        "the queue's digest opens the gone file, and neither classify nor the held members' \
+         digest after it"
+    );
+    assert_eq!(
+        report.unreadable.vanished,
+        [tree.path().join(GAMMA_CBZ).display().to_string()],
+        "the gone file counted vanished, once"
+    );
+    assert_eq!(
+        scan::tests::held_reading(&conn, root.id, GAMMA_CBZ),
+        held,
+        "its held reading stands"
+    );
+}
+
+/// O452: a folder the queue finds gone is listed once, by the queue's sizing,
+/// and opened once, by the queue's digest.
+#[test]
+fn a_folder_the_queue_finds_gone_is_listed_once_and_opened_once() {
+    let tree = crate::tests::tempdir("fill-gone-folder");
+    write_archive(&tree.path().join(ALPHA), 2);
+    write_pages(&tree.path().join(GAMMA), 2);
+    write_archive(&tree.path().join(ZETA), 2);
+    let library = Library::open_in_memory().expect("open");
+    let conn = library.conn();
+    scanned_root(&conn, tree.path(), None);
+    std::fs::remove_dir_all(tree.path().join(GAMMA)).expect("Gamma's folder goes");
+    crate::derive::DIGEST_OPENS.with_borrow_mut(Vec::clear);
+    crate::derive::FOLDER_SIZINGS.with_borrow_mut(Vec::clear);
+
+    let report = derive::done(
+        derive::derive_filling_at(
+            &conn,
+            derive::Documents::Reconcile,
+            &[],
+            &Recording::default(),
+            &every_group(),
+        )
+        .expect("the job derives"),
+    )
+    .expect("the job ends");
+
+    assert_eq!(
+        crate::derive::tests::recorded(&crate::derive::FOLDER_SIZINGS, GAMMA),
+        1,
+        "the queue's sizing lists the gone folder, and the full derive's does not"
+    );
+    assert_eq!(
+        crate::derive::tests::recorded(&crate::derive::DIGEST_OPENS, GAMMA),
+        1,
+        "the queue's digest opens the gone folder, and nothing after it"
+    );
+    assert_eq!(
+        report.unreadable.vanished,
+        [tree.path().join(GAMMA).display().to_string()],
+        "the gone folder counted vanished, once"
     );
 }
 

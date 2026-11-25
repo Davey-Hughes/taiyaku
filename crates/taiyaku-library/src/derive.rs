@@ -697,7 +697,14 @@ pub fn derive_watched(
     fresh: &[i64],
     watch: &dyn Watch,
 ) -> Result<Outcome<DeriveReport>, String> {
-    derive_in(conn, documents, &setup(conn, fresh)?, watch, Mode::Full)
+    derive_in(
+        conn,
+        documents,
+        &setup(conn, fresh)?,
+        watch,
+        Mode::Full,
+        Vec::new(),
+    )
 }
 
 /// Which derive [`derive_in`] runs.
@@ -759,12 +766,17 @@ fn setup(conn: &Connection, fresh: &[i64]) -> Result<Setup, String> {
 /// [`derive_watched`] in either [`Mode`], over the rules, the roots and the
 /// frozen set `setup` holds, so the passes of a filling derive and its full
 /// derive, handed one [`Setup`], read one input.
+///
+/// `vanished` names the files the caller found gone before it, as
+/// [`vanished_name`] names them: its report starts with them, and none is
+/// listed or opened again.
 fn derive_in(
     conn: &Connection,
     documents: Documents,
     setup: &Setup,
     watch: &dyn Watch,
     mode: Mode,
+    vanished: Vec<String>,
 ) -> Result<Outcome<DeriveReport>, String> {
     let Setup {
         engine,
@@ -773,6 +785,7 @@ fn derive_in(
     } = setup;
 
     let mut report = DeriveReport::default();
+    report.unreadable.vanished = vanished;
     let Grouped {
         groups,
         mut named_series,
@@ -1061,8 +1074,8 @@ fn derive_in(
 /// into groups by [`place`]. Nothing is written but digests.
 ///
 /// In [`Mode::Early`] nothing is hashed or sized: an entry [`hashes`]
-/// accepts puts its own key into [`Grouped::waiting`] and goes no further,
-/// so it is neither placed nor counted.
+/// accepts puts itself and its own key into [`Grouped::waiting`] and goes no
+/// further, so it is neither placed nor counted.
 fn grouped(
     conn: &Connection,
     engine: &Engine,
@@ -1075,7 +1088,7 @@ fn grouped(
     let mut staged: Vec<Staged> = Vec::new();
     let mut chapter_dirs: BTreeSet<(i64, String)> = BTreeSet::new();
     let mut named_series: BTreeSet<String> = BTreeSet::new();
-    let mut waiting: BTreeSet<GroupKey> = BTreeSet::new();
+    let mut waiting = Waiting::default();
 
     // Hashing is shown from here, with no total yet: sizing the folders below
     // can take a while on a share, and the screen must not stay on the walk.
@@ -1108,7 +1121,8 @@ fn grouped(
             // The full derive that hashes it counts it, so an early pass,
             // which opens no file, only notes the group it holds back.
             if mode == Mode::Early && hashes(&admitted) {
-                waiting.insert(own_key_of(&admitted));
+                waiting.keys.insert(own_key_of(&admitted));
+                waiting.entries.insert((root.id, admitted.entry.rel_path));
                 continue;
             }
             classify(
@@ -1146,14 +1160,26 @@ struct Grouped {
     groups: BTreeMap<GroupKey, Group>,
     /// Every series a group or an unattached chapter directory names.
     named_series: BTreeSet<String>,
-    /// In [`Mode::Early`], the own key ([`own_key_of`]) of every entry still
-    /// to hash. Empty in [`Mode::Full`], which hashes them.
-    waiting: BTreeSet<GroupKey>,
+    /// In [`Mode::Early`], every entry still to hash. Empty in
+    /// [`Mode::Full`], which hashes them.
+    waiting: Waiting,
+}
+
+/// The entries an early pass finds still to hash, a file the queue found gone
+/// among them: outside a directory the job reads frozen, the only entries the
+/// full derive may stage that the pass does not.
+#[derive(Default)]
+struct Waiting {
+    /// The own key ([`own_key_of`]) of each, which holds its group back.
+    keys: BTreeSet<GroupKey>,
+    /// Each as its root's id and `rel_path`.
+    entries: HashSet<(i64, String)>,
 }
 
 /// Every root's entries as derivation reads them: each admitted, any that
 /// another entry speaks for dropped and counted, and each kept one paired with
-/// the bytes its digest reads where [`hashes`] says it is read.
+/// the bytes its digest reads where [`hashes`] says it is read and `report`
+/// does not already name it gone.
 ///
 /// With `size` false nothing is sized, so every bytes is `None`, and no
 /// cancel flag is read, since the only long step a cancel here interrupts is
@@ -1210,7 +1236,11 @@ fn read_input<'r>(
                 if is_folder(&admitted.entry) && watch.cancelled() {
                     return Ok(Outcome::Cancelled(Step::Hashing));
                 }
-                Some(bytes_to_hash(root, &admitted.entry))
+                // One the caller found gone is left unsized, so a gone folder
+                // is not listed again; `classify` opens nothing for it either.
+                let gone = vanished_name(root, &admitted.entry.rel_path);
+                (!report.unreadable.vanished.contains(&gone))
+                    .then(|| bytes_to_hash(root, &admitted.entry))
             } else {
                 None
             };
@@ -1772,9 +1802,10 @@ fn nested_in_claim(claims: &BTreeSet<String>, rel_path: &str) -> bool {
     false
 }
 
-/// Whether [`classify`] reads this entry's bytes: it is not chapter-only, it
-/// holds pages, and no digest is held for it. A watched derive sums the bytes
-/// to hash over the same test, so its count and its total cannot disagree.
+/// Whether [`classify`] reads this entry's bytes, unless the derive's report
+/// already names it gone: it is not chapter-only, it holds pages, and no digest
+/// is held for it. A watched derive sums the bytes to hash over the same test,
+/// so its count and its total cannot disagree.
 fn hashes(seen: &Seen) -> bool {
     !chapter_only(&seen.resolved)
         && seen.entry.pages.is_some_and(|pages| pages > 0)
@@ -1810,6 +1841,8 @@ fn bytes_to_hash(root: &Root, entry: &Entry) -> u64 {
     if !is_folder(entry) {
         return entry.size;
     }
+    #[cfg(test)]
+    FOLDER_SIZINGS.with_borrow_mut(|sizings| sizings.push(entry.rel_path.clone()));
     taiyaku_read::member_page_sizes(&root.path.join(&entry.rel_path))
         .map_or(0, |sizes| sizes.iter().sum())
 }
@@ -1872,6 +1905,16 @@ fn classify(
         into.report.unreadable.no_pages += 1;
         return Ok(());
     }
+    // One the caller found gone is named already, and not opened again.
+    if hashing
+        && into
+            .report
+            .unreadable
+            .vanished
+            .contains(&vanished_name(root, &entry.rel_path))
+    {
+        return Ok(());
+    }
     // Hashed only where `hashes` says, so no bytes are read that the total
     // left out. Past the tests above, an entry it passes over holds a digest.
     let held = if hashing {
@@ -1883,7 +1926,7 @@ fn classify(
         into.report
             .unreadable
             .vanished
-            .push(root.path.join(&entry.rel_path).display().to_string());
+            .push(vanished_name(root, &entry.rel_path));
         return Ok(());
     };
 
@@ -2048,6 +2091,13 @@ fn is_readable(format: Option<&str>) -> bool {
         .is_some_and(taiyaku_read::Format::is_readable)
 }
 
+/// The text [`Unreadable::vanished`] names a file by: its full path under
+/// `root`. Every site that names a gone file or asks whether one is named
+/// builds it here, so the two cannot disagree.
+fn vanished_name(root: &Root, rel_path: &str) -> String {
+    root.path.join(rel_path).display().to_string()
+}
+
 /// This member's digest, hashing it and writing the answer back onto
 /// `scan_entry` if nothing has yet.
 ///
@@ -2063,6 +2113,8 @@ fn digest(conn: &Connection, root: &Root, entry: &Entry) -> Result<Option<String
     if let Some(held) = &entry.sha256 {
         return Ok(Some(held.clone()));
     }
+    #[cfg(test)]
+    DIGEST_OPENS.with_borrow_mut(|opens| opens.push(entry.rel_path.clone()));
     let Ok(hash) = taiyaku_read::member_digest(&root.path.join(&entry.rel_path)) else {
         return Ok(None);
     };
@@ -3633,18 +3685,19 @@ fn digest_held_members(
         for entry in undigested {
             // Joined as `classify` joins a candidate's path.
             let path = root.path.join(&entry.rel_path);
-            if !held.contains(path.to_string_lossy().as_ref())
-                || digest(conn, root, &entry)?.is_some()
-            {
+            if !held.contains(path.to_string_lossy().as_ref()) {
                 continue;
             }
             // Its entry holds the work by path until the next walk forgets it,
-            // so the report is the one place its going shows; `classify` has
-            // named it already where these rules stage it.
-            let gone = path.display().to_string();
-            if !unreadable.vanished.contains(&gone) {
-                unreadable.vanished.push(gone);
+            // so the report is the one place its going shows; `classify` or
+            // [`derive_in`]'s caller has named it already where either found it
+            // gone. Asked before the digest: each open of a gone file on a
+            // dropped share can wait out the mount's timeout.
+            let gone = vanished_name(root, &entry.rel_path);
+            if unreadable.vanished.contains(&gone) || digest(conn, root, &entry)?.is_some() {
+                continue;
             }
+            unreadable.vanished.push(gone);
         }
     }
     Ok(())
@@ -4064,6 +4117,17 @@ thread_local! {
     /// regardless of what else the suite is doing.
     pub(crate) static REL_PATHS_BY_SERIES_CALLS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
+}
+
+// Thread-local for the reason `REL_PATHS_BY_SERIES_CALLS` gives.
+#[cfg(test)]
+thread_local! {
+    /// The rel_path of each file [`digest`] opens, on the calling thread.
+    pub(crate) static DIGEST_OPENS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// The rel_path of each folder [`bytes_to_hash`] lists, on the calling thread.
+    pub(crate) static FOLDER_SIZINGS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// What [`rel_paths_by_series`] answers: each title asked about, with the
