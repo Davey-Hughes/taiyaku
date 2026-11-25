@@ -19,6 +19,7 @@
 import {
   type CSSProperties,
   Fragment,
+  memo,
   type ReactNode,
   useCallback,
   useEffect,
@@ -111,6 +112,7 @@ import {
   rangeIn,
   type Selected,
   selectionIn,
+  type Shown,
 } from './bookNotes'
 import { BookFootnote } from './BookFootnote'
 import { BookProgress } from './BookProgress'
@@ -151,6 +153,7 @@ import {
   TOGGLE_INTENT as SEARCH_TOGGLE,
 } from './modules/bookSearch'
 import {
+  type BookTextPrefs,
   bookTextModule,
   resized,
   stepped,
@@ -615,6 +618,10 @@ export function BookReader({
   // reader again and an edition runs to thousands of blocks.
   const edition = book && place ? book.editions[place.edition] : undefined
   const editionKey = place?.edition ?? ''
+  // What hangs on the edition alone is keyed by it rather than by `place`,
+  // which changes with every placing: a size step, a resize or a panel set
+  // in would otherwise rebuild every block of the book.
+  const shownEdition = place?.edition
   const { furigana } = typeset
   const layout = useMemo(
     () =>
@@ -628,19 +635,23 @@ export function BookReader({
     () => edition && firstSentences(edition.blocks),
     [edition],
   )
+  const figuresAt = useMemo(
+    () => edition && figuresBefore(edition.figures),
+    [edition],
+  )
   const peeked = useMemo(() => {
-    if (!book || !place || !peek) return undefined
-    const to = nextEdition(book, place.edition)
+    if (!book || !shownEdition || !peek) return undefined
+    const to = nextEdition(book, shownEdition)
     const other = book.editions[to]
     const texts =
       peek.sentence === undefined
         ? other.blocks
-            .slice(...span(book, place.edition, to, peek.block))
+            .slice(...span(book, shownEdition, to, peek.block))
             .map((b) => [excerpt(b, [0, b.text.length])])
         : [
             excerptsIn(
               other,
-              sentenceSpan(book, place.edition, to, peek.sentence),
+              sentenceSpan(book, shownEdition, to, peek.sentence),
             ),
           ].filter((group) => group.length > 0)
     return {
@@ -652,13 +663,12 @@ export function BookReader({
       language: other.language,
       texts,
     }
-  }, [book, place, peek, work, furigana])
+  }, [book, shownEdition, peek, work, furigana])
   const other =
     book && place && editionOrder(book).length > 1
       ? nextEdition(book, place.edition)
       : undefined
   const comparing = mode === 'compare' && other !== undefined
-  const shownEdition = place?.edition
   // The editions compared besides the one read, kept a work at a time in
   // this browser, since one book's editions are not another's.
   const [others, setOthers] = useState<string[]>(() => keptColumns(work))
@@ -730,8 +740,11 @@ export function BookReader({
   }, [comparing])
 
   const shownNotes = useMemo(
-    () => book && place && notesOn(book, place.edition, notes.notes),
-    [book, place, notes.notes],
+    () =>
+      book && shownEdition
+        ? notesOn(book, shownEdition, notes.notes)
+        : undefined,
+    [book, shownEdition, notes.notes],
   )
   // The page follows the sentence read aloud, turned only once it is off it.
   useEffect(() => {
@@ -745,85 +758,63 @@ export function BookReader({
   }, [speaking, edition, firsts, place])
   useEffect(() => () => stopReading.current?.(), [])
 
+  // The translations tapped open, by the block they are in. Worked out apart
+  // from `paragraphs`, which a sentence read aloud or a peek rebuilds, so a
+  // block with one open keeps the same set and is not drawn again.
+  const revealedIn = useMemo(() => {
+    const by = new Map<number, ReadonlySet<number>>()
+    if (!firsts || !under || !hideTranslation) return by
+    for (const n of revealed) {
+      const at = firsts.findLastIndex((first) => first <= n)
+      by.set(at, new Set([...(by.get(at) ?? []), n]))
+    }
+    return by
+  }, [firsts, under, hideTranslation, revealed])
+
   const paragraphs = useMemo(() => {
-    const litSentence: [number, number] | undefined =
-      speaking !== undefined
-        ? [speaking, speaking + 1]
-        : peek?.sentence !== undefined
-          ? [peek.sentence, peek.sentence + 1]
-          : undefined
-    if (!edition) return undefined
-    const figures = figuresBefore(edition.figures)
+    const litSentence = speaking ?? peek?.sentence
+    if (!edition || !firsts || !figuresAt) return undefined
+    // Each block is handed only its own share of what is lit, found, peeked
+    // and revealed, so the blocks it leaves alone keep their props and are not
+    // drawn again.
     const drawn = edition.blocks.map((block, i) => {
-      const Block = block.heading ? 'h2' : 'p'
-      const here = shownNotes?.get(i) ?? []
-      const highlights = here
-        .filter(({ note, own }) => own && note.text)
-        .map(({ note }) => note)
+      const first = firsts[i]
+      const holds = (n: number | undefined) =>
+        n !== undefined && n >= first && n < firsts[i + 1]
+      const found =
+        foundDrawn?.edition === editionKey && foundDrawn.block === i
+          ? foundDrawn
+          : undefined
+      const peekedHere = peeked?.block === i ? peeked : undefined
       return (
-        <Fragment key={i}>
-          <Figures figures={figures.get(i)} work={work} edition={editionKey} />
-          <Block
-            data-block={i}
-            data-line={block.line ?? undefined}
-            data-lit={(lit && i >= lit[0] && i < lit[1]) || undefined}
-          >
-            {here
-              .filter(({ note, own }) => !own || !note.text)
-              .map(({ note }) => (
-                <span
-                  key={note.id}
-                  className="book-note-mark"
-                  data-note={note.id}
-                  title={note.body || 'a note'}
-                  style={{ background: noteColour(note.color).edge }}
-                />
-              ))}
-            <span data-text>
-              <Sentences
-                block={block}
-                first={firsts?.[i] ?? 0}
-                highlights={highlights}
-                work={work}
-                edition={editionKey}
-                furigana={furigana}
-                lit={litSentence}
-                found={
-                  foundDrawn?.edition === editionKey && foundDrawn.block === i
-                    ? [foundDrawn.start, foundDrawn.end]
-                    : undefined
-                }
-                upright={vertical}
-                asideAfter={(n) => (
-                  <>
-                    {peeked?.block === i && peek?.sentence === n && (
-                      <Peek {...peeked} />
-                    )}
-                    {under && (
-                      <Interlinear
-                        n={n}
-                        under={under}
-                        work={work}
-                        furigana={furigana}
-                        hidden={hideTranslation && !revealed.has(n)}
-                      />
-                    )}
-                  </>
-                )}
-              />
-            </span>
-            {peeked?.block === i && peek?.sentence === undefined && (
-              <Peek {...peeked} />
-            )}
-          </Block>
-        </Fragment>
+        <BookBlock
+          key={i}
+          index={i}
+          block={block}
+          first={first}
+          figures={figuresAt.get(i)}
+          notes={shownNotes?.get(i) ?? NO_NOTES}
+          lit={(lit && i >= lit[0] && i < lit[1]) || false}
+          litSentence={holds(litSentence) ? litSentence : undefined}
+          foundStart={found?.start}
+          foundEnd={found?.end}
+          peeked={peekedHere}
+          peekSentence={peekedHere && peek?.sentence}
+          under={under}
+          hideTranslation={hideTranslation}
+          revealed={revealedIn.get(i) ?? NONE_REVEALED}
+          work={work}
+          edition={editionKey}
+          furigana={furigana}
+          vertical={vertical}
+        />
       )
     })
     return (
       <>
         {drawn}
         <Figures
-          figures={figures.get(edition.blocks.length)}
+          figures={figuresAt.get(edition.blocks.length)}
           work={work}
           edition={editionKey}
         />
@@ -835,19 +826,20 @@ export function BookReader({
     work,
     furigana,
     firsts,
+    figuresAt,
     lit,
     peek,
     peeked,
     shownNotes,
     under,
     hideTranslation,
-    revealed,
+    revealedIn,
     speaking,
     foundDrawn,
     vertical,
   ])
   const compared = useMemo(() => {
-    if (!book || !place || !comparing) return undefined
+    if (!book || !shownEdition || !comparing) return undefined
     const pinned =
       columnKeys.length === 2
         ? pinnedBlocks(book, columnKeys[0], columnKeys[1])
@@ -863,13 +855,19 @@ export function BookReader({
     const figuresOf = Object.fromEntries(
       columnKeys.map((key) => [key, figuresBefore(book.editions[key].figures)]),
     )
+    // Once a column, not once a cell: a cell holds a row's few blocks, and
+    // numbering the whole edition's sentences for each would cost the rows
+    // times the blocks.
+    const firstsOf = Object.fromEntries(
+      columnKeys.map((key) => [key, firstSentences(book.editions[key].blocks)]),
+    )
     const cell = (
       key: string,
       column: number,
       [from, to]: [number, number],
     ) => {
       const blocks = book.editions[key].blocks
-      const first = firstSentences(blocks)
+      const first = firstsOf[key]
       const figures = figuresOf[key]
       // The first two columns are the two a pin joins.
       const side = column === 0 ? 'left' : column === 1 ? 'right' : `c${column}`
@@ -931,7 +929,16 @@ export function BookReader({
         {columnKeys.map((key, column) => cell(key, column, row[column]))}
       </div>
     ))
-  }, [book, place, comparing, columnKeys, paired, work, furigana, foundDrawn])
+  }, [
+    book,
+    shownEdition,
+    comparing,
+    columnKeys,
+    paired,
+    work,
+    furigana,
+    foundDrawn,
+  ])
 
   // The series the top bar links to, from the library's answer for the work,
   // asked once beside the load and never waited on: until it answers, if it
@@ -1107,35 +1114,63 @@ export function BookReader({
     savePlaced.current = false
   }, [place, layout, save])
 
+  // The text's settings as last asked for, ahead of the drawing that shows
+  // them, so a size step can tell whether it changes the size at all.
+  const typesetAsked = useRef(typeset)
+  typesetAsked.current = typeset
+  // A size step keeps the place and lays the book out again. One that changes
+  // nothing, at the smallest or largest size, does neither: laying out again
+  // costs the whole book's layout, and compared and paged the place kept can
+  // fall on another page of a row taller than the screen.
+  const resizeText = useCallback(
+    (to: (prefs: BookTextPrefs) => BookTextPrefs) => {
+      const asked = to(typesetAsked.current)
+      if (asked.textSize === typesetAsked.current.textSize) return
+      typesetAsked.current = asked
+      const at = kept(text.current, anchor.current)
+      setPlace((p) => p && { edition: p.edition, ...at, relaid: true })
+      setPrefs((map) => changeSlice(map, bookTextModule, to))
+    },
+    [setPrefs],
+  )
+
   // Paged, the wheel sets the text larger or smaller as it zooms a page in the
   // page reader, a step a notch, the notches of a smooth wheel added up. The
   // text is drawn only once the book has loaded, so that is when it listens.
+  // A step lays the whole book out again, so after one the notches turned
+  // before the next frame wait for it and are stepped together: a fast spin
+  // lays the book out once a frame, not once a notch, while a lone notch
+  // still steps at once.
   const loaded = layout !== undefined
   useEffect(() => {
     const host = text.current
     if (!host || !pagedPref || !loaded) return
     let notches = 0
+    let frame = 0
+    const step = () => {
+      const steps = Math.trunc(notches)
+      if (steps === 0) return false
+      notches -= steps
+      resizeText((p) => stepped(p, steps))
+      return true
+    }
+    const waitAFrame = () => {
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        if (step()) waitAFrame()
+      })
+    }
     const onWheel = (event: WheelEvent) => {
       event.preventDefault()
       notches += wheelNotches(event) * (event.deltaY < 0 ? 1 : -1)
-      const steps = Math.trunc(notches)
-      if (steps === 0) return
-      notches -= steps
-      setPlace(
-        (p) =>
-          p && {
-            edition: p.edition,
-            ...kept(host, anchor.current),
-            relaid: true,
-          },
-      )
-      setPrefs((map) =>
-        changeSlice(map, bookTextModule, (p) => stepped(p, steps)),
-      )
+      if (frame === 0 && step()) waitAFrame()
     }
     host.addEventListener('wheel', onWheel, { passive: false })
-    return () => host.removeEventListener('wheel', onWheel)
-  }, [pagedPref, loaded, setPrefs])
+    return () => {
+      host.removeEventListener('wheel', onWheel)
+      cancelAnimationFrame(frame)
+    }
+  }, [pagedPref, loaded, resizeText])
 
   // Vertical and scrolled, the text runs on sideways, where a wheel turned
   // down would not take it, so turned down it scrolls on, leftward. A
@@ -1557,14 +1592,7 @@ export function BookReader({
         setPinning((p) => (p ? undefined : {}))
       }
       if (place && own && TEXT_SIZE_INTENTS.has(own.intent)) {
-        setPlace({
-          edition: place.edition,
-          ...kept(text.current, anchor.current),
-          relaid: true,
-        })
-        setPrefs((map) =>
-          changeSlice(map, bookTextModule, (p) => resized(p, own.intent)),
-        )
+        resizeText((p) => resized(p, own.intent))
       }
     }
     window.addEventListener('keydown', onKey)
@@ -1595,6 +1623,7 @@ export function BookReader({
     here,
     steppedFrom,
     vertical,
+    resizeText,
   ])
 
   if (failed) {
@@ -2595,6 +2624,121 @@ function figuresBefore(figures: Figure[] = []): Map<number, Figure[]> {
   }
   return by
 }
+
+/** A block with no notes on it, shared so its props stay the same from one drawing to the next. */
+const NO_NOTES: Shown[] = []
+/** A block with no translation tapped open, shared for the same reason. */
+const NONE_REVEALED: ReadonlySet<number> = new Set()
+
+/**
+ * Block `index` of the edition read, after the figures set before it. Memoised,
+ * and handed only its own share of the reader's state (the sentence lit, a
+ * match, a peek, the translations tapped open), so a placing, a sentence read
+ * aloud or a peek draws again only the blocks whose words change, not the
+ * thousands an edition runs to.
+ */
+const BookBlock = memo(function BookBlock({
+  index,
+  block,
+  first,
+  figures,
+  notes,
+  lit,
+  litSentence,
+  foundStart,
+  foundEnd,
+  peeked,
+  peekSentence,
+  under,
+  hideTranslation,
+  revealed,
+  work,
+  edition,
+  furigana,
+  vertical,
+}: {
+  index: number
+  block: Block
+  first: number
+  figures: Figure[] | undefined
+  notes: Shown[]
+  lit: boolean
+  litSentence: number | undefined
+  foundStart: number | undefined
+  foundEnd: number | undefined
+  peeked: Parameters<typeof Peek>[0] | undefined
+  peekSentence: number | undefined
+  under: Parameters<typeof Interlinear>[0]['under'] | undefined
+  hideTranslation: boolean
+  revealed: ReadonlySet<number>
+  work: string
+  edition: string
+  furigana: boolean
+  vertical: boolean
+}) {
+  const Block = block.heading ? 'h2' : 'p'
+  const highlights = notes
+    .filter(({ note, own }) => own && note.text)
+    .map(({ note }) => note)
+  return (
+    <>
+      <Figures figures={figures} work={work} edition={edition} />
+      <Block
+        data-block={index}
+        data-line={block.line ?? undefined}
+        data-lit={lit || undefined}
+      >
+        {notes
+          .filter(({ note, own }) => !own || !note.text)
+          .map(({ note }) => (
+            <span
+              key={note.id}
+              className="book-note-mark"
+              data-note={note.id}
+              title={note.body || 'a note'}
+              style={{ background: noteColour(note.color).edge }}
+            />
+          ))}
+        <span data-text>
+          <Sentences
+            block={block}
+            first={first}
+            highlights={highlights}
+            work={work}
+            edition={edition}
+            furigana={furigana}
+            lit={
+              litSentence === undefined
+                ? undefined
+                : [litSentence, litSentence + 1]
+            }
+            found={
+              foundStart === undefined || foundEnd === undefined
+                ? undefined
+                : [foundStart, foundEnd]
+            }
+            upright={vertical}
+            asideAfter={(n) => (
+              <>
+                {peeked && peekSentence === n && <Peek {...peeked} />}
+                {under && (
+                  <Interlinear
+                    n={n}
+                    under={under}
+                    work={work}
+                    furigana={furigana}
+                    hidden={hideTranslation && !revealed.has(n)}
+                  />
+                )}
+              </>
+            )}
+          />
+        </span>
+        {peeked && peekSentence === undefined && <Peek {...peeked} />}
+      </Block>
+    </>
+  )
+})
 
 /**
  * The images a book sets between its blocks, from `edition` of `work`. A

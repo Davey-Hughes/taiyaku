@@ -1575,31 +1575,185 @@ describe('BookReader', () => {
     expect(size()).toBe('18px')
   })
 
+  /** Animation frames run only when `frame` is called, and none cancelled before then. */
+  function frames() {
+    const waiting = new Map<number, FrameRequestCallback>()
+    // From 1, as a browser's are: the reader keeps 0 for no frame awaited.
+    let made = 0
+    vi.stubGlobal('requestAnimationFrame', (run: FrameRequestCallback) => {
+      waiting.set(++made, run)
+      return made
+    })
+    vi.stubGlobal('cancelAnimationFrame', (frame: number) => {
+      waiting.delete(frame)
+    })
+    return () =>
+      act(() => {
+        const due = [...waiting.values()]
+        waiting.clear()
+        for (const run of due) run(0)
+      })
+  }
+
+  /** A notch's worth or part of one, `deltaY` pixels, turned on `text`. */
+  function wheelOn(text: HTMLElement, deltaY: number) {
+    const event = new WheelEvent('wheel', {
+      deltaY,
+      deltaMode: 0,
+      cancelable: true,
+    })
+    act(() => {
+      text.dispatchEvent(event)
+    })
+    return event
+  }
+
   it('sets a paged book’s text larger on the wheel up and smaller down, a step a notch, adding up a smooth wheel', async () => {
+    const frame = frames()
     paged()
     paging([0, 0, 1, 1, 2, 2])
     const { host } = await opened()
     const text = host.querySelector('.book-text') as HTMLElement
     const size = () => text.style.getPropertyValue('--book-text-size')
-    const wheel = (deltaY: number) => {
-      const event = new WheelEvent('wheel', {
-        deltaY,
-        deltaMode: 0,
-        cancelable: true,
-      })
-      act(() => {
-        text.dispatchEvent(event)
-      })
-      return event
-    }
+    const wheel = (deltaY: number) => wheelOn(text, deltaY)
     expect(wheel(-100).defaultPrevented).toBe(true)
     expect(size()).toBe('20px')
+    // The frame after a step ends the wait, so the part notch below is taken
+    // up at once: turned while a frame is awaited, it would wait for the notch
+    // that completes it, and a part notch that steps alone would go unseen.
+    frame()
     wheel(-60)
     expect(size()).toBe('20px')
     wheel(-40)
     expect(size()).toBe('22px')
+    frame()
     wheel(200)
     expect(size()).toBe('18px')
+    // A part notch left over after a step is kept for the notches after it.
+    frame()
+    wheel(150)
+    expect(size()).toBe('16px')
+    frame()
+    wheel(50)
+    expect(size()).toBe('14px')
+  })
+
+  it('steps a paged book’s text at once on a lone notch, and the notches turned before the next frame together when it comes', async () => {
+    const frame = frames()
+    paged()
+    paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened()
+    const text = host.querySelector('.book-text') as HTMLElement
+    const size = () => text.style.getPropertyValue('--book-text-size')
+    wheelOn(text, -100)
+    expect(size()).toBe('20px')
+    wheelOn(text, -100)
+    wheelOn(text, -100)
+    wheelOn(text, -100)
+    expect(size()).toBe('20px')
+    frame()
+    expect(size()).toBe('26px')
+    // A frame with no notch waiting ends the wait: the next notch steps at once.
+    frame()
+    wheelOn(text, 100)
+    expect(size()).toBe('24px')
+  })
+
+  it('steps no notch still waiting for its frame, and takes no wheel, once the book is no longer paged', async () => {
+    const frame = frames()
+    paged()
+    paging([0, 0, 1, 1, 2, 2])
+    const { host } = await opened()
+    touch(host, { x: 300 })
+    const text = () => host.querySelector('.book-text') as HTMLElement
+    const size = () => text().style.getPropertyValue('--book-text-size')
+    wheelOn(text(), -100)
+    wheelOn(text(), -100)
+    expect(size()).toBe('20px')
+    const switched = [
+      ...host.querySelectorAll('[aria-label="Layout"] button'),
+    ].find((b) => b.textContent === 'paged') as HTMLElement
+    act(() => switched.click())
+    expect(text().dataset.paged).toBeUndefined()
+    frame()
+    expect(size()).toBe('20px')
+    // Scrolled, the wheel scrolls the text: the paged wheel's listener has gone.
+    expect(wheelOn(text(), -100).defaultPrevented).toBe(false)
+  })
+
+  it('leaves a compared, paged reader on its page when + is pressed at the largest size', async () => {
+    paged('compare')
+    localStorage.setItem(
+      'taiyaku.prefs.book-text',
+      JSON.stringify({ textSize: 40 }),
+    )
+    // The second row, block 1 beside ko 1-2, runs from page 0 to page 2.
+    const page = paging([0, [0, 2], 2, 2])
+    const { host } = await opened()
+    const text = host.querySelector('.book-text') as HTMLElement
+    press('ArrowRight')
+    expect(page()).toBe(1)
+    press('+')
+    expect(text.style.getPropertyValue('--book-text-size')).toBe('40px')
+    expect(page()).toBe(1)
+  })
+
+  it('leaves a compared, paged reader on its page when - is pressed at the smallest size', async () => {
+    paged('compare')
+    localStorage.setItem(
+      'taiyaku.prefs.book-text',
+      JSON.stringify({ textSize: 12 }),
+    )
+    const page = paging([0, [0, 2], 2, 2])
+    await opened()
+    press('ArrowRight')
+    expect(page()).toBe(1)
+    press('-')
+    expect(page()).toBe(1)
+  })
+
+  it('leaves a compared, paged reader on its page when 0 is pressed at the usual size', async () => {
+    paged('compare')
+    const page = paging([0, [0, 2], 2, 2])
+    const { host } = await opened()
+    const text = host.querySelector('.book-text') as HTMLElement
+    press('ArrowRight')
+    expect(page()).toBe(1)
+    press('0')
+    expect(text.style.getPropertyValue('--book-text-size')).toBe('18px')
+    expect(page()).toBe(1)
+  })
+
+  it('leaves a compared, paged reader on its page when the wheel turns up at the largest size', async () => {
+    paged('compare')
+    localStorage.setItem(
+      'taiyaku.prefs.book-text',
+      JSON.stringify({ textSize: 40 }),
+    )
+    const page = paging([0, [0, 2], 2, 2])
+    const { host } = await opened()
+    const text = host.querySelector('.book-text') as HTMLElement
+    press('ArrowRight')
+    expect(page()).toBe(1)
+    wheelOn(text, -100)
+    expect(text.style.getPropertyValue('--book-text-size')).toBe('40px')
+    expect(page()).toBe(1)
+  })
+
+  it('leaves a compared, paged reader on its page when the wheel turns down at the smallest size', async () => {
+    paged('compare')
+    localStorage.setItem(
+      'taiyaku.prefs.book-text',
+      JSON.stringify({ textSize: 12 }),
+    )
+    const page = paging([0, [0, 2], 2, 2])
+    const { host } = await opened()
+    const text = host.querySelector('.book-text') as HTMLElement
+    press('ArrowRight')
+    expect(page()).toBe(1)
+    wheelOn(text, 100)
+    expect(text.style.getPropertyValue('--book-text-size')).toBe('12px')
+    expect(page()).toBe(1)
   })
 
   it('leaves the wheel to scroll a book that is not paged', async () => {

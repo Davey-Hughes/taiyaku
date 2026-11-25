@@ -821,9 +821,35 @@ export function movesAnchor(
   )
 }
 
-/** The child of `text` that holds block `block`: the last that starts at or before it. */
+/**
+ * The child of `text` that holds block `block`: the last that starts at or
+ * before it. The children run in block order, blocks or compared rows with
+ * figures between them that name no block, so the child is found by halving
+ * rather than by reading every one: a placing and a page turn each ask for it
+ * several times, and an edition runs to thousands of blocks.
+ */
 function holding(text: HTMLElement | null, block: number): Element | undefined {
-  return [...(text?.children ?? [])].findLast(
-    (child) => Number((child as HTMLElement).dataset.block) <= block,
-  )
+  const children = text?.children
+  if (!children) return undefined
+  // The block named by the first child from `i` that names one, looked for
+  // no further than `end`: the first child from `end` on that names a block
+  // names one past `block`, so a run of figures reaching `end` is past it
+  // too, and is not read again at every halving.
+  const from = (i: number, end: number) => {
+    for (let at = i; at < end; at++) {
+      const named = Number((children[at] as HTMLElement).dataset.block)
+      if (!Number.isNaN(named)) return named
+    }
+    return Number.POSITIVE_INFINITY
+  }
+  let low = 0
+  let high = children.length
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (from(middle, high) <= block) low = middle + 1
+    else high = middle
+  }
+  // The child before the first whose named block is past `block` names one
+  // itself: were it a figure, the block it is followed by would be past too.
+  return low > 0 ? children[low - 1] : undefined
 }

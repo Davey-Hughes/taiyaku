@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import {
   anchorOf,
   bringIntoSight,
@@ -703,6 +703,115 @@ describe('an image loading in a compared text, paged', () => {
     expect(movesAnchor(before.el, anchor, before.image)).toBe(true)
     const after = withImage(2)
     expect(movesAnchor(after.el, anchor, after.image)).toBe(false)
+  })
+})
+
+describe('the child holding a block, among thousands', () => {
+  /** A paged text of `children`, each a block's number or `null` for a figure, which names none. */
+  const laid = (children: (number | null)[]) => {
+    const el = document.createElement('div')
+    el.dataset.paged = ''
+    for (const block of children) {
+      if (block === null) {
+        const f = document.createElement('figure')
+        f.dataset.figure = ''
+        f.append(document.createElement('img'))
+        el.append(f)
+      } else {
+        const p = document.createElement('p')
+        p.dataset.block = String(block)
+        el.append(p)
+      }
+    }
+    return el
+  }
+  /** A paged text of `count` blocks, a figure before every seventh and one after the last. */
+  const long = (count: number) =>
+    laid([
+      ...Array.from({ length: count }, (_, block) =>
+        block % 7 === 0 ? [null, block] : [block],
+      ).flat(),
+      null,
+    ])
+  /** `count` figures in a row. */
+  const figures = (count: number) => Array<null>(count).fill(null)
+  /** The image of the figure set before block `block`. */
+  const imageBefore = (el: HTMLElement, block: number) =>
+    el.querySelector(`[data-block="${block}"]`)?.previousElementSibling
+      ?.firstElementChild as Element
+  /** Counts the `data-block`s read until the test ends. */
+  const counted = () => {
+    const read = vi.spyOn(HTMLElement.prototype, 'dataset', 'get')
+    onTestFinished(() => read.mockRestore())
+    return () => read.mock.calls.length
+  }
+
+  it('is the block itself, past the figures before it and before those after it', () => {
+    const el = long(300)
+    for (const block of [0, 7, 70, 140, 294]) {
+      const image = imageBefore(el, block)
+      expect(movesAnchor(el, { block, at: 0 }, image)).toBe(true)
+      expect(movesAnchor(el, { block: block - 1, at: 0 }, image)).toBe(
+        block === 0,
+      )
+    }
+    const last = el.lastElementChild?.firstElementChild as Element
+    expect(movesAnchor(el, { block: 299, at: 0 }, last)).toBe(false)
+  })
+
+  it.each([
+    ['figures between blocks', long(60)],
+    [
+      'long runs of figures before and after',
+      laid([...figures(40), 0, 1, 2, ...figures(40)]),
+    ],
+    [
+      'runs of figures between blocks',
+      laid([0, ...figures(9), 1, 2, ...figures(30), 3, null]),
+    ],
+    ['figures alone', laid(figures(5))],
+    ['blocks alone', laid([0, 1, 2])],
+    // Compared, a row whose read column is empty names the block the row
+    // after it names; the figures here are only how the test tells the last
+    // such child from an earlier one.
+    [
+      'children naming one block, figures between them',
+      laid([0, 1, null, 1, null, 1, 2]),
+    ],
+  ])(
+    'is the last child to start at or before the block, as reading every child finds it, with %s',
+    (_, el) => {
+      const children = [...el.children] as HTMLElement[]
+      const images = [...el.querySelectorAll('img')]
+      const named = children.filter((c) => c.dataset.block !== undefined)
+      for (let block = -1; block <= named.length; block++) {
+        const held = children.findLast((c) => Number(c.dataset.block) <= block)
+        for (const image of images) {
+          expect(movesAnchor(el, { block, at: 0 }, image)).toBe(
+            !held ||
+              (held.compareDocumentPosition(image) &
+                Node.DOCUMENT_POSITION_PRECEDING) !==
+                0,
+          )
+        }
+      }
+    },
+  )
+
+  it('is found reading a few of the children, not all of them', () => {
+    const el = long(3000)
+    const image = imageBefore(el, 1400)
+    const reads = counted()
+    expect(movesAnchor(el, { block: 1400, at: 0 }, image)).toBe(true)
+    expect(reads()).toBeLessThan(100)
+  })
+
+  it('reads a long run of figures after the block once, not at every halving', () => {
+    const el = laid([...figures(400), 0, 1, 2, ...figures(400)])
+    const last = el.lastElementChild?.firstElementChild as Element
+    const reads = counted()
+    expect(movesAnchor(el, { block: 2, at: 0 }, last)).toBe(false)
+    expect(reads()).toBeLessThan(el.children.length)
   })
 })
 
