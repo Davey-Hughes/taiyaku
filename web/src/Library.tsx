@@ -67,6 +67,7 @@ import {
   stepLine,
   stepWord,
   useScanFeed,
+  useScanFeedStale,
 } from './scanFeed'
 import { SeriesGrid } from './SeriesGrid'
 import { PageLoading } from './settingsLayout'
@@ -844,8 +845,10 @@ export function Library() {
  * Drawn with the works, so the tab polls the feed while the view is open
  * (O314). It draws the feed's last answer as it stands, not waiting for one
  * since it was drawn as `EmptyView` does, so the line holds through the
- * commit that swaps `EmptyView` for a scan's first works. Not a live region:
- * an administrator's counts change at every poll.
+ * commit that swaps `EmptyView` for a scan's first works. A stale answer may
+ * show a scan that has ended, so its line keeps its room with no words until
+ * the next answer (O451). Not a live region: an administrator's counts change
+ * at every poll.
  */
 function ScanLine({
   status,
@@ -855,10 +858,15 @@ function ScanLine({
   library: number | undefined
 }) {
   const feed = useScanFeed()
+  const stale = useScanFeedStale()
   const step = scanLine(feed, status, library)
   if (step === undefined) return null
   return (
-    <p className="scan-line">
+    // Drawn rather than dropped while stale: if the scan still runs, its
+    // words fill the room, and the works below stay where they stand unless
+    // the words take another number of lines, as a step changed while away
+    // can.
+    <p className="scan-line" data-stale={stale ? '' : undefined}>
       A scan is running: {step}. More series appear as they are read.
     </p>
   )

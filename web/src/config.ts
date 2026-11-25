@@ -539,18 +539,14 @@ export function keptSchedule(
 /**
  * What a never-scanned directory set to Off says after "never": neither the
  * scheduler nor startup scans it, so a bare "never" would read as a first
- * scan still to come (O275). Nothing while a pressed scan waits or runs: its
- * status is `waiting`, as that scan waits only for the job lock, or the page
- * draws its scan running (`scanning`) beside words read before the press.
+ * scan still to come (O275). Nothing while a pressed scan waits: its status
+ * is `waiting`, as that scan waits only for the job lock.
  */
 const untilPressed = (
   root: Pick<Root, 'last_scan_status'> &
     Partial<Pick<Root, 'scan_interval_secs'>>,
-  scanning = false,
 ) =>
-  isOff(root.scan_interval_secs ?? null) &&
-  !scanning &&
-  root.last_scan_status !== 'waiting'
+  isOff(root.scan_interval_secs ?? null) && root.last_scan_status !== 'waiting'
     ? `${JOINING_DOT}until Scan is pressed`
     : ''
 
@@ -619,9 +615,13 @@ export function regimeFacts(
           ? 'probe failed'
           : `probe failed: ${probe.watch_reason}`
 
-  const last =
-    root.last_scan_at === null
-      ? `never${untilPressed(root, scanning)}`
+  const last = scanning
+    ? // The step line under the facts says what the scan is doing: the last
+      // scan's word beside it would read as the running scan's outcome, and
+      // a first scan's `never` would deny the scan the line shows (O455).
+      'scanning…'
+    : root.last_scan_at === null
+      ? `never${untilPressed(root)}`
       : `${inUtc(root.last_scan_at)}${JOINING_DOT}${root.last_scan_status ?? 'outcome unrecorded'}`
 
   return [

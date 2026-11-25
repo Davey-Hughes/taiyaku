@@ -23,12 +23,14 @@ import {
   libraryStep,
   matchJob,
   onScanEnd,
+  resetScanFeed,
   type ScanFeed,
   type ScanStep,
   scanJobs,
   stepLine,
   stepWord,
   useScanFeed,
+  useScanFeedStale,
 } from '../src/scanFeed'
 import { usePage } from '../src/usePage'
 import { deferred } from './support/async'
@@ -124,10 +126,26 @@ function consumers() {
     return <p className="step">{job === undefined ? 'none' : job.step}</p>
   }
 
-  return { Ended, Consumers, StatusReader, StatusAndGrid, Step }
+  /**
+   * Draws whether the feed's answer is marked stale, and its `ended`:
+   * `stale 1`, `fresh 2`, or `fresh none` before any answer. A new `round`
+   * draws it again, for a reading where nothing is published to do so.
+   */
+  function Kept({ round = 0 }: { round?: number }) {
+    const feed = useScanFeed()
+    const stale = useScanFeedStale()
+    return (
+      <p className="kept" data-round={round}>
+        {`${stale ? 'stale' : 'fresh'} ${feed?.ended ?? 'none'}`}
+      </p>
+    )
+  }
+
+  return { Ended, Consumers, StatusReader, StatusAndGrid, Step, Kept }
 }
 
-const { Ended, Consumers, StatusReader, StatusAndGrid, Step } = consumers()
+const { Ended, Consumers, StatusReader, StatusAndGrid, Step, Kept } =
+  consumers()
 
 const drawn = (host: Element) =>
   [...host.querySelectorAll('.ended')].map((p) => p.textContent)
@@ -988,6 +1006,137 @@ describe('the scan feed', () => {
       3,
       ['2'],
     ])
+  })
+
+  describe('the kept answer, marked stale once polling has stayed stopped (O451)', () => {
+    const kept = (host: Element) => host.querySelector('.kept')?.textContent
+
+    it('marks the kept answer stale for a consumer that returns after the bound, until the answer that ends its scan is published', async () => {
+      // The status reader stays drawn, so the end's re-read of it is sent
+      // and held.
+      const page = (round?: number) => (
+        <>
+          <StatusReader />
+          {round !== undefined && <Kept round={round} />}
+        </>
+      )
+      const { routes, feed, host } = await mountWithStatus(running(1), page(0))
+      rerender(page())
+      await wait(2 * SCAN_POLL_MS)
+      feed.answer(idle(2))
+      rerender(page(0))
+      const atMount = kept(host)
+      await wait(0)
+      // Drawn again: a held answer publishes nothing that would draw it.
+      rerender(page(1))
+      const whileHeld = [kept(host), routes.sent(STATUS)]
+      routes.answer(STATUS, 1, mangaStatus(true))
+      await wait(0)
+      expect([atMount, whileHeld, kept(host)]).toEqual([
+        'stale 1',
+        ['stale 1', 2],
+        'fresh 2',
+      ])
+    })
+
+    it('draws the kept answer fresh for a consumer that returns inside the bound', async () => {
+      const feed = serveFeed(running(1))
+      const host = mount(<Kept />)
+      await wait(0)
+      rerender(null)
+      feed.hold()
+      rerender(<Kept />)
+      expect(kept(host)).toBe('fresh 1')
+    })
+
+    it('keeps the mark through a failed read on a return after the bound, and the next answer clears it', async () => {
+      const feed = serveFeed(running(1))
+      const host = mount(<Kept />)
+      await wait(0)
+      rerender(null)
+      await wait(2 * SCAN_POLL_MS)
+      feed.answer(500)
+      rerender(<Kept />)
+      await wait(0)
+      rerender(<Kept round={1} />)
+      const failed = [kept(host), feed.polls()]
+      feed.answer(running(1))
+      await wait(FEED_IDLE_MS)
+      expect([failed, kept(host)]).toEqual([['stale 1', 2], 'fresh 1'])
+    })
+
+    it('a consumer that returns inside the bound cancels the mark, however long its first answer takes', async () => {
+      const feed = serveFeed(running(1))
+      const host = mount(<Kept />)
+      await wait(0)
+      rerender(null)
+      await wait(SCAN_POLL_MS / 2)
+      feed.hold()
+      rerender(<Kept />)
+      await wait(2 * SCAN_POLL_MS)
+      rerender(<Kept round={1} />)
+      expect(kept(host)).toBe('fresh 1')
+    })
+
+    it('never marks the answer while a consumer stays drawn, through a held poll and failed reads', async () => {
+      const feed = serveFeed(running(1))
+      const host = mount(<Kept />)
+      await wait(0)
+      const readings: (string | null | undefined)[] = []
+      let round = 0
+      const read = async (ms: number) => {
+        await wait(ms)
+        round += 1
+        rerender(<Kept round={round} />)
+        readings.push(kept(host))
+      }
+      const release = feed.hold()
+      for (let i = 0; i < 3; i += 1) await read(SCAN_POLL_MS)
+      const held = feed.polls()
+      feed.answer(500)
+      release()
+      for (let i = 0; i < 3; i += 1) await read(FEED_IDLE_MS)
+      expect(readings).toEqual(Array(6).fill('fresh 1'))
+      // The reads failed while it was drawn: one each `FEED_IDLE_MS`.
+      expect(feed.polls()).toBeGreaterThan(held + 1)
+    })
+
+    it('hands a consumer of the answer alone the kept answer at a return after the bound, while it asks again', async () => {
+      const feed = serveFeed(running(1))
+      const host = mount(<Consumers n={1} />)
+      await wait(0)
+      rerender(<Consumers n={0} />)
+      await wait(2 * SCAN_POLL_MS)
+      feed.hold()
+      rerender(<Consumers n={1} />)
+      expect(drawn(host)).toEqual(['1'])
+    })
+
+    it.each([
+      [
+        'once the mark is set',
+        async () => {
+          await wait(2 * SCAN_POLL_MS)
+          resetScanFeed()
+        },
+      ],
+      [
+        'before the mark is due',
+        async () => {
+          resetScanFeed()
+          await wait(2 * SCAN_POLL_MS)
+        },
+      ],
+    ])('a reset %s leaves no mark for the next consumer', async (_, reset) => {
+      const feed = serveFeed(running(1))
+      const host = mount(<Kept />)
+      await wait(0)
+      rerender(null)
+      await reset()
+      feed.hold()
+      rerender(<Kept />)
+      expect(kept(host)).toBe('fresh none')
+    })
   })
 })
 

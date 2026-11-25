@@ -32,6 +32,14 @@
  * read yet" between the scan and what it left. A read that never answers
  * holds it no longer than `SCAN_END_HOLD_MS`, and the next poll is timed from
  * the answer's publication.
+ *
+ * **A kept answer is marked stale once polling has stayed stopped for
+ * `SCAN_POLL_MS` (O451),** until the next answer is published. A polling page
+ * asks again that often while a scan runs, so an answer kept longer may show
+ * a scan that has since ended. It is still the base the next answer is
+ * compared with, so an end is still held for its reads, and what the admin
+ * pages draw at once; only words drawn from it may be out of date, so the
+ * reader's scan line reads `useScanFeedStale` and keeps its room without them.
  */
 import { useSyncExternalStore } from 'react'
 import { getJson, sendJson } from './api'
@@ -152,9 +160,25 @@ const scanEndListeners = new Set<() => void>()
 /**
  * The last answer, kept while nothing draws it: a page that replaces another
  * in one commit draws what the other drew, not nothing until its first poll
- * lands.
+ * lands. Kept when `stale` too: it is still the base a return's first answer
+ * is compared with, so an end is still held for its reads, and the admin
+ * pages' answer; only the words drawn from it may be out of date.
  */
 let latest: ScanFeed | undefined
+/**
+ * Set once polling has stayed stopped for `SCAN_POLL_MS`, and cleared by the
+ * next answer published. A polling page asks again every `SCAN_POLL_MS` while
+ * a scan runs, so a kept answer older than that may show a scan that has since
+ * ended. A gap shorter than that leaves it unset: the commit that swaps one
+ * consumer for another, and a library switch's loading or a pending search
+ * that answers within it.
+ */
+let stale = false
+/**
+ * Sets `stale` when it fires. A subscribe cancels it, which alone keeps the
+ * mark off while a page draws the feed.
+ */
+let staleTimer: ReturnType<typeof setTimeout> | undefined
 /**
  * The next poll, or, while an answer that ends a scan is held, the end of
  * its hold: an ask or a stop clears either, as either overtakes the held
@@ -238,6 +262,9 @@ function scanEnded(before: ScanFeed, now: ScanFeed): boolean {
  */
 function publish(answer: ScanFeed): void {
   latest = answer
+  // Before the listeners are told, so a view reading the answer and the mark
+  // draws one state in one render.
+  stale = false
   for (const listener of listeners) listener()
   settle(answer)
   timer = setTimeout(
@@ -293,6 +320,9 @@ function onVisibilityChange(): void {
 function subscribe(listener: () => void): () => void {
   listeners.add(listener)
   if (listeners.size === 1) {
+    // The mark, where it is set, stays until an answer is published.
+    clearTimeout(staleTimer)
+    staleTimer = undefined
     document.addEventListener('visibilitychange', onVisibilityChange)
     ask()
   }
@@ -308,6 +338,16 @@ function stop(): void {
   asked += 1
   document.removeEventListener('visibilitychange', onVisibilityChange)
   settle(undefined)
+  // Cleared first: a second stop with no subscribe between, as a reset after
+  // the last unmount, would orphan the first timer, which no subscribe can
+  // then cancel.
+  clearTimeout(staleTimer)
+  staleTimer =
+    latest === undefined
+      ? undefined
+      : setTimeout(() => {
+          stale = true
+        }, SCAN_POLL_MS)
 }
 
 /**
@@ -316,6 +356,16 @@ function stop(): void {
  */
 export function useScanFeed(): ScanFeed | undefined {
   return useSyncExternalStore(subscribe, () => latest)
+}
+
+/**
+ * Whether the answer `useScanFeed` hands back is marked stale: kept from before
+ * polling stopped at least `SCAN_POLL_MS` ago, with no answer since. For a
+ * view that draws the kept answer's words, which may then name a scan that
+ * has ended.
+ */
+export function useScanFeedStale(): boolean {
+  return useSyncExternalStore(subscribe, () => stale)
 }
 
 /**
@@ -529,11 +579,14 @@ export const cancelScan = (job: number): Promise<CancelAnswer> =>
 
 /**
  * Signing in or out, and every test's end: stops the poll and forgets the
- * last answer, which was the account's that read it.
+ * last answer, which was the account's that read it, and its mark.
  */
 export function resetScanFeed(): void {
   listeners.clear()
   stop()
+  clearTimeout(staleTimer)
+  staleTimer = undefined
+  stale = false
   latest = undefined
   missed = false
 }

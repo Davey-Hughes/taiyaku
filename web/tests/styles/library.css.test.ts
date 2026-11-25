@@ -59,6 +59,18 @@ describe('library.css colours the Title form’s failure', () => {
   })
 })
 
+// O451: `Library.test.tsx` tells the room from the words by the attribute
+// alone, since jsdom draws no style; this is what hides them.
+describe('library.css keeps a stale scan line’s room with no words', () => {
+  it('hides the scan line marked stale, which keeps its box', () => {
+    expect(
+      atRulesOf(librarySource, '.scan-line[data-stale]').map(
+        ({ at, body }) => ({ at, visibility: valuesOf(body, 'visibility') }),
+      ),
+    ).toEqual([{ at: '', visibility: ['hidden'] }])
+  })
+})
+
 /**
  * `library.ts`'s `coverSizes` repeats two facts of this file, as an image's
  * `sizes` cannot read CSS: the layout in which a cover fills its column, and

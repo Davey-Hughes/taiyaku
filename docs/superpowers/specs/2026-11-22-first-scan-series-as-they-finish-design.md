@@ -519,6 +519,10 @@ as any job: the tables draw Scanning in place of the last scan's word,
 and a directory's own page keeps its last scan, `interrupted`, beside
 the job's step line until the job ends, as it keeps `cancelled` or
 `failed` beside a pressed scan.
+*Note, 2026-11-24: reversed for a directory's own page by the owner's
+ruling of 2026-11-24 (O455, the scan words' PR): the page reads
+`scanning…` as its last scan while the job runs, as the tables draw
+Scanning.*
 
 ### Server: the paused freeze (O320)
 

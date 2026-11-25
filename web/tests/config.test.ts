@@ -268,6 +268,53 @@ describe('regimeFacts', () => {
       '2026-09-17 08:33:49 UTC\u00a0·\u00a0outcome unrecorded',
     )
   })
+
+  it.each([
+    ...['ok', 'interrupted', 'cancelled', 'failed', 'waiting', 'deriving'].map(
+      (status) => ({
+        was: status,
+        over: { last_scan_at: '2026-11-23 10:00:00', last_scan_status: status },
+        idle: `2026-11-23 10:00:00 UTC\u00a0·\u00a0${status}`,
+      }),
+    ),
+    {
+      was: 'unrecorded',
+      over: { last_scan_at: '2026-11-23 10:00:00', last_scan_status: null },
+      idle: '2026-11-23 10:00:00 UTC\u00a0·\u00a0outcome unrecorded',
+    },
+    {
+      was: 'never, on Automatic',
+      over: {
+        scan_interval_secs: null,
+        last_scan_at: null,
+        last_scan_status: null,
+      },
+      idle: 'never',
+    },
+    {
+      was: 'never, on Off',
+      over: {
+        scan_interval_secs: 0,
+        last_scan_at: null,
+        last_scan_status: null,
+      },
+      idle: 'never\u00a0·\u00a0until Scan is pressed',
+    },
+  ])(
+    'says scanning… as the last scan while a scan of the directory runs, where it was $was, and keeps every other fact (O455)',
+    ({ over, idle }) => {
+      const one = root({ next_scan_at: '2026-11-24 10:00:00', ...over })
+      const drawn = regimeFacts(one)
+      const running = regimeFacts(one, undefined, true)
+      expect(drawn[2]).toEqual({ label: 'last scan', value: idle })
+      expect(running[2]).toEqual({ label: 'last scan', value: 'scanning…' })
+      expect(running).toHaveLength(4)
+      expect(drawn).toHaveLength(4)
+      expect(running[0]).toEqual(drawn[0])
+      expect(running[1]).toEqual(drawn[1])
+      expect(running[3]).toEqual(drawn[3])
+    },
+  )
 })
 
 describe('lastScan', () => {

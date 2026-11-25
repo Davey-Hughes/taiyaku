@@ -939,6 +939,78 @@ describe('the library screen', () => {
         ],
       })
 
+      /** The feed as a reader is sent it while a scan hashes library 1. */
+      const readerHashing: ScanFeed = {
+        ended: 0,
+        libraries: [{ id: 1, step: 'hashing' }],
+      }
+
+      /** What the scan line draws: its words, its room alone, or nothing. */
+      const lineState = (host: Element) => {
+        const line = host.querySelector('.scan-line')
+        if (line === null) return 'none'
+        return line.hasAttribute('data-stale') ? 'room' : 'words'
+      }
+
+      /**
+       * The scan line's state at each change to `host` from now on that
+       * leaves a card drawn. The room filling with words changes only the
+       * line's attribute, so attributes are watched too.
+       */
+      const linesDrawn = (host: Element) => {
+        const frames: string[] = []
+        probe = new MutationObserver(() => {
+          if (host.querySelector('a[href^="/series/"]') !== null)
+            frames.push(lineState(host))
+        })
+        probe.observe(host, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+          attributes: true,
+          attributeFilter: ['data-stale'],
+        })
+        return frames
+      }
+
+      /** `frames` with each run of one state cut to one. */
+      const runsOf = (frames: string[]) =>
+        frames.filter((frame, i) => frame !== frames[i - 1])
+
+      /**
+       * Draws library 1's view on a scan running, leaves it by drawing the
+       * root with no `Library`, lets `away` of the clock run, and returns
+       * to it, a remount, with the feed's answer `next` held until the
+       * return has drawn. Hands back the host, the runs of the line's states
+       * drawn before that answer lands, and the line's state at each change
+       * from the return on, with a last one once that answer has landed.
+       */
+      const leaveAndReturn = async (away: number, next: ScanFeed) => {
+        const feed = serveFeed(readerHashing)
+        const host = await shownAt('/?library=1', manga(true))
+        expect(lineState(host)).toBe('words')
+        rerender(<p>Elsewhere</p>)
+        await clock(away)
+        feed.answer(next)
+        const release = feed.hold()
+        const frames = linesDrawn(host)
+        rerender(
+          <MemoryRouter initialEntries={['/?library=1']}>
+            <StatusContext.Provider value={manga(true)}>
+              <Library />
+            </StatusContext.Provider>
+          </MemoryRouter>,
+        )
+        await clock(0)
+        // Taken before the last state is added, which alone would pass a
+        // case expecting the words throughout.
+        const atReturn = runsOf(frames)
+        release()
+        await clock(SCAN_POLL_MS)
+        frames.push(lineState(host))
+        return { host, atReturn, frames }
+      }
+
       beforeEach(() => {
         vi.mocked(library.grid).mockResolvedValue({
           series: [alpha],
@@ -988,14 +1060,9 @@ describe('the library screen', () => {
         const feed = serveFeed(hashing(0, 1))
         const host = await shownAt('/?library=1', manga(false))
         const before = host.querySelector('.empty h2')?.textContent
-        // Each change to the page that leaves a card drawn, and whether the
-        // line was drawn with it.
-        const frames: boolean[] = []
-        probe = new MutationObserver(() => {
-          if (host.querySelector('a[href^="/series/"]') !== null)
-            frames.push(host.querySelector('.scan-line') !== null)
-        })
-        probe.observe(host, { childList: true, subtree: true })
+        // Its words, not only a line: a room drawn at the swap would mark an
+        // answer polled a moment ago.
+        const frames = linesDrawn(host)
         vi.mocked(library.grid).mockResolvedValue({
           series: [alpha],
           unfiled: [],
@@ -1004,8 +1071,37 @@ describe('the library screen', () => {
         await clock(1000)
         expect(before).toBe('Scanning')
         expect(cards(host)).toEqual(['/series/1?library=1'])
-        expect(frames.length).toBeGreaterThan(0)
-        expect(frames.filter((line) => !line)).toEqual([])
+        expect(runsOf(frames)).toEqual(['words'])
+      })
+
+      it('a return after a scan ended while away keeps the line’s room until the end is published, then closes it (O451)', async () => {
+        const { host, atReturn, frames } = await leaveAndReturn(
+          2 * SCAN_POLL_MS,
+          { ended: 1, libraries: [] },
+        )
+        expect(atReturn, 'before the answer lands').toEqual(['room'])
+        expect(runsOf(frames)).toEqual(['room', 'none'])
+        expect(cards(host)).toEqual(['/series/1?library=1'])
+      })
+
+      it('a return while the scan still runs keeps the line’s room, and its words fill it (O451)', async () => {
+        const { host, atReturn, frames } = await leaveAndReturn(
+          2 * SCAN_POLL_MS,
+          readerHashing,
+        )
+        expect(atReturn, 'before the answer lands').toEqual(['room'])
+        expect(runsOf(frames)).toEqual(['room', 'words'])
+        expect(cards(host)).toEqual(['/series/1?library=1'])
+      })
+
+      it('a return inside the bound draws the line’s words throughout (O451)', async () => {
+        const { host, atReturn, frames } = await leaveAndReturn(
+          SCAN_POLL_MS / 2,
+          readerHashing,
+        )
+        expect(atReturn, 'before the answer lands').toEqual(['words'])
+        expect(runsOf(frames)).toEqual(['words'])
+        expect(cards(host)).toEqual(['/series/1?library=1'])
       })
 
       it('the scan line shows only for a library the view shows, and a reader sees the step alone', async () => {

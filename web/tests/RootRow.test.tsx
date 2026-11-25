@@ -203,6 +203,13 @@ const scanLine = (host: HTMLElement) =>
 const pausedLine = (host: HTMLElement) =>
   host.querySelector('.paused')?.textContent
 
+/** Each of the directory's facts as its label and its value, in order. */
+const factsOf = (host: HTMLElement) =>
+  [...host.querySelectorAll('.regime > div')].map((one) => [
+    one.querySelector('dt')?.textContent,
+    one.querySelector('dd')?.textContent,
+  ])
+
 beforeEach(() => {
   // `mockResolvedValue` sets an implementation and leaves the call log
   // alone, and this project sets no `clearMocks` in `vite.config.ts` — so a
@@ -445,14 +452,10 @@ describe('RootRow', () => {
     expect(host.querySelector('.remove-root')).toBeNull()
   })
 
-  it('says its Off directory never scanned waits for no press while the scan pressed here is drawn running (O275)', async () => {
+  it('says its Off directory never scanned waits for no press while the scan pressed here is drawn running, its last scan reading scanning… (O275, O455)', async () => {
     const host = await settle({ scan_interval_secs: 0 })
     await clock(0)
-    const facts = () =>
-      [...host.querySelectorAll('.regime > div')].map((one) => [
-        one.querySelector('dt')?.textContent,
-        one.querySelector('dd')?.textContent,
-      ])
+    const facts = () => factsOf(host)
     expect(facts().slice(1)).toEqual([
       ['scan every', 'off'],
       ['last scan', 'never · until Scan is pressed'],
@@ -466,10 +469,41 @@ describe('RootRow', () => {
     expect(scanLine(host)).not.toBeUndefined()
     expect(facts().slice(1)).toEqual([
       ['scan every', 'off'],
-      ['last scan', 'never'],
+      ['last scan', 'scanning…'],
       ['next scan', 'off'],
     ])
   })
+
+  it.each(['interrupted', 'cancelled', 'failed'])(
+    'says scanning… as its last scan, not %s, while a scan of it is drawn running, and keeps its other facts (O455)',
+    async (last_scan_status) => {
+      const host = await settle({
+        last_scan_at: '2026-11-23 10:00:00',
+        last_scan_status,
+        next_scan_at: '2026-11-24 10:00:00',
+      })
+      const facts = () => factsOf(host)
+      const scanEvery = ['scan every', '24h']
+      const nextScan = ['next scan', inUtc('2026-11-24 10:00:00')]
+      expect(facts().slice(1)).toEqual([
+        scanEvery,
+        [
+          'last scan',
+          `${inUtc('2026-11-23 10:00:00')}\u00a0·\u00a0${last_scan_status}`,
+        ],
+        nextScan,
+      ])
+
+      feed.answer(runningFeed(dirJob()))
+      await clock(5000)
+      expect(scanLine(host)).not.toBeUndefined()
+      expect(facts().slice(1)).toEqual([
+        scanEvery,
+        ['last scan', 'scanning…'],
+        nextScan,
+      ])
+    },
+  )
 
   describe('Move…', () => {
     const library = { id: 5, name: 'Chapters' }

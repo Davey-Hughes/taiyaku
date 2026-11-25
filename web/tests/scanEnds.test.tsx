@@ -521,14 +521,7 @@ describe('as a scan ends, a page draws no frame of the reads from before it (O25
       ])
       const feed = serveFeed(scanningBoth)
       const host = await mountAt('/config/libraries/Manga/dirs/4')
-      const running = [
-        STEP,
-        [
-          `${inUtc('2026-11-16 03:47:00')}${JOINING_DOT}deriving`,
-          inUtc('2026-11-17 03:47:00'),
-        ],
-        null,
-      ]
+      const running = [STEP, ['scanning…', inUtc('2026-11-17 03:47:00')], null]
       expect(dirLines(host)).toEqual(running)
       const lines = watchDrawn(() => JSON.stringify(dirLines(host)))
 

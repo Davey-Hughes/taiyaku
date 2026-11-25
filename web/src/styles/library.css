@@ -1067,6 +1067,16 @@
   font-size: var(--text-ui);
 }
 
+/* A stale answer's line (O451): its words may name a scan that has ended, so
+ * none are shown, and its box keeps the height its words take at any width,
+ * so a scan still running fills it without moving the works below, unless
+ * its words now take another number of lines, as a step changed while away
+ * can. Hidden rather than transparent, so the words leave the accessibility
+ * tree too. */
+.scan-line[data-stale] {
+  visibility: hidden;
+}
+
 /* 44 px targets for a finger (spec 2026-09-17 §7.1). */
 @media (pointer: coarse) {
   .library-chips button {
