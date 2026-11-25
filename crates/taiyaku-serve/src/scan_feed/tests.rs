@@ -413,6 +413,17 @@ async fn a_library_two_jobs_hold_shows_the_step_of_the_lower_id() {
     assert_eq!(ids, [first.id, second.id], "by id, each once");
 }
 
+/// Stores `true` in its flag as it is dropped, so a thread that polls the flag
+/// stops however its test ends, a panic included, rather than spinning on a
+/// core until the test binary exits.
+struct Stops(Arc<AtomicBool>);
+
+impl Drop for Stops {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
 /// An answer's top-level `libraries` and each job's own come from one read:
 /// a job whose libraries are filled in while the feed answers, as a spawned
 /// job's are, is in the top-level list exactly when its own list names it.
@@ -421,10 +432,10 @@ async fn an_answer_names_the_same_libraries_at_the_top_as_in_each_job() {
     let nested = nested("feed-one-read");
     let job =
         scan_jobs::reserve(&nested.state, &nested.roots, Instant::now(), None).expect("reserves");
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = Stops(Arc::new(AtomicBool::new(false)));
     let flipping = {
         let job = Arc::clone(&job);
-        let stop = Arc::clone(&stop);
+        let stop = Arc::clone(&stop.0);
         std::thread::spawn(move || {
             let mut filled = false;
             while !stop.load(Ordering::SeqCst) {
@@ -438,9 +449,8 @@ async fn an_answer_names_the_same_libraries_at_the_top_as_in_each_job() {
         })
     };
 
-    // Collected rather than asserted in the loop, so a contradiction still
-    // stops the thread above instead of leaving it spinning for the rest of
-    // the run.
+    // Collected rather than asserted in the loop, so a failure says how many
+    // answers contradicted themselves.
     let mut checked = 0;
     let mut contradicting = Vec::new();
     for _ in 0..2000 {
@@ -467,7 +477,7 @@ async fn an_answer_names_the_same_libraries_at_the_top_as_in_each_job() {
         }
         checked += 1;
     }
-    stop.store(true, Ordering::SeqCst);
+    drop(stop);
     flipping.join().expect("the flipping thread ends");
 
     assert!(

@@ -169,9 +169,8 @@ pub struct ServeState {
     /// only to write its finished report back. A crate this size gains
     /// nothing from a lock-free map for that shape of access.
     pub scans: Arc<std::sync::Mutex<std::collections::HashMap<i64, ScanProgress>>>,
-    /// The scan feed's markers: `ended`, raised as each scan job ends, as
-    /// each match pass's derive ends and as a scan another process ran ends,
-    /// and `written`, raised as a scan job's early passes write volumes.
+    /// The scan feed's markers, `ended` and `written`: [`FeedMarks`] lists
+    /// what raises each.
     pub jobs_ended: Arc<FeedMarks>,
     /// The store's job lock: [`LibraryJob`] names the jobs that take it, a
     /// scan's derive and a save's `preview::apply` among them.

@@ -3,17 +3,16 @@
 
 use std::sync::atomic::Ordering;
 
-use taiyaku_library::Library;
-use taiyaku_library::lease::Wait;
+use taiyaku_library::schedule::ScanMark;
 
 use super::{CliWatch, Reading};
 use crate::ServeState;
-use crate::test_support::{Fixture, router_over_a_live_library};
-
-type Marks = Vec<(i64, Option<String>, Option<String>)>;
+use crate::test_support::{
+    holding_the_lease, mark_a_scan, router_over_a_live_library, the_store_elsewhere,
+};
 
 /// One directory, last scanned `at`.
-fn marks(at: &str) -> Marks {
+fn marks(at: &str) -> Vec<ScanMark> {
     vec![(1, Some(at.to_owned()), Some("ok".to_owned()))]
 }
 
@@ -21,7 +20,7 @@ const BEFORE: &str = "2026-11-24 10:00:00";
 const AFTER: &str = "2026-11-24 10:05:00";
 
 /// A reading with no job of this server's running and no lease held elsewhere.
-fn idle(marks: Marks, ended: u64) -> Reading {
+fn idle(marks: Vec<ScanMark>, ended: u64) -> Reading {
     Reading {
         marks,
         version: 0,
@@ -32,7 +31,7 @@ fn idle(marks: Marks, ended: u64) -> Reading {
 }
 
 /// A reading with the lease held elsewhere.
-fn held(marks: Marks, ended: u64) -> Reading {
+fn held(marks: Vec<ScanMark>, ended: u64) -> Reading {
     Reading {
         elsewhere: true,
         ..idle(marks, ended)
@@ -218,36 +217,14 @@ fn ended(state: &ServeState) -> u64 {
     state.jobs_ended.ended.load(Ordering::SeqCst)
 }
 
-/// A second `Library` over the fixture's store, which is another process as
-/// far as the state's own connections and lease can tell.
-fn another_handle(fixture: &Fixture) -> Library {
-    Library::open(&fixture.path().join("db").join("library.db"))
-        .expect("a second library over the same file")
-}
-
-/// Write the fixture's one directory's marks as a command-line walk does, with
-/// no lease. A time of its own, since `datetime('now')` reads the same as the
-/// fixture's own scan within a second.
-fn mark_a_scan(library: &Library, at: &str) {
-    let changed = library
-        .conn()
-        .execute(
-            "UPDATE root SET last_scan_at = ?1, last_scan_status = 'ok' \
-             WHERE id = (SELECT min(id) FROM root)",
-            [at],
-        )
-        .expect("writes a directory's marks");
-    assert_eq!(changed, 1, "the fixture has one directory");
-}
-
 #[test]
 fn a_root_scanned_from_another_library_handle_moves_ended() {
-    let (_router, state, fixture) = router_over_a_live_library();
+    let (_router, state, _fixture) = router_over_a_live_library();
     let mut watch = CliWatch::default();
     watch.look(&state);
     let before = ended(&state);
 
-    mark_a_scan(&another_handle(&fixture), "2030-01-01 00:00:00");
+    mark_a_scan(&the_store_elsewhere(&state), "2030-01-01 00:00:00");
     watch.look(&state);
     assert_eq!(
         ended(&state),
@@ -266,8 +243,8 @@ fn a_root_scanned_from_another_library_handle_moves_ended() {
 /// ends the look after another's raise is still another process's.
 #[test]
 fn a_walk_that_ends_the_look_after_a_raise_moves_ended_again() {
-    let (_router, state, fixture) = router_over_a_live_library();
-    let other = another_handle(&fixture);
+    let (_router, state, _fixture) = router_over_a_live_library();
+    let other = the_store_elsewhere(&state);
     let mut watch = CliWatch::default();
     watch.look(&state);
     let before = ended(&state);
@@ -288,8 +265,8 @@ fn a_walk_that_ends_the_look_after_a_raise_moves_ended_again() {
 /// takes and lets go of the lease between two looks is seen by what it wrote.
 #[test]
 fn a_derive_after_a_walk_already_raised_for_moves_ended_again() {
-    let (_router, state, fixture) = router_over_a_live_library();
-    let other = another_handle(&fixture);
+    let (_router, state, _fixture) = router_over_a_live_library();
+    let other = the_store_elsewhere(&state);
     let mut watch = CliWatch::default();
     watch.look(&state);
     let before = ended(&state);
@@ -298,10 +275,7 @@ fn a_derive_after_a_walk_already_raised_for_moves_ended_again() {
     watch.look(&state);
     assert_eq!(ended(&state), before + 1, "the walk raised nothing");
     {
-        let lease = other
-            .derive_lease(Wait::No)
-            .expect("takes the lease")
-            .expect("nothing else holds it");
+        let lease = holding_the_lease(&other);
         let changed = lease.holding(|| {
             other
                 .conn()
@@ -323,16 +297,13 @@ fn a_derive_after_a_walk_already_raised_for_moves_ended_again() {
 
 #[test]
 fn a_lease_another_handle_holds_moves_ended_when_dropped() {
-    let (_router, state, fixture) = router_over_a_live_library();
+    let (_router, state, _fixture) = router_over_a_live_library();
     let mut watch = CliWatch::default();
     watch.look(&state);
     let before = ended(&state);
 
-    let other = another_handle(&fixture);
-    let lease = other
-        .derive_lease(Wait::No)
-        .expect("takes the lease")
-        .expect("nothing else holds it");
+    let other = the_store_elsewhere(&state);
+    let lease = holding_the_lease(&other);
     assert!(
         state.library.derive_held_elsewhere(),
         "another handle's lease did not read as held elsewhere"
@@ -357,18 +328,14 @@ fn a_lease_another_handle_holds_moves_ended_when_dropped() {
 
 #[test]
 fn the_servers_own_lease_is_not_elsewhere() {
-    let (_router, state, fixture) = router_over_a_live_library();
+    let (_router, state, _fixture) = router_over_a_live_library();
     let mut watch = CliWatch::default();
     watch.look(&state);
     let before = ended(&state);
 
-    let lease = state
-        .library
-        .derive_lease(Wait::No)
-        .expect("takes the lease")
-        .expect("nothing else holds it");
+    let lease = holding_the_lease(&state.library);
     assert!(
-        another_handle(&fixture).derive_held_elsewhere(),
+        the_store_elsewhere(&state).derive_held_elsewhere(),
         "the lease is not on the lock file, where another handle's probe would read it"
     );
     assert!(

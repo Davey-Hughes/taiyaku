@@ -763,6 +763,11 @@ async fn a_refresh_after_a_correction_leaves_the_sidecars_etag_alone() {
 
 // --- the refresher ---------------------------------------------------------
 
+/// How many rounds of 20 ms a refresher test waits for what it looks for
+/// before it gives up. The refresher's tick runs on the blocking pool, which a
+/// loaded machine can keep waiting.
+const ROUNDS: u32 = 250;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_refresher_serves_a_new_volume_before_anything_asks_for_it() {
     let (_router, state, fixture) = crate::test_support::router_over_a_live_library();
@@ -771,7 +776,7 @@ async fn the_refresher_serves_a_new_volume_before_anything_asks_for_it() {
 
     // `get` never refreshes, so only the refresher can make this true.
     let mut served = false;
-    for _ in 0..250 {
+    for _ in 0..ROUNDS {
         if state.works.get(&slug).is_some() {
             served = true;
             break;
@@ -790,24 +795,15 @@ async fn the_refresher_serves_a_new_volume_before_anything_asks_for_it() {
 /// has been, so each round writes marks no round wrote before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_refresher_raises_ended_for_a_scan_another_handle_wrote() {
-    let (_router, state, fixture) = crate::test_support::router_over_a_live_library();
+    let (_router, state, _fixture) = crate::test_support::router_over_a_live_library();
     let before = state.jobs_ended.ended.load(Ordering::SeqCst);
     let refresher = super::spawn_refresher(Arc::clone(&state), Duration::from_millis(20));
-    let other = Library::open(&fixture.path().join("db").join("library.db"))
-        .expect("a second library over the same file");
+    let other = crate::test_support::the_store_elsewhere(&state);
 
     let mut raised = false;
-    for round in 0..100 {
+    for round in 0..ROUNDS {
         let at = format!("2030-01-01 00:{:02}:{:02}", round / 60, round % 60);
-        let changed = other
-            .conn()
-            .execute(
-                "UPDATE root SET last_scan_at = ?1, last_scan_status = 'ok' \
-                 WHERE id = (SELECT min(id) FROM root)",
-                [&at],
-            )
-            .expect("writes a directory's marks");
-        assert_eq!(changed, 1, "the fixture has one directory");
+        crate::test_support::mark_a_scan(&other, &at);
         tokio::time::sleep(Duration::from_millis(20)).await;
         if state.jobs_ended.ended.load(Ordering::SeqCst) != before {
             raised = true;
@@ -818,5 +814,60 @@ async fn the_refresher_raises_ended_for_a_scan_another_handle_wrote() {
     assert!(
         raised,
         "the refresher never moved ended for a walk another process ended"
+    );
+}
+
+/// A refresh that panics costs its tick no look: a walk another process
+/// ended is raised on that same tick, by the watch the tick before it kept.
+#[tokio::test]
+async fn a_tick_whose_refresh_panics_still_looks_with_the_watch_it_kept() {
+    let (_router, state, _fixture) = crate::test_support::router_over_a_live_library();
+    let mut watch = crate::cli_watch::CliWatch::default();
+    super::refresh_and_look(&state, &mut watch, |_| {}).await;
+    let before = state.jobs_ended.ended.load(Ordering::SeqCst);
+
+    crate::test_support::mark_a_scan(
+        &crate::test_support::the_store_elsewhere(&state),
+        "2030-01-01 00:00:00",
+    );
+    super::refresh_and_look(&state, &mut watch, |_| panic!("a refresh that panics")).await;
+    assert_eq!(
+        state.jobs_ended.ended.load(Ordering::SeqCst),
+        before + 1,
+        "a tick whose refresh panicked raised nothing for a walk another process ended"
+    );
+}
+
+/// A tick publishes what its refresh read before its look raises `ended`, so
+/// a page that reads again at once is served what the refresh read. The
+/// refresh here records whether `ended` had moved when it ran; the look must
+/// raise on this tick, or the order would go unchecked.
+#[tokio::test]
+async fn a_tick_refreshes_the_works_before_its_look_raises_ended() {
+    let (_router, state, _fixture) = crate::test_support::router_over_a_live_library();
+    let mut watch = crate::cli_watch::CliWatch::default();
+    super::refresh_and_look(&state, &mut watch, |_| {}).await;
+    let before = state.jobs_ended.ended.load(Ordering::SeqCst);
+
+    crate::test_support::mark_a_scan(
+        &crate::test_support::the_store_elsewhere(&state),
+        "2030-01-01 00:00:00",
+    );
+    let (refreshed, moved_at_refresh) = mpsc::channel();
+    super::refresh_and_look(&state, &mut watch, move |state| {
+        let moved = state.jobs_ended.ended.load(Ordering::SeqCst) != before;
+        refreshed.send(moved).expect("the test is listening");
+    })
+    .await;
+    assert_eq!(
+        state.jobs_ended.ended.load(Ordering::SeqCst),
+        before + 1,
+        "the tick's look raised nothing for a walk another process ended"
+    );
+    assert!(
+        !moved_at_refresh
+            .try_recv()
+            .expect("the tick ran its refresh"),
+        "the tick's look raised ended before its refresh ran"
     );
 }

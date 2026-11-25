@@ -4059,6 +4059,21 @@ pub(crate) fn holding_the_lease(
         .expect("the lease is free")
 }
 
+/// Write the first directory's marks through `library` as a command-line walk
+/// does, with no lease. A time of its own, since `datetime('now')` reads the
+/// same as the store's own scan within a second.
+pub(crate) fn mark_a_scan(library: &taiyaku_library::Library, at: &str) {
+    let changed = library
+        .conn()
+        .execute(
+            "UPDATE root SET last_scan_at = ?1, last_scan_status = 'ok' \
+             WHERE id = (SELECT min(id) FROM root)",
+            [at],
+        )
+        .expect("writes a directory's marks");
+    assert_eq!(changed, 1, "the store has a directory");
+}
+
 /// Directory `id`'s last scan as each page is sent it: its own scan status
 /// (whether it runs, and the word), the list of directories, and every
 /// library list that names it (each word once).

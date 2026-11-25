@@ -353,7 +353,8 @@ pub(crate) const REFRESH_EVERY: Duration = Duration::from_secs(2);
 /// again when it has; then look for a scan another process ran, by every
 /// directory's last scan, the structure version and the derive lease, with one
 /// [`crate::cli_watch::CliWatch`] kept from tick to tick. Both on the blocking
-/// pool, because both read the database.
+/// pool, because both read the database, and each under a guard of its own
+/// ([`refresh_and_look`]): a refresh that panics still leaves the tick its look.
 ///
 /// `serve` spawns this for a live registry only and lets it run for the
 /// runtime's life. It answers the task so that a test can stop it.
@@ -367,30 +368,56 @@ pub(crate) fn spawn_refresher(
         let mut watch = crate::cli_watch::CliWatch::default();
         loop {
             ticks.tick().await;
-            let asking = Arc::clone(&state);
-            let mut watching = std::mem::take(&mut watch);
-            match tokio::task::spawn_blocking(move || {
+            refresh_and_look(&state, &mut watch, |state| {
                 // The refresh reports itself, in its own order (`Works::refresh`).
-                let _ = asking.works.refresh_if_moved(&asking.library);
-                watching.look(&asking);
-                watching
+                let _ = state.works.refresh_if_moved(&state.library);
             })
-            .await
-            {
-                Ok(looked) => watch = looked,
-                // The watch is lost with the panic, and its fresh one's first
-                // look raises nothing.
-                Err(panicked) => {
-                    // Not `eprintln!`, which panics when nothing reads stderr,
-                    // and a panic here would end the refresher for good.
-                    let _ = writeln!(
-                        std::io::stderr(),
-                        "taiyaku: the refresher panicked: {panicked}"
-                    );
-                }
-            }
+            .await;
         }
     })
+}
+
+/// One of [`spawn_refresher`]'s ticks: `refresh`, then a look with `watch`,
+/// each on the blocking pool under a guard of its own, and each panic printed.
+/// The refresh comes first so that what it read is served before the look
+/// raises `ended` for it: a page reads again at once and asks for its covers
+/// through [`crate::ServeState::find`], which reads again only for a work it
+/// does not hold, and no later look raises `ended` for that scan. A refresh
+/// that panics still leaves the look the watch the last tick kept, so the
+/// watch outlives a refresh that panics on every tick; a look's panic loses it.
+async fn refresh_and_look(
+    state: &Arc<crate::ServeState>,
+    watch: &mut crate::cli_watch::CliWatch,
+    refresh: impl FnOnce(&crate::ServeState) + Send + 'static,
+) {
+    let asking = Arc::clone(state);
+    if let Err(panicked) = tokio::task::spawn_blocking(move || refresh(&asking)).await {
+        // The look below still runs, with the watch the last look kept.
+        print_panic(&panicked);
+    }
+    let asking = Arc::clone(state);
+    let mut watching = std::mem::take(watch);
+    match tokio::task::spawn_blocking(move || {
+        watching.look(&asking);
+        watching
+    })
+    .await
+    {
+        Ok(looked) => *watch = looked,
+        // The watch is lost with the panic, and its fresh one's first
+        // look raises nothing.
+        Err(panicked) => print_panic(&panicked),
+    }
+}
+
+/// Print a panic on one of the refresher's blocking tasks to stderr.
+fn print_panic(panicked: &tokio::task::JoinError) {
+    // Not `eprintln!`, which panics when nothing reads stderr, and a panic
+    // here would end the refresher for good.
+    let _ = writeln!(
+        std::io::stderr(),
+        "taiyaku: the refresher panicked: {panicked}"
+    );
 }
 
 /// One work's document, read inside a read transaction of its own, so it

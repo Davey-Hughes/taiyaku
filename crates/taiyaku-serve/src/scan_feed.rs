@@ -27,9 +27,13 @@ use crate::ServeState;
 use crate::auth::Principal;
 use crate::scan_jobs::{Job, JobEnded, JobKind, Snapshot};
 
-/// `GET /api/library/scans`, for any signed-in account: `ended`, a marker that
-/// moves as a scan job, the match pass's derive or another process's scan ends;
-/// `written`, one that moves as a scan job's early passes write volumes (O314);
+/// A running job as one answer reads it: the job; its progress, read once
+/// ([`Job::snapshot`]); and the libraries it holds, by id and name, read once
+/// for every list of the answer that names them.
+type JobRead = (Arc<Job>, Snapshot, Vec<(i64, String)>);
+
+/// `GET /api/library/scans`, for any signed-in account: the markers `ended`
+/// and `written`, each moved by what its field of [`crate::FeedMarks`] lists;
 /// and each library a running scan job holds, with its step. An administrator
 /// in a browser ([`crate::session::administers`]) is also sent every running
 /// job, passes too, with its kind and a scan's volumes written so far; any
@@ -46,7 +50,7 @@ pub(crate) async fn feed(
     // an answer whose marker counts a pass shows that pass's count. The
     // volumes are in the store before either.
     let written = state.jobs_ended.written.load(Ordering::SeqCst);
-    let jobs: Vec<_> = running_jobs(&state)
+    let jobs: Vec<JobRead> = running_jobs(&state)
         .into_iter()
         .map(|job| {
             let snapshot = job.snapshot();

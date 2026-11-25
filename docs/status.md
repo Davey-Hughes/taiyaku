@@ -180,7 +180,7 @@ and, for libraries whose directories overlap,
 
 ## What is built
 
-Six crates, 4692 tests, plus 6,111 in `web/`'s TypeScript — 2,078 in the `node`
+Six crates, 4694 tests, plus 6,111 in `web/`'s TypeScript — 2,078 in the `node`
 project and 4,033 in the `jsdom` one — and two thousand six hundred and
 fifty-seven more in a **browser** project of its own, no dependencies beyond
 `image`, `zip`, `sha2`, `rayon`, `base64` and `serde`, and `compress-tools` in `taiyaku-read` behind its optional `rar-libarchive` feature, linking the system libarchive and taken from the owner's fork by commit (O382), with `pkg-config` at build time for libarchive's version, plus `axum`, `tokio`,
@@ -259,7 +259,7 @@ unmeasured when the browser is absent. That adds `@vitest/browser`,
 `@vitest/browser-playwright` and `playwright` to `web/`'s dev dependencies;
 the runtime list above is unchanged. That list did not grow for L1: zoom is a CSS transform and
 a page of arithmetic, and its corpus experiment fingerprints with `image` and
-`rayon` exactly as `align` already did. Twenty-six of the 4692 are standing checks in
+`rayon` exactly as `align` already did. Twenty-six of the 4694 are standing checks in
 the corpus run (`corpus::`) — seventeen in `crates/taiyaku-cli` (ten in `src/corpus.rs`,
 three in `src/corpus/tests.rs` and four in `src/score_corpus.rs`; the three in
 `corpus/tests.rs` and two of `score_corpus.rs`'s, which run on fixtures, need
