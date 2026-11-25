@@ -349,12 +349,12 @@ impl Works {
 /// feed, and an open page reads again soon after a `library scan` ends.
 pub(crate) const REFRESH_EVERY: Duration = Duration::from_secs(2);
 
-/// Every `every`, ask whether `state`'s library has moved, and read its works
-/// again when it has; then look for a scan another process ran, by every
-/// directory's last scan, the structure version and the derive lease, with one
-/// [`crate::cli_watch::CliWatch`] kept from tick to tick. Both on the blocking
-/// pool, because both read the database, and each under a guard of its own
-/// ([`refresh_and_look`]): a refresh that panics still leaves the tick its look.
+/// Every `every`, run a [`tick`]: read the signs of a scan another process
+/// ran, ask whether `state`'s library has moved and read its works again when
+/// it has, then raise the feed's `ended` when the signs say such a scan has
+/// ended, with one [`crate::cli_watch::CliWatch`] kept from tick to tick. The
+/// refresh comes between the read and the raise so that a tick never raises
+/// `ended` for a write its refresh was not asked to read.
 ///
 /// `serve` spawns this for a live registry only and lets it run for the
 /// runtime's life. It answers the task so that a test can stop it.
@@ -368,7 +368,7 @@ pub(crate) fn spawn_refresher(
         let mut watch = crate::cli_watch::CliWatch::default();
         loop {
             ticks.tick().await;
-            refresh_and_look(&state, &mut watch, |state| {
+            tick(&state, &mut watch, |state| {
                 // The refresh reports itself, in its own order (`Works::refresh`).
                 let _ = state.works.refresh_if_moved(&state.library);
             })
@@ -377,36 +377,44 @@ pub(crate) fn spawn_refresher(
     })
 }
 
-/// One of [`spawn_refresher`]'s ticks: `refresh`, then a look with `watch`,
-/// each on the blocking pool under a guard of its own, and each panic printed.
-/// The refresh comes first so that what it read is served before the look
-/// raises `ended` for it: a page reads again at once and asks for its covers
-/// through [`crate::ServeState::find`], which reads again only for a work it
-/// does not hold, and no later look raises `ended` for that scan. A refresh
-/// that panics still leaves the look the watch the last tick kept, so the
-/// watch outlives a refresh that panics on every tick; a look's panic loses it.
-async fn refresh_and_look(
+/// One of [`spawn_refresher`]'s ticks: read what the look compares
+/// ([`crate::cli_watch::reading`]), then `refresh`, then raise with `watch`.
+/// The refresh starts after the read so that the tick never raises `ended` for
+/// a write its refresh was not asked to read. Refreshing before the read would
+/// leave a page that read again before the next tick on the registry as it was,
+/// since [`crate::ServeState::find`] reads again only for a work it does not
+/// hold, and no later look would raise for that write. A write after the read
+/// is the next tick's to raise, by `CliWatch::decide`'s rules.
+async fn tick(
     state: &Arc<crate::ServeState>,
     watch: &mut crate::cli_watch::CliWatch,
     refresh: impl FnOnce(&crate::ServeState) + Send + 'static,
 ) {
+    // The read and the refresh run on the blocking pool, because both read the
+    // database. A read the store refuses, or one that panics, is no look: it
+    // raises nothing and leaves the watch as it was. A refusal prints nothing:
+    // the refresh reports a store that will not open or give its version, once
+    // per change (`Works::report`), and a refusal of the scan marks alone,
+    // which the refresh never reads, goes unreported.
+    let asking = Arc::clone(state);
+    let now = tokio::task::spawn_blocking(move || crate::cli_watch::reading(&asking))
+        .await
+        .unwrap_or_else(|panicked| {
+            print_panic(&panicked);
+            None
+        });
+    // A refresh that fails or panics still leaves the tick its raise, with the
+    // watch the last tick kept, so one that panics on every tick does not
+    // silence the feed.
     let asking = Arc::clone(state);
     if let Err(panicked) = tokio::task::spawn_blocking(move || refresh(&asking)).await {
-        // The look below still runs, with the watch the last look kept.
         print_panic(&panicked);
     }
-    let asking = Arc::clone(state);
-    let mut watching = std::mem::take(watch);
-    match tokio::task::spawn_blocking(move || {
-        watching.look(&asking);
-        watching
-    })
-    .await
-    {
-        Ok(looked) => *watch = looked,
-        // The watch is lost with the panic, and its fresh one's first
-        // look raises nothing.
-        Err(panicked) => print_panic(&panicked),
+    // The raise reads no store, so it runs here, and the watch never goes into
+    // a blocking task whose panic would take it. It must not panic: nothing on
+    // this task catches one, and a panic here ends the refresher for good.
+    if let Some(now) = now {
+        watch.raise_for(now, state);
     }
 }
 

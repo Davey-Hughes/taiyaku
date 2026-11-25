@@ -15,6 +15,15 @@
 //! already. It moves for this server's own writes outside a job as well, and
 //! each look that sees one costs an open page one more read.
 //!
+//! **Read, refresh, raise.** A tick reads the signs ([`reading`]), then
+//! refreshes the registry, then decides and raises ([`CliWatch::raise_for`]).
+//! The refresh starts after the read, so the tick never raises `ended` for a
+//! write its refresh was not asked to read: when the refresh succeeds, a page
+//! that reads again after the raise is served at least what the look saw. A
+//! write that lands after the read is the next tick's to raise, by
+//! [`CliWatch::decide`]'s rules, and that tick's refresh reads it before that
+//! raise.
+//!
 //! **Re-read only.** Nothing is drawn while the other process runs: it is no
 //! job of this server's, so the feed lists nothing for it, and a page only
 //! reads again once one of the signs has moved.
@@ -84,29 +93,33 @@ impl CliWatch {
         self.version_seen = now.version;
         // The caller's raise is no job of this server's ending, so the next
         // look must not read it as one and pass over what it finds.
+        // `raise_for` sets this again from its own add, since a job of this
+        // server's may end between the read and the raise; `now` is all this
+        // function knows, and its tests drive it with no counter.
         self.ended_seen = now.ended.wrapping_add(u64::from(raise));
         self.held_seen = false;
         raise
     }
 
-    /// Read `state`, and raise its feed's `ended` by one when
-    /// [`Self::decide`] says a scan another process ran has ended.
+    /// Raise `state`'s feed's `ended` by one when [`Self::decide`] says, from
+    /// `now`, that a scan another process ran has ended.
     ///
-    /// **A read that fails is no look**: it changes nothing and prints
-    /// nothing, since the refresh on the same tick reports a store it cannot
-    /// read.
-    pub(crate) fn look(&mut self, state: &ServeState) {
-        let Some(now) = reading(state) else {
-            return;
-        };
+    /// **The count comes from the add.** The tick refreshes between its read of
+    /// `now` and this raise, and a job of this server's may end in that gap and
+    /// raise `ended` too. Counted from `now`, the watch would expect one less
+    /// than `ended` holds, and the next look would take the difference for a
+    /// job of this server's ending and pass over what it finds; counted from
+    /// the add, the next look errs towards one more read.
+    pub(crate) fn raise_for(&mut self, now: Reading, state: &ServeState) {
         if self.decide(now) {
-            state.jobs_ended.ended.fetch_add(1, Ordering::SeqCst);
+            let raised_from = state.jobs_ended.ended.fetch_add(1, Ordering::SeqCst);
+            self.ended_seen = raised_from.wrapping_add(1);
         }
     }
 }
 
 /// What `state` reads now, or `None` when the store refuses the read.
-fn reading(state: &ServeState) -> Option<Reading> {
+pub(crate) fn reading(state: &ServeState) -> Option<Reading> {
     let (marks, version) = {
         let working = state.library.working().ok()?;
         (
@@ -118,11 +131,12 @@ fn reading(state: &ServeState) -> Option<Reading> {
     let busy = !crate::scan_feed::running_jobs(state).is_empty();
     // Read last: a job is marked ended before it is counted, so a job of this
     // server's that wrote what was read above reads here as running or as
-    // counted, and raises nothing. A raise for this server's own work needs
-    // one of its jobs to end, from its mark to its count, across a look's
-    // reads; its own lease to be taken as the probe reads it
-    // (`Library::derive_held_elsewhere`); or a write of its own outside any
-    // job.
+    // counted, and raises nothing. This server's own work costs an open page
+    // one more read when one of its jobs ends, from its mark to its count,
+    // across a look's reads; when its own lease is taken as the probe reads it;
+    // when it writes outside any job; or when one of its jobs writes and ends
+    // in the refresh after a read on which the tick raises, as its add counts
+    // the end: the next look sees the write with `ended` equal to `ended_seen`.
     let ended = state.jobs_ended.ended.load(Ordering::SeqCst);
     Some(Reading {
         marks,

@@ -823,14 +823,14 @@ async fn the_refresher_raises_ended_for_a_scan_another_handle_wrote() {
 async fn a_tick_whose_refresh_panics_still_looks_with_the_watch_it_kept() {
     let (_router, state, _fixture) = crate::test_support::router_over_a_live_library();
     let mut watch = crate::cli_watch::CliWatch::default();
-    super::refresh_and_look(&state, &mut watch, |_| {}).await;
+    super::tick(&state, &mut watch, |_| {}).await;
     let before = state.jobs_ended.ended.load(Ordering::SeqCst);
 
     crate::test_support::mark_a_scan(
         &crate::test_support::the_store_elsewhere(&state),
         "2030-01-01 00:00:00",
     );
-    super::refresh_and_look(&state, &mut watch, |_| panic!("a refresh that panics")).await;
+    super::tick(&state, &mut watch, |_| panic!("a refresh that panics")).await;
     assert_eq!(
         state.jobs_ended.ended.load(Ordering::SeqCst),
         before + 1,
@@ -838,36 +838,45 @@ async fn a_tick_whose_refresh_panics_still_looks_with_the_watch_it_kept() {
     );
 }
 
-/// A tick publishes what its refresh read before its look raises `ended`, so
-/// a page that reads again at once is served what the refresh read. The
-/// refresh here records whether `ended` had moved when it ran; the look must
-/// raise on this tick, or the order would go unchecked.
+/// A tick's refresh starts after its look's read and before its raise, so the
+/// tick never raises `ended` for a write its refresh was not asked to read. The
+/// refresh here records whether `ended` had moved when it ran, then writes a
+/// walk of its own: a write the look did not read, which the next tick raises.
 #[tokio::test]
-async fn a_tick_refreshes_the_works_before_its_look_raises_ended() {
+async fn a_tick_refreshes_between_its_looks_read_and_its_raise() {
     let (_router, state, _fixture) = crate::test_support::router_over_a_live_library();
+    let other = crate::test_support::the_store_elsewhere(&state);
     let mut watch = crate::cli_watch::CliWatch::default();
-    super::refresh_and_look(&state, &mut watch, |_| {}).await;
+    super::tick(&state, &mut watch, |_| {}).await;
     let before = state.jobs_ended.ended.load(Ordering::SeqCst);
 
-    crate::test_support::mark_a_scan(
-        &crate::test_support::the_store_elsewhere(&state),
-        "2030-01-01 00:00:00",
-    );
+    crate::test_support::mark_a_scan(&other, "2030-01-01 00:00:00");
     let (refreshed, moved_at_refresh) = mpsc::channel();
-    super::refresh_and_look(&state, &mut watch, move |state| {
+    super::tick(&state, &mut watch, move |state| {
         let moved = state.jobs_ended.ended.load(Ordering::SeqCst) != before;
         refreshed.send(moved).expect("the test is listening");
+        crate::test_support::mark_a_scan(
+            &crate::test_support::the_store_elsewhere(state),
+            "2030-01-01 00:00:01",
+        );
     })
     .await;
     assert_eq!(
         state.jobs_ended.ended.load(Ordering::SeqCst),
         before + 1,
-        "the tick's look raised nothing for a walk another process ended"
+        "the tick raised nothing for a walk another process ended"
     );
     assert!(
         !moved_at_refresh
             .try_recv()
             .expect("the tick ran its refresh"),
-        "the tick's look raised ended before its refresh ran"
+        "the tick raised ended before its refresh ran"
+    );
+
+    super::tick(&state, &mut watch, |_| {}).await;
+    assert_eq!(
+        state.jobs_ended.ended.load(Ordering::SeqCst),
+        before + 2,
+        "a write made while the refresh ran was raised by no tick"
     );
 }

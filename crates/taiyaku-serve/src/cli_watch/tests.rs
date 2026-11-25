@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 
 use taiyaku_library::schedule::ScanMark;
 
-use super::{CliWatch, Reading};
+use super::{CliWatch, Reading, reading};
 use crate::ServeState;
 use crate::test_support::{
     holding_the_lease, mark_a_scan, router_over_a_live_library, the_store_elsewhere,
@@ -217,21 +217,29 @@ fn ended(state: &ServeState) -> u64 {
     state.jobs_ended.ended.load(Ordering::SeqCst)
 }
 
+/// A tick's look with no refresh between its read and its raise, and nothing
+/// on a read the store refuses.
+fn look(watch: &mut CliWatch, state: &ServeState) {
+    if let Some(now) = reading(state) {
+        watch.raise_for(now, state);
+    }
+}
+
 #[test]
 fn a_root_scanned_from_another_library_handle_moves_ended() {
     let (_router, state, _fixture) = router_over_a_live_library();
     let mut watch = CliWatch::default();
-    watch.look(&state);
+    look(&mut watch, &state);
     let before = ended(&state);
 
     mark_a_scan(&the_store_elsewhere(&state), "2030-01-01 00:00:00");
-    watch.look(&state);
+    look(&mut watch, &state);
     assert_eq!(
         ended(&state),
         before + 1,
         "a walk another process ended did not move ended by one"
     );
-    watch.look(&state);
+    look(&mut watch, &state);
     assert_eq!(
         ended(&state),
         before + 1,
@@ -246,17 +254,49 @@ fn a_walk_that_ends_the_look_after_a_raise_moves_ended_again() {
     let (_router, state, _fixture) = router_over_a_live_library();
     let other = the_store_elsewhere(&state);
     let mut watch = CliWatch::default();
-    watch.look(&state);
+    look(&mut watch, &state);
     let before = ended(&state);
 
     mark_a_scan(&other, "2030-01-01 00:00:00");
-    watch.look(&state);
+    look(&mut watch, &state);
     mark_a_scan(&other, "2030-01-01 00:00:01");
-    watch.look(&state);
+    look(&mut watch, &state);
     assert_eq!(
         ended(&state),
         before + 2,
         "the watch's own raise hid the walk that ended after it"
+    );
+}
+
+/// The tick refreshes between a look's read and its raise, and a job of this
+/// server's may end in that gap and raise `ended` itself. The raise counts
+/// from what its add answered, so the next look does not read that job's
+/// raise as a job ending since it looked and pass over what it finds.
+#[test]
+fn a_raise_counts_from_the_add_so_a_job_that_ended_since_the_read_hides_no_later_change() {
+    let (_router, state, _fixture) = router_over_a_live_library();
+    let other = the_store_elsewhere(&state);
+    let mut watch = CliWatch::default();
+    look(&mut watch, &state);
+    let before = ended(&state);
+
+    mark_a_scan(&other, "2030-01-01 00:00:00");
+    let now = reading(&state).expect("reads the store");
+    // A job of this server's ends between the look's read and its raise.
+    state.jobs_ended.ended.fetch_add(1, Ordering::SeqCst);
+    watch.raise_for(now, &state);
+    assert_eq!(
+        ended(&state),
+        before + 2,
+        "the raise for a walk another process ended went missing beside a job's own"
+    );
+
+    mark_a_scan(&other, "2030-01-01 00:00:01");
+    look(&mut watch, &state);
+    assert_eq!(
+        ended(&state),
+        before + 3,
+        "a job that ended between a look's read and its raise hid the walk that ended after it"
     );
 }
 
@@ -268,11 +308,11 @@ fn a_derive_after_a_walk_already_raised_for_moves_ended_again() {
     let (_router, state, _fixture) = router_over_a_live_library();
     let other = the_store_elsewhere(&state);
     let mut watch = CliWatch::default();
-    watch.look(&state);
+    look(&mut watch, &state);
     let before = ended(&state);
 
     mark_a_scan(&other, "2030-01-01 00:00:00");
-    watch.look(&state);
+    look(&mut watch, &state);
     assert_eq!(ended(&state), before + 1, "the walk raised nothing");
     {
         let lease = holding_the_lease(&other);
@@ -287,7 +327,7 @@ fn a_derive_after_a_walk_already_raised_for_moves_ended_again() {
         });
         assert_eq!(changed, 1, "the fixture has a work");
     }
-    watch.look(&state);
+    look(&mut watch, &state);
     assert_eq!(
         ended(&state),
         before + 2,
@@ -299,7 +339,7 @@ fn a_derive_after_a_walk_already_raised_for_moves_ended_again() {
 fn a_lease_another_handle_holds_moves_ended_when_dropped() {
     let (_router, state, _fixture) = router_over_a_live_library();
     let mut watch = CliWatch::default();
-    watch.look(&state);
+    look(&mut watch, &state);
     let before = ended(&state);
 
     let other = the_store_elsewhere(&state);
@@ -308,17 +348,17 @@ fn a_lease_another_handle_holds_moves_ended_when_dropped() {
         state.library.derive_held_elsewhere(),
         "another handle's lease did not read as held elsewhere"
     );
-    watch.look(&state);
+    look(&mut watch, &state);
     assert_eq!(ended(&state), before, "a lease still held moved ended");
 
     drop(lease);
-    watch.look(&state);
+    look(&mut watch, &state);
     assert_eq!(
         ended(&state),
         before + 1,
         "a lease let go did not move ended by one"
     );
-    watch.look(&state);
+    look(&mut watch, &state);
     assert_eq!(
         ended(&state),
         before + 1,
@@ -330,7 +370,7 @@ fn a_lease_another_handle_holds_moves_ended_when_dropped() {
 fn the_servers_own_lease_is_not_elsewhere() {
     let (_router, state, _fixture) = router_over_a_live_library();
     let mut watch = CliWatch::default();
-    watch.look(&state);
+    look(&mut watch, &state);
     let before = ended(&state);
 
     let lease = holding_the_lease(&state.library);
@@ -342,10 +382,10 @@ fn the_servers_own_lease_is_not_elsewhere() {
         !state.library.derive_held_elsewhere(),
         "the server's own lease read as held elsewhere"
     );
-    watch.look(&state);
-    watch.look(&state);
+    look(&mut watch, &state);
+    look(&mut watch, &state);
     drop(lease);
-    watch.look(&state);
+    look(&mut watch, &state);
     assert_eq!(
         ended(&state),
         before,
@@ -361,7 +401,7 @@ fn a_store_no_derive_has_touched_raises_nothing() {
     let before = ended(&state);
     let mut watch = CliWatch::default();
     for _ in 0..3 {
-        watch.look(&state);
+        look(&mut watch, &state);
     }
     assert_eq!(ended(&state), before, "a store nobody scanned moved ended");
     assert!(!lock.exists(), "a look made the derive lock file");

@@ -33172,3 +33172,87 @@ its directory follows.
 One way to close it, neither built nor run, is to read as a stray a matched
 member whose own path no entry holds, though another entry holds its bytes.
 What that would hold back is not worked out.
+
+## O585 and O586: the refresher's order and the cache test's zips (2026-11-25)
+
+The rows in `docs/status.md` say what changed. Each mutation below was put in
+by hand, run against the tests named, and taken out, and no mutation sweep ran
+for the branch.
+
+**O585.** `registry::tests`'
+`a_tick_refreshes_between_its_looks_read_and_its_raise` marks a walk from
+another handle after a first tick, then runs a tick whose refresh records
+whether `ended` has moved and then marks a second walk the same way, then a
+third tick. It asserts that the second tick raised once, after its refresh,
+and that the third raised the second walk. Run against the old order, refresh
+then look, it failed at its last assertion:
+
+```
+assertion `left == right` failed: a write made while the refresh ran was raised by no tick
+  left: 1
+ right: 2
+```
+
+`cli_watch::tests`'
+`a_raise_counts_from_the_add_so_a_job_that_ended_since_the_read_hides_no_later_change`
+moves `ended` as a job of the server's ending would, between a look's read and
+its raise, then asserts that a walk ended after it is still raised. Before
+`raise_for` existed it did not compile:
+
+```
+error[E0599]: no method named `raise_for` found for struct `CliWatch` in the current scope
+```
+
+Put wrong by hand in the code as built, each mutation failed one of three
+tests, these two and #304's
+`a_tick_whose_refresh_panics_still_looks_with_the_watch_it_kept`, and the
+other two passed:
+
+- the refresh moved before the read, the old order: the order test, at "a
+  write made while the refresh ran was raised by no tick", 1 against 2;
+- the raise moved before the refresh: the order test, at "the tick raised
+  ended before its refresh ran";
+- `ended_seen` set from the reading plus one, not from the add: the count
+  test, at "a job that ended between a look's read and its raise hid the walk
+  that ended after it", 2 against 3;
+- no raise after a refresh that panicked: the panic test, at "a tick whose
+  refresh panicked raised nothing for a walk another process ended", 0 against
+  1.
+
+With the code restored the three passed. No test makes the store refuse one
+read; by a reading, a read the store refuses, or one that panics, raises
+nothing and leaves the watch as it was, and the refresh still runs.
+
+**O586.** `taiyaku-cli`'s
+`match_experiment::volume_test::tests::a_fingerprint_answered_from_the_cache_stops_the_run_and_writes_no_report`
+failed once in a gate run of #304's branch, in the default-features tests,
+having passed in the same gate's coverage run, and passed in each of 20 runs
+of it alone. It writes two archives from the same pages and seed with
+`taiyaku_read::test_support`'s `cbz_pages`, and needs the second answered from
+the fingerprint cache, which keys a member by the sha256 of its file's bytes
+(`taiyaku_read::member_digest`).
+
+The zip writer stamps the clock. `Cargo.lock` holds zip 9.1.3, which the
+workspace takes with its default features, `time` among them. Its default
+entry options take `DateTime::default_for_write()`, which with that feature
+reads `time::OffsetDateTime::now_utc()`, and its `DateTime` doc says of the
+DOS format zip stores times in, "it has a resolution of 2 seconds!". So two
+archives of the same pages written either side of a two-second step are not
+the same bytes.
+
+With a sleep put in by hand between the test's two archives, the test failed
+before the fix:
+
+```
+FAIL [   2.148s] (1/1) taiyaku-cli::bin/taiyaku match_experiment::volume_test::tests::a_fingerprint_answered_from_the_cache_stops_the_run_and_writes_no_report
+members: 2, fingerprinted: 2, unreadable: 0, cache hits: 0
+the second member's bytes are the first's: Judged { outcome: Untested, wrong: 0, at_bar: [], relabelled: [] }
+```
+
+The gate run printed the same last two lines. `write_zip`, which `cbz_pages`,
+`epub_with` and `print_fixture_cbz` write through, now gives every entry
+`zip::DateTime::default()`, 1980-01-01 00:00:00. With the sleep still in, the
+test passed (`PASS [   2.157s]`); with the sleep taken out and the second
+archive cut from another seed, it failed at the same assertion. That the
+gate's own failure fell across a step is inferred from its identical panic
+text, not observed.

@@ -386,16 +386,21 @@ pub fn epub_with(dir: &Path, name: &str, dc: &str, paragraphs: &[&str]) -> PathB
 }
 
 /// A new zip at `path` holding `entries` in the order given, each with zip's
-/// default options.
+/// default options but a fixed modification time.
 fn write_zip<B: AsRef<[u8]>>(
     path: &Path,
     entries: impl IntoIterator<Item = (impl Into<String>, B)>,
 ) {
     use std::io::Write;
+    // zip's default stamps each entry with the wall clock, so two calls with
+    // the same entries could write different bytes and hash apart; a test that
+    // needs two members of the same bytes (a fingerprint-cache hit, a shared
+    // sha256) would then pass or fail by the clock.
+    let options =
+        zip::write::SimpleFileOptions::default().last_modified_time(zip::DateTime::default());
     let mut zip = zip::ZipWriter::new(std::fs::File::create(path).expect("create zip"));
     for (name, bytes) in entries {
-        zip.start_file(name.into(), zip::write::SimpleFileOptions::default())
-            .expect("start entry");
+        zip.start_file(name.into(), options).expect("start entry");
         zip.write_all(bytes.as_ref()).expect("write entry");
     }
     zip.finish().expect("finish zip");
